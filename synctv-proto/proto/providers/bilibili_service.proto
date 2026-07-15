@@ -11,6 +11,18 @@ service BilibiliProviderService {
   // Parse Bilibili URL (video, anime, live), using the user's global bind when available
   rpc Parse(ParseRequest) returns (ParseResponse);
 
+  // List live categories available for dynamic playlist creation
+  rpc ListLiveAreas(ListLiveAreasRequest) returns (ListLiveAreasResponse);
+
+  // List the authenticated user's favorite folders
+  rpc ListFavoriteFolders(ListFavoriteFoldersRequest) returns (ListFavoriteFoldersResponse);
+
+  // List anime or cinema seasons followed by the authenticated user
+  rpc ListFollowedPgc(ListFollowedPgcRequest) returns (ListFollowedPgcResponse);
+  rpc ListHistory(ListHistoryRequest) returns (ListHistoryResponse);
+  rpc ListPgcTimeline(ListPgcTimelineRequest) returns (ListPgcTimelineResponse);
+  rpc ListPgcSeasons(ListPgcSeasonsRequest) returns (ListPgcSeasonsResponse);
+
   // Generate QR code for login
   rpc LoginQR(LoginQRRequest) returns (QRCodeResponse);
 

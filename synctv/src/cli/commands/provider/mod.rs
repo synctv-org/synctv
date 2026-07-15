@@ -2,15 +2,21 @@ use super::prelude::*;
 
 mod alist;
 mod bilibili;
+mod douyin;
 mod emby;
 mod rtmp;
 mod shared;
+mod tiktok;
+mod twitch;
 
 pub use alist::*;
 pub use bilibili::*;
+pub use douyin::*;
 pub use emby::*;
 pub use rtmp::*;
 pub use shared::*;
+pub use tiktok::*;
+pub use twitch::*;
 
 #[derive(Debug, Args)]
 pub struct ProviderCommand {
@@ -44,6 +50,12 @@ pub enum ProviderSubcommand {
     Emby(ProviderEmbyCommand),
     /// Bilibili provider service operations
     Bilibili(ProviderBilibiliCommand),
+    /// Douyin provider service operations
+    Douyin(ProviderDouyinCommand),
+    /// TikTok provider service operations
+    Tiktok(ProviderTikTokCommand),
+    /// Twitch provider service operations
+    Twitch(ProviderTwitchCommand),
     /// RTMP provider service operations
     Rtmp(ProviderRtmpCommand),
 }

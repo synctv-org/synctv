@@ -7,6 +7,7 @@ use super::store::{ProviderStore, ProviderStoreExt, VersionedPlayback};
 use super::ExecutionControl;
 use crate::credential_encryption::CredentialEncryption;
 use crate::models::{MediaId, RoomId, UserId};
+use crate::repository::ProviderPlaybackSessionRepository;
 use crate::repository::UserProviderCredentialRepository;
 use crate::service::{PermissionService, RoomService};
 
@@ -93,7 +94,18 @@ pub struct PlaybackTransportServices {
     pub permission_service: PermissionService,
     pub credential_encryption: Option<CredentialEncryption>,
     pub credential_repo: Arc<UserProviderCredentialRepository>,
+    pub playback_session_repo: ProviderPlaybackSessionRepository,
     pub provider_access_service: Arc<dyn ProviderAccessService>,
+}
+
+pub struct StatefulPlaybackResourceRequest<'a> {
+    pub store: Option<&'a Arc<dyn ProviderStore>>,
+    pub session_repo: &'a ProviderPlaybackSessionRepository,
+    pub version: &'a str,
+    pub mode_name: &'a str,
+    pub media_index: usize,
+    pub request_context: Option<&'a ExecutionControl>,
+    pub range_header: Option<&'a str>,
 }
 
 #[must_use]
@@ -205,6 +217,7 @@ mod tests {
                 metadata: None,
             },
             expires_at: 0, // Already expired
+            playback_context: None,
         };
         store
             .set("v:v1", &vp, Duration::from_mins(1))
@@ -233,6 +246,7 @@ mod tests {
                 metadata: None,
             },
             expires_at: crate::SystemClock.now().timestamp() + 3600,
+            playback_context: None,
         };
         store
             .set("v:v1", &vp, Duration::from_mins(1))
@@ -258,6 +272,7 @@ mod tests {
                 metadata: None,
             },
             expires_at: crate::SystemClock.now().timestamp() + 60,
+            playback_context: None,
         };
         store
             .set("v:v1", &vp, Duration::from_mins(1))

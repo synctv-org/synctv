@@ -814,6 +814,7 @@ fn test_playback_state_to_proto() -> TestResult {
         position: 120.5,
         speed: 1.5,
         is_playing: false,
+        playback_generation: 0,
         updated_at: synctv_core::SystemClock.now(),
         version: 42,
     };
@@ -853,6 +854,7 @@ fn test_playback_state_to_proto_computes_elapsed_time_while_playing() -> TestRes
         position: 120.5,
         speed: 1.5,
         is_playing: true,
+        playback_generation: 0,
         updated_at: synctv_core::SystemClock.now() - chrono::TimeDelta::seconds(2),
         version: 42,
     };
@@ -882,6 +884,7 @@ fn test_playback_state_to_proto_dynamic_playlist_target() -> TestResult {
         position: 120.5,
         speed: 1.5,
         is_playing: true,
+        playback_generation: 0,
         updated_at: synctv_core::SystemClock.now(),
         version: 42,
     };
@@ -897,12 +900,20 @@ fn test_playback_state_to_proto_dynamic_playlist_target() -> TestResult {
         codec_ok(public_id_codec.encode_playlist_id(playing_playlist_id))?
     );
     let Some(synctv_proto::client::ProviderTarget {
-        target: Some(synctv_proto::client::provider_target::Target::Emby(target)),
+        target:
+            Some(synctv_proto::client::provider_target::Target::Emby(
+                synctv_proto::client::EmbyTarget {
+                    target:
+                        Some(synctv_proto::client::emby_target::Target::Item(
+                            synctv_proto::client::EmbyItemTarget { item_id },
+                        )),
+                },
+            )),
     }) = proto.target
     else {
         return Err(test_error("playback state should include emby target"));
     };
-    assert_eq!(target.item_id, "provider-item-9");
+    assert_eq!(item_id, "provider-item-9");
     Ok(())
 }
 
@@ -1183,6 +1194,37 @@ fn test_media_to_proto_for_owner_includes_source_metadata() -> TestResult {
         Some("BV1234")
     );
     assert!(proto.source_config.is_some());
+    Ok(())
+}
+
+#[test]
+fn test_seafile_source_metadata_uses_native_path() -> TestResult {
+    let public_id_codec = test_public_id_codec();
+    let mut media = make_test_media();
+    media.source_provider = synctv_core::models::SourceProvider::Seafile;
+    media.source_config = synctv_core::models::MediaSourceConfig::Seafile(
+        synctv_core::models::SeafileMediaSourceConfig {
+            server_id: "seafile-home".to_string(),
+            repository_id: "repo-1".to_string(),
+            path: "/Videos/Movie.mkv".to_string(),
+            object_id: "object-1".to_string(),
+            has_thumbnail: true,
+        },
+    );
+    let proto = api_ok(try_media_to_proto_for_viewer_without_cover(
+        &media,
+        true,
+        media.creator_id,
+        &public_id_codec,
+    ))?;
+
+    assert_eq!(
+        proto
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.source.as_deref()),
+        Some("/Videos/Movie.mkv")
+    );
     Ok(())
 }
 
@@ -1714,6 +1756,7 @@ fn test_playback_state_version_no_truncation() -> TestResult {
         position: 0.0,
         speed: 1.0,
         is_playing: false,
+        playback_generation: 0,
         updated_at: synctv_core::SystemClock.now(),
         version: large_version,
     };
@@ -1738,6 +1781,7 @@ fn test_playback_state_version_i32_range_still_works() -> TestResult {
         position: 0.0,
         speed: 1.0,
         is_playing: false,
+        playback_generation: 0,
         updated_at: synctv_core::SystemClock.now(),
         version: 42,
     };

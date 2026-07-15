@@ -61,8 +61,7 @@ fn assert_proto_alist_target(
 fn decode_alist_target(target: &ProviderTarget) -> String {
     match target {
         ProviderTarget::Alist(target) => target.relative_path.clone(),
-        ProviderTarget::Emby(_) => panic!("expected alist provider target"),
-        ProviderTarget::Cloudreve(_) => panic!("expected alist provider target"),
+        _ => panic!("expected alist provider target"),
     }
 }
 
@@ -317,6 +316,7 @@ impl DynamicFolder for StubDynamicProvider {
                 thumbnail: None,
                 description: None,
                 modified_at: None,
+                source_config: None,
             }],
             cursor if cursor == self.folder_cursor() => vec![DirectoryItem {
                 name: self
@@ -331,6 +331,7 @@ impl DynamicFolder for StubDynamicProvider {
                 thumbnail: None,
                 description: None,
                 modified_at: None,
+                source_config: None,
             }],
             _ => Vec::new(),
         };
@@ -691,6 +692,7 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
                 availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
+                preview_source_config: None,
             },
         )
         .await
@@ -1329,6 +1331,7 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
                 availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
+                preview_source_config: None,
             },
         )
         .await
@@ -1453,6 +1456,7 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
                 availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
+                preview_source_config: None,
             },
         )
         .await

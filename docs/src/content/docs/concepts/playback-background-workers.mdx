@@ -3,17 +3,18 @@ title: 播放后台任务
 description: 播放时长探测、自动切换和播放资源生命周期任务的调度边界。
 ---
 
-播放后台任务使用当前进程的 active room 集合作为调度边界。这里的 active room 指本节点 `ConnectionRuntime` 中至少有一个 Realtime 连接的房间。
+时长探测和自动切换使用当前进程的 active room 集合作为调度边界。Provider session 通过 `provider_playback_sessions` 持久化，覆盖断开 Realtime 或进程重启后仍待清理的上游会话。
 
 ## 调度边界
 
 播放后台任务在每个节点运行。每个节点只扫描自己正在承载连接的房间，因为这些连接代表本进程真实持有的房间生命周期。
 
-这个边界适用于：
+active room 边界适用于：
 
 - 播放时长探测；
 - 播放自动切换；
-- 播放资源生命周期任务。
+
+Provider 生命周期回收器在每个 tick 使用 `FOR UPDATE SKIP LOCKED` 领取到期或待停止 session。Graceful shutdown 会把 active session 标记为待停止并执行一次强制清理。
 
 全局热门房间统计属于 presence 和分析数据，适合房间列表、管理视图和 metrics。播放后台任务读取 `ConnectionRuntime::active_room_ids()`。
 
@@ -27,20 +28,20 @@ description: 播放时长探测、自动切换和播放资源生命周期任务�
 - 自动切换使用播放状态事务和乐观版本；
 - worker 的输入集合来自本节点连接，写入正确性来自持久化层。
 
-Leader election 用于分区维护、清理和其他全局单例任务。播放生命周期 worker 的所有权来自本节点实时连接集合。
+Leader election 用于分区维护和其他全局单例任务。Provider 生命周期回收使用数据库 cleanup lease 与 fencing token 收敛多节点尝试。
 
 ## 维护规则
 
 Repository 查询使用 SQLx checked macros。修改这些查询后，更新 `.sqlx`：
 
 ```bash
-cargo sqlx prepare --workspace -- --all-targets
-SQLX_OFFLINE=true cargo check --workspace --all-targets
+cargo +nightly sqlx prepare --workspace -- --all-targets
+SQLX_OFFLINE=true cargo +nightly check --workspace --all-targets
 ```
 
 保留 checked macro，让 CI 的离线 SQLx 校验继续覆盖查询形状。
 
-实现上，调度输入固定为 `ConnectionRuntime::active_room_ids()`。Presence hot-room 查询服务于列表、管理视图和 metrics。播放 worker 使用本节点实时连接集合，跨节点重复尝试由数据库 claim、`SKIP LOCKED` 和播放状态乐观版本收敛。
+时长探测和自动切换的调度输入固定为 `ConnectionRuntime::active_room_ids()`。Presence hot-room 查询服务于列表、管理视图和 metrics。Provider 生命周期回收器读取 `provider_playback_sessions`，跨节点重复尝试由行锁、cleanup lease 和 fence 收敛。
 
 Room-scoped 查询需要保留 `room_id = ANY(...)` 过滤和当前 `room_playback_progress.target_hash` 连接条件。前者保持本节点 active-room 调度边界，后者把普通媒体和动态 playlist 播放都绑定到当前 target。
 

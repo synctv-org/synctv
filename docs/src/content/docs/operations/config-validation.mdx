@@ -14,7 +14,7 @@ synctv config --config synctv.yaml validate --strict
 开发环境使用 cargo：
 
 ```bash
-cargo run -p synctv --bin synctv -- config --config synctv.yaml validate --strict
+cargo +nightly run -p synctv --bin synctv -- config --config synctv.yaml validate --strict
 ```
 
 `config validate` 默认会把未知配置项和不支持的 `SYNCTV_` 环境变量作为 warning 输出。部署前预检建议使用 `--strict`，因为 `synctv serve` 启动时也会使用同一套严格未知输入策略。

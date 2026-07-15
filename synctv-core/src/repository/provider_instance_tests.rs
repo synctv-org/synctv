@@ -170,6 +170,109 @@ async fn test_user_provider_credential_storage_encrypts_cloudreve_password() {
 }
 
 #[tokio::test]
+async fn test_user_provider_credential_storage_encrypts_twitch_session() {
+    let encryption = ok(CredentialEncryption::new(&[17u8; 32]), "encryption key");
+    let credential = ProviderCredential::Twitch {
+        login: "synctv".to_string(),
+        twitch_user_id: "123456".to_string(),
+        client_id: "web-client".to_string(),
+        scopes: vec!["user:read:follows".to_string()],
+        auth_token: "oauth-token".to_string(),
+        device_id: Some("device-id".to_string()),
+        client_integrity: Some("integrity-token".to_string()),
+    };
+
+    let stored = ok(
+        UserProviderCredentialRepository::encrypt_credential_with(Some(&encryption), &credential),
+        "credential should encrypt",
+    );
+    let stored_json = ok(
+        serde_json::to_value(&stored).map_err(crate::Error::from),
+        "stored credential should serialize",
+    );
+    assert_eq!(stored_json["type"], "twitch");
+    assert_eq!(stored_json["login"], "synctv");
+    for field in ["authToken", "deviceId", "clientIntegrity"] {
+        assert!(stored_json[field]
+            .as_str()
+            .is_some_and(|value| value.starts_with("enc:")));
+    }
+
+    let decrypted = ok(
+        UserProviderCredentialRepository::decrypt_credential_with(Some(&encryption), &stored),
+        "stored credential should decrypt",
+    );
+    let ProviderCredential::Twitch {
+        login,
+        twitch_user_id,
+        client_id,
+        scopes,
+        auth_token,
+        device_id,
+        client_integrity,
+    } = decrypted
+    else {
+        panic!("expected Twitch credential");
+    };
+    assert_eq!(login, "synctv");
+    assert_eq!(client_id, "web-client");
+    assert_eq!(scopes, ["user:read:follows"]);
+    assert_eq!(twitch_user_id, "123456");
+    assert_eq!(auth_token, "oauth-token");
+    assert_eq!(device_id.as_deref(), Some("device-id"));
+    assert_eq!(client_integrity.as_deref(), Some("integrity-token"));
+}
+
+#[tokio::test]
+async fn test_user_provider_credential_storage_encrypts_qnap_secrets() {
+    let encryption = ok(CredentialEncryption::new(&[19u8; 32]), "encryption key");
+    let credential = ProviderCredential::Qnap {
+        endpoint: "https://qnap.example.com".to_string(),
+        username: "alice".to_string(),
+        password: "secret-password".to_string(),
+        sid: "session-id".to_string(),
+        server_name: "QNAP".to_string(),
+        version: Some("5.2".to_string()),
+        support_rtt: true,
+    };
+    let stored = ok(
+        UserProviderCredentialRepository::encrypt_credential_with(Some(&encryption), &credential),
+        "credential should encrypt",
+    );
+    let json = ok(
+        serde_json::to_value(&stored).map_err(crate::Error::from),
+        "stored credential should serialize",
+    );
+    assert_eq!(json["type"], "qnap");
+    for field in ["password", "sid"] {
+        assert!(json[field]
+            .as_str()
+            .is_some_and(|value| value.starts_with("enc:")));
+    }
+    let decrypted = ok(
+        UserProviderCredentialRepository::decrypt_credential_with(Some(&encryption), &stored),
+        "stored credential should decrypt",
+    );
+    assert!(matches!(
+        decrypted,
+        ProviderCredential::Qnap {
+            endpoint,
+            username,
+            password,
+            sid,
+            server_name,
+            version,
+            support_rtt: true,
+        } if endpoint == "https://qnap.example.com"
+            && username == "alice"
+            && password == "secret-password"
+            && sid == "session-id"
+            && server_name == "QNAP"
+            && version.as_deref() == Some("5.2")
+    ));
+}
+
+#[tokio::test]
 async fn test_provider_instance_repo_requires_encryption_when_sensitive_fields_present() {
     let err = err(
         ProviderInstanceRepository::ensure_encryption_for_sensitive_fields_with(

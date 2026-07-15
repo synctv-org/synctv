@@ -1,0 +1,10 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+import "User.proto";
+
+message UserInstance {
+    User user = 1;
+    int64 instanceId = 2;
+}

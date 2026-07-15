@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package acproto;
+
+import "ChatMediaType.proto";
+import "ZtLiveUserInfo.proto";
+
+message CommonStateSignalChatReady {
+	string chatId = 1;
+	ZtLiveUserInfo guestUserInfo = 2;
+	ChatMediaType mediaType = 3;
+}

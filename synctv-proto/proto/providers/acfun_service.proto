@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package synctv.provider.acfun;
+
+import "proto/providers/acfun.proto";
+
+service AcFunProviderService {
+  rpc Resolve(ResolveRequest) returns (ResolveResponse);
+}

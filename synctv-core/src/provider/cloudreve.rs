@@ -973,6 +973,7 @@ impl DynamicFolder for CloudreveProvider {
                     thumbnail,
                     description: None,
                     modified_at: file.updated_at.map(|value| value.timestamp()),
+                    source_config: None,
                 })
             })
             .collect::<Result<Vec<_>, ProviderError>>()?;
@@ -1225,17 +1226,18 @@ mod tests {
 
     #[test]
     fn cloudreve_target_round_trips() {
-        let target = CloudreveProvider::encode_target("/Season 1/Episode 1.mp4").unwrap();
+        let target = CloudreveProvider::encode_target("/Season 1/Episode 1.mp4")
+            .expect("test operation should succeed");
         assert_eq!(
-            CloudreveProvider::decode_target(Some(&target)).unwrap(),
+            CloudreveProvider::decode_target(Some(&target)).expect("test operation should succeed"),
             Some("/Season 1/Episode 1.mp4".to_string())
         );
     }
 
     #[test]
     fn empty_directory_path_normalizes_to_cloudreve_root() {
-        CloudreveProvider::validate_path("").unwrap();
-        CloudreveProvider::validate_path("/").unwrap();
+        CloudreveProvider::validate_path("").expect("test operation should succeed");
+        CloudreveProvider::validate_path("/").expect("test operation should succeed");
         assert_eq!(CloudreveProvider::normalize_path(""), "cloudreve://my/");
         assert_eq!(CloudreveProvider::normalize_path(" / "), "cloudreve://my/");
         assert!(CloudreveProvider::validate_file_path("").is_err());
@@ -1248,11 +1250,13 @@ mod tests {
             .map(|index| DirectoryItem {
                 name: format!("Episode {index}"),
                 item_type: ItemType::Media,
-                target: CloudreveProvider::encode_target(&format!("/Episode {index}.mp4")).unwrap(),
+                target: CloudreveProvider::encode_target(&format!("/Episode {index}.mp4"))
+                    .expect("test operation should succeed"),
                 size: None,
                 thumbnail: None,
                 description: None,
                 modified_at: None,
+                source_config: None,
             })
             .collect::<Vec<_>>();
         let current = items[199].target.clone();
@@ -1270,7 +1274,10 @@ mod tests {
             }
         }
 
-        assert_eq!(selected.unwrap().name, "Episode 201");
+        assert_eq!(
+            selected.expect("test operation should succeed").name,
+            "Episode 201"
+        );
     }
 
     #[test]
@@ -1278,26 +1285,35 @@ mod tests {
         let first = DirectoryItem {
             name: "Episode 1".to_string(),
             item_type: ItemType::Media,
-            target: CloudreveProvider::encode_target("/Episode 1.mp4").unwrap(),
+            target: CloudreveProvider::encode_target("/Episode 1.mp4")
+                .expect("test operation should succeed"),
             size: None,
             thumbnail: None,
             description: None,
             modified_at: None,
+            source_config: None,
         };
         let last = DirectoryItem {
             name: "Episode 202".to_string(),
             item_type: ItemType::Media,
-            target: CloudreveProvider::encode_target("/Episode 202.mp4").unwrap(),
+            target: CloudreveProvider::encode_target("/Episode 202.mp4")
+                .expect("test operation should succeed"),
             size: None,
             thumbnail: None,
             description: None,
             modified_at: None,
+            source_config: None,
         };
         let last_target = last.target.clone();
         let mut scan = SequentialMediaScan::default();
         assert!(scan.observe(first.clone(), &last_target).is_none());
         assert!(scan.observe(last, &last_target).is_none());
-        assert_eq!(scan.finish(true).unwrap().target, first.target);
+        assert_eq!(
+            scan.finish(true)
+                .expect("test operation should succeed")
+                .target,
+            first.target
+        );
     }
 
     #[test]
@@ -1353,14 +1369,17 @@ mod tests {
         let item = DirectoryItem {
             name: "Episode 1".to_string(),
             item_type: ItemType::Media,
-            target: CloudreveProvider::encode_target("/Season 1/Episode 1.mp4").unwrap(),
+            target: CloudreveProvider::encode_target("/Season 1/Episode 1.mp4")
+                .expect("test operation should succeed"),
             size: Some(1024),
             thumbnail: None,
             description: None,
             modified_at: None,
+            source_config: None,
         };
 
-        let next = CloudreveProvider::next_item(&config, &item).unwrap();
+        let next =
+            CloudreveProvider::next_item(&config, &item).expect("test operation should succeed");
         let MediaSourceConfig::Cloudreve(source) = next.source_config else {
             panic!("expected Cloudreve media source config");
         };

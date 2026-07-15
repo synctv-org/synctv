@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package acproto;
+
+import "PkAudienceContributionInfo.proto";
+import "PkPlayerStatistic.proto";
+import "PkRoundInfo.proto";
+
+message CommonStateSignalPkStatistic {
+    string a = 1;
+    int64 b = 2;
+    int64 c = 3;
+    int64 d = 4;
+    bool e = 5;
+    int64 f = 6;
+    int64 g = 7;
+    int64 h = 8;
+    repeated PkAudienceContributionInfo i = 9;
+    repeated PkPlayerStatistic j = 10;
+    PkRoundInfo k = 11;
+    int64 l = 12;
+}

@@ -18,8 +18,10 @@ use super::common::{
 use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
 use synctv_proto::providers::bilibili::{
-    CheckQrRequest, GetBindsResponse, LoginQrRequest, LoginSmsRequest, LogoutRequest, ParseRequest,
-    SendSmsRequest, StartSmsLoginRequest, UserInfoRequest,
+    CheckQrRequest, GetBindsResponse, ListFavoriteFoldersRequest, ListFollowedPgcRequest,
+    ListHistoryRequest, ListLiveAreasRequest, ListPgcSeasonsRequest, ListPgcTimelineRequest,
+    LoginQrRequest, LoginSmsRequest, LogoutRequest, ParseRequest, SendSmsRequest,
+    StartSmsLoginRequest, UserInfoRequest,
 };
 use synctv_proto::providers::common::ProviderInstanceQuery;
 
@@ -38,6 +40,12 @@ pub(crate) fn bilibili_auth_routes() -> Router<AppState> {
 pub(crate) fn bilibili_read_routes() -> Router<AppState> {
     Router::new()
         .route("/parse", post(parse))
+        .route("/live/areas", post(list_live_areas))
+        .route("/favorites", post(list_favorite_folders))
+        .route("/pgc/followed", post(list_followed_pgc))
+        .route("/history", post(list_history))
+        .route("/pgc/timeline", post(list_pgc_timeline))
+        .route("/pgc/seasons", post(list_pgc_seasons))
         .route("/me", post(user_info))
         .route("/binds", get(binds))
 }
@@ -99,6 +107,259 @@ pub(crate) async fn parse(
         tracing::error!("Bilibili parse failed: {}", e);
         e
     })
+}
+
+/// List Bilibili live categories for dynamic playlist creation.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/bilibili/live/areas",
+        tag = "Provider",
+        request_body = ListLiveAreasRequest,
+        responses(
+            (status = 200, description = "Bilibili live areas", body = synctv_proto::providers::bilibili::ListLiveAreasResponse),
+            (status = 400, description = "Invalid provider instance", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Provider access denied", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_live_areas(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<ListLiveAreasRequest>,
+) -> AppResult<Json<synctv_proto::providers::bilibili::ListLiveAreasResponse>> {
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
+    let api = state.shared_api_runtime.bilibili_api.clone();
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |control, _| {
+            async move {
+                api.list_live_areas_with_context(req, instance_name.as_deref(), Some(&control))
+                    .await
+            }
+            .boxed()
+        },
+    )
+    .await
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/bilibili/favorites",
+        tag = "Provider",
+        request_body = ListFavoriteFoldersRequest,
+        responses(
+            (status = 200, description = "Bilibili favorite folders", body = synctv_proto::providers::bilibili::ListFavoriteFoldersResponse),
+            (status = 400, description = "Invalid provider instance", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Bilibili credential required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Provider access denied", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_favorite_folders(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<ListFavoriteFoldersRequest>,
+) -> AppResult<Json<synctv_proto::providers::bilibili::ListFavoriteFoldersResponse>> {
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
+    let api = state.shared_api_runtime.bilibili_api.clone();
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |control, authenticated| {
+            async move {
+                api.list_favorite_folders_with_context(
+                    &authenticated.user_id,
+                    req,
+                    instance_name.as_deref(),
+                    Some(&control),
+                )
+                .await
+            }
+            .boxed()
+        },
+    )
+    .await
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/bilibili/pgc/followed",
+        tag = "Provider",
+        request_body = ListFollowedPgcRequest,
+        responses(
+            (status = 200, description = "Followed Bilibili PGC seasons", body = synctv_proto::providers::bilibili::ListFollowedPgcResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Bilibili credential required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Provider access denied", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_followed_pgc(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<ListFollowedPgcRequest>,
+) -> AppResult<Json<synctv_proto::providers::bilibili::ListFollowedPgcResponse>> {
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
+    let api = state.shared_api_runtime.bilibili_api.clone();
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |control, authenticated| {
+            async move {
+                api.list_followed_pgc_with_context(
+                    &authenticated.user_id,
+                    req,
+                    instance_name.as_deref(),
+                    Some(&control),
+                )
+                .await
+            }
+            .boxed()
+        },
+    )
+    .await
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/bilibili/history",
+        tag = "Provider",
+        request_body = ListHistoryRequest,
+        responses(
+            (status = 200, description = "Bilibili playback history cursor page", body = synctv_proto::providers::bilibili::ListHistoryResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Bilibili credential required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_history(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<ListHistoryRequest>,
+) -> AppResult<Json<synctv_proto::providers::bilibili::ListHistoryResponse>> {
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
+    let api = state.shared_api_runtime.bilibili_api.clone();
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |control, authenticated| {
+            async move {
+                api.list_history_with_context(
+                    &authenticated.user_id,
+                    req,
+                    instance_name.as_deref(),
+                    Some(&control),
+                )
+                .await
+            }
+            .boxed()
+        },
+    )
+    .await
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/bilibili/pgc/timeline",
+        tag = "Provider",
+        request_body = ListPgcTimelineRequest,
+        responses((status = 200, description = "Bilibili PGC timeline", body = synctv_proto::providers::bilibili::ListPgcTimelineResponse)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_pgc_timeline(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<ListPgcTimelineRequest>,
+) -> AppResult<Json<synctv_proto::providers::bilibili::ListPgcTimelineResponse>> {
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
+    let api = state.shared_api_runtime.bilibili_api.clone();
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |control, authenticated| {
+            async move {
+                api.list_pgc_timeline_with_context(
+                    &authenticated.user_id,
+                    req,
+                    instance_name.as_deref(),
+                    Some(&control),
+                )
+                .await
+            }
+            .boxed()
+        },
+    )
+    .await
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/bilibili/pgc/seasons",
+        tag = "Provider",
+        request_body = ListPgcSeasonsRequest,
+        responses((status = 200, description = "Bilibili PGC season index", body = synctv_proto::providers::bilibili::ListPgcSeasonsResponse)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_pgc_seasons(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<ListPgcSeasonsRequest>,
+) -> AppResult<Json<synctv_proto::providers::bilibili::ListPgcSeasonsResponse>> {
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
+    let api = state.shared_api_runtime.bilibili_api.clone();
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |control, authenticated| {
+            async move {
+                api.list_pgc_seasons_with_context(
+                    &authenticated.user_id,
+                    req,
+                    instance_name.as_deref(),
+                    Some(&control),
+                )
+                .await
+            }
+            .boxed()
+        },
+    )
+    .await
 }
 
 /// Generate Bilibili QR code for login

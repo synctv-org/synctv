@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE provider_playback_sessions\n               SET state = 3, cleanup_attempts = cleanup_attempts + 1,\n                   next_cleanup_at = NOW() + make_interval(secs => $3),\n                   cleanup_lease_until = NULL\n               WHERE id = $1 AND cleanup_fence = $2\n                 AND state IN (2, 3) AND cleanup_lease_until IS NOT NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dd2518fdf9335f7b239b4e53656328528cdb50e7411dc04b33eb1a106d561f40"
+}

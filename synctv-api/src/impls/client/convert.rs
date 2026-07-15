@@ -392,10 +392,73 @@ pub(crate) fn provider_target_to_proto(
                 },
             )),
         },
+        synctv_core::models::ProviderTarget::Bilibili(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Bilibili(
+                client_proto::BilibiliTarget {
+                    target: Some(match target {
+                        synctv_core::models::BilibiliTarget::Video { bvid, aid } => {
+                            client_proto::bilibili_target::Target::Video(
+                                client_proto::BilibiliVideoTarget {
+                                    bvid: bvid.clone(),
+                                    aid: *aid,
+                                },
+                            )
+                        }
+                        synctv_core::models::BilibiliTarget::VideoPart {
+                            bvid,
+                            aid,
+                            cid,
+                            page,
+                        } => client_proto::bilibili_target::Target::VideoPart(
+                            client_proto::BilibiliVideoPartTarget {
+                                bvid: bvid.clone(),
+                                aid: *aid,
+                                cid: *cid,
+                                page: *page,
+                            },
+                        ),
+                        synctv_core::models::BilibiliTarget::PgcEpisode { epid, cid } => {
+                            client_proto::bilibili_target::Target::PgcEpisode(
+                                client_proto::BilibiliPgcEpisodeTarget {
+                                    epid: *epid,
+                                    cid: *cid,
+                                },
+                            )
+                        }
+                        synctv_core::models::BilibiliTarget::Live { room_id } => {
+                            client_proto::bilibili_target::Target::Live(
+                                client_proto::BilibiliLiveTarget { room_id: *room_id },
+                            )
+                        }
+                    }),
+                },
+            )),
+        },
         synctv_core::models::ProviderTarget::Emby(target) => client_proto::ProviderTarget {
             target: Some(client_proto::provider_target::Target::Emby(
                 client_proto::EmbyTarget {
-                    item_id: target.item_id.clone(),
+                    target: Some(match target {
+                        synctv_core::models::EmbyTarget::Item { item_id } => {
+                            client_proto::emby_target::Target::Item(client_proto::EmbyItemTarget {
+                                item_id: item_id.clone(),
+                            })
+                        }
+                        synctv_core::models::EmbyTarget::Person { person_id } => {
+                            client_proto::emby_target::Target::Person(
+                                client_proto::EmbyPersonTarget {
+                                    person_id: person_id.clone(),
+                                },
+                            )
+                        }
+                        synctv_core::models::EmbyTarget::PersonItem { person_id, item_id } => {
+                            client_proto::emby_target::Target::PersonItem(
+                                client_proto::EmbyPersonItemTarget {
+                                    person_id: person_id.clone(),
+                                    item_id: item_id.clone(),
+                                },
+                            )
+                        }
+                    }),
                 },
             )),
         },
@@ -406,6 +469,136 @@ pub(crate) fn provider_target_to_proto(
                 },
             )),
         },
+        synctv_core::models::ProviderTarget::Twitch(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Twitch(
+                client_proto::TwitchTarget {
+                    kind: match target.kind {
+                        synctv_core::models::TwitchTargetKind::Video => {
+                            client_proto::TwitchTargetKind::Video as i32
+                        }
+                        synctv_core::models::TwitchTargetKind::Clip => {
+                            client_proto::TwitchTargetKind::Clip as i32
+                        }
+                        synctv_core::models::TwitchTargetKind::Live => {
+                            client_proto::TwitchTargetKind::Live as i32
+                        }
+                    },
+                    id: target.id.clone(),
+                },
+            )),
+        },
+        synctv_core::models::ProviderTarget::Youtube(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Youtube(
+                client_proto::YoutubeTarget {
+                    video_id: target.video_id.clone(),
+                },
+            )),
+        },
+        synctv_core::models::ProviderTarget::Douyin(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Douyin(
+                client_proto::DouyinTarget {
+                    aweme_id: target.aweme_id.clone(),
+                },
+            )),
+        },
+        synctv_core::models::ProviderTarget::TikTok(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Tiktok(
+                client_proto::TikTokTarget {
+                    video_id: target.video_id.clone(),
+                },
+            )),
+        },
+        synctv_core::models::ProviderTarget::Fnos(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Fnos(
+                client_proto::FnosTarget {
+                    target: Some(match &target.target {
+                        synctv_core::models::FnosTargetKind::File { relative_path } => {
+                            client_proto::fnos_target::Target::File(client_proto::FnosFileTarget {
+                                relative_path: relative_path.clone(),
+                            })
+                        }
+                        synctv_core::models::FnosTargetKind::MediaItem {
+                            item_guid,
+                            media_guid,
+                        } => client_proto::fnos_target::Target::MediaItem(
+                            client_proto::FnosMediaItemTarget {
+                                item_guid: item_guid.clone(),
+                                media_guid: media_guid.clone(),
+                            },
+                        ),
+                    }),
+                },
+            )),
+        },
+        synctv_core::models::ProviderTarget::Qnap(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Qnap(
+                client_proto::QnapTarget {
+                    relative_path: target.relative_path.clone(),
+                },
+            )),
+        },
+        synctv_core::models::ProviderTarget::Synology(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Synology(
+                client_proto::SynologyTarget {
+                    target: Some(match target {
+                        synctv_core::models::SynologyTarget::File { relative_path } => {
+                            client_proto::synology_target::Target::File(
+                                client_proto::SynologyFileTarget {
+                                    relative_path: relative_path.clone(),
+                                },
+                            )
+                        }
+                        synctv_core::models::SynologyTarget::LibraryItem {
+                            kind,
+                            item_id,
+                            file_id,
+                            parent_id,
+                        } => client_proto::synology_target::Target::LibraryItem(
+                            client_proto::SynologyLibraryItemTarget {
+                                kind: synology_kind_to_proto(*kind),
+                                item_id: *item_id,
+                                file_id: *file_id,
+                                parent_id: *parent_id,
+                            },
+                        ),
+                        synctv_core::models::SynologyTarget::TvShow {
+                            library_id,
+                            tv_show_id,
+                        } => client_proto::synology_target::Target::TvShow(
+                            client_proto::SynologyTvShowTarget {
+                                library_id: *library_id,
+                                tv_show_id: *tv_show_id,
+                            },
+                        ),
+                    }),
+                },
+            )),
+        },
+        synctv_core::models::ProviderTarget::Nextcloud(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Nextcloud(
+                client_proto::NextcloudTarget {
+                    path: target.path.clone(),
+                    file_id: target.file_id,
+                },
+            )),
+        },
+        synctv_core::models::ProviderTarget::Seafile(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Seafile(
+                client_proto::SeafileTarget {
+                    repository_id: target.repository_id.clone(),
+                    path: target.path.clone(),
+                    object_id: target.object_id.clone(),
+                    has_thumbnail: target.has_thumbnail,
+                },
+            )),
+        },
+        synctv_core::models::ProviderTarget::TrueNas(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Truenas(
+                client_proto::TrueNasTarget {
+                    path: target.path.clone(),
+                },
+            )),
+        },
     }
 }
 
@@ -413,6 +606,47 @@ pub(crate) fn optional_provider_target_to_proto(
     target: Option<&synctv_core::models::ProviderTarget>,
 ) -> Option<client_proto::ProviderTarget> {
     target.map(provider_target_to_proto)
+}
+
+fn synology_kind_to_proto(kind: synctv_core::models::SynologyLibraryItemKind) -> i32 {
+    match kind {
+        synctv_core::models::SynologyLibraryItemKind::Movie => {
+            source_config_proto::SynologyLibraryItemKind::Movie as i32
+        }
+        synctv_core::models::SynologyLibraryItemKind::Episode => {
+            source_config_proto::SynologyLibraryItemKind::Episode as i32
+        }
+        synctv_core::models::SynologyLibraryItemKind::HomeVideo => {
+            source_config_proto::SynologyLibraryItemKind::HomeVideo as i32
+        }
+        synctv_core::models::SynologyLibraryItemKind::TvRecording => {
+            source_config_proto::SynologyLibraryItemKind::TvRecording as i32
+        }
+    }
+}
+
+fn synology_kind_from_proto(
+    kind: i32,
+) -> Result<synctv_core::models::SynologyLibraryItemKind, crate::impls::ApiError> {
+    match source_config_proto::SynologyLibraryItemKind::try_from(kind) {
+        Ok(source_config_proto::SynologyLibraryItemKind::Movie) => {
+            Ok(synctv_core::models::SynologyLibraryItemKind::Movie)
+        }
+        Ok(source_config_proto::SynologyLibraryItemKind::Episode) => {
+            Ok(synctv_core::models::SynologyLibraryItemKind::Episode)
+        }
+        Ok(source_config_proto::SynologyLibraryItemKind::HomeVideo) => {
+            Ok(synctv_core::models::SynologyLibraryItemKind::HomeVideo)
+        }
+        Ok(source_config_proto::SynologyLibraryItemKind::TvRecording) => {
+            Ok(synctv_core::models::SynologyLibraryItemKind::TvRecording)
+        }
+        Ok(source_config_proto::SynologyLibraryItemKind::Unspecified) | Err(_) => {
+            Err(crate::impls::ApiError::InvalidInput(
+                "Synology library item kind is required".to_string(),
+            ))
+        }
+    }
 }
 
 pub(crate) fn provider_target_from_proto(
@@ -428,11 +662,136 @@ pub(crate) fn provider_target_from_proto(
         client_proto::provider_target::Target::Alist(target) => {
             synctv_core::models::ProviderTarget::alist(target.relative_path)
         }
+        client_proto::provider_target::Target::Bilibili(target) => {
+            match target.target.ok_or_else(|| {
+                crate::impls::ApiError::InvalidInput(
+                    "Bilibili target oneof is required".to_string(),
+                )
+            })? {
+                client_proto::bilibili_target::Target::Video(target) => {
+                    synctv_core::models::ProviderTarget::bilibili_video(target.bvid, target.aid)
+                }
+                client_proto::bilibili_target::Target::VideoPart(target) => {
+                    synctv_core::models::ProviderTarget::bilibili_video_part(
+                        target.bvid,
+                        target.aid,
+                        target.cid,
+                        target.page,
+                    )
+                }
+                client_proto::bilibili_target::Target::PgcEpisode(target) => {
+                    synctv_core::models::ProviderTarget::bilibili_pgc_episode(
+                        target.epid,
+                        target.cid,
+                    )
+                }
+                client_proto::bilibili_target::Target::Live(target) => {
+                    synctv_core::models::ProviderTarget::bilibili_live(target.room_id)
+                }
+            }
+        }
         client_proto::provider_target::Target::Emby(target) => {
-            synctv_core::models::ProviderTarget::emby(target.item_id)
+            match target.target.ok_or_else(|| {
+                crate::impls::ApiError::InvalidInput("Emby target oneof is required".to_string())
+            })? {
+                client_proto::emby_target::Target::Item(target) => {
+                    synctv_core::models::ProviderTarget::emby(target.item_id)
+                }
+                client_proto::emby_target::Target::Person(target) => {
+                    synctv_core::models::ProviderTarget::emby_person(target.person_id)
+                }
+                client_proto::emby_target::Target::PersonItem(target) => {
+                    synctv_core::models::ProviderTarget::emby_person_item(
+                        target.person_id,
+                        target.item_id,
+                    )
+                }
+            }
         }
         client_proto::provider_target::Target::Cloudreve(target) => {
             synctv_core::models::ProviderTarget::cloudreve(target.relative_path)
+        }
+        client_proto::provider_target::Target::Twitch(target) => {
+            let kind = match client_proto::TwitchTargetKind::try_from(target.kind) {
+                Ok(client_proto::TwitchTargetKind::Video) => {
+                    synctv_core::models::TwitchTargetKind::Video
+                }
+                Ok(client_proto::TwitchTargetKind::Clip) => {
+                    synctv_core::models::TwitchTargetKind::Clip
+                }
+                Ok(client_proto::TwitchTargetKind::Live) => {
+                    synctv_core::models::TwitchTargetKind::Live
+                }
+                Ok(client_proto::TwitchTargetKind::Unspecified) | Err(_) => {
+                    return Err(crate::impls::ApiError::InvalidInput(
+                        "Twitch target kind is required".to_string(),
+                    ));
+                }
+            };
+            synctv_core::models::ProviderTarget::twitch(kind, target.id)
+        }
+        client_proto::provider_target::Target::Youtube(target) => {
+            synctv_core::models::ProviderTarget::youtube(target.video_id)
+        }
+        client_proto::provider_target::Target::Douyin(target) => {
+            synctv_core::models::ProviderTarget::douyin(target.aweme_id)
+        }
+        client_proto::provider_target::Target::Tiktok(target) => {
+            synctv_core::models::ProviderTarget::tiktok(target.video_id)
+        }
+        client_proto::provider_target::Target::Fnos(target) => {
+            match target.target.ok_or_else(|| {
+                crate::impls::ApiError::InvalidInput("FNOS target oneof is required".to_string())
+            })? {
+                client_proto::fnos_target::Target::File(file) => {
+                    synctv_core::models::ProviderTarget::fnos(file.relative_path)
+                }
+                client_proto::fnos_target::Target::MediaItem(item) => {
+                    synctv_core::models::ProviderTarget::fnos_media(item.item_guid, item.media_guid)
+                }
+            }
+        }
+        client_proto::provider_target::Target::Qnap(target) => {
+            synctv_core::models::ProviderTarget::qnap(target.relative_path)
+        }
+        client_proto::provider_target::Target::Synology(target) => {
+            match target.target.ok_or_else(|| {
+                crate::impls::ApiError::InvalidInput(
+                    "Synology target oneof is required".to_string(),
+                )
+            })? {
+                client_proto::synology_target::Target::File(value) => {
+                    synctv_core::models::ProviderTarget::synology_file(value.relative_path)
+                }
+                client_proto::synology_target::Target::LibraryItem(value) => {
+                    synctv_core::models::ProviderTarget::synology_library_item(
+                        synology_kind_from_proto(value.kind)?,
+                        value.item_id,
+                        value.file_id,
+                        value.parent_id,
+                    )
+                }
+                client_proto::synology_target::Target::TvShow(value) => {
+                    synctv_core::models::ProviderTarget::synology_tv_show(
+                        value.library_id,
+                        value.tv_show_id,
+                    )
+                }
+            }
+        }
+        client_proto::provider_target::Target::Nextcloud(target) => {
+            synctv_core::models::ProviderTarget::nextcloud(target.path, target.file_id)
+        }
+        client_proto::provider_target::Target::Seafile(target) => {
+            synctv_core::models::ProviderTarget::seafile(
+                target.repository_id,
+                target.path,
+                target.object_id,
+                target.has_thumbnail,
+            )
+        }
+        client_proto::provider_target::Target::Truenas(target) => {
+            synctv_core::models::ProviderTarget::truenas(target.path)
         }
     }))
 }
@@ -619,6 +978,153 @@ pub(crate) fn media_source_config_to_proto(
                 path: config.path,
             })
         }
+        synctv_core::models::MediaSourceConfig::Twitch(config) => {
+            Provider::Twitch(twitch_media_source_config_to_proto(config))
+        }
+        synctv_core::models::MediaSourceConfig::Youtube(config) => {
+            Provider::Youtube(source_config_proto::YoutubeMediaSourceConfig {
+                video_id: config.video_id,
+                shared: config.shared,
+            })
+        }
+        synctv_core::models::MediaSourceConfig::Huya(config) => {
+            Provider::Huya(huya_media_source_config_to_proto(config))
+        }
+        synctv_core::models::MediaSourceConfig::Douyu(config) => {
+            Provider::Douyu(source_config_proto::DouyuMediaSourceConfig { room: config.room })
+        }
+        synctv_core::models::MediaSourceConfig::Douyin(config) => {
+            let source = match config {
+                synctv_core::models::DouyinMediaSourceConfig::Video { aweme_id, shared } => {
+                    source_config_proto::douyin_media_source_config::Source::Video(
+                        source_config_proto::DouyinVideoSourceConfig { aweme_id, shared },
+                    )
+                }
+                synctv_core::models::DouyinMediaSourceConfig::Live { web_rid, shared } => {
+                    source_config_proto::douyin_media_source_config::Source::Live(
+                        source_config_proto::DouyinLiveSourceConfig { web_rid, shared },
+                    )
+                }
+            };
+            Provider::Douyin(source_config_proto::DouyinMediaSourceConfig {
+                source: Some(source),
+            })
+        }
+        synctv_core::models::MediaSourceConfig::TikTok(config) => {
+            let source = match config {
+                synctv_core::models::TikTokMediaSourceConfig::Video { video_id, shared } => {
+                    source_config_proto::tik_tok_media_source_config::Source::Video(
+                        source_config_proto::TikTokVideoSourceConfig { video_id, shared },
+                    )
+                }
+                synctv_core::models::TikTokMediaSourceConfig::Live { unique_id, shared } => {
+                    source_config_proto::tik_tok_media_source_config::Source::Live(
+                        source_config_proto::TikTokLiveSourceConfig { unique_id, shared },
+                    )
+                }
+            };
+            Provider::Tiktok(source_config_proto::TikTokMediaSourceConfig {
+                source: Some(source),
+            })
+        }
+        synctv_core::models::MediaSourceConfig::AcFun(config) => {
+            use source_config_proto::ac_fun_media_source_config::Source;
+            let source = match config {
+                synctv_core::models::AcFunMediaSourceConfig::Video { video_id } => {
+                    Source::Video(source_config_proto::AcFunVideoSourceConfig { video_id })
+                }
+                synctv_core::models::AcFunMediaSourceConfig::Bangumi {
+                    bangumi_id,
+                    episode_query,
+                } => Source::Bangumi(source_config_proto::AcFunBangumiSourceConfig {
+                    bangumi_id,
+                    episode_query,
+                }),
+                synctv_core::models::AcFunMediaSourceConfig::Live { author_id } => {
+                    Source::Live(source_config_proto::AcFunLiveSourceConfig { author_id })
+                }
+            };
+            Provider::AcFun(source_config_proto::AcFunMediaSourceConfig {
+                source: Some(source),
+            })
+        }
+        synctv_core::models::MediaSourceConfig::Cctv(config) => {
+            Provider::Cctv(source_config_proto::CctvMediaSourceConfig {
+                resource: config.resource,
+            })
+        }
+        synctv_core::models::MediaSourceConfig::Fnos(config) => {
+            Provider::Fnos(source_config_proto::FnosMediaSourceConfig {
+                server_id: config.server_id,
+                source: Some(match config.source {
+                    synctv_core::models::FnosMediaSource::File { path } => {
+                        source_config_proto::fnos_media_source_config::Source::File(
+                            source_config_proto::FnosFileSourceConfig { path },
+                        )
+                    }
+                    synctv_core::models::FnosMediaSource::LibraryItem {
+                        item_guid,
+                        media_guid,
+                    } => source_config_proto::fnos_media_source_config::Source::LibraryItem(
+                        source_config_proto::FnosLibraryItemSourceConfig {
+                            item_guid,
+                            media_guid,
+                        },
+                    ),
+                }),
+            })
+        }
+        synctv_core::models::MediaSourceConfig::Qnap(config) => {
+            Provider::Qnap(source_config_proto::QnapMediaSourceConfig {
+                server_id: config.server_id,
+                path: config.path,
+            })
+        }
+        synctv_core::models::MediaSourceConfig::Synology(config) => {
+            Provider::Synology(source_config_proto::SynologyMediaSourceConfig {
+                server_id: config.server_id,
+                source: Some(match config.source {
+                    synctv_core::models::SynologyMediaSource::File { path } => {
+                        source_config_proto::synology_media_source_config::Source::File(
+                            source_config_proto::SynologyFileSourceConfig { path },
+                        )
+                    }
+                    synctv_core::models::SynologyMediaSource::LibraryItem {
+                        kind,
+                        item_id,
+                        file_id,
+                    } => source_config_proto::synology_media_source_config::Source::LibraryItem(
+                        source_config_proto::SynologyLibraryItemSourceConfig {
+                            kind: synology_kind_to_proto(kind),
+                            item_id,
+                            file_id,
+                        },
+                    ),
+                }),
+            })
+        }
+        synctv_core::models::MediaSourceConfig::Nextcloud(config) => {
+            Provider::Nextcloud(source_config_proto::NextcloudMediaSourceConfig {
+                server_id: config.server_id,
+                path: config.path,
+                file_id: config.file_id,
+            })
+        }
+        synctv_core::models::MediaSourceConfig::Seafile(config) => {
+            Provider::Seafile(source_config_proto::SeafileMediaSourceConfig {
+                server_id: config.server_id,
+                repository_id: config.repository_id,
+                path: config.path,
+                object_id: config.object_id,
+                has_thumbnail: config.has_thumbnail,
+            })
+        }
+        synctv_core::models::MediaSourceConfig::TrueNas(config) => {
+            Provider::Truenas(source_config_proto::TrueNasMediaSourceConfig {
+                server_id: config.server_id,
+                path: config.path,
+            })
+        }
     };
 
     Ok(source_config_proto::MediaSourceConfig {
@@ -632,6 +1138,9 @@ pub(crate) fn playlist_source_config_to_proto(
     use source_config_proto::playlist_source_config::Provider;
 
     let provider = match config.clone() {
+        synctv_core::models::PlaylistSourceConfig::Bilibili(config) => {
+            Provider::Bilibili(bilibili_playlist_source_config_to_proto(config))
+        }
         synctv_core::models::PlaylistSourceConfig::Alist(config) => {
             Provider::Alist(alist_playlist_source_config_to_proto(config))
         }
@@ -644,11 +1153,319 @@ pub(crate) fn playlist_source_config_to_proto(
                 path: config.path,
             })
         }
+        synctv_core::models::PlaylistSourceConfig::Twitch(config) => {
+            use source_config_proto::twitch_playlist_source_config::{
+                CategoryLive, Channel, FollowedLive, SearchLive, Source,
+            };
+            let (shared, source) = match config {
+                synctv_core::models::TwitchPlaylistSourceConfig::Channel {
+                    channel,
+                    content,
+                    shared,
+                } => (
+                    shared,
+                    Source::Channel(Channel {
+                        channel,
+                        content: match content {
+                            synctv_core::models::TwitchPlaylistContent::Videos => {
+                                source_config_proto::TwitchPlaylistContent::Videos as i32
+                            }
+                            synctv_core::models::TwitchPlaylistContent::Highlights => {
+                                source_config_proto::TwitchPlaylistContent::Highlights as i32
+                            }
+                            synctv_core::models::TwitchPlaylistContent::Uploads => {
+                                source_config_proto::TwitchPlaylistContent::Uploads as i32
+                            }
+                            synctv_core::models::TwitchPlaylistContent::Clips => {
+                                source_config_proto::TwitchPlaylistContent::Clips as i32
+                            }
+                        },
+                    }),
+                ),
+                synctv_core::models::TwitchPlaylistSourceConfig::FollowedLive { shared } => {
+                    (shared, Source::FollowedLive(FollowedLive {}))
+                }
+                synctv_core::models::TwitchPlaylistSourceConfig::CategoryLive {
+                    category_id,
+                    category_name,
+                    shared,
+                } => (
+                    shared,
+                    Source::CategoryLive(CategoryLive {
+                        category_id,
+                        category_name,
+                    }),
+                ),
+                synctv_core::models::TwitchPlaylistSourceConfig::SearchLive { query, shared } => {
+                    (shared, Source::SearchLive(SearchLive { query }))
+                }
+            };
+            Provider::Twitch(source_config_proto::TwitchPlaylistSourceConfig {
+                shared,
+                source: Some(source),
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::Youtube(config) => {
+            use source_config_proto::youtube_playlist_source_config::{
+                Channel, LikedVideos, Playlist, Search, Source, Subscriptions, Trending, WatchLater,
+            };
+            let (shared, source) = match config {
+                synctv_core::models::YoutubePlaylistSourceConfig::Playlist {
+                    playlist_id,
+                    shared,
+                } => (shared, Source::Playlist(Playlist { playlist_id })),
+                synctv_core::models::YoutubePlaylistSourceConfig::Channel {
+                    channel_id,
+                    content,
+                    shared,
+                } => (
+                    shared,
+                    Source::Channel(Channel {
+                        channel_id,
+                        content: match content {
+                            synctv_core::models::YoutubeChannelContent::Videos => {
+                                source_config_proto::YoutubeChannelContent::Videos as i32
+                            }
+                            synctv_core::models::YoutubeChannelContent::Shorts => {
+                                source_config_proto::YoutubeChannelContent::Shorts as i32
+                            }
+                            synctv_core::models::YoutubeChannelContent::Live => {
+                                source_config_proto::YoutubeChannelContent::Live as i32
+                            }
+                        },
+                    }),
+                ),
+                synctv_core::models::YoutubePlaylistSourceConfig::Search { query, shared } => {
+                    (shared, Source::Search(Search { query }))
+                }
+                synctv_core::models::YoutubePlaylistSourceConfig::Trending { shared } => {
+                    (shared, Source::Trending(Trending {}))
+                }
+                synctv_core::models::YoutubePlaylistSourceConfig::Subscriptions { shared } => {
+                    (shared, Source::Subscriptions(Subscriptions {}))
+                }
+                synctv_core::models::YoutubePlaylistSourceConfig::LikedVideos { shared } => {
+                    (shared, Source::LikedVideos(LikedVideos {}))
+                }
+                synctv_core::models::YoutubePlaylistSourceConfig::WatchLater { shared } => {
+                    (shared, Source::WatchLater(WatchLater {}))
+                }
+            };
+            Provider::Youtube(source_config_proto::YoutubePlaylistSourceConfig {
+                shared,
+                source: Some(source),
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::Douyin(config) => {
+            Provider::Douyin(source_config_proto::DouyinPlaylistSourceConfig {
+                sec_uid: config.sec_uid,
+                shared: config.shared,
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::TikTok(config) => {
+            Provider::Tiktok(source_config_proto::TikTokPlaylistSourceConfig {
+                sec_uid: config.sec_uid,
+                shared: config.shared,
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::Fnos(config) => {
+            Provider::Fnos(source_config_proto::FnosPlaylistSourceConfig {
+                server_id: config.server_id,
+                source: Some(match config.source {
+                    synctv_core::models::FnosPlaylistSource::Files { path } => {
+                        source_config_proto::fnos_playlist_source_config::Source::Files(
+                            source_config_proto::FnosFilesPlaylistSourceConfig { path },
+                        )
+                    }
+                    synctv_core::models::FnosPlaylistSource::MediaLibrary {
+                        ancestor_guid,
+                        media_types,
+                    } => source_config_proto::fnos_playlist_source_config::Source::MediaLibrary(
+                        source_config_proto::FnosMediaLibraryPlaylistSourceConfig {
+                            ancestor_guid,
+                            media_types,
+                        },
+                    ),
+                    synctv_core::models::FnosPlaylistSource::Favorites { media_types } => {
+                        source_config_proto::fnos_playlist_source_config::Source::Favorites(
+                            source_config_proto::FnosFavoritesPlaylistSourceConfig { media_types },
+                        )
+                    }
+                    synctv_core::models::FnosPlaylistSource::History => {
+                        source_config_proto::fnos_playlist_source_config::Source::History(
+                            source_config_proto::FnosHistoryPlaylistSourceConfig {},
+                        )
+                    }
+                }),
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::Qnap(config) => {
+            Provider::Qnap(source_config_proto::QnapPlaylistSourceConfig {
+                server_id: config.server_id,
+                path: config.path,
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::Synology(config) => {
+            Provider::Synology(source_config_proto::SynologyPlaylistSourceConfig {
+                server_id: config.server_id,
+                source: Some(match config.source {
+                    synctv_core::models::SynologyPlaylistSource::Files { path } => {
+                        source_config_proto::synology_playlist_source_config::Source::Files(
+                            source_config_proto::SynologyFilesPlaylistSourceConfig { path },
+                        )
+                    }
+                    synctv_core::models::SynologyPlaylistSource::Movies { library_id } => {
+                        source_config_proto::synology_playlist_source_config::Source::Movies(
+                            source_config_proto::SynologyMoviesPlaylistSourceConfig { library_id },
+                        )
+                    }
+                    synctv_core::models::SynologyPlaylistSource::TvShows { library_id } => {
+                        source_config_proto::synology_playlist_source_config::Source::TvShows(
+                            source_config_proto::SynologyTvShowsPlaylistSourceConfig { library_id },
+                        )
+                    }
+                    synctv_core::models::SynologyPlaylistSource::Episodes {
+                        library_id,
+                        tv_show_id,
+                    } => source_config_proto::synology_playlist_source_config::Source::Episodes(
+                        source_config_proto::SynologyEpisodesPlaylistSourceConfig {
+                            library_id,
+                            tv_show_id,
+                        },
+                    ),
+                    synctv_core::models::SynologyPlaylistSource::HomeVideos { library_id } => {
+                        source_config_proto::synology_playlist_source_config::Source::HomeVideos(
+                            source_config_proto::SynologyHomeVideosPlaylistSourceConfig {
+                                library_id,
+                            },
+                        )
+                    }
+                    synctv_core::models::SynologyPlaylistSource::TvRecordings { library_id } => {
+                        source_config_proto::synology_playlist_source_config::Source::TvRecordings(
+                            source_config_proto::SynologyTvRecordingsPlaylistSourceConfig {
+                                library_id,
+                            },
+                        )
+                    }
+                }),
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::Nextcloud(config) => {
+            Provider::Nextcloud(source_config_proto::NextcloudPlaylistSourceConfig {
+                server_id: config.server_id,
+                source: Some(match config.source {
+                    synctv_core::models::NextcloudPlaylistSource::Folder { path } => {
+                        source_config_proto::nextcloud_playlist_source_config::Source::Folder(
+                            source_config_proto::NextcloudFolderPlaylistSourceConfig { path },
+                        )
+                    }
+                    synctv_core::models::NextcloudPlaylistSource::Favorites => {
+                        source_config_proto::nextcloud_playlist_source_config::Source::Favorites(
+                            source_config_proto::NextcloudFavoritesPlaylistSourceConfig {},
+                        )
+                    }
+                    synctv_core::models::NextcloudPlaylistSource::Search { path, query } => {
+                        source_config_proto::nextcloud_playlist_source_config::Source::Search(
+                            source_config_proto::NextcloudSearchPlaylistSourceConfig {
+                                path,
+                                query,
+                            },
+                        )
+                    }
+                }),
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::Seafile(config) => {
+            Provider::Seafile(source_config_proto::SeafilePlaylistSourceConfig {
+                server_id: config.server_id,
+                source: Some(match config.source {
+                    synctv_core::models::SeafilePlaylistSource::Folder {
+                        repository_id,
+                        path,
+                    } => source_config_proto::seafile_playlist_source_config::Source::Folder(
+                        source_config_proto::SeafileFolderPlaylistSourceConfig {
+                            repository_id,
+                            path,
+                        },
+                    ),
+                    synctv_core::models::SeafilePlaylistSource::Starred => {
+                        source_config_proto::seafile_playlist_source_config::Source::Starred(
+                            source_config_proto::SeafileStarredPlaylistSourceConfig {},
+                        )
+                    }
+                    synctv_core::models::SeafilePlaylistSource::Search {
+                        repository_id,
+                        query,
+                    } => source_config_proto::seafile_playlist_source_config::Source::Search(
+                        source_config_proto::SeafileSearchPlaylistSourceConfig {
+                            repository_id,
+                            query,
+                        },
+                    ),
+                }),
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::TrueNas(config) => {
+            Provider::Truenas(source_config_proto::TrueNasPlaylistSourceConfig {
+                server_id: config.server_id,
+                source: Some(match config.source {
+                    synctv_core::models::TrueNasPlaylistSource::Folder { path } => {
+                        source_config_proto::true_nas_playlist_source_config::Source::Folder(
+                            source_config_proto::TrueNasFolderPlaylistSourceConfig { path },
+                        )
+                    }
+                    synctv_core::models::TrueNasPlaylistSource::Search { path, query } => {
+                        source_config_proto::true_nas_playlist_source_config::Source::Search(
+                            source_config_proto::TrueNasSearchPlaylistSourceConfig { path, query },
+                        )
+                    }
+                }),
+            })
+        }
     };
 
     Ok(source_config_proto::PlaylistSourceConfig {
         provider: Some(provider),
     })
+}
+
+fn twitch_media_source_config_to_proto(
+    config: synctv_core::models::TwitchMediaSourceConfig,
+) -> source_config_proto::TwitchMediaSourceConfig {
+    use source_config_proto::twitch_media_source_config::Source;
+
+    let source = match config {
+        synctv_core::models::TwitchMediaSourceConfig::Live { channel, shared } => {
+            Source::Live(source_config_proto::TwitchLiveSourceConfig { channel, shared })
+        }
+        synctv_core::models::TwitchMediaSourceConfig::Video { video_id, shared } => {
+            Source::Video(source_config_proto::TwitchVideoSourceConfig { video_id, shared })
+        }
+        synctv_core::models::TwitchMediaSourceConfig::Clip { slug, shared } => {
+            Source::Clip(source_config_proto::TwitchClipSourceConfig { slug, shared })
+        }
+    };
+    source_config_proto::TwitchMediaSourceConfig {
+        source: Some(source),
+    }
+}
+
+fn huya_media_source_config_to_proto(
+    config: synctv_core::models::HuyaMediaSourceConfig,
+) -> source_config_proto::HuyaMediaSourceConfig {
+    use source_config_proto::huya_media_source_config::Source;
+
+    let source = match config {
+        synctv_core::models::HuyaMediaSourceConfig::Live { room_id } => {
+            Source::Live(source_config_proto::HuyaLiveSourceConfig { room_id })
+        }
+        synctv_core::models::HuyaMediaSourceConfig::Video { video_id } => {
+            Source::Video(source_config_proto::HuyaVideoSourceConfig { video_id })
+        }
+    };
+    source_config_proto::HuyaMediaSourceConfig {
+        source: Some(source),
+    }
 }
 
 fn optional_index_to_proto(index: Option<usize>) -> Option<u32> {
@@ -737,6 +1554,100 @@ fn bilibili_media_source_config_to_proto(
     }
 }
 
+fn bilibili_playlist_source_config_to_proto(
+    config: synctv_core::models::BilibiliPlaylistSourceConfig,
+) -> source_config_proto::BilibiliPlaylistSourceConfig {
+    use source_config_proto::bilibili_playlist_source_config::Source;
+
+    let source = match config.source {
+        synctv_core::models::BilibiliPlaylistSource::VideoParts { bvid, aid } => {
+            Source::VideoParts(source_config_proto::BilibiliVideoPartsPlaylistSource { bvid, aid })
+        }
+        synctv_core::models::BilibiliPlaylistSource::Popular => {
+            Source::Popular(source_config_proto::BilibiliPopularPlaylistSource {})
+        }
+        synctv_core::models::BilibiliPlaylistSource::Recommended => {
+            Source::Recommended(source_config_proto::BilibiliRecommendedPlaylistSource {})
+        }
+        synctv_core::models::BilibiliPlaylistSource::UpVideos { mid, keyword } => {
+            Source::UpVideos(source_config_proto::BilibiliUpVideosPlaylistSource { mid, keyword })
+        }
+        synctv_core::models::BilibiliPlaylistSource::FavoriteVideos { media_id } => {
+            Source::FavoriteVideos(source_config_proto::BilibiliFavoriteVideosPlaylistSource {
+                media_id,
+            })
+        }
+        synctv_core::models::BilibiliPlaylistSource::CollectionVideos { mid, season_id } => {
+            Source::CollectionVideos(
+                source_config_proto::BilibiliCollectionVideosPlaylistSource { mid, season_id },
+            )
+        }
+        synctv_core::models::BilibiliPlaylistSource::SeriesVideos { mid, series_id } => {
+            Source::SeriesVideos(source_config_proto::BilibiliSeriesVideosPlaylistSource {
+                mid,
+                series_id,
+            })
+        }
+        synctv_core::models::BilibiliPlaylistSource::WatchLater => {
+            Source::WatchLater(source_config_proto::BilibiliWatchLaterPlaylistSource {})
+        }
+        synctv_core::models::BilibiliPlaylistSource::PgcSeason { season_id } => {
+            Source::PgcSeason(source_config_proto::BilibiliPgcSeasonPlaylistSource { season_id })
+        }
+        synctv_core::models::BilibiliPlaylistSource::LiveRecommended => {
+            Source::LiveRecommended(source_config_proto::BilibiliLiveRecommendedPlaylistSource {})
+        }
+        synctv_core::models::BilibiliPlaylistSource::LiveFollowed => {
+            Source::LiveFollowed(source_config_proto::BilibiliLiveFollowedPlaylistSource {})
+        }
+        synctv_core::models::BilibiliPlaylistSource::LiveArea {
+            parent_area_id,
+            area_id,
+        } => Source::LiveArea(source_config_proto::BilibiliLiveAreaPlaylistSource {
+            parent_area_id,
+            area_id,
+        }),
+        synctv_core::models::BilibiliPlaylistSource::History { history_type } => {
+            Source::History(source_config_proto::BilibiliHistoryPlaylistSource {
+                r#type: match history_type {
+                    synctv_core::models::BilibiliHistoryType::All => {
+                        source_config_proto::BilibiliHistoryType::All as i32
+                    }
+                    synctv_core::models::BilibiliHistoryType::Archive => {
+                        source_config_proto::BilibiliHistoryType::Archive as i32
+                    }
+                    synctv_core::models::BilibiliHistoryType::Live => {
+                        source_config_proto::BilibiliHistoryType::Live as i32
+                    }
+                },
+            })
+        }
+        synctv_core::models::BilibiliPlaylistSource::PgcTimeline {
+            timeline_type,
+            before_days,
+            after_days,
+        } => Source::PgcTimeline(source_config_proto::BilibiliPgcTimelinePlaylistSource {
+            r#type: match timeline_type {
+                synctv_core::models::BilibiliPgcTimelineType::Anime => {
+                    source_config_proto::BilibiliPgcTimelineType::Anime as i32
+                }
+                synctv_core::models::BilibiliPgcTimelineType::Cinema => {
+                    source_config_proto::BilibiliPgcTimelineType::Cinema as i32
+                }
+                synctv_core::models::BilibiliPgcTimelineType::Guochuang => {
+                    source_config_proto::BilibiliPgcTimelineType::Guochuang as i32
+                }
+            },
+            before_days,
+            after_days,
+        }),
+    };
+    source_config_proto::BilibiliPlaylistSourceConfig {
+        source: Some(source),
+        shared: config.shared,
+    }
+}
+
 fn alist_media_source_config_to_proto(
     config: synctv_core::models::AlistMediaSourceConfig,
 ) -> source_config_proto::AlistMediaSourceConfig {
@@ -769,9 +1680,57 @@ fn emby_media_source_config_to_proto(
 fn emby_playlist_source_config_to_proto(
     config: synctv_core::models::EmbyPlaylistSourceConfig,
 ) -> source_config_proto::EmbyPlaylistSourceConfig {
+    use source_config_proto::emby_playlist_source_config::Source;
+    let source = match config.source {
+        synctv_core::models::EmbyPlaylistSource::Folder { item_id } => {
+            Source::Folder(source_config_proto::EmbyFolderPlaylistSource { item_id })
+        }
+        synctv_core::models::EmbyPlaylistSource::FavoriteItems { item_types } => {
+            Source::FavoriteItems(source_config_proto::EmbyFavoriteItemsPlaylistSource {
+                item_types,
+            })
+        }
+        synctv_core::models::EmbyPlaylistSource::FavoritePeople => {
+            Source::FavoritePeople(source_config_proto::EmbyFavoritePeoplePlaylistSource {})
+        }
+        synctv_core::models::EmbyPlaylistSource::PersonItems {
+            person_id,
+            item_types,
+        } => Source::PersonItems(source_config_proto::EmbyPersonItemsPlaylistSource {
+            person_id,
+            item_types,
+        }),
+        synctv_core::models::EmbyPlaylistSource::ContinueWatching => {
+            Source::ContinueWatching(source_config_proto::EmbyContinueWatchingPlaylistSource {})
+        }
+        synctv_core::models::EmbyPlaylistSource::NextUp => {
+            Source::NextUp(source_config_proto::EmbyNextUpPlaylistSource {})
+        }
+        synctv_core::models::EmbyPlaylistSource::RecentlyAdded { item_types } => {
+            Source::RecentlyAdded(source_config_proto::EmbyRecentlyAddedPlaylistSource {
+                item_types,
+            })
+        }
+        synctv_core::models::EmbyPlaylistSource::Playlists => {
+            Source::Playlists(source_config_proto::EmbyPlaylistsPlaylistSource {})
+        }
+        synctv_core::models::EmbyPlaylistSource::Collections => {
+            Source::Collections(source_config_proto::EmbyCollectionsPlaylistSource {})
+        }
+        synctv_core::models::EmbyPlaylistSource::Genres { item_types } => {
+            Source::Genres(source_config_proto::EmbyGenresPlaylistSource { item_types })
+        }
+        synctv_core::models::EmbyPlaylistSource::GenreItems {
+            genre_id,
+            item_types,
+        } => Source::GenreItems(source_config_proto::EmbyGenreItemsPlaylistSource {
+            genre_id,
+            item_types,
+        }),
+    };
     source_config_proto::EmbyPlaylistSourceConfig {
         server_id: config.server_id,
-        item_id: config.item_id,
+        source: Some(source),
     }
 }
 
@@ -1498,19 +2457,87 @@ fn media_resource_metadata_to_proto(
                 format!("live:{}", live.room_id)
             }
         },
-        synctv_core::models::MediaSourceConfig::Alist(config) => {
-            format!(
-                "alist://{}/{}",
-                config.server_id,
-                config.path.trim_start_matches('/')
-            )
-        }
-        synctv_core::models::MediaSourceConfig::Emby(config) => {
-            format!("emby://{}/{}", config.server_id, config.item_id)
-        }
+        synctv_core::models::MediaSourceConfig::Alist(config) => config.path.clone(),
+        synctv_core::models::MediaSourceConfig::Emby(config) => config.item_id.clone(),
         synctv_core::models::MediaSourceConfig::Rtmp(_) => "rtmp".to_string(),
         synctv_core::models::MediaSourceConfig::LiveProxy(config) => config.url.clone(),
         synctv_core::models::MediaSourceConfig::Cloudreve(config) => config.path.clone(),
+        synctv_core::models::MediaSourceConfig::Twitch(config) => match config {
+            synctv_core::models::TwitchMediaSourceConfig::Live { channel, .. } => {
+                format!("https://www.twitch.tv/{channel}")
+            }
+            synctv_core::models::TwitchMediaSourceConfig::Video { video_id, .. } => {
+                format!("https://www.twitch.tv/videos/{video_id}")
+            }
+            synctv_core::models::TwitchMediaSourceConfig::Clip { slug, .. } => {
+                format!("https://clips.twitch.tv/{slug}")
+            }
+        },
+        synctv_core::models::MediaSourceConfig::Youtube(config) => {
+            format!("https://www.youtube.com/watch?v={}", config.video_id)
+        }
+        synctv_core::models::MediaSourceConfig::Huya(config) => match config {
+            synctv_core::models::HuyaMediaSourceConfig::Live { room_id } => {
+                format!("https://www.huya.com/{room_id}")
+            }
+            synctv_core::models::HuyaMediaSourceConfig::Video { video_id } => {
+                format!("https://www.huya.com/video/play/{video_id}.html")
+            }
+        },
+        synctv_core::models::MediaSourceConfig::Douyu(config) => {
+            format!("https://www.douyu.com/{}", config.room)
+        }
+        synctv_core::models::MediaSourceConfig::Douyin(config) => match config {
+            synctv_core::models::DouyinMediaSourceConfig::Video { aweme_id, .. } => {
+                format!("https://www.douyin.com/video/{aweme_id}")
+            }
+            synctv_core::models::DouyinMediaSourceConfig::Live { web_rid, .. } => {
+                format!("https://live.douyin.com/{web_rid}")
+            }
+        },
+        synctv_core::models::MediaSourceConfig::TikTok(config) => match config {
+            synctv_core::models::TikTokMediaSourceConfig::Video { video_id, .. } => {
+                format!("https://www.tiktok.com/@_/video/{video_id}")
+            }
+            synctv_core::models::TikTokMediaSourceConfig::Live { unique_id, .. } => {
+                format!("https://www.tiktok.com/@{unique_id}/live")
+            }
+        },
+        synctv_core::models::MediaSourceConfig::AcFun(config) => match config {
+            synctv_core::models::AcFunMediaSourceConfig::Video { video_id } => {
+                format!("https://www.acfun.cn/v/{video_id}")
+            }
+            synctv_core::models::AcFunMediaSourceConfig::Bangumi {
+                bangumi_id,
+                episode_query,
+            } => format!(
+                "https://www.acfun.cn/bangumi/{bangumi_id}{}",
+                episode_query
+                    .as_deref()
+                    .map(|query| format!("?{query}"))
+                    .unwrap_or_default()
+            ),
+            synctv_core::models::AcFunMediaSourceConfig::Live { author_id } => {
+                format!("https://live.acfun.cn/live/{author_id}")
+            }
+        },
+        synctv_core::models::MediaSourceConfig::Cctv(config) => config.resource.clone(),
+        synctv_core::models::MediaSourceConfig::Fnos(config) => match &config.source {
+            synctv_core::models::FnosMediaSource::File { path } => path.clone(),
+            synctv_core::models::FnosMediaSource::LibraryItem { item_guid, .. } => {
+                item_guid.clone()
+            }
+        },
+        synctv_core::models::MediaSourceConfig::Qnap(config) => config.path.clone(),
+        synctv_core::models::MediaSourceConfig::Synology(config) => match &config.source {
+            synctv_core::models::SynologyMediaSource::File { path } => path.clone(),
+            synctv_core::models::SynologyMediaSource::LibraryItem { item_id, .. } => {
+                item_id.to_string()
+            }
+        },
+        synctv_core::models::MediaSourceConfig::Nextcloud(config) => config.path.clone(),
+        synctv_core::models::MediaSourceConfig::Seafile(config) => config.path.clone(),
+        synctv_core::models::MediaSourceConfig::TrueNas(config) => config.path.clone(),
     };
 
     synctv_proto::client::ResourceMetadata {
@@ -1951,6 +2978,375 @@ fn playback_metadata_to_proto(
                 room_id: encode_room_id_for_proto(metadata.room_id, public_id_codec)?,
             })
         }
+        PlaybackMetadata::Twitch(metadata) => {
+            playback_metadata::Metadata::Twitch(synctv_proto::client::TwitchPlaybackMetadata {
+                resource_id: metadata.resource_id.clone(),
+                title: metadata.title.clone(),
+                author: metadata.author.clone(),
+                category: metadata.category.clone(),
+                thumbnail_url: metadata.thumbnail_url.clone(),
+                description: metadata.description.clone(),
+                view_count: metadata.view_count,
+                published_at: metadata.published_at.clone(),
+                chapters: metadata
+                    .chapters
+                    .iter()
+                    .map(|chapter| synctv_proto::client::TwitchChapterMetadata {
+                        title: chapter.title.clone(),
+                        start_seconds: chapter.start_seconds,
+                        end_seconds: chapter.end_seconds,
+                    })
+                    .collect(),
+                storyboard_url: metadata.storyboard_url.clone(),
+            })
+        }
+        PlaybackMetadata::Youtube(metadata) => {
+            playback_metadata::Metadata::Youtube(synctv_proto::client::YoutubePlaybackMetadata {
+                video_id: metadata.video_id.clone(),
+                channel_id: metadata.channel_id.clone(),
+                channel_name: metadata.channel_name.clone(),
+                description: metadata.description.clone(),
+                view_count: metadata.view_count,
+                publish_date: metadata.publish_date.clone(),
+                upload_date: metadata.upload_date.clone(),
+                category: metadata.category.clone(),
+                is_live: metadata.is_live,
+                live_start: metadata.live_start.clone(),
+                live_end: metadata.live_end.clone(),
+                storyboard_spec: metadata.storyboard_spec.clone(),
+                automatic_caption_count: u32::try_from(metadata.automatic_caption_count).map_err(
+                    |_| {
+                        crate::impls::ApiError::Internal(
+                            "YouTube automatic caption count exceeds u32::MAX".to_string(),
+                        )
+                    },
+                )?,
+                manual_caption_count: u32::try_from(metadata.manual_caption_count).map_err(
+                    |_| {
+                        crate::impls::ApiError::Internal(
+                            "YouTube manual caption count exceeds u32::MAX".to_string(),
+                        )
+                    },
+                )?,
+                translation_languages: metadata.translation_languages.clone(),
+            })
+        }
+        PlaybackMetadata::Huya(metadata) => {
+            playback_metadata::Metadata::Huya(synctv_proto::client::HuyaPlaybackMetadata {
+                resource_id: metadata.resource_id.clone(),
+                title: metadata.title.clone(),
+                author: metadata.author.clone(),
+                author_id: metadata.author_id.clone(),
+                category: metadata.category.clone(),
+                thumbnail_url: metadata.thumbnail_url.clone(),
+                avatar_url: metadata.avatar_url.clone(),
+                description: metadata.description.clone(),
+                view_count: metadata.view_count,
+                comment_count: metadata.comment_count,
+                like_count: metadata.like_count,
+                published_at: metadata.published_at,
+            })
+        }
+        PlaybackMetadata::Douyu(metadata) => {
+            playback_metadata::Metadata::Douyu(synctv_proto::client::DouyuPlaybackMetadata {
+                room_id: metadata.room_id.clone(),
+                title: metadata.title.clone(),
+                author: metadata.author.clone(),
+                category: metadata.category.clone(),
+                thumbnail_url: metadata.thumbnail_url.clone(),
+                avatar_url: metadata.avatar_url.clone(),
+                is_replay: metadata.is_replay,
+                is_vip: metadata.is_vip,
+                viewer_count: metadata.viewer_count,
+                started_at: metadata.started_at.clone(),
+            })
+        }
+        PlaybackMetadata::Douyin(metadata) => {
+            playback_metadata::Metadata::Douyin(synctv_proto::client::DouyinPlaybackMetadata {
+                id: metadata.id.clone(),
+                kind: metadata.kind.clone(),
+                author_id: metadata.author_id.clone(),
+                author_sec_uid: metadata.author_sec_uid.clone(),
+                author_name: metadata.author_name.clone(),
+                description: metadata.description.clone(),
+                view_count: metadata.view_count,
+                like_count: metadata.like_count,
+                comment_count: metadata.comment_count,
+                share_count: metadata.share_count,
+                collect_count: metadata.collect_count,
+                created_at: metadata.created_at,
+                music_title: metadata.music_title.clone(),
+                music_author: metadata.music_author.clone(),
+                is_live: metadata.is_live,
+                room_id: metadata.room_id.clone(),
+            })
+        }
+        PlaybackMetadata::TikTok(metadata) => {
+            playback_metadata::Metadata::Tiktok(synctv_proto::client::TikTokPlaybackMetadata {
+                id: metadata.id.clone(),
+                kind: metadata.kind.clone(),
+                author_id: metadata.author_id.clone(),
+                author_sec_uid: metadata.author_sec_uid.clone(),
+                author_unique_id: metadata.author_unique_id.clone(),
+                author_name: metadata.author_name.clone(),
+                description: metadata.description.clone(),
+                view_count: metadata.view_count,
+                like_count: metadata.like_count,
+                comment_count: metadata.comment_count,
+                share_count: metadata.share_count,
+                collect_count: metadata.collect_count,
+                concurrent_viewers: metadata.concurrent_viewers,
+                created_at: metadata.created_at,
+                music_title: metadata.music_title.clone(),
+                music_author: metadata.music_author.clone(),
+                subtitle_count: u32::try_from(metadata.subtitle_count).unwrap_or(u32::MAX),
+                is_live: metadata.is_live,
+                room_id: metadata.room_id.clone(),
+            })
+        }
+        PlaybackMetadata::AcFun(metadata) => {
+            playback_metadata::Metadata::AcFun(synctv_proto::client::AcFunPlaybackMetadata {
+                resource_id: metadata.resource_id.clone(),
+                title: metadata.title.clone(),
+                author: metadata.author.clone(),
+                author_id: metadata.author_id.clone(),
+                category: metadata.category.clone(),
+                thumbnail_url: metadata.thumbnail_url.clone(),
+                avatar_url: metadata.avatar_url.clone(),
+                description: metadata.description.clone(),
+                tags: metadata.tags.clone(),
+                view_count: metadata.view_count,
+                like_count: metadata.like_count,
+                comment_count: metadata.comment_count,
+                published_at: metadata.published_at,
+                started_at: metadata.started_at,
+            })
+        }
+        PlaybackMetadata::Cctv(metadata) => {
+            playback_metadata::Metadata::Cctv(synctv_proto::client::CctvPlaybackMetadata {
+                video_id: metadata.video_id.clone(),
+                title: metadata.title.clone(),
+                description: metadata.description.clone(),
+                uploader: metadata.uploader.clone(),
+                producer: metadata.producer.clone(),
+                channel: metadata.channel.clone(),
+                column: metadata.column.clone(),
+                tags: metadata.tags.clone(),
+                thumbnail_url: metadata.thumbnail_url.clone(),
+                published_at: metadata.published_at,
+                chapters: metadata
+                    .chapters
+                    .iter()
+                    .map(|chapter| synctv_proto::client::CctvChapterMetadata {
+                        id: chapter.id.clone(),
+                        title: chapter.title.clone(),
+                        start_ms: chapter.start_ms,
+                        end_ms: chapter.end_ms,
+                    })
+                    .collect(),
+                protected: metadata.protected,
+            })
+        }
+        PlaybackMetadata::Fnos(metadata) => {
+            playback_metadata::Metadata::Fnos(synctv_proto::client::FnosPlaybackMetadata {
+                kind: Some(match metadata {
+                    synctv_core::models::FnosPlaybackMetadata::File(metadata) => {
+                        synctv_proto::client::fnos_playback_metadata::Kind::File(
+                            synctv_proto::client::FnosFilePlaybackMetadata {
+                                name: metadata.name.clone(),
+                                path: metadata.path.clone(),
+                                size: metadata.size,
+                                modified_at: metadata.modified_at,
+                            },
+                        )
+                    }
+                    synctv_core::models::FnosPlaybackMetadata::Media(metadata) => {
+                        synctv_proto::client::fnos_playback_metadata::Kind::Media(
+                            synctv_proto::client::FnosMediaPlaybackMetadata {
+                                item_guid: metadata.item_guid.clone(),
+                                media_guid: metadata.media_guid.clone(),
+                                title: metadata.title.clone(),
+                                overview: metadata.overview.clone(),
+                                poster_url: metadata.poster_url.clone(),
+                                backdrop_url: metadata.backdrop_url.clone(),
+                                width: metadata.width,
+                                height: metadata.height,
+                                video_codec: metadata.video_codec.clone(),
+                                video_profile: metadata.video_profile.clone(),
+                                bit_depth: metadata.bit_depth,
+                                dolby_vision_profile: metadata.dolby_vision_profile,
+                                frame_rate: metadata.frame_rate.clone(),
+                                season_number: metadata.season_number,
+                                episode_number: metadata.episode_number,
+                                progress_seconds: metadata.progress_seconds,
+                                duration_seconds: metadata.duration_seconds,
+                                watched: metadata.watched,
+                                audio_tracks: metadata
+                                    .audio_tracks
+                                    .iter()
+                                    .map(|track| synctv_proto::client::FnosAudioTrackMetadata {
+                                        guid: track.guid.clone(),
+                                        title: track.title.clone(),
+                                        language: track.language.clone(),
+                                        codec: track.codec.clone(),
+                                        channels: track.channels,
+                                        bitrate: track.bitrate,
+                                        is_default: track.default,
+                                    })
+                                    .collect(),
+                                subtitle_tracks: metadata
+                                    .subtitle_tracks
+                                    .iter()
+                                    .map(|track| synctv_proto::client::FnosSubtitleTrackMetadata {
+                                        guid: track.guid.clone(),
+                                        title: track.title.clone(),
+                                        language: track.language.clone(),
+                                        codec: track.codec.clone(),
+                                        format: track.format.clone(),
+                                        external: track.external,
+                                        is_default: track.default,
+                                        forced: track.forced,
+                                    })
+                                    .collect(),
+                            },
+                        )
+                    }
+                }),
+            })
+        }
+        PlaybackMetadata::Qnap(metadata) => {
+            playback_metadata::Metadata::Qnap(synctv_proto::client::QnapPlaybackMetadata {
+                name: metadata.name.clone(),
+                path: metadata.path.clone(),
+                size: metadata.size,
+                modified_at: metadata.modified_at,
+                file_type: metadata.file_type,
+                realtime_transcode: metadata.realtime_transcode,
+                hardware_transcode: metadata.hardware_transcode,
+                multimedia_codec: metadata.multimedia_codec,
+                pre_transcoded_heights: metadata.pre_transcoded_heights.clone(),
+                realtime_heights: metadata.realtime_heights.clone(),
+            })
+        }
+        PlaybackMetadata::Synology(metadata) => {
+            playback_metadata::Metadata::Synology(synctv_proto::client::SynologyPlaybackMetadata {
+                title: metadata.title.clone(),
+                summary: metadata.summary.clone(),
+                tagline: metadata.tagline.clone(),
+                certificate: metadata.certificate.clone(),
+                rating: metadata.rating,
+                actors: metadata.actors.clone(),
+                directors: metadata.directors.clone(),
+                writers: metadata.writers.clone(),
+                genres: metadata.genres.clone(),
+                item_id: metadata.item_id,
+                file_id: metadata.file_id,
+                kind: metadata.kind.clone(),
+                path: metadata.path.clone(),
+                size: metadata.size,
+                duration_seconds: metadata.duration_seconds,
+                progress_seconds: metadata.progress_seconds,
+                width: metadata.width,
+                height: metadata.height,
+                video_codec: metadata.video_codec.clone(),
+                audio_codec: metadata.audio_codec.clone(),
+                container: metadata.container.clone(),
+                video_bitrate: metadata.video_bitrate,
+                audio_bitrate: metadata.audio_bitrate,
+                frame_rate_numerator: metadata.frame_rate_numerator,
+                frame_rate_denominator: metadata.frame_rate_denominator,
+                audio_channels: metadata.audio_channels,
+                audio_frequency_hz: metadata.audio_frequency_hz,
+                poster_url: metadata.poster_url.clone(),
+                backdrop_url: metadata.backdrop_url.clone(),
+                watched: metadata.watched,
+                watched_ratio: metadata.watched_ratio,
+                parental_controlled: metadata.parental_controlled,
+                create_time: metadata.create_time,
+                last_watched: metadata.last_watched,
+                audio_tracks: metadata
+                    .audio_tracks
+                    .iter()
+                    .map(|track| synctv_proto::client::SynologyAudioTrackMetadata {
+                        id: track.id,
+                        language: track.language.clone(),
+                        codec: track.codec.clone(),
+                        channels: track.channels,
+                        bitrate: track.bitrate,
+                        is_default: track.default,
+                    })
+                    .collect(),
+                subtitles: metadata
+                    .subtitles
+                    .iter()
+                    .map(|subtitle| synctv_proto::client::SynologySubtitleMetadata {
+                        id: subtitle.id.clone(),
+                        language: subtitle.language.clone(),
+                        title: subtitle.title.clone(),
+                        format: subtitle.format.clone(),
+                        embedded: subtitle.embedded,
+                    })
+                    .collect(),
+            })
+        }
+        PlaybackMetadata::Nextcloud(metadata) => playback_metadata::Metadata::Nextcloud(
+            synctv_proto::client::NextcloudPlaybackMetadata {
+                file_id: metadata.file_id,
+                name: metadata.name.clone(),
+                path: metadata.path.clone(),
+                size: metadata.size,
+                modified_at: metadata.modified_at.clone(),
+                content_type: metadata.content_type.clone(),
+                etag: metadata.etag.clone(),
+                permissions: metadata.permissions.clone(),
+                owner_id: metadata.owner_id.clone(),
+                owner_display_name: metadata.owner_display_name.clone(),
+                favorite: metadata.favorite,
+                has_preview: metadata.has_preview,
+                blurhash: metadata.blurhash.clone(),
+                width: metadata.width,
+                height: metadata.height,
+                duration_millis: metadata.duration_millis,
+            },
+        ),
+        PlaybackMetadata::Seafile(metadata) => {
+            playback_metadata::Metadata::Seafile(synctv_proto::client::SeafilePlaybackMetadata {
+                repository_id: metadata.repository_id.clone(),
+                object_id: metadata.object_id.clone(),
+                name: metadata.name.clone(),
+                path: metadata.path.clone(),
+                size: metadata.size,
+                modified_at: metadata.modified_at.clone(),
+                is_locked: metadata.is_locked,
+                can_preview: metadata.can_preview,
+                can_edit: metadata.can_edit,
+                has_thumbnail: metadata.has_thumbnail,
+            })
+        }
+        PlaybackMetadata::TrueNas(metadata) => {
+            playback_metadata::Metadata::Truenas(synctv_proto::client::TrueNasPlaybackMetadata {
+                realpath: metadata.realpath.clone(),
+                size: metadata.size,
+                allocation_size: metadata.allocation_size,
+                mode: metadata.mode,
+                mount_id: metadata.mount_id,
+                uid: metadata.uid,
+                gid: metadata.gid,
+                atime: metadata.atime,
+                mtime: metadata.mtime,
+                ctime: metadata.ctime,
+                btime: metadata.btime,
+                dev: metadata.dev,
+                inode: metadata.inode,
+                nlink: metadata.nlink,
+                acl: metadata.acl,
+                is_mountpoint: metadata.is_mountpoint,
+                is_ctldir: metadata.is_ctldir,
+                attributes: metadata.attributes.clone(),
+                user: metadata.user.clone(),
+                group: metadata.group.clone(),
+            })
+        }
     };
 
     Ok(Some(synctv_proto::client::PlaybackMetadata {
@@ -1958,7 +3354,8 @@ fn playback_metadata_to_proto(
     }))
 }
 
-fn signed_alist_thumbnail_url(
+fn signed_provider_thumbnail_url(
+    provider: &str,
     version: &str,
     expires_at: i64,
     signing: Option<&PlaybackHttpSigningContext<'_>>,
@@ -1967,7 +3364,7 @@ fn signed_alist_thumbnail_url(
 
     let signing = require_provider_signing(signing, "Alist thumbnail URL")?;
     let query = signed_provider_query(
-        "alist",
+        provider,
         version,
         expires_at,
         "thumbnail".to_string(),
@@ -1975,7 +3372,7 @@ fn signed_alist_thumbnail_url(
     );
     let version = path_segment_encode(version);
     Ok(format!(
-        "/api/playback-providers/alist/{version}/thumbnail?{query}"
+        "/api/playback-providers/{provider}/{version}/thumbnail?{query}"
     ))
 }
 
@@ -1992,24 +3389,36 @@ fn playback_info_thumbnail_to_proto(
         return Ok(None);
     };
 
-    let Some((version, expires_at)) = alist_proxy_resource_for_thumbnail(info) else {
+    let Some((provider, version, expires_at)) = proxy_resource_for_thumbnail(info) else {
         return Ok(Some(thumbnail.to_string()));
     };
 
-    signed_alist_thumbnail_url(version, expires_at, signing).map(Some)
+    signed_provider_thumbnail_url(provider, version, expires_at, signing).map(Some)
 }
 
-fn alist_proxy_resource_for_thumbnail(
+fn proxy_resource_for_thumbnail(
     info: &synctv_core::models::media::PlaybackInfo,
-) -> Option<(&str, i64)> {
-    use synctv_core::models::media::{PlaybackAlistMedia, PlaybackMediaProvider};
+) -> Option<(&'static str, &str, i64)> {
+    use synctv_core::models::media::{
+        PlaybackAlistMedia, PlaybackFnosMedia, PlaybackMediaProvider, PlaybackQnapMedia,
+    };
 
     info.medias.iter().find_map(|media| match &media.provider {
         PlaybackMediaProvider::Alist(PlaybackAlistMedia::ProxyFile {
             version,
             expires_at,
             ..
-        }) => Some((version.as_str(), *expires_at)),
+        }) => Some(("alist", version.as_str(), *expires_at)),
+        PlaybackMediaProvider::Fnos(PlaybackFnosMedia::Proxy {
+            version,
+            expires_at,
+            ..
+        }) => Some(("fnos", version.as_str(), *expires_at)),
+        PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Proxy {
+            version,
+            expires_at,
+            ..
+        }) => Some(("qnap", version.as_str(), *expires_at)),
         _ => None,
     })
 }
@@ -2180,8 +3589,12 @@ fn playback_media_url(
     signing: Option<&PlaybackHttpSigningContext<'_>>,
 ) -> Result<String, crate::impls::ApiError> {
     use synctv_core::models::media::{
-        PlaybackAlistMedia, PlaybackBilibiliMedia, PlaybackDirectUrlMedia, PlaybackEmbyMedia,
-        PlaybackExternalMedia, PlaybackLiveProxyMedia, PlaybackMediaProvider, PlaybackRtmpMedia,
+        PlaybackAcFunMedia, PlaybackAlistMedia, PlaybackBilibiliMedia, PlaybackCctvMedia,
+        PlaybackDirectUrlMedia, PlaybackDouyinMedia, PlaybackDouyuMedia, PlaybackEmbyMedia,
+        PlaybackExternalMedia, PlaybackFnosMedia, PlaybackHuyaMedia, PlaybackLiveProxyMedia,
+        PlaybackMediaProvider, PlaybackNextcloudMedia, PlaybackQnapMedia, PlaybackRtmpMedia,
+        PlaybackSeafileMedia, PlaybackSynologyMedia, PlaybackTikTokMedia, PlaybackTrueNasMedia,
+        PlaybackTwitchMedia, PlaybackYoutubeMedia,
     };
 
     let direct = |media: &PlaybackExternalMedia| Ok(media.url.clone());
@@ -2360,6 +3773,268 @@ fn playback_media_url(
             "hls-playlist".to_string(),
             "hls-playlist".to_string(),
         ),
+        PlaybackMediaProvider::Twitch(PlaybackTwitchMedia::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+        }) => versioned_indexed_resource(
+            synctv_core::provider::TwitchProvider::NAME,
+            version,
+            *expires_at,
+            "resources",
+            mode_name,
+            *media_index,
+        ),
+        PlaybackMediaProvider::Twitch(PlaybackTwitchMedia::Refresh { .. }) => {
+            return Err(crate::impls::ApiError::Internal(
+                "unmarked Twitch playback resource".to_string(),
+            ));
+        }
+        PlaybackMediaProvider::Youtube(PlaybackYoutubeMedia::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+        }) => versioned_indexed_resource(
+            synctv_core::provider::YoutubeProvider::NAME,
+            version,
+            *expires_at,
+            "resources",
+            mode_name,
+            *media_index,
+        ),
+        PlaybackMediaProvider::Youtube(PlaybackYoutubeMedia::Refresh { .. }) => {
+            return Err(crate::impls::ApiError::Internal(
+                "unmarked YouTube playback resource".to_string(),
+            ));
+        }
+        PlaybackMediaProvider::Huya(PlaybackHuyaMedia::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+        }) => versioned_indexed_resource(
+            synctv_core::provider::HuyaProvider::NAME,
+            version,
+            *expires_at,
+            "resources",
+            mode_name,
+            *media_index,
+        ),
+        PlaybackMediaProvider::Huya(PlaybackHuyaMedia::Refresh { .. }) => {
+            return Err(crate::impls::ApiError::Internal(
+                "unmarked Huya playback resource".to_string(),
+            ));
+        }
+        PlaybackMediaProvider::Douyu(PlaybackDouyuMedia::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+        }) => versioned_indexed_resource(
+            synctv_core::provider::DouyuProvider::NAME,
+            version,
+            *expires_at,
+            "resources",
+            mode_name,
+            *media_index,
+        ),
+        PlaybackMediaProvider::Douyu(PlaybackDouyuMedia::Refresh { .. }) => {
+            return Err(crate::impls::ApiError::Internal(
+                "unmarked Douyu playback resource".to_string(),
+            ));
+        }
+        PlaybackMediaProvider::Douyin(PlaybackDouyinMedia::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+        }) => versioned_indexed_resource(
+            synctv_core::provider::DouyinProvider::NAME,
+            version,
+            *expires_at,
+            "resources",
+            mode_name,
+            *media_index,
+        ),
+        PlaybackMediaProvider::Douyin(PlaybackDouyinMedia::Refresh { .. }) => {
+            return Err(crate::impls::ApiError::Internal(
+                "unmarked Douyin playback resource".to_string(),
+            ));
+        }
+        PlaybackMediaProvider::TikTok(PlaybackTikTokMedia::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+        }) => versioned_indexed_resource(
+            synctv_core::provider::TikTokProvider::NAME,
+            version,
+            *expires_at,
+            "resources",
+            mode_name,
+            *media_index,
+        ),
+        PlaybackMediaProvider::TikTok(PlaybackTikTokMedia::Refresh { .. }) => {
+            return Err(crate::impls::ApiError::Internal(
+                "unmarked TikTok playback resource".to_string(),
+            ));
+        }
+        PlaybackMediaProvider::AcFun(PlaybackAcFunMedia::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+        }) => versioned_indexed_resource(
+            synctv_core::provider::AcFunProvider::NAME,
+            version,
+            *expires_at,
+            "resources",
+            mode_name,
+            *media_index,
+        ),
+        PlaybackMediaProvider::AcFun(PlaybackAcFunMedia::Refresh { .. }) => {
+            return Err(crate::impls::ApiError::Internal(
+                "unmarked AcFun playback resource".to_string(),
+            ));
+        }
+        PlaybackMediaProvider::Cctv(PlaybackCctvMedia::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+        }) => versioned_indexed_resource(
+            synctv_core::provider::CctvProvider::NAME,
+            version,
+            *expires_at,
+            "resources",
+            mode_name,
+            *media_index,
+        ),
+        PlaybackMediaProvider::Cctv(PlaybackCctvMedia::Refresh { .. }) => {
+            return Err(crate::impls::ApiError::Internal(
+                "unmarked CCTV playback resource".to_string(),
+            ));
+        }
+        PlaybackMediaProvider::Fnos(PlaybackFnosMedia::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+            ..
+        }) => versioned_indexed_resource(
+            synctv_core::provider::FnosProvider::NAME,
+            version,
+            *expires_at,
+            "resources",
+            mode_name,
+            *media_index,
+        ),
+        PlaybackMediaProvider::Fnos(
+            PlaybackFnosMedia::FileRefresh { .. }
+            | PlaybackFnosMedia::MediaRefresh { .. }
+            | PlaybackFnosMedia::TranscodeRefresh { .. },
+        ) => {
+            return Err(crate::impls::ApiError::Internal(
+                "unmarked FNOS playback resource".to_string(),
+            ));
+        }
+        PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+            ..
+        }) => versioned_indexed_resource(
+            "qnap",
+            version,
+            *expires_at,
+            "resources",
+            mode_name,
+            *media_index,
+        ),
+        PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Refresh { .. }) => {
+            return Err(crate::impls::ApiError::Internal(
+                "unmarked QNAP playback resource".to_string(),
+            ));
+        }
+        PlaybackMediaProvider::Synology(PlaybackSynologyMedia::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+            ..
+        }) => versioned_indexed_resource(
+            synctv_core::provider::SynologyProvider::NAME,
+            version,
+            *expires_at,
+            "resources",
+            mode_name,
+            *media_index,
+        ),
+        PlaybackMediaProvider::Synology(PlaybackSynologyMedia::Refresh { .. }) => {
+            return Err(crate::impls::ApiError::Internal(
+                "unmarked Synology playback resource".to_string(),
+            ));
+        }
+        PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+            ..
+        }) => versioned_indexed_resource(
+            synctv_core::provider::NextcloudProvider::NAME,
+            version,
+            *expires_at,
+            "resources",
+            mode_name,
+            *media_index,
+        ),
+        PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Refresh { .. }) => {
+            return Err(crate::impls::ApiError::Internal(
+                "unmarked Nextcloud playback resource".to_string(),
+            ));
+        }
+        PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+            ..
+        }) => versioned_indexed_resource(
+            synctv_core::provider::SeafileProvider::NAME,
+            version,
+            *expires_at,
+            "resources",
+            mode_name,
+            *media_index,
+        ),
+        PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Refresh { .. }) => {
+            return Err(crate::impls::ApiError::Internal(
+                "unmarked Seafile playback resource".to_string(),
+            ));
+        }
+        PlaybackMediaProvider::TrueNas(PlaybackTrueNasMedia::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+            ..
+        }) => versioned_indexed_resource(
+            synctv_core::provider::TrueNasProvider::NAME,
+            version,
+            *expires_at,
+            "resources",
+            mode_name,
+            *media_index,
+        ),
+        PlaybackMediaProvider::TrueNas(PlaybackTrueNasMedia::Refresh { .. }) => {
+            return Err(crate::impls::ApiError::Internal(
+                "unmarked TrueNAS playback resource".to_string(),
+            ));
+        }
     };
     let signing = require_provider_signing(signing, "playback provider URL")?;
     let encoded_version = path_segment_encode(&version);
@@ -2420,7 +4095,10 @@ fn playback_subtitle_url(
 ) -> Result<String, crate::impls::ApiError> {
     use synctv_core::models::media::{
         PlaybackAlistSubtitle, PlaybackBilibiliSubtitle, PlaybackDirectUrlSubtitle,
-        PlaybackEmbySubtitle, PlaybackSubtitleProvider,
+        PlaybackEmbySubtitle, PlaybackFnosSubtitle, PlaybackNextcloudSubtitle,
+        PlaybackQnapSubtitle, PlaybackSeafileSubtitle, PlaybackSubtitleProvider,
+        PlaybackSynologySubtitle, PlaybackTikTokSubtitle, PlaybackTrueNasSubtitle,
+        PlaybackYoutubeSubtitle,
     };
     let (provider, version, expires_at, mode_name, subtitle_index) = match &subtitle.provider {
         PlaybackSubtitleProvider::External(subtitle) => return Ok(subtitle.url.clone()),
@@ -2458,6 +4136,115 @@ fn playback_subtitle_url(
             subtitle_index,
             ..
         }) => ("emby", version, *expires_at, mode_name, *subtitle_index),
+        PlaybackSubtitleProvider::Fnos(PlaybackFnosSubtitle {
+            version,
+            expires_at,
+            mode_name,
+            subtitle_index,
+            ..
+        }) => ("fnos", version, *expires_at, mode_name, *subtitle_index),
+        PlaybackSubtitleProvider::Qnap(PlaybackQnapSubtitle {
+            version,
+            expires_at,
+            mode_name,
+            subtitle_index,
+            ..
+        }) => ("qnap", version, *expires_at, mode_name, *subtitle_index),
+        PlaybackSubtitleProvider::Nextcloud(PlaybackNextcloudSubtitle {
+            version,
+            expires_at,
+            mode_name,
+            subtitle_index,
+            ..
+        }) => (
+            synctv_core::provider::NextcloudProvider::NAME,
+            version,
+            *expires_at,
+            mode_name,
+            *subtitle_index,
+        ),
+        PlaybackSubtitleProvider::Seafile(PlaybackSeafileSubtitle {
+            version,
+            expires_at,
+            mode_name,
+            subtitle_index,
+            ..
+        }) => (
+            synctv_core::provider::SeafileProvider::NAME,
+            version,
+            *expires_at,
+            mode_name,
+            *subtitle_index,
+        ),
+        PlaybackSubtitleProvider::TrueNas(PlaybackTrueNasSubtitle {
+            version,
+            expires_at,
+            mode_name,
+            subtitle_index,
+            ..
+        }) => (
+            synctv_core::provider::TrueNasProvider::NAME,
+            version,
+            *expires_at,
+            mode_name,
+            *subtitle_index,
+        ),
+        PlaybackSubtitleProvider::Synology(
+            PlaybackSynologySubtitle::File {
+                version,
+                expires_at,
+                mode_name,
+                subtitle_index,
+                ..
+            }
+            | PlaybackSynologySubtitle::VideoStation {
+                version,
+                expires_at,
+                mode_name,
+                subtitle_index,
+                ..
+            },
+        ) => (
+            synctv_core::provider::SynologyProvider::NAME,
+            version,
+            *expires_at,
+            mode_name,
+            *subtitle_index,
+        ),
+        PlaybackSubtitleProvider::Youtube(PlaybackYoutubeSubtitle::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            subtitle_index,
+        }) => (
+            synctv_core::provider::YoutubeProvider::NAME,
+            version,
+            *expires_at,
+            mode_name,
+            *subtitle_index,
+        ),
+        PlaybackSubtitleProvider::Youtube(PlaybackYoutubeSubtitle::Refresh { .. }) => {
+            return Err(crate::impls::ApiError::Internal(
+                "unmarked YouTube subtitle resource".to_string(),
+            ));
+        }
+        PlaybackSubtitleProvider::TikTok(PlaybackTikTokSubtitle::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            subtitle_index,
+        }) => (
+            synctv_core::provider::TikTokProvider::NAME,
+            version,
+            *expires_at,
+            mode_name,
+            *subtitle_index,
+        ),
+        PlaybackSubtitleProvider::TikTok(PlaybackTikTokSubtitle::Refresh { .. }) => {
+            return Err(crate::impls::ApiError::Internal(
+                "unmarked TikTok subtitle resource".to_string(),
+            ));
+        }
     };
     let signing = require_provider_signing(signing, "playback provider subtitle URL")?;
     let mode = path_segment_encode(mode_name);
@@ -2475,7 +4262,10 @@ fn playback_danmaku_url(
     public_id_codec: &synctv_adapter::PublicIdCodec,
     signing: Option<&PlaybackHttpSigningContext<'_>>,
 ) -> Result<String, crate::impls::ApiError> {
-    use synctv_core::models::media::{PlaybackBilibiliDanmaku, PlaybackDanmakuProvider};
+    use synctv_core::models::media::{
+        PlaybackAcFunDanmaku, PlaybackBilibiliDanmaku, PlaybackDanmakuProvider,
+        PlaybackDouyinDanmaku, PlaybackDouyuDanmaku, PlaybackHuyaDanmaku, PlaybackTwitchDanmaku,
+    };
     match &danmaku.provider {
         PlaybackDanmakuProvider::External(danmaku) => Ok(danmaku.url.clone()),
         PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::File {
@@ -2499,6 +4289,155 @@ fn playback_danmaku_url(
                 "/api/playback-providers/bilibili/live-danmaku/{media_id}"
             ))
         }
+        PlaybackDanmakuProvider::Twitch(PlaybackTwitchDanmaku::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+        }) => {
+            let signing = require_provider_signing(signing, "Twitch chat URL")?;
+            let resource = format!("chats/{mode_name}/{media_index}");
+            let query = signed_provider_query(
+                synctv_core::provider::TwitchProvider::NAME,
+                version,
+                *expires_at,
+                resource,
+                signing,
+            );
+            Ok(format!(
+                "/api/playback-providers/twitch/{}/chats/{}/{}?{query}",
+                path_segment_encode(version),
+                path_segment_encode(mode_name),
+                media_index,
+            ))
+        }
+        PlaybackDanmakuProvider::Twitch(PlaybackTwitchDanmaku::Refresh { .. }) => Err(
+            crate::impls::ApiError::Internal("unmarked Twitch chat resource".to_string()),
+        ),
+        PlaybackDanmakuProvider::Huya(PlaybackHuyaDanmaku::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+        }) => {
+            let signing = require_provider_signing(signing, "Huya danmaku URL")?;
+            let resource = format!("danmakus/{mode_name}/{media_index}");
+            let query = signed_provider_query(
+                synctv_core::provider::HuyaProvider::NAME,
+                version,
+                *expires_at,
+                resource,
+                signing,
+            );
+            Ok(format!(
+                "/api/playback-providers/huya/{}/danmakus/{}/{}?{query}",
+                path_segment_encode(version),
+                path_segment_encode(mode_name),
+                media_index,
+            ))
+        }
+        PlaybackDanmakuProvider::Huya(PlaybackHuyaDanmaku::Refresh { .. }) => Err(
+            crate::impls::ApiError::Internal("unmarked Huya danmaku resource".to_string()),
+        ),
+        PlaybackDanmakuProvider::Douyu(PlaybackDouyuDanmaku::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+        }) => {
+            let signing = require_provider_signing(signing, "Douyu danmaku URL")?;
+            let resource = format!("danmakus/{mode_name}/{media_index}");
+            let query = signed_provider_query(
+                synctv_core::provider::DouyuProvider::NAME,
+                version,
+                *expires_at,
+                resource,
+                signing,
+            );
+            Ok(format!(
+                "/api/playback-providers/douyu/{}/danmakus/{}/{}?{query}",
+                path_segment_encode(version),
+                path_segment_encode(mode_name),
+                media_index,
+            ))
+        }
+        PlaybackDanmakuProvider::Douyu(PlaybackDouyuDanmaku::Refresh { .. }) => Err(
+            crate::impls::ApiError::Internal("unmarked Douyu danmaku resource".to_string()),
+        ),
+        PlaybackDanmakuProvider::Douyin(PlaybackDouyinDanmaku::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+        }) => {
+            let signing = require_provider_signing(signing, "Douyin danmaku URL")?;
+            let resource = format!("danmakus/{mode_name}/{media_index}");
+            let query = signed_provider_query(
+                synctv_core::provider::DouyinProvider::NAME,
+                version,
+                *expires_at,
+                resource,
+                signing,
+            );
+            Ok(format!(
+                "/api/playback-providers/douyin/{}/danmakus/{}/{}?{query}",
+                path_segment_encode(version),
+                path_segment_encode(mode_name),
+                media_index,
+            ))
+        }
+        PlaybackDanmakuProvider::Douyin(PlaybackDouyinDanmaku::Refresh { .. }) => Err(
+            crate::impls::ApiError::Internal("unmarked Douyin danmaku resource".to_string()),
+        ),
+        PlaybackDanmakuProvider::AcFun(PlaybackAcFunDanmaku::FileProxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+        }) => {
+            let signing = require_provider_signing(signing, "AcFun VOD danmaku URL")?;
+            let resource = format!("danmaku-files/{mode_name}/{media_index}");
+            let query = signed_provider_query(
+                synctv_core::provider::AcFunProvider::NAME,
+                version,
+                *expires_at,
+                resource,
+                signing,
+            );
+            Ok(format!(
+                "/api/playback-providers/acfun/{}/danmaku-files/{}/{}?{query}",
+                path_segment_encode(version),
+                path_segment_encode(mode_name),
+                media_index,
+            ))
+        }
+        PlaybackDanmakuProvider::AcFun(PlaybackAcFunDanmaku::LiveProxy {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+        }) => {
+            let signing = require_provider_signing(signing, "AcFun live danmaku URL")?;
+            let resource = format!("danmakus/{mode_name}/{media_index}");
+            let query = signed_provider_query(
+                synctv_core::provider::AcFunProvider::NAME,
+                version,
+                *expires_at,
+                resource,
+                signing,
+            );
+            Ok(format!(
+                "/api/playback-providers/acfun/{}/danmakus/{}/{}?{query}",
+                path_segment_encode(version),
+                path_segment_encode(mode_name),
+                media_index,
+            ))
+        }
+        PlaybackDanmakuProvider::AcFun(
+            PlaybackAcFunDanmaku::FileRefresh { .. } | PlaybackAcFunDanmaku::LiveRefresh { .. },
+        ) => Err(crate::impls::ApiError::Internal(
+            "unmarked AcFun danmaku resource".to_string(),
+        )),
     }
 }
 
@@ -2523,7 +4462,8 @@ mod playback_conversion_tests {
     use std::collections::HashMap;
     use synctv_core::models::media::{
         PlaybackAlistMedia, PlaybackBilibiliDanmaku, PlaybackBilibiliMedia, PlaybackDanmaku,
-        PlaybackDanmakuProvider, PlaybackDirectUrlMedia, PlaybackExternalSubtitle, PlaybackInfo,
+        PlaybackDanmakuProvider, PlaybackDirectUrlMedia, PlaybackDouyuDanmaku, PlaybackDouyuMedia,
+        PlaybackExternalSubtitle, PlaybackHuyaDanmaku, PlaybackHuyaMedia, PlaybackInfo,
         PlaybackLiveProxyMedia, PlaybackMedia, PlaybackMediaProvider, PlaybackResult,
         PlaybackSubtitle, PlaybackSubtitleProvider,
     };
@@ -2812,6 +4752,124 @@ mod playback_conversion_tests {
             )
             .expect("signature should bind decoded resource");
         assert_eq!(claims.resource, "streams/My Source+Main/0");
+    }
+
+    #[test]
+    fn huya_proxy_urls_bind_media_and_danmaku_resources() {
+        let key = signing_key();
+        let signing = signing_context(&key);
+        let mode_name = "蓝光 HLS";
+        let version = "huya v1";
+        let expires_at = synctv_core::SystemClock.now().timestamp() + 1800;
+        let info = PlaybackInfo::builder()
+            .add_media(PlaybackMedia {
+                name: "蓝光".to_string(),
+                format: "m3u8".to_string(),
+                expire_at: None,
+                metadata: None,
+                provider: PlaybackMediaProvider::Huya(PlaybackHuyaMedia::Proxy {
+                    version: version.to_string(),
+                    expires_at,
+                    mode_name: mode_name.to_string(),
+                    media_index: 0,
+                }),
+            })
+            .add_danmaku(PlaybackDanmaku {
+                name: "Huya live danmaku".to_string(),
+                format: Some("synctv-huya-live".to_string()),
+                provider: PlaybackDanmakuProvider::Huya(PlaybackHuyaDanmaku::Proxy {
+                    version: version.to_string(),
+                    expires_at,
+                    mode_name: mode_name.to_string(),
+                    media_index: 0,
+                }),
+            })
+            .build();
+
+        let proto = try_playback_to_proto(
+            &playback_result_with_mode(mode_name, info),
+            &codec(),
+            Some(&signing),
+        )
+        .expect("Huya playback should convert");
+        let info = &proto.playback_infos[mode_name];
+        let media = &info.medias[0];
+        let danmaku = &info.danmakus[0];
+
+        assert!(media.url.starts_with(
+            "/api/playback-providers/huya/huya%20v1/resources/%E8%93%9D%E5%85%89%20HLS/0?"
+        ));
+        key.parse_and_verify_query(
+            signed_query(&media.url),
+            synctv_core::provider::HuyaProvider::NAME,
+            version,
+            "resources/蓝光 HLS/0",
+        )
+        .expect("media signature should bind its decoded resource");
+
+        assert!(danmaku.url.starts_with(
+            "/api/playback-providers/huya/huya%20v1/danmakus/%E8%93%9D%E5%85%89%20HLS/0?"
+        ));
+        key.parse_and_verify_query(
+            signed_query(&danmaku.url),
+            synctv_core::provider::HuyaProvider::NAME,
+            version,
+            "danmakus/蓝光 HLS/0",
+        )
+        .expect("danmaku signature should bind its decoded resource");
+    }
+
+    #[test]
+    fn douyu_proxy_urls_bind_media_and_danmaku_resources() {
+        let key = signing_key();
+        let signing = signing_context(&key);
+        let mode_name = "original_tct_hevc";
+        let version = "douyu v1";
+        let expires_at = synctv_core::SystemClock.now().timestamp() + 1800;
+        let info = PlaybackInfo::builder()
+            .add_media(PlaybackMedia {
+                name: "Original".to_string(),
+                format: "flv".to_string(),
+                expire_at: None,
+                metadata: None,
+                provider: PlaybackMediaProvider::Douyu(PlaybackDouyuMedia::Proxy {
+                    version: version.to_string(),
+                    expires_at,
+                    mode_name: mode_name.to_string(),
+                    media_index: 0,
+                }),
+            })
+            .add_danmaku(PlaybackDanmaku {
+                name: "Douyu live danmaku".to_string(),
+                format: Some("synctv-douyu-live".to_string()),
+                provider: PlaybackDanmakuProvider::Douyu(PlaybackDouyuDanmaku::Proxy {
+                    version: version.to_string(),
+                    expires_at,
+                    mode_name: mode_name.to_string(),
+                    media_index: 0,
+                }),
+            })
+            .build();
+        let proto = try_playback_to_proto(
+            &playback_result_with_mode(mode_name, info),
+            &codec(),
+            Some(&signing),
+        )
+        .expect("Douyu playback should convert");
+        let info = &proto.playback_infos[mode_name];
+        for (url, resource) in [
+            (&info.medias[0].url, "resources/original_tct_hevc/0"),
+            (&info.danmakus[0].url, "danmakus/original_tct_hevc/0"),
+        ] {
+            assert!(url.starts_with("/api/playback-providers/douyu/douyu%20v1/"));
+            key.parse_and_verify_query(
+                signed_query(url),
+                synctv_core::provider::DouyuProvider::NAME,
+                version,
+                resource,
+            )
+            .expect("Douyu signature should bind its resource");
+        }
     }
 
     #[test]

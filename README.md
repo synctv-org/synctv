@@ -24,7 +24,7 @@ SyncTV is a Rust implementation of a real-time synchronized video watching platf
 ## Highlights
 
 - Synchronized room playback with real-time state updates.
-- Media providers including Bilibili, Alist, Emby-compatible servers (Emby/Jellyfin), and direct URLs.
+- Media providers for Bilibili, Twitch, YouTube, Douyin, TikTok, Huya, Douyu, AcFun, CCTV, Alist, Cloudreve, Emby/Jellyfin, FNOS, QNAP, Synology, Nextcloud, Seafile, TrueNAS, direct URLs, and livestream sources.
 - RTMP push/pull, HLS, and HTTP-FLV livestream support.
 - HTTP REST, public gRPC, WebSocket, management gRPC, metrics, RTMP, and STUN runtime surfaces.
 - PostgreSQL-backed durable storage with optional Redis shared state, cache, rate limiting, and cluster coordination.
@@ -65,19 +65,19 @@ docker compose up -d
 Validate configuration:
 
 ```bash
-cargo run -p synctv --bin synctv -- config validate
+cargo +nightly run -p synctv --bin synctv -- config validate
 ```
 
 Optional migration preflight. The server also runs embedded SQLx migrations automatically during startup:
 
 ```bash
-cargo run -p synctv --bin synctv -- db migrate
+cargo +nightly run -p synctv --bin synctv -- db migrate
 ```
 
 Start locally:
 
 ```bash
-cargo run -p synctv --bin synctv -- serve
+cargo +nightly run -p synctv --bin synctv -- serve
 ```
 
 ## Documentation
@@ -112,6 +112,8 @@ Important entry points:
 - [Authentication and Security Model](./docs/src/content/docs/en/admin/authentication-security.mdx)
 - [Administration Runbook](./docs/src/content/docs/en/admin/index.mdx)
 - [Rooms, Permissions, and Preferences](./docs/src/content/docs/en/use/rooms-permissions.mdx)
+- [Provider User Guide](./docs/src/content/docs/en/use/provider-guide.mdx)
+- [Provider Development Guide](./docs/src/content/docs/en/develop/provider-development.mdx)
 - [Client Integration Guide](./docs/src/content/docs/en/develop/client-integration.mdx)
 - [How Configuration Works](./docs/src/content/docs/en/configuration/how-configuration-works.mdx)
 - [Full Configuration Example](./docs/src/content/docs/en/configuration/full-example.mdx)

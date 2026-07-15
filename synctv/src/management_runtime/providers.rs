@@ -8,16 +8,17 @@ use synctv_management::provider_runtime::{
     AddProviderInstanceCommand, AlistListQuery, AlistLoginCommand, AlistLoginCredential,
     AlistRuntime, AlistSearchQuery, BilibiliCheckQrQuery, BilibiliLoginQrCommand,
     BilibiliLoginSmsCommand, BilibiliLogoutCommand, BilibiliParseQuery, BilibiliRuntime,
-    BilibiliSendSmsCommand, BilibiliStartSmsLoginCommand, BilibiliUserInfoQuery, EmbyListQuery,
-    EmbyLoginCommand, EmbyLoginCredential, EmbyRuntime, ListAvailableProviderInstancesQuery,
-    ListProviderBackendsQuery, ProviderCommonRuntime, ProviderCredentialServerQuery,
-    ProviderInstanceNameCommand, UpdateProviderInstanceCommand,
+    BilibiliSendSmsCommand, BilibiliStartSmsLoginCommand, BilibiliUserInfoQuery, DouyinRuntime,
+    EmbyListQuery, EmbyLoginCommand, EmbyLoginCredential, EmbyRuntime,
+    ListAvailableProviderInstancesQuery, ListProviderBackendsQuery, ProviderCommonRuntime,
+    ProviderCredentialServerQuery, ProviderInstanceNameCommand, TikTokRuntime, TwitchRuntime,
+    UpdateProviderInstanceCommand,
 };
 use synctv_management::request_context::RequestContext;
 use synctv_management::runtime_error::RuntimeError;
 use synctv_proto::providers::{
     alist as alist_proto, bilibili as bilibili_proto, common as provider_common_proto,
-    emby as emby_proto,
+    douyin as douyin_proto, emby as emby_proto, tiktok as tiktok_proto, twitch as twitch_proto,
 };
 use synctv_proto::source_config as source_config_proto;
 
@@ -252,6 +253,203 @@ impl EmbyRuntime for ManagementEmbyRuntime {
     }
 }
 
+pub(crate) struct ManagementDouyinRuntime {
+    inner: Arc<synctv_api::DouyinApiImpl>,
+}
+
+impl ManagementDouyinRuntime {
+    pub(crate) fn new(inner: Arc<synctv_api::DouyinApiImpl>) -> Self {
+        Self { inner }
+    }
+}
+
+#[tonic::async_trait]
+impl DouyinRuntime for ManagementDouyinRuntime {
+    async fn bind(
+        &self,
+        caller_user_id: &UserId,
+        request: douyin_proto::BindRequest,
+        instance_name: Option<&str>,
+    ) -> Result<douyin_proto::BindResponse, ProviderError> {
+        self.inner
+            .bind(*caller_user_id, request, instance_name)
+            .await
+    }
+
+    async fn get_binds(
+        &self,
+        caller_user_id: &UserId,
+        instance_name: Option<&str>,
+    ) -> Result<douyin_proto::GetBindsResponse, ProviderError> {
+        self.inner.get_binds(*caller_user_id, instance_name).await
+    }
+
+    async fn unbind(
+        &self,
+        caller_user_id: &UserId,
+        request: douyin_proto::UnbindRequest,
+    ) -> Result<douyin_proto::UnbindResponse, ProviderError> {
+        self.inner.unbind(*caller_user_id, request).await
+    }
+
+    async fn resolve(
+        &self,
+        caller_user_id: &UserId,
+        request: douyin_proto::ResolveRequest,
+        instance_name: Option<&str>,
+    ) -> Result<douyin_proto::ResolveResponse, ProviderError> {
+        self.inner
+            .resolve(*caller_user_id, request, instance_name)
+            .await
+    }
+
+    async fn list_user_posts(
+        &self,
+        caller_user_id: &UserId,
+        request: douyin_proto::ListUserPostsRequest,
+        instance_name: Option<&str>,
+    ) -> Result<douyin_proto::ListUserPostsResponse, ProviderError> {
+        self.inner
+            .list_user_posts(*caller_user_id, request, instance_name)
+            .await
+    }
+}
+
+pub(crate) struct ManagementTikTokRuntime {
+    inner: Arc<synctv_api::TikTokApiImpl>,
+}
+
+impl ManagementTikTokRuntime {
+    pub(crate) fn new(inner: Arc<synctv_api::TikTokApiImpl>) -> Self {
+        Self { inner }
+    }
+}
+
+#[tonic::async_trait]
+impl TikTokRuntime for ManagementTikTokRuntime {
+    async fn bind(
+        &self,
+        caller_user_id: &UserId,
+        request: tiktok_proto::BindRequest,
+        instance_name: Option<&str>,
+    ) -> Result<tiktok_proto::BindResponse, ProviderError> {
+        self.inner
+            .bind(*caller_user_id, request, instance_name)
+            .await
+    }
+
+    async fn get_binds(
+        &self,
+        caller_user_id: &UserId,
+        instance_name: Option<&str>,
+    ) -> Result<tiktok_proto::GetBindsResponse, ProviderError> {
+        self.inner.get_binds(*caller_user_id, instance_name).await
+    }
+
+    async fn unbind(
+        &self,
+        caller_user_id: &UserId,
+        request: tiktok_proto::UnbindRequest,
+    ) -> Result<tiktok_proto::UnbindResponse, ProviderError> {
+        self.inner.unbind(*caller_user_id, request).await
+    }
+
+    async fn resolve(
+        &self,
+        caller_user_id: &UserId,
+        request: tiktok_proto::ResolveRequest,
+        instance_name: Option<&str>,
+    ) -> Result<tiktok_proto::ResolveResponse, ProviderError> {
+        self.inner
+            .resolve(*caller_user_id, request, instance_name)
+            .await
+    }
+
+    async fn get_user(
+        &self,
+        caller_user_id: &UserId,
+        request: tiktok_proto::GetUserRequest,
+        instance_name: Option<&str>,
+    ) -> Result<tiktok_proto::GetUserResponse, ProviderError> {
+        self.inner
+            .get_user(*caller_user_id, request, instance_name)
+            .await
+    }
+
+    async fn list_user_posts(
+        &self,
+        caller_user_id: &UserId,
+        request: tiktok_proto::ListUserPostsRequest,
+        instance_name: Option<&str>,
+    ) -> Result<tiktok_proto::ListUserPostsResponse, ProviderError> {
+        self.inner
+            .list_user_posts(*caller_user_id, request, instance_name)
+            .await
+    }
+}
+
+pub(crate) struct ManagementTwitchRuntime {
+    inner: Arc<synctv_api::TwitchApiImpl>,
+}
+
+impl ManagementTwitchRuntime {
+    pub(crate) fn new(inner: Arc<synctv_api::TwitchApiImpl>) -> Self {
+        Self { inner }
+    }
+}
+
+#[tonic::async_trait]
+impl TwitchRuntime for ManagementTwitchRuntime {
+    async fn bind(
+        &self,
+        caller_user_id: &UserId,
+        request: twitch_proto::BindRequest,
+        instance_name: Option<&str>,
+    ) -> Result<twitch_proto::BindResponse, ProviderError> {
+        self.inner
+            .bind(*caller_user_id, request, instance_name)
+            .await
+    }
+
+    async fn get_binds(
+        &self,
+        caller_user_id: &UserId,
+        instance_name: Option<&str>,
+    ) -> Result<twitch_proto::GetBindsResponse, ProviderError> {
+        self.inner.get_binds(*caller_user_id, instance_name).await
+    }
+
+    async fn unbind(
+        &self,
+        caller_user_id: &UserId,
+        request: twitch_proto::UnbindRequest,
+    ) -> Result<twitch_proto::UnbindResponse, ProviderError> {
+        self.inner.unbind(*caller_user_id, request).await
+    }
+
+    async fn resolve(
+        &self,
+        caller_user_id: &UserId,
+        request: twitch_proto::ResolveRequest,
+        instance_name: Option<&str>,
+    ) -> Result<twitch_proto::ResolveResponse, ProviderError> {
+        self.inner
+            .resolve(*caller_user_id, request, instance_name)
+            .await
+    }
+
+    async fn list_channel_items(
+        &self,
+        caller_user_id: &UserId,
+        request: twitch_proto::ListChannelItemsRequest,
+        instance_name: Option<&str>,
+    ) -> Result<twitch_proto::ListChannelItemsResponse, ProviderError> {
+        self.inner
+            .list_channel_items(*caller_user_id, request, instance_name)
+            .await
+    }
+}
+
 pub(crate) struct ManagementBilibiliRuntime {
     inner: Arc<synctv_api::BilibiliApiImpl>,
 }
@@ -415,6 +613,48 @@ fn source_provider_to_proto(provider: Option<synctv_core::models::SourceProvider
         }
         Some(synctv_core::models::SourceProvider::Cloudreve) => {
             source_config_proto::SourceProvider::Cloudreve as i32
+        }
+        Some(synctv_core::models::SourceProvider::Twitch) => {
+            source_config_proto::SourceProvider::Twitch as i32
+        }
+        Some(synctv_core::models::SourceProvider::Huya) => {
+            source_config_proto::SourceProvider::Huya as i32
+        }
+        Some(synctv_core::models::SourceProvider::Douyu) => {
+            source_config_proto::SourceProvider::Douyu as i32
+        }
+        Some(synctv_core::models::SourceProvider::Douyin) => {
+            source_config_proto::SourceProvider::Douyin as i32
+        }
+        Some(synctv_core::models::SourceProvider::TikTok) => {
+            source_config_proto::SourceProvider::Tiktok as i32
+        }
+        Some(synctv_core::models::SourceProvider::AcFun) => {
+            source_config_proto::SourceProvider::Acfun as i32
+        }
+        Some(synctv_core::models::SourceProvider::Cctv) => {
+            source_config_proto::SourceProvider::Cctv as i32
+        }
+        Some(synctv_core::models::SourceProvider::Fnos) => {
+            source_config_proto::SourceProvider::Fnos as i32
+        }
+        Some(synctv_core::models::SourceProvider::Qnap) => {
+            source_config_proto::SourceProvider::Qnap as i32
+        }
+        Some(synctv_core::models::SourceProvider::Synology) => {
+            source_config_proto::SourceProvider::Synology as i32
+        }
+        Some(synctv_core::models::SourceProvider::Nextcloud) => {
+            source_config_proto::SourceProvider::Nextcloud as i32
+        }
+        Some(synctv_core::models::SourceProvider::Seafile) => {
+            source_config_proto::SourceProvider::Seafile as i32
+        }
+        Some(synctv_core::models::SourceProvider::TrueNas) => {
+            source_config_proto::SourceProvider::Truenas as i32
+        }
+        Some(synctv_core::models::SourceProvider::Youtube) => {
+            source_config_proto::SourceProvider::Youtube as i32
         }
         None => source_config_proto::SourceProvider::Unspecified as i32,
     }

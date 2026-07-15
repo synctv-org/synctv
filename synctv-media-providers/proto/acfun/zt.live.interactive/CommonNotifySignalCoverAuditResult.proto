@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package acproto;
+
+message CommonNotifySignalCoverAuditResult {
+	AuditStatus auditStatus = 1;
+
+	enum AuditStatus {
+		SUCCESS = 0;
+		COVER_AUDIT_FAILED = 1;
+		CAPTION_AUDIT_FAILED = 2;
+		BOTH_FAILED = 3;
+	}
+}

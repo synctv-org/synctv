@@ -330,6 +330,7 @@ pub async fn watch_playlist_items(
         sort_direction: query.sort_direction.unwrap_or_default(),
         availability: query.availability.unwrap_or_default(),
         refresh: query.refresh.unwrap_or_default(),
+        preview_source_config: None,
     };
     let request = WatchPlaylistItemsRequest {
         delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,

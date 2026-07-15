@@ -1,0 +1,51 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+import "AppInfo.proto";
+import "DeviceInfo.proto";
+import "EnvInfo.proto";
+import "ZtCommonInfo.proto";
+import "AccessPointsConfig.proto";
+import "PushServiceToken.proto";
+import "SdkOption.proto";
+
+message RegisterRequest {
+	AppInfo appInfo = 1;
+	DeviceInfo deviceInfo = 2;
+	EnvInfo envInfo = 3;
+	PresenceStatus presenceStatus = 4;
+	ActiveStatus appActiveStatus = 5;
+	bytes appCustomStatus = 6;
+	PushServiceToken pushServiceToken = 7;
+	int64 instanceId = 8;
+	repeated PushServiceToken pushServiceTokenList = 9;
+	int32 keepaliveIntervalSec = 10;
+	ZtCommonInfo ztCommonInfo = 11;
+	bool ipv6Available = 12;
+
+	enum PresenceStatus {
+		kPresenceOffline = 0;
+		kPresenceOnline = 1;
+	}
+
+	enum ActiveStatus {
+		kInvalid = 0;
+		kAppInForeground = 1;
+		kAppInBackground = 2;
+	}
+}
+
+message RegisterResponse {
+	AccessPointsConfig accessPointsConfig = 1;
+	bytes sessKey = 2;
+	int64 instanceId = 3;
+	SdkOption sdkOption = 4;
+	AccessPointsConfig accessPointsConfigIpv6 = 5;
+	AccessPointsConfig accessPointsConfigQUic = 6;
+	AccessPointsConfig accessPointsConfigQuicIpv6 = 7;
+	bool cleanAccessPoint = 8;
+	float flowCostSampleRate = 9;
+	float commandSampleRate = 10;
+	AccessPointsConfig accessPointsConfigWs = 11;
+}

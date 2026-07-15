@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package synctv.provider.twitch;
+
+import "proto/providers/twitch.proto";
+
+service TwitchProviderService {
+  rpc Bind(BindRequest) returns (BindResponse);
+  rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+  rpc Unbind(UnbindRequest) returns (UnbindResponse);
+  rpc Resolve(ResolveRequest) returns (ResolveResponse);
+  rpc ListChannelItems(ListChannelItemsRequest) returns (ListChannelItemsResponse);
+  rpc ListFollowedLive(ListFollowedLiveRequest) returns (ListFollowedLiveResponse);
+  rpc ListCategoryStreams(ListCategoryStreamsRequest) returns (ListCategoryStreamsResponse);
+  rpc ListTopCategories(ListTopCategoriesRequest) returns (ListTopCategoriesResponse);
+  rpc SearchLiveChannels(SearchLiveChannelsRequest) returns (SearchLiveChannelsResponse);
+  rpc ListSchedule(ListScheduleRequest) returns (ListScheduleResponse);
+}

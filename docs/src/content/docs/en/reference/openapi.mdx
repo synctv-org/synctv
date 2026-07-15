@@ -10,19 +10,19 @@ SyncTV includes built-in OpenAPI JSON and Swagger UI. The binary must be built w
 Run locally with OpenAPI:
 
 ```bash
-cargo run -p synctv --features openapi --bin synctv -- serve
+cargo +nightly run -p synctv --features openapi --bin synctv -- serve
 ```
 
 With an explicit config file:
 
 ```bash
-cargo run -p synctv --features openapi --bin synctv -- serve --config synctv.yaml
+cargo +nightly run -p synctv --features openapi --bin synctv -- serve --config synctv.yaml
 ```
 
 Build check:
 
 ```bash
-cargo check --workspace --all-targets --features openapi
+cargo +nightly check --workspace --all-targets --features openapi
 ```
 
 ## Swagger UI

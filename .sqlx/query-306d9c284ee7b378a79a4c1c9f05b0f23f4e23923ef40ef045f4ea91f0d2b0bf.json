@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO room_playback_state\n             (room_id, playing_media_id, playing_playlist_id, target, current_progress_id,\n              speed, is_playing, playback_generation, updated_at, version)\n         VALUES ($1, $2, NULL, NULL, $3, 1.0, TRUE, 0, NOW(), 0)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "306d9c284ee7b378a79a4c1c9f05b0f23f4e23923ef40ef045f4ea91f0d2b0bf"
+}

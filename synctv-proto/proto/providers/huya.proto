@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package synctv.provider.huya;
+
+import "proto/buf/validate/validate.proto";
+import "proto/source_config.proto";
+
+enum ResourceKind {
+  RESOURCE_KIND_UNSPECIFIED = 0;
+  RESOURCE_KIND_LIVE = 1;
+  RESOURCE_KIND_VIDEO = 2;
+}
+
+enum StreamFormat {
+  STREAM_FORMAT_UNSPECIFIED = 0;
+  STREAM_FORMAT_FLV = 1;
+  STREAM_FORMAT_HLS = 2;
+}
+
+message ResolveRequest {
+  string resource = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message Metadata {
+  string id = 1;
+  string title = 2;
+  string author = 3;
+  optional string author_id = 4;
+  optional string category = 5;
+  optional string thumbnail_url = 6;
+  optional string avatar_url = 7;
+  bool is_live = 8;
+  optional string description = 9;
+  optional uint64 duration_seconds = 10;
+  optional uint64 view_count = 11;
+  optional uint64 comment_count = 12;
+  optional uint64 like_count = 13;
+  optional int64 published_at = 14;
+}
+
+message Quality {
+  string name = 1;
+  string cdn = 2;
+  StreamFormat format = 3;
+  string url = 4;
+  optional uint64 bitrate = 5;
+  optional uint32 width = 6;
+  optional uint32 height = 7;
+}
+
+message ResolveResponse {
+  ResourceKind kind = 1;
+  Metadata metadata = 2;
+  repeated Quality qualities = 3;
+  synctv.source_config.HuyaMediaSourceConfig source_config = 4;
+}

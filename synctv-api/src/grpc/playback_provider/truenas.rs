@@ -1,0 +1,93 @@
+use std::sync::Arc;
+
+use futures::FutureExt;
+use synctv_proto::playback_provider::truenas::true_nas_playback_provider_service_server::TrueNasPlaybackProviderService;
+use synctv_proto::playback_provider::truenas::{
+    GetTrueNasResourceRequest, GetTrueNasSubtitleRequest, TrueNasResourceResponse,
+    TrueNasSubtitleResponse,
+};
+use tonic::{Request, Response, Status};
+
+use super::{
+    execute_playback_provider_stream, grpc_request_metadata, GrpcResponseStream,
+    PlaybackProviderGrpcState,
+};
+
+#[derive(Clone)]
+pub struct TrueNasPlaybackProviderGrpcService {
+    state: Arc<PlaybackProviderGrpcState>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
+}
+
+impl TrueNasPlaybackProviderGrpcService {
+    #[must_use]
+    pub fn new(
+        state: Arc<PlaybackProviderGrpcState>,
+        runtime_settings: Arc<crate::ApiRuntimeSettings>,
+    ) -> Self {
+        Self {
+            state,
+            runtime_settings,
+        }
+    }
+}
+
+#[tonic::async_trait]
+#[allow(clippy::result_large_err)]
+impl TrueNasPlaybackProviderService for TrueNasPlaybackProviderGrpcService {
+    type GetResourceStream = GrpcResponseStream<TrueNasResourceResponse>;
+    type GetSubtitleStream = GrpcResponseStream<TrueNasSubtitleResponse>;
+
+    async fn get_resource(
+        &self,
+        request: Request<GetTrueNasResourceRequest>,
+    ) -> Result<Response<Self::GetResourceStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+        execute_playback_provider_stream(state.clone(), metadata, move |control| {
+            let state = state.clone();
+            async move {
+                crate::impls::playback_provider::truenas::get_truenas_resource(
+                    deps(&state, Some(&control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn get_subtitle(
+        &self,
+        request: Request<GetTrueNasSubtitleRequest>,
+    ) -> Result<Response<Self::GetSubtitleStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+        execute_playback_provider_stream(state.clone(), metadata, move |control| {
+            let state = state.clone();
+            async move {
+                crate::impls::playback_provider::truenas::get_truenas_subtitle(
+                    deps(&state, Some(&control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+}
+
+fn deps<'a>(
+    state: &'a PlaybackProviderGrpcState,
+    request_control: Option<&'a synctv_core::provider::ExecutionControl>,
+) -> crate::impls::playback_provider::truenas::TrueNasPlaybackProviderDeps<'a> {
+    crate::impls::playback_provider::truenas::TrueNasPlaybackProviderDeps {
+        playback_provider_service: &state.shared_api_runtime.truenas_playback_provider_service,
+        runtime: super::playback_provider_api_runtime(state),
+        request_control,
+    }
+}

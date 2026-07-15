@@ -19,6 +19,20 @@ pub enum MediaSourceConfig {
     Rtmp(RtmpMediaSourceConfig),
     LiveProxy(LiveProxyMediaSourceConfig),
     Cloudreve(CloudreveMediaSourceConfig),
+    Twitch(TwitchMediaSourceConfig),
+    Youtube(YoutubeMediaSourceConfig),
+    Huya(HuyaMediaSourceConfig),
+    Douyu(DouyuMediaSourceConfig),
+    Douyin(DouyinMediaSourceConfig),
+    AcFun(AcFunMediaSourceConfig),
+    Cctv(CctvMediaSourceConfig),
+    Fnos(FnosMediaSourceConfig),
+    Qnap(QnapMediaSourceConfig),
+    Synology(SynologyMediaSourceConfig),
+    Nextcloud(NextcloudMediaSourceConfig),
+    Seafile(SeafileMediaSourceConfig),
+    TrueNas(TrueNasMediaSourceConfig),
+    TikTok(TikTokMediaSourceConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -30,8 +44,19 @@ pub enum MediaSourceConfig {
 )]
 pub enum PlaylistSourceConfig {
     Alist(AlistPlaylistSourceConfig),
+    Bilibili(BilibiliPlaylistSourceConfig),
     Emby(EmbyPlaylistSourceConfig),
     Cloudreve(CloudrevePlaylistSourceConfig),
+    Twitch(TwitchPlaylistSourceConfig),
+    Youtube(YoutubePlaylistSourceConfig),
+    Douyin(DouyinPlaylistSourceConfig),
+    Fnos(FnosPlaylistSourceConfig),
+    Qnap(QnapPlaylistSourceConfig),
+    Synology(SynologyPlaylistSourceConfig),
+    Nextcloud(NextcloudPlaylistSourceConfig),
+    Seafile(SeafilePlaylistSourceConfig),
+    TrueNas(TrueNasPlaylistSourceConfig),
+    TikTok(TikTokPlaylistSourceConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -195,6 +220,362 @@ pub enum BilibiliMediaSourceConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BilibiliPlaylistSourceConfig {
+    pub source: BilibiliPlaylistSource,
+    #[serde(default)]
+    pub shared: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum BilibiliPlaylistSource {
+    VideoParts {
+        bvid: String,
+        aid: Option<u64>,
+    },
+    Popular,
+    Recommended,
+    UpVideos {
+        mid: u64,
+        keyword: String,
+    },
+    FavoriteVideos {
+        media_id: u64,
+    },
+    CollectionVideos {
+        mid: u64,
+        season_id: u64,
+    },
+    SeriesVideos {
+        mid: u64,
+        series_id: u64,
+    },
+    WatchLater,
+    PgcSeason {
+        season_id: u64,
+    },
+    LiveRecommended,
+    LiveFollowed,
+    LiveArea {
+        parent_area_id: u64,
+        area_id: u64,
+    },
+    History {
+        history_type: BilibiliHistoryType,
+    },
+    PgcTimeline {
+        timeline_type: BilibiliPgcTimelineType,
+        before_days: u32,
+        after_days: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BilibiliHistoryType {
+    All,
+    Archive,
+    Live,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BilibiliPgcTimelineType {
+    Anime,
+    Cinema,
+    Guochuang,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum HuyaMediaSourceConfig {
+    Live { room_id: String },
+    Video { video_id: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DouyuMediaSourceConfig {
+    pub room: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum DouyinMediaSourceConfig {
+    Video {
+        aweme_id: String,
+        #[serde(default)]
+        shared: bool,
+    },
+    Live {
+        web_rid: String,
+        #[serde(default)]
+        shared: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DouyinPlaylistSourceConfig {
+    pub sec_uid: String,
+    #[serde(default)]
+    pub shared: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum TikTokMediaSourceConfig {
+    Video {
+        video_id: String,
+        #[serde(default)]
+        shared: bool,
+    },
+    Live {
+        unique_id: String,
+        #[serde(default)]
+        shared: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TikTokPlaylistSourceConfig {
+    pub sec_uid: String,
+    #[serde(default)]
+    pub shared: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum AcFunMediaSourceConfig {
+    Video {
+        video_id: String,
+    },
+    Bangumi {
+        bangumi_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        episode_query: Option<String>,
+    },
+    Live {
+        author_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CctvMediaSourceConfig {
+    pub resource: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FnosMediaSourceConfig {
+    pub server_id: String,
+    pub source: FnosMediaSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum FnosMediaSource {
+    File {
+        path: String,
+    },
+    LibraryItem {
+        item_guid: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        media_guid: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FnosPlaylistSourceConfig {
+    pub server_id: String,
+    pub source: FnosPlaylistSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum FnosPlaylistSource {
+    Files {
+        path: String,
+    },
+    MediaLibrary {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ancestor_guid: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        media_types: Vec<String>,
+    },
+    Favorites {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        media_types: Vec<String>,
+    },
+    History,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QnapMediaSourceConfig {
+    pub server_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QnapPlaylistSourceConfig {
+    pub server_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NextcloudMediaSourceConfig {
+    pub server_id: String,
+    pub path: String,
+    pub file_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NextcloudPlaylistSourceConfig {
+    pub server_id: String,
+    pub source: NextcloudPlaylistSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum NextcloudPlaylistSource {
+    Folder { path: String },
+    Favorites,
+    Search { path: String, query: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SeafileMediaSourceConfig {
+    pub server_id: String,
+    pub repository_id: String,
+    pub path: String,
+    pub object_id: String,
+    pub has_thumbnail: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SeafilePlaylistSourceConfig {
+    pub server_id: String,
+    pub source: SeafilePlaylistSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum SeafilePlaylistSource {
+    Folder {
+        repository_id: String,
+        path: String,
+    },
+    Starred,
+    Search {
+        repository_id: String,
+        query: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TrueNasMediaSourceConfig {
+    pub server_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TrueNasPlaylistSourceConfig {
+    pub server_id: String,
+    pub source: TrueNasPlaylistSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum TrueNasPlaylistSource {
+    Folder { path: String },
+    Search { path: String, query: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SynologyMediaSourceConfig {
+    pub server_id: String,
+    pub source: SynologyMediaSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum SynologyMediaSource {
+    File {
+        path: String,
+    },
+    LibraryItem {
+        kind: SynologyLibraryItemKind,
+        item_id: i64,
+        file_id: i64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum SynologyLibraryItemKind {
+    Movie,
+    Episode,
+    HomeVideo,
+    TvRecording,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SynologyPlaylistSourceConfig {
+    pub server_id: String,
+    pub source: SynologyPlaylistSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum SynologyPlaylistSource {
+    Files { path: String },
+    Movies { library_id: i64 },
+    TvShows { library_id: i64 },
+    Episodes { library_id: i64, tv_show_id: i64 },
+    HomeVideos { library_id: i64 },
+    TvRecordings { library_id: i64 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BilibiliVideoSourceConfig {
     pub bvid: Option<String>,
     pub aid: Option<u64>,
@@ -253,6 +634,129 @@ pub struct CloudrevePlaylistSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum TwitchMediaSourceConfig {
+    Live {
+        channel: String,
+        #[serde(default)]
+        shared: bool,
+    },
+    Video {
+        video_id: String,
+        #[serde(default)]
+        shared: bool,
+    },
+    Clip {
+        slug: String,
+        #[serde(default)]
+        shared: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TwitchPlaylistContent {
+    Videos,
+    Highlights,
+    Uploads,
+    Clips,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum TwitchPlaylistSourceConfig {
+    Channel {
+        channel: String,
+        content: TwitchPlaylistContent,
+        #[serde(default)]
+        shared: bool,
+    },
+    FollowedLive {
+        #[serde(default)]
+        shared: bool,
+    },
+    CategoryLive {
+        category_id: String,
+        category_name: String,
+        #[serde(default)]
+        shared: bool,
+    },
+    SearchLive {
+        query: String,
+        #[serde(default)]
+        shared: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct YoutubeMediaSourceConfig {
+    pub video_id: String,
+    #[serde(default)]
+    pub shared: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum YoutubePlaylistSourceConfig {
+    Playlist {
+        playlist_id: String,
+        #[serde(default)]
+        shared: bool,
+    },
+    Channel {
+        channel_id: String,
+        content: YoutubeChannelContent,
+        #[serde(default)]
+        shared: bool,
+    },
+    Search {
+        query: String,
+        #[serde(default)]
+        shared: bool,
+    },
+    Trending {
+        #[serde(default)]
+        shared: bool,
+    },
+    Subscriptions {
+        #[serde(default)]
+        shared: bool,
+    },
+    LikedVideos {
+        #[serde(default)]
+        shared: bool,
+    },
+    WatchLater {
+        #[serde(default)]
+        shared: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum YoutubeChannelContent {
+    Videos,
+    Shorts,
+    Live,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EmbyMediaSourceConfig {
     pub item_id: String,
@@ -262,8 +766,43 @@ pub struct EmbyMediaSourceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EmbyPlaylistSourceConfig {
-    pub item_id: String,
     pub server_id: String,
+    pub source: EmbyPlaylistSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum EmbyPlaylistSource {
+    Folder {
+        item_id: String,
+    },
+    FavoriteItems {
+        item_types: Vec<String>,
+    },
+    FavoritePeople,
+    PersonItems {
+        person_id: String,
+        item_types: Vec<String>,
+    },
+    ContinueWatching,
+    NextUp,
+    RecentlyAdded {
+        item_types: Vec<String>,
+    },
+    Playlists,
+    Collections,
+    Genres {
+        item_types: Vec<String>,
+    },
+    GenreItems {
+        genre_id: String,
+        item_types: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -287,6 +826,20 @@ impl MediaSourceConfig {
             Self::Rtmp(_) => SourceProvider::Rtmp,
             Self::LiveProxy(_) => SourceProvider::LiveProxy,
             Self::Cloudreve(_) => SourceProvider::Cloudreve,
+            Self::Twitch(_) => SourceProvider::Twitch,
+            Self::Youtube(_) => SourceProvider::Youtube,
+            Self::Huya(_) => SourceProvider::Huya,
+            Self::Douyu(_) => SourceProvider::Douyu,
+            Self::Douyin(_) => SourceProvider::Douyin,
+            Self::TikTok(_) => SourceProvider::TikTok,
+            Self::AcFun(_) => SourceProvider::AcFun,
+            Self::Cctv(_) => SourceProvider::Cctv,
+            Self::Fnos(_) => SourceProvider::Fnos,
+            Self::Qnap(_) => SourceProvider::Qnap,
+            Self::Synology(_) => SourceProvider::Synology,
+            Self::Nextcloud(_) => SourceProvider::Nextcloud,
+            Self::Seafile(_) => SourceProvider::Seafile,
+            Self::TrueNas(_) => SourceProvider::TrueNas,
         }
     }
 
@@ -308,8 +861,19 @@ impl PlaylistSourceConfig {
     pub const fn provider(&self) -> SourceProvider {
         match self {
             Self::Alist(_) => SourceProvider::Alist,
+            Self::Bilibili(_) => SourceProvider::Bilibili,
             Self::Emby(_) => SourceProvider::Emby,
             Self::Cloudreve(_) => SourceProvider::Cloudreve,
+            Self::Twitch(_) => SourceProvider::Twitch,
+            Self::Youtube(_) => SourceProvider::Youtube,
+            Self::Douyin(_) => SourceProvider::Douyin,
+            Self::TikTok(_) => SourceProvider::TikTok,
+            Self::Fnos(_) => SourceProvider::Fnos,
+            Self::Qnap(_) => SourceProvider::Qnap,
+            Self::Synology(_) => SourceProvider::Synology,
+            Self::Nextcloud(_) => SourceProvider::Nextcloud,
+            Self::Seafile(_) => SourceProvider::Seafile,
+            Self::TrueNas(_) => SourceProvider::TrueNas,
         }
     }
 
@@ -597,12 +1161,17 @@ mod tests {
         playlist_round_trip(
             &PlaylistSourceConfig::Emby(EmbyPlaylistSourceConfig {
                 server_id: "emby-main".to_string(),
-                item_id: "folder-1".to_string(),
+                source: EmbyPlaylistSource::Folder {
+                    item_id: "folder-1".to_string(),
+                },
             }),
             &json!({
                 "provider": "emby",
                 "serverId": "emby-main",
-                "itemId": "folder-1"
+                "source": {
+                    "type": "folder",
+                    "itemId": "folder-1"
+                }
             }),
         );
     }

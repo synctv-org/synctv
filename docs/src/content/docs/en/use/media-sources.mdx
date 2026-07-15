@@ -5,6 +5,8 @@ description: Add direct URLs, Alist, Emby/Jellyfin, Bilibili, RTMP livestreaming
 
 import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
+See the [Provider User Guide](../provider-guide/) for binding, preview, dynamic-playlist, and advanced playback capabilities across video platforms, media servers, and NAS systems.
+
 ## Choose a Source
 
 Provider is the adapter layer that turns external media into SyncTV playback results. Before integrating, answer:
@@ -15,7 +17,7 @@ Provider is the adapter layer that turns external media into SyncTV playback res
 | Does the upstream require special headers or cookies? | Decides whether browsers can direct play |
 | Are credentials user-owned or instance-owned? | Decides user binding, Provider instance, and encryption |
 
-Built-in Provider types include `alist`, `bilibili`, `emby`, `direct-url`, `rtmp`, and `live-proxy`. A remote Provider instance is stored in the database and connects SyncTV to a separate Provider service; it is not the `media_providers` YAML object.
+Built-in Providers cover video and live platforms, media servers, file services, NAS systems, direct URLs, and livestream sources. A remote Provider instance is stored in the database and connects SyncTV to a separate Provider service.
 
 ## Before Adding Media
 

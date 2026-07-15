@@ -154,6 +154,11 @@ export default defineConfig({
               slug: 'use/media-sources',
             },
             {
+              label: 'Provider 使用手册',
+              translations: { en: 'Provider User Guide' },
+              slug: 'use/provider-guide',
+            },
+            {
               label: '播放与代理模型',
               translations: { en: 'Playback and Proxy Model' },
               slug: 'use/playback-and-proxy',
@@ -370,6 +375,11 @@ export default defineConfig({
           label: '开发与集成',
           translations: { en: 'Develop with SyncTV' },
           items: [
+            {
+              label: 'Provider 开发指南',
+              translations: { en: 'Provider Development Guide' },
+              slug: 'develop/provider-development',
+            },
             {
               label: '客户端集成指南',
               translations: { en: 'Client Integration Guide' },

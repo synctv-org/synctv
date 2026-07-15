@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package synctv.playback_provider.truenas;
+
+import "proto/buf/validate/validate.proto";
+import "proto/playback_provider/common.proto";
+
+message GetTrueNasResourceRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string mode_name = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 media_index = 3;
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+  optional string range = 8;
+  bool head = 9;
+}
+
+message TrueNasResourceResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetTrueNasSubtitleRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string mode_name = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 subtitle_index = 3;
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+}
+
+message TrueNasSubtitleResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+service TrueNasPlaybackProviderService {
+  rpc GetResource(GetTrueNasResourceRequest) returns (stream TrueNasResourceResponse);
+  rpc GetSubtitle(GetTrueNasSubtitleRequest) returns (stream TrueNasSubtitleResponse);
+}

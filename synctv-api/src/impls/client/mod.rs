@@ -366,6 +366,225 @@ impl ClientApiImpl {
                 .map(Some)
                 .map_err(ApiError::Internal)
             }
+            synctv_core::provider::SourceCover::Fnos {
+                server_id,
+                credential_owner_id,
+                image_path,
+            } => {
+                let Some(viewer_id) = viewer_id else {
+                    return Ok(None);
+                };
+                let public_room_id = self
+                    .public_id_codec
+                    .encode_room_id(room_id)
+                    .map_err(ApiError::Internal)?;
+                let public_user_id = self
+                    .public_id_codec
+                    .encode_user_id(viewer_id)
+                    .map_err(ApiError::Internal)?;
+                let public_owner_id = self
+                    .public_id_codec
+                    .encode_user_id(credential_owner_id)
+                    .map_err(ApiError::Internal)?;
+                let thumbnail = crate::fnos_thumbnail_urls::fnos_thumbnail_url(
+                    &server_id,
+                    &public_owner_id,
+                    &image_path,
+                    800,
+                );
+                crate::fnos_thumbnail_urls::sign_fnos_thumbnail_url(
+                    &thumbnail,
+                    &public_room_id,
+                    &public_user_id,
+                    self.signing_key.as_ref(),
+                )
+                .map(Some)
+                .map_err(ApiError::Internal)
+            }
+            synctv_core::provider::SourceCover::Qnap {
+                server_id,
+                credential_owner_id,
+                path,
+            } => {
+                let Some(viewer_id) = viewer_id else {
+                    return Ok(None);
+                };
+                let room_id = self
+                    .public_id_codec
+                    .encode_room_id(room_id)
+                    .map_err(ApiError::Internal)?;
+                let user_id = self
+                    .public_id_codec
+                    .encode_user_id(viewer_id)
+                    .map_err(ApiError::Internal)?;
+                let owner_id = self
+                    .public_id_codec
+                    .encode_user_id(credential_owner_id)
+                    .map_err(ApiError::Internal)?;
+                let thumbnail = crate::qnap_thumbnail_urls::qnap_thumbnail_url(
+                    &server_id, &owner_id, &path, 640,
+                );
+                crate::qnap_thumbnail_urls::sign_qnap_thumbnail_url(
+                    &thumbnail,
+                    &room_id,
+                    &user_id,
+                    self.signing_key.as_ref(),
+                )
+                .map(Some)
+                .map_err(ApiError::Internal)
+            }
+            synctv_core::provider::SourceCover::Nextcloud {
+                server_id,
+                credential_owner_id,
+                file_id,
+            } => {
+                let Some(viewer_id) = viewer_id else {
+                    return Ok(None);
+                };
+                let room_id = self
+                    .public_id_codec
+                    .encode_room_id(room_id)
+                    .map_err(ApiError::Internal)?;
+                let user_id = self
+                    .public_id_codec
+                    .encode_user_id(viewer_id)
+                    .map_err(ApiError::Internal)?;
+                let owner_id = self
+                    .public_id_codec
+                    .encode_user_id(credential_owner_id)
+                    .map_err(ApiError::Internal)?;
+                let preview = crate::nextcloud_preview_urls::nextcloud_preview_url(
+                    &server_id, &owner_id, file_id, 640, 640, true,
+                );
+                crate::nextcloud_preview_urls::sign_nextcloud_preview_url(
+                    &preview,
+                    &room_id,
+                    &user_id,
+                    self.signing_key.as_ref(),
+                )
+                .map(Some)
+                .map_err(ApiError::Internal)
+            }
+            synctv_core::provider::SourceCover::Seafile {
+                server_id,
+                credential_owner_id,
+                repository_id,
+                path,
+            } => {
+                let Some(viewer_id) = viewer_id else {
+                    return Ok(None);
+                };
+                let room_id = self
+                    .public_id_codec
+                    .encode_room_id(room_id)
+                    .map_err(ApiError::Internal)?;
+                let user_id = self
+                    .public_id_codec
+                    .encode_user_id(viewer_id)
+                    .map_err(ApiError::Internal)?;
+                let owner_id = self
+                    .public_id_codec
+                    .encode_user_id(credential_owner_id)
+                    .map_err(ApiError::Internal)?;
+                let thumbnail = crate::seafile_thumbnail_urls::seafile_thumbnail_url(
+                    &server_id,
+                    &owner_id,
+                    &repository_id,
+                    &path,
+                    640,
+                );
+                crate::seafile_thumbnail_urls::sign_seafile_thumbnail_url(
+                    &thumbnail,
+                    &room_id,
+                    &user_id,
+                    self.signing_key.as_ref(),
+                )
+                .map(Some)
+                .map_err(ApiError::Internal)
+            }
+            synctv_core::provider::SourceCover::SynologyFile {
+                server_id,
+                credential_owner_id,
+                path,
+            } => {
+                let Some(viewer_id) = viewer_id else {
+                    return Ok(None);
+                };
+                let room_id = self
+                    .public_id_codec
+                    .encode_room_id(room_id)
+                    .map_err(ApiError::Internal)?;
+                let user_id = self
+                    .public_id_codec
+                    .encode_user_id(viewer_id)
+                    .map_err(ApiError::Internal)?;
+                let owner_id = self
+                    .public_id_codec
+                    .encode_user_id(credential_owner_id)
+                    .map_err(ApiError::Internal)?;
+                let image = crate::synology_image_urls::synology_file_image_url(
+                    &server_id, &owner_id, &path, "large",
+                );
+                crate::synology_image_urls::sign_synology_image_url(
+                    &image,
+                    crate::synology_image_urls::SynologyImageScope::File {
+                        server_id: &server_id,
+                        credential_owner_id: &owner_id,
+                        path: &path,
+                        size: "large",
+                    },
+                    &room_id,
+                    &user_id,
+                    self.signing_key.as_ref(),
+                )
+                .map(Some)
+                .map_err(ApiError::Internal)
+            }
+            synctv_core::provider::SourceCover::SynologyPoster {
+                server_id,
+                credential_owner_id,
+                item_id,
+                media_type,
+                poster_mtime,
+            } => {
+                let Some(viewer_id) = viewer_id else {
+                    return Ok(None);
+                };
+                let room_id = self
+                    .public_id_codec
+                    .encode_room_id(room_id)
+                    .map_err(ApiError::Internal)?;
+                let user_id = self
+                    .public_id_codec
+                    .encode_user_id(viewer_id)
+                    .map_err(ApiError::Internal)?;
+                let owner_id = self
+                    .public_id_codec
+                    .encode_user_id(credential_owner_id)
+                    .map_err(ApiError::Internal)?;
+                let image = crate::synology_image_urls::synology_poster_url(
+                    &server_id,
+                    &owner_id,
+                    item_id,
+                    &media_type,
+                    poster_mtime.as_deref(),
+                );
+                crate::synology_image_urls::sign_synology_image_url(
+                    &image,
+                    crate::synology_image_urls::SynologyImageScope::Poster {
+                        server_id: &server_id,
+                        credential_owner_id: &owner_id,
+                        item_id,
+                        media_type: &media_type,
+                        poster_mtime: poster_mtime.as_deref(),
+                    },
+                    &room_id,
+                    &user_id,
+                    self.signing_key.as_ref(),
+                )
+                .map(Some)
+                .map_err(ApiError::Internal)
+            }
         }
     }
 

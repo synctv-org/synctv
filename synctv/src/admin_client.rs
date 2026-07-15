@@ -357,23 +357,25 @@ mod tests {
         BilibiliParseRequest, BilibiliSendSmsRequest, BilibiliStartSmsLoginRequest,
         CreateAlistPlaylistRequest, CreateEmbyPlaylistRequest, CreatePlaylistRequest,
         CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest, DeleteMediaRequest,
-        DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest, EditMediaRequest,
-        EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
-        EmbyLogoutRequest, EvictExpiredSliceCacheRequest, FavoriteRoomRequest, GetPlaybackRequest,
-        GetPlaylistRequest, GetRoomMembersRequest, GetRoomRequest, GetRoomSettingsRequest,
-        GetServerStateRequest, GetServerStateResponse, GetServiceStateRequest, GetSettingsRequest,
-        GetSliceCacheStatsRequest, GetStreamInfoRequest, GetUserPreferencesRequest, GetUserRequest,
-        GetUserRoomsRequest, KickMemberRequest, KickRoomStreamRequest, KickStreamRequest,
-        ListActiveStreamsRequest, ListAdminsRequest, ListBanRecordsRequest,
-        ListFavoriteRoomsRequest, ListMediaRequest, ListPlaylistsRequest,
-        ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest, ListRoomStreamsRequest,
-        ListRoomsRequest, ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
-        MovePlaylistRequest, PurgeSliceCacheRequest, RejectRoomCreationReviewRequest,
-        RejectRoomJoinReviewRequest, RejectUserRegistrationReviewRequest, RemoveAdminRequest,
-        ResetRoomSettingsRequest, SearchChatMessagesRequest, SendTestEmailRequest,
-        SetUserPasswordRequest, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
-        StopServerRequest, TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest,
-        UnfavoriteRoomRequest, UpdateMemberDisplayTagRequest, UpdateMemberPermissionsRequest,
+        DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest, DouyinBindRequest,
+        DouyinGetBindsRequest, DouyinListUserPostsRequest, DouyinResolveRequest,
+        DouyinUnbindRequest, EditMediaRequest, EmbyGetBindsRequest, EmbyGetMeRequest,
+        EmbyListRequest, EmbyLoginRequest, EmbyLogoutRequest, EvictExpiredSliceCacheRequest,
+        FavoriteRoomRequest, GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest,
+        GetRoomRequest, GetRoomSettingsRequest, GetServerStateRequest, GetServerStateResponse,
+        GetServiceStateRequest, GetSettingsRequest, GetSliceCacheStatsRequest,
+        GetStreamInfoRequest, GetUserPreferencesRequest, GetUserRequest, GetUserRoomsRequest,
+        KickMemberRequest, KickRoomStreamRequest, KickStreamRequest, ListActiveStreamsRequest,
+        ListAdminsRequest, ListBanRecordsRequest, ListFavoriteRoomsRequest, ListMediaRequest,
+        ListPlaylistsRequest, ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest,
+        ListRoomStreamsRequest, ListRoomsRequest, ListUserRegistrationReviewsRequest,
+        ListUsersRequest, MoveMediaRequest, MovePlaylistRequest, PurgeSliceCacheRequest,
+        RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
+        RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
+        SearchChatMessagesRequest, SendTestEmailRequest, SetUserPasswordRequest,
+        StartPlaybackRequest, StopPlaybackRequest, StopServerEvent, StopServerRequest,
+        TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest, UnfavoriteRoomRequest,
+        UpdateMemberDisplayTagRequest, UpdateMemberPermissionsRequest,
         UpdateMemberRemarkNameRequest, UpdatePlaybackStateRequest, UpdatePlaylistRequest,
         UpdateRoomPasswordRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
         UpdateUserUsernameRequest,
@@ -383,7 +385,7 @@ mod tests {
         admin as admin_proto, client as client_proto, common as common_proto,
         providers::{
             alist as alist_proto, bilibili as bilibili_proto, common as provider_common_proto,
-            emby as emby_proto, rtmp as rtmp_proto,
+            douyin as douyin_proto, emby as emby_proto, rtmp as rtmp_proto,
         },
     };
     #[cfg(unix)]
@@ -1103,6 +1105,117 @@ mod tests {
             &self,
             _: Request<EmbyGetBindsRequest>,
         ) -> std::result::Result<Response<emby_proto::GetBindsResponse>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn douyin_bind(
+            &self,
+            _: Request<DouyinBindRequest>,
+        ) -> std::result::Result<Response<douyin_proto::BindResponse>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn douyin_get_binds(
+            &self,
+            _: Request<DouyinGetBindsRequest>,
+        ) -> std::result::Result<Response<douyin_proto::GetBindsResponse>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn douyin_unbind(
+            &self,
+            _: Request<DouyinUnbindRequest>,
+        ) -> std::result::Result<Response<douyin_proto::UnbindResponse>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn douyin_resolve(
+            &self,
+            _: Request<DouyinResolveRequest>,
+        ) -> std::result::Result<Response<douyin_proto::ResolveResponse>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn douyin_list_user_posts(
+            &self,
+            _: Request<DouyinListUserPostsRequest>,
+        ) -> std::result::Result<Response<douyin_proto::ListUserPostsResponse>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn tik_tok_bind(
+            &self,
+            _: Request<synctv_management::proto::TikTokBindRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::tiktok::BindResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+        async fn tik_tok_get_binds(
+            &self,
+            _: Request<synctv_management::proto::TikTokGetBindsRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::tiktok::GetBindsResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+        async fn tik_tok_unbind(
+            &self,
+            _: Request<synctv_management::proto::TikTokUnbindRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::tiktok::UnbindResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+        async fn tik_tok_resolve(
+            &self,
+            _: Request<synctv_management::proto::TikTokResolveRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::tiktok::ResolveResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+        async fn tik_tok_get_user(
+            &self,
+            _: Request<synctv_management::proto::TikTokGetUserRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::tiktok::GetUserResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+        async fn tik_tok_list_user_posts(
+            &self,
+            _: Request<synctv_management::proto::TikTokListUserPostsRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::tiktok::ListUserPostsResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+        async fn twitch_bind(
+            &self,
+            _: Request<synctv_management::proto::TwitchBindRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::twitch::BindResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+        async fn twitch_get_binds(
+            &self,
+            _: Request<synctv_management::proto::TwitchGetBindsRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::twitch::GetBindsResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+        async fn twitch_unbind(
+            &self,
+            _: Request<synctv_management::proto::TwitchUnbindRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::twitch::UnbindResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+        async fn twitch_resolve(
+            &self,
+            _: Request<synctv_management::proto::TwitchResolveRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::twitch::ResolveResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+        async fn twitch_list_channel_items(
+            &self,
+            _: Request<synctv_management::proto::TwitchListChannelItemsRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::twitch::ListChannelItemsResponse>,
+            Status,
+        > {
             unavailable_test_management_response()
         }
         async fn bilibili_parse(

@@ -60,6 +60,20 @@ struct TestPlaybackProviderServices {
     emby: Arc<synctv_core::service::EmbyPlaybackProviderService>,
     rtmp: Arc<synctv_core::service::RtmpPlaybackProviderService>,
     live_proxy: Arc<synctv_core::service::LiveProxyPlaybackProviderService>,
+    twitch: Arc<synctv_core::service::TwitchPlaybackProviderService>,
+    youtube: Arc<synctv_core::service::YoutubePlaybackProviderService>,
+    douyin: Arc<synctv_core::service::DouyinPlaybackProviderService>,
+    tiktok: Arc<synctv_core::service::TikTokPlaybackProviderService>,
+    huya: Arc<synctv_core::service::HuyaPlaybackProviderService>,
+    douyu: Arc<synctv_core::service::DouyuPlaybackProviderService>,
+    acfun: Arc<synctv_core::service::AcFunPlaybackProviderService>,
+    cctv: Arc<synctv_core::service::CctvPlaybackProviderService>,
+    fnos: Arc<synctv_core::service::FnosPlaybackProviderService>,
+    qnap: Arc<synctv_core::service::QnapPlaybackProviderService>,
+    synology: Arc<synctv_core::service::SynologyPlaybackProviderService>,
+    nextcloud: Arc<synctv_core::service::NextcloudPlaybackProviderService>,
+    seafile: Arc<synctv_core::service::SeafilePlaybackProviderService>,
+    truenas: Arc<synctv_core::service::TrueNasPlaybackProviderService>,
 }
 
 struct TestProviderApiImpls {
@@ -68,6 +82,16 @@ struct TestProviderApiImpls {
     alist: Arc<crate::impls::AlistApiImpl>,
     emby: Arc<crate::impls::EmbyApiImpl>,
     cloudreve: Arc<crate::impls::CloudreveApiImpl>,
+    twitch: Arc<crate::impls::TwitchApiImpl>,
+    youtube: Arc<crate::impls::YoutubeApiImpl>,
+    douyin: Arc<crate::impls::DouyinApiImpl>,
+    tiktok: Arc<crate::impls::TikTokApiImpl>,
+    fnos: Arc<crate::impls::FnosApiImpl>,
+    qnap: Arc<crate::impls::QnapApiImpl>,
+    synology: Arc<crate::impls::SynologyApiImpl>,
+    nextcloud: Arc<crate::impls::NextcloudApiImpl>,
+    seafile: Arc<crate::impls::SeafileApiImpl>,
+    truenas: Arc<crate::impls::TrueNasApiImpl>,
 }
 
 struct TestCoreApiImpls {
@@ -235,6 +259,46 @@ fn test_provider_api_impls(
     ));
     let cloudreve = Arc::new(crate::impls::CloudreveApiImpl::new(
         credential_backed_providers.cloudreve.clone(),
+        event_service.clone(),
+    ));
+    let twitch = Arc::new(crate::impls::TwitchApiImpl::new(
+        credential_backed_providers.twitch.clone(),
+        event_service.clone(),
+    ));
+    let youtube = Arc::new(crate::impls::YoutubeApiImpl::new(
+        credential_backed_providers.youtube.clone(),
+        event_service.clone(),
+    ));
+    let douyin = Arc::new(crate::impls::DouyinApiImpl::new(
+        credential_backed_providers.douyin.clone(),
+        event_service.clone(),
+    ));
+    let tiktok = Arc::new(crate::impls::TikTokApiImpl::new(
+        credential_backed_providers.tiktok.clone(),
+        event_service.clone(),
+    ));
+    let fnos = Arc::new(crate::impls::FnosApiImpl::new(
+        credential_backed_providers.fnos.clone(),
+        event_service.clone(),
+    ));
+    let qnap = Arc::new(crate::impls::QnapApiImpl::new(
+        credential_backed_providers.qnap.clone(),
+        event_service.clone(),
+    ));
+    let synology = Arc::new(crate::impls::SynologyApiImpl::new(
+        credential_backed_providers.synology.clone(),
+        event_service.clone(),
+    ));
+    let nextcloud = Arc::new(crate::impls::NextcloudApiImpl::new(
+        credential_backed_providers.nextcloud.clone(),
+        event_service.clone(),
+    ));
+    let seafile = Arc::new(crate::impls::SeafileApiImpl::new(
+        credential_backed_providers.seafile.clone(),
+        event_service.clone(),
+    ));
+    let truenas = Arc::new(crate::impls::TrueNasApiImpl::new(
+        credential_backed_providers.truenas.clone(),
         event_service,
     ));
 
@@ -244,6 +308,16 @@ fn test_provider_api_impls(
         alist,
         emby,
         cloudreve,
+        twitch,
+        youtube,
+        douyin,
+        tiktok,
+        fnos,
+        qnap,
+        synology,
+        nextcloud,
+        seafile,
+        truenas,
     })
 }
 
@@ -259,6 +333,9 @@ fn test_playback_provider_services(
         room_service: room_service.clone(),
         permission_service: room_service.permission_service().clone(),
         credential_encryption: None,
+        playback_session_repo: synctv_core::repository::ProviderPlaybackSessionRepository::new(
+            credential_repo.pool().clone(),
+        ),
         credential_repo,
         provider_access_service: provider_access_service.clone(),
     });
@@ -286,6 +363,48 @@ fn test_playback_provider_services(
             deps.clone(),
         )),
         live_proxy: Arc::new(synctv_core::service::LiveProxyPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        twitch: Arc::new(synctv_core::service::TwitchPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        youtube: Arc::new(synctv_core::service::YoutubePlaybackProviderService::new(
+            deps.clone(),
+        )),
+        douyin: Arc::new(synctv_core::service::DouyinPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        tiktok: Arc::new(synctv_core::service::TikTokPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        huya: Arc::new(synctv_core::service::HuyaPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        douyu: Arc::new(synctv_core::service::DouyuPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        acfun: Arc::new(synctv_core::service::AcFunPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        cctv: Arc::new(synctv_core::service::CctvPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        fnos: Arc::new(synctv_core::service::FnosPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        qnap: Arc::new(synctv_core::service::QnapPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        synology: Arc::new(synctv_core::service::SynologyPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        nextcloud: Arc::new(synctv_core::service::NextcloudPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        seafile: Arc::new(synctv_core::service::SeafilePlaybackProviderService::new(
+            deps.clone(),
+        )),
+        truenas: Arc::new(synctv_core::service::TrueNasPlaybackProviderService::new(
             deps,
         )),
     }
@@ -789,11 +908,35 @@ fn test_app_state_with_rate_limits(
         emby_playback_provider_service: playback_provider_services.emby.clone(),
         rtmp_playback_provider_service: playback_provider_services.rtmp.clone(),
         live_proxy_playback_provider_service: playback_provider_services.live_proxy.clone(),
+        twitch_playback_provider_service: playback_provider_services.twitch.clone(),
+        youtube_playback_provider_service: playback_provider_services.youtube.clone(),
+        douyin_playback_provider_service: playback_provider_services.douyin.clone(),
+        tiktok_playback_provider_service: playback_provider_services.tiktok.clone(),
+        huya_playback_provider_service: playback_provider_services.huya.clone(),
+        douyu_playback_provider_service: playback_provider_services.douyu.clone(),
+        acfun_playback_provider_service: playback_provider_services.acfun.clone(),
+        cctv_playback_provider_service: playback_provider_services.cctv.clone(),
+        fnos_playback_provider_service: playback_provider_services.fnos.clone(),
+        qnap_playback_provider_service: playback_provider_services.qnap.clone(),
+        synology_playback_provider_service: playback_provider_services.synology.clone(),
+        nextcloud_playback_provider_service: playback_provider_services.nextcloud.clone(),
+        seafile_playback_provider_service: playback_provider_services.seafile.clone(),
+        truenas_playback_provider_service: playback_provider_services.truenas.clone(),
         provider_common_api: provider_api_impls.provider_common.clone(),
         bilibili_api: provider_api_impls.bilibili.clone(),
         alist_api: provider_api_impls.alist.clone(),
         emby_api: provider_api_impls.emby.clone(),
         cloudreve_api: provider_api_impls.cloudreve.clone(),
+        twitch_api: provider_api_impls.twitch.clone(),
+        youtube_api: provider_api_impls.youtube.clone(),
+        douyin_api: provider_api_impls.douyin.clone(),
+        tiktok_api: provider_api_impls.tiktok.clone(),
+        fnos_api: provider_api_impls.fnos.clone(),
+        qnap_api: provider_api_impls.qnap.clone(),
+        synology_api: provider_api_impls.synology.clone(),
+        nextcloud_api: provider_api_impls.nextcloud.clone(),
+        seafile_api: provider_api_impls.seafile.clone(),
+        truenas_api: provider_api_impls.truenas.clone(),
         shared_proxy_signing_key,
         builtin_stun_url: None,
         webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
@@ -1267,11 +1410,35 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
         live_proxy_playback_provider_service: injected_playback_provider_services
             .live_proxy
             .clone(),
+        twitch_playback_provider_service: injected_playback_provider_services.twitch.clone(),
+        youtube_playback_provider_service: injected_playback_provider_services.youtube.clone(),
+        douyin_playback_provider_service: injected_playback_provider_services.douyin.clone(),
+        tiktok_playback_provider_service: injected_playback_provider_services.tiktok.clone(),
+        huya_playback_provider_service: injected_playback_provider_services.huya.clone(),
+        douyu_playback_provider_service: injected_playback_provider_services.douyu.clone(),
+        acfun_playback_provider_service: injected_playback_provider_services.acfun.clone(),
+        cctv_playback_provider_service: injected_playback_provider_services.cctv.clone(),
+        fnos_playback_provider_service: injected_playback_provider_services.fnos.clone(),
+        qnap_playback_provider_service: injected_playback_provider_services.qnap.clone(),
+        synology_playback_provider_service: injected_playback_provider_services.synology.clone(),
+        nextcloud_playback_provider_service: injected_playback_provider_services.nextcloud.clone(),
+        seafile_playback_provider_service: injected_playback_provider_services.seafile.clone(),
+        truenas_playback_provider_service: injected_playback_provider_services.truenas.clone(),
         provider_common_api: injected_provider_api_impls.provider_common.clone(),
         bilibili_api: injected_provider_api_impls.bilibili.clone(),
         alist_api: injected_provider_api_impls.alist.clone(),
         emby_api: injected_provider_api_impls.emby.clone(),
         cloudreve_api: injected_provider_api_impls.cloudreve.clone(),
+        twitch_api: injected_provider_api_impls.twitch.clone(),
+        youtube_api: injected_provider_api_impls.youtube.clone(),
+        douyin_api: injected_provider_api_impls.douyin.clone(),
+        tiktok_api: injected_provider_api_impls.tiktok.clone(),
+        fnos_api: injected_provider_api_impls.fnos.clone(),
+        qnap_api: injected_provider_api_impls.qnap.clone(),
+        synology_api: injected_provider_api_impls.synology.clone(),
+        nextcloud_api: injected_provider_api_impls.nextcloud.clone(),
+        seafile_api: injected_provider_api_impls.seafile.clone(),
+        truenas_api: injected_provider_api_impls.truenas.clone(),
         shared_proxy_signing_key: injected_proxy_signing_key.clone(),
         builtin_stun_url: None,
         webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
@@ -2617,6 +2784,7 @@ async fn test_openapi_json_route_is_available() -> TestResult {
     assert!(json["paths"]["/api/oauth2/{provider}/authorize"].is_object());
     assert!(json["paths"]["/api/notifications"].is_object());
     assert!(json["paths"]["/api/providers/bilibili/parse"].is_object());
+    assert!(json["paths"]["/api/providers/youtube/resolve"].is_object());
     assert!(json["paths"]["/api/providers/alist/login"].is_object());
     assert!(json["paths"]["/api/providers/instances"].is_object());
     assert!(json["paths"]["/api/rooms/{roomId}/streams"].is_object());
@@ -2636,6 +2804,54 @@ async fn test_openapi_json_route_is_available() -> TestResult {
         json["paths"]["/api/providers/bilibili/login/qr/check"]["post"]["responses"]["200"]
             ["content"]["application/json"]["schema"]["$ref"],
         "#/components/schemas/synctv_provider_bilibili_QRStatusResponse"
+    );
+    assert_eq!(
+        json["paths"]["/api/providers/bilibili/parse"]["post"]["responses"]["200"]["content"]
+            ["application/json"]["schema"]["$ref"],
+        "#/components/schemas/synctv_provider_bilibili_ParseResponse"
+    );
+    assert!(
+        json["components"]["schemas"]["synctv_provider_bilibili_ParseRequest"]["properties"]
+            ["shared"]
+            .is_null(),
+        "Bilibili parsing should return credential-neutral source configs"
+    );
+    for request_schema in [
+        "synctv_provider_twitch_ResolveRequest",
+        "synctv_provider_twitch_ListChannelItemsRequest",
+        "synctv_provider_douyin_ResolveRequest",
+        "synctv_provider_douyin_ListUserPostsRequest",
+        "synctv_provider_tiktok_ResolveRequest",
+        "synctv_provider_tiktok_GetUserRequest",
+        "synctv_provider_tiktok_ListUserPostsRequest",
+        "synctv_provider_youtube_ResolveRequest",
+    ] {
+        assert!(
+            json["components"]["schemas"][request_schema]["properties"]["shared"].is_null(),
+            "{request_schema} should return credential-neutral source configs"
+        );
+    }
+    let bilibili_parse_candidate =
+        &json["components"]["schemas"]["synctv_provider_bilibili_ParseCandidate"];
+    let source_config_variants = json["components"]["schemas"]
+        ["synctv_provider_bilibili_ParseCandidate_source_config"]["oneOf"]
+        .as_array()
+        .ok_or_else(|| test_error("Bilibili ParseCandidate source config variants"))?;
+    assert!(
+        bilibili_parse_candidate["allOf"].is_array(),
+        "Bilibili parse candidates should flatten their source config"
+    );
+    assert!(
+        source_config_variants
+            .iter()
+            .any(|variant| variant["properties"]["media"].is_object()),
+        "Bilibili parse candidates should expose typed media source config"
+    );
+    assert!(
+        source_config_variants
+            .iter()
+            .any(|variant| variant["properties"]["playlist"].is_object()),
+        "Bilibili parse candidates should expose typed playlist source config"
     );
     assert_eq!(
         json["paths"]["/api/user"]["patch"]["responses"]["200"]["content"]["application/json"]

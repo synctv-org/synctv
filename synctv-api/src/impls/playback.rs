@@ -44,6 +44,8 @@ pub trait PlaybackService: Send + Sync {
     ) {
     }
 
+    async fn reap_provider_playback_sessions(&self, _force: bool) {}
+
     async fn refresh_observed_playback_metadata_and_auto_advance(
         &self,
         _room_id: &RoomId,

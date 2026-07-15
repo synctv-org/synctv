@@ -1,7 +1,7 @@
 use super::*;
 use crate::bilibili::Quality;
 use serde_json::json;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -29,6 +29,11 @@ fn test_endpoints(base_url: impl AsRef<str>) -> BilibiliEndpoints {
         passport_base: base.clone(),
         live_api_base: base,
     }
+}
+
+fn test_http_client() -> reqwest::Client {
+    crate::install_process_crypto_provider();
+    reqwest::Client::new()
 }
 
 fn nav_response_with_wbi_keys(img_key: &str, sub_key: &str) -> serde_json::Value {
@@ -154,45 +159,63 @@ fn test_is_short_link_variations() {
 
 #[test]
 fn test_match_url_video() -> TestResult {
-    let (media_type, id) =
-        BilibiliClient::match_url("https://www.bilibili.com/video/BV1xx411c7XZ")?;
-    assert_eq!(media_type, "bv");
-    assert_eq!(id, "BV1xx411c7XZ");
+    let matched = BilibiliClient::match_url("https://www.bilibili.com/video/BV1xx411c7XZ")?;
+    assert!(matches!(
+        matched.resource,
+        BilibiliResource::Video { ref bvid, .. } if bvid == "BV1xx411c7XZ"
+    ));
     Ok(())
 }
 
 #[test]
 fn test_match_url_bangumi_ep() -> TestResult {
-    let (media_type, id) =
-        BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ep12345")?;
-    assert_eq!(media_type, "ep");
-    assert_eq!(id, "12345");
+    let matched = BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ep12345")?;
+    assert_eq!(
+        matched.resource,
+        BilibiliResource::PgcEpisode { episode_id: 12345 }
+    );
     Ok(())
 }
 
 #[test]
 fn test_match_url_bangumi_ss() -> TestResult {
-    let (media_type, id) =
-        BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ss67890")?;
-    assert_eq!(media_type, "ss");
-    assert_eq!(id, "67890");
+    let matched = BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ss67890")?;
+    assert_eq!(
+        matched.resource,
+        BilibiliResource::PgcSeason { season_id: 67890 }
+    );
     Ok(())
 }
 
 #[test]
 fn test_match_url_live() -> TestResult {
-    let (media_type, id) = BilibiliClient::match_url("https://live.bilibili.com/live/12345")?;
-    assert_eq!(media_type, "live");
-    assert_eq!(id, "12345");
+    let matched = BilibiliClient::match_url("https://live.bilibili.com/live/12345")?;
+    assert_eq!(matched.resource, BilibiliResource::Live { room_id: 12345 });
 
-    let (media_type, id) =
-        BilibiliClient::match_url("https://live.bilibili.com/76?live_from=85002")?;
-    assert_eq!(media_type, "live");
-    assert_eq!(id, "76");
+    let matched = BilibiliClient::match_url("https://live.bilibili.com/76?live_from=85002")?;
+    assert_eq!(matched.resource, BilibiliResource::Live { room_id: 76 });
 
-    let (media_type, id) = BilibiliClient::match_url("https://live.bilibili.com/21452505#main")?;
-    assert_eq!(media_type, "live");
-    assert_eq!(id, "21452505");
+    let matched = BilibiliClient::match_url("https://live.bilibili.com/21452505#main")?;
+    assert_eq!(
+        matched.resource,
+        BilibiliResource::Live {
+            room_id: 21_452_505
+        }
+    );
+
+    let matched = BilibiliClient::match_url("https://live.bilibili.com/")?;
+    assert_eq!(matched.resource, BilibiliResource::LiveRecommended);
+
+    let matched = BilibiliClient::match_url(
+        "https://live.bilibili.com/p/eden/area-tags?parentAreaId=2&areaId=86",
+    )?;
+    assert_eq!(
+        matched.resource,
+        BilibiliResource::LiveArea {
+            parent_area_id: 2,
+            area_id: 86,
+        }
+    );
     Ok(())
 }
 
@@ -717,8 +740,8 @@ async fn test_force_wbi_refresh_reuses_key_written_while_waiting() -> TestResult
     state.set_wbi_key("old-key".to_string());
     let refresh_guard = state.acquire_refresh_for_tests().await;
     let client = BilibiliClient::new_with_transport(
-        reqwest::Client::new(),
-        reqwest::Client::new(),
+        test_http_client(),
+        test_http_client(),
         test_endpoints(server.uri()),
         state.clone(),
         SsrfGuard::strict_policy(),
@@ -759,8 +782,8 @@ async fn test_wbi_refresh_rechecks_failure_breaker_after_waiting() -> TestResult
     let state = Arc::new(WbiState::default());
     let refresh_guard = state.acquire_refresh_for_tests().await;
     let client = Arc::new(BilibiliClient::new_with_transport(
-        reqwest::Client::new(),
-        reqwest::Client::new(),
+        test_http_client(),
+        test_http_client(),
         test_endpoints(server.uri()),
         state.clone(),
         SsrfGuard::strict_policy(),
@@ -1000,5 +1023,716 @@ async fn test_notify_arrives_before_timeout() -> TestResult {
         notification_received,
         "Notification should have arrived before timeout"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_popular_videos_preserves_multi_part_metadata() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/x/web-interface/popular"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "data": {
+                "list": [{
+                    "aid": 42,
+                    "bvid": "BV1xx411c7XZ",
+                    "cid": 100,
+                    "title": "Multi-part video",
+                    "pic": "https://example.com/cover.jpg",
+                    "duration": 120,
+                    "videos": 3,
+                    "pubdate": 1234,
+                    "owner": {"name": "UP"}
+                }],
+                "no_more": true
+            }
+        })))
+        .mount(&server)
+        .await;
+    let client = BilibiliClient::new_with_transport(
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::strict_policy(),
+    );
+
+    let page = client.list_popular_videos(1, 20).await?;
+
+    assert!(!page.has_more);
+    assert_eq!(page.items[0].part_count, 3);
+    assert_eq!(page.items[0].cid, 100);
+    assert_eq!(page.items[0].author, "UP");
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_video_parts_uses_first_frame_as_part_cover() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/x/web-interface/view"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "data": {
+                "title": "Video",
+                "pic": "https://example.com/cover.jpg",
+                "bvid": "BV1xx411c7XZ",
+                "aid": 42,
+                "cid": 100,
+                "owner": {"name": "UP", "face": "", "mid": 1},
+                "pages": [{
+                    "cid": 101,
+                    "page": 1,
+                    "part": "Part one",
+                    "duration": 60,
+                    "dimension": {"width": 1920, "height": 1080, "rotate": 0},
+                    "first_frame": "https://example.com/frame.jpg"
+                }]
+            }
+        })))
+        .mount(&server)
+        .await;
+    let client = BilibiliClient::new_with_transport(
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::strict_policy(),
+    );
+
+    let parts = client.list_video_parts(0, "BV1xx411c7XZ").await?;
+
+    assert_eq!(parts.parts[0].cover, "https://example.com/frame.jpg");
+    assert_eq!(parts.parts[0].width, 1920);
+    assert_eq!(parts.parts[0].duration_seconds, 60);
+    Ok(())
+}
+
+#[test]
+fn parse_dash_info_includes_dolby_flac_and_backup_urls() -> TestResult {
+    let dash: types::DashInfo = serde_json::from_value(json!({
+        "duration": 60.0,
+        "minBufferTime": 1.5,
+        "video": [{
+            "id": 80,
+            "baseUrl": "https://cdn.example.com/video.m4s",
+            "backupUrl": ["https://backup.example.com/video.m4s"],
+            "mimeType": "video/mp4",
+            "codecs": "av01.0.08M.08",
+            "codecid": 13,
+            "width": 1920,
+            "height": 1080,
+            "frameRate": "60",
+            "bandwidth": 1000,
+            "sar": "1:1",
+            "SegmentBase": {"Initialization": "0-1", "indexRange": "2-3"}
+        }],
+        "audio": [],
+        "dolby": {"audio": [{
+            "id": 30250,
+            "baseUrl": "https://cdn.example.com/dolby.m4s",
+            "mimeType": "audio/mp4",
+            "codecs": "ec-3",
+            "bandwidth": 448_000,
+            "SegmentBase": {"Initialization": "0-1", "indexRange": "2-3"}
+        }]},
+        "flac": {"audio": {
+            "id": 30251,
+            "baseUrl": "https://cdn.example.com/flac.m4s",
+            "backupUrl": ["https://backup.example.com/flac.m4s"],
+            "mimeType": "audio/mp4",
+            "codecs": "fLaC",
+            "bandwidth": 1_200_000,
+            "SegmentBase": {"Initialization": "0-1", "indexRange": "2-3"}
+        }}
+    }))?;
+
+    let (dash, hevc) = parse_dash_info(&dash, &[]);
+
+    assert!(hevc.video_streams.is_empty());
+    assert_eq!(dash.video_streams[0].codecid, 13);
+    assert_eq!(dash.video_streams[0].backup_urls.len(), 1);
+    assert_eq!(dash.audio_streams.len(), 2);
+    assert_eq!(dash.audio_streams[0].quality_name, "Dolby Atmos");
+    assert_eq!(dash.audio_streams[1].quality_name, "Hi-Res FLAC");
+    assert_eq!(dash.audio_streams[1].backup_urls.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_recommended_live_rooms_maps_room_metadata() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/xlive/web-interface/v1/webMain/getMoreRecList"))
+        .and(query_param("platform", "web"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "data": {
+                "recommend_room_list": [{
+                    "roomid": "101",
+                    "title": "Live room",
+                    "keyframe": "https://example.com/live.jpg",
+                    "uname": "Streamer",
+                    "uid": 202,
+                    "face": "https://example.com/avatar.jpg",
+                    "area_v2_parent_id": "1",
+                    "area_v2_parent_name": "Games",
+                    "area_v2_id": 2,
+                    "area_v2_name": "Indie",
+                    "online": "303"
+                }]
+            }
+        })))
+        .mount(&server)
+        .await;
+    let client = BilibiliClient::new_with_transport(
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::strict_policy(),
+    );
+
+    let result = client.list_recommended_live_rooms(1, 20).await?;
+
+    assert_eq!(result.items.len(), 1);
+    let room = &result.items[0];
+    assert_eq!(room.room_id, 101);
+    assert_eq!(room.author, "Streamer");
+    assert_eq!(room.parent_area_name, "Games");
+    assert_eq!(room.area_name, "Indie");
+    assert_eq!(room.online, 303);
+    assert!(!result.has_more);
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_followed_live_rooms_sends_cookie_and_preserves_pagination() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/xlive/web-ucenter/user/following"))
+        .and(query_param("page", "2"))
+        .and(query_param("page_size", "10"))
+        .and(header("cookie", "SESSDATA=session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "data": {
+                "list": [{"room_id": 404, "title": "Followed", "uname": "UP"}],
+                "count": "21",
+                "totalPage": "3"
+            }
+        })))
+        .mount(&server)
+        .await;
+    let client = BilibiliClient::with_cookies_and_transport(
+        HashMap::from([("SESSDATA".to_string(), "session".to_string())]),
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::strict_policy(),
+    );
+
+    let result = client.list_followed_live_rooms(2, 20).await?;
+
+    assert_eq!(result.total, Some(21));
+    assert!(result.has_more);
+    assert_eq!(result.items[0].room_id, 404);
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_area_live_rooms_sends_area_and_page_parameters() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/xlive/web-interface/v1/second/getList"))
+        .and(query_param("parent_area_id", "6"))
+        .and(query_param("area_id", "7"))
+        .and(query_param("page", "2"))
+        .and(query_param("page_size", "20"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "data": {
+                "list": [{"roomid": 505, "title": "Area room"}],
+                "count": 45,
+                "has_more": 1
+            }
+        })))
+        .mount(&server)
+        .await;
+    let client = BilibiliClient::new_with_transport(
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::strict_policy(),
+    );
+
+    let result = client.list_area_live_rooms(6, 7, 2, 20).await?;
+
+    assert_eq!(result.total, Some(45));
+    assert!(result.has_more);
+    assert_eq!(result.items[0].room_id, 505);
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_live_areas_accepts_string_and_number_ids() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/room/v1/Area/getList"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "data": [{
+                "id": "9",
+                "name": "Parent",
+                "list": [
+                    {"id": "10", "parent_id": 9, "name": "Child A", "pic": "a", "hot_status": "1"},
+                    {"id": 11, "name": "Child B", "parent_name": "Override"}
+                ]
+            }]
+        })))
+        .mount(&server)
+        .await;
+    let client = BilibiliClient::new_with_transport(
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::strict_policy(),
+    );
+
+    let areas = client.list_live_areas().await?;
+
+    assert_eq!(areas.len(), 2);
+    assert_eq!(areas[0].id, 10);
+    assert_eq!(areas[0].parent_id, 9);
+    assert_eq!(areas[0].parent_name, "Parent");
+    assert!(areas[0].hot);
+    assert_eq!(areas[1].id, 11);
+    assert_eq!(areas[1].parent_name, "Override");
+    Ok(())
+}
+
+#[tokio::test]
+async fn parse_pgc_page_includes_named_extra_sections() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/pgc/view/web/season"))
+        .and(query_param("season_id", "42"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "message": "success",
+            "result": {
+                "season_id": 42,
+                "title": "Season",
+                "cover": "https://example.com/season.jpg",
+                "actors": "Actor",
+                "episodes": [{
+                    "title": "1",
+                    "long_title": "Main episode",
+                    "bvid": "BV1main",
+                    "cid": 101,
+                    "ep_id": 201,
+                    "aid": 301,
+                    "cover": "https://example.com/main.jpg",
+                    "duration": 120_000
+                }],
+                "section": [{
+                    "title": "PV",
+                    "episodes": [{
+                        "title": "PV1",
+                        "long_title": "Trailer",
+                        "bvid": "BV1extra",
+                        "cid": 102,
+                        "ep_id": 202,
+                        "aid": 302,
+                        "cover": "https://example.com/extra.jpg",
+                        "duration": 30000
+                    }]
+                }]
+            }
+        })))
+        .mount(&server)
+        .await;
+    let client = BilibiliClient::new_with_transport(
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::strict_policy(),
+    );
+
+    let page = client.parse_pgc_page(0, 42).await?;
+
+    assert_eq!(page.video_infos.len(), 2);
+    assert_eq!(page.video_infos[0].name, "Main episode");
+    assert_eq!(page.video_infos[0].duration_seconds, 120);
+    assert_eq!(page.video_infos[1].name, "PV - Trailer");
+    assert_eq!(page.video_infos[1].page, 2);
+    assert_eq!(page.video_infos[1].duration_seconds, 30);
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_favorite_folders_uses_authenticated_mid_and_maps_attributes() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/x/web-interface/nav"))
+        .and(header("cookie", "SESSDATA=session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "message": "0",
+            "ttl": 1,
+            "data": {
+                "isLogin": true,
+                "mid": 42,
+                "uname": "Tester",
+                "face": "",
+                "vipStatus": 0
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/x/v3/fav/folder/created/list-all"))
+        .and(query_param("up_mid", "42"))
+        .and(header("cookie", "SESSDATA=session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "data": {
+                "list": [
+                    {"id": 100, "attr": 0, "title": "Default", "media_count": 8},
+                    {"id": 101, "attr": 3, "title": "Private", "media_count": 2}
+                ]
+            }
+        })))
+        .mount(&server)
+        .await;
+    let client = BilibiliClient::with_cookies_and_transport(
+        HashMap::from([("SESSDATA".to_string(), "session".to_string())]),
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::strict_policy(),
+    );
+
+    let folders = client.list_favorite_folders().await?;
+
+    assert_eq!(folders.len(), 2);
+    assert!(folders[0].default_folder);
+    assert!(!folders[0].private);
+    assert!(folders[1].private);
+    assert!(!folders[1].default_folder);
+    assert_eq!(folders[1].media_count, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_followed_pgc_uses_native_page_and_maps_season_metadata() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/x/web-interface/nav"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "message": "0",
+            "ttl": 1,
+            "data": {"isLogin": true, "mid": 42, "uname": "Tester", "vipStatus": 0}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/x/space/bangumi/follow/list"))
+        .and(query_param("vmid", "42"))
+        .and(query_param("type", "2"))
+        .and(query_param("pn", "2"))
+        .and(query_param("ps", "15"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "data": {
+                "total": 31,
+                "list": [{
+                    "season_id": 77,
+                    "title": "Cinema",
+                    "cover": "https://example.com/cinema.jpg",
+                    "evaluate": "Description",
+                    "new_ep": {"index_show": "Updated to 12"}
+                }]
+            }
+        })))
+        .mount(&server)
+        .await;
+    let client = BilibiliClient::with_cookies_and_transport(
+        HashMap::from([("SESSDATA".to_string(), "session".to_string())]),
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::strict_policy(),
+    );
+
+    let result = client.list_followed_pgc(2, 2, 15).await?;
+
+    assert_eq!(result.total, 31);
+    assert!(result.has_more);
+    assert_eq!(result.items[0].season_id, 77);
+    assert_eq!(result.items[0].description, "Description");
+    assert_eq!(result.items[0].latest_episode, "Updated to 12");
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_history_forwards_native_cursor_and_preserves_playable_targets() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/x/web-interface/history/cursor"))
+        .and(query_param("type", "all"))
+        .and(query_param("ps", "30"))
+        .and(query_param("max", "77"))
+        .and(query_param("view_at", "123456"))
+        .and(query_param("business", "archive"))
+        .and(header("cookie", "SESSDATA=session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "data": {
+                "cursor": {"max": 88, "view_at": 123_400, "business": "pgc"},
+                "list": [
+                    {
+                        "title": "Video",
+                        "long_title": "Part one",
+                        "cover": "https://example.com/video.jpg",
+                        "author_name": "Uploader",
+                        "view_at": 123_455,
+                        "progress": 42,
+                        "duration": 120,
+                        "history": {
+                            "oid": 10,
+                            "epid": 0,
+                            "bvid": "BV1234567890",
+                            "cid": 11,
+                            "business": "archive"
+                        }
+                    },
+                    {
+                        "title": "Episode",
+                        "view_at": 123_454,
+                        "progress": 60,
+                        "duration": 1500,
+                        "history": {
+                            "oid": 20,
+                            "epid": 21,
+                            "bvid": "",
+                            "cid": 22,
+                            "business": "pgc"
+                        }
+                    },
+                    {
+                        "title": "Offline live",
+                        "live_status": 0,
+                        "history": {"oid": 30, "business": "live"}
+                    }
+                ]
+            }
+        })))
+        .mount(&server)
+        .await;
+    let client = BilibiliClient::with_cookies_and_transport(
+        HashMap::from([("SESSDATA".to_string(), "session".to_string())]),
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::strict_policy(),
+    );
+
+    let result = client
+        .list_history(
+            "all",
+            Some(&HistoryCursor {
+                max: 77,
+                view_at: 123_456,
+                business: "archive".to_string(),
+            }),
+            50,
+        )
+        .await?;
+
+    assert_eq!(result.items.len(), 2);
+    assert!(matches!(
+        &result.items[0].resource,
+        HistoryResource::Video {
+            aid: 10,
+            cid: 11,
+            ..
+        }
+    ));
+    assert!(matches!(
+        result.items[1].resource,
+        HistoryResource::Pgc { epid: 21, cid: 22 }
+    ));
+    assert_eq!(result.cursor.as_ref().map(|cursor| cursor.max), Some(88));
+    assert!(result.has_more);
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_pgc_timeline_maps_schedule_and_resolves_published_episode_cid() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/pgc/web/timeline"))
+        .and(query_param("types", "4"))
+        .and(query_param("before", "2"))
+        .and(query_param("after", "5"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "result": [{
+                "date": "7-14",
+                "day_of_week": 2,
+                "episodes": [{
+                    "episode_id": 501,
+                    "season_id": 50,
+                    "title": "Published show",
+                    "pub_index": "Episode 1",
+                    "cover": "https://example.com/season.jpg",
+                    "ep_cover": "https://example.com/episode.jpg",
+                    "pub_ts": 1_700_000_000,
+                    "published": 1,
+                    "delay": 0
+                }, {
+                    "episode_id": 502,
+                    "season_id": 51,
+                    "title": "Upcoming show",
+                    "pub_index": "Episode 3",
+                    "pub_ts": 1_700_003_600,
+                    "published": 0,
+                    "delay": 1,
+                    "delay_reason": "Delayed until Friday"
+                }]
+            }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/pgc/view/web/season"))
+        .and(query_param("ep_id", "501"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "message": "success",
+            "result": {
+                "season_id": 50,
+                "title": "Published show",
+                "cover": "https://example.com/season.jpg",
+                "actors": "",
+                "episodes": [{
+                    "title": "1",
+                    "long_title": "Episode 1",
+                    "bvid": "BV1timeline",
+                    "cid": 777,
+                    "ep_id": 501,
+                    "aid": 778,
+                    "cover": "https://example.com/episode.jpg",
+                    "duration": 1_500_000
+                }]
+            }
+        })))
+        .mount(&server)
+        .await;
+    let client = BilibiliClient::new_with_transport(
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::strict_policy(),
+    );
+
+    let items = client.list_pgc_timeline(4, 2, 5).await?;
+
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].episode_id, 501);
+    assert_eq!(items[0].cid, 777);
+    assert!(items[0].published);
+    assert_eq!(items[1].episode_id, 502);
+    assert_eq!(items[1].cid, 0);
+    assert!(items[1].delayed);
+    assert_eq!(items[1].delay_reason, "Delayed until Friday");
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_pgc_seasons_forwards_filters_and_maps_index_metadata() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/pgc/season/index/result"))
+        .and(query_param("season_type", "2"))
+        .and(query_param("st", "2"))
+        .and(query_param("type", "1"))
+        .and(query_param("page", "3"))
+        .and(query_param("pagesize", "25"))
+        .and(query_param("order", "4"))
+        .and(query_param("sort", "1"))
+        .and(query_param("is_finish", "1"))
+        .and(query_param("area", "2"))
+        .and(query_param("release_date", "[2020,2026)"))
+        .and(query_param("style_id", "10010"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "message": "success",
+            "data": {
+                "has_next": 1,
+                "total": 77,
+                "list": [{
+                    "season_id": 900,
+                    "media_id": 901,
+                    "title": "Indexed movie",
+                    "subTitle": "Movie subtitle",
+                    "cover": "https://example.com/movie.jpg",
+                    "badge": "Exclusive",
+                    "index_show": "Full movie",
+                    "score": "9.8",
+                    "is_finish": 1,
+                    "season_type": 2,
+                    "first_ep": {
+                        "cover": "https://example.com/first.jpg",
+                        "ep_id": 902
+                    }
+                }]
+            }
+        })))
+        .mount(&server)
+        .await;
+    let client = BilibiliClient::new_with_transport(
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::strict_policy(),
+    );
+
+    let page = client
+        .list_pgc_seasons(
+            2,
+            3,
+            25,
+            4,
+            true,
+            Some(true),
+            Some("2"),
+            Some("[2020,2026)"),
+            Some(10010),
+        )
+        .await?;
+
+    assert_eq!(page.total, 77);
+    assert!(page.has_more);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].season_id, 900);
+    assert_eq!(page.items[0].media_id, 901);
+    assert_eq!(page.items[0].first_episode_id, 902);
+    assert_eq!(page.items[0].subtitle, "Movie subtitle");
+    assert_eq!(page.items[0].score, "9.8");
+    assert!(page.items[0].finished);
+    assert_eq!(page.items[0].season_type, 2);
     Ok(())
 }

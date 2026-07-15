@@ -8,20 +8,20 @@ Typical local setup:
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d postgres redis
-cargo check --workspace --all-targets
-cargo nextest run --workspace --locked --run-ignored default --nff
+cargo +nightly check --workspace --all-targets
+make nextest
 ```
 
 Run the service locally:
 
 ```bash
-cargo run -p synctv --bin synctv -- serve
+cargo +nightly run -p synctv --bin synctv -- serve
 ```
 
 Run with OpenAPI enabled:
 
 ```bash
-cargo run -p synctv --features openapi --bin synctv -- serve
+cargo +nightly run -p synctv --features openapi --bin synctv -- serve
 ```
 
 ## Before Submitting Changes
@@ -29,11 +29,11 @@ cargo run -p synctv --features openapi --bin synctv -- serve
 Use the narrowest relevant test first, then run broader checks before handing off:
 
 ```bash
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo nextest run --workspace --locked --run-ignored default --nff
-cargo test --workspace --doc --locked
-cargo check --workspace --all-targets --features openapi
+cargo +nightly fmt --all
+cargo +nightly clippy --workspace --all-targets -- -D warnings
+make nextest
+cargo +nightly test --workspace --doc --locked
+cargo +nightly check --workspace --all-targets --features openapi
 ```
 
 If your change touches SQLx queries, migrations, or query result shapes, refresh and verify SQLx metadata according to the project workflow before submitting.
@@ -49,6 +49,15 @@ npm run validate
 ```
 
 Documentation changes should keep Chinese and English pages aligned when a page exists in both locales.
+
+Provider work starts with the [Provider Development Guide](docs/src/content/docs/en/develop/provider-development.mdx). Keep the provider's upstream client and DTOs, Core source config and target, public protobuf/API, OpenAPI, management and CLI surfaces, and Flutter App flow aligned. Validate typed parse/preview results, generated playback resources, local and remote execution paths, provider credentials, and page/cursor behavior.
+
+Provider changes that affect the Flutter App also require its standard checks:
+
+```bash
+dart analyze
+flutter test
+```
 
 Update docs when changing:
 

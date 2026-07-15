@@ -9,10 +9,23 @@ use crate::impls::{ApiError, EndpointRateLimitCategory};
 
 pub(crate) mod alist;
 pub(crate) mod bilibili;
+pub(crate) mod cctv;
 pub(crate) mod direct_url;
+pub(crate) mod douyin;
+pub(crate) mod douyu;
 pub(crate) mod emby;
+pub(crate) mod fnos;
+pub(crate) mod huya;
 pub(crate) mod live_proxy;
+pub(crate) mod nextcloud;
+pub(crate) mod qnap;
 pub(crate) mod rtmp;
+pub(crate) mod seafile;
+pub(crate) mod synology;
+pub(crate) mod tiktok;
+pub(crate) mod truenas;
+pub(crate) mod twitch;
+pub(crate) mod youtube;
 
 pub(crate) fn playback_provider_api_runtime(
     state: &PlaybackProviderGrpcState,
@@ -97,3 +110,4 @@ pub(crate) fn grpc_request_metadata<T>(
 ) -> Result<crate::impls::RequestMetadata, Status> {
     crate::grpc::request_metadata(request, runtime_settings, None)
 }
+pub(crate) mod acfun;

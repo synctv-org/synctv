@@ -9,8 +9,9 @@ use crate::models::{
     FileReferenceMetadata, FileUploadSessionKind, FileUploadSessionMetadata, FileVariantMetadata,
     MediaId, MediaSourceConfig, Notification, NotificationData, NotificationType, OAuth2Provider,
     PlaybackDurationSource, PlaybackDurationStatus, PlaybackSourceMetadata, Playlist, PlaylistId,
-    PlaylistSourceConfig, ProviderTarget, ReviewRequestId, ReviewStatus, RoomCategoryId, RoomId,
-    RoomLabelId, RoomPlaybackProgress, RoomPlaybackState, RoomSettings, RuntimeSetting,
+    PlaylistSourceConfig, ProviderPlaybackSession, ProviderPlaybackSessionState,
+    ProviderPlaybackStopReason, ProviderTarget, ReviewRequestId, ReviewStatus, RoomCategoryId,
+    RoomId, RoomLabelId, RoomPlaybackProgress, RoomPlaybackState, RoomSettings, RuntimeSetting,
     SignupMethod, SourceProvider, UserId, UserRole, UserStatus,
 };
 
@@ -92,6 +93,8 @@ sqlx_i16_enum!(UserRole);
 sqlx_i16_enum!(SignupMethod);
 sqlx_i16_enum!(PlaybackDurationStatus);
 sqlx_i16_enum!(PlaybackDurationSource);
+sqlx_i16_enum!(ProviderPlaybackSessionState);
+sqlx_i16_enum!(ProviderPlaybackStopReason);
 sqlx_i16_enum!(Role);
 sqlx_i16_enum!(NotificationType);
 sqlx_i16_enum!(ReviewStatus);
@@ -209,6 +212,7 @@ macro_rules! sqlx_json {
 }
 
 sqlx_json!(ContentReportMetadata);
+sqlx_json!(ProviderPlaybackSession);
 sqlx_json!(ProviderTarget);
 sqlx_json!(MediaSourceConfig);
 sqlx_json!(PlaylistSourceConfig);
@@ -331,6 +335,7 @@ sqlx_from_row!(RoomPlaybackState, {
     position,
     speed,
     is_playing,
+    playback_generation,
     updated_at,
     version,
 });

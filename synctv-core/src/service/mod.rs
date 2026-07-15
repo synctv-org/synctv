@@ -125,8 +125,9 @@ pub use global_settings::{
 };
 pub use media::{
     AddMediaRequest, BackendPlaybackRequest, CreateMediaCoverUploadSession,
-    CreateMediaThumbnailUploadSession, EditMediaRequest, MediaService, MediaServiceRuntime,
-    MoveMediaRequest, RealtimeOutboxMediaBatchEventFactory, RealtimeOutboxMediaEventFactory,
+    CreateMediaThumbnailUploadSession, DynamicPlaylistPreviewRequest, EditMediaRequest,
+    MediaService, MediaServiceRuntime, MoveMediaRequest, RealtimeOutboxMediaBatchEventFactory,
+    RealtimeOutboxMediaEventFactory,
 };
 pub use member::{AdminMemberUpdate, MemberService};
 pub use notification::{GuestKickReason, NotificationService, RoomEvent};
@@ -157,9 +158,14 @@ pub use playback::{
 pub use playback_auto_advance::{ActivePlaybackRoomSource, PlaybackAutoAdvanceService};
 pub use playback_duration_probe::PlaybackDurationProbeService;
 pub use playback_provider::{
-    AlistPlaybackProviderService, BilibiliLiveDanmakuRequest, BilibiliPlaybackProviderService,
-    DirectUrlPlaybackProviderService, EmbyPlaybackProviderService,
-    LiveProxyPlaybackProviderService, PlaybackProviderServiceDeps, RtmpPlaybackProviderService,
+    AcFunPlaybackProviderService, AlistPlaybackProviderService, BilibiliLiveDanmakuRequest,
+    BilibiliPlaybackProviderService, CctvPlaybackProviderService, DirectUrlPlaybackProviderService,
+    DouyinPlaybackProviderService, DouyuPlaybackProviderService, EmbyPlaybackProviderService,
+    FnosPlaybackProviderService, HuyaPlaybackProviderService, LiveProxyPlaybackProviderService,
+    NextcloudPlaybackProviderService, PlaybackProviderServiceDeps, QnapPlaybackProviderService,
+    RtmpPlaybackProviderService, SeafilePlaybackProviderService, SynologyPlaybackProviderService,
+    TikTokPlaybackProviderService, TrueNasPlaybackProviderService, TwitchPlaybackProviderService,
+    YoutubePlaybackProviderService,
 };
 pub use playlist::{
     CreatePlaylistCoverUploadSession, CreatePlaylistRequest, MovePlaylistRequest, PlaylistService,

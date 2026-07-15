@@ -344,6 +344,127 @@ pub enum ProviderCredential {
         email: String,
         password: String,
     },
+
+    #[serde(rename = "twitch")]
+    /// Twitch web session credentials. Every value is encrypted by the repository.
+    Twitch {
+        login: String,
+        twitch_user_id: String,
+        client_id: String,
+        #[serde(default)]
+        scopes: Vec<String>,
+        auth_token: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_integrity: Option<String>,
+    },
+
+    #[serde(rename = "youtube")]
+    /// Optional YouTube Innertube session tokens. Secret fields are encrypted by the repository.
+    Youtube {
+        label: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        visitor_data: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        po_token: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cookie: Option<String>,
+    },
+
+    #[serde(rename = "douyin")]
+    /// Douyin web session cookie. The cookie is encrypted by the repository.
+    Douyin { label: String, cookie: String },
+
+    #[serde(rename = "tiktok")]
+    /// TikTok web session cookie. The cookie is encrypted by the repository.
+    TikTok { label: String, cookie: String },
+
+    #[serde(rename = "fnos")]
+    /// FNOS RPC and WebDAV credentials. Secret fields are encrypted by the repository.
+    Fnos {
+        endpoint: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        webdav_endpoint: Option<String>,
+        username: String,
+        password: String,
+        token: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        long_token: Option<String>,
+        secret: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        media_endpoint: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        media_token: Option<String>,
+    },
+
+    #[serde(rename = "qnap")]
+    /// QNAP File Station credentials. Secret fields are encrypted by the repository.
+    Qnap {
+        endpoint: String,
+        username: String,
+        password: String,
+        sid: String,
+        server_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+        support_rtt: bool,
+    },
+
+    #[serde(rename = "synology")]
+    /// Synology DSM File Station and Video Station credentials.
+    Synology {
+        endpoint: String,
+        username: String,
+        password: String,
+        file_sid: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        video_sid: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        synotoken: Option<String>,
+        apis: HashMap<String, SynologyApiBinding>,
+    },
+
+    #[serde(rename = "nextcloud")]
+    /// Nextcloud DAV credentials. The app password is encrypted by the repository.
+    Nextcloud {
+        endpoint: String,
+        username: String,
+        user_id: String,
+        app_password: String,
+        version: String,
+        edition: String,
+        capabilities: serde_json::Value,
+    },
+
+    #[serde(rename = "seafile")]
+    /// Seafile API token and per-library passwords. Secrets are encrypted by the repository.
+    Seafile {
+        endpoint: String,
+        username: String,
+        token: String,
+        version: String,
+        features: Vec<String>,
+        library_passwords: HashMap<String, String>,
+    },
+    #[serde(rename = "truenas")]
+    TrueNas {
+        endpoint: String,
+        api_key: String,
+        hostname: String,
+        version: String,
+        system_product: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SynologyApiBinding {
+    pub path: String,
+    pub min_version: u32,
+    pub max_version: u32,
 }
 
 impl Default for ProviderCredential {

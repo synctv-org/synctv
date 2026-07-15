@@ -110,10 +110,23 @@ fn live_status_for_media_source(
         (SourceProvider::Bilibili, crate::models::MediaSourceConfig::Bilibili(config)) => {
             Some(matches!(config, BilibiliMediaSourceConfig::Live(_)))
         }
-        (SourceProvider::Alist | SourceProvider::Emby | SourceProvider::Cloudreve, _) => {
-            Some(false)
-        }
+        (
+            SourceProvider::Alist
+            | SourceProvider::Emby
+            | SourceProvider::Cloudreve
+            | SourceProvider::Cctv
+            | SourceProvider::Fnos
+            | SourceProvider::Synology
+            | SourceProvider::Seafile,
+            _,
+        ) => Some(false),
         (SourceProvider::Rtmp | SourceProvider::LiveProxy, _) => Some(true),
+        (SourceProvider::Douyin, crate::models::MediaSourceConfig::Douyin(config)) => Some(
+            matches!(config, crate::models::DouyinMediaSourceConfig::Live { .. }),
+        ),
+        (SourceProvider::TikTok, crate::models::MediaSourceConfig::TikTok(config)) => Some(
+            matches!(config, crate::models::TikTokMediaSourceConfig::Live { .. }),
+        ),
         _ => None,
     }
 }
@@ -123,14 +136,27 @@ fn live_status_for_playlist_source(
     source_config: &crate::models::PlaylistSourceConfig,
 ) -> Option<bool> {
     match provider {
-        SourceProvider::Alist | SourceProvider::Emby => {
-            (source_config.provider() == provider).then_some(false)
-        }
+        SourceProvider::Alist
+        | SourceProvider::Emby
+        | SourceProvider::Synology
+        | SourceProvider::Nextcloud
+        | SourceProvider::Seafile
+        | SourceProvider::TrueNas => (source_config.provider() == provider).then_some(false),
         SourceProvider::DirectUrl
         | SourceProvider::Bilibili
         | SourceProvider::Rtmp
         | SourceProvider::LiveProxy
-        | SourceProvider::Cloudreve => None,
+        | SourceProvider::Cloudreve
+        | SourceProvider::Twitch
+        | SourceProvider::Huya
+        | SourceProvider::Douyu
+        | SourceProvider::Douyin
+        | SourceProvider::AcFun
+        | SourceProvider::Cctv
+        | SourceProvider::Fnos
+        | SourceProvider::Qnap
+        | SourceProvider::Youtube
+        | SourceProvider::TikTok => None,
     }
 }
 

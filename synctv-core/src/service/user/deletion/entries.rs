@@ -145,6 +145,7 @@ impl UserService {
                                 current_progress_id = NULL,
                                 speed = 1.0,
                                 is_playing = false,
+                                playback_generation = playback_generation + 1,
                                 version = $2,
                                 updated_at = NOW()
                             FROM current_state
@@ -156,6 +157,7 @@ impl UserService {
                                       state.current_progress_id,
                                       state.speed,
                                       state.is_playing,
+                                      state.playback_generation,
                                       state.updated_at,
                                       state.version
                         )
@@ -167,6 +169,7 @@ impl UserService {
                                0.0::DOUBLE PRECISION AS "position!",
                                speed AS "speed!",
                                is_playing AS "is_playing!",
+                               playback_generation AS "playback_generation!",
                                updated_at AS "updated_at!",
                                version AS "version!"
                         FROM updated"#,

@@ -17,6 +17,40 @@ use super::types::{
     device_profile_from_playback_client_profile, AuthResponse, FsListResponse, Item, ItemsResponse,
     PathInfo, PlaybackInfoResponse, SystemInfo, UserInfo,
 };
+
+#[derive(Debug, Clone)]
+pub enum EmbyListSource {
+    Folder(Option<String>),
+    FavoriteItems(Vec<String>),
+    FavoritePeople,
+    PersonItems {
+        person_id: String,
+        item_types: Vec<String>,
+    },
+    ContinueWatching,
+    NextUp,
+    RecentlyAdded(Vec<String>),
+    Playlists,
+    Collections,
+    Genres(Vec<String>),
+    GenreItems {
+        genre_id: String,
+        item_types: Vec<String>,
+    },
+}
+
+fn append_item_types(url: &mut String, item_types: &[String]) {
+    let item_types = item_types
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join(",");
+    if !item_types.is_empty() {
+        url.push_str("&IncludeItemTypes=");
+        url.push_str(&url_encode(&item_types));
+    }
+}
 use crate::error::with_retry;
 use crate::error::{check_response, json_with_limit, ProviderClientError as EmbyError};
 
@@ -531,22 +565,17 @@ impl EmbyClient {
     /// Filesystem list
     pub async fn fs_list(
         &self,
-        path: Option<&str>,
+        source: EmbyListSource,
         start_index: u64,
         limit: u64,
         search_term: Option<&str>,
     ) -> Result<FsListResponse, EmbyError> {
-        if let Some(p) = path {
-            validate_item_id(p)?;
-        }
-
         let user_id = self
             .user_id
             .as_ref()
             .ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?;
 
-        // Get user views (libraries) if no path specified
-        if path.is_none() && search_term.is_none() {
+        if matches!(&source, EmbyListSource::Folder(None)) && search_term.is_none() {
             let url = self
                 .endpoint_url(&format!("Users/{}/Views", url_encode(user_id)))
                 .await?;
@@ -564,15 +593,82 @@ impl EmbyClient {
             });
         }
 
-        // Query items with filters
-        let mut url = self
-            .endpoint_url(&format!("Users/{}/Items", url_encode(user_id)))
-            .await?;
+        let mut url = match &source {
+            EmbyListSource::FavoritePeople => self.endpoint_url("Persons").await?,
+            EmbyListSource::NextUp => self.endpoint_url("Shows/NextUp").await?,
+            EmbyListSource::Genres(_) => self.endpoint_url("Genres").await?,
+            _ => {
+                self.endpoint_url(&format!("Users/{}/Items", url_encode(user_id)))
+                    .await?
+            }
+        };
         let _ = write!(url, "?StartIndex={start_index}&Limit={limit}");
+        url.push_str("&Fields=Overview%2CPrimaryImageAspectRatio%2CParentId%2CRunTimeTicks");
 
-        if let Some(p) = path {
-            url.push_str("&ParentId=");
-            url.push_str(&url_encode(p));
+        match &source {
+            EmbyListSource::Folder(parent_id) => {
+                if let Some(parent_id) = parent_id {
+                    validate_item_id(parent_id)?;
+                    url.push_str("&ParentId=");
+                    url.push_str(&url_encode(parent_id));
+                }
+            }
+            EmbyListSource::FavoriteItems(item_types) => {
+                url.push_str("&Recursive=true&Filters=IsFavorite");
+                append_item_types(&mut url, item_types);
+            }
+            EmbyListSource::FavoritePeople => {
+                url.push_str("&IsFavorite=true&UserId=");
+                url.push_str(&url_encode(user_id));
+            }
+            EmbyListSource::PersonItems {
+                person_id,
+                item_types,
+            } => {
+                validate_item_id(person_id)?;
+                url.push_str("&Recursive=true&PersonIds=");
+                url.push_str(&url_encode(person_id));
+                append_item_types(&mut url, item_types);
+            }
+            EmbyListSource::ContinueWatching => {
+                url.push_str("&Recursive=true&Filters=IsResumable");
+                append_item_types(
+                    &mut url,
+                    &[
+                        "Movie".to_string(),
+                        "Episode".to_string(),
+                        "Video".to_string(),
+                    ],
+                );
+            }
+            EmbyListSource::NextUp => {
+                url.push_str("&UserId=");
+                url.push_str(&url_encode(user_id));
+            }
+            EmbyListSource::RecentlyAdded(item_types) => {
+                url.push_str("&Recursive=true&SortBy=DateCreated&SortOrder=Descending");
+                append_item_types(&mut url, item_types);
+            }
+            EmbyListSource::Playlists => {
+                url.push_str("&Recursive=true&IncludeItemTypes=Playlist");
+            }
+            EmbyListSource::Collections => {
+                url.push_str("&Recursive=true&IncludeItemTypes=BoxSet");
+            }
+            EmbyListSource::Genres(item_types) => {
+                url.push_str("&Recursive=true&UserId=");
+                url.push_str(&url_encode(user_id));
+                append_item_types(&mut url, item_types);
+            }
+            EmbyListSource::GenreItems {
+                genre_id,
+                item_types,
+            } => {
+                validate_item_id(genre_id)?;
+                url.push_str("&Recursive=true&GenreIds=");
+                url.push_str(&url_encode(genre_id));
+                append_item_types(&mut url, item_types);
+            }
         }
 
         if let Some(term) = search_term {
@@ -591,8 +687,8 @@ impl EmbyClient {
         }];
 
         // Add current path if specified
-        if let Some(p) = path {
-            if let Ok(item) = self.get_item(p).await {
+        if let EmbyListSource::Folder(Some(parent_id)) = &source {
+            if let Ok(item) = self.get_item(parent_id).await {
                 paths.push(PathInfo {
                     name: item.name,
                     path: item.id,

@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package acproto;
+
+message ZtLiveUserIdentity {
+	ManagerType managerType = 1;
+
+	enum ManagerType {
+		UNKNOWN_MANAGER_TYPE = 0;
+		NORMAL = 1;
+	}
+}

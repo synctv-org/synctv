@@ -5,8 +5,9 @@ mod providers;
 
 pub(crate) use admin::ManagementAdminRuntime;
 pub(crate) use providers::{
-    ManagementAlistRuntime, ManagementBilibiliRuntime, ManagementEmbyRuntime,
-    ManagementProviderCommonRuntime,
+    ManagementAlistRuntime, ManagementBilibiliRuntime, ManagementDouyinRuntime,
+    ManagementEmbyRuntime, ManagementProviderCommonRuntime, ManagementTikTokRuntime,
+    ManagementTwitchRuntime,
 };
 
 fn map_runtime_error(error: &impl synctv_adapter::error::ClassifiedError) -> RuntimeError {

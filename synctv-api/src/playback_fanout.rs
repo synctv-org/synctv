@@ -287,6 +287,7 @@ mod tests {
             position: 12.5,
             speed: 1.0,
             is_playing: true,
+            playback_generation: 0,
             updated_at: synctv_core::SystemClock.now(),
             version,
         }

@@ -38,6 +38,7 @@ struct PlaybackSourceWithStateRow {
     state_position: f64,
     state_speed: f64,
     state_is_playing: bool,
+    state_playback_generation: i64,
     state_updated_at: DateTime<Utc>,
     state_version: i64,
 }
@@ -68,6 +69,7 @@ impl PlaybackSourceWithStateRow {
             position: self.state_position,
             speed: self.state_speed,
             is_playing: self.state_is_playing,
+            playback_generation: self.state_playback_generation,
             updated_at: self.state_updated_at,
             version: self.state_version,
         };
@@ -322,6 +324,7 @@ impl PlaybackSourceMetadataRepository {
                    COALESCE(progress."position", 0.0) AS "state_position!",
                    state.speed AS "state_speed!",
                    state.is_playing AS "state_is_playing!",
+                   state.playback_generation AS "state_playback_generation!",
                    state.updated_at AS "state_updated_at!",
                    state.version AS "state_version!"
             FROM room_playback_state state
@@ -450,6 +453,7 @@ impl PlaybackSourceMetadataRepository {
                    COALESCE(progress."position", 0.0) AS "state_position!",
                    state.speed AS "state_speed!",
                    state.is_playing AS "state_is_playing!",
+                   state.playback_generation AS "state_playback_generation!",
                    state.updated_at AS "state_updated_at!",
                    state.version AS "state_version!"
             FROM updated
@@ -566,6 +570,7 @@ impl PlaybackSourceMetadataRepository {
                    COALESCE(progress."position", 0.0) AS "state_position!",
                    state.speed AS "state_speed!",
                    state.is_playing AS "state_is_playing!",
+                   state.playback_generation AS "state_playback_generation!",
                    state.updated_at AS "state_updated_at!",
                    state.version AS "state_version!"
             FROM updated

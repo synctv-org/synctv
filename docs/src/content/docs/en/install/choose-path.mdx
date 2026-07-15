@@ -25,7 +25,7 @@ Use **single-node production Compose** for a long-running instance on one machin
 | --- | --- | --- | --- | --- |
 | Single-node production Compose | Self-hosters, small teams, one server | Prebuilt image + `.env.postgres` + `.env.redis` + `.env.synctv` | Default production path | [Quick Start](../../install/quick-start/) |
 | Local evaluation | Temporary UI or feature preview | `docker-compose.dev.yml` | Not for public or long-running use | [Development Environment](../../develop/local-development/) |
-| Source run | Developers, API debugging, code changes | Container dependencies + local `cargo run` | Not a deployment path | [Development Guide](../../develop/local-development/) |
+| Source run | Developers, API debugging, code changes | Container dependencies + local `cargo +nightly run` | Not a deployment path | [Development Guide](../../develop/local-development/) |
 | Helm/Kubernetes | Multi-replica or platform teams | Helm values + Kubernetes Secret/PVC/Ingress | Production capable, higher complexity | [Helm Deployment](../helm/) |
 
 ## Single-Node Production Compose

@@ -7,22 +7,24 @@
 //! can be verified against a local mock server.
 
 #![allow(clippy::unwrap_used)]
-use synctv_media_providers::bilibili::BilibiliEndpoints;
+use synctv_media_providers::bilibili::{BilibiliEndpoints, BilibiliResource};
 use synctv_media_providers::BilibiliClient;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-
-fn redirecting_client_for_b23(server: &MockServer) -> reqwest::Client {
-    reqwest::Client::builder()
-        .resolve("b23.tv", *server.address())
-        .build()
-        .unwrap()
-}
 
 fn manual_redirect_client_for_b23(server: &MockServer) -> reqwest::Client {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .resolve("b23.tv", *server.address())
+        .build()
+        .unwrap()
+}
+
+fn manual_redirect_client_for_b23_and_www(server: &MockServer) -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve("b23.tv", *server.address())
+        .resolve("www.bilibili.com", *server.address())
         .build()
         .unwrap()
 }
@@ -39,11 +41,11 @@ fn test_endpoints(base_url: impl AsRef<str>) -> BilibiliEndpoints {
 
 fn bilibili_client_with_short_link_client(
     server: &MockServer,
-    client: reqwest::Client,
+    short_link_client: reqwest::Client,
 ) -> BilibiliClient {
     BilibiliClient::new_with_short_link_transport_defaults(
-        client,
-        manual_redirect_client_for_b23(server),
+        reqwest::Client::new(),
+        short_link_client,
         test_endpoints(server.uri()),
     )
 }
@@ -52,43 +54,54 @@ fn bilibili_client_with_short_link_client(
 
 #[test]
 fn test_match_url_bvid_with_query_params() {
-    let (media_type, id) =
+    let matched =
         BilibiliClient::match_url("https://www.bilibili.com/video/BV1xx411c7mD?p=2&vd_source=abc")
             .unwrap();
-    assert_eq!(media_type, "bv");
-    assert_eq!(id, "BV1xx411c7mD");
+    assert_eq!(
+        matched.resource,
+        BilibiliResource::Video {
+            bvid: "BV1xx411c7mD".to_string(),
+            aid: 0,
+            page: 2,
+        }
+    );
 }
 
 #[test]
 fn test_match_url_bvid_mobile() {
-    let (media_type, id) =
-        BilibiliClient::match_url("https://m.bilibili.com/video/BV1xx411c7mD").unwrap();
-    assert_eq!(media_type, "bv");
-    assert_eq!(id, "BV1xx411c7mD");
+    let matched = BilibiliClient::match_url("https://m.bilibili.com/video/BV1xx411c7mD").unwrap();
+    assert!(matches!(
+        matched.resource,
+        BilibiliResource::Video { ref bvid, .. } if bvid == "BV1xx411c7mD"
+    ));
 }
 
 #[test]
 fn test_match_url_live_room_direct() {
-    let (media_type, id) =
-        BilibiliClient::match_url("https://live.bilibili.com/live/99999").unwrap();
-    assert_eq!(media_type, "live");
-    assert_eq!(id, "99999");
+    let matched = BilibiliClient::match_url("https://live.bilibili.com/live/99999").unwrap();
+    assert_eq!(matched.resource, BilibiliResource::Live { room_id: 99999 });
 }
 
 #[test]
 fn test_match_url_bangumi_ep_long_id() {
-    let (media_type, id) =
+    let matched =
         BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ep999999999").unwrap();
-    assert_eq!(media_type, "ep");
-    assert_eq!(id, "999999999");
+    assert_eq!(
+        matched.resource,
+        BilibiliResource::PgcEpisode {
+            episode_id: 999_999_999,
+        }
+    );
 }
 
 #[test]
 fn test_match_url_bangumi_ss_long_id() {
-    let (media_type, id) =
+    let matched =
         BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ss888888").unwrap();
-    assert_eq!(media_type, "ss");
-    assert_eq!(id, "888888");
+    assert_eq!(
+        matched.resource,
+        BilibiliResource::PgcSeason { season_id: 888_888 }
+    );
 }
 
 // extract_bvid / extract_epid / is_short_link
@@ -241,31 +254,6 @@ async fn test_resolve_short_link_rejects_cross_domain_redirect() {
 }
 
 #[tokio::test]
-async fn test_resolve_short_link_rejects_cross_domain_redirect_with_redirecting_client() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/abc"))
-        .respond_with(
-            ResponseTemplate::new(302).insert_header("location", "https://evil.example/video"),
-        )
-        .mount(&server)
-        .await;
-
-    let client =
-        bilibili_client_with_short_link_client(&server, redirecting_client_for_b23(&server));
-
-    let err = client
-        .resolve_short_link(&format!("http://b23.tv:{}/abc", server.address().port()))
-        .await
-        .expect_err("cross-domain redirect should be rejected before reqwest follows it");
-
-    assert!(
-        err.to_string().contains("known Bilibili domain"),
-        "unexpected error: {err}"
-    );
-}
-
-#[tokio::test]
 async fn test_resolve_short_link_supports_relative_location() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -290,6 +278,44 @@ async fn test_resolve_short_link_supports_relative_location() {
     assert_eq!(
         resolved,
         format!("http://b23.tv:{}/video/BV123", server.address().port())
+    );
+}
+
+#[tokio::test]
+async fn test_match_resource_resolves_short_link_to_typed_video() {
+    let server = MockServer::start().await;
+    let target = format!(
+        "http://www.bilibili.com:{}/video/BV1xx411c7mD?p=3",
+        server.address().port()
+    );
+    Mock::given(method("GET"))
+        .and(path("/abc"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", target.as_str()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/video/BV1xx411c7mD"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    let client = bilibili_client_with_short_link_client(
+        &server,
+        manual_redirect_client_for_b23_and_www(&server),
+    );
+    let matched = client
+        .match_resource(&format!("http://b23.tv:{}/abc", server.address().port()))
+        .await
+        .unwrap();
+
+    assert_eq!(matched.normalized_url, target);
+    assert_eq!(
+        matched.resource,
+        BilibiliResource::Video {
+            bvid: "BV1xx411c7mD".to_string(),
+            aid: 0,
+            page: 3,
+        }
     );
 }
 

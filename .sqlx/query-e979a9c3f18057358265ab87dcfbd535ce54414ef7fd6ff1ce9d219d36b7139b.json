@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO room_playback_state (\n                 room_id, speed, is_playing, playback_generation, updated_at, version\n             )\n             VALUES ($1, $2, $3, $4, $5, $6)\n             ON CONFLICT (room_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Float8",
+        "Bool",
+        "Int8",
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e979a9c3f18057358265ab87dcfbd535ce54414ef7fd6ff1ce9d219d36b7139b"
+}

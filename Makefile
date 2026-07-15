@@ -256,8 +256,9 @@ check-all-targets: ## Check all workspace targets, including tests, benches, and
 nextest: ## Run the full workspace nextest suite, including ignored tests.
 	SQLX_OFFLINE=true cargo nextest run --workspace --run-ignored all -j "$(DEV_JOBS)" --nff --status-level fail
 
-clippy: ## Run Clippy fixes across all workspace targets.
+clippy: ## Apply Clippy fixes, then require a clean workspace lint pass.
 	SQLX_OFFLINE=true cargo clippy -j "$(DEV_JOBS)" --workspace --all-targets --fix --allow-dirty
+	SQLX_OFFLINE=true cargo clippy -j "$(DEV_JOBS)" --workspace --all-targets
 
 dev-db: dev-up ## Open psql inside the PostgreSQL container.
 	$(COMPOSE_DEV) exec postgres psql -U synctv -d synctv

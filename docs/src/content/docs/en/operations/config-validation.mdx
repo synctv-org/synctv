@@ -14,7 +14,7 @@ synctv config --config synctv.yaml validate --strict
 Development via Cargo:
 
 ```bash
-cargo run -p synctv --bin synctv -- config --config synctv.yaml validate --strict
+cargo +nightly run -p synctv --bin synctv -- config --config synctv.yaml validate --strict
 ```
 
 If the service starts but access, authentication, media playback, or Ingress behavior is wrong, start from [Troubleshooting](../troubleshooting/).

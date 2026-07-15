@@ -3,17 +3,18 @@ title: Playback Background Workers
 description: Scheduling boundaries for duration probing, auto-advance, and playback resource lifecycle work.
 ---
 
-Playback background workers use the current process's active room set as their scheduling boundary. An active room here means a room with at least one Realtime connection in the local `ConnectionRuntime`.
+Duration probing and auto-advance use the current process's active room set as their scheduling boundary. Provider sessions are persisted in `provider_playback_sessions`, so upstream sessions remain discoverable after Realtime disconnects and process restarts.
 
 ## Scheduling Boundary
 
 Playback background workers run on every node. Each node scans only the rooms it is actively serving because those connections are the lifecycle state owned by that process.
 
-This boundary applies to:
+The active-room boundary applies to:
 
 - duration probing;
 - playback auto-advance;
-- playback resource lifecycle work.
+
+On every tick, the Provider lifecycle reaper claims expired or stop-requested sessions with `FOR UPDATE SKIP LOCKED`. Graceful shutdown marks active sessions for stop and runs one forced cleanup pass.
 
 Global hot-room statistics are presence and analytics data for room lists, admin views, and metrics. Playback background workers read `ConnectionRuntime::active_room_ids()`.
 
@@ -27,20 +28,20 @@ The same room can be active on several nodes in a cluster. Duplicate attempts co
 - auto-advance uses playback state transactions and optimistic versions;
 - worker input comes from node-local connections, while write correctness comes from persistence.
 
-Leader election fits partition maintenance, cleanup, and other global singleton tasks. Playback lifecycle worker ownership comes from the node-local realtime connection set.
+Leader election fits partition maintenance and other global singleton tasks. Provider lifecycle retries converge through database cleanup leases and fencing tokens.
 
 ## Maintenance Rules
 
 Repository queries use SQLx checked macros. After changing these queries, update `.sqlx`:
 
 ```bash
-cargo sqlx prepare --workspace -- --all-targets
-SQLX_OFFLINE=true cargo check --workspace --all-targets
+cargo +nightly sqlx prepare --workspace -- --all-targets
+SQLX_OFFLINE=true cargo +nightly check --workspace --all-targets
 ```
 
 Keep checked macros so CI's offline SQLx validation continues to cover query shape.
 
-The scheduling input is `ConnectionRuntime::active_room_ids()`. Presence hot-room queries serve lists, admin views, and metrics. Playback workers use the node-local realtime connection set, while database claims, `SKIP LOCKED`, and playback-state optimistic versions converge duplicate cross-node attempts.
+Duration probing and auto-advance use `ConnectionRuntime::active_room_ids()`. Presence hot-room queries serve lists, admin views, and metrics. The Provider lifecycle reaper reads `provider_playback_sessions`; row locks, cleanup leases, and fences converge duplicate cross-node attempts.
 
 Room-scoped queries must keep the `room_id = ANY(...)` filter and the join to the current `room_playback_progress.target_hash`. The room filter preserves the node-local active-room scheduler boundary. The target hash binds normal media and dynamic playlist playback to the currently selected item.
 

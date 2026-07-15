@@ -8,6 +8,9 @@ import "proto/common.proto";
 import "proto/providers/alist.proto";
 import "proto/providers/bilibili.proto";
 import "proto/providers/common.proto";
+import "proto/providers/douyin.proto";
+import "proto/providers/tiktok.proto";
+import "proto/providers/twitch.proto";
 import "proto/providers/emby.proto";
 import "proto/providers/rtmp.proto";
 import "proto/source_config.proto";
@@ -83,6 +86,22 @@ service ManagementService {
     rpc EmbyGetMe(EmbyGetMeRequest) returns (synctv.provider.emby.GetMeResponse);
     rpc EmbyLogout(EmbyLogoutRequest) returns (synctv.provider.emby.LogoutResponse);
     rpc EmbyGetBinds(EmbyGetBindsRequest) returns (synctv.provider.emby.GetBindsResponse);
+    rpc DouyinBind(DouyinBindRequest) returns (synctv.provider.douyin.BindResponse);
+    rpc DouyinGetBinds(DouyinGetBindsRequest) returns (synctv.provider.douyin.GetBindsResponse);
+    rpc DouyinUnbind(DouyinUnbindRequest) returns (synctv.provider.douyin.UnbindResponse);
+    rpc DouyinResolve(DouyinResolveRequest) returns (synctv.provider.douyin.ResolveResponse);
+    rpc DouyinListUserPosts(DouyinListUserPostsRequest) returns (synctv.provider.douyin.ListUserPostsResponse);
+    rpc TikTokBind(TikTokBindRequest) returns (synctv.provider.tiktok.BindResponse);
+    rpc TikTokGetBinds(TikTokGetBindsRequest) returns (synctv.provider.tiktok.GetBindsResponse);
+    rpc TikTokUnbind(TikTokUnbindRequest) returns (synctv.provider.tiktok.UnbindResponse);
+    rpc TikTokResolve(TikTokResolveRequest) returns (synctv.provider.tiktok.ResolveResponse);
+    rpc TikTokGetUser(TikTokGetUserRequest) returns (synctv.provider.tiktok.GetUserResponse);
+    rpc TikTokListUserPosts(TikTokListUserPostsRequest) returns (synctv.provider.tiktok.ListUserPostsResponse);
+    rpc TwitchBind(TwitchBindRequest) returns (synctv.provider.twitch.BindResponse);
+    rpc TwitchGetBinds(TwitchGetBindsRequest) returns (synctv.provider.twitch.GetBindsResponse);
+    rpc TwitchUnbind(TwitchUnbindRequest) returns (synctv.provider.twitch.UnbindResponse);
+    rpc TwitchResolve(TwitchResolveRequest) returns (synctv.provider.twitch.ResolveResponse);
+    rpc TwitchListChannelItems(TwitchListChannelItemsRequest) returns (synctv.provider.twitch.ListChannelItemsResponse);
     rpc BilibiliParse(BilibiliParseRequest) returns (synctv.provider.bilibili.ParseResponse);
     rpc BilibiliLoginQr(BilibiliLoginQrRequest) returns (synctv.provider.bilibili.QRCodeResponse);
     rpc BilibiliCheckQr(BilibiliCheckQrRequest) returns (synctv.provider.bilibili.QRStatusResponse);
@@ -856,6 +875,86 @@ message EmbyLogoutRequest {
 message EmbyGetBindsRequest {
     UserRef actor = 1;
     synctv.provider.emby.GetBindsRequest request = 2;
+}
+
+message DouyinBindRequest {
+    UserRef actor = 1;
+    synctv.provider.douyin.BindRequest request = 2;
+}
+
+message DouyinGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.douyin.GetBindsRequest request = 2;
+}
+
+message DouyinUnbindRequest {
+    UserRef actor = 1;
+    synctv.provider.douyin.UnbindRequest request = 2;
+}
+
+message DouyinResolveRequest {
+    UserRef actor = 1;
+    synctv.provider.douyin.ResolveRequest request = 2;
+}
+
+message DouyinListUserPostsRequest {
+    UserRef actor = 1;
+    synctv.provider.douyin.ListUserPostsRequest request = 2;
+}
+
+message TikTokBindRequest {
+    UserRef actor = 1;
+    synctv.provider.tiktok.BindRequest request = 2;
+}
+
+message TikTokGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.tiktok.GetBindsRequest request = 2;
+}
+
+message TikTokUnbindRequest {
+    UserRef actor = 1;
+    synctv.provider.tiktok.UnbindRequest request = 2;
+}
+
+message TikTokResolveRequest {
+    UserRef actor = 1;
+    synctv.provider.tiktok.ResolveRequest request = 2;
+}
+
+message TikTokGetUserRequest {
+    UserRef actor = 1;
+    synctv.provider.tiktok.GetUserRequest request = 2;
+}
+
+message TikTokListUserPostsRequest {
+    UserRef actor = 1;
+    synctv.provider.tiktok.ListUserPostsRequest request = 2;
+}
+
+message TwitchBindRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.BindRequest request = 2;
+}
+
+message TwitchGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.GetBindsRequest request = 2;
+}
+
+message TwitchUnbindRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.UnbindRequest request = 2;
+}
+
+message TwitchResolveRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.ResolveRequest request = 2;
+}
+
+message TwitchListChannelItemsRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.ListChannelItemsRequest request = 2;
 }
 
 message BilibiliParseRequest {

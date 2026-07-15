@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    models::{Playlist, PlaylistId, RoomId, SourceProvider, UserId},
+    models::{Playlist, PlaylistId, PlaylistSourceConfig, RoomId, SourceProvider, UserId},
     provider::{
         DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, DynamicListResult,
         MediaProvider, NextPlayItem, ProviderContext,
@@ -17,6 +17,16 @@ pub(super) struct PreparedDynamicPlaylist {
     pub(super) provider: Arc<dyn MediaProvider>,
 }
 
+pub struct DynamicPlaylistPreviewRequest {
+    pub room_id: RoomId,
+    pub user_id: UserId,
+    pub source_provider: SourceProvider,
+    pub source_config: PlaylistSourceConfig,
+    pub provider_instance_name: Option<String>,
+    pub target: Option<crate::models::ProviderTarget>,
+    pub query: DynamicListQuery,
+}
+
 impl PreparedDynamicPlaylist {
     pub(super) fn dynamic_folder(&self) -> Result<&dyn DynamicFolder> {
         self.provider.as_dynamic_folder().ok_or_else(|| {
@@ -29,6 +39,76 @@ impl PreparedDynamicPlaylist {
 }
 
 impl MediaService {
+    pub async fn preview_dynamic_playlist_items(
+        &self,
+        request: DynamicPlaylistPreviewRequest,
+    ) -> Result<DynamicListResult> {
+        let DynamicPlaylistPreviewRequest {
+            room_id,
+            user_id,
+            source_provider,
+            source_config,
+            provider_instance_name,
+            target,
+            query,
+        } = request;
+        self.permission_service
+            .check_permission(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::VIEW_MEDIA_RESOURCES,
+            )
+            .await?;
+        if source_config.provider() != source_provider {
+            return Err(Error::InvalidInput(
+                "Preview source provider does not match source_config".to_string(),
+            ));
+        }
+        let playlist = Playlist {
+            id: PlaylistId::new(),
+            room_id,
+            creator_id: Some(user_id),
+            name: "Preview".to_string(),
+            description: String::new(),
+            cover_file_reference_id: None,
+            parent_id: None,
+            position: 0.0,
+            source_provider: Some(source_provider),
+            source_config: Some(source_config),
+            provider_instance_name,
+            created_at: crate::SystemClock.now(),
+            updated_at: crate::SystemClock.now(),
+            version: 0,
+        };
+        let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
+        self.ensure_provider_credential_repo(&provider_name)?;
+        let prepared = PreparedDynamicPlaylist {
+            playlist,
+            provider_name,
+            provider,
+        };
+        let ctx = self.dynamic_playlist_context(&prepared, Some(&user_id), Some(&user_id));
+        prepared
+            .provider
+            .validate_source_config(
+                &ctx,
+                crate::provider::SourceConfig::DynamicPlaylist(
+                    prepared
+                        .playlist
+                        .source_config
+                        .as_ref()
+                        .ok_or_else(|| Error::InvalidInput("Missing source_config".to_string()))?,
+                ),
+            )
+            .await
+            .map_err(Error::from)?;
+        prepared
+            .dynamic_folder()?
+            .list_playlist(&ctx, &prepared.playlist, target.as_ref(), query)
+            .await
+            .map_err(Error::from)
+    }
+
     pub(super) async fn prepare_dynamic_playlist(
         &self,
         room_id: &RoomId,

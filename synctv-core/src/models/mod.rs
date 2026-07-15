@@ -96,6 +96,7 @@ pub mod opaque_password;
 pub mod pagination;
 pub mod permission;
 pub mod playback;
+pub mod playback_session;
 pub mod playlist;
 pub mod provider_instance;
 pub mod provider_target;
@@ -156,17 +157,35 @@ pub use id::{
 };
 pub use media::{
     provider_type_code_from_name, provider_type_codes_from_names, provider_type_name_from_code,
-    AlistPlaybackMetadata, AlistTranscodingTaskMetadata, AlistVideoPreviewMetadata,
-    BilibiliDashAudioStream, BilibiliDashManifest, BilibiliDashManifestSlot, BilibiliDashManifests,
-    BilibiliDashSegmentBase, BilibiliDashVideoStream, BilibiliPlaybackMetadata,
-    DirectMultimodeParams, DirectUrlPlaybackMetadata, EmbyPlaybackMetadata, FromProviderParams,
-    LivePlaybackMetadata, LiveProxyPlaybackMetadata, Media, MediaListQuery, MediaListSortBy,
-    PlaybackAlistMedia, PlaybackAlistSubtitle, PlaybackBilibiliDanmaku, PlaybackBilibiliMedia,
-    PlaybackBilibiliSubtitle, PlaybackDanmaku, PlaybackDanmakuProvider, PlaybackDirectUrlMedia,
-    PlaybackDirectUrlSubtitle, PlaybackEmbyMedia, PlaybackEmbySubtitle, PlaybackExternalDanmaku,
-    PlaybackExternalMedia, PlaybackExternalSubtitle, PlaybackInfo, PlaybackLiveProxyMedia,
-    PlaybackMedia, PlaybackMediaMetadata, PlaybackMediaProvider, PlaybackMetadata, PlaybackResult,
-    PlaybackRtmpMedia, PlaybackSubtitle, PlaybackSubtitleProvider, ProviderType, SourceProvider,
+    AcFunPlaybackFormat, AcFunPlaybackMetadata, AcFunPlaybackResourceKind, AlistPlaybackMetadata,
+    AlistTranscodingTaskMetadata, AlistVideoPreviewMetadata, BilibiliDashAudioStream,
+    BilibiliDashManifest, BilibiliDashManifestSlot, BilibiliDashManifests, BilibiliDashSegmentBase,
+    BilibiliDashVideoStream, BilibiliPlaybackMetadata, CctvChapterMetadata, CctvPlaybackMetadata,
+    CctvPlaybackStreamKind, DirectMultimodeParams, DirectUrlPlaybackMetadata,
+    DouyinPlaybackMetadata, DouyinPlaybackResource, DouyuPlaybackCodec, DouyuPlaybackFormat,
+    DouyuPlaybackMetadata, EmbyPlaybackMetadata, FnosAudioTrackMetadata, FnosFilePlaybackMetadata,
+    FnosMediaPlaybackMetadata, FnosPlaybackMetadata, FnosProxyResource, FnosSubtitleTrackMetadata,
+    FnosTranscodeResource, FromProviderParams, HuyaPlaybackFormat, HuyaPlaybackMetadata,
+    HuyaPlaybackResourceKind, LivePlaybackMetadata, LiveProxyPlaybackMetadata, Media,
+    MediaListQuery, MediaListSortBy, NextcloudPlaybackMetadata, PlaybackAcFunDanmaku,
+    PlaybackAcFunMedia, PlaybackAlistMedia, PlaybackAlistSubtitle, PlaybackBilibiliDanmaku,
+    PlaybackBilibiliMedia, PlaybackBilibiliSubtitle, PlaybackCctvMedia, PlaybackDanmaku,
+    PlaybackDanmakuProvider, PlaybackDirectUrlMedia, PlaybackDirectUrlSubtitle,
+    PlaybackDouyinDanmaku, PlaybackDouyinMedia, PlaybackDouyuDanmaku, PlaybackDouyuMedia,
+    PlaybackEmbyMedia, PlaybackEmbySubtitle, PlaybackExternalDanmaku, PlaybackExternalMedia,
+    PlaybackExternalSubtitle, PlaybackFnosMedia, PlaybackFnosSubtitle, PlaybackHuyaDanmaku,
+    PlaybackHuyaMedia, PlaybackInfo, PlaybackLiveProxyMedia, PlaybackMedia, PlaybackMediaMetadata,
+    PlaybackMediaProvider, PlaybackMetadata, PlaybackNextcloudMedia, PlaybackNextcloudSubtitle,
+    PlaybackQnapMedia, PlaybackQnapSubtitle, PlaybackResult, PlaybackRtmpMedia,
+    PlaybackSeafileMedia, PlaybackSeafileSubtitle, PlaybackSubtitle, PlaybackSubtitleProvider,
+    PlaybackSynologyMedia, PlaybackSynologySubtitle, PlaybackTikTokMedia, PlaybackTikTokSubtitle,
+    PlaybackTrueNasMedia, PlaybackTrueNasSubtitle, PlaybackTwitchDanmaku, PlaybackTwitchMedia,
+    PlaybackYoutubeMedia, PlaybackYoutubeSubtitle, ProviderType, QnapPlaybackMetadata,
+    QnapPlaybackMode, QnapPlaybackResource, SeafilePlaybackMetadata, SourceProvider,
+    SynologyAudioTrackMetadata, SynologyPlaybackMetadata, SynologyPlaybackProfile,
+    SynologyPlaybackResource, SynologySubtitleMetadata, TikTokPlaybackMetadata,
+    TikTokPlaybackResource, TrueNasPlaybackMetadata, TwitchChapterMetadata, TwitchPlaybackMetadata,
+    TwitchPlaybackResourceKind, YoutubePlaybackMetadata, YoutubePlaybackResource,
 };
 pub use notification::{
     CreateNotificationRequest, MarkAllAsReadRequest, MarkAsReadRequest, Notification,
@@ -191,6 +210,11 @@ pub use playback::{
     PlaybackDurationSource, PlaybackDurationStatus, PlaybackSourceIdentity, PlaybackSourceMetadata,
     RoomPlaybackProgress, RoomPlaybackState,
 };
+pub use playback_session::{
+    EmbyPlaybackSession, FnosPlaybackSession, ProviderPlaybackSession,
+    ProviderPlaybackSessionRecord, ProviderPlaybackSessionState, ProviderPlaybackStopReason,
+    SynologyPlaybackSession,
+};
 pub use playlist::{
     CreatePlaylistRequest, Playlist, PlaylistListQuery, PlaylistListSortBy, PlaylistWithCount,
     UpdatePlaylistRequest,
@@ -200,11 +224,14 @@ pub use provider_instance::{
     normalize_provider_instance_name_owned, resolve_provider_instance_binding,
     validate_provider_instance_name, CredentialProviderInstanceName, NewProviderInstance,
     ProviderCredential, ProviderInstance, ProviderInstanceBindingMismatch,
-    ProviderInstanceListQuery, ProviderInstanceListSortBy, UserProviderCredential,
+    ProviderInstanceListQuery, ProviderInstanceListSortBy, SynologyApiBinding,
+    UserProviderCredential,
 };
 pub use provider_target::{
-    hash_empty_provider_target, hash_optional_provider_target, AlistTarget, CloudreveTarget,
-    EmbyTarget, ProviderTarget,
+    hash_empty_provider_target, hash_optional_provider_target, AlistTarget, BilibiliTarget,
+    CloudreveTarget, EmbyTarget, FnosTarget, FnosTargetKind, NextcloudTarget, ProviderTarget,
+    QnapTarget, SeafileTarget, SynologyTarget, TikTokTarget, TrueNasTarget, TwitchTarget,
+    TwitchTargetKind, YoutubeTarget,
 };
 pub use query::SortDirection;
 pub use realtime_event::{
@@ -223,12 +250,25 @@ pub use room_member::{
 pub use room_settings::RoomSettings;
 pub use settings::RuntimeSetting;
 pub use source_config::{
-    detect_direct_url_format, AlistMediaSourceConfig, AlistPlaylistSourceConfig,
-    BilibiliLiveSourceConfig, BilibiliMediaSourceConfig, BilibiliPgcSourceConfig,
-    BilibiliVideoSourceConfig, CloudreveMediaSourceConfig, CloudrevePlaylistSourceConfig,
+    detect_direct_url_format, AcFunMediaSourceConfig, AlistMediaSourceConfig,
+    AlistPlaylistSourceConfig, BilibiliHistoryType, BilibiliLiveSourceConfig,
+    BilibiliMediaSourceConfig, BilibiliPgcSourceConfig, BilibiliPgcTimelineType,
+    BilibiliPlaylistSource, BilibiliPlaylistSourceConfig, BilibiliVideoSourceConfig,
+    CctvMediaSourceConfig, CloudreveMediaSourceConfig, CloudrevePlaylistSourceConfig,
     DirectUrlDanmakuSourceConfig, DirectUrlMediaResourceConfig, DirectUrlMediaSourceConfig,
-    DirectUrlSubtitleSourceConfig, EmbyMediaSourceConfig, EmbyPlaylistSourceConfig,
-    LiveProxyMediaSourceConfig, MediaSourceConfig, PlaylistSourceConfig, RtmpMediaSourceConfig,
+    DirectUrlSubtitleSourceConfig, DouyinMediaSourceConfig, DouyinPlaylistSourceConfig,
+    DouyuMediaSourceConfig, EmbyMediaSourceConfig, EmbyPlaylistSource, EmbyPlaylistSourceConfig,
+    FnosMediaSource, FnosMediaSourceConfig, FnosPlaylistSource, FnosPlaylistSourceConfig,
+    HuyaMediaSourceConfig, LiveProxyMediaSourceConfig, MediaSourceConfig,
+    NextcloudMediaSourceConfig, NextcloudPlaylistSource, NextcloudPlaylistSourceConfig,
+    PlaylistSourceConfig, QnapMediaSourceConfig, QnapPlaylistSourceConfig, RtmpMediaSourceConfig,
+    SeafileMediaSourceConfig, SeafilePlaylistSource, SeafilePlaylistSourceConfig,
+    SynologyLibraryItemKind, SynologyMediaSource, SynologyMediaSourceConfig,
+    SynologyPlaylistSource, SynologyPlaylistSourceConfig, TikTokMediaSourceConfig,
+    TikTokPlaylistSourceConfig, TrueNasMediaSourceConfig, TrueNasPlaylistSource,
+    TrueNasPlaylistSourceConfig, TwitchMediaSourceConfig, TwitchPlaylistContent,
+    TwitchPlaylistSourceConfig, YoutubeChannelContent, YoutubeMediaSourceConfig,
+    YoutubePlaylistSourceConfig,
 };
 pub use user::{
     CreateUserRequest, SignupMethod, UpdateUserRequest, User, UserListQuery, UserListSortBy,

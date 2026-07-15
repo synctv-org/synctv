@@ -1,0 +1,10 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+message SdkOption {
+	int32 reportIntervalSeconds = 1;
+	string reportSecurity = 2;
+	int32 lz4CompressionThresholdBytes = 3;
+	repeated string netCheckServers = 4;
+}

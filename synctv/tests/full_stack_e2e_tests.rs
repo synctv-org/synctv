@@ -2665,6 +2665,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
+        preview_source_config: None,
     });
     list_items
         .metadata_mut()
@@ -7414,6 +7415,7 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
+        preview_source_config: None,
     });
     initial_list_request
         .metadata_mut()
@@ -7446,6 +7448,7 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
                 availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
+                preview_source_config: None,
             },
         ))
         .await
@@ -7766,6 +7769,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                 availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
                 target: None,
+                preview_source_config: None,
             },
         ),
     )
@@ -8346,6 +8350,7 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
                 availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
                 target: None,
+                preview_source_config: None,
             },
         ),
     )
@@ -8664,6 +8669,7 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
+        preview_source_config: None,
     });
     initial_list_request
         .metadata_mut()
@@ -8700,6 +8706,7 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
                 availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
+                preview_source_config: None,
             },
         ),
     )

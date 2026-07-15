@@ -54,10 +54,13 @@ CREATE TABLE IF NOT EXISTS room_playback_state (
     current_progress_id BIGINT NULL REFERENCES room_playback_progress(id) ON DELETE SET NULL,
     speed DOUBLE PRECISION NOT NULL DEFAULT 1.0,
     is_playing BOOLEAN NOT NULL DEFAULT FALSE,
+    playback_generation BIGINT NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     version BIGINT NOT NULL DEFAULT 0,
     CONSTRAINT room_playback_state_target_object
         CHECK (target IS NULL OR jsonb_typeof(target) = 'object'),
+    CONSTRAINT room_playback_state_generation_non_negative
+        CHECK (playback_generation >= 0),
     CONSTRAINT playback_media_same_room_fk
         FOREIGN KEY (playing_media_id, room_id)
         REFERENCES media(id, room_id)

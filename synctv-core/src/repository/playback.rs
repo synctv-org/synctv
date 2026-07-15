@@ -293,6 +293,13 @@ impl RoomPlaybackStateRepository {
                     current_progress_id = $5,
                     speed = $6,
                     is_playing = $7,
+                    playback_generation = CASE
+                        WHEN playing_media_id IS DISTINCT FROM $2
+                          OR playing_playlist_id IS DISTINCT FROM $3
+                          OR target IS DISTINCT FROM $4
+                        THEN playback_generation + 1
+                        ELSE playback_generation
+                    END,
                     updated_at = NOW(),
                     version = $9
                 WHERE room_id = $1 AND version = $8
@@ -303,6 +310,7 @@ impl RoomPlaybackStateRepository {
                           current_progress_id,
                           speed,
                           is_playing,
+                          playback_generation,
                           updated_at,
                           version
             )
@@ -314,6 +322,7 @@ impl RoomPlaybackStateRepository {
                    COALESCE(progress."position", 0.0) AS "position!",
                    updated.speed AS "speed!",
                    updated.is_playing AS "is_playing!",
+                   updated.playback_generation AS "playback_generation!",
                    updated.updated_at AS "updated_at!",
                    updated.version AS "version!"
             FROM updated
@@ -346,12 +355,15 @@ impl RoomPlaybackStateRepository {
 
         // Attempt insert; if the row already exists, do nothing
         sqlx::query!(
-            "INSERT INTO room_playback_state (room_id, speed, is_playing, updated_at, version)
-             VALUES ($1, $2, $3, $4, $5)
+            "INSERT INTO room_playback_state (
+                 room_id, speed, is_playing, playback_generation, updated_at, version
+             )
+             VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (room_id) DO NOTHING",
             room_id as &RoomId,
             state.speed,
             state.is_playing,
+            state.playback_generation,
             state.updated_at,
             state.version,
         )
@@ -369,6 +381,7 @@ impl RoomPlaybackStateRepository {
                       COALESCE(progress."position", 0.0) AS "position!",
                       state.speed AS "speed!",
                       state.is_playing AS "is_playing!",
+                      state.playback_generation AS "playback_generation!",
                       state.updated_at AS "updated_at!",
                       state.version AS "version!"
              FROM room_playback_state state
@@ -397,12 +410,15 @@ impl RoomPlaybackStateRepository {
         let state = RoomPlaybackState::new(*room_id);
 
         sqlx::query!(
-            "INSERT INTO room_playback_state (room_id, speed, is_playing, updated_at, version)
-             VALUES ($1, $2, $3, $4, $5)
+            "INSERT INTO room_playback_state (
+                 room_id, speed, is_playing, playback_generation, updated_at, version
+             )
+             VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (room_id) DO NOTHING",
             room_id as &RoomId,
             state.speed,
             state.is_playing,
+            state.playback_generation,
             state.updated_at,
             state.version,
         )
@@ -419,6 +435,7 @@ impl RoomPlaybackStateRepository {
                       COALESCE(progress."position", 0.0) AS "position!",
                       state.speed AS "speed!",
                       state.is_playing AS "is_playing!",
+                      state.playback_generation AS "playback_generation!",
                       state.updated_at AS "updated_at!",
                       state.version AS "version!"
              FROM room_playback_state state
@@ -444,6 +461,7 @@ impl RoomPlaybackStateRepository {
                       COALESCE(progress."position", 0.0) AS "position!",
                       state.speed AS "speed!",
                       state.is_playing AS "is_playing!",
+                      state.playback_generation AS "playback_generation!",
                       state.updated_at AS "updated_at!",
                       state.version AS "version!"
              FROM room_playback_state state
@@ -570,6 +588,7 @@ impl RoomPlaybackStateRepository {
                    COALESCE(progress."position", 0.0) AS "position!",
                    rps.speed AS "speed!",
                    rps.is_playing AS "is_playing!",
+                   rps.playback_generation AS "playback_generation!",
                    rps.updated_at AS "updated_at!",
                    rps.version AS "version!"
             FROM room_playback_state rps

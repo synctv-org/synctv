@@ -1,0 +1,233 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH candidates AS (\n                   SELECT id FROM provider_playback_sessions\n                   WHERE ((state = 1 AND lease_expires_at <= NOW())\n                          OR (state IN (2, 3) AND COALESCE(next_cleanup_at, NOW()) <= NOW()))\n                     AND (cleanup_lease_until IS NULL OR cleanup_lease_until <= NOW())\n                   ORDER BY COALESCE(next_cleanup_at, lease_expires_at), id\n                   FOR UPDATE SKIP LOCKED LIMIT $1\n               ), claimed AS (\n                   UPDATE provider_playback_sessions session\n                   SET state = CASE WHEN session.state = 1 THEN 2 ELSE session.state END,\n                       stop_position = COALESCE(session.stop_position, 0.0),\n                       stop_reason = COALESCE(session.stop_reason, 3),\n                       next_cleanup_at = COALESCE(session.next_cleanup_at, NOW()),\n                       cleanup_lease_until = NOW() + make_interval(secs => $2),\n                       cleanup_fence = session.cleanup_fence + 1\n                   FROM candidates WHERE session.id = candidates.id RETURNING session.*\n               )\n               SELECT id AS \"id!\", room_id AS \"room_id!: RoomId\",\n                      playback_generation AS \"playback_generation!\", provider_instance_name,\n                      credential_owner_id AS \"credential_owner_id!: UserId\",\n                      resource_key AS \"resource_key!\", resource_version,\n                      session AS \"session!: ProviderPlaybackSession\",\n                      state AS \"state!: ProviderPlaybackSessionState\",\n                      lease_expires_at AS \"lease_expires_at!\", stop_position,\n                      stop_reason AS \"stop_reason?: ProviderPlaybackStopReason\",\n                      cleanup_attempts AS \"cleanup_attempts!\", next_cleanup_at,\n                      cleanup_lease_until, cleanup_fence AS \"cleanup_fence!\",\n                      created_at AS \"created_at!\", updated_at AS \"updated_at!\"\n               FROM claimed ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "playback_generation!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "playback_generation"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "provider_instance_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "provider_instance_name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "credential_owner_id!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "credential_owner_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "resource_key!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "resource_key"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "resource_version",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "resource_version"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "session!: ProviderPlaybackSession",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "session"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "state!: ProviderPlaybackSessionState",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "lease_expires_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "lease_expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "stop_position",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "stop_position"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "stop_reason?: ProviderPlaybackStopReason",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "stop_reason"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "cleanup_attempts!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "cleanup_attempts"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "next_cleanup_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "next_cleanup_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "cleanup_lease_until",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "cleanup_lease_until"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "cleanup_fence!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "cleanup_fence"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "updated_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1d646481034951674b9d39941a02c5fcf1f16a96e5b4427ee432b08c93d865f8"
+}

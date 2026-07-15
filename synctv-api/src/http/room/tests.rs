@@ -734,18 +734,26 @@ fn test_chat_message_path_injected_queries_ignore_message_id() -> TestResult {
 #[test]
 fn test_chat_playback_messages_query_accepts_structured_emby_target() -> TestResult {
     let query: super::chat::GetChatPlaybackMessagesQuery = serde_urlencoded::from_str(
-        "playbackPlaylistId=pl_45&playbackTarget=%7B%22emby%22%3A%7B%22itemId%22%3A%225%22%7D%7D&positionSeconds=12.5",
+        "playbackPlaylistId=pl_45&playbackTarget=%7B%22emby%22%3A%7B%22item%22%3A%7B%22itemId%22%3A%225%22%7D%7D%7D&positionSeconds=12.5",
     )?;
     let query = query.into_request()?;
 
     assert_eq!(query.playback_playlist_id, "pl_45");
     let Some(synctv_proto::client::ProviderTarget {
-        target: Some(synctv_proto::client::provider_target::Target::Emby(target)),
+        target:
+            Some(synctv_proto::client::provider_target::Target::Emby(
+                synctv_proto::client::EmbyTarget {
+                    target:
+                        Some(synctv_proto::client::emby_target::Target::Item(
+                            synctv_proto::client::EmbyItemTarget { item_id },
+                        )),
+                },
+            )),
     }) = query.playback_target
     else {
         return Err(test_error("emby playback target should deserialize"));
     };
-    assert_eq!(target.item_id, "5");
+    assert_eq!(item_id, "5");
     assert!((query.position_seconds - 12.5).abs() < f64::EPSILON);
     Ok(())
 }

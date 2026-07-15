@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package synctv.provider.youtube;
+
+import "proto/providers/youtube.proto";
+
+service YoutubeProviderService {
+  rpc Bind(BindRequest) returns (BindResponse);
+  rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+  rpc Unbind(UnbindRequest) returns (UnbindResponse);
+  rpc Resolve(ResolveRequest) returns (ResolveResponse);
+}

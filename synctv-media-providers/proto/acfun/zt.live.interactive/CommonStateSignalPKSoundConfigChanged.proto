@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package acproto;
+
+message CommonStateSignalPKSoundConfigChanged {
+    string a = 1;
+    unknown b = 2;
+
+    enum unknown {
+        c = 0;
+        d = 1;
+        e = 2;
+    }
+}

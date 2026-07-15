@@ -24,10 +24,24 @@ mod validation;
 mod credential;
 
 // HTTP clients (no MediaProvider dependency)
+pub mod acfun;
 pub mod alist;
 pub mod bilibili;
+pub mod cctv;
 pub mod cloudreve;
+pub mod douyin;
+pub mod douyu;
 pub mod emby;
+pub mod fnos;
+pub mod huya;
+pub mod nextcloud;
+pub mod qnap;
+pub mod seafile;
+pub mod synology;
+pub mod tiktok;
+pub mod truenas;
+pub mod twitch;
+pub mod youtube;
 
 // gRPC servers (wrap HTTP clients)
 pub mod grpc;
@@ -44,8 +58,8 @@ pub use bilibili::{BilibiliClient, BilibiliError};
 pub use cloudreve::CloudreveClient;
 pub use emby::{EmbyClient, EmbyError};
 pub use error::{
-    check_response, fetch_json, json_with_limit, provider_backoff, with_retry, ProviderClientError,
-    MAX_RESPONSE_SIZE, PROVIDER_USER_AGENT,
+    check_response, fetch_json, json_with_limit, provider_backoff, text_with_limit, with_retry,
+    ProviderClientError, MAX_RESPONSE_SIZE, PROVIDER_USER_AGENT,
 };
 
 // Re-export credential types

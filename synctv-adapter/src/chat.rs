@@ -522,10 +522,74 @@ pub fn provider_target_to_proto(target: &ProviderTarget) -> client_proto::Provid
                 },
             )),
         },
+        ProviderTarget::Bilibili(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Bilibili(
+                client_proto::BilibiliTarget {
+                    target: Some(match target {
+                        synctv_core::models::BilibiliTarget::Video { bvid, aid } => {
+                            client_proto::bilibili_target::Target::Video(
+                                client_proto::BilibiliVideoTarget {
+                                    bvid: bvid.clone(),
+                                    aid: *aid,
+                                },
+                            )
+                        }
+                        synctv_core::models::BilibiliTarget::VideoPart {
+                            bvid,
+                            aid,
+                            cid,
+                            page,
+                        } => client_proto::bilibili_target::Target::VideoPart(
+                            client_proto::BilibiliVideoPartTarget {
+                                bvid: bvid.clone(),
+                                aid: *aid,
+                                cid: *cid,
+                                page: *page,
+                            },
+                        ),
+                        synctv_core::models::BilibiliTarget::PgcEpisode { epid, cid } => {
+                            client_proto::bilibili_target::Target::PgcEpisode(
+                                client_proto::BilibiliPgcEpisodeTarget {
+                                    epid: *epid,
+                                    cid: *cid,
+                                },
+                            )
+                        }
+                        synctv_core::models::BilibiliTarget::Live { room_id } => {
+                            client_proto::bilibili_target::Target::Live(
+                                client_proto::BilibiliLiveTarget { room_id: *room_id },
+                            )
+                        }
+                    }),
+                },
+            )),
+        },
         ProviderTarget::Emby(target) => client_proto::ProviderTarget {
             target: Some(client_proto::provider_target::Target::Emby(
                 client_proto::EmbyTarget {
-                    item_id: target.item_id.clone(),
+                    target: Some(match target {
+                        synctv_core::models::EmbyTarget::Item { item_id } => {
+                            client_proto::emby_target::Target::Item(client_proto::EmbyItemTarget {
+                                item_id: item_id.clone(),
+                            })
+                        }
+                        synctv_core::models::EmbyTarget::Person { person_id } => {
+                            client_proto::emby_target::Target::Person(
+                                client_proto::EmbyPersonTarget {
+                                    person_id: person_id.clone(),
+                                },
+                            )
+                        }
+                        synctv_core::models::EmbyTarget::PersonItem {
+                            person_id,
+                            item_id,
+                        } => client_proto::emby_target::Target::PersonItem(
+                            client_proto::EmbyPersonItemTarget {
+                                person_id: person_id.clone(),
+                                item_id: item_id.clone(),
+                            },
+                        ),
+                    }),
                 },
             )),
         },
@@ -533,6 +597,153 @@ pub fn provider_target_to_proto(target: &ProviderTarget) -> client_proto::Provid
             target: Some(client_proto::provider_target::Target::Cloudreve(
                 client_proto::CloudreveTarget {
                     relative_path: target.relative_path.clone(),
+                },
+            )),
+        },
+        ProviderTarget::Twitch(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Twitch(
+                client_proto::TwitchTarget {
+                    kind: match target.kind {
+                        synctv_core::models::TwitchTargetKind::Video => {
+                            client_proto::TwitchTargetKind::Video as i32
+                        }
+                        synctv_core::models::TwitchTargetKind::Clip => {
+                            client_proto::TwitchTargetKind::Clip as i32
+                        }
+                        synctv_core::models::TwitchTargetKind::Live => {
+                            client_proto::TwitchTargetKind::Live as i32
+                        }
+                    },
+                    id: target.id.clone(),
+                },
+            )),
+        },
+        ProviderTarget::Youtube(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Youtube(
+                client_proto::YoutubeTarget {
+                    video_id: target.video_id.clone(),
+                },
+            )),
+        },
+        ProviderTarget::Douyin(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Douyin(
+                client_proto::DouyinTarget {
+                    aweme_id: target.aweme_id.clone(),
+                },
+            )),
+        },
+        ProviderTarget::TikTok(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Tiktok(
+                client_proto::TikTokTarget {
+                    video_id: target.video_id.clone(),
+                },
+            )),
+        },
+        ProviderTarget::Fnos(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Fnos(
+                client_proto::FnosTarget {
+                    target: Some(match &target.target {
+                        synctv_core::models::FnosTargetKind::File { relative_path } => {
+                            client_proto::fnos_target::Target::File(client_proto::FnosFileTarget {
+                                relative_path: relative_path.clone(),
+                            })
+                        }
+                        synctv_core::models::FnosTargetKind::MediaItem {
+                            item_guid,
+                            media_guid,
+                        } => client_proto::fnos_target::Target::MediaItem(
+                            client_proto::FnosMediaItemTarget {
+                                item_guid: item_guid.clone(),
+                                media_guid: media_guid.clone(),
+                            },
+                        ),
+                    }),
+                },
+            )),
+        },
+        ProviderTarget::Qnap(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Qnap(
+                client_proto::QnapTarget {
+                    relative_path: target.relative_path.clone(),
+                },
+            )),
+        },
+        ProviderTarget::Synology(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Synology(
+                client_proto::SynologyTarget {
+                    target: Some(match target {
+                        synctv_core::models::SynologyTarget::File { relative_path } => {
+                            client_proto::synology_target::Target::File(
+                                client_proto::SynologyFileTarget {
+                                    relative_path: relative_path.clone(),
+                                },
+                            )
+                        }
+                        synctv_core::models::SynologyTarget::LibraryItem {
+                            kind,
+                            item_id,
+                            file_id,
+                            parent_id,
+                        } => client_proto::synology_target::Target::LibraryItem(
+                            client_proto::SynologyLibraryItemTarget {
+                                kind: match kind {
+                                    synctv_core::models::SynologyLibraryItemKind::Movie => {
+                                        synctv_proto::source_config::SynologyLibraryItemKind::Movie
+                                            as i32
+                                    }
+                                    synctv_core::models::SynologyLibraryItemKind::Episode => {
+                                        synctv_proto::source_config::SynologyLibraryItemKind::Episode
+                                            as i32
+                                    }
+                                    synctv_core::models::SynologyLibraryItemKind::HomeVideo => {
+                                        synctv_proto::source_config::SynologyLibraryItemKind::HomeVideo
+                                            as i32
+                                    }
+                                    synctv_core::models::SynologyLibraryItemKind::TvRecording => {
+                                        synctv_proto::source_config::SynologyLibraryItemKind::TvRecording
+                                            as i32
+                                    }
+                                },
+                                item_id: *item_id,
+                                file_id: *file_id,
+                                parent_id: *parent_id,
+                            },
+                        ),
+                        synctv_core::models::SynologyTarget::TvShow {
+                            library_id,
+                            tv_show_id,
+                        } => client_proto::synology_target::Target::TvShow(
+                            client_proto::SynologyTvShowTarget {
+                                library_id: *library_id,
+                                tv_show_id: *tv_show_id,
+                            },
+                        ),
+                    }),
+                },
+            )),
+        },
+        ProviderTarget::Nextcloud(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Nextcloud(
+                client_proto::NextcloudTarget {
+                    path: target.path.clone(),
+                    file_id: target.file_id,
+                },
+            )),
+        },
+        ProviderTarget::Seafile(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Seafile(
+                client_proto::SeafileTarget {
+                    repository_id: target.repository_id.clone(),
+                    path: target.path.clone(),
+                    object_id: target.object_id.clone(),
+                    has_thumbnail: target.has_thumbnail,
+                },
+            )),
+        },
+        ProviderTarget::TrueNas(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Truenas(
+                client_proto::TrueNasTarget {
+                    path: target.path.clone(),
                 },
             )),
         },

@@ -17,6 +17,20 @@ pub(crate) fn proto_source_provider_required(value: i32) -> Result<SourceProvide
         source_config_proto::SourceProvider::Rtmp => Ok(SourceProvider::Rtmp),
         source_config_proto::SourceProvider::LiveProxy => Ok(SourceProvider::LiveProxy),
         source_config_proto::SourceProvider::Cloudreve => Ok(SourceProvider::Cloudreve),
+        source_config_proto::SourceProvider::Twitch => Ok(SourceProvider::Twitch),
+        source_config_proto::SourceProvider::Huya => Ok(SourceProvider::Huya),
+        source_config_proto::SourceProvider::Douyu => Ok(SourceProvider::Douyu),
+        source_config_proto::SourceProvider::Douyin => Ok(SourceProvider::Douyin),
+        source_config_proto::SourceProvider::Tiktok => Ok(SourceProvider::TikTok),
+        source_config_proto::SourceProvider::Acfun => Ok(SourceProvider::AcFun),
+        source_config_proto::SourceProvider::Cctv => Ok(SourceProvider::Cctv),
+        source_config_proto::SourceProvider::Fnos => Ok(SourceProvider::Fnos),
+        source_config_proto::SourceProvider::Qnap => Ok(SourceProvider::Qnap),
+        source_config_proto::SourceProvider::Synology => Ok(SourceProvider::Synology),
+        source_config_proto::SourceProvider::Nextcloud => Ok(SourceProvider::Nextcloud),
+        source_config_proto::SourceProvider::Seafile => Ok(SourceProvider::Seafile),
+        source_config_proto::SourceProvider::Truenas => Ok(SourceProvider::TrueNas),
+        source_config_proto::SourceProvider::Youtube => Ok(SourceProvider::Youtube),
     }
 }
 
@@ -44,6 +58,20 @@ pub(crate) const fn core_source_provider_to_proto(provider: SourceProvider) -> i
         SourceProvider::Rtmp => source_config_proto::SourceProvider::Rtmp as i32,
         SourceProvider::LiveProxy => source_config_proto::SourceProvider::LiveProxy as i32,
         SourceProvider::Cloudreve => source_config_proto::SourceProvider::Cloudreve as i32,
+        SourceProvider::Twitch => source_config_proto::SourceProvider::Twitch as i32,
+        SourceProvider::Huya => source_config_proto::SourceProvider::Huya as i32,
+        SourceProvider::Douyu => source_config_proto::SourceProvider::Douyu as i32,
+        SourceProvider::Douyin => source_config_proto::SourceProvider::Douyin as i32,
+        SourceProvider::AcFun => source_config_proto::SourceProvider::Acfun as i32,
+        SourceProvider::Cctv => source_config_proto::SourceProvider::Cctv as i32,
+        SourceProvider::Fnos => source_config_proto::SourceProvider::Fnos as i32,
+        SourceProvider::Qnap => source_config_proto::SourceProvider::Qnap as i32,
+        SourceProvider::Synology => source_config_proto::SourceProvider::Synology as i32,
+        SourceProvider::Nextcloud => source_config_proto::SourceProvider::Nextcloud as i32,
+        SourceProvider::Seafile => source_config_proto::SourceProvider::Seafile as i32,
+        SourceProvider::TrueNas => source_config_proto::SourceProvider::Truenas as i32,
+        SourceProvider::Youtube => source_config_proto::SourceProvider::Youtube as i32,
+        SourceProvider::TikTok => source_config_proto::SourceProvider::Tiktok as i32,
     }
 }
 
@@ -87,6 +115,34 @@ mod tests {
         (
             SourceProvider::Cloudreve,
             source_config_proto::SourceProvider::Cloudreve,
+        ),
+        (
+            SourceProvider::Twitch,
+            source_config_proto::SourceProvider::Twitch,
+        ),
+        (
+            SourceProvider::Huya,
+            source_config_proto::SourceProvider::Huya,
+        ),
+        (
+            SourceProvider::Douyu,
+            source_config_proto::SourceProvider::Douyu,
+        ),
+        (
+            SourceProvider::AcFun,
+            source_config_proto::SourceProvider::Acfun,
+        ),
+        (
+            SourceProvider::Cctv,
+            source_config_proto::SourceProvider::Cctv,
+        ),
+        (
+            SourceProvider::Fnos,
+            source_config_proto::SourceProvider::Fnos,
+        ),
+        (
+            SourceProvider::Qnap,
+            source_config_proto::SourceProvider::Qnap,
         ),
     ];
 

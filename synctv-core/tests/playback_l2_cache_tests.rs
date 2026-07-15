@@ -294,6 +294,7 @@ async fn test_playback_state_l2_miss_reads_from_db() {
                 COALESCE(progress."position", 0.0) AS "position!",
                 state.speed AS "speed!",
                 state.is_playing AS "is_playing!",
+                state.playback_generation AS "playback_generation!",
                 state.updated_at AS "updated_at!",
                 state.version AS "version!"
          FROM room_playback_state state

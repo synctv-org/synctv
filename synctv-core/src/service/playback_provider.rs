@@ -381,6 +381,989 @@ pub struct EmbyPlaybackProviderService {
     runtime: Arc<PlaybackProviderRuntime>,
 }
 
+#[derive(Clone)]
+pub struct TwitchPlaybackProviderService {
+    runtime: Arc<PlaybackProviderRuntime>,
+}
+
+#[derive(Clone)]
+pub struct YoutubePlaybackProviderService {
+    runtime: Arc<PlaybackProviderRuntime>,
+}
+
+#[derive(Clone)]
+pub struct HuyaPlaybackProviderService {
+    runtime: Arc<PlaybackProviderRuntime>,
+}
+
+#[derive(Clone)]
+pub struct DouyuPlaybackProviderService {
+    runtime: Arc<PlaybackProviderRuntime>,
+}
+
+#[derive(Clone)]
+pub struct DouyinPlaybackProviderService {
+    runtime: Arc<PlaybackProviderRuntime>,
+}
+
+#[derive(Clone)]
+pub struct TikTokPlaybackProviderService {
+    runtime: Arc<PlaybackProviderRuntime>,
+}
+
+#[derive(Clone)]
+pub struct AcFunPlaybackProviderService {
+    runtime: Arc<PlaybackProviderRuntime>,
+}
+
+#[derive(Clone)]
+pub struct CctvPlaybackProviderService {
+    runtime: Arc<PlaybackProviderRuntime>,
+}
+
+#[derive(Clone)]
+pub struct FnosPlaybackProviderService {
+    runtime: Arc<PlaybackProviderRuntime>,
+}
+
+#[derive(Clone)]
+pub struct QnapPlaybackProviderService {
+    runtime: Arc<PlaybackProviderRuntime>,
+}
+
+#[derive(Clone)]
+pub struct SynologyPlaybackProviderService {
+    runtime: Arc<PlaybackProviderRuntime>,
+}
+
+#[derive(Clone)]
+pub struct NextcloudPlaybackProviderService {
+    runtime: Arc<PlaybackProviderRuntime>,
+}
+
+#[derive(Clone)]
+pub struct SeafilePlaybackProviderService {
+    runtime: Arc<PlaybackProviderRuntime>,
+}
+
+#[derive(Clone)]
+pub struct TrueNasPlaybackProviderService {
+    runtime: Arc<PlaybackProviderRuntime>,
+}
+
+impl TrueNasPlaybackProviderService {
+    #[must_use]
+    pub fn new(deps: PlaybackProviderServiceDeps) -> Self {
+        Self {
+            runtime: Arc::new(PlaybackProviderRuntime::new(deps)),
+        }
+    }
+
+    pub async fn resource_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .truenas
+            .get_resource(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+                range,
+            )
+            .await
+    }
+
+    pub async fn subtitle_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        subtitle_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .truenas
+            .get_subtitle(
+                Some(&store),
+                version,
+                mode_name,
+                subtitle_index,
+                request_control,
+            )
+            .await
+    }
+}
+
+impl SeafilePlaybackProviderService {
+    #[must_use]
+    pub fn new(deps: PlaybackProviderServiceDeps) -> Self {
+        Self {
+            runtime: Arc::new(PlaybackProviderRuntime::new(deps)),
+        }
+    }
+
+    pub async fn resource_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .seafile
+            .get_resource(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+                range,
+            )
+            .await
+    }
+
+    pub async fn subtitle_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        subtitle_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .seafile
+            .get_subtitle(
+                Some(&store),
+                version,
+                mode_name,
+                subtitle_index,
+                request_control,
+            )
+            .await
+    }
+}
+
+impl NextcloudPlaybackProviderService {
+    #[must_use]
+    pub fn new(deps: PlaybackProviderServiceDeps) -> Self {
+        Self {
+            runtime: Arc::new(PlaybackProviderRuntime::new(deps)),
+        }
+    }
+
+    pub async fn resource_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .nextcloud
+            .get_resource(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+                range,
+            )
+            .await
+    }
+
+    pub async fn subtitle_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        subtitle_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .nextcloud
+            .get_subtitle(
+                Some(&store),
+                version,
+                mode_name,
+                subtitle_index,
+                request_control,
+            )
+            .await
+    }
+}
+
+impl SynologyPlaybackProviderService {
+    #[must_use]
+    pub fn new(deps: PlaybackProviderServiceDeps) -> Self {
+        Self {
+            runtime: Arc::new(PlaybackProviderRuntime::new(deps)),
+        }
+    }
+
+    pub async fn resource_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .synology
+            .get_resource(crate::provider::StatefulPlaybackResourceRequest {
+                store: Some(&store),
+                session_repo: &self
+                    .runtime
+                    .playback_transport_services
+                    .playback_session_repo,
+                version,
+                mode_name,
+                media_index,
+                request_context: request_control,
+                range_header: range,
+            })
+            .await
+    }
+
+    pub async fn subtitle_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        subtitle_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .synology
+            .get_subtitle(
+                Some(&store),
+                version,
+                mode_name,
+                subtitle_index,
+                request_control,
+            )
+            .await
+    }
+
+    pub async fn segment_action(
+        &self,
+        version: &str,
+        target_url: String,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .synology
+            .get_segment(Some(&store), version, target_url, request_control, range)
+            .await
+    }
+}
+
+impl QnapPlaybackProviderService {
+    #[must_use]
+    pub fn new(deps: PlaybackProviderServiceDeps) -> Self {
+        Self {
+            runtime: Arc::new(PlaybackProviderRuntime::new(deps)),
+        }
+    }
+
+    pub async fn resource_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .qnap
+            .get_resource(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+                range,
+            )
+            .await
+    }
+
+    pub async fn subtitle_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        subtitle_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .qnap
+            .get_subtitle(
+                Some(&store),
+                version,
+                mode_name,
+                subtitle_index,
+                request_control,
+            )
+            .await
+    }
+
+    pub async fn thumbnail_action(
+        &self,
+        version: &str,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .qnap
+            .get_thumbnail(Some(&store), version, request_control)
+            .await
+    }
+}
+
+impl FnosPlaybackProviderService {
+    #[must_use]
+    pub fn new(deps: PlaybackProviderServiceDeps) -> Self {
+        Self {
+            runtime: Arc::new(PlaybackProviderRuntime::new(deps)),
+        }
+    }
+
+    pub async fn resource_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .fnos
+            .get_resource(crate::provider::StatefulPlaybackResourceRequest {
+                store: Some(&store),
+                session_repo: &self
+                    .runtime
+                    .playback_transport_services
+                    .playback_session_repo,
+                version,
+                mode_name,
+                media_index,
+                request_context: request_control,
+                range_header: range,
+            })
+            .await
+    }
+
+    pub async fn segment_action(
+        &self,
+        version: &str,
+        target_url: String,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .fnos
+            .get_segment(Some(&store), version, target_url, request_control, range)
+            .await
+    }
+
+    pub async fn subtitle_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        subtitle_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .fnos
+            .get_subtitle(
+                Some(&store),
+                version,
+                mode_name,
+                subtitle_index,
+                request_control,
+            )
+            .await
+    }
+
+    pub async fn thumbnail_action(
+        &self,
+        version: &str,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .fnos
+            .get_thumbnail(Some(&store), version, request_control)
+            .await
+    }
+}
+
+impl CctvPlaybackProviderService {
+    #[must_use]
+    pub fn new(deps: PlaybackProviderServiceDeps) -> Self {
+        Self {
+            runtime: Arc::new(PlaybackProviderRuntime::new(deps)),
+        }
+    }
+
+    pub async fn resolve_resource(
+        &self,
+        resource: &str,
+    ) -> Result<synctv_media_providers::cctv::CctvMedia, ProviderError> {
+        self.runtime.providers.cctv.resolve_resource(resource).await
+    }
+
+    pub async fn resource_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .cctv
+            .get_resource(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+                range,
+            )
+            .await
+    }
+
+    pub fn segment_action(
+        &self,
+        target_url: String,
+        range: Option<&str>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime.providers.cctv.get_segment(target_url, range)
+    }
+}
+
+impl AcFunPlaybackProviderService {
+    #[must_use]
+    pub fn new(deps: PlaybackProviderServiceDeps) -> Self {
+        Self {
+            runtime: Arc::new(PlaybackProviderRuntime::new(deps)),
+        }
+    }
+
+    pub async fn resolve_resource(
+        &self,
+        resource: &str,
+    ) -> Result<synctv_media_providers::acfun::AcFunMedia, ProviderError> {
+        self.runtime
+            .providers
+            .acfun
+            .resolve_resource(resource)
+            .await
+    }
+
+    pub async fn resource_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .acfun
+            .get_resource(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+                range,
+            )
+            .await
+    }
+
+    pub fn segment_action(
+        &self,
+        target_url: String,
+        range: Option<&str>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime.providers.acfun.get_segment(target_url, range)
+    }
+
+    pub async fn danmaku_file_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .acfun
+            .get_danmaku_file(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+            )
+            .await
+    }
+
+    pub async fn watch_danmaku(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<crate::provider::AcFunDanmakuStream, ProviderError> {
+        self.runtime
+            .providers
+            .acfun
+            .watch_danmaku(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+            )
+            .await
+    }
+}
+
+impl DouyuPlaybackProviderService {
+    #[must_use]
+    pub fn new(deps: PlaybackProviderServiceDeps) -> Self {
+        Self {
+            runtime: Arc::new(PlaybackProviderRuntime::new(deps)),
+        }
+    }
+
+    pub async fn resolve_resource(
+        &self,
+        resource: &str,
+    ) -> Result<synctv_media_providers::douyu::DouyuMedia, ProviderError> {
+        self.runtime
+            .providers
+            .douyu
+            .resolve_resource(resource)
+            .await
+    }
+
+    pub async fn resource_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .douyu
+            .get_resource(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+                range,
+            )
+            .await
+    }
+
+    pub fn segment_action(
+        &self,
+        target_url: String,
+        range: Option<&str>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime.providers.douyu.get_segment(target_url, range)
+    }
+
+    pub async fn watch_danmaku(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<crate::provider::DouyuDanmakuStream, ProviderError> {
+        self.runtime
+            .providers
+            .douyu
+            .watch_danmaku(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+            )
+            .await
+    }
+}
+
+impl DouyinPlaybackProviderService {
+    #[must_use]
+    pub fn new(deps: PlaybackProviderServiceDeps) -> Self {
+        Self {
+            runtime: Arc::new(PlaybackProviderRuntime::new(deps)),
+        }
+    }
+
+    pub async fn resource_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .douyin
+            .get_resource(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+                range,
+            )
+            .await
+    }
+
+    pub fn segment_action(
+        &self,
+        target_url: String,
+        range: Option<&str>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime.providers.douyin.get_segment(target_url, range)
+    }
+
+    pub async fn watch_danmaku(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<crate::provider::DouyinDanmakuStream, ProviderError> {
+        self.runtime
+            .providers
+            .douyin
+            .watch_danmaku(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+            )
+            .await
+    }
+}
+
+impl TikTokPlaybackProviderService {
+    #[must_use]
+    pub fn new(deps: PlaybackProviderServiceDeps) -> Self {
+        Self {
+            runtime: Arc::new(PlaybackProviderRuntime::new(deps)),
+        }
+    }
+
+    pub async fn resource_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .tiktok
+            .get_resource(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+                range,
+            )
+            .await
+    }
+
+    pub fn segment_action(
+        &self,
+        target_url: String,
+        range: Option<&str>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime.providers.tiktok.get_segment(target_url, range)
+    }
+
+    pub async fn subtitle_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        subtitle_index: usize,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .tiktok
+            .get_subtitle(
+                Some(&store),
+                version,
+                mode_name,
+                subtitle_index,
+                request_control,
+                range,
+            )
+            .await
+    }
+}
+
+impl HuyaPlaybackProviderService {
+    #[must_use]
+    pub fn new(deps: PlaybackProviderServiceDeps) -> Self {
+        Self {
+            runtime: Arc::new(PlaybackProviderRuntime::new(deps)),
+        }
+    }
+
+    pub async fn resolve_resource(
+        &self,
+        resource: &str,
+    ) -> Result<synctv_media_providers::huya::HuyaMedia, ProviderError> {
+        self.runtime.providers.huya.resolve_resource(resource).await
+    }
+
+    pub async fn resource_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .huya
+            .get_resource(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+                range,
+            )
+            .await
+    }
+
+    pub fn segment_action(
+        &self,
+        target_url: String,
+        range: Option<&str>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime.providers.huya.get_segment(target_url, range)
+    }
+
+    pub async fn watch_danmaku(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<crate::provider::HuyaDanmakuStream, ProviderError> {
+        self.runtime
+            .providers
+            .huya
+            .watch_danmaku(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+            )
+            .await
+    }
+}
+
+impl TwitchPlaybackProviderService {
+    #[must_use]
+    pub fn new(deps: PlaybackProviderServiceDeps) -> Self {
+        Self {
+            runtime: Arc::new(PlaybackProviderRuntime::new(deps)),
+        }
+    }
+
+    pub async fn resource_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .twitch
+            .get_resource(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+                range,
+            )
+            .await
+    }
+
+    pub fn segment_action(
+        &self,
+        target_url: String,
+        range: Option<&str>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime.providers.twitch.get_segment(target_url, range)
+    }
+
+    pub async fn watch_chat(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<crate::provider::TwitchChatStream, ProviderError> {
+        self.runtime
+            .providers
+            .twitch
+            .watch_chat(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+            )
+            .await
+    }
+}
+
+impl YoutubePlaybackProviderService {
+    #[must_use]
+    pub fn new(deps: PlaybackProviderServiceDeps) -> Self {
+        Self {
+            runtime: Arc::new(PlaybackProviderRuntime::new(deps)),
+        }
+    }
+
+    pub async fn resource_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .youtube
+            .get_resource(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+                range,
+            )
+            .await
+    }
+
+    pub fn segment_action(
+        &self,
+        target_url: String,
+        range: Option<&str>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .youtube
+            .get_segment(target_url, range)
+    }
+
+    pub async fn subtitle_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        subtitle_index: usize,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .youtube
+            .get_subtitle(
+                Some(&store),
+                version,
+                mode_name,
+                subtitle_index,
+                request_control,
+                range,
+            )
+            .await
+    }
+}
+
 impl EmbyPlaybackProviderService {
     #[must_use]
     pub fn new(deps: PlaybackProviderServiceDeps) -> Self {

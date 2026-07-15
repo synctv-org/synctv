@@ -51,8 +51,10 @@ pub use messaging::{
 pub use notification::NotificationApiImpl;
 pub use oauth2::OAuth2ApiImpl;
 pub use providers::{
-    AlistApiImpl, BilibiliApiImpl, CloudreveApiImpl, EmbyApiImpl, ProviderApiRuntime,
-    ProviderCommonApiImpl, ProviderCommonApiRuntime,
+    AlistApiImpl, BilibiliApiImpl, CloudreveApiImpl, DouyinApiImpl, EmbyApiImpl, FnosApiImpl,
+    NextcloudApiImpl, ProviderApiRuntime, ProviderCommonApiImpl, ProviderCommonApiRuntime,
+    QnapApiImpl, SeafileApiImpl, SynologyApiImpl, TikTokApiImpl, TrueNasApiImpl, TwitchApiImpl,
+    YoutubeApiImpl,
 };
 pub use request_context::{
     ApiRequestContext, EndpointRateLimitCategory, EndpointRateLimitScope, RequestExecutor,

@@ -33,6 +33,8 @@ version, and expiry into the Provider rewrite callback; mode names, default
 mode, header exposure, manifest metadata, and live lifecycle data remain
 provider decisions.
 
+Providers that allocate releasable upstream resources write `provider_playback_sessions` after allocation succeeds. Rust's `ProviderPlaybackSession` enum directly encodes and decodes the `session` JSONB column through SQLx. The database stores room and playback-generation ownership, credential ownership, leases, cleanup fences, and relational constraints; Provider session fields, enum variants, and numeric rules remain application concerns. A source change increments the generation and queues the previous generation for cleanup, while progress positions continue to come from the current `RoomPlaybackState`.
+
 App clients can usually consume provider-native URLs, so Providers should return usable upstream/direct modes and proxy sibling modes together when both are valid. The Provider chooses the safest default for that source: for example, header-bound HLS or DASH may default to `proxy_*`, while simple direct files can default to the upstream URL.
 
 Proxy generation and proxy resolution are one contract. A Provider that emits `/stream`, `/m3u8`, `/mpd`, subtitle, danmaku, thumbnail, FLV, HLS playlist, or HLS segment URLs must implement and test the matching resolver path in the same Provider. Cached playback entries and refreshed playback entries must produce the same usable URL shapes.
@@ -117,8 +119,8 @@ The upload part size is server-planned. Changing it affects new sessions; open s
 Repository code uses SQLx checked macros. Keep checked macros for query shape validation and update `.sqlx` with SQL changes:
 
 ```bash
-cargo sqlx prepare --workspace -- --all-targets
-SQLX_OFFLINE=true cargo check --workspace --all-targets
+cargo +nightly sqlx prepare --workspace -- --all-targets
+SQLX_OFFLINE=true cargo +nightly check --workspace --all-targets
 ```
 
 Treat `.sqlx` metadata as part of the change whenever SQL or query-returned columns change.

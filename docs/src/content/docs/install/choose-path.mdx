@@ -25,7 +25,7 @@ import deploymentPathLight from '../../../assets/diagrams/deployment-path-zh-lig
 | --- | --- | --- | --- | --- |
 | 单机生产 Compose | 自托管用户、小团队、一台服务器 | 预构建镜像 + `.env.postgres` + `.env.redis` + `.env.synctv` | 默认生产路径 | [快速开始](../../install/quick-start/) |
 | 本地试用 | 临时看界面或功能 | `docker-compose.dev.yml` | 不可用于公网或长期运行 | [开发环境](../../develop/local-development/) |
-| 源码运行 | 开发者、调试 API、改代码 | 容器依赖 + 本机 `cargo run` | 不作为部署方式 | [开发指南](../../develop/local-development/) |
+| 源码运行 | 开发者、调试 API、改代码 | 容器依赖 + 本机 `cargo +nightly run` | 不作为部署方式 | [开发指南](../../develop/local-development/) |
 | Helm/Kubernetes | 多副本、平台团队、统一 Ingress/监控 | Helm values + Kubernetes Secret/PVC/Ingress | 可用于生产，但复杂度更高 | [Helm 部署](../helm/) |
 
 ## 单机生产 Compose

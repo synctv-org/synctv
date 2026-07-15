@@ -6105,3 +6105,234 @@ fn print_stop_output_json_is_machine_readable() {
     );
     assert_eq!(rendered["events"][0]["message"], "runtime draining");
 }
+
+#[test]
+fn cli_parses_douyin_provider_commands() {
+    let bind = Cli::parse_from([
+        "synctv",
+        "provider",
+        "douyin",
+        "bind",
+        "--username",
+        "alice",
+        "--label",
+        "main",
+        "--cookie",
+        "sessionid=secret",
+        "--instance-name",
+        "douyin-edge",
+    ]);
+    match bind.command {
+        Commands::Provider(ProviderCommand {
+            command:
+                ProviderSubcommand::Douyin(ProviderDouyinCommand {
+                    command: ProviderDouyinSubcommand::Bind(args),
+                }),
+        }) => {
+            assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
+            assert_eq!(args.label, "main");
+            assert_eq!(args.cookie, "sessionid=secret");
+            assert_eq!(args.instance.instance_name.as_deref(), Some("douyin-edge"));
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+
+    let posts = Cli::parse_from([
+        "synctv",
+        "provider",
+        "douyin",
+        "posts",
+        "--user-id",
+        "user-1",
+        "--sec-uid",
+        "MS4wLjABAAAAexample",
+        "--cursor",
+        "123456",
+        "--page-size",
+        "30",
+    ]);
+    match posts.command {
+        Commands::Provider(ProviderCommand {
+            command:
+                ProviderSubcommand::Douyin(ProviderDouyinCommand {
+                    command: ProviderDouyinSubcommand::Posts(args),
+                }),
+        }) => {
+            assert_eq!(args.access.actor.user_id.as_deref(), Some("user-1"));
+            assert_eq!(args.cursor.as_deref(), Some("123456"));
+            assert_eq!(args.page_size, 30);
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_tiktok_provider_commands() {
+    let bind = Cli::parse_from([
+        "synctv",
+        "provider",
+        "tiktok",
+        "bind",
+        "--username",
+        "alice",
+        "--label",
+        "main",
+        "--cookie",
+        "sessionid=secret",
+        "--instance-name",
+        "tiktok-edge",
+    ]);
+    match bind.command {
+        Commands::Provider(ProviderCommand {
+            command:
+                ProviderSubcommand::Tiktok(ProviderTikTokCommand {
+                    command: ProviderTikTokSubcommand::Bind(args),
+                }),
+        }) => {
+            assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
+            assert_eq!(args.label, "main");
+            assert_eq!(args.cookie, "sessionid=secret");
+            assert_eq!(args.instance.instance_name.as_deref(), Some("tiktok-edge"));
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+
+    let user = Cli::parse_from([
+        "synctv",
+        "provider",
+        "tiktok",
+        "user",
+        "creator_name",
+        "--user-id",
+        "user-1",
+    ]);
+    match user.command {
+        Commands::Provider(ProviderCommand {
+            command:
+                ProviderSubcommand::Tiktok(ProviderTikTokCommand {
+                    command: ProviderTikTokSubcommand::User(args),
+                }),
+        }) => {
+            assert_eq!(args.access.actor.user_id.as_deref(), Some("user-1"));
+            assert_eq!(args.unique_id, "creator_name");
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+
+    let posts = Cli::parse_from([
+        "synctv",
+        "provider",
+        "tiktok",
+        "posts",
+        "--user-id",
+        "user-1",
+        "--sec-uid",
+        "MS4wLjABAAAAexample",
+        "--cursor",
+        "1712345678",
+        "--page-size",
+        "35",
+    ]);
+    match posts.command {
+        Commands::Provider(ProviderCommand {
+            command:
+                ProviderSubcommand::Tiktok(ProviderTikTokCommand {
+                    command: ProviderTikTokSubcommand::Posts(args),
+                }),
+        }) => {
+            assert_eq!(args.access.actor.user_id.as_deref(), Some("user-1"));
+            assert_eq!(args.sec_uid, "MS4wLjABAAAAexample");
+            assert_eq!(args.cursor.as_deref(), Some("1712345678"));
+            assert_eq!(args.page_size, 35);
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_twitch_provider_commands() {
+    let bind = Cli::parse_from([
+        "synctv",
+        "provider",
+        "twitch",
+        "bind",
+        "--username",
+        "alice",
+        "--oauth-token",
+        "oauth-secret",
+        "--device-id",
+        "device-1",
+        "--client-integrity",
+        "integrity-secret",
+        "--instance-name",
+        "twitch-edge",
+    ]);
+    match bind.command {
+        Commands::Provider(ProviderCommand {
+            command:
+                ProviderSubcommand::Twitch(ProviderTwitchCommand {
+                    command: ProviderTwitchSubcommand::Bind(args),
+                }),
+        }) => {
+            assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
+            assert_eq!(args.oauth_token, "oauth-secret");
+            assert_eq!(args.device_id.as_deref(), Some("device-1"));
+            assert_eq!(args.client_integrity.as_deref(), Some("integrity-secret"));
+            assert_eq!(args.instance.instance_name.as_deref(), Some("twitch-edge"));
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+
+    let resolve = Cli::parse_from([
+        "synctv",
+        "provider",
+        "twitch",
+        "resolve",
+        "https://www.twitch.tv/videos/1234",
+        "--user-id",
+        "user-1",
+    ]);
+    match resolve.command {
+        Commands::Provider(ProviderCommand {
+            command:
+                ProviderSubcommand::Twitch(ProviderTwitchCommand {
+                    command: ProviderTwitchSubcommand::Resolve(args),
+                }),
+        }) => {
+            assert_eq!(args.access.actor.user_id.as_deref(), Some("user-1"));
+            assert_eq!(args.resource, "https://www.twitch.tv/videos/1234");
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+
+    let items = Cli::parse_from([
+        "synctv",
+        "provider",
+        "twitch",
+        "items",
+        "streamer",
+        "--user-id",
+        "user-1",
+        "--content",
+        "clips",
+        "--cursor",
+        "next-page",
+        "--page-size",
+        "30",
+    ]);
+    match items.command {
+        Commands::Provider(ProviderCommand {
+            command:
+                ProviderSubcommand::Twitch(ProviderTwitchCommand {
+                    command: ProviderTwitchSubcommand::Items(args),
+                }),
+        }) => {
+            assert_eq!(args.access.actor.user_id.as_deref(), Some("user-1"));
+            assert_eq!(args.channel, "streamer");
+            assert!(matches!(args.content, ProviderTwitchContent::Clips));
+            assert_eq!(args.cursor.as_deref(), Some("next-page"));
+            assert_eq!(args.page_size, 30);
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}

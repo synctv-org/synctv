@@ -315,12 +315,124 @@ message AlistTarget {
   string relative_path = 1;
 }
 
+message EmbyItemTarget { string item_id = 1; }
+message EmbyPersonTarget { string person_id = 1; }
+message EmbyPersonItemTarget {
+  string person_id = 1;
+  string item_id = 2;
+}
 message EmbyTarget {
-  string item_id = 1;
+  oneof target {
+    EmbyItemTarget item = 1;
+    EmbyPersonTarget person = 2;
+    EmbyPersonItemTarget person_item = 3;
+  }
 }
 
 message CloudreveTarget {
   string relative_path = 1;
+}
+
+message FnosFileTarget {
+  string relative_path = 1;
+}
+
+message FnosMediaItemTarget {
+  string item_guid = 1;
+  optional string media_guid = 2;
+}
+
+message FnosTarget {
+  oneof target {
+    FnosFileTarget file = 1;
+    FnosMediaItemTarget media_item = 2;
+  }
+}
+
+enum TwitchTargetKind {
+  TWITCH_TARGET_KIND_UNSPECIFIED = 0;
+  TWITCH_TARGET_KIND_VIDEO = 1;
+  TWITCH_TARGET_KIND_CLIP = 2;
+  TWITCH_TARGET_KIND_LIVE = 3;
+}
+
+message TwitchTarget {
+  TwitchTargetKind kind = 1;
+  string id = 2;
+}
+
+message QnapTarget {
+  string relative_path = 1;
+}
+
+message SynologyFileTarget {
+  string relative_path = 1;
+}
+
+message SynologyLibraryItemTarget {
+  synctv.source_config.SynologyLibraryItemKind kind = 1;
+  int64 item_id = 2;
+  int64 file_id = 3;
+  optional int64 parent_id = 4;
+}
+
+message SynologyTvShowTarget {
+  int64 library_id = 1;
+  int64 tv_show_id = 2;
+}
+
+message SynologyTarget {
+  oneof target {
+    SynologyFileTarget file = 1;
+    SynologyLibraryItemTarget library_item = 2;
+    SynologyTvShowTarget tv_show = 3;
+  }
+}
+
+message NextcloudTarget {
+  string path = 1;
+  uint64 file_id = 2;
+}
+
+message SeafileTarget {
+  string repository_id = 1;
+  string path = 2;
+  string object_id = 3;
+  bool has_thumbnail = 4;
+}
+
+message TrueNasTarget { string path = 1; }
+
+message YoutubeTarget { string video_id = 1; }
+message DouyinTarget { string aweme_id = 1; }
+message TikTokTarget { string video_id = 1; }
+
+message BilibiliVideoTarget {
+  string bvid = 1;
+  uint64 aid = 2;
+}
+
+message BilibiliVideoPartTarget {
+  string bvid = 1;
+  uint64 aid = 2;
+  uint64 cid = 3;
+  uint32 page = 4;
+}
+
+message BilibiliPgcEpisodeTarget {
+  uint64 epid = 1;
+  uint64 cid = 2;
+}
+
+message BilibiliLiveTarget { uint64 room_id = 1; }
+
+message BilibiliTarget {
+  oneof target {
+    BilibiliVideoTarget video = 1;
+    BilibiliVideoPartTarget video_part = 2;
+    BilibiliPgcEpisodeTarget pgc_episode = 3;
+    BilibiliLiveTarget live = 4;
+  }
 }
 
 message ProviderTarget {
@@ -328,6 +440,17 @@ message ProviderTarget {
     AlistTarget alist = 1;
     EmbyTarget emby = 2;
     CloudreveTarget cloudreve = 3;
+    TwitchTarget twitch = 4;
+    FnosTarget fnos = 5;
+    QnapTarget qnap = 6;
+    SynologyTarget synology = 7;
+    NextcloudTarget nextcloud = 8;
+    SeafileTarget seafile = 9;
+    TrueNasTarget truenas = 10;
+    DouyinTarget douyin = 11;
+    YoutubeTarget youtube = 12;
+    TikTokTarget tiktok = 13;
+    BilibiliTarget bilibili = 14;
   }
 }
 
@@ -1925,6 +2048,7 @@ message ListPlaylistItemsRequest {
   SortDirection sort_direction = 10 [(buf.validate.field).enum.defined_only = true];
   ResourceAvailabilityFilter availability = 11 [(buf.validate.field).enum.defined_only = true];
   bool refresh = 12; // For provider playlists, force upstream directory cache refresh when supported.
+  synctv.source_config.PlaylistSourceConfig preview_source_config = 13; // Transient provider source used for pre-create preview.
 }
 
 message PagePagination {
@@ -1966,6 +2090,10 @@ message PlaylistItem {
   optional string thumbnail = 5; // Thumbnail URL
   optional int64 modified_at = 6; // Modified time (Unix timestamp)
   string description = 7;
+  oneof source_config {
+    synctv.source_config.MediaSourceConfig media_source_config = 8;
+    synctv.source_config.PlaylistSourceConfig playlist_source_config = 9;
+  }
 }
 
 message PlaylistBrowsePathNode {
@@ -2200,6 +2328,20 @@ message PlaybackMetadata {
     DirectUrlPlaybackMetadata direct_url = 4;
     LiveProxyPlaybackMetadata live_proxy = 5;
     LivePlaybackMetadata live = 6;
+    TwitchPlaybackMetadata twitch = 7;
+    YoutubePlaybackMetadata youtube = 8;
+    DouyinPlaybackMetadata douyin = 9;
+    TikTokPlaybackMetadata tiktok = 10;
+    HuyaPlaybackMetadata huya = 11;
+    DouyuPlaybackMetadata douyu = 12;
+    AcFunPlaybackMetadata ac_fun = 13;
+    CctvPlaybackMetadata cctv = 14;
+    FnosPlaybackMetadata fnos = 15;
+    QnapPlaybackMetadata qnap = 16;
+    SynologyPlaybackMetadata synology = 17;
+    NextcloudPlaybackMetadata nextcloud = 18;
+    SeafilePlaybackMetadata seafile = 19;
+    TrueNasPlaybackMetadata truenas = 20;
   }
 }
 
@@ -2267,6 +2409,333 @@ message LiveProxyPlaybackMetadata {
 message LivePlaybackMetadata {
   string media_id = 1;
   string room_id = 2;
+}
+
+message TwitchPlaybackMetadata {
+  string resource_id = 1;
+  string title = 2;
+  string author = 3;
+  optional string category = 4;
+  optional string thumbnail_url = 5;
+  optional string description = 6;
+  optional uint64 view_count = 7;
+  optional string published_at = 8;
+  repeated TwitchChapterMetadata chapters = 9;
+  optional string storyboard_url = 10;
+}
+
+message TwitchChapterMetadata {
+  string title = 1;
+  uint64 start_seconds = 2;
+  uint64 end_seconds = 3;
+}
+
+message YoutubePlaybackMetadata {
+  string video_id = 1;
+  string channel_id = 2;
+  string channel_name = 3;
+  string description = 4;
+  optional uint64 view_count = 5;
+  optional string publish_date = 6;
+  optional string upload_date = 7;
+  optional string category = 8;
+  bool is_live = 9;
+  optional string live_start = 10;
+  optional string live_end = 11;
+  optional string storyboard_spec = 12;
+  uint32 automatic_caption_count = 13;
+  uint32 manual_caption_count = 14;
+  repeated string translation_languages = 15;
+}
+
+message DouyinPlaybackMetadata {
+  string id = 1;
+  string kind = 2;
+  string author_id = 3;
+  string author_sec_uid = 4;
+  string author_name = 5;
+  string description = 6;
+  optional uint64 view_count = 7;
+  optional uint64 like_count = 8;
+  optional uint64 comment_count = 9;
+  optional uint64 share_count = 10;
+  optional uint64 collect_count = 11;
+  optional int64 created_at = 12;
+  optional string music_title = 13;
+  optional string music_author = 14;
+  bool is_live = 15;
+  optional string room_id = 16;
+}
+
+message TikTokPlaybackMetadata {
+  string id = 1;
+  string kind = 2;
+  string author_id = 3;
+  string author_sec_uid = 4;
+  string author_unique_id = 5;
+  string author_name = 6;
+  string description = 7;
+  optional uint64 view_count = 8;
+  optional uint64 like_count = 9;
+  optional uint64 comment_count = 10;
+  optional uint64 share_count = 11;
+  optional uint64 collect_count = 12;
+  optional uint64 concurrent_viewers = 13;
+  optional int64 created_at = 14;
+  optional string music_title = 15;
+  optional string music_author = 16;
+  uint32 subtitle_count = 17;
+  bool is_live = 18;
+  optional string room_id = 19;
+}
+
+message HuyaPlaybackMetadata {
+  string resource_id = 1;
+  string title = 2;
+  string author = 3;
+  optional string author_id = 4;
+  optional string category = 5;
+  optional string thumbnail_url = 6;
+  optional string avatar_url = 7;
+  optional string description = 8;
+  optional uint64 view_count = 9;
+  optional uint64 comment_count = 10;
+  optional uint64 like_count = 11;
+  optional int64 published_at = 12;
+}
+
+message DouyuPlaybackMetadata {
+  string room_id = 1;
+  string title = 2;
+  string author = 3;
+  optional string category = 4;
+  optional string thumbnail_url = 5;
+  optional string avatar_url = 6;
+  bool is_replay = 7;
+  bool is_vip = 8;
+  optional uint64 viewer_count = 9;
+  optional string started_at = 10;
+}
+
+message AcFunPlaybackMetadata {
+  string resource_id = 1;
+  string title = 2;
+  string author = 3;
+  optional string author_id = 4;
+  optional string category = 5;
+  optional string thumbnail_url = 6;
+  optional string avatar_url = 7;
+  optional string description = 8;
+  repeated string tags = 9;
+  optional uint64 view_count = 10;
+  optional uint64 like_count = 11;
+  optional uint64 comment_count = 12;
+  optional int64 published_at = 13;
+  optional int64 started_at = 14;
+}
+
+message CctvChapterMetadata {
+  string id = 1;
+  string title = 2;
+  uint64 start_ms = 3;
+  uint64 end_ms = 4;
+}
+
+message CctvPlaybackMetadata {
+  string video_id = 1;
+  string title = 2;
+  optional string description = 3;
+  optional string uploader = 4;
+  optional string producer = 5;
+  optional string channel = 6;
+  optional string column = 7;
+  repeated string tags = 8;
+  optional string thumbnail_url = 9;
+  optional int64 published_at = 10;
+  repeated CctvChapterMetadata chapters = 11;
+  bool protected = 12;
+}
+
+message FnosFilePlaybackMetadata {
+  string name = 1;
+  string path = 2;
+  optional uint64 size = 3;
+  optional int64 modified_at = 4;
+}
+
+message QnapPlaybackMetadata {
+  string name = 1;
+  string path = 2;
+  uint64 size = 3;
+  uint64 modified_at = 4;
+  uint64 file_type = 5;
+  bool realtime_transcode = 6;
+  bool hardware_transcode = 7;
+  bool multimedia_codec = 8;
+  repeated uint32 pre_transcoded_heights = 9;
+  repeated uint32 realtime_heights = 10;
+}
+
+message SynologyAudioTrackMetadata {
+  int64 id = 1;
+  string language = 2;
+  string codec = 3;
+  uint32 channels = 4;
+  uint64 bitrate = 5;
+  bool is_default = 6;
+}
+
+message SynologySubtitleMetadata {
+  string id = 1;
+  string language = 2;
+  string title = 3;
+  string format = 4;
+  bool embedded = 5;
+}
+
+message SynologyPlaybackMetadata {
+  string title = 1;
+  string summary = 2;
+  string tagline = 3;
+  string certificate = 4;
+  int32 rating = 5;
+  repeated string actors = 6;
+  repeated string directors = 7;
+  repeated string writers = 8;
+  repeated string genres = 9;
+  int64 item_id = 10;
+  int64 file_id = 11;
+  string kind = 12;
+  string path = 13;
+  uint64 size = 14;
+  uint64 duration_seconds = 15;
+  uint64 progress_seconds = 16;
+  uint32 width = 17;
+  uint32 height = 18;
+  string video_codec = 19;
+  string audio_codec = 20;
+  string container = 21;
+  uint64 video_bitrate = 22;
+  uint64 audio_bitrate = 23;
+  uint64 frame_rate_numerator = 24;
+  uint64 frame_rate_denominator = 25;
+  uint32 audio_channels = 26;
+  uint32 audio_frequency_hz = 27;
+  optional string poster_url = 28;
+  optional string backdrop_url = 29;
+  bool watched = 30;
+  double watched_ratio = 31;
+  bool parental_controlled = 32;
+  int64 create_time = 33;
+  int64 last_watched = 34;
+  repeated SynologyAudioTrackMetadata audio_tracks = 35;
+  repeated SynologySubtitleMetadata subtitles = 36;
+}
+
+message NextcloudPlaybackMetadata {
+  uint64 file_id = 1;
+  string name = 2;
+  string path = 3;
+  uint64 size = 4;
+  optional string modified_at = 5;
+  optional string content_type = 6;
+  optional string etag = 7;
+  optional string permissions = 8;
+  optional string owner_id = 9;
+  optional string owner_display_name = 10;
+  bool favorite = 11;
+  bool has_preview = 12;
+  optional string blurhash = 13;
+  optional uint32 width = 14;
+  optional uint32 height = 15;
+  optional uint64 duration_millis = 16;
+}
+
+message SeafilePlaybackMetadata {
+  string repository_id = 1;
+  string object_id = 2;
+  string name = 3;
+  string path = 4;
+  uint64 size = 5;
+  string modified_at = 6;
+  bool is_locked = 7;
+  bool can_preview = 8;
+  bool can_edit = 9;
+  bool has_thumbnail = 10;
+}
+
+message TrueNasPlaybackMetadata {
+  string realpath = 1;
+  uint64 size = 2;
+  uint64 allocation_size = 3;
+  uint32 mode = 4;
+  uint64 mount_id = 5;
+  uint32 uid = 6;
+  uint32 gid = 7;
+  double atime = 8;
+  double mtime = 9;
+  double ctime = 10;
+  double btime = 11;
+  uint64 dev = 12;
+  uint64 inode = 13;
+  uint64 nlink = 14;
+  bool acl = 15;
+  bool is_mountpoint = 16;
+  bool is_ctldir = 17;
+  repeated string attributes = 18;
+  optional string user = 19;
+  optional string group = 20;
+}
+
+message FnosAudioTrackMetadata {
+  optional string guid = 1;
+  optional string title = 2;
+  optional string language = 3;
+  optional string codec = 4;
+  uint32 channels = 5;
+  uint64 bitrate = 6;
+  bool is_default = 7;
+}
+
+message FnosSubtitleTrackMetadata {
+  optional string guid = 1;
+  optional string title = 2;
+  optional string language = 3;
+  optional string codec = 4;
+  optional string format = 5;
+  bool external = 6;
+  bool is_default = 7;
+  bool forced = 8;
+}
+
+message FnosMediaPlaybackMetadata {
+  string item_guid = 1;
+  string media_guid = 2;
+  string title = 3;
+  optional string overview = 4;
+  optional string poster_url = 5;
+  optional string backdrop_url = 6;
+  optional uint32 width = 7;
+  optional uint32 height = 8;
+  optional string video_codec = 9;
+  optional string video_profile = 10;
+  optional uint32 bit_depth = 11;
+  optional int32 dolby_vision_profile = 12;
+  optional string frame_rate = 13;
+  optional uint32 season_number = 14;
+  optional uint32 episode_number = 15;
+  uint64 progress_seconds = 16;
+  uint64 duration_seconds = 17;
+  bool watched = 18;
+  repeated FnosAudioTrackMetadata audio_tracks = 19;
+  repeated FnosSubtitleTrackMetadata subtitle_tracks = 20;
+}
+
+message FnosPlaybackMetadata {
+  oneof kind {
+    FnosFilePlaybackMetadata file = 1;
+    FnosMediaPlaybackMetadata media = 2;
+  }
 }
 
 // Playback information for a single mode

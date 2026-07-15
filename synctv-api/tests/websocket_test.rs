@@ -969,6 +969,10 @@ mod websocket_e2e {
                 room_service: room_service.clone(),
                 permission_service: room_service.permission_service().clone(),
                 credential_encryption: None,
+                playback_session_repo:
+                    synctv_core::repository::ProviderPlaybackSessionRepository::new(
+                        user_provider_credential_repo.pool().clone(),
+                    ),
                 credential_repo: user_provider_credential_repo.clone(),
                 provider_access_service: provider_access_service.clone(),
             });
@@ -995,8 +999,58 @@ mod websocket_e2e {
         let rtmp_playback_provider_service = Arc::new(
             synctv_core::service::RtmpPlaybackProviderService::new(playback_provider_deps.clone()),
         );
-        let live_proxy_playback_provider_service = Arc::new(
-            synctv_core::service::LiveProxyPlaybackProviderService::new(playback_provider_deps),
+        let live_proxy_playback_provider_service =
+            Arc::new(synctv_core::service::LiveProxyPlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let twitch_playback_provider_service =
+            Arc::new(synctv_core::service::TwitchPlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let youtube_playback_provider_service =
+            Arc::new(synctv_core::service::YoutubePlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let douyin_playback_provider_service =
+            Arc::new(synctv_core::service::DouyinPlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let tiktok_playback_provider_service =
+            Arc::new(synctv_core::service::TikTokPlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let huya_playback_provider_service = Arc::new(
+            synctv_core::service::HuyaPlaybackProviderService::new(playback_provider_deps.clone()),
+        );
+        let douyu_playback_provider_service = Arc::new(
+            synctv_core::service::DouyuPlaybackProviderService::new(playback_provider_deps.clone()),
+        );
+        let acfun_playback_provider_service = Arc::new(
+            synctv_core::service::AcFunPlaybackProviderService::new(playback_provider_deps.clone()),
+        );
+        let cctv_playback_provider_service = Arc::new(
+            synctv_core::service::CctvPlaybackProviderService::new(playback_provider_deps.clone()),
+        );
+        let fnos_playback_provider_service = Arc::new(
+            synctv_core::service::FnosPlaybackProviderService::new(playback_provider_deps.clone()),
+        );
+        let qnap_playback_provider_service = Arc::new(
+            synctv_core::service::QnapPlaybackProviderService::new(playback_provider_deps.clone()),
+        );
+        let synology_playback_provider_service =
+            Arc::new(synctv_core::service::SynologyPlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let nextcloud_playback_provider_service =
+            Arc::new(synctv_core::service::NextcloudPlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let seafile_playback_provider_service =
+            Arc::new(synctv_core::service::SeafilePlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let truenas_playback_provider_service = Arc::new(
+            synctv_core::service::TrueNasPlaybackProviderService::new(playback_provider_deps),
         );
 
         let mut config_inner = synctv_api::ApiRuntimeSettings::default();
@@ -1062,10 +1116,50 @@ mod websocket_e2e {
         ));
         let emby_api = Arc::new(synctv_api::EmbyApiImpl::new_with_runtime(
             credential_backed_providers.emby.clone(),
-            provider_api_runtime,
+            provider_api_runtime.clone(),
         ));
         let cloudreve_api = Arc::new(synctv_api::CloudreveApiImpl::new(
             credential_backed_providers.cloudreve.clone(),
+            realtime_manager.clone(),
+        ));
+        let twitch_api = Arc::new(synctv_api::TwitchApiImpl::new(
+            credential_backed_providers.twitch.clone(),
+            realtime_manager.clone(),
+        ));
+        let youtube_api = Arc::new(synctv_api::YoutubeApiImpl::new(
+            credential_backed_providers.youtube.clone(),
+            realtime_manager.clone(),
+        ));
+        let douyin_api = Arc::new(synctv_api::DouyinApiImpl::new(
+            credential_backed_providers.douyin.clone(),
+            realtime_manager.clone(),
+        ));
+        let tiktok_api = Arc::new(synctv_api::TikTokApiImpl::new(
+            credential_backed_providers.tiktok.clone(),
+            realtime_manager.clone(),
+        ));
+        let fnos_api = Arc::new(synctv_api::FnosApiImpl::new(
+            credential_backed_providers.fnos.clone(),
+            realtime_manager.clone(),
+        ));
+        let qnap_api = Arc::new(synctv_api::QnapApiImpl::new(
+            credential_backed_providers.qnap.clone(),
+            realtime_manager.clone(),
+        ));
+        let synology_api = Arc::new(synctv_api::SynologyApiImpl::new(
+            credential_backed_providers.synology.clone(),
+            realtime_manager.clone(),
+        ));
+        let nextcloud_api = Arc::new(synctv_api::NextcloudApiImpl::new(
+            credential_backed_providers.nextcloud.clone(),
+            realtime_manager.clone(),
+        ));
+        let seafile_api = Arc::new(synctv_api::SeafileApiImpl::new(
+            credential_backed_providers.seafile.clone(),
+            realtime_manager.clone(),
+        ));
+        let truenas_api = Arc::new(synctv_api::TrueNasApiImpl::new(
+            credential_backed_providers.truenas.clone(),
             realtime_manager.clone(),
         ));
 
@@ -1160,11 +1254,35 @@ mod websocket_e2e {
             emby_playback_provider_service,
             rtmp_playback_provider_service,
             live_proxy_playback_provider_service,
+            twitch_playback_provider_service,
+            youtube_playback_provider_service,
+            douyin_playback_provider_service,
+            tiktok_playback_provider_service,
+            huya_playback_provider_service,
+            douyu_playback_provider_service,
+            acfun_playback_provider_service,
+            cctv_playback_provider_service,
+            fnos_playback_provider_service,
+            qnap_playback_provider_service,
+            synology_playback_provider_service,
+            nextcloud_playback_provider_service,
+            seafile_playback_provider_service,
+            truenas_playback_provider_service,
             provider_common_api,
             bilibili_api,
             alist_api,
             emby_api,
             cloudreve_api,
+            twitch_api,
+            youtube_api,
+            douyin_api,
+            tiktok_api,
+            fnos_api,
+            qnap_api,
+            synology_api,
+            nextcloud_api,
+            seafile_api,
+            truenas_api,
             shared_proxy_signing_key,
             builtin_stun_url: None,
             webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),

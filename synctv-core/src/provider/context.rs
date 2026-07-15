@@ -27,6 +27,12 @@ pub struct ProviderContext<'a> {
     /// Media ID currently being resolved (optional)
     pub media_id: Option<MediaId>,
 
+    /// Playback generation that owns provider-side resources allocated by this request.
+    pub playback_generation: Option<i64>,
+
+    /// Whether the owning room playback state is currently playing.
+    pub playback_is_playing: Option<bool>,
+
     /// Bound provider instance name selected by the media/playlist owner (optional)
     pub provider_instance_name: Option<&'a str>,
 
@@ -64,6 +70,8 @@ impl<'a> ProviderContext<'a> {
             credential_owner_id: None,
             room_id: None,
             media_id: None,
+            playback_generation: None,
+            playback_is_playing: None,
             provider_instance_name: None,
             key_prefix,
             db: None,
@@ -101,6 +109,20 @@ impl<'a> ProviderContext<'a> {
     #[must_use]
     pub const fn with_media_id(mut self, media_id: MediaId) -> Self {
         self.media_id = Some(media_id);
+        self
+    }
+
+    /// Bind provider resources allocated by this request to a playback generation.
+    #[must_use]
+    pub const fn with_playback_generation(mut self, playback_generation: i64) -> Self {
+        self.playback_generation = Some(playback_generation);
+        self
+    }
+
+    /// Attach the current room playback activity state.
+    #[must_use]
+    pub const fn with_playback_is_playing(mut self, playback_is_playing: bool) -> Self {
+        self.playback_is_playing = Some(playback_is_playing);
         self
     }
 
@@ -193,6 +215,16 @@ impl<'a> ProviderContext<'a> {
     #[must_use]
     pub const fn media_id(&self) -> Option<&MediaId> {
         self.media_id.as_ref()
+    }
+
+    #[must_use]
+    pub const fn playback_generation(&self) -> Option<i64> {
+        self.playback_generation
+    }
+
+    #[must_use]
+    pub const fn playback_is_playing(&self) -> Option<bool> {
+        self.playback_is_playing
     }
 
     #[must_use]

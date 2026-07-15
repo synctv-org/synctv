@@ -16,7 +16,7 @@ use futures_util::{SinkExt, StreamExt};
 use md5::{Digest, Md5};
 use regex::Regex;
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use synctv_common::ssrf::SsrfGuard;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
 use tokio::net::TcpStream;
@@ -35,9 +35,6 @@ use crate::error::{check_response, json_with_limit, ProviderClientError as Bilib
 static RE_BVID: LazyLock<Result<Regex, regex::Error>> =
     LazyLock::new(|| Regex::new(r"BV[a-zA-Z0-9]+"));
 static RE_EPID: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| Regex::new(r"ep(\d+)"));
-static RE_SSID: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| Regex::new(r"ss(\d+)"));
-static RE_LIVE_ROOM: LazyLock<Result<Regex, regex::Error>> =
-    LazyLock::new(|| Regex::new(r"(?:/live)?/(\d+)(?:[/?#]|$)"));
 
 use crate::PROVIDER_USER_AGENT as USER_AGENT;
 const REFERER: &str = "https://www.bilibili.com";
@@ -92,6 +89,14 @@ fn unix_timestamp_secs() -> u64 {
             0
         }
     }
+}
+
+fn parse_colon_duration(value: &str) -> u64 {
+    value.split(':').fold(0_u64, |duration, component| {
+        duration
+            .saturating_mul(60)
+            .saturating_add(component.parse::<u64>().unwrap_or(0))
+    })
 }
 
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots", test))]
@@ -705,6 +710,73 @@ impl BilibiliClient {
         }
     }
 
+    async fn get_api<T>(
+        &self,
+        path: &str,
+        query: Vec<(String, String)>,
+    ) -> Result<types::ApiEnvelope<T>, BilibiliError>
+    where
+        T: DeserializeOwned + Send,
+    {
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
+        let endpoint = self.endpoints.api_url(path);
+        let referer = self.endpoints.web_base.clone();
+
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            let endpoint = endpoint.clone();
+            let query = query.clone();
+            let referer = referer.clone();
+            async move {
+                let mut request = client
+                    .get(&endpoint)
+                    .query(&query)
+                    .header("Referer", referer.as_str());
+                if let Some(cookies) = cookie_header.as_deref() {
+                    request = request.header("Cookie", cookies);
+                }
+                let response = check_response(request.send().await?).await?;
+                json_with_limit(response).await
+            }
+        })
+        .await
+    }
+
+    async fn get_wbi_api<T>(
+        &self,
+        path: &str,
+        query: Vec<(&str, String)>,
+    ) -> Result<types::ApiEnvelope<T>, BilibiliError>
+    where
+        T: DeserializeOwned + Send,
+    {
+        let first = self.get_wbi_api_once(path, &query, false).await;
+        if matches!(&first, Err(error) if Self::is_wbi_stale_error(error)) {
+            return self.get_wbi_api_once(path, &query, true).await;
+        }
+        first
+    }
+
+    async fn get_wbi_api_once<T>(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        force_key_refresh: bool,
+    ) -> Result<types::ApiEnvelope<T>, BilibiliError>
+    where
+        T: DeserializeOwned + Send,
+    {
+        let mixin_key = self.get_wbi_mixin_key_internal(force_key_refresh).await?;
+        let signed = wbi_sign(query, &mixin_key);
+        let response = self.get_api(path, signed).await?;
+        if response.code != 0 {
+            return Err(bilibili_api_error(i64::from(response.code), "signed list"));
+        }
+        Ok(response)
+    }
+
     /// Generate QR code for login
     pub async fn new_qr_code(&self) -> Result<(String, String), BilibiliError> {
         #[derive(Deserialize)]
@@ -1160,6 +1232,307 @@ impl BilibiliClient {
     }
 
     /// Parse video page to get video information
+    pub async fn list_popular_videos(
+        &self,
+        page: u64,
+        page_size: u32,
+    ) -> Result<types::BilibiliVideoListPage, BilibiliError> {
+        let response = self
+            .get_api::<types::PopularListData>(
+                "/x/web-interface/popular",
+                vec![
+                    ("pn".to_string(), page.to_string()),
+                    ("ps".to_string(), page_size.to_string()),
+                ],
+            )
+            .await?;
+        if response.code != 0 {
+            return Err(bilibili_api_error(i64::from(response.code), "popular list"));
+        }
+        let data = response.data.ok_or_else(|| {
+            BilibiliError::Parse("Popular list response missing data".to_string())
+        })?;
+        Ok(types::BilibiliVideoListPage {
+            items: data
+                .list
+                .into_iter()
+                .map(types::ArchiveSummaryDto::into_item)
+                .collect(),
+            total: None,
+            has_more: !data.no_more,
+        })
+    }
+
+    pub async fn list_recommended_videos(
+        &self,
+        page: u64,
+        page_size: u32,
+    ) -> Result<types::BilibiliVideoListPage, BilibiliError> {
+        let page_size = page_size.min(30);
+        let response = self
+            .get_wbi_api::<types::RecommendedListData>(
+                "/x/web-interface/wbi/index/top/feed/rcmd",
+                vec![
+                    ("fresh_type", "4".to_string()),
+                    ("fresh_idx", page.to_string()),
+                    ("fresh_idx_1h", page.to_string()),
+                    ("brush", page.to_string()),
+                    ("ps", page_size.to_string()),
+                    ("web_location", "1430650".to_string()),
+                ],
+            )
+            .await?;
+        let data = response.data.ok_or_else(|| {
+            BilibiliError::Parse("Recommended list response missing data".to_string())
+        })?;
+        let items = data
+            .item
+            .into_iter()
+            .filter_map(types::RecommendedArchiveDto::into_item)
+            .collect::<Vec<_>>();
+        Ok(types::BilibiliVideoListPage {
+            has_more: items.len() >= page_size as usize,
+            items,
+            total: None,
+        })
+    }
+
+    pub async fn list_up_videos(
+        &self,
+        mid: u64,
+        keyword: &str,
+        page: u64,
+        page_size: u32,
+    ) -> Result<types::BilibiliVideoListPage, BilibiliError> {
+        let response = self
+            .get_wbi_api::<types::UpVideoListData>(
+                "/x/space/wbi/arc/search",
+                vec![
+                    ("mid", mid.to_string()),
+                    ("keyword", keyword.to_string()),
+                    ("order", "pubdate".to_string()),
+                    ("pn", page.to_string()),
+                    ("ps", page_size.to_string()),
+                ],
+            )
+            .await?;
+        let data = response.data.ok_or_else(|| {
+            BilibiliError::Parse("UP video list response missing data".to_string())
+        })?;
+        let total = data.page.total;
+        let items = data
+            .list
+            .vlist
+            .into_iter()
+            .map(|video| types::BilibiliVideoListItem {
+                bvid: video.bvid,
+                aid: video.aid,
+                cid: 0,
+                epid: 0,
+                title: video.title,
+                cover: video.pic,
+                author: video.author,
+                description: video.description,
+                duration_seconds: parse_colon_duration(&video.length),
+                part_count: 0,
+                published_at: video.created,
+            })
+            .collect();
+        Ok(types::BilibiliVideoListPage {
+            items,
+            total: Some(total),
+            has_more: page.saturating_mul(u64::from(page_size)) < total,
+        })
+    }
+
+    pub async fn list_favorite_videos(
+        &self,
+        media_id: u64,
+        page: u64,
+        page_size: u32,
+    ) -> Result<types::BilibiliVideoListPage, BilibiliError> {
+        let response = self
+            .get_api::<types::FavoriteListData>(
+                "/x/v3/fav/resource/list",
+                vec![
+                    ("media_id".to_string(), media_id.to_string()),
+                    ("pn".to_string(), page.to_string()),
+                    ("ps".to_string(), page_size.min(20).to_string()),
+                    ("platform".to_string(), "web".to_string()),
+                ],
+            )
+            .await?;
+        if response.code != 0 {
+            return Err(bilibili_api_error(
+                i64::from(response.code),
+                "favorite list",
+            ));
+        }
+        let data = response.data.ok_or_else(|| {
+            BilibiliError::Parse("Favorite list response missing data".to_string())
+        })?;
+        Ok(types::BilibiliVideoListPage {
+            items: data
+                .medias
+                .into_iter()
+                .map(types::ArchiveSummaryDto::into_item)
+                .collect(),
+            total: Some(data.info.media_count),
+            has_more: data.has_more,
+        })
+    }
+
+    pub async fn list_collection_videos(
+        &self,
+        mid: u64,
+        season_id: u64,
+        page: u64,
+        page_size: u32,
+    ) -> Result<types::BilibiliVideoListPage, BilibiliError> {
+        let response = self
+            .get_wbi_api::<types::ArchivePageData>(
+                "/x/polymer/web-space/seasons_archives_list",
+                vec![
+                    ("mid", mid.to_string()),
+                    ("season_id", season_id.to_string()),
+                    ("page_num", page.to_string()),
+                    ("page_size", page_size.to_string()),
+                    ("sort_reverse", "false".to_string()),
+                    ("web_location", "333.999".to_string()),
+                ],
+            )
+            .await?;
+        Self::archive_page(response, page, page_size, "Collection list")
+    }
+
+    pub async fn list_series_videos(
+        &self,
+        mid: u64,
+        series_id: u64,
+        page: u64,
+        page_size: u32,
+    ) -> Result<types::BilibiliVideoListPage, BilibiliError> {
+        let response = self
+            .get_api::<types::ArchivePageData>(
+                "/x/series/archives",
+                vec![
+                    ("mid".to_string(), mid.to_string()),
+                    ("series_id".to_string(), series_id.to_string()),
+                    ("only_normal".to_string(), "true".to_string()),
+                    ("sort".to_string(), "desc".to_string()),
+                    ("pn".to_string(), page.to_string()),
+                    ("ps".to_string(), page_size.to_string()),
+                ],
+            )
+            .await?;
+        if response.code != 0 {
+            return Err(bilibili_api_error(i64::from(response.code), "series list"));
+        }
+        Self::archive_page(response, page, page_size, "Series list")
+    }
+
+    fn archive_page(
+        response: types::ApiEnvelope<types::ArchivePageData>,
+        page: u64,
+        page_size: u32,
+        context: &'static str,
+    ) -> Result<types::BilibiliVideoListPage, BilibiliError> {
+        let data = response
+            .data
+            .ok_or_else(|| BilibiliError::Parse(format!("{context} response missing data")))?;
+        let total = data.page.total;
+        Ok(types::BilibiliVideoListPage {
+            items: data
+                .archives
+                .into_iter()
+                .map(types::ArchiveSummaryDto::into_item)
+                .collect(),
+            total: Some(total),
+            has_more: page.saturating_mul(u64::from(page_size)) < total,
+        })
+    }
+
+    pub async fn list_watch_later_videos(
+        &self,
+        page: u64,
+        page_size: u32,
+    ) -> Result<types::BilibiliVideoListPage, BilibiliError> {
+        let response = self
+            .get_api::<types::WatchLaterData>("/x/v2/history/toview", Vec::new())
+            .await?;
+        if response.code != 0 {
+            return Err(bilibili_api_error(
+                i64::from(response.code),
+                "watch-later list",
+            ));
+        }
+        let data = response.data.ok_or_else(|| {
+            BilibiliError::Parse("Watch-later list response missing data".to_string())
+        })?;
+        let start = page.saturating_sub(1).saturating_mul(u64::from(page_size));
+        let start = usize::try_from(start).unwrap_or(usize::MAX);
+        let items = data
+            .list
+            .into_iter()
+            .skip(start)
+            .take(page_size as usize)
+            .map(types::ArchiveSummaryDto::into_item)
+            .collect::<Vec<_>>();
+        let end = u64::try_from(start.saturating_add(items.len())).unwrap_or(u64::MAX);
+        Ok(types::BilibiliVideoListPage {
+            has_more: end < data.count,
+            items,
+            total: Some(data.count),
+        })
+    }
+
+    pub async fn list_video_parts(
+        &self,
+        aid: u64,
+        bvid: &str,
+    ) -> Result<types::BilibiliVideoParts, BilibiliError> {
+        let response = self
+            .get_api::<types::VideoPageData>(
+                "/x/web-interface/view",
+                if bvid.is_empty() {
+                    vec![("aid".to_string(), aid.to_string())]
+                } else {
+                    vec![("bvid".to_string(), bvid.to_string())]
+                },
+            )
+            .await?;
+        if response.code != 0 {
+            return Err(bilibili_api_error(i64::from(response.code), "video parts"));
+        }
+        let data = response
+            .data
+            .ok_or_else(|| BilibiliError::Parse("Video parts response missing data".to_string()))?;
+        let parts = data
+            .pages
+            .into_iter()
+            .map(|part| types::BilibiliVideoPart {
+                bvid: data.bvid.clone(),
+                aid: data.aid,
+                cid: part.cid,
+                page: part.page,
+                title: part.part,
+                cover: if part.first_frame.is_empty() {
+                    data.pic.clone()
+                } else {
+                    part.first_frame
+                },
+                duration_seconds: part.duration,
+                width: part.dimension.width,
+                height: part.dimension.height,
+            })
+            .collect();
+        Ok(types::BilibiliVideoParts {
+            title: data.title,
+            author: data.owner.name,
+            parts,
+        })
+    }
+
     pub async fn parse_video_page(
         &self,
         aid: u64,
@@ -1200,16 +1573,35 @@ impl BilibiliClient {
                     .ok_or_else(|| BilibiliError::Parse("Missing video page data".to_string()))?;
                 let title = data.title;
                 let owner_name = data.owner.name;
+                let cover = data.pic.clone();
+                let aid = data.aid;
+                let collection = data.ugc_season.and_then(|season| {
+                    (season.id > 0 && season.mid > 0).then_some(BilibiliCollectionInfo {
+                        mid: season.mid,
+                        season_id: season.id,
+                        title: season.title,
+                        cover: season.cover,
+                    })
+                });
 
                 let mut video_infos = Vec::new();
                 for page in data.pages {
                     video_infos.push(VideoInfoItem {
                         bvid: data.bvid.clone(),
+                        aid,
                         cid: page.cid,
                         epid: 0,
+                        page: page.page,
                         name: page.part,
-                        cover_image: data.pic.clone(),
+                        cover_image: if page.first_frame.is_empty() {
+                            cover.clone()
+                        } else {
+                            page.first_frame
+                        },
                         live: false,
+                        duration_seconds: page.duration,
+                        width: page.dimension.width,
+                        height: page.dimension.height,
                     });
                 }
 
@@ -1217,6 +1609,9 @@ impl BilibiliClient {
                     title,
                     actors: vec![owner_name],
                     video_infos,
+                    season_id: 0,
+                    cover,
+                    collection,
                 })
             }
         })
@@ -1443,14 +1838,14 @@ impl BilibiliClient {
     pub async fn user_info(&self) -> Result<UserInfo, BilibiliError> {
         let client = self.client.clone();
         let cookie_header = self.build_cookie_header();
+        let url = self.endpoints.api_url("/x/web-interface/nav");
 
         with_retry(|| {
             let client = client.clone();
             let cookie_header = cookie_header.clone();
+            let url = url.clone();
             async move {
-                let mut req = client
-                    .get("https://api.bilibili.com/x/web-interface/nav")
-                    .header("Referer", REFERER);
+                let mut req = client.get(url).header("Referer", REFERER);
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
                 }
@@ -1464,6 +1859,7 @@ impl BilibiliClient {
                 let data = json.data;
                 Ok(UserInfo {
                     is_login: data.is_login,
+                    user_id: data.mid,
                     username: data.uname,
                     face: data.face,
                     is_vip: data.vip_status == 1,
@@ -1481,12 +1877,14 @@ impl BilibiliClient {
     ) -> Result<VideoPageInfo, BilibiliError> {
         let client = self.client.clone();
         let cookie_header = self.build_cookie_header();
+        let url = self.endpoints.api_url("/pgc/view/web/season");
 
         with_retry(|| {
             let client = client.clone();
             let cookie_header = cookie_header.clone();
+            let url = url.clone();
             async move {
-                let mut req = client.get("https://api.bilibili.com/pgc/view/web/season");
+                let mut req = client.get(url);
                 if epid != 0 {
                     req = req.query(&[("ep_id", epid)]);
                 } else {
@@ -1505,6 +1903,8 @@ impl BilibiliClient {
 
                 let result = json.result;
                 let title = result.title;
+                let cover = result.cover;
+                let season_id = result.season_id;
                 let actors_str = result.actors;
                 let actors = if actors_str.is_empty() {
                     vec![]
@@ -1513,11 +1913,13 @@ impl BilibiliClient {
                 };
 
                 let mut video_infos = Vec::new();
-                for ep in result.episodes {
+                for (index, ep) in result.episodes.into_iter().enumerate() {
                     video_infos.push(VideoInfoItem {
                         bvid: ep.bvid,
+                        aid: ep.aid,
                         cid: ep.cid,
                         epid: ep.ep_id,
+                        page: u32::try_from(index + 1).unwrap_or(u32::MAX),
                         name: if ep.long_title.is_empty() {
                             ep.title
                         } else {
@@ -1525,13 +1927,47 @@ impl BilibiliClient {
                         },
                         cover_image: ep.cover,
                         live: false,
+                        duration_seconds: ep.duration / 1_000,
+                        width: 0,
+                        height: 0,
                     });
+                }
+                for section in result.sections {
+                    for ep in section.episodes {
+                        let page = u32::try_from(video_infos.len() + 1).unwrap_or(u32::MAX);
+                        let episode_title = if ep.long_title.is_empty() {
+                            ep.title
+                        } else {
+                            ep.long_title
+                        };
+                        let name = if section.title.is_empty() {
+                            episode_title
+                        } else {
+                            format!("{} - {}", section.title, episode_title)
+                        };
+                        video_infos.push(VideoInfoItem {
+                            bvid: ep.bvid,
+                            aid: ep.aid,
+                            cid: ep.cid,
+                            epid: ep.ep_id,
+                            page,
+                            name,
+                            cover_image: ep.cover,
+                            live: false,
+                            duration_seconds: ep.duration / 1_000,
+                            width: 0,
+                            height: 0,
+                        });
+                    }
                 }
 
                 Ok(VideoPageInfo {
                     title,
                     actors,
                     video_infos,
+                    season_id,
+                    cover,
+                    collection: None,
                 })
             }
         })
@@ -1637,50 +2073,248 @@ impl BilibiliClient {
         .await
     }
 
-    /// Match URL to extract video type and ID
-    pub fn match_url(url: &str) -> Result<(String, String), BilibiliError> {
-        let bvid_regex = RE_BVID
-            .as_ref()
-            .map_err(|err| BilibiliError::Parse(format!("Invalid BVID regex: {err}")))?;
-        let epid_regex = RE_EPID
-            .as_ref()
-            .map_err(|err| BilibiliError::Parse(format!("Invalid EPID regex: {err}")))?;
-        let ssid_regex = RE_SSID
-            .as_ref()
-            .map_err(|err| BilibiliError::Parse(format!("Invalid SSID regex: {err}")))?;
-        let live_room_regex = RE_LIVE_ROOM
-            .as_ref()
-            .map_err(|err| BilibiliError::Parse(format!("Invalid live room regex: {err}")))?;
+    /// Resolve short links and classify a Bilibili URL into a typed resource.
+    pub async fn match_resource(
+        &self,
+        input: &str,
+    ) -> Result<MatchedBilibiliResource, BilibiliError> {
+        let input = input.trim();
+        if input.is_empty() {
+            return Err(BilibiliError::Parse(
+                "Bilibili resource URL must not be empty".to_string(),
+            ));
+        }
+        let normalized = if Self::is_short_link(input) {
+            self.resolve_short_link(input).await?
+        } else {
+            input.to_string()
+        };
+        Self::match_url(&normalized)
+    }
 
-        // Video: BV id
-        if let Some(bvid) = bvid_regex.find(url).map(|m| m.as_str().to_string()) {
-            return Ok(("bv".to_string(), bvid));
+    /// Classify a full Bilibili URL or canonical resource identifier.
+    pub fn match_url(input: &str) -> Result<MatchedBilibiliResource, BilibiliError> {
+        fn positive_id(value: &str, field: &str) -> Result<u64, BilibiliError> {
+            value
+                .parse::<u64>()
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or_else(|| BilibiliError::Parse(format!("Invalid Bilibili {field}: {value}")))
         }
 
-        // Bangumi/Anime: ep id or ss id
-        if url.contains("/bangumi/play/") {
-            if let Some(ep_match) = epid_regex.captures(url) {
-                if let Some(ep_id) = ep_match.get(1) {
-                    return Ok(("ep".to_string(), ep_id.as_str().to_string()));
-                }
-            }
-            if let Some(ss_match) = ssid_regex.captures(url) {
-                if let Some(ss_id) = ss_match.get(1) {
-                    return Ok(("ss".to_string(), ss_id.as_str().to_string()));
-                }
-            }
+        fn query_value(url: &url::Url, key: &str) -> Option<String> {
+            url.query_pairs()
+                .find_map(|(name, value)| (name == key).then(|| value.into_owned()))
         }
 
-        // Live: room id
-        if url.contains("/live/") || url.contains("live.bilibili.com") {
-            if let Some(room_match) = live_room_regex.captures(url) {
-                if let Some(room_id) = room_match.get(1) {
-                    return Ok(("live".to_string(), room_id.as_str().to_string()));
-                }
-            }
+        let input = input.trim();
+        if RE_BVID
+            .as_ref()
+            .is_ok_and(|regex| regex.find(input).is_some())
+            && !input.contains("://")
+        {
+            let bvid = RE_BVID
+                .as_ref()
+                .ok()
+                .and_then(|regex| regex.find(input))
+                .map(|value| value.as_str().to_string())
+                .ok_or_else(|| BilibiliError::Parse("Invalid BVID".to_string()))?;
+            return Ok(MatchedBilibiliResource {
+                normalized_url: format!("https://www.bilibili.com/video/{bvid}"),
+                resource: BilibiliResource::Video {
+                    bvid,
+                    aid: 0,
+                    page: 0,
+                },
+            });
+        }
+        if let Some(aid) = input
+            .strip_prefix("av")
+            .or_else(|| input.strip_prefix("AV"))
+        {
+            let aid = positive_id(aid, "aid")?;
+            return Ok(MatchedBilibiliResource {
+                normalized_url: format!("https://www.bilibili.com/video/av{aid}"),
+                resource: BilibiliResource::Video {
+                    bvid: String::new(),
+                    aid,
+                    page: 0,
+                },
+            });
+        }
+        if let Some(episode_id) = input.strip_prefix("ep") {
+            let episode_id = positive_id(episode_id, "episode ID")?;
+            return Ok(MatchedBilibiliResource {
+                normalized_url: format!("https://www.bilibili.com/bangumi/play/ep{episode_id}"),
+                resource: BilibiliResource::PgcEpisode { episode_id },
+            });
+        }
+        if let Some(season_id) = input.strip_prefix("ss") {
+            let season_id = positive_id(season_id, "season ID")?;
+            return Ok(MatchedBilibiliResource {
+                normalized_url: format!("https://www.bilibili.com/bangumi/play/ss{season_id}"),
+                resource: BilibiliResource::PgcSeason { season_id },
+            });
         }
 
-        Err(BilibiliError::Parse("Cannot parse URL type".to_string()))
+        let url = url::Url::parse(input)
+            .map_err(|error| BilibiliError::Parse(format!("Invalid Bilibili URL: {error}")))?;
+        Self::validate_bilibili_url(url.as_str())?;
+        let host = url.host_str().unwrap_or_default();
+        let segments = url
+            .path_segments()
+            .map(|segments| {
+                segments
+                    .filter(|segment| !segment.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let page = query_value(&url, "p")
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0);
+
+        let resource = if host == "live.bilibili.com" || host.ends_with(".live.bilibili.com") {
+            if segments.is_empty() {
+                BilibiliResource::LiveRecommended
+            } else if segments.starts_with(&["p", "eden", "area-tags"]) {
+                let parent_area_id = query_value(&url, "parentAreaId")
+                    .or_else(|| query_value(&url, "parent_area_id"))
+                    .unwrap_or_default();
+                let area_id = query_value(&url, "areaId")
+                    .or_else(|| query_value(&url, "area_id"))
+                    .unwrap_or_default();
+                BilibiliResource::LiveArea {
+                    parent_area_id: positive_id(&parent_area_id, "live parent area ID")?,
+                    area_id: positive_id(&area_id, "live area ID")?,
+                }
+            } else {
+                let room_id = segments
+                    .strip_prefix(&["live"])
+                    .unwrap_or(&segments)
+                    .first()
+                    .ok_or_else(|| {
+                        BilibiliError::Parse("Missing Bilibili live room ID".to_string())
+                    })?;
+                BilibiliResource::Live {
+                    room_id: positive_id(room_id, "live room ID")?,
+                }
+            }
+        } else if host == "space.bilibili.com" || host.ends_with(".space.bilibili.com") {
+            let mid = positive_id(segments.first().copied().unwrap_or_default(), "UP mid")?;
+            match segments.get(1).copied() {
+                Some("favlist") => BilibiliResource::FavoriteVideos {
+                    media_id: positive_id(
+                        &query_value(&url, "fid").unwrap_or_default(),
+                        "favorite media ID",
+                    )?,
+                },
+                Some("lists") => {
+                    let list_id = positive_id(
+                        segments.get(2).copied().unwrap_or_default(),
+                        "collection or series ID",
+                    )?;
+                    match query_value(&url, "type").as_deref() {
+                        Some("series") => BilibiliResource::SeriesVideos {
+                            mid,
+                            series_id: list_id,
+                        },
+                        _ => BilibiliResource::CollectionVideos {
+                            mid,
+                            season_id: list_id,
+                        },
+                    }
+                }
+                Some("channel") if segments.get(2) == Some(&"seriesdetail") => {
+                    BilibiliResource::SeriesVideos {
+                        mid,
+                        series_id: positive_id(
+                            &query_value(&url, "sid").unwrap_or_default(),
+                            "series ID",
+                        )?,
+                    }
+                }
+                Some("channel") if segments.get(2) == Some(&"collectiondetail") => {
+                    BilibiliResource::CollectionVideos {
+                        mid,
+                        season_id: positive_id(
+                            &query_value(&url, "sid").unwrap_or_default(),
+                            "collection season ID",
+                        )?,
+                    }
+                }
+                None | Some("video") => BilibiliResource::UpVideos { mid },
+                _ => {
+                    return Err(BilibiliError::Parse(
+                        "Unsupported Bilibili space resource URL".to_string(),
+                    ));
+                }
+            }
+        } else if segments.first() == Some(&"video") {
+            let identifier = segments.get(1).copied().unwrap_or_default();
+            if let Some(aid) = identifier
+                .strip_prefix("av")
+                .or_else(|| identifier.strip_prefix("AV"))
+            {
+                BilibiliResource::Video {
+                    bvid: String::new(),
+                    aid: positive_id(aid, "aid")?,
+                    page,
+                }
+            } else {
+                let bvid = RE_BVID
+                    .as_ref()
+                    .ok()
+                    .and_then(|regex| regex.find(identifier))
+                    .map(|value| value.as_str().to_string())
+                    .ok_or_else(|| BilibiliError::Parse("Invalid Bilibili video ID".to_string()))?;
+                BilibiliResource::Video { bvid, aid: 0, page }
+            }
+        } else if segments.first() == Some(&"bangumi") && segments.get(1) == Some(&"play") {
+            let identifier = segments.get(2).copied().unwrap_or_default();
+            if let Some(episode_id) = identifier.strip_prefix("ep") {
+                BilibiliResource::PgcEpisode {
+                    episode_id: positive_id(episode_id, "episode ID")?,
+                }
+            } else if let Some(season_id) = identifier.strip_prefix("ss") {
+                BilibiliResource::PgcSeason {
+                    season_id: positive_id(season_id, "season ID")?,
+                }
+            } else {
+                return Err(BilibiliError::Parse("Invalid Bilibili PGC URL".to_string()));
+            }
+        } else if segments.first() == Some(&"watchlater") {
+            BilibiliResource::WatchLater
+        } else if segments.first() == Some(&"list") {
+            let list_id = positive_id(
+                segments.get(1).copied().unwrap_or_default(),
+                "collection or series ID",
+            )?;
+            let mid = positive_id(
+                &query_value(&url, "mid")
+                    .or_else(|| query_value(&url, "uid"))
+                    .unwrap_or_default(),
+                "UP mid",
+            )?;
+            match query_value(&url, "type").as_deref() {
+                Some("series") => BilibiliResource::SeriesVideos {
+                    mid,
+                    series_id: list_id,
+                },
+                _ => BilibiliResource::CollectionVideos {
+                    mid,
+                    season_id: list_id,
+                },
+            }
+        } else {
+            return Err(BilibiliError::Parse(
+                "Unsupported Bilibili resource URL".to_string(),
+            ));
+        };
+
+        Ok(MatchedBilibiliResource {
+            normalized_url: url.to_string(),
+            resource,
+        })
     }
 
     /// Parse live page
@@ -1735,24 +2369,612 @@ impl BilibiliClient {
                         _ => uid.to_string(),
                     }
                 };
+                let cover = data.user_cover.clone();
 
                 let video_info = VideoInfoItem {
                     bvid: String::new(),
+                    aid: 0,
                     cid: room_id,
                     epid: 0,
+                    page: 0,
                     name: title.clone(),
-                    cover_image: data.user_cover,
+                    cover_image: cover.clone(),
                     live: true,
+                    duration_seconds: 0,
+                    width: 0,
+                    height: 0,
                 };
 
                 Ok(VideoPageInfo {
                     title,
                     actors: vec![uname],
                     video_infos: vec![video_info],
+                    season_id: 0,
+                    cover,
+                    collection: None,
                 })
             }
         })
         .await
+    }
+
+    pub async fn list_recommended_live_rooms(
+        &self,
+        page: u64,
+        page_size: u32,
+    ) -> Result<LiveRoomList, BilibiliError> {
+        if page > 1 {
+            return Ok(LiveRoomList {
+                items: Vec::new(),
+                total: None,
+                has_more: false,
+            });
+        }
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
+        let url = self
+            .endpoints
+            .live_api_url("/xlive/web-interface/v1/webMain/getMoreRecList");
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            let url = url.clone();
+            async move {
+                let mut request = client.get(url).query(&[("platform", "web")]);
+                if let Some(cookies) = cookie_header.as_deref() {
+                    request = request.header("Cookie", cookies);
+                }
+                let response = check_response(request.send().await?).await?;
+                let payload: types::LiveRecommendedResp = json_with_limit(response).await?;
+                if payload.code != 0 {
+                    return Err(bilibili_api_error(
+                        i64::from(payload.code),
+                        "live recommendations",
+                    ));
+                }
+                let mut items = payload
+                    .data
+                    .recommend_room_list
+                    .into_iter()
+                    .filter_map(live_room_from_card)
+                    .collect::<Vec<_>>();
+                items.truncate(page_size.clamp(1, 50) as usize);
+                Ok(LiveRoomList {
+                    items,
+                    total: None,
+                    has_more: false,
+                })
+            }
+        })
+        .await
+    }
+
+    pub async fn list_followed_live_rooms(
+        &self,
+        page: u64,
+        page_size: u32,
+    ) -> Result<LiveRoomList, BilibiliError> {
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
+        let url = self
+            .endpoints
+            .live_api_url("/xlive/web-ucenter/user/following");
+        let page = page.max(1);
+        let page_size = page_size.clamp(1, 10);
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            let url = url.clone();
+            async move {
+                let mut request = client.get(url).query(&[
+                    ("page", page.to_string()),
+                    ("page_size", page_size.to_string()),
+                    ("ignoreRecord", "1".to_string()),
+                    ("hit_ab", "true".to_string()),
+                ]);
+                if let Some(cookies) = cookie_header.as_deref() {
+                    request = request.header("Cookie", cookies);
+                }
+                let response = check_response(request.send().await?).await?;
+                let payload: types::LiveFollowingResp = json_with_limit(response).await?;
+                if payload.code != 0 {
+                    return Err(bilibili_api_error(
+                        i64::from(payload.code),
+                        "followed live rooms",
+                    ));
+                }
+                let total = payload.data.count.value();
+                let has_more = page < payload.data.total_page.value();
+                Ok(LiveRoomList {
+                    items: payload
+                        .data
+                        .list
+                        .into_iter()
+                        .filter_map(live_room_from_card)
+                        .collect(),
+                    total: Some(total),
+                    has_more,
+                })
+            }
+        })
+        .await
+    }
+
+    pub async fn list_area_live_rooms(
+        &self,
+        parent_area_id: u64,
+        area_id: u64,
+        page: u64,
+        page_size: u32,
+    ) -> Result<LiveRoomList, BilibiliError> {
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
+        let url = self
+            .endpoints
+            .live_api_url("/xlive/web-interface/v1/second/getList");
+        let page = page.max(1);
+        let page_size = page_size.clamp(1, 50);
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            let url = url.clone();
+            async move {
+                let mut request = client.get(url).query(&[
+                    ("platform", "web".to_string()),
+                    ("parent_area_id", parent_area_id.to_string()),
+                    ("area_id", area_id.to_string()),
+                    ("sort_type", "online".to_string()),
+                    ("page", page.to_string()),
+                    ("page_size", page_size.to_string()),
+                ]);
+                if let Some(cookies) = cookie_header.as_deref() {
+                    request = request.header("Cookie", cookies);
+                }
+                let response = check_response(request.send().await?).await?;
+                let payload: types::LiveAreaRoomsResp = json_with_limit(response).await?;
+                if payload.code != 0 {
+                    return Err(bilibili_api_error(
+                        i64::from(payload.code),
+                        "live area rooms",
+                    ));
+                }
+                let total = payload.data.count.value();
+                let items = payload
+                    .data
+                    .list
+                    .into_iter()
+                    .filter_map(live_room_from_card)
+                    .collect::<Vec<_>>();
+                let has_more = payload.data.has_more.value() != 0
+                    || page.saturating_mul(u64::from(page_size)) < total;
+                Ok(LiveRoomList {
+                    items,
+                    total: Some(total),
+                    has_more,
+                })
+            }
+        })
+        .await
+    }
+
+    pub async fn list_live_areas(&self) -> Result<Vec<LiveAreaItem>, BilibiliError> {
+        let client = self.client.clone();
+        let url = self.endpoints.live_api_url("/room/v1/Area/getList");
+        with_retry(|| {
+            let client = client.clone();
+            let url = url.clone();
+            async move {
+                let response = check_response(client.get(url).send().await?).await?;
+                let payload: types::LiveAreasResp = json_with_limit(response).await?;
+                if payload.code != 0 {
+                    return Err(bilibili_api_error(i64::from(payload.code), "live areas"));
+                }
+                Ok(payload
+                    .data
+                    .into_iter()
+                    .flat_map(|parent| {
+                        let parent_id = parent.id.value();
+                        let parent_name = parent.name;
+                        parent.list.into_iter().filter_map(move |area| {
+                            let id = area.id.value();
+                            (id > 0).then(|| LiveAreaItem {
+                                id,
+                                parent_id: if area.parent_id.value() > 0 {
+                                    area.parent_id.value()
+                                } else {
+                                    parent_id
+                                },
+                                name: area.name,
+                                parent_name: if area.parent_name.is_empty() {
+                                    parent_name.clone()
+                                } else {
+                                    area.parent_name
+                                },
+                                picture: area.pic,
+                                hot: area.hot_status.value() != 0,
+                            })
+                        })
+                    })
+                    .collect())
+            }
+        })
+        .await
+    }
+
+    pub async fn list_favorite_folders(&self) -> Result<Vec<FavoriteFolder>, BilibiliError> {
+        let user = self.user_info().await?;
+        if !user.is_login || user.user_id == 0 {
+            return Err(BilibiliError::Api {
+                code: -101,
+                message: "Bilibili authentication is required".to_string(),
+            });
+        }
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
+        let url = self.endpoints.api_url("/x/v3/fav/folder/created/list-all");
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            let url = url.clone();
+            async move {
+                let mut request = client.get(url).query(&[("up_mid", user.user_id)]);
+                if let Some(cookies) = cookie_header.as_deref() {
+                    request = request.header("Cookie", cookies);
+                }
+                let response = check_response(request.send().await?).await?;
+                let payload: types::FavoriteFoldersResp = json_with_limit(response).await?;
+                if payload.code != 0 {
+                    return Err(bilibili_api_error(
+                        i64::from(payload.code),
+                        "favorite folders",
+                    ));
+                }
+                Ok(payload
+                    .data
+                    .list
+                    .into_iter()
+                    .filter(|folder| folder.id > 0)
+                    .map(|folder| FavoriteFolder {
+                        media_id: folder.id,
+                        title: folder.title,
+                        media_count: folder.media_count,
+                        private: folder.attr & 1 != 0,
+                        default_folder: folder.attr & 2 == 0,
+                    })
+                    .collect())
+            }
+        })
+        .await
+    }
+
+    pub async fn list_followed_pgc(
+        &self,
+        season_type: u32,
+        page: u64,
+        page_size: u32,
+    ) -> Result<FollowedPgcList, BilibiliError> {
+        if !matches!(season_type, 1 | 2) {
+            return Err(BilibiliError::InvalidConfig(
+                "Bilibili followed PGC type must be 1 (anime) or 2 (cinema)".to_string(),
+            ));
+        }
+        let user = self.user_info().await?;
+        if !user.is_login || user.user_id == 0 {
+            return Err(BilibiliError::Api {
+                code: -101,
+                message: "Bilibili authentication is required".to_string(),
+            });
+        }
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
+        let url = self.endpoints.api_url("/x/space/bangumi/follow/list");
+        let page = page.max(1);
+        let page_size = page_size.clamp(1, 30);
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            let url = url.clone();
+            async move {
+                let mut request = client.get(url).query(&[
+                    ("vmid", user.user_id.to_string()),
+                    ("type", season_type.to_string()),
+                    ("pn", page.to_string()),
+                    ("ps", page_size.to_string()),
+                ]);
+                if let Some(cookies) = cookie_header.as_deref() {
+                    request = request.header("Cookie", cookies);
+                }
+                let response = check_response(request.send().await?).await?;
+                let payload: types::FollowedPgcResp = json_with_limit(response).await?;
+                if payload.code != 0 {
+                    return Err(bilibili_api_error(i64::from(payload.code), "followed PGC"));
+                }
+                let total = payload.data.total;
+                Ok(FollowedPgcList {
+                    items: payload
+                        .data
+                        .list
+                        .into_iter()
+                        .filter(|season| season.season_id > 0)
+                        .map(|season| FollowedPgcSeason {
+                            season_id: season.season_id,
+                            title: season.title,
+                            cover: season.cover,
+                            description: season.evaluate,
+                            latest_episode: season.new_ep.index_show,
+                        })
+                        .collect(),
+                    total,
+                    has_more: page.saturating_mul(u64::from(page_size)) < total,
+                })
+            }
+        })
+        .await
+    }
+
+    pub async fn list_history(
+        &self,
+        history_type: &str,
+        cursor: Option<&HistoryCursor>,
+        page_size: u32,
+    ) -> Result<HistoryPage, BilibiliError> {
+        let history_type = match history_type {
+            "all" | "archive" | "live" => history_type,
+            _ => {
+                return Err(BilibiliError::InvalidConfig(
+                    "Bilibili history type must be all, archive, or live".to_string(),
+                ));
+            }
+        };
+        let mut query = vec![
+            ("type".to_string(), history_type.to_string()),
+            ("ps".to_string(), page_size.clamp(1, 30).to_string()),
+        ];
+        if let Some(cursor) = cursor {
+            query.extend([
+                ("max".to_string(), cursor.max.to_string()),
+                ("view_at".to_string(), cursor.view_at.to_string()),
+                ("business".to_string(), cursor.business.clone()),
+            ]);
+        }
+        let response = self
+            .get_api::<types::HistoryDataDto>("/x/web-interface/history/cursor", query)
+            .await?;
+        if response.code != 0 {
+            return Err(bilibili_api_error(i64::from(response.code), "history list"));
+        }
+        let data = response.data.ok_or_else(|| {
+            BilibiliError::Parse("Bilibili history response missing data".to_string())
+        })?;
+        let upstream_count = data.list.len();
+        let cursor = HistoryCursor {
+            max: data.cursor.max,
+            view_at: data.cursor.view_at,
+            business: data.cursor.business,
+        };
+        let items = data
+            .list
+            .into_iter()
+            .filter_map(|item| {
+                let resource = match item.history.business.as_str() {
+                    "archive"
+                        if !item.history.bvid.is_empty()
+                            && item.history.oid > 0
+                            && item.history.cid > 0 =>
+                    {
+                        HistoryResource::Video {
+                            bvid: item.history.bvid,
+                            aid: item.history.oid,
+                            cid: item.history.cid,
+                        }
+                    }
+                    "pgc" if item.history.epid > 0 && item.history.cid > 0 => {
+                        HistoryResource::Pgc {
+                            epid: item.history.epid,
+                            cid: item.history.cid,
+                        }
+                    }
+                    "live" if item.history.oid > 0 && item.live_status == 1 => {
+                        HistoryResource::Live {
+                            room_id: item.history.oid,
+                        }
+                    }
+                    _ => return None,
+                };
+                Some(HistoryItem {
+                    resource,
+                    title: item.title,
+                    subtitle: item.long_title,
+                    cover: item.cover,
+                    author: item.author_name,
+                    viewed_at: item.view_at,
+                    progress_seconds: item.progress,
+                    duration_seconds: item.duration,
+                })
+            })
+            .collect();
+        let has_more = upstream_count > 0
+            && cursor.view_at > 0
+            && cursor.max > 0
+            && !cursor.business.is_empty();
+        Ok(HistoryPage {
+            items,
+            cursor: has_more.then_some(cursor),
+            has_more,
+        })
+    }
+
+    pub async fn list_pgc_timeline(
+        &self,
+        timeline_type: u32,
+        before_days: u32,
+        after_days: u32,
+    ) -> Result<Vec<PgcTimelineItem>, BilibiliError> {
+        if !matches!(timeline_type, 1 | 3 | 4) {
+            return Err(BilibiliError::InvalidConfig(
+                "Bilibili timeline type must be anime, cinema, or guochuang".to_string(),
+            ));
+        }
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
+        let url = self.endpoints.api_url("/pgc/web/timeline");
+        let before_days = before_days.min(7);
+        let after_days = after_days.min(7);
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            let url = url.clone();
+            async move {
+                let mut request = client.get(url).query(&[
+                    ("types", timeline_type),
+                    ("before", before_days),
+                    ("after", after_days),
+                ]);
+                if let Some(cookies) = cookie_header.as_deref() {
+                    request = request.header("Cookie", cookies);
+                }
+                let response = check_response(request.send().await?).await?;
+                let payload: types::TimelineResp = json_with_limit(response).await?;
+                if payload.code != 0 {
+                    return Err(bilibili_api_error(i64::from(payload.code), "PGC timeline"));
+                }
+                let items = payload
+                    .result
+                    .into_iter()
+                    .flat_map(|day| {
+                        day.episodes
+                            .into_iter()
+                            .map(move |episode| PgcTimelineItem {
+                                episode_id: episode.episode_id,
+                                season_id: episode.season_id,
+                                cid: 0,
+                                title: episode.title,
+                                episode_title: episode.pub_index,
+                                cover: episode.cover,
+                                episode_cover: episode.ep_cover,
+                                publish_at: episode.pub_ts,
+                                published: episode.published != 0,
+                                date: day.date.clone(),
+                                day_of_week: day.day_of_week,
+                                delayed: episode.delay != 0,
+                                delay_reason: episode.delay_reason,
+                            })
+                    })
+                    .filter(|item| item.episode_id > 0)
+                    .collect::<Vec<_>>();
+                let mut items = futures_util::stream::iter(items.into_iter().enumerate())
+                    .map(|(index, mut item)| async move {
+                        if item.published {
+                            item.cid = self
+                                .parse_pgc_page(item.episode_id, 0)
+                                .await
+                                .ok()
+                                .and_then(|page| {
+                                    page.video_infos
+                                        .into_iter()
+                                        .find(|video| video.epid == item.episode_id)
+                                })
+                                .map_or(0, |video| video.cid);
+                        }
+                        (index, item)
+                    })
+                    .buffer_unordered(8)
+                    .collect::<Vec<_>>()
+                    .await;
+                items.sort_unstable_by_key(|(index, _)| *index);
+                Ok(items.into_iter().map(|(_, item)| item).collect())
+            }
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn list_pgc_seasons(
+        &self,
+        season_type: u32,
+        page: u64,
+        page_size: u32,
+        order: u32,
+        ascending: bool,
+        finished: Option<bool>,
+        area: Option<&str>,
+        year: Option<&str>,
+        style_id: Option<u64>,
+    ) -> Result<PgcSeasonIndexPage, BilibiliError> {
+        if !matches!(season_type, 1 | 2 | 3 | 4 | 5 | 7) || order > 6 {
+            return Err(BilibiliError::InvalidConfig(
+                "Bilibili PGC season index filter is invalid".to_string(),
+            ));
+        }
+        let page = page.max(1);
+        let page_size = page_size.clamp(1, 50);
+        let mut query = vec![
+            ("season_type".to_string(), season_type.to_string()),
+            ("st".to_string(), season_type.to_string()),
+            ("type".to_string(), "1".to_string()),
+            ("page".to_string(), page.to_string()),
+            ("pagesize".to_string(), page_size.to_string()),
+            ("order".to_string(), order.to_string()),
+            (
+                "sort".to_string(),
+                if ascending { "1" } else { "0" }.to_string(),
+            ),
+        ];
+        if let Some(finished) = finished {
+            query.push((
+                "is_finish".to_string(),
+                if finished { "1" } else { "0" }.to_string(),
+            ));
+        }
+        if let Some(area) = area.map(str::trim).filter(|value| !value.is_empty()) {
+            query.push(("area".to_string(), area.to_string()));
+        }
+        if let Some(year) = year.map(str::trim).filter(|value| !value.is_empty()) {
+            let field = if matches!(season_type, 1 | 4) {
+                "year"
+            } else {
+                "release_date"
+            };
+            query.push((field.to_string(), year.to_string()));
+        }
+        if let Some(style_id) = style_id.filter(|value| *value > 0) {
+            query.push(("style_id".to_string(), style_id.to_string()));
+        }
+        let response = self
+            .get_api::<types::SeasonIndexDataDto>("/pgc/season/index/result", query)
+            .await?;
+        if response.code != 0 {
+            return Err(bilibili_api_error(
+                i64::from(response.code),
+                "PGC season index",
+            ));
+        }
+        let data = response.data.ok_or_else(|| {
+            BilibiliError::Parse("Bilibili PGC season index response missing data".to_string())
+        })?;
+        Ok(PgcSeasonIndexPage {
+            items: data
+                .list
+                .into_iter()
+                .filter(|item| item.season_id > 0)
+                .map(|item| PgcSeasonIndexItem {
+                    season_id: item.season_id,
+                    media_id: item.media_id,
+                    first_episode_id: item.first_ep.ep_id,
+                    title: item.title,
+                    subtitle: item.subtitle,
+                    cover: item.cover,
+                    first_episode_cover: item.first_ep.cover,
+                    badge: item.badge,
+                    progress: item.index_show,
+                    score: item.score,
+                    finished: item.is_finish != 0,
+                    season_type: item.season_type,
+                })
+                .collect(),
+            total: data.total,
+            has_more: data.has_next != 0,
+        })
     }
 
     /// Get live streams
@@ -2123,7 +3345,7 @@ impl LiveDanmakuConnection {
     /// Stop the automatic heartbeat loop.
     ///
     /// This method signals the heartbeat task to stop and aborts it.
-    /// After calling this, you can call [`start_heartbeat_loop_arc`](Self::start_heartbeat_loop_arc)
+    /// After calling this, you can call [`start_heartbeat_loop`](Self::start_heartbeat_loop)
     /// again if needed.
     pub async fn stop_heartbeat_loop(&self) {
         // Signal the heartbeat task to stop
@@ -2145,13 +3367,12 @@ impl LiveDanmakuConnection {
 }
 
 impl LiveDanmakuConnection {
-    /// Start automatic heartbeat loop with `Arc<Self>`.
+    /// Start the automatic heartbeat loop.
     ///
     /// This is the recommended way to start the heartbeat loop when you have
     /// an `Arc<LiveDanmakuConnection>`.
     ///
     /// # Arguments
-    /// * `self_ptr` - An `Arc` reference to this connection
     /// * `config` - Heartbeat configuration including interval
     ///
     /// # Returns
@@ -2172,7 +3393,7 @@ impl LiveDanmakuConnection {
     /// let config = HeartbeatConfig {
     ///     interval: Duration::from_secs(30),
     /// };
-    /// conn.start_heartbeat_loop_arc(Arc::clone(&conn), config).await;
+    /// conn.start_heartbeat_loop(config).await;
     ///
     /// while let Ok(messages) = conn.recv().await {
     ///     for message in messages {
@@ -2184,11 +3405,7 @@ impl LiveDanmakuConnection {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn start_heartbeat_loop_arc(
-        self: &Arc<Self>,
-        self_ptr: Arc<Self>,
-        config: HeartbeatConfig,
-    ) -> bool {
+    pub async fn start_heartbeat_loop(self: &Arc<Self>, config: HeartbeatConfig) -> bool {
         let mut handle_guard = self.heartbeat_handle.lock().await;
 
         // Already running
@@ -2202,6 +3419,7 @@ impl LiveDanmakuConnection {
         self.heartbeat_stop.store(false, Ordering::SeqCst);
 
         let stop_flag = Arc::clone(&self.heartbeat_stop);
+        let connection = Arc::downgrade(self);
         let interval = config.interval;
 
         // Spawn the heartbeat task
@@ -2220,8 +3438,10 @@ impl LiveDanmakuConnection {
                     break;
                 }
 
-                // Send heartbeat
-                if self_ptr.send_heartbeat().await.is_err() {
+                let Some(connection) = connection.upgrade() else {
+                    break;
+                };
+                if connection.send_heartbeat().await.is_err() {
                     // Connection likely closed, stop the loop
                     break;
                 }
@@ -2230,6 +3450,15 @@ impl LiveDanmakuConnection {
 
         *handle_guard = Some(handle);
         true
+    }
+}
+
+impl Drop for LiveDanmakuConnection {
+    fn drop(&mut self) {
+        self.heartbeat_stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.heartbeat_handle.get_mut().take() {
+            handle.abort();
+        }
     }
 }
 
@@ -2409,9 +3638,7 @@ impl ReconnectableLiveDanmakuConnection {
 
                     // Start heartbeat loop if configured
                     if let Some(ref heartbeat_config) = self.heartbeat_config {
-                        new_conn
-                            .start_heartbeat_loop_arc(Arc::clone(&new_conn), *heartbeat_config)
-                            .await;
+                        new_conn.start_heartbeat_loop(*heartbeat_config).await;
                     }
 
                     self.connection = Some(new_conn);
@@ -2782,16 +4009,53 @@ pub struct VideoPageInfo {
     pub title: String,
     pub actors: Vec<String>,
     pub video_infos: Vec<VideoInfoItem>,
+    pub season_id: u64,
+    pub cover: String,
+    pub collection: Option<BilibiliCollectionInfo>,
 }
 
 #[derive(Debug, Clone)]
 pub struct VideoInfoItem {
     pub bvid: String,
+    pub aid: u64,
     pub cid: u64,
     pub epid: u64,
+    pub page: u32,
     pub name: String,
     pub cover_image: String,
     pub live: bool,
+    pub duration_seconds: u64,
+    pub width: u64,
+    pub height: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliCollectionInfo {
+    pub mid: u64,
+    pub season_id: u64,
+    pub title: String,
+    pub cover: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchedBilibiliResource {
+    pub normalized_url: String,
+    pub resource: BilibiliResource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BilibiliResource {
+    Video { bvid: String, aid: u64, page: u32 },
+    PgcEpisode { episode_id: u64 },
+    PgcSeason { season_id: u64 },
+    Live { room_id: u64 },
+    LiveRecommended,
+    LiveArea { parent_area_id: u64, area_id: u64 },
+    UpVideos { mid: u64 },
+    FavoriteVideos { media_id: u64 },
+    CollectionVideos { mid: u64, season_id: u64 },
+    SeriesVideos { mid: u64, series_id: u64 },
+    WatchLater,
 }
 
 /// A single segment (durl) from Bilibili's multi-segment video response.
@@ -2821,9 +4085,108 @@ pub struct VideoUrlInfo {
 #[derive(Debug, Clone)]
 pub struct UserInfo {
     pub is_login: bool,
+    pub user_id: u64,
     pub username: String,
     pub face: String,
     pub is_vip: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct FavoriteFolder {
+    pub media_id: u64,
+    pub title: String,
+    pub media_count: u64,
+    pub private: bool,
+    pub default_folder: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct FollowedPgcSeason {
+    pub season_id: u64,
+    pub title: String,
+    pub cover: String,
+    pub description: String,
+    pub latest_episode: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct FollowedPgcList {
+    pub items: Vec<FollowedPgcSeason>,
+    pub total: u64,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryCursor {
+    pub max: u64,
+    pub view_at: i64,
+    pub business: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HistoryResource {
+    Video { bvid: String, aid: u64, cid: u64 },
+    Pgc { epid: u64, cid: u64 },
+    Live { room_id: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryItem {
+    pub resource: HistoryResource,
+    pub title: String,
+    pub subtitle: String,
+    pub cover: String,
+    pub author: String,
+    pub viewed_at: i64,
+    pub progress_seconds: i64,
+    pub duration_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryPage {
+    pub items: Vec<HistoryItem>,
+    pub cursor: Option<HistoryCursor>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PgcTimelineItem {
+    pub episode_id: u64,
+    pub season_id: u64,
+    pub cid: u64,
+    pub title: String,
+    pub episode_title: String,
+    pub cover: String,
+    pub episode_cover: String,
+    pub publish_at: i64,
+    pub published: bool,
+    pub date: String,
+    pub day_of_week: u32,
+    pub delayed: bool,
+    pub delay_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PgcSeasonIndexItem {
+    pub season_id: u64,
+    pub media_id: u64,
+    pub first_episode_id: u64,
+    pub title: String,
+    pub subtitle: String,
+    pub cover: String,
+    pub first_episode_cover: String,
+    pub badge: String,
+    pub progress: String,
+    pub score: String,
+    pub finished: bool,
+    pub season_type: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PgcSeasonIndexPage {
+    pub items: Vec<PgcSeasonIndexItem>,
+    pub total: u64,
+    pub has_more: bool,
 }
 
 /// Live stream information
@@ -2832,6 +4195,62 @@ pub struct LiveStream {
     pub quality: u32,
     pub urls: Vec<String>,
     pub desc: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveRoomListItem {
+    pub room_id: u64,
+    pub title: String,
+    pub cover: String,
+    pub author: String,
+    pub author_id: u64,
+    pub author_avatar: String,
+    pub parent_area_id: u64,
+    pub parent_area_name: String,
+    pub area_id: u64,
+    pub area_name: String,
+    pub online: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveRoomList {
+    pub items: Vec<LiveRoomListItem>,
+    pub total: Option<u64>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveAreaItem {
+    pub id: u64,
+    pub parent_id: u64,
+    pub name: String,
+    pub parent_name: String,
+    pub picture: String,
+    pub hot: bool,
+}
+
+fn live_room_from_card(card: types::LiveRoomCard) -> Option<LiveRoomListItem> {
+    let room_id = card.roomid.value();
+    if room_id == 0 {
+        return None;
+    }
+    let cover = [card.user_cover, card.keyframe, card.cover]
+        .into_iter()
+        .find(|value| !value.trim().is_empty())
+        .unwrap_or_default();
+    Some(LiveRoomListItem {
+        room_id,
+        title: card.title,
+        cover,
+        author: card.uname,
+        author_id: card.uid.value(),
+        author_avatar: card.face,
+        parent_area_id: card.area_v2_parent_id.value(),
+        parent_area_name: card.area_v2_parent_name,
+        area_id: card.area_v2_id.value(),
+        area_name: card.area_v2_name,
+        online: card.online.value(),
+    })
 }
 
 /// Live danmaku server information
@@ -2925,6 +4344,7 @@ pub struct VideoStreamData {
     pub height: u64,
     pub frame_rate: String,
     pub bandwidth: u64,
+    pub codecid: u32,
     pub sar: String,
     pub start_with_sap: u64,
     pub segment_base: SegmentBaseData,
@@ -2934,6 +4354,7 @@ pub struct VideoStreamData {
 #[derive(Debug, Clone)]
 pub struct AudioStreamData {
     pub id: u64,
+    pub quality_name: String,
     pub base_url: String,
     pub backup_urls: Vec<String>,
     pub mime_type: String,
@@ -2973,8 +4394,12 @@ impl From<&VideoStreamData> for crate::transport_dto::bilibili::VideoStream {
             height: data.height,
             frame_rate: data.frame_rate.clone(),
             bandwidth: data.bandwidth,
+            codecid: data.codecid,
             start_with_sap: data.start_with_sap,
             segment_base: Some((&data.segment_base).into()),
+            backup_urls: data.backup_urls.clone(),
+            quality_name: data.quality_name.clone(),
+            sar: data.sar.clone(),
         }
     }
 }
@@ -2990,6 +4415,8 @@ impl From<&AudioStreamData> for crate::transport_dto::bilibili::AudioStream {
             start_with_sap: data.start_with_sap,
             segment_base: Some((&data.segment_base).into()),
             audio_sampling_rate: data.audio_sampling_rate,
+            backup_urls: data.backup_urls.clone(),
+            quality_name: data.quality_name.clone(),
         }
     }
 }
@@ -3032,8 +4459,18 @@ fn parse_dash_info(
     let parsed_audios: Vec<AudioStreamData> = dash_info
         .audio
         .iter()
+        .chain(dash_info.dolby.iter().flat_map(|dolby| dolby.audio.iter()))
+        .chain(dash_info.flac.iter().filter_map(|flac| flac.audio.as_ref()))
         .map(|audio| AudioStreamData {
             id: audio.id,
+            quality_name: match audio.id {
+                30_251 => "Hi-Res FLAC".to_string(),
+                30_250 => "Dolby Atmos".to_string(),
+                30_280 => "192K".to_string(),
+                30_232 => "132K".to_string(),
+                30_216 => "64K".to_string(),
+                id => format!("Audio {id}"),
+            },
             base_url: audio.base_url.clone(),
             backup_urls: audio.backup_url.clone(),
             mime_type: audio.mime_type.clone(),
@@ -3069,6 +4506,7 @@ fn parse_dash_info(
             height: video.height,
             frame_rate: video.frame_rate.clone(),
             bandwidth: video.bandwidth,
+            codecid: video.codecid,
             sar: video.sar.clone(),
             start_with_sap: video.start_with_sap,
             segment_base: SegmentBaseData {

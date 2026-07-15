@@ -3,23 +3,31 @@
 //! Unified implementation for all Bilibili API operations.
 //! Used by both HTTP and gRPC handlers.
 
+use source_config_proto::bilibili_playlist_source_config::Source as PlaylistSource;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::models::{
-    resolve_provider_instance_binding, CredentialProviderInstanceName, UserId,
+    resolve_provider_instance_binding, BilibiliHistoryType, BilibiliPgcTimelineType,
+    CredentialProviderInstanceName, UserId,
 };
 use synctv_core::provider::{
-    BilibiliMatchRequest, BilibiliParseLivePageRequest, BilibiliParsePgcPageRequest,
-    BilibiliParseVideoPageRequest, BilibiliProvider, BilibiliQrLoginStatus,
-    BilibiliSmsLoginTokenCodec, BilibiliUserInfoRequest, ExecutionControl, ProviderAccessService,
+    BilibiliMatchRequest, BilibiliMatchedResource, BilibiliParseLivePageRequest,
+    BilibiliParsePgcPageRequest, BilibiliParseVideoPageRequest, BilibiliProvider,
+    BilibiliQrLoginStatus, BilibiliSmsLoginTokenCodec, BilibiliUserInfoRequest, ExecutionControl,
+    ProviderAccessService, ProviderError,
 };
 use synctv_proto::providers::bilibili::{
-    BindInfo, CheckQrRequest, GetBindsResponse, LoginQrRequest, LoginSmsRequest, LoginSmsResponse,
-    LogoutRequest, LogoutResponse, ParseRequest, ParseResponse, QrCodeResponse, QrStatusResponse,
-    SendSmsRequest, SendSmsResponse, StartSmsLoginRequest, StartSmsLoginResponse, UserInfoRequest,
-    UserInfoResponse, VideoInfo,
+    BindInfo, CheckQrRequest, FavoriteFolder, FollowedPgcSeason, GetBindsResponse, HistoryItem,
+    ListFavoriteFoldersRequest, ListFavoriteFoldersResponse, ListFollowedPgcRequest,
+    ListFollowedPgcResponse, ListHistoryRequest, ListHistoryResponse, ListLiveAreasRequest,
+    ListLiveAreasResponse, ListPgcSeasonsRequest, ListPgcSeasonsResponse, ListPgcTimelineRequest,
+    ListPgcTimelineResponse, LiveArea, LoginQrRequest, LoginSmsRequest, LoginSmsResponse,
+    LogoutRequest, LogoutResponse, ParseCandidate, ParseRequest, ParseResponse, PgcSeason,
+    PgcTimelineItem, QrCodeResponse, QrStatusResponse, SendSmsRequest, SendSmsResponse,
+    StartSmsLoginRequest, StartSmsLoginResponse, UserInfoRequest, UserInfoResponse,
 };
+use synctv_proto::source_config as source_config_proto;
 use synctv_realtime::fanout::RealtimeEventService;
 
 use super::ProviderApiRuntime;
@@ -27,6 +35,11 @@ use super::{
     provider_instance_name_for_provider, provider_instance_name_for_response,
     publish_provider_credential_changed,
 };
+
+fn checked_u32(value: i32, field: &str) -> Result<u32, ProviderError> {
+    u32::try_from(value)
+        .map_err(|_| ProviderError::InvalidConfig(format!("Bilibili {field} must be non-negative")))
+}
 
 /// Bilibili API implementation
 ///
@@ -48,15 +61,91 @@ struct ResolvedBilibiliCredential {
 
 const QR_LOGIN_STATUS_CACHE_TTL_SECONDS: u64 = 2;
 
-fn parse_bilibili_match_id(
-    raw: &str,
-    field: &str,
-) -> Result<u64, synctv_core::provider::ProviderError> {
-    raw.parse::<u64>().map_err(|error| {
-        synctv_core::provider::ProviderError::ParseError(format!(
-            "Invalid Bilibili {field} id '{raw}': {error}"
-        ))
-    })
+fn bilibili_media_parse_candidate(
+    video: synctv_core::provider::BilibiliVideoInfo,
+    page_title: &str,
+    actors: &[String],
+) -> ParseCandidate {
+    use source_config_proto::bilibili_media_source_config::Source;
+    use source_config_proto::media_source_config::Provider;
+
+    let source = if video.r#live {
+        Source::Live(source_config_proto::BilibiliLiveSourceConfig {
+            room_id: video.cid,
+            shared: false,
+        })
+    } else if video.epid > 0 {
+        Source::Pgc(source_config_proto::BilibiliPgcSourceConfig {
+            epid: video.epid,
+            cid: video.cid,
+            shared: false,
+        })
+    } else {
+        Source::Video(source_config_proto::BilibiliVideoSourceConfig {
+            bvid: video.bvid,
+            aid: (video.aid > 0).then_some(video.aid),
+            cid: video.cid,
+            shared: false,
+        })
+    };
+    let title = if video.name.trim().is_empty() {
+        page_title.to_string()
+    } else {
+        video.name
+    };
+    ParseCandidate {
+        title,
+        description: String::new(),
+        cover: video.cover_image,
+        actors: actors.to_vec(),
+        duration_seconds: (video.duration_seconds > 0).then_some(video.duration_seconds),
+        part_number: (video.page > 0).then_some(video.page),
+        width: (video.width > 0).then_some(video.width),
+        height: (video.height > 0).then_some(video.height),
+        source_config: Some(
+            synctv_proto::providers::bilibili::parse_candidate::SourceConfig::Media(
+                source_config_proto::MediaSourceConfig {
+                    provider: Some(Provider::Bilibili(
+                        source_config_proto::BilibiliMediaSourceConfig {
+                            source: Some(source),
+                        },
+                    )),
+                },
+            ),
+        ),
+    }
+}
+
+fn bilibili_playlist_parse_candidate(
+    title: String,
+    description: String,
+    cover: String,
+    source: source_config_proto::bilibili_playlist_source_config::Source,
+) -> ParseCandidate {
+    use source_config_proto::playlist_source_config::Provider;
+
+    ParseCandidate {
+        title,
+        description,
+        cover,
+        actors: Vec::new(),
+        duration_seconds: None,
+        part_number: None,
+        width: None,
+        height: None,
+        source_config: Some(
+            synctv_proto::providers::bilibili::parse_candidate::SourceConfig::Playlist(
+                source_config_proto::PlaylistSourceConfig {
+                    provider: Some(Provider::Bilibili(
+                        source_config_proto::BilibiliPlaylistSourceConfig {
+                            source: Some(source),
+                            shared: false,
+                        },
+                    )),
+                },
+            ),
+        ),
+    }
 }
 
 const fn bilibili_qr_status_to_proto(status: BilibiliQrLoginStatus) -> i32 {
@@ -175,109 +264,213 @@ impl BilibiliApiImpl {
             )
             .await?;
 
-        // Step 2: Parse based on type
-        let page_info = match match_resp.content_type.as_str() {
-            "video" | "bv" | "av" => {
-                let parse_req = BilibiliParseVideoPageRequest {
-                    cookies: cookies.clone(),
-                    bvid: if match_resp.content_type == "bv" {
-                        match_resp.id.clone()
-                    } else {
-                        String::new()
-                    },
-                    aid: if match_resp.content_type == "av" {
-                        parse_bilibili_match_id(&match_resp.id, "aid")?
-                    } else {
-                        0
-                    },
-                    sections: false,
-                };
-
-                self.provider
+        let normalized_url = match_resp.normalized_url;
+        let mut candidates = Vec::new();
+        match match_resp.resource {
+            BilibiliMatchedResource::Video { bvid, aid, page } => {
+                let page_info = self
+                    .provider
                     .parse_video_page_with_context(
-                        parse_req,
+                        BilibiliParseVideoPageRequest {
+                            cookies: cookies.clone(),
+                            bvid: bvid.clone(),
+                            aid,
+                            sections: true,
+                        },
                         effective_instance_name.as_deref(),
                         request_context,
                     )
-                    .await?
+                    .await?;
+                let mut videos = page_info.videos;
+                if page > 0 {
+                    videos.sort_by_key(|video| video.page != page);
+                }
+                candidates.extend(videos.into_iter().map(|video| {
+                    bilibili_media_parse_candidate(video, &page_info.title, &page_info.actors)
+                }));
+                if candidates.len() > 1 {
+                    candidates.push(bilibili_playlist_parse_candidate(
+                        page_info.title.clone(),
+                        "All video parts".to_string(),
+                        page_info.cover.clone(),
+                        PlaylistSource::VideoParts(
+                            source_config_proto::BilibiliVideoPartsPlaylistSource {
+                                bvid: bvid.clone(),
+                                aid: (aid > 0).then_some(aid),
+                            },
+                        ),
+                    ));
+                }
+                if let Some(collection) = page_info.collection {
+                    candidates.push(bilibili_playlist_parse_candidate(
+                        collection.title,
+                        "Bilibili collection".to_string(),
+                        collection.cover,
+                        PlaylistSource::CollectionVideos(
+                            source_config_proto::BilibiliCollectionVideosPlaylistSource {
+                                mid: collection.mid,
+                                season_id: collection.season_id,
+                            },
+                        ),
+                    ));
+                }
             }
-            "pgc" | "ep" | "ss" => {
-                let parse_req = BilibiliParsePgcPageRequest {
-                    cookies: cookies.clone(),
-                    epid: if match_resp.content_type == "ep" {
-                        parse_bilibili_match_id(&match_resp.id, "epid")?
-                    } else {
-                        0
-                    },
-                    ssid: if match_resp.content_type == "ss" {
-                        parse_bilibili_match_id(&match_resp.id, "ssid")?
-                    } else {
-                        0
-                    },
+            resource @ (BilibiliMatchedResource::PgcEpisode { .. }
+            | BilibiliMatchedResource::PgcSeason { .. }) => {
+                let (episode_request, episode_id) = match resource {
+                    BilibiliMatchedResource::PgcEpisode { episode_id } => (true, episode_id),
+                    BilibiliMatchedResource::PgcSeason { season_id } => (false, season_id),
+                    _ => unreachable!(),
                 };
-
-                self.provider
+                let page_info = self
+                    .provider
                     .parse_pgc_page_with_context(
-                        parse_req,
+                        BilibiliParsePgcPageRequest {
+                            cookies: cookies.clone(),
+                            ssid: if episode_request {
+                                Default::default()
+                            } else {
+                                episode_id
+                            },
+                            epid: if episode_request {
+                                episode_id
+                            } else {
+                                Default::default()
+                            },
+                        },
                         effective_instance_name.as_deref(),
                         request_context,
                     )
-                    .await?
-            }
-            "live" => {
-                let parse_req = BilibiliParseLivePageRequest {
-                    cookies: cookies.clone(),
-                    room_id: parse_bilibili_match_id(&match_resp.id, "room")?,
+                    .await?;
+                let season_id = if page_info.season_id > 0 {
+                    page_info.season_id
+                } else if episode_request {
+                    0
+                } else {
+                    episode_id
                 };
-
-                self.provider
+                let season_candidate = (season_id > 0).then(|| {
+                    bilibili_playlist_parse_candidate(
+                        page_info.title.clone(),
+                        "Bilibili PGC season".to_string(),
+                        page_info.cover.clone(),
+                        PlaylistSource::PgcSeason(
+                            source_config_proto::BilibiliPgcSeasonPlaylistSource { season_id },
+                        ),
+                    )
+                });
+                let mut videos = page_info.videos;
+                if episode_request {
+                    videos.sort_by_key(|video| video.epid != episode_id);
+                } else if let Some(candidate) = season_candidate.clone() {
+                    candidates.push(candidate);
+                }
+                candidates.extend(videos.into_iter().map(|video| {
+                    bilibili_media_parse_candidate(video, &page_info.title, &page_info.actors)
+                }));
+                if episode_request {
+                    candidates.extend(season_candidate);
+                }
+            }
+            BilibiliMatchedResource::Live { room_id } => {
+                let page_info = self
+                    .provider
                     .parse_live_page_with_context(
-                        parse_req,
+                        BilibiliParseLivePageRequest {
+                            cookies: cookies.clone(),
+                            room_id,
+                        },
                         effective_instance_name.as_deref(),
                         request_context,
                     )
-                    .await?
+                    .await?;
+                candidates.extend(page_info.videos.into_iter().map(|video| {
+                    bilibili_media_parse_candidate(video, &page_info.title, &page_info.actors)
+                }));
             }
-            _ => {
-                return Err(synctv_core::provider::ProviderError::UnsupportedFormat(
-                    format!("Unsupported URL type: {}", match_resp.content_type),
+            BilibiliMatchedResource::LiveRecommended => {
+                candidates.push(bilibili_playlist_parse_candidate(
+                    "Bilibili Live".to_string(),
+                    "Recommended live rooms".to_string(),
+                    String::new(),
+                    PlaylistSource::LiveRecommended(
+                        source_config_proto::BilibiliLiveRecommendedPlaylistSource {},
+                    ),
                 ));
             }
-        };
-
-        // Convert to response format
-        let videos: Vec<VideoInfo> = page_info
-            .videos
-            .into_iter()
-            .map(|v| {
-                let cid = i64::try_from(v.cid).map_err(|_| {
-                    synctv_core::provider::ProviderError::ParseError(format!(
-                        "Bilibili cid {} exceeds int64 range",
-                        v.cid
-                    ))
-                })?;
-                let epid = i64::try_from(v.epid).map_err(|_| {
-                    synctv_core::provider::ProviderError::ParseError(format!(
-                        "Bilibili epid {} exceeds int64 range",
-                        v.epid
-                    ))
-                })?;
-
-                Ok::<_, synctv_core::provider::ProviderError>(VideoInfo {
-                    bvid: v.bvid,
-                    cid,
-                    epid,
-                    name: v.name,
-                    cover: v.cover_image,
-                    is_live: v.live,
-                })
-            })
-            .collect::<Result<_, _>>()?;
+            BilibiliMatchedResource::LiveArea {
+                parent_area_id,
+                area_id,
+            } => {
+                candidates.push(bilibili_playlist_parse_candidate(
+                    format!("Bilibili Live Area {area_id}"),
+                    "Live rooms in this area".to_string(),
+                    String::new(),
+                    PlaylistSource::LiveArea(source_config_proto::BilibiliLiveAreaPlaylistSource {
+                        parent_area_id,
+                        area_id,
+                    }),
+                ));
+            }
+            BilibiliMatchedResource::UpVideos { mid } => {
+                candidates.push(bilibili_playlist_parse_candidate(
+                    format!("UP {mid} videos"),
+                    "Bilibili UP submissions".to_string(),
+                    String::new(),
+                    PlaylistSource::UpVideos(source_config_proto::BilibiliUpVideosPlaylistSource {
+                        mid,
+                        keyword: String::new(),
+                    }),
+                ));
+            }
+            BilibiliMatchedResource::FavoriteVideos { media_id } => {
+                candidates.push(bilibili_playlist_parse_candidate(
+                    format!("Favorite {media_id}"),
+                    "Bilibili favorite videos".to_string(),
+                    String::new(),
+                    PlaylistSource::FavoriteVideos(
+                        source_config_proto::BilibiliFavoriteVideosPlaylistSource { media_id },
+                    ),
+                ));
+            }
+            BilibiliMatchedResource::CollectionVideos { mid, season_id } => {
+                candidates.push(bilibili_playlist_parse_candidate(
+                    format!("Collection {season_id}"),
+                    "Bilibili collection".to_string(),
+                    String::new(),
+                    PlaylistSource::CollectionVideos(
+                        source_config_proto::BilibiliCollectionVideosPlaylistSource {
+                            mid,
+                            season_id,
+                        },
+                    ),
+                ));
+            }
+            BilibiliMatchedResource::SeriesVideos { mid, series_id } => {
+                candidates.push(bilibili_playlist_parse_candidate(
+                    format!("Series {series_id}"),
+                    "Bilibili series".to_string(),
+                    String::new(),
+                    PlaylistSource::SeriesVideos(
+                        source_config_proto::BilibiliSeriesVideosPlaylistSource { mid, series_id },
+                    ),
+                ));
+            }
+            BilibiliMatchedResource::WatchLater => {
+                candidates.push(bilibili_playlist_parse_candidate(
+                    "Watch later".to_string(),
+                    "Bilibili watch later".to_string(),
+                    String::new(),
+                    PlaylistSource::WatchLater(
+                        source_config_proto::BilibiliWatchLaterPlaylistSource {},
+                    ),
+                ));
+            }
+        }
 
         Ok(ParseResponse {
-            title: page_info.title,
-            actors: page_info.actors,
-            videos,
+            normalized_url,
+            candidates,
         })
     }
 
@@ -295,6 +488,406 @@ impl BilibiliApiImpl {
         Ok(QrCodeResponse {
             url: resp.url,
             key: resp.key,
+        })
+    }
+
+    pub async fn list_live_areas_with_context(
+        &self,
+        _req: ListLiveAreasRequest,
+        instance_name: Option<&str>,
+        request_context: Option<&ExecutionControl>,
+    ) -> Result<ListLiveAreasResponse, synctv_core::provider::ProviderError> {
+        let areas = self
+            .provider
+            .list_live_areas_with_context(instance_name, request_context)
+            .await?
+            .into_iter()
+            .map(|area| LiveArea {
+                id: area.id,
+                parent_id: area.parent_id,
+                name: area.name,
+                parent_name: area.parent_name,
+                picture: area.picture,
+                hot: area.hot,
+            })
+            .collect();
+        Ok(ListLiveAreasResponse { areas })
+    }
+
+    pub async fn list_favorite_folders_with_context(
+        &self,
+        caller_user_id: &UserId,
+        _req: ListFavoriteFoldersRequest,
+        requested_instance_name: Option<&str>,
+        request_context: Option<&ExecutionControl>,
+    ) -> Result<ListFavoriteFoldersResponse, synctv_core::provider::ProviderError> {
+        use source_config_proto::bilibili_playlist_source_config::Source;
+        use source_config_proto::playlist_source_config::Provider;
+
+        let credential = self
+            .resolve_credential(caller_user_id, request_context)
+            .await?
+            .ok_or(synctv_core::provider::ProviderError::CredentialRequired)?;
+        let effective_instance_name = Self::resolve_effective_instance_name(
+            requested_instance_name,
+            CredentialProviderInstanceName::CredentialBacked(
+                credential.provider_instance_name.as_deref(),
+            ),
+        )?;
+        let folders = self
+            .provider
+            .list_favorite_folders_with_context(
+                credential.cookies,
+                effective_instance_name.as_deref(),
+                request_context,
+            )
+            .await?
+            .into_iter()
+            .map(|folder| FavoriteFolder {
+                media_id: folder.media_id,
+                title: folder.title,
+                media_count: folder.media_count,
+                private: folder.private,
+                default_folder: folder.default_folder,
+                source_config: Some(source_config_proto::PlaylistSourceConfig {
+                    provider: Some(Provider::Bilibili(
+                        source_config_proto::BilibiliPlaylistSourceConfig {
+                            source: Some(Source::FavoriteVideos(
+                                source_config_proto::BilibiliFavoriteVideosPlaylistSource {
+                                    media_id: folder.media_id,
+                                },
+                            )),
+                            shared: false,
+                        },
+                    )),
+                }),
+            })
+            .collect();
+        Ok(ListFavoriteFoldersResponse { folders })
+    }
+
+    pub async fn list_followed_pgc_with_context(
+        &self,
+        caller_user_id: &UserId,
+        req: ListFollowedPgcRequest,
+        requested_instance_name: Option<&str>,
+        request_context: Option<&ExecutionControl>,
+    ) -> Result<ListFollowedPgcResponse, synctv_core::provider::ProviderError> {
+        use source_config_proto::bilibili_playlist_source_config::Source;
+        use source_config_proto::playlist_source_config::Provider;
+
+        if !matches!(req.r#type, 1 | 2) {
+            return Err(synctv_core::provider::ProviderError::InvalidConfig(
+                "Bilibili PGC follow type must be anime or cinema".to_string(),
+            ));
+        }
+        let credential = self
+            .resolve_credential(caller_user_id, request_context)
+            .await?
+            .ok_or(synctv_core::provider::ProviderError::CredentialRequired)?;
+        let effective_instance_name = Self::resolve_effective_instance_name(
+            requested_instance_name,
+            CredentialProviderInstanceName::CredentialBacked(
+                credential.provider_instance_name.as_deref(),
+            ),
+        )?;
+        let result = self
+            .provider
+            .list_followed_pgc_with_context(
+                credential.cookies,
+                checked_u32(req.r#type, "PGC follow type")?,
+                req.page,
+                req.page_size,
+                effective_instance_name.as_deref(),
+                request_context,
+            )
+            .await?;
+        let seasons = result
+            .items
+            .into_iter()
+            .map(|season| FollowedPgcSeason {
+                season_id: season.season_id,
+                title: season.title,
+                cover: season.cover,
+                description: season.description,
+                latest_episode: season.latest_episode,
+                source_config: Some(source_config_proto::PlaylistSourceConfig {
+                    provider: Some(Provider::Bilibili(
+                        source_config_proto::BilibiliPlaylistSourceConfig {
+                            source: Some(Source::PgcSeason(
+                                source_config_proto::BilibiliPgcSeasonPlaylistSource {
+                                    season_id: season.season_id,
+                                },
+                            )),
+                            shared: false,
+                        },
+                    )),
+                }),
+            })
+            .collect();
+        Ok(ListFollowedPgcResponse {
+            seasons,
+            total: result.total,
+            has_more: result.has_more,
+        })
+    }
+
+    pub async fn list_history_with_context(
+        &self,
+        caller_user_id: &UserId,
+        req: ListHistoryRequest,
+        requested_instance_name: Option<&str>,
+        request_context: Option<&ExecutionControl>,
+    ) -> Result<ListHistoryResponse, synctv_core::provider::ProviderError> {
+        use source_config_proto::bilibili_playlist_source_config::Source;
+        use source_config_proto::playlist_source_config::Provider;
+
+        let history_type = match source_config_proto::BilibiliHistoryType::try_from(req.r#type)
+            .map_err(|_| {
+                synctv_core::provider::ProviderError::InvalidConfig(
+                    "Bilibili history type is invalid".to_string(),
+                )
+            })? {
+            source_config_proto::BilibiliHistoryType::All => BilibiliHistoryType::All,
+            source_config_proto::BilibiliHistoryType::Archive => BilibiliHistoryType::Archive,
+            source_config_proto::BilibiliHistoryType::Live => BilibiliHistoryType::Live,
+        };
+        let credential = self
+            .resolve_credential(caller_user_id, request_context)
+            .await?
+            .ok_or(synctv_core::provider::ProviderError::CredentialRequired)?;
+        let effective_instance_name = Self::resolve_effective_instance_name(
+            requested_instance_name,
+            CredentialProviderInstanceName::CredentialBacked(
+                credential.provider_instance_name.as_deref(),
+            ),
+        )?;
+        let result = self
+            .provider
+            .list_history_with_context(
+                credential.cookies,
+                history_type,
+                req.cursor.as_deref(),
+                req.page_size,
+                effective_instance_name.as_deref(),
+                request_context,
+            )
+            .await?;
+        let mut items = Vec::with_capacity(result.items.len());
+        for item in result.items {
+            items.push(HistoryItem {
+                title: item.title,
+                subtitle: item.subtitle,
+                cover: item.cover,
+                author: item.author,
+                viewed_at: item.viewed_at,
+                progress_seconds: item.progress_seconds,
+                duration_seconds: item.duration_seconds,
+                source_config: Some(
+                    crate::impls::client::convert::media_source_config_to_proto(
+                        &item.source_config,
+                    )
+                    .map_err(|error| {
+                        synctv_core::provider::ProviderError::Internal(error.to_string())
+                    })?,
+                ),
+            });
+        }
+        let source = source_config_proto::BilibiliHistoryPlaylistSource { r#type: req.r#type };
+        Ok(ListHistoryResponse {
+            items,
+            cursor: result.cursor,
+            has_more: result.has_more,
+            source_config: Some(source_config_proto::PlaylistSourceConfig {
+                provider: Some(Provider::Bilibili(
+                    source_config_proto::BilibiliPlaylistSourceConfig {
+                        source: Some(Source::History(source)),
+                        shared: false,
+                    },
+                )),
+            }),
+        })
+    }
+
+    pub async fn list_pgc_timeline_with_context(
+        &self,
+        caller_user_id: &UserId,
+        req: ListPgcTimelineRequest,
+        requested_instance_name: Option<&str>,
+        request_context: Option<&ExecutionControl>,
+    ) -> Result<ListPgcTimelineResponse, synctv_core::provider::ProviderError> {
+        use source_config_proto::bilibili_playlist_source_config::Source;
+        use source_config_proto::playlist_source_config::Provider;
+
+        let timeline_type = match source_config_proto::BilibiliPgcTimelineType::try_from(req.r#type)
+            .map_err(|_| {
+                synctv_core::provider::ProviderError::InvalidConfig(
+                    "Bilibili PGC timeline type is invalid".to_string(),
+                )
+            })? {
+            source_config_proto::BilibiliPgcTimelineType::Anime => BilibiliPgcTimelineType::Anime,
+            source_config_proto::BilibiliPgcTimelineType::Cinema => BilibiliPgcTimelineType::Cinema,
+            source_config_proto::BilibiliPgcTimelineType::Guochuang => {
+                BilibiliPgcTimelineType::Guochuang
+            }
+            source_config_proto::BilibiliPgcTimelineType::Unspecified => {
+                return Err(synctv_core::provider::ProviderError::InvalidConfig(
+                    "Bilibili PGC timeline type is required".to_string(),
+                ));
+            }
+        };
+        let credential = self
+            .resolve_credential(caller_user_id, request_context)
+            .await?;
+        let effective_instance_name = Self::resolve_effective_instance_name(
+            requested_instance_name,
+            credential.as_ref().map_or(
+                CredentialProviderInstanceName::NotCredentialBacked,
+                |credential| {
+                    CredentialProviderInstanceName::CredentialBacked(
+                        credential.provider_instance_name.as_deref(),
+                    )
+                },
+            ),
+        )?;
+        let cookies = credential.map_or_else(HashMap::new, |credential| credential.cookies);
+        let result = self
+            .provider
+            .list_pgc_timeline_with_context(
+                cookies,
+                timeline_type,
+                req.before_days,
+                req.after_days,
+                effective_instance_name.as_deref(),
+                request_context,
+            )
+            .await?;
+        let mut items = Vec::with_capacity(result.len());
+        for item in result {
+            items.push(PgcTimelineItem {
+                source_config: item
+                    .source_config
+                    .as_ref()
+                    .map(crate::impls::client::convert::media_source_config_to_proto)
+                    .transpose()
+                    .map_err(|error| {
+                        synctv_core::provider::ProviderError::Internal(error.to_string())
+                    })?,
+                episode_id: item.episode_id,
+                season_id: item.season_id,
+                title: item.title,
+                episode_title: item.episode_title,
+                cover: item.cover,
+                episode_cover: item.episode_cover,
+                publish_at: item.publish_at,
+                published: item.published,
+                date: item.date,
+                day_of_week: item.day_of_week,
+                delayed: item.delayed,
+                delay_reason: item.delay_reason,
+            });
+        }
+        let source = source_config_proto::BilibiliPgcTimelinePlaylistSource {
+            r#type: req.r#type,
+            before_days: req.before_days,
+            after_days: req.after_days,
+        };
+        Ok(ListPgcTimelineResponse {
+            items,
+            source_config: Some(source_config_proto::PlaylistSourceConfig {
+                provider: Some(Provider::Bilibili(
+                    source_config_proto::BilibiliPlaylistSourceConfig {
+                        source: Some(Source::PgcTimeline(source)),
+                        shared: false,
+                    },
+                )),
+            }),
+        })
+    }
+
+    pub async fn list_pgc_seasons_with_context(
+        &self,
+        caller_user_id: &UserId,
+        req: ListPgcSeasonsRequest,
+        requested_instance_name: Option<&str>,
+        request_context: Option<&ExecutionControl>,
+    ) -> Result<ListPgcSeasonsResponse, synctv_core::provider::ProviderError> {
+        use source_config_proto::bilibili_playlist_source_config::Source;
+        use source_config_proto::playlist_source_config::Provider;
+
+        let credential = self
+            .resolve_credential(caller_user_id, request_context)
+            .await?;
+        let effective_instance_name = Self::resolve_effective_instance_name(
+            requested_instance_name,
+            credential.as_ref().map_or(
+                CredentialProviderInstanceName::NotCredentialBacked,
+                |credential| {
+                    CredentialProviderInstanceName::CredentialBacked(
+                        credential.provider_instance_name.as_deref(),
+                    )
+                },
+            ),
+        )?;
+        let cookies = credential.map_or_else(HashMap::new, |credential| credential.cookies);
+        let result = self
+            .provider
+            .list_pgc_seasons_with_context(
+                cookies,
+                checked_u32(req.r#type, "season type")?,
+                req.page,
+                req.page_size,
+                checked_u32(req.order, "season order")?,
+                req.ascending,
+                req.finished,
+                req.area,
+                req.year,
+                req.style_id,
+                effective_instance_name.as_deref(),
+                request_context,
+            )
+            .await?;
+        let seasons = result
+            .items
+            .into_iter()
+            .map(|season| {
+                Ok(PgcSeason {
+                    source_config: Some(source_config_proto::PlaylistSourceConfig {
+                        provider: Some(Provider::Bilibili(
+                            source_config_proto::BilibiliPlaylistSourceConfig {
+                                source: Some(Source::PgcSeason(
+                                    source_config_proto::BilibiliPgcSeasonPlaylistSource {
+                                        season_id: season.season_id,
+                                    },
+                                )),
+                                shared: false,
+                            },
+                        )),
+                    }),
+                    season_id: season.season_id,
+                    media_id: season.media_id,
+                    first_episode_id: season.first_episode_id,
+                    title: season.title,
+                    subtitle: season.subtitle,
+                    cover: season.cover,
+                    first_episode_cover: season.first_episode_cover,
+                    badge: season.badge,
+                    progress: season.progress,
+                    score: season.score,
+                    finished: season.finished,
+                    r#type: i32::try_from(season.season_type).map_err(|_| {
+                        ProviderError::ApiError(
+                            "Bilibili returned a season type outside the supported range"
+                                .to_string(),
+                        )
+                    })?,
+                })
+            })
+            .collect::<Result<Vec<_>, ProviderError>>()?;
+        Ok(ListPgcSeasonsResponse {
+            seasons,
+            total: result.total,
+            has_more: result.has_more,
         })
     }
 
@@ -419,6 +1012,7 @@ impl BilibiliApiImpl {
         else {
             return Ok(UserInfoResponse {
                 is_login: false,
+                user_id: 0,
                 username: String::new(),
                 face: String::new(),
                 is_vip: false,
@@ -446,6 +1040,7 @@ impl BilibiliApiImpl {
 
         Ok(UserInfoResponse {
             is_login: resp.is_login,
+            user_id: resp.user_id,
             username: resp.username,
             face: resp.face,
             is_vip: resp.is_vip,
@@ -501,6 +1096,88 @@ impl BilibiliApiImpl {
             .collect();
 
         Ok(GetBindsResponse { binds })
+    }
+}
+
+#[cfg(test)]
+mod parse_candidate_tests {
+    use super::*;
+
+    #[test]
+    fn media_parse_candidate_contains_typed_bilibili_source_config() {
+        let candidate = bilibili_media_parse_candidate(
+            synctv_core::provider::BilibiliVideoInfo {
+                bvid: "BV1typed".to_string(),
+                aid: 123,
+                cid: 456,
+                epid: 0,
+                page: 2,
+                name: "Part 2".to_string(),
+                cover_image: "https://example.com/cover.jpg".to_string(),
+                r#live: false,
+                duration_seconds: 90,
+                width: 1920,
+                height: 1080,
+            },
+            "Typed video",
+            &["Creator".to_string()],
+        );
+
+        let Some(synctv_proto::providers::bilibili::parse_candidate::SourceConfig::Media(config)) =
+            candidate.source_config
+        else {
+            panic!("candidate should contain a media source config");
+        };
+        let Some(source_config_proto::media_source_config::Provider::Bilibili(config)) =
+            config.provider
+        else {
+            panic!("candidate should contain a Bilibili source config");
+        };
+        let Some(source_config_proto::bilibili_media_source_config::Source::Video(video)) =
+            config.source
+        else {
+            panic!("candidate should contain a Bilibili video source");
+        };
+        assert_eq!(video.bvid, "BV1typed");
+        assert_eq!(video.aid, Some(123));
+        assert_eq!(video.cid, 456);
+        assert!(!video.shared);
+        assert_eq!(candidate.part_number, Some(2));
+    }
+
+    #[test]
+    fn playlist_parse_candidate_contains_typed_video_parts_source_config() {
+        let candidate = bilibili_playlist_parse_candidate(
+            "Typed video".to_string(),
+            "All video parts".to_string(),
+            String::new(),
+            source_config_proto::bilibili_playlist_source_config::Source::VideoParts(
+                source_config_proto::BilibiliVideoPartsPlaylistSource {
+                    bvid: "BV1typed".to_string(),
+                    aid: Some(123),
+                },
+            ),
+        );
+
+        let Some(synctv_proto::providers::bilibili::parse_candidate::SourceConfig::Playlist(
+            config,
+        )) = candidate.source_config
+        else {
+            panic!("candidate should contain a playlist source config");
+        };
+        let Some(source_config_proto::playlist_source_config::Provider::Bilibili(config)) =
+            config.provider
+        else {
+            panic!("candidate should contain a Bilibili playlist source config");
+        };
+        let Some(source_config_proto::bilibili_playlist_source_config::Source::VideoParts(source)) =
+            config.source
+        else {
+            panic!("candidate should contain a video-parts source");
+        };
+        assert_eq!(source.bvid, "BV1typed");
+        assert_eq!(source.aid, Some(123));
+        assert!(!config.shared);
     }
 }
 

@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package acproto;
+
+message LiveFeatureState {
+	FeatureType type = 1;
+	FeatureState state = 2;
+
+	enum FeatureType {
+		FEATURE_UNKNOWN = 0;
+		LANDSCAPE_COMMENT = 1;
+	}
+
+	enum FeatureState {
+		FEATURE_STATE_UNKNOWN = 0;
+		FEATURE_STATE_OPEND = 1;
+		FEATURE_STATE_CLOSED = 2;
+	}
+}

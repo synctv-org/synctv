@@ -13,7 +13,7 @@ mod service;
 mod types;
 
 pub use crate::error::ProviderClientError as EmbyError;
-pub use client::{EmbyClient, PlaybackInfoRequest};
+pub use client::{EmbyClient, EmbyListSource, PlaybackInfoRequest};
 pub use service::{EmbyInterface, EmbyService};
 pub use types::{
     default_device_profile, device_profile_from_playback_client_profile, AuthResponse,

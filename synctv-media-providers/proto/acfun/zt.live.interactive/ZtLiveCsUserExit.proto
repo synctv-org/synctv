@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package acproto;
+
+message ZtLiveCsUserExit {}
+
+message ZtLiveCsUserExitAck {}

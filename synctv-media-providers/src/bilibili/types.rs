@@ -3,6 +3,256 @@
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BilibiliVideoListItem {
+    pub bvid: String,
+    pub aid: u64,
+    pub cid: u64,
+    pub epid: u64,
+    pub title: String,
+    pub cover: String,
+    pub author: String,
+    pub description: String,
+    pub duration_seconds: u64,
+    pub part_count: u32,
+    pub published_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BilibiliVideoListPage {
+    pub items: Vec<BilibiliVideoListItem>,
+    pub total: Option<u64>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BilibiliVideoPart {
+    pub bvid: String,
+    pub aid: u64,
+    pub cid: u64,
+    pub page: u32,
+    pub title: String,
+    pub cover: String,
+    pub duration_seconds: u64,
+    pub width: u64,
+    pub height: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BilibiliVideoParts {
+    pub title: String,
+    pub author: String,
+    pub parts: Vec<BilibiliVideoPart>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(bound(deserialize = "T: Deserialize<'de>"))]
+pub(crate) struct ApiEnvelope<T> {
+    #[serde(default)]
+    pub code: i32,
+    #[serde(default, rename = "message")]
+    pub _message: String,
+    #[serde(default)]
+    pub data: Option<T>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct ArchiveOwnerDto {
+    #[serde(default)]
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct ArchiveSummaryDto {
+    #[serde(default, alias = "id")]
+    pub aid: u64,
+    #[serde(default, alias = "bv_id")]
+    pub bvid: String,
+    #[serde(default)]
+    pub cid: u64,
+    #[serde(default)]
+    pub epid: u64,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default, alias = "cover")]
+    pub pic: String,
+    #[serde(default, alias = "intro")]
+    pub desc: String,
+    #[serde(default)]
+    pub duration: u64,
+    #[serde(default, alias = "page")]
+    pub videos: u32,
+    #[serde(default, alias = "ctime", alias = "created")]
+    pub pubdate: i64,
+    #[serde(default)]
+    pub owner: Option<ArchiveOwnerDto>,
+    #[serde(default)]
+    pub upper: Option<ArchiveOwnerDto>,
+    #[serde(default)]
+    pub author: String,
+}
+
+impl ArchiveSummaryDto {
+    pub(crate) fn into_item(self) -> BilibiliVideoListItem {
+        let author = self
+            .owner
+            .or(self.upper)
+            .map(|owner| owner.name)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(self.author);
+        BilibiliVideoListItem {
+            bvid: self.bvid,
+            aid: self.aid,
+            cid: self.cid,
+            epid: self.epid,
+            title: self.title,
+            cover: self.pic,
+            author,
+            description: self.desc,
+            duration_seconds: self.duration,
+            part_count: self.videos,
+            published_at: self.pubdate,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct ListPageDto {
+    #[serde(
+        default,
+        rename = "page",
+        alias = "num",
+        alias = "pn",
+        alias = "page_num"
+    )]
+    pub _page: u64,
+    #[serde(default)]
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct PopularListData {
+    #[serde(default)]
+    pub list: Vec<ArchiveSummaryDto>,
+    #[serde(default)]
+    pub no_more: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct RecommendedArchiveDto {
+    #[serde(default, alias = "aid")]
+    pub id: u64,
+    #[serde(default)]
+    pub bvid: String,
+    #[serde(default)]
+    pub cid: u64,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub pic: String,
+    #[serde(default)]
+    pub duration: u64,
+    #[serde(default)]
+    pub pubdate: i64,
+    #[serde(default)]
+    pub owner: Option<ArchiveOwnerDto>,
+    #[serde(default)]
+    pub goto: String,
+}
+
+impl RecommendedArchiveDto {
+    pub(crate) fn into_item(self) -> Option<BilibiliVideoListItem> {
+        if self.goto != "av" || self.bvid.is_empty() {
+            return None;
+        }
+        Some(BilibiliVideoListItem {
+            bvid: self.bvid,
+            aid: self.id,
+            cid: self.cid,
+            epid: 0,
+            title: self.title,
+            cover: self.pic,
+            author: self.owner.map_or_else(String::new, |owner| owner.name),
+            description: String::new(),
+            duration_seconds: self.duration,
+            part_count: 0,
+            published_at: self.pubdate,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct RecommendedListData {
+    #[serde(default)]
+    pub item: Vec<RecommendedArchiveDto>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct UpVideoListData {
+    #[serde(default)]
+    pub list: UpVideoList,
+    #[serde(default)]
+    pub page: ListPageDto,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct UpVideoList {
+    #[serde(default)]
+    pub vlist: Vec<UpVideoDto>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct UpVideoDto {
+    #[serde(default)]
+    pub aid: u64,
+    #[serde(default)]
+    pub bvid: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub pic: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub length: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub created: i64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct FavoriteListData {
+    #[serde(default)]
+    pub medias: Vec<ArchiveSummaryDto>,
+    #[serde(default)]
+    pub has_more: bool,
+    #[serde(default)]
+    pub info: FavoriteInfoDto,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct FavoriteInfoDto {
+    #[serde(default)]
+    pub media_count: u64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct ArchivePageData {
+    #[serde(default)]
+    pub archives: Vec<ArchiveSummaryDto>,
+    #[serde(default)]
+    pub page: ListPageDto,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct WatchLaterData {
+    #[serde(default)]
+    pub list: Vec<ArchiveSummaryDto>,
+    #[serde(default)]
+    pub count: u64,
+}
+
 /// Video ID types
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VideoId {
@@ -124,6 +374,10 @@ pub struct Dimension {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct UgcSeason {
+    #[serde(default)]
+    pub id: u64,
+    #[serde(default)]
+    pub mid: u64,
     pub title: String,
     pub cover: String,
     pub sections: Vec<Section>,
@@ -214,9 +468,21 @@ pub struct SeasonInfoResp {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SeasonResult {
+    #[serde(default)]
+    pub season_id: u64,
     pub title: String,
     pub cover: String,
     pub actors: String,
+    pub episodes: Vec<EpisodeInfo>,
+    #[serde(default, rename = "section")]
+    pub sections: Vec<PgcSection>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PgcSection {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
     pub episodes: Vec<EpisodeInfo>,
 }
 
@@ -278,7 +544,24 @@ pub struct DashInfo {
     #[serde(rename = "minBufferTime")]
     pub min_buffer_time: f64,
     pub video: Vec<DashVideo>,
+    #[serde(default)]
     pub audio: Vec<DashAudio>,
+    #[serde(default)]
+    pub dolby: Option<DashDolby>,
+    #[serde(default)]
+    pub flac: Option<DashFlac>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DashDolby {
+    #[serde(default)]
+    pub audio: Vec<DashAudio>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DashFlac {
+    #[serde(default)]
+    pub audio: Option<DashAudio>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -296,6 +579,8 @@ pub struct DashVideo {
     #[serde(rename = "frameRate")]
     pub frame_rate: String,
     pub bandwidth: u64,
+    #[serde(default)]
+    pub codecid: u32,
     #[serde(default)]
     pub sar: String,
     #[serde(default, rename = "startWithSap")]
@@ -437,6 +722,333 @@ pub struct LiveDanmuHost {
     pub port: u32,
     pub ws_port: u32,
     pub wss_port: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(untagged)]
+pub(crate) enum FlexibleU64 {
+    Number(u64),
+    String(String),
+    #[default]
+    Null,
+}
+
+impl FlexibleU64 {
+    pub(crate) fn value(&self) -> u64 {
+        match self {
+            Self::Number(value) => *value,
+            Self::String(value) => value.parse().unwrap_or_default(),
+            Self::Null => 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct LiveRoomCard {
+    #[serde(default, alias = "room_id")]
+    pub roomid: FlexibleU64,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub cover: String,
+    #[serde(default)]
+    pub keyframe: String,
+    #[serde(default)]
+    pub user_cover: String,
+    #[serde(default, alias = "name")]
+    pub uname: String,
+    #[serde(default)]
+    pub uid: FlexibleU64,
+    #[serde(default)]
+    pub face: String,
+    #[serde(default, alias = "parent_area_id")]
+    pub area_v2_parent_id: FlexibleU64,
+    #[serde(default, alias = "parent_area_name")]
+    pub area_v2_parent_name: String,
+    #[serde(default, alias = "area_id")]
+    pub area_v2_id: FlexibleU64,
+    #[serde(default, alias = "area_name")]
+    pub area_v2_name: String,
+    #[serde(default)]
+    pub online: FlexibleU64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct LiveRecommendedData {
+    #[serde(default)]
+    pub recommend_room_list: Vec<LiveRoomCard>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct LiveRecommendedResp {
+    pub code: i32,
+    #[serde(default)]
+    pub data: LiveRecommendedData,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct LiveFollowingData {
+    #[serde(default)]
+    pub list: Vec<LiveRoomCard>,
+    #[serde(default)]
+    pub count: FlexibleU64,
+    #[serde(default, rename = "totalPage")]
+    pub total_page: FlexibleU64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct LiveFollowingResp {
+    pub code: i32,
+    #[serde(default)]
+    pub data: LiveFollowingData,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct LiveAreaRoomsData {
+    #[serde(default)]
+    pub list: Vec<LiveRoomCard>,
+    #[serde(default)]
+    pub count: FlexibleU64,
+    #[serde(default)]
+    pub has_more: FlexibleU64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct LiveAreaRoomsResp {
+    pub code: i32,
+    #[serde(default)]
+    pub data: LiveAreaRoomsData,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct LiveAreaChild {
+    #[serde(default)]
+    pub id: FlexibleU64,
+    #[serde(default)]
+    pub parent_id: FlexibleU64,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub parent_name: String,
+    #[serde(default)]
+    pub pic: String,
+    #[serde(default)]
+    pub hot_status: FlexibleU64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct LiveAreaParent {
+    #[serde(default)]
+    pub id: FlexibleU64,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub list: Vec<LiveAreaChild>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct LiveAreasResp {
+    pub code: i32,
+    #[serde(default)]
+    pub data: Vec<LiveAreaParent>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct FavoriteFolderItem {
+    pub id: u64,
+    #[serde(default)]
+    pub attr: u64,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub media_count: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct FavoriteFoldersData {
+    #[serde(default)]
+    pub list: Vec<FavoriteFolderItem>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct FavoriteFoldersResp {
+    pub code: i32,
+    #[serde(default)]
+    pub data: FavoriteFoldersData,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct FollowedPgcNewEpisode {
+    #[serde(default)]
+    pub index_show: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct FollowedPgcItem {
+    #[serde(default)]
+    pub season_id: u64,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub cover: String,
+    #[serde(default)]
+    pub evaluate: String,
+    #[serde(default)]
+    pub new_ep: FollowedPgcNewEpisode,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct FollowedPgcData {
+    #[serde(default)]
+    pub list: Vec<FollowedPgcItem>,
+    #[serde(default)]
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct FollowedPgcResp {
+    pub code: i32,
+    #[serde(default)]
+    pub data: FollowedPgcData,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct HistoryCursorDto {
+    #[serde(default)]
+    pub max: u64,
+    #[serde(default)]
+    pub view_at: i64,
+    #[serde(default)]
+    pub business: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct HistoryTargetDto {
+    #[serde(default)]
+    pub oid: u64,
+    #[serde(default)]
+    pub epid: u64,
+    #[serde(default)]
+    pub bvid: String,
+    #[serde(default)]
+    pub cid: u64,
+    #[serde(default)]
+    pub business: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct HistoryItemDto {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub long_title: String,
+    #[serde(default)]
+    pub cover: String,
+    #[serde(default)]
+    pub author_name: String,
+    #[serde(default)]
+    pub view_at: i64,
+    #[serde(default)]
+    pub progress: i64,
+    #[serde(default)]
+    pub duration: u64,
+    #[serde(default)]
+    pub live_status: u32,
+    #[serde(default)]
+    pub history: HistoryTargetDto,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct HistoryDataDto {
+    #[serde(default)]
+    pub cursor: HistoryCursorDto,
+    #[serde(default)]
+    pub list: Vec<HistoryItemDto>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct TimelineEpisodeDto {
+    #[serde(default)]
+    pub episode_id: u64,
+    #[serde(default)]
+    pub season_id: u64,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub pub_index: String,
+    #[serde(default)]
+    pub cover: String,
+    #[serde(default)]
+    pub ep_cover: String,
+    #[serde(default)]
+    pub pub_ts: i64,
+    #[serde(default)]
+    pub published: u32,
+    #[serde(default)]
+    pub delay: u32,
+    #[serde(default)]
+    pub delay_reason: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct TimelineDayDto {
+    #[serde(default)]
+    pub date: String,
+    #[serde(default)]
+    pub day_of_week: u32,
+    #[serde(default)]
+    pub episodes: Vec<TimelineEpisodeDto>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct TimelineResp {
+    pub code: i32,
+    #[serde(default)]
+    pub result: Vec<TimelineDayDto>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct SeasonIndexFirstEpisodeDto {
+    #[serde(default)]
+    pub cover: String,
+    #[serde(default)]
+    pub ep_id: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct SeasonIndexItemDto {
+    #[serde(default)]
+    pub season_id: u64,
+    #[serde(default)]
+    pub media_id: u64,
+    #[serde(default)]
+    pub title: String,
+    #[serde(rename = "subTitle", default)]
+    pub subtitle: String,
+    #[serde(default)]
+    pub cover: String,
+    #[serde(default)]
+    pub badge: String,
+    #[serde(default)]
+    pub index_show: String,
+    #[serde(default)]
+    pub score: String,
+    #[serde(default)]
+    pub is_finish: u32,
+    #[serde(default)]
+    pub season_type: u32,
+    #[serde(default)]
+    pub first_ep: SeasonIndexFirstEpisodeDto,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct SeasonIndexDataDto {
+    #[serde(default)]
+    pub has_next: u32,
+    #[serde(default)]
+    pub total: u64,
+    #[serde(default)]
+    pub list: Vec<SeasonIndexItemDto>,
 }
 
 /// User info (Nav) response

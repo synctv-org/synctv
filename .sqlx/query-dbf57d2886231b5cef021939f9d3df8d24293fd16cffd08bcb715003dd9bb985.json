@@ -1,0 +1,151 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH updated AS (\n                UPDATE room_playback_state\n                SET playing_media_id = $2,\n                    playing_playlist_id = $3,\n                    target = $4,\n                    current_progress_id = $5,\n                    speed = $6,\n                    is_playing = $7,\n                    playback_generation = CASE\n                        WHEN playing_media_id IS DISTINCT FROM $2\n                          OR playing_playlist_id IS DISTINCT FROM $3\n                          OR target IS DISTINCT FROM $4\n                        THEN playback_generation + 1\n                        ELSE playback_generation\n                    END,\n                    updated_at = NOW(),\n                    version = $9\n                WHERE room_id = $1 AND version = $8\n                RETURNING room_id,\n                          playing_media_id,\n                          playing_playlist_id,\n                          target,\n                          current_progress_id,\n                          speed,\n                          is_playing,\n                          playback_generation,\n                          updated_at,\n                          version\n            )\n            SELECT updated.room_id AS \"room_id!: RoomId\",\n                   updated.playing_media_id AS \"playing_media_id?: MediaId\",\n                   updated.playing_playlist_id AS \"playing_playlist_id?: PlaylistId\",\n                   updated.target AS \"target?: crate::models::ProviderTarget\",\n                   updated.current_progress_id,\n                   COALESCE(progress.\"position\", 0.0) AS \"position!\",\n                   updated.speed AS \"speed!\",\n                   updated.is_playing AS \"is_playing!\",\n                   updated.playback_generation AS \"playback_generation!\",\n                   updated.updated_at AS \"updated_at!\",\n                   updated.version AS \"version!\"\n            FROM updated\n            LEFT JOIN room_playback_progress progress ON progress.id = updated.current_progress_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "playing_media_id?: MediaId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "playing_media_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "playing_playlist_id?: PlaylistId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "playing_playlist_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "target?: crate::models::ProviderTarget",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "target"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "current_progress_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "current_progress_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "position!",
+        "type_info": "Float8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "speed!",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "speed"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "is_playing!",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "is_playing"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "playback_generation!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "playback_generation"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "version!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Jsonb",
+        "Int8",
+        "Float8",
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true,
+      null,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "dbf57d2886231b5cef021939f9d3df8d24293fd16cffd08bcb715003dd9bb985"
+}

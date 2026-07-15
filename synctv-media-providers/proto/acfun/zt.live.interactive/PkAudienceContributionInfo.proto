@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package acproto;
+
+import "PkAudienceContributionDetail.proto";
+
+message PkAudienceContributionInfo {
+    int64 a = 1;
+    repeated PkAudienceContributionDetail b = 2;
+}

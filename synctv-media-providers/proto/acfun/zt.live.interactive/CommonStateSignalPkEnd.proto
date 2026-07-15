@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package acproto;
+
+message CommonStateSignalPkEnd {
+    string a = 1;
+    unknown b = 2;
+    string c = 3;
+
+    enum unknown {
+        d = 0;
+        e = 1;
+        f = 2;
+        g = 3;
+        h = 4;
+        i = 5;
+        j = 6;
+        k = 7;
+        l = 8;
+        m = 9;
+        n = 10;
+        o = 11;
+    }
+}

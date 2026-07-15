@@ -28,7 +28,8 @@ use synctv_core::{
 };
 use synctv_management::lifecycle::{ManagementLifecycleController, ShutdownMode};
 use synctv_management::provider_runtime::{
-    AlistRuntime, BilibiliRuntime, EmbyRuntime, ProviderCommonRuntime,
+    AlistRuntime, BilibiliRuntime, DouyinRuntime, EmbyRuntime, ProviderCommonRuntime,
+    TikTokRuntime, TwitchRuntime,
 };
 use synctv_management::server::{spawn_management_server, ManagementServerConfig};
 use synctv_realtime::fanout::{RealtimeEventService, RealtimeFanoutService};
@@ -40,7 +41,8 @@ use crate::bootstrap::cluster::ClusterNodeActivator;
 use crate::bootstrap::DatabasePools;
 use crate::management_runtime::{
     ManagementAdminRuntime, ManagementAlistRuntime, ManagementBilibiliRuntime,
-    ManagementEmbyRuntime, ManagementProviderCommonRuntime,
+    ManagementDouyinRuntime, ManagementEmbyRuntime, ManagementProviderCommonRuntime,
+    ManagementTikTokRuntime, ManagementTwitchRuntime,
 };
 use crate::path_util::absolute_display_path;
 use crate::resource_options::api_runtime_settings;
@@ -167,6 +169,20 @@ struct SharedPlaybackProviderServices {
     emby: Arc<synctv_core::service::EmbyPlaybackProviderService>,
     rtmp: Arc<synctv_core::service::RtmpPlaybackProviderService>,
     live_proxy: Arc<synctv_core::service::LiveProxyPlaybackProviderService>,
+    twitch: Arc<synctv_core::service::TwitchPlaybackProviderService>,
+    youtube: Arc<synctv_core::service::YoutubePlaybackProviderService>,
+    douyin: Arc<synctv_core::service::DouyinPlaybackProviderService>,
+    tiktok: Arc<synctv_core::service::TikTokPlaybackProviderService>,
+    huya: Arc<synctv_core::service::HuyaPlaybackProviderService>,
+    douyu: Arc<synctv_core::service::DouyuPlaybackProviderService>,
+    acfun: Arc<synctv_core::service::AcFunPlaybackProviderService>,
+    cctv: Arc<synctv_core::service::CctvPlaybackProviderService>,
+    fnos: Arc<synctv_core::service::FnosPlaybackProviderService>,
+    qnap: Arc<synctv_core::service::QnapPlaybackProviderService>,
+    synology: Arc<synctv_core::service::SynologyPlaybackProviderService>,
+    nextcloud: Arc<synctv_core::service::NextcloudPlaybackProviderService>,
+    seafile: Arc<synctv_core::service::SeafilePlaybackProviderService>,
+    truenas: Arc<synctv_core::service::TrueNasPlaybackProviderService>,
 }
 
 #[derive(Clone)]
@@ -176,6 +192,16 @@ struct SharedProviderApiImpls {
     alist: Arc<synctv_api::AlistApiImpl>,
     emby: Arc<synctv_api::EmbyApiImpl>,
     cloudreve: Arc<synctv_api::CloudreveApiImpl>,
+    twitch: Arc<synctv_api::TwitchApiImpl>,
+    youtube: Arc<synctv_api::YoutubeApiImpl>,
+    douyin: Arc<synctv_api::DouyinApiImpl>,
+    tiktok: Arc<synctv_api::TikTokApiImpl>,
+    fnos: Arc<synctv_api::FnosApiImpl>,
+    qnap: Arc<synctv_api::QnapApiImpl>,
+    synology: Arc<synctv_api::SynologyApiImpl>,
+    nextcloud: Arc<synctv_api::NextcloudApiImpl>,
+    seafile: Arc<synctv_api::SeafileApiImpl>,
+    truenas: Arc<synctv_api::TrueNasApiImpl>,
 }
 
 #[derive(Clone)]
@@ -416,6 +442,46 @@ fn build_provider_api_impls(
         credential_backed_providers.cloudreve.clone(),
         provider_api_runtime.event_service.clone(),
     ));
+    let twitch = Arc::new(synctv_api::TwitchApiImpl::new(
+        credential_backed_providers.twitch.clone(),
+        provider_api_runtime.event_service.clone(),
+    ));
+    let youtube = Arc::new(synctv_api::YoutubeApiImpl::new(
+        credential_backed_providers.youtube.clone(),
+        provider_api_runtime.event_service.clone(),
+    ));
+    let douyin = Arc::new(synctv_api::DouyinApiImpl::new(
+        credential_backed_providers.douyin.clone(),
+        provider_api_runtime.event_service.clone(),
+    ));
+    let tiktok = Arc::new(synctv_api::TikTokApiImpl::new(
+        credential_backed_providers.tiktok.clone(),
+        provider_api_runtime.event_service.clone(),
+    ));
+    let fnos = Arc::new(synctv_api::FnosApiImpl::new(
+        credential_backed_providers.fnos.clone(),
+        provider_api_runtime.event_service.clone(),
+    ));
+    let qnap = Arc::new(synctv_api::QnapApiImpl::new(
+        credential_backed_providers.qnap.clone(),
+        provider_api_runtime.event_service.clone(),
+    ));
+    let synology = Arc::new(synctv_api::SynologyApiImpl::new(
+        credential_backed_providers.synology.clone(),
+        provider_api_runtime.event_service.clone(),
+    ));
+    let nextcloud = Arc::new(synctv_api::NextcloudApiImpl::new(
+        credential_backed_providers.nextcloud.clone(),
+        provider_api_runtime.event_service.clone(),
+    ));
+    let seafile = Arc::new(synctv_api::SeafileApiImpl::new(
+        credential_backed_providers.seafile.clone(),
+        provider_api_runtime.event_service.clone(),
+    ));
+    let truenas = Arc::new(synctv_api::TrueNasApiImpl::new(
+        credential_backed_providers.truenas.clone(),
+        provider_api_runtime.event_service.clone(),
+    ));
 
     Ok(SharedProviderApiImpls {
         provider_common,
@@ -423,6 +489,16 @@ fn build_provider_api_impls(
         alist,
         emby,
         cloudreve,
+        twitch,
+        youtube,
+        douyin,
+        tiktok,
+        fnos,
+        qnap,
+        synology,
+        nextcloud,
+        seafile,
+        truenas,
     })
 }
 
@@ -439,6 +515,9 @@ fn build_playback_provider_services(
         room_service: room_service.clone(),
         permission_service: room_service.permission_service().clone(),
         credential_encryption,
+        playback_session_repo: synctv_core::repository::ProviderPlaybackSessionRepository::new(
+            credential_repo.pool().clone(),
+        ),
         credential_repo,
         provider_access_service: provider_access_service.clone(),
     });
@@ -467,6 +546,48 @@ fn build_playback_provider_services(
             deps.clone(),
         )),
         live_proxy: Arc::new(synctv_core::service::LiveProxyPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        twitch: Arc::new(synctv_core::service::TwitchPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        youtube: Arc::new(synctv_core::service::YoutubePlaybackProviderService::new(
+            deps.clone(),
+        )),
+        douyin: Arc::new(synctv_core::service::DouyinPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        tiktok: Arc::new(synctv_core::service::TikTokPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        huya: Arc::new(synctv_core::service::HuyaPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        douyu: Arc::new(synctv_core::service::DouyuPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        acfun: Arc::new(synctv_core::service::AcFunPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        cctv: Arc::new(synctv_core::service::CctvPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        fnos: Arc::new(synctv_core::service::FnosPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        qnap: Arc::new(synctv_core::service::QnapPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        synology: Arc::new(synctv_core::service::SynologyPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        nextcloud: Arc::new(synctv_core::service::NextcloudPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        seafile: Arc::new(synctv_core::service::SeafilePlaybackProviderService::new(
+            deps.clone(),
+        )),
+        truenas: Arc::new(synctv_core::service::TrueNasPlaybackProviderService::new(
             deps,
         )),
     }
@@ -546,6 +667,9 @@ struct ManagementApiHandles {
     alist: Arc<dyn AlistRuntime>,
     bilibili: Arc<dyn BilibiliRuntime>,
     emby: Arc<dyn EmbyRuntime>,
+    douyin: Arc<dyn DouyinRuntime>,
+    tiktok: Arc<dyn TikTokRuntime>,
+    twitch: Arc<dyn TwitchRuntime>,
 }
 
 fn management_apis_from_http_state(
@@ -568,6 +692,15 @@ fn management_apis_from_http_state(
             shared_runtime.bilibili_api.clone(),
         )),
         emby: Arc::new(ManagementEmbyRuntime::new(shared_runtime.emby_api.clone())),
+        douyin: Arc::new(ManagementDouyinRuntime::new(
+            shared_runtime.douyin_api.clone(),
+        )),
+        tiktok: Arc::new(ManagementTikTokRuntime::new(
+            shared_runtime.tiktok_api.clone(),
+        )),
+        twitch: Arc::new(ManagementTwitchRuntime::new(
+            shared_runtime.twitch_api.clone(),
+        )),
     })
 }
 
@@ -2017,6 +2150,62 @@ impl SyncTvServer {
                 .shared_api_runtime
                 .live_proxy_playback_provider_service
                 .clone(),
+            twitch_playback_provider_service: shared_http_app_state
+                .shared_api_runtime
+                .twitch_playback_provider_service
+                .clone(),
+            youtube_playback_provider_service: shared_http_app_state
+                .shared_api_runtime
+                .youtube_playback_provider_service
+                .clone(),
+            douyin_playback_provider_service: shared_http_app_state
+                .shared_api_runtime
+                .douyin_playback_provider_service
+                .clone(),
+            tiktok_playback_provider_service: shared_http_app_state
+                .shared_api_runtime
+                .tiktok_playback_provider_service
+                .clone(),
+            huya_playback_provider_service: shared_http_app_state
+                .shared_api_runtime
+                .huya_playback_provider_service
+                .clone(),
+            douyu_playback_provider_service: shared_http_app_state
+                .shared_api_runtime
+                .douyu_playback_provider_service
+                .clone(),
+            acfun_playback_provider_service: shared_http_app_state
+                .shared_api_runtime
+                .acfun_playback_provider_service
+                .clone(),
+            cctv_playback_provider_service: shared_http_app_state
+                .shared_api_runtime
+                .cctv_playback_provider_service
+                .clone(),
+            fnos_playback_provider_service: shared_http_app_state
+                .shared_api_runtime
+                .fnos_playback_provider_service
+                .clone(),
+            qnap_playback_provider_service: shared_http_app_state
+                .shared_api_runtime
+                .qnap_playback_provider_service
+                .clone(),
+            synology_playback_provider_service: shared_http_app_state
+                .shared_api_runtime
+                .synology_playback_provider_service
+                .clone(),
+            nextcloud_playback_provider_service: shared_http_app_state
+                .shared_api_runtime
+                .nextcloud_playback_provider_service
+                .clone(),
+            seafile_playback_provider_service: shared_http_app_state
+                .shared_api_runtime
+                .seafile_playback_provider_service
+                .clone(),
+            truenas_playback_provider_service: shared_http_app_state
+                .shared_api_runtime
+                .truenas_playback_provider_service
+                .clone(),
             provider_common_api: shared_http_app_state
                 .shared_api_runtime
                 .provider_common_api
@@ -2031,6 +2220,22 @@ impl SyncTvServer {
                 .shared_api_runtime
                 .cloudreve_api
                 .clone(),
+            twitch_api: shared_http_app_state.shared_api_runtime.twitch_api.clone(),
+            youtube_api: shared_http_app_state.shared_api_runtime.youtube_api.clone(),
+            douyin_api: shared_http_app_state.shared_api_runtime.douyin_api.clone(),
+            tiktok_api: shared_http_app_state.shared_api_runtime.tiktok_api.clone(),
+            fnos_api: shared_http_app_state.shared_api_runtime.fnos_api.clone(),
+            qnap_api: shared_http_app_state.shared_api_runtime.qnap_api.clone(),
+            synology_api: shared_http_app_state
+                .shared_api_runtime
+                .synology_api
+                .clone(),
+            nextcloud_api: shared_http_app_state
+                .shared_api_runtime
+                .nextcloud_api
+                .clone(),
+            seafile_api: shared_http_app_state.shared_api_runtime.seafile_api.clone(),
+            truenas_api: shared_http_app_state.shared_api_runtime.truenas_api.clone(),
             proxy_slice_cache: shared_http_app_state.proxy_slice_cache.clone(),
             ssrf_guard: shared_http_app_state.ssrf_guard.clone(),
             proxy_http_client: shared_http_app_state.proxy_http_client.clone(),
@@ -2189,11 +2394,35 @@ impl SyncTvServer {
                 emby_playback_provider_service: playback_provider_services.emby.clone(),
                 rtmp_playback_provider_service: playback_provider_services.rtmp.clone(),
                 live_proxy_playback_provider_service: playback_provider_services.live_proxy.clone(),
+                twitch_playback_provider_service: playback_provider_services.twitch.clone(),
+                youtube_playback_provider_service: playback_provider_services.youtube.clone(),
+                douyin_playback_provider_service: playback_provider_services.douyin.clone(),
+                tiktok_playback_provider_service: playback_provider_services.tiktok.clone(),
+                huya_playback_provider_service: playback_provider_services.huya.clone(),
+                douyu_playback_provider_service: playback_provider_services.douyu.clone(),
+                acfun_playback_provider_service: playback_provider_services.acfun.clone(),
+                cctv_playback_provider_service: playback_provider_services.cctv.clone(),
+                fnos_playback_provider_service: playback_provider_services.fnos.clone(),
+                qnap_playback_provider_service: playback_provider_services.qnap.clone(),
+                synology_playback_provider_service: playback_provider_services.synology.clone(),
+                nextcloud_playback_provider_service: playback_provider_services.nextcloud.clone(),
+                seafile_playback_provider_service: playback_provider_services.seafile.clone(),
+                truenas_playback_provider_service: playback_provider_services.truenas.clone(),
                 provider_common_api: provider_api_impls.provider_common.clone(),
                 bilibili_api: provider_api_impls.bilibili.clone(),
                 alist_api: provider_api_impls.alist.clone(),
                 emby_api: provider_api_impls.emby.clone(),
                 cloudreve_api: provider_api_impls.cloudreve.clone(),
+                twitch_api: provider_api_impls.twitch.clone(),
+                youtube_api: provider_api_impls.youtube.clone(),
+                douyin_api: provider_api_impls.douyin.clone(),
+                tiktok_api: provider_api_impls.tiktok.clone(),
+                fnos_api: provider_api_impls.fnos.clone(),
+                qnap_api: provider_api_impls.qnap.clone(),
+                synology_api: provider_api_impls.synology.clone(),
+                nextcloud_api: provider_api_impls.nextcloud.clone(),
+                seafile_api: provider_api_impls.seafile.clone(),
+                truenas_api: provider_api_impls.truenas.clone(),
                 shared_proxy_signing_key: shared_provider_runtime.signing_key.clone(),
                 builtin_stun_url: self.builtin_stun_url(),
                 webrtc_status: self.current_webrtc_status(),
@@ -2409,6 +2638,9 @@ impl SyncTvServer {
             alist_api: management_apis.alist,
             bilibili_api: management_apis.bilibili,
             emby_api: management_apis.emby,
+            douyin_api: management_apis.douyin,
+            tiktok_api: management_apis.tiktok,
+            twitch_api: management_apis.twitch,
             slice_cache_runtime: shared_http_app_state
                 .shared_api_runtime
                 .slice_cache_management_runtime
@@ -2744,11 +2976,35 @@ mod tests {
             emby_playback_provider_service: playback_provider_services.emby.clone(),
             rtmp_playback_provider_service: playback_provider_services.rtmp.clone(),
             live_proxy_playback_provider_service: playback_provider_services.live_proxy.clone(),
+            twitch_playback_provider_service: playback_provider_services.twitch.clone(),
+            youtube_playback_provider_service: playback_provider_services.youtube.clone(),
+            douyin_playback_provider_service: playback_provider_services.douyin.clone(),
+            tiktok_playback_provider_service: playback_provider_services.tiktok.clone(),
+            huya_playback_provider_service: playback_provider_services.huya.clone(),
+            douyu_playback_provider_service: playback_provider_services.douyu.clone(),
+            acfun_playback_provider_service: playback_provider_services.acfun.clone(),
+            cctv_playback_provider_service: playback_provider_services.cctv.clone(),
+            fnos_playback_provider_service: playback_provider_services.fnos.clone(),
+            qnap_playback_provider_service: playback_provider_services.qnap.clone(),
+            synology_playback_provider_service: playback_provider_services.synology.clone(),
+            nextcloud_playback_provider_service: playback_provider_services.nextcloud.clone(),
+            seafile_playback_provider_service: playback_provider_services.seafile.clone(),
+            truenas_playback_provider_service: playback_provider_services.truenas.clone(),
             provider_common_api: provider_api_impls.provider_common.clone(),
             bilibili_api: provider_api_impls.bilibili.clone(),
             alist_api: provider_api_impls.alist.clone(),
             emby_api: provider_api_impls.emby.clone(),
             cloudreve_api: provider_api_impls.cloudreve.clone(),
+            twitch_api: provider_api_impls.twitch.clone(),
+            youtube_api: provider_api_impls.youtube.clone(),
+            douyin_api: provider_api_impls.douyin.clone(),
+            tiktok_api: provider_api_impls.tiktok.clone(),
+            fnos_api: provider_api_impls.fnos.clone(),
+            qnap_api: provider_api_impls.qnap.clone(),
+            synology_api: provider_api_impls.synology.clone(),
+            nextcloud_api: provider_api_impls.nextcloud.clone(),
+            seafile_api: provider_api_impls.seafile.clone(),
+            truenas_api: provider_api_impls.truenas.clone(),
             shared_proxy_signing_key: shared_runtime.signing_key.clone(),
             builtin_stun_url: None,
             webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),

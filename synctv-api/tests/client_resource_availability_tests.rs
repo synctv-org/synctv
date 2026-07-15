@@ -276,6 +276,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
                 availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
+                preview_source_config: None,
             },
         )
         .await
@@ -392,6 +393,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
                 availability: synctv_proto::client::ResourceAvailabilityFilter::Unavailable as i32,
                 refresh: false,
+                preview_source_config: None,
             },
         )
         .await
@@ -424,6 +426,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
                 availability: synctv_proto::client::ResourceAvailabilityFilter::Unavailable as i32,
                 refresh: false,
+                preview_source_config: None,
             },
         )
         .await
@@ -472,6 +475,7 @@ async fn list_playlist_items_root_returns_stable_version_until_contents_change()
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
+        preview_source_config: None,
     };
     let room_public_id = public_id_codec().encode_room_id(room.id).unwrap();
 

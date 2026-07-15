@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package synctv.provider.cctv;
+
+import "proto/buf/validate/validate.proto";
+import "proto/source_config.proto";
+
+enum StreamKind {
+  STREAM_KIND_UNSPECIFIED = 0;
+  STREAM_KIND_VIDEO_HLS = 1;
+  STREAM_KIND_AUDIO_HLS = 2;
+  STREAM_KIND_HTTP = 3;
+}
+
+message ResolveRequest {
+  string resource = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message Chapter {
+  string id = 1;
+  string title = 2;
+  uint64 start_ms = 3;
+  uint64 end_ms = 4;
+}
+
+message Metadata {
+  string video_id = 1;
+  string title = 2;
+  optional string description = 3;
+  optional string uploader = 4;
+  optional string producer = 5;
+  optional string channel = 6;
+  optional string column = 7;
+  repeated string tags = 8;
+  optional string thumbnail_url = 9;
+  optional double duration_seconds = 10;
+  optional int64 published_at = 11;
+  repeated Chapter chapters = 12;
+  bool protected = 13;
+}
+
+message Stream {
+  string name = 1;
+  string url = 2;
+  StreamKind kind = 3;
+}
+
+message ResolveResponse {
+  Metadata metadata = 1;
+  repeated Stream streams = 2;
+  synctv.source_config.CctvMediaSourceConfig source_config = 3;
+}

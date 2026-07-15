@@ -16,7 +16,10 @@ use synctv_core::service::{ChatService, OnlinePresenceService, RoomService, User
 use crate::admin_runtime::AdminRuntime;
 use crate::lifecycle::ManagementLifecycleController;
 use crate::proto::management_service_server::ManagementServiceServer;
-use crate::provider_runtime::{AlistRuntime, BilibiliRuntime, EmbyRuntime, ProviderCommonRuntime};
+use crate::provider_runtime::{
+    AlistRuntime, BilibiliRuntime, DouyinRuntime, EmbyRuntime, ProviderCommonRuntime,
+    TikTokRuntime, TwitchRuntime,
+};
 use crate::service::{ManagementServiceDependencies, ManagementServiceImpl};
 use crate::FILE_DESCRIPTOR_SET;
 use synctv_realtime::fanout::{
@@ -39,6 +42,9 @@ pub struct ManagementServerConfig {
     pub alist_api: Arc<dyn AlistRuntime>,
     pub bilibili_api: Arc<dyn BilibiliRuntime>,
     pub emby_api: Arc<dyn EmbyRuntime>,
+    pub douyin_api: Arc<dyn DouyinRuntime>,
+    pub tiktok_api: Arc<dyn TikTokRuntime>,
+    pub twitch_api: Arc<dyn TwitchRuntime>,
     pub slice_cache_runtime: Arc<synctv_core::service::SliceCacheManagementService>,
     pub server_state_runtime: Arc<synctv_core::service::ServerStateService>,
     pub lifecycle_controller: Arc<ManagementLifecycleController>,
@@ -204,6 +210,9 @@ where
             alist_api: config.alist_api,
             bilibili_api: config.bilibili_api,
             emby_api: config.emby_api,
+            douyin_api: config.douyin_api,
+            tiktok_api: config.tiktok_api,
+            twitch_api: config.twitch_api,
             slice_cache_runtime: config.slice_cache_runtime,
             server_state_runtime: config.server_state_runtime,
             lifecycle_controller: config.lifecycle_controller,

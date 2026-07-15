@@ -18,6 +18,7 @@ async-trait.workspace = true
 reqwest.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
+tokio-stream = { workspace = true, features = ["net"] }
 
 # gRPC
 tonic.workspace = true
@@ -33,15 +34,28 @@ rustls.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
+serde_urlencoded.workspace = true
+quick-xml.workspace = true
 chrono.workspace = true
+html-escape.workspace = true
 
 # Utilities
 anyhow.workspace = true
 thiserror.workspace = true
 regex.workspace = true
+oxc_allocator.workspace = true
+oxc_ast.workspace = true
+oxc_parser.workspace = true
+oxc_span.workspace = true
+boa_engine.workspace = true
 url.workspace = true
+percent-encoding.workspace = true
 subtle.workspace = true
 sha2.workspace = true
+sha1.workspace = true
+sm3.workspace = true
+hmac.workspace = true
+rsa.workspace = true
 md-5.workspace = true
 uuid.workspace = true
 moka.workspace = true
@@ -62,6 +76,9 @@ backon.workspace = true
 
 # Encryption
 aes-gcm.workspace = true
+aes.workspace = true
+cbc.workspace = true
+rand.workspace = true
 base64.workspace = true
 hex.workspace = true
 
@@ -105,7 +122,6 @@ protoc-bin-vendored.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-tokio-stream = { workspace = true, features = ["net"] }
 wiremock.workspace = true
 futures.workspace = true
 synctv-core-testing.workspace = true

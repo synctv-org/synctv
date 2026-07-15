@@ -1,252 +1,129 @@
 # SyncTV Media Providers
 
-HTTP clients and gRPC services for SyncTV media providers, separated from core
-so provider backends can also run as a remote service.
+`synctv-media-providers` contains the upstream protocol implementations used by
+SyncTV. Each provider owns its HTTP/WebSocket protocol, request signing, DTOs,
+pagination, authentication details, playback extraction, and protocol tests.
+
+The complete integration guide is available in Chinese and English:
+
+- [Provider 开发指南](../docs/src/content/docs/develop/provider-development.mdx)
+- [Provider Development Guide](../docs/src/content/docs/en/develop/provider-development.mdx)
+- [Provider 使用手册](../docs/src/content/docs/use/provider-guide.mdx)
+- [Provider User Guide](../docs/src/content/docs/en/use/provider-guide.mdx)
+
+## Modules
+
+| Category | Modules | Upstream capabilities represented here |
+| --- | --- | --- |
+| Video and live platforms | `bilibili`, `youtube`, `twitch`, `douyin`, `tiktok`, `huya`, `douyu`, `acfun`, `cctv` | URL/ID parsing, metadata, native playback variants, platform feeds, subtitles, danmaku/chat, chapters, storyboard, and live protocols where available |
+| Media servers and file services | `emby`, `alist`, `cloudreve` | Authentication, browsing, search, metadata, thumbnails, subtitles, direct streams, transcode/remux, and playback reporting where available |
+| NAS and private cloud | `fnos`, `qnap`, `synology`, `nextcloud`, `seafile`, `truenas` | File browsing, search, preview/thumbnail, media libraries, native transcode, favorites, history, and playback reporting according to each server API |
+
+Provider modules remain independent. A provider-specific source enum, cursor,
+signature, media-library model, or playback response stays inside that provider.
+Shared code is reserved for stable transport concerns such as HTTP safety,
+bounded response reads, retries, credentials, circuit breakers, and errors.
 
 ## Architecture
 
-```
-synctv/
-├── synctv-core/          # Core provider adapters and trait definitions
-│   └── src/provider/
-│       ├── traits.rs     # MediaProvider trait
-│       ├── registry.rs   # ProviderRegistry
-│       ├── context.rs    # ProviderContext
-│       ├── config.rs     # Source config types
-│       ├── direct_url.rs # Direct URL adapter
-│       ├── rtmp.rs       # RTMP adapter
-│       └── error.rs      # ProviderError
-│
-├── synctv-media-providers/     # HTTP clients and gRPC provider services
-│   └── src/
-│       ├── alist/        # Alist HTTP client
-│       ├── bilibili/     # Bilibili HTTP client
-│       ├── emby/         # Emby HTTP client
-│       ├── grpc/         # Provider gRPC server implementations
-│       └── bin/
-│           └── media-provider-server.rs
-│
-└── synctv-api/           # API handlers that call local or remote providers
-```
+Provider support crosses three API boundaries:
 
-## Why Separate?
+| Boundary | Location | Purpose |
+| --- | --- | --- |
+| Upstream client | `synctv-media-providers/src/<provider>/` | Calls the provider's native HTTP, WebSocket, XML, or binary protocol |
+| Internal remote-provider transport | `synctv-media-providers/proto/`, `src/grpc/`, `src/remote_transport/` | Runs selected provider clients in a separate SyncTV provider process |
+| Public SyncTV API | `synctv-proto/proto/providers/`, `synctv-proto/proto/playback_provider/`, `synctv-api/` | Exposes typed parse, preview, list, binding, and playback operations to App and CLI clients |
 
-This separation provides several benefits:
+The Core adapters live in `synctv-core/src/provider/`. They connect upstream
+clients to credentials, persistent source configs and targets, dynamic folders,
+autoplay, `PlaybackResult`, and proxy resource resolution.
 
-### 1. Independent Compilation
-- Providers can be compiled separately from core
-- Faster build times when only updating providers
-- Reduced dependencies in core library
+Current standalone remote gRPC services cover Alist, Bilibili, and Emby. Other
+providers run through their local clients and public SyncTV APIs. Extending the
+remote transport requires a provider-specific internal proto, server, client,
+registration, configuration, and local/remote parity tests.
 
-### 2. Independent Deployment
-- Deploy providers as standalone gRPC services
-- Cross-region deployment (e.g., China-specific provider instance)
-- Scale providers independently
+## Library Usage
 
-### 3. Version Independence
-- Update provider implementations without rebuilding core
-- Different provider versions for different regions
-- A/B testing new provider implementations
-
-### 4. Security & Isolation
-- Provider credentials isolated from main application
-- Network policies per provider
-- Separate permission boundaries
-
-## Usage
-
-This crate exposes the internal remote-provider wire protocol under the
-`synctv.media.*` protobuf packages in `synctv-media-providers/proto/`. That
-protocol is used by `media-provider-server` and SyncTV remote provider
-instances. It is separate from the public SyncTV provider API in
-`synctv-proto/proto/providers`, which is exposed by the main SyncTV API server.
-
-### As Library
+Clients create or accept SyncTV's guarded HTTP configuration so redirects and
+resolved addresses remain inside the configured SSRF policy:
 
 ```rust
-use synctv_media_providers::{AlistClient, BilibiliClient, EmbyClient};
+use synctv_media_providers::{
+    build_provider_http_client, BilibiliClient, CloudreveClient,
+};
+use synctv_common::ssrf::SsrfGuard;
 
-let alist = AlistClient::new("https://alist.example.com")?;
+let http = build_provider_http_client(SsrfGuard::strict_policy())?;
 let bilibili = BilibiliClient::new()?;
-let emby = EmbyClient::new("https://emby.example.com")?;
+let cloudreve = CloudreveClient::with_http_client(
+    "https://cloud.example.com",
+    http,
+)?;
 ```
 
-Core `MediaProvider` adapters live under `synctv-core/src/provider/`. Direct
-URL and RTMP are implemented there, not in this crate.
+Consult each module's `client.rs` and tests for its constructors and typed
+requests. Core and API code should consume typed provider methods rather than
+constructing upstream URLs or decoding provider JSON themselves.
 
-### As Standalone Service
+## Standalone Provider Service
+
+The provider server currently publishes Alist, Bilibili, and Emby internal gRPC
+services. Every request carries `x-provider-secret`; each service also applies
+message limits, compression policy, and an independent circuit breaker.
 
 ```bash
-# Build provider server
-cargo build --release -p synctv-media-providers --bin media-provider-server
+cargo +nightly build --release \
+  -p synctv-media-providers \
+  --bin media-provider-server
 
-# Run with configuration
 PROVIDER_AUTH_SECRET="$(openssl rand -hex 32)" \
 PROVIDER_LISTEN_ADDR="0.0.0.0:50051" \
 ./target/release/media-provider-server
 ```
 
-## Provider Status
+TLS features are `tls-aws-lc`, `tls-ring`, `tls-webpki-roots`, and
+`tls-native-roots`. Select one crypto provider and the root source required by
+the deployment.
 
-| Provider | HTTP Client | gRPC Server | Features |
-|----------|-------------|-------------|----------|
-| **Alist** | Complete | Complete | Network storage, video preview |
-| **Bilibili** | Complete | Complete | Video/anime metadata, playback helpers, login, subtitles, and live-stream helpers |
-| **Emby** | Complete | Complete | Media server browsing, playback, session, and playback-report helpers |
+## Adding or Extending a Provider
 
-### Implementation Details
+1. Define the provider's real product flows: login, parse, preview, browse,
+   dynamic sources, playback variants, auxiliary media, and status reporting.
+2. Implement a dedicated module under `src/<provider>/` with its own DTOs,
+   pagination, signing, and protocol tests.
+3. Add typed source configs and targets, then implement the Core provider and
+   dynamic folder behavior.
+4. Add public protobuf messages, HTTP/gRPC handlers, OpenAPI schemas, CLI paths,
+   and every generated playback-resource resolver.
+5. Add internal remote transport when that provider needs separate deployment.
+6. Sync public protobuf into the Flutter App and implement codec, binding,
+   parse/preview, selection, and creation UI.
+7. Test upstream contracts, Core behavior, public transports, CLI, database
+   integration, and Flutter flows.
 
-**Alist**:
-- HTTP client with login, me, fs_get, fs_list, fs_other, and fs_search
-- gRPC server wrapping HTTP client with request validation
-- Remote gRPC client calls in ProviderClient
+Typed parse, resolve, list, search, and preview results carry a media or playlist
+source config. Page, cursor, offset, and continuation models follow each
+provider's upstream contract and map to the explicit public pagination type.
 
-**Bilibili**:
-- HTTP client with login, video/anime parsing, playback URLs, DASH metadata,
-  subtitles, user info, URL matching, live streams, and live danmu info
-- gRPC server wrapping HTTP client with request validation and provider-specific
-  error mapping
+## Development
 
-**Emby**:
-- HTTP client with authentication, item browsing, playback info, logout,
-  session cleanup, and playback reporting
-- gRPC server wrapping HTTP client with request validation and provider-specific
-  error mapping
-
-## Deployment Patterns
-
-### Pattern 1: Embedded (Default)
-
-```
-┌─────────────────────┐
-│   SyncTV Server     │
-│  ┌───────────────┐  │
-│  │ synctv-core   │  │
-│  │ synctv-media-providers│ │
-│  └───────────────┘  │
-└─────────────────────┘
-```
-
-Core provider adapters run in the same process as the main application. This
-crate supplies the HTTP clients used by the Alist, Bilibili, and Emby adapters.
-
-### Pattern 2: Remote Provider Instance
-
-```
-┌─────────────────────┐       ┌──────────────────────┐
-│   SyncTV Server     │       │  Provider Instance   │
-│  ┌───────────────┐  │       │  media-provider-     │
-│  │ synctv-core   │──┼──gRPC─┤  server              │
-│  │               │  │       │  ┌────────────────┐  │
-│  └───────────────┘  │       │  │ BilibiliProvider│ │
-└─────────────────────┘       │  │ AlistProvider   │  │
-                              │  └────────────────┘  │
-                              └──────────────────────┘
-```
-
-Alist, Bilibili, and Emby provider services run as a separate gRPC service,
-useful for:
-- Cross-region deployment (provider instance in China for Bilibili)
-- Scaling specific providers
-- Credential isolation
-
-### Pattern 3: Hybrid
-
-```
-┌─────────────────────┐       ┌──────────────────────┐
-│   SyncTV Server     │       │  Provider Instance   │
-│  ┌───────────────┐  │       │  (China Region)      │
-│  │ synctv-core   │  │       │  ┌────────────────┐  │
-│  │ DirectUrl/RTMP│  │       │  │ Bilibili service│  │
-│  │ local adapters│  │       │  │ (with CDN)      │  │
-│  │               │──┼──gRPC─┤  └────────────────┘  │
-│  └───────────────┘  │       └──────────────────────┘
-└─────────────────────┘
-```
-
-Mix of local and remote providers:
-- Local: Direct URL and RTMP adapters in `synctv-core`
-- Remote: Bilibili, Alist, or Emby through `media-provider-server`
-
-## Configuration
-
-### Provider Instance Configuration
-
-```json
-{
-  "providers": {
-    "bilibili_main": {
-      "type": "bilibili",
-      "mode": "local",
-      "config": {
-        "base_url": "https://synctv.example.com"
-      }
-    },
-    "bilibili_china": {
-      "type": "bilibili",
-      "mode": "remote",
-      "config": {
-        "grpc_url": "https://provider.cn.example.com:50051",
-        "base_url": "https://synctv.cn.example.com"
-      }
-    }
-  }
-}
-```
-
-## Design Benefits
-
-Compared to earlier provider implementations:
-
-1. **Type Safety**: Rust's type system catches errors at compile time
-2. **Zero-Cost Abstractions**: No runtime overhead from trait usage
-3. **Memory Safety**: No data races or null pointer issues
-4. **Better Testing**: Each provider can be tested independently
-5. **Clear Boundaries**: Trait-based architecture enforces contracts
-
-## Building
-
-Feature flags are TLS-related: `tls-aws-lc`, `tls-ring`,
-`tls-webpki-roots`, and `tls-native-roots`. The crate does not currently define
-media-provider-specific feature flags.
+Use the repository nightly toolchain for builds and checks:
 
 ```bash
-# Build only providers
-cargo build -p synctv-media-providers
-
-# Build with TLS provider features
-cargo build -p synctv-media-providers --features "tls-aws-lc,tls-webpki-roots"
-
-# Test providers
-cargo test -p synctv-media-providers
-
-# Build provider server
-cargo build -p synctv-media-providers --bin media-provider-server --release
+cargo +nightly fmt --all
+cargo +nightly check -p synctv-media-providers --all-targets
+cargo +nightly nextest run -p synctv-media-providers --run-ignored all --nff
 ```
 
-## Adding New Provider
+Run the complete workspace suite from the repository root after changing Core,
+protobuf, API, management, CLI, or persistence behavior:
 
-1. Create a new HTTP client module in `synctv-media-providers/src/`:
-
-```rust
-// src/my_provider/mod.rs
-pub struct MyProviderClient {
-    base_url: String,
-}
+```bash
+cargo +nightly check --workspace --all-targets
+make nextest
 ```
 
-2. Add the module and public client export to `lib.rs`:
-
-```rust
-pub mod my_provider;
-pub use my_provider::MyProviderClient;
-```
-
-3. Add gRPC protobuf/service glue if the provider must run remotely.
-
-4. Add a `synctv-core/src/provider/` adapter if it needs to implement the
-   core `MediaProvider` trait.
-
-## Reference
-
-- Core Traits: `synctv-core/src/provider/`
+Tests that call upstream services use deterministic protocol fixtures or
+WireMock. Database and service integration scenarios use the workspace
+Testcontainers setup and run through `make nextest`.

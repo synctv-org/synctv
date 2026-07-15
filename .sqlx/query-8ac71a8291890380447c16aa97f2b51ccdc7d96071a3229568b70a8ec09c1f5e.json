@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE provider_playback_sessions\n               SET state = 2, stop_position = $3, stop_reason = $4,\n                   next_cleanup_at = NOW(), cleanup_lease_until = NULL\n               WHERE room_id = $1 AND playback_generation = $2 AND state = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Float8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8ac71a8291890380447c16aa97f2b51ccdc7d96071a3229568b70a8ec09c1f5e"
+}

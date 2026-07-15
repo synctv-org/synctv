@@ -257,6 +257,39 @@ pub enum DirectoryItemThumbnail {
         credential_owner_id: crate::models::UserId,
         item_id: String,
     },
+    Fnos {
+        server_id: String,
+        credential_owner_id: crate::models::UserId,
+        image_path: String,
+    },
+    Qnap {
+        server_id: String,
+        credential_owner_id: crate::models::UserId,
+        path: String,
+    },
+    SynologyFile {
+        server_id: String,
+        credential_owner_id: crate::models::UserId,
+        path: String,
+    },
+    SynologyPoster {
+        server_id: String,
+        credential_owner_id: crate::models::UserId,
+        item_id: i64,
+        media_type: String,
+        poster_mtime: Option<String>,
+    },
+    Nextcloud {
+        server_id: String,
+        credential_owner_id: crate::models::UserId,
+        file_id: u64,
+    },
+    Seafile {
+        server_id: String,
+        credential_owner_id: crate::models::UserId,
+        repository_id: String,
+        path: String,
+    },
 }
 
 /// Provider-owned cover candidate for a persisted media or dynamic playlist.
@@ -270,6 +303,39 @@ pub enum SourceCover {
         server_id: String,
         credential_owner_id: crate::models::UserId,
         item_id: String,
+    },
+    Fnos {
+        server_id: String,
+        credential_owner_id: crate::models::UserId,
+        image_path: String,
+    },
+    Nextcloud {
+        server_id: String,
+        credential_owner_id: crate::models::UserId,
+        file_id: u64,
+    },
+    Seafile {
+        server_id: String,
+        credential_owner_id: crate::models::UserId,
+        repository_id: String,
+        path: String,
+    },
+    Qnap {
+        server_id: String,
+        credential_owner_id: crate::models::UserId,
+        path: String,
+    },
+    SynologyFile {
+        server_id: String,
+        credential_owner_id: crate::models::UserId,
+        path: String,
+    },
+    SynologyPoster {
+        server_id: String,
+        credential_owner_id: crate::models::UserId,
+        item_id: i64,
+        media_type: String,
+        poster_mtime: Option<String>,
     },
 }
 
@@ -300,6 +366,17 @@ pub struct DirectoryItem {
     /// Modified time (Unix timestamp)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub modified_at: Option<i64>,
+
+    /// Typed source config that can be submitted directly to an add endpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_config: Option<DirectoryItemSourceConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "config", rename_all = "camelCase")]
+pub enum DirectoryItemSourceConfig {
+    Media(crate::models::MediaSourceConfig),
+    Playlist(crate::models::PlaylistSourceConfig),
 }
 
 /// Query options for browsing provider-backed dynamic playlists.
@@ -440,6 +517,10 @@ pub trait MediaProvider: Send + Sync {
         None
     }
 
+    fn as_playback_session_lifecycle(&self) -> Option<&dyn ProviderPlaybackSessionLifecycle> {
+        None
+    }
+
     #[cfg(test)]
     fn test_client_manager_marker(&self) -> Option<usize> {
         None
@@ -497,60 +578,23 @@ pub trait MediaProvider: Send + Sync {
     ) -> Result<PreparedSourceConfig, ProviderError> {
         Ok(source_config.into()) // Default: no transformation
     }
+}
 
-    /// Called when playback starts
-    ///
-    /// Use cases:
-    /// - Emby: Notify server to start transcoding
-    /// - Statistics: Record playback event
-    async fn on_playback_start(
+#[async_trait]
+pub trait ProviderPlaybackSessionLifecycle: Send + Sync {
+    async fn progress(
         &self,
-        _ctx: &ProviderContext<'_>,
-        _session_id: &str,
-        _source_config: &crate::models::MediaSourceConfig,
-    ) -> Result<(), ProviderError> {
-        Ok(()) // Default: no-op
-    }
+        ctx: &ProviderContext<'_>,
+        session: &crate::models::ProviderPlaybackSessionRecord,
+        position: f64,
+        paused: bool,
+    ) -> Result<(), ProviderError>;
 
-    /// Called when playback stops
-    ///
-    /// Use cases:
-    /// - Emby: Notify server to stop transcoding
-    /// - Statistics: Record watch duration
-    async fn on_playback_stop(
+    async fn cleanup(
         &self,
-        _ctx: &ProviderContext<'_>,
-        _session_id: &str,
-        _source_config: &crate::models::MediaSourceConfig,
-        _position: f64,
-    ) -> Result<(), ProviderError> {
-        Ok(()) // Default: no-op
-    }
-
-    /// Called periodically during playback (every 10s)
-    ///
-    /// Use cases:
-    /// - Emby: Update playback progress on server
-    /// - Statistics: Track viewing progress
-    async fn on_playback_progress(
-        &self,
-        _ctx: &ProviderContext<'_>,
-        _session_id: &str,
-        _source_config: &crate::models::MediaSourceConfig,
-        _position: f64,
-        _is_paused: bool,
-    ) -> Result<(), ProviderError> {
-        Ok(()) // Default: no-op
-    }
-
-    /// Return the provider-owned playback session id from a generated playback result.
-    ///
-    /// Providers that allocate server-side playback/transcoding sessions should
-    /// expose the opaque provider session id here so playback lifecycle logic can
-    /// report progress and release provider resources when room playback changes.
-    fn playback_lifecycle_session_id(&self, _result: &PlaybackResult) -> Option<String> {
-        None
-    }
+        ctx: &ProviderContext<'_>,
+        session: &crate::models::ProviderPlaybackSessionRecord,
+    ) -> Result<(), ProviderError>;
 }
 
 #[async_trait]

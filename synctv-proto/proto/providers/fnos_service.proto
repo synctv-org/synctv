@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package synctv.provider.fnos;
+
+import "proto/providers/fnos.proto";
+
+service FnosProviderService {
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc List(ListRequest) returns (ListResponse);
+  rpc ListMediaLibraries(ListMediaLibrariesRequest) returns (ListMediaLibrariesResponse);
+  rpc ListMediaItems(ListMediaItemsRequest) returns (ListMediaItemsResponse);
+  rpc SetFavorite(SetFavoriteRequest) returns (SetFavoriteResponse);
+  rpc SetWatched(SetWatchedRequest) returns (SetWatchedResponse);
+  rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+}

@@ -1,0 +1,21 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+message AccessPoint {
+	AddressType addressType = 1;
+	uint32 port = 2;
+	fixed32 ipV4 = 3;
+	bytes ipV6= 4;
+	string domain = 5;
+	fixed32 quic = 6;
+	bytes quicV6 = 7;
+
+	enum AddressType{
+		kIPV4 = 0;
+		kIPV6= 1;
+		kDomain = 2;
+		kQuic = 3;
+		kQuicV6 = 4;
+	}
+}

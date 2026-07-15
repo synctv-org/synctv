@@ -205,5 +205,47 @@ pub(crate) fn source_provider_from_proto_filter(
         source_config_proto::SourceProvider::Cloudreve => {
             Ok(Some(synctv_core::models::SourceProvider::Cloudreve))
         }
+        source_config_proto::SourceProvider::Twitch => {
+            Ok(Some(synctv_core::models::SourceProvider::Twitch))
+        }
+        source_config_proto::SourceProvider::Huya => {
+            Ok(Some(synctv_core::models::SourceProvider::Huya))
+        }
+        source_config_proto::SourceProvider::Douyu => {
+            Ok(Some(synctv_core::models::SourceProvider::Douyu))
+        }
+        source_config_proto::SourceProvider::Douyin => {
+            Ok(Some(synctv_core::models::SourceProvider::Douyin))
+        }
+        source_config_proto::SourceProvider::Tiktok => {
+            Ok(Some(synctv_core::models::SourceProvider::TikTok))
+        }
+        source_config_proto::SourceProvider::Acfun => {
+            Ok(Some(synctv_core::models::SourceProvider::AcFun))
+        }
+        source_config_proto::SourceProvider::Cctv => {
+            Ok(Some(synctv_core::models::SourceProvider::Cctv))
+        }
+        source_config_proto::SourceProvider::Fnos => {
+            Ok(Some(synctv_core::models::SourceProvider::Fnos))
+        }
+        source_config_proto::SourceProvider::Qnap => {
+            Ok(Some(synctv_core::models::SourceProvider::Qnap))
+        }
+        source_config_proto::SourceProvider::Synology => {
+            Ok(Some(synctv_core::models::SourceProvider::Synology))
+        }
+        source_config_proto::SourceProvider::Nextcloud => {
+            Ok(Some(synctv_core::models::SourceProvider::Nextcloud))
+        }
+        source_config_proto::SourceProvider::Seafile => {
+            Ok(Some(synctv_core::models::SourceProvider::Seafile))
+        }
+        source_config_proto::SourceProvider::Truenas => {
+            Ok(Some(synctv_core::models::SourceProvider::TrueNas))
+        }
+        source_config_proto::SourceProvider::Youtube => {
+            Ok(Some(synctv_core::models::SourceProvider::Youtube))
+        }
     }
 }

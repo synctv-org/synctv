@@ -14,7 +14,7 @@ use synctv_core::models::{
     PlaylistListQuery as CorePlaylistListQuery, PlaylistListSortBy as CorePlaylistListSortBy,
     RoomId, SortDirection as CoreSortDirection, StoreFileUploadResult, UserId,
 };
-use synctv_core::provider::{DynamicListQuery, DynamicPagination};
+use synctv_core::provider::{DirectoryItemSourceConfig, DynamicListQuery, DynamicPagination};
 use synctv_core::service::{
     AddMediaRequest as CoreAddMediaRequest, CreateMediaCoverUploadSession,
     CreateMediaThumbnailUploadSession, MoveMediaRequest as CoreMoveMediaRequest,
@@ -28,8 +28,8 @@ use synctv_core::service::{MediaService, NewRealtimeOutboxEvent};
 
 use super::convert::try_playlist_path_node_to_proto;
 use super::convert::{
-    file_metadata_from_proto, optional_proto_source_provider_to_core,
-    optional_provider_target_to_proto, provider_target_from_proto,
+    file_metadata_from_proto, media_source_config_to_proto, optional_proto_source_provider_to_core,
+    optional_provider_target_to_proto, playlist_source_config_to_proto, provider_target_from_proto,
 };
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::media_fanout::{MediaFanoutService, PreparedMediaRemovedFanout};
@@ -46,6 +46,25 @@ struct AddMediaBatchBuildResult {
 fn optional_trimmed_string(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn directory_item_source_config_to_proto(
+    source_config: Option<DirectoryItemSourceConfig>,
+) -> Result<Option<synctv_proto::client::playlist_item::SourceConfig>, ApiError> {
+    source_config
+        .map(|source_config| match source_config {
+            DirectoryItemSourceConfig::Media(config) => Ok(
+                synctv_proto::client::playlist_item::SourceConfig::MediaSourceConfig(
+                    media_source_config_to_proto(&config)?,
+                ),
+            ),
+            DirectoryItemSourceConfig::Playlist(config) => Ok(
+                synctv_proto::client::playlist_item::SourceConfig::PlaylistSourceConfig(
+                    playlist_source_config_to_proto(&config)?,
+                ),
+            ),
+        })
+        .transpose()
 }
 
 #[cfg(test)]
@@ -2116,6 +2135,145 @@ impl ClientApiImpl {
         let rid = actor.room_id();
         let viewer_id = actor.user_id();
         let target = provider_target_from_proto(req.target.clone())?;
+        if let Some(preview_source_config) = req.preview_source_config.clone() {
+            if !req.playlist_id.is_empty() {
+                return Err(ApiError::InvalidInput(
+                    "playlist_id must be empty for source preview".to_string(),
+                ));
+            }
+            let Some(uid) = actor.user_id() else {
+                return Err(ApiError::Authorization(
+                    "Guests cannot preview provider playlists".to_string(),
+                ));
+            };
+            let (source_provider, source_config) =
+                synctv_adapter::source_config::playlist_source_config_from_proto(Some(
+                    preview_source_config,
+                ))
+                .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+            let requested_provider = optional_proto_source_provider_to_core(req.source_provider)?;
+            if requested_provider.is_some_and(|provider| provider != source_provider) {
+                return Err(ApiError::InvalidInput(
+                    "source_provider does not match preview_source_config".to_string(),
+                ));
+            }
+            let page = match req.pagination.as_ref() {
+                Some(synctv_proto::client::list_playlist_items_request::Pagination::Page(page)) => {
+                    page_u32_to_usize(page.page)?
+                }
+                Some(synctv_proto::client::list_playlist_items_request::Pagination::Cursor(_)) => {
+                    return Err(ApiError::InvalidInput(
+                        "Source preview requires page pagination".to_string(),
+                    ));
+                }
+                None => 1,
+            };
+            let result = self
+                .room_service
+                .media_service()
+                .preview_dynamic_playlist_items(
+                    synctv_core::service::DynamicPlaylistPreviewRequest {
+                        room_id: rid,
+                        user_id: uid,
+                        source_provider,
+                        source_config,
+                        provider_instance_name: normalize_non_empty_filter(
+                            &req.provider_instance_name,
+                        ),
+                        target,
+                        query: DynamicListQuery {
+                            pagination: DynamicPagination::Page { page },
+                            page_size: crate::impls::proto_page_size_u32_usize(
+                                req.page_size,
+                                20,
+                                100,
+                            )?,
+                            search: normalize_non_empty_filter(&req.search),
+                            refresh: req.refresh,
+                        },
+                    },
+                )
+                .await
+                .map_err(ApiError::from)?;
+            let dynamic_items = result
+                .items
+                .into_iter()
+                .map(|item| {
+                    use synctv_core::provider::{DirectoryItemThumbnail, ItemType};
+                    let source_config = directory_item_source_config_to_proto(item.source_config)?;
+                    let thumbnail = match item.thumbnail {
+                        Some(DirectoryItemThumbnail::Url(url)) => Some(url),
+                        Some(DirectoryItemThumbnail::Emby {
+                            server_id,
+                            credential_owner_id,
+                            item_id,
+                        }) => {
+                            let public_room_id = self
+                                .public_id_codec
+                                .encode_room_id(rid)
+                                .map_err(ApiError::Internal)?;
+                            let public_user_id = self
+                                .public_id_codec
+                                .encode_user_id(uid)
+                                .map_err(ApiError::Internal)?;
+                            let public_owner_id = self
+                                .public_id_codec
+                                .encode_user_id(credential_owner_id)
+                                .map_err(ApiError::Internal)?;
+                            let url = crate::emby_thumbnail_urls::emby_thumbnail_url(
+                                &server_id,
+                                &public_owner_id,
+                                &item_id,
+                            );
+                            Some(
+                                crate::emby_thumbnail_urls::sign_emby_thumbnail_url(
+                                    &url,
+                                    &public_room_id,
+                                    &public_user_id,
+                                    self.signing_key.as_ref(),
+                                )
+                                .map_err(ApiError::Internal)?,
+                            )
+                        }
+                        _ => None,
+                    };
+                    Ok(synctv_proto::client::PlaylistItem {
+                        name: item.name,
+                        item_type: match item.item_type {
+                            ItemType::Playlist => synctv_proto::client::ItemType::Playlist as i32,
+                            ItemType::Media => synctv_proto::client::ItemType::Media as i32,
+                        },
+                        target: optional_provider_target_to_proto(Some(&item.target)),
+                        size: item.size,
+                        thumbnail,
+                        modified_at: item.modified_at,
+                        description: item.description.unwrap_or_default(),
+                        source_config,
+                    })
+                })
+                .collect::<Result<Vec<_>, ApiError>>()?;
+            return finalize_playlist_items_response_version(
+                synctv_proto::client::ListPlaylistItemsResponse {
+                    playlists: Vec::new(),
+                    media: Vec::new(),
+                    total: None,
+                    folder_count: 0,
+                    file_count: 0,
+                    dynamic_items,
+                    current_path: Vec::new(),
+                    version: String::new(),
+                    pagination: Some(
+                        synctv_proto::client::list_playlist_items_response::Pagination::Page(
+                            synctv_proto::client::PagePagination {
+                                page: u32::try_from(page).map_err(|_| {
+                                    ApiError::Internal("preview page exceeds u32::MAX".to_string())
+                                })?,
+                            },
+                        ),
+                    ),
+                },
+            );
+        }
         let Some(playlist_id) = (if req.playlist_id.is_empty() {
             None
         } else {
@@ -2358,6 +2516,7 @@ impl ClientApiImpl {
                 .into_iter()
                 .map(|item| {
                     use synctv_core::provider::{DirectoryItemThumbnail, ItemType};
+                    let source_config = directory_item_source_config_to_proto(item.source_config)?;
                     let item_type = match item.item_type {
                         ItemType::Playlist => synctv_proto::client::ItemType::Playlist as i32,
                         ItemType::Media => synctv_proto::client::ItemType::Media as i32,
@@ -2404,6 +2563,224 @@ impl ClientApiImpl {
                                 .map_err(ApiError::Internal)?,
                             )
                         }
+                        Some(DirectoryItemThumbnail::Fnos {
+                            server_id,
+                            credential_owner_id,
+                            image_path,
+                        }) => {
+                            let public_room_id = self
+                                .public_id_codec
+                                .encode_room_id(rid)
+                                .map_err(ApiError::Internal)?;
+                            let public_user_id = self
+                                .public_id_codec
+                                .encode_user_id(uid)
+                                .map_err(ApiError::Internal)?;
+                            let public_owner_id = self
+                                .public_id_codec
+                                .encode_user_id(credential_owner_id)
+                                .map_err(ApiError::Internal)?;
+                            let thumbnail = crate::fnos_thumbnail_urls::fnos_thumbnail_url(
+                                &server_id,
+                                &public_owner_id,
+                                &image_path,
+                                400,
+                            );
+                            Some(
+                                crate::fnos_thumbnail_urls::sign_fnos_thumbnail_url(
+                                    &thumbnail,
+                                    &public_room_id,
+                                    &public_user_id,
+                                    self.signing_key.as_ref(),
+                                )
+                                .map_err(ApiError::Internal)?,
+                            )
+                        }
+                        Some(DirectoryItemThumbnail::Qnap {
+                            server_id,
+                            credential_owner_id,
+                            path,
+                        }) => {
+                            let public_room_id = self
+                                .public_id_codec
+                                .encode_room_id(rid)
+                                .map_err(ApiError::Internal)?;
+                            let public_user_id = self
+                                .public_id_codec
+                                .encode_user_id(uid)
+                                .map_err(ApiError::Internal)?;
+                            let public_owner_id = self
+                                .public_id_codec
+                                .encode_user_id(credential_owner_id)
+                                .map_err(ApiError::Internal)?;
+                            let thumbnail = crate::qnap_thumbnail_urls::qnap_thumbnail_url(
+                                &server_id,
+                                &public_owner_id,
+                                &path,
+                                320,
+                            );
+                            Some(
+                                crate::qnap_thumbnail_urls::sign_qnap_thumbnail_url(
+                                    &thumbnail,
+                                    &public_room_id,
+                                    &public_user_id,
+                                    self.signing_key.as_ref(),
+                                )
+                                .map_err(ApiError::Internal)?,
+                            )
+                        }
+                        Some(DirectoryItemThumbnail::Nextcloud {
+                            server_id,
+                            credential_owner_id,
+                            file_id,
+                        }) => {
+                            let public_room_id = self
+                                .public_id_codec
+                                .encode_room_id(rid)
+                                .map_err(ApiError::Internal)?;
+                            let public_user_id = self
+                                .public_id_codec
+                                .encode_user_id(uid)
+                                .map_err(ApiError::Internal)?;
+                            let public_owner_id = self
+                                .public_id_codec
+                                .encode_user_id(credential_owner_id)
+                                .map_err(ApiError::Internal)?;
+                            let preview = crate::nextcloud_preview_urls::nextcloud_preview_url(
+                                &server_id,
+                                &public_owner_id,
+                                file_id,
+                                320,
+                                320,
+                                true,
+                            );
+                            Some(
+                                crate::nextcloud_preview_urls::sign_nextcloud_preview_url(
+                                    &preview,
+                                    &public_room_id,
+                                    &public_user_id,
+                                    self.signing_key.as_ref(),
+                                )
+                                .map_err(ApiError::Internal)?,
+                            )
+                        }
+                        Some(DirectoryItemThumbnail::Seafile {
+                            server_id,
+                            credential_owner_id,
+                            repository_id,
+                            path,
+                        }) => {
+                            let room_id = self
+                                .public_id_codec
+                                .encode_room_id(rid)
+                                .map_err(ApiError::Internal)?;
+                            let user_id = self
+                                .public_id_codec
+                                .encode_user_id(uid)
+                                .map_err(ApiError::Internal)?;
+                            let owner_id = self
+                                .public_id_codec
+                                .encode_user_id(credential_owner_id)
+                                .map_err(ApiError::Internal)?;
+                            let thumbnail = crate::seafile_thumbnail_urls::seafile_thumbnail_url(
+                                &server_id,
+                                &owner_id,
+                                &repository_id,
+                                &path,
+                                320,
+                            );
+                            Some(
+                                crate::seafile_thumbnail_urls::sign_seafile_thumbnail_url(
+                                    &thumbnail,
+                                    &room_id,
+                                    &user_id,
+                                    self.signing_key.as_ref(),
+                                )
+                                .map_err(ApiError::Internal)?,
+                            )
+                        }
+                        Some(DirectoryItemThumbnail::SynologyFile {
+                            server_id,
+                            credential_owner_id,
+                            path,
+                        }) => {
+                            let public_room_id = self
+                                .public_id_codec
+                                .encode_room_id(rid)
+                                .map_err(ApiError::Internal)?;
+                            let public_user_id = self
+                                .public_id_codec
+                                .encode_user_id(uid)
+                                .map_err(ApiError::Internal)?;
+                            let public_owner_id = self
+                                .public_id_codec
+                                .encode_user_id(credential_owner_id)
+                                .map_err(ApiError::Internal)?;
+                            let image = crate::synology_image_urls::synology_file_image_url(
+                                &server_id,
+                                &public_owner_id,
+                                &path,
+                                "medium",
+                            );
+                            Some(
+                                crate::synology_image_urls::sign_synology_image_url(
+                                    &image,
+                                    crate::synology_image_urls::SynologyImageScope::File {
+                                        server_id: &server_id,
+                                        credential_owner_id: &public_owner_id,
+                                        path: &path,
+                                        size: "medium",
+                                    },
+                                    &public_room_id,
+                                    &public_user_id,
+                                    self.signing_key.as_ref(),
+                                )
+                                .map_err(ApiError::Internal)?,
+                            )
+                        }
+                        Some(DirectoryItemThumbnail::SynologyPoster {
+                            server_id,
+                            credential_owner_id,
+                            item_id,
+                            media_type,
+                            poster_mtime,
+                        }) => {
+                            let public_room_id = self
+                                .public_id_codec
+                                .encode_room_id(rid)
+                                .map_err(ApiError::Internal)?;
+                            let public_user_id = self
+                                .public_id_codec
+                                .encode_user_id(uid)
+                                .map_err(ApiError::Internal)?;
+                            let public_owner_id = self
+                                .public_id_codec
+                                .encode_user_id(credential_owner_id)
+                                .map_err(ApiError::Internal)?;
+                            let image = crate::synology_image_urls::synology_poster_url(
+                                &server_id,
+                                &public_owner_id,
+                                item_id,
+                                &media_type,
+                                poster_mtime.as_deref(),
+                            );
+                            Some(
+                                crate::synology_image_urls::sign_synology_image_url(
+                                    &image,
+                                    crate::synology_image_urls::SynologyImageScope::Poster {
+                                        server_id: &server_id,
+                                        credential_owner_id: &public_owner_id,
+                                        item_id,
+                                        media_type: &media_type,
+                                        poster_mtime: poster_mtime.as_deref(),
+                                    },
+                                    &public_room_id,
+                                    &public_user_id,
+                                    self.signing_key.as_ref(),
+                                )
+                                .map_err(ApiError::Internal)?,
+                            )
+                        }
                         None => None,
                     };
 
@@ -2418,6 +2795,7 @@ impl ClientApiImpl {
                         thumbnail,
                         modified_at: item.modified_at,
                         description: item.description.unwrap_or_default(),
+                        source_config,
                     })
                 })
                 .collect::<Result<Vec<_>, ApiError>>()?;
@@ -2774,7 +3152,9 @@ mod tests {
                     synctv_core::models::PlaylistSourceConfig::Emby(
                         synctv_core::models::EmbyPlaylistSourceConfig {
                             server_id: "emby-server".to_string(),
-                            item_id: "library".to_string(),
+                            source: synctv_core::models::EmbyPlaylistSource::Folder {
+                                item_id: "library".to_string(),
+                            },
                         },
                     )
                 }
@@ -2813,6 +3193,7 @@ mod tests {
                 thumbnail: Some(thumbnail.to_string()),
                 modified_at: Some(456),
                 description: String::new(),
+                source_config: None,
             }],
             current_path: Vec::new(),
             version: String::new(),
@@ -3297,6 +3678,7 @@ mod tests {
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
                 availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
+                preview_source_config: None,
             },
         ))?;
 

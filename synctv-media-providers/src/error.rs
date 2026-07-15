@@ -102,6 +102,29 @@ pub async fn json_with_limit<T: serde::de::DeserializeOwned>(
     serde_json::from_slice(&bytes).map_err(Into::into)
 }
 
+/// Read a UTF-8 response body with the shared provider size limit.
+pub async fn text_with_limit(
+    mut response: reqwest::Response,
+) -> Result<String, ProviderClientError> {
+    if let Some(size) = response.content_length() {
+        if usize::try_from(size).map_or(true, |size| size > MAX_RESPONSE_SIZE) {
+            return Err(ProviderClientError::ResponseTooLarge { size });
+        }
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        let size = bytes
+            .len()
+            .checked_add(chunk.len())
+            .ok_or(ProviderClientError::ResponseTooLarge { size: u64::MAX })?;
+        if size > MAX_RESPONSE_SIZE {
+            return Err(ProviderClientError::ResponseTooLarge { size: size as u64 });
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    String::from_utf8(bytes).map_err(|error| ProviderClientError::Parse(error.to_string()))
+}
+
 /// Check HTTP response status before processing body.
 ///
 /// For HTTP 429 (Too Many Requests) and 503 (Service Unavailable) responses,
@@ -175,6 +198,12 @@ impl From<reqwest::Error> for ProviderClientError {
 
 impl From<serde_json::Error> for ProviderClientError {
     fn from(err: serde_json::Error) -> Self {
+        Self::Parse(err.to_string())
+    }
+}
+
+impl From<prost::DecodeError> for ProviderClientError {
+    fn from(err: prost::DecodeError) -> Self {
         Self::Parse(err.to_string())
     }
 }

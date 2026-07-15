@@ -1,0 +1,23 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+import "DeviceInfo.proto";
+import "AppInfo.proto";
+import "EnvInfo.proto";
+
+message RequestBasicInfo { //RequsetBasicInfo
+    DeviceInfo.PlatformType clientType = 1;
+    string deviceId = 2;
+    string clientIp = 3;
+    string appVersion = 4;
+    string channel = 5;
+    AppInfo appInfo = 6;
+    DeviceInfo deviceInfo = 7;
+    EnvInfo envInfo = 8;
+    int32 clientPort = 9;
+    string location = 10;
+    string kpf = 11;
+    string clientIpV6 = 12;
+    string countryCode = 13;
+}

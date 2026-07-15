@@ -67,6 +67,20 @@ pub enum SourceProvider {
     Rtmp,
     LiveProxy,
     Cloudreve,
+    Twitch,
+    Huya,
+    Douyu,
+    Douyin,
+    AcFun,
+    Cctv,
+    Fnos,
+    Qnap,
+    Synology,
+    Nextcloud,
+    Seafile,
+    TrueNas,
+    Youtube,
+    TikTok,
 }
 
 pub type ProviderType = SourceProvider;
@@ -83,6 +97,20 @@ impl FromStr for SourceProvider {
             "rtmp" => Ok(Self::Rtmp),
             "live_proxy" => Ok(Self::LiveProxy),
             "cloudreve" => Ok(Self::Cloudreve),
+            "twitch" => Ok(Self::Twitch),
+            "huya" => Ok(Self::Huya),
+            "douyu" => Ok(Self::Douyu),
+            "douyin" => Ok(Self::Douyin),
+            "acfun" => Ok(Self::AcFun),
+            "cctv" => Ok(Self::Cctv),
+            "fnos" => Ok(Self::Fnos),
+            "qnap" => Ok(Self::Qnap),
+            "synology" => Ok(Self::Synology),
+            "nextcloud" => Ok(Self::Nextcloud),
+            "seafile" => Ok(Self::Seafile),
+            "truenas" => Ok(Self::TrueNas),
+            "youtube" => Ok(Self::Youtube),
+            "tiktok" => Ok(Self::TikTok),
             other => Err(format!("Unknown provider type: {other}")),
         }
     }
@@ -99,6 +127,20 @@ impl SourceProvider {
             Self::Rtmp => 5,
             Self::LiveProxy => 6,
             Self::Cloudreve => 7,
+            Self::Twitch => 8,
+            Self::Huya => 9,
+            Self::Douyu => 10,
+            Self::Douyin => 11,
+            Self::AcFun => 12,
+            Self::Cctv => 13,
+            Self::Fnos => 14,
+            Self::Qnap => 15,
+            Self::Synology => 16,
+            Self::Nextcloud => 17,
+            Self::Seafile => 18,
+            Self::TrueNas => 19,
+            Self::Youtube => 20,
+            Self::TikTok => 21,
         }
     }
 
@@ -112,6 +154,20 @@ impl SourceProvider {
             Self::Rtmp => "rtmp",
             Self::LiveProxy => "live_proxy",
             Self::Cloudreve => "cloudreve",
+            Self::Twitch => "twitch",
+            Self::Huya => "huya",
+            Self::Douyu => "douyu",
+            Self::Douyin => "douyin",
+            Self::AcFun => "acfun",
+            Self::Cctv => "cctv",
+            Self::Fnos => "fnos",
+            Self::Qnap => "qnap",
+            Self::Synology => "synology",
+            Self::Nextcloud => "nextcloud",
+            Self::Seafile => "seafile",
+            Self::TrueNas => "truenas",
+            Self::Youtube => "youtube",
+            Self::TikTok => "tiktok",
         }
     }
 }
@@ -128,6 +184,20 @@ impl TryFrom<i16> for SourceProvider {
             5 => Ok(Self::Rtmp),
             6 => Ok(Self::LiveProxy),
             7 => Ok(Self::Cloudreve),
+            8 => Ok(Self::Twitch),
+            9 => Ok(Self::Huya),
+            10 => Ok(Self::Douyu),
+            11 => Ok(Self::Douyin),
+            12 => Ok(Self::AcFun),
+            13 => Ok(Self::Cctv),
+            14 => Ok(Self::Fnos),
+            15 => Ok(Self::Qnap),
+            16 => Ok(Self::Synology),
+            17 => Ok(Self::Nextcloud),
+            18 => Ok(Self::Seafile),
+            19 => Ok(Self::TrueNas),
+            20 => Ok(Self::Youtube),
+            21 => Ok(Self::TikTok),
             other => Err(format!("Unknown provider type code: {other}")),
         }
     }
@@ -447,6 +517,391 @@ pub enum PlaybackMediaProvider {
     Emby(PlaybackEmbyMedia),
     Rtmp(PlaybackRtmpMedia),
     LiveProxy(PlaybackLiveProxyMedia),
+    Twitch(PlaybackTwitchMedia),
+    Youtube(PlaybackYoutubeMedia),
+    Huya(PlaybackHuyaMedia),
+    Douyu(PlaybackDouyuMedia),
+    Douyin(PlaybackDouyinMedia),
+    AcFun(PlaybackAcFunMedia),
+    Cctv(PlaybackCctvMedia),
+    Fnos(PlaybackFnosMedia),
+    Qnap(PlaybackQnapMedia),
+    Synology(PlaybackSynologyMedia),
+    Nextcloud(PlaybackNextcloudMedia),
+    Seafile(PlaybackSeafileMedia),
+    TrueNas(PlaybackTrueNasMedia),
+    TikTok(PlaybackTikTokMedia),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackTrueNasMedia {
+    Refresh {
+        credential_owner_id: String,
+        server_id: String,
+        path: String,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+        credential_owner_id: String,
+        server_id: String,
+        path: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackSeafileMedia {
+    Refresh {
+        credential_owner_id: String,
+        server_id: String,
+        repository_id: String,
+        path: String,
+        object_id: String,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+        credential_owner_id: String,
+        server_id: String,
+        repository_id: String,
+        path: String,
+        object_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackNextcloudMedia {
+    Refresh {
+        credential_owner_id: String,
+        server_id: String,
+        path: String,
+        file_id: u64,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+        credential_owner_id: String,
+        server_id: String,
+        path: String,
+        file_id: u64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackSynologyMedia {
+    Refresh {
+        credential_owner_id: String,
+        server_id: String,
+        resource: SynologyPlaybackResource,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+        credential_owner_id: String,
+        server_id: String,
+        resource: SynologyPlaybackResource,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum SynologyPlaybackResource {
+    File {
+        path: String,
+    },
+    VideoStation {
+        file_id: i64,
+        profile: SynologyPlaybackProfile,
+        audio_track: Option<i64>,
+        ac3_passthrough: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SynologyPlaybackProfile {
+    Raw,
+    HlsRemux,
+    HlsMedium,
+    HlsLow,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackFnosMedia {
+    FileRefresh {
+        credential_owner_id: String,
+        server_id: String,
+        path: String,
+    },
+    MediaRefresh {
+        credential_owner_id: String,
+        server_id: String,
+        media_guid: String,
+        quality_index: Option<usize>,
+    },
+    TranscodeRefresh {
+        credential_owner_id: String,
+        server_id: String,
+        spec: FnosTranscodeResource,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+        credential_owner_id: String,
+        server_id: String,
+        resource: FnosProxyResource,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum FnosProxyResource {
+    File {
+        path: String,
+    },
+    Media {
+        media_guid: String,
+        quality_index: Option<usize>,
+    },
+    Transcode {
+        spec: FnosTranscodeResource,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FnosTranscodeResource {
+    pub media_guid: String,
+    pub video_guid: String,
+    pub video_encoder: String,
+    pub resolution: String,
+    pub bitrate: u64,
+    pub audio_guid: String,
+    pub subtitle_guid: String,
+    pub channels: u32,
+    pub forced_sdr: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackQnapMedia {
+    Refresh {
+        credential_owner_id: String,
+        server_id: String,
+        resource: QnapPlaybackResource,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+        credential_owner_id: String,
+        server_id: String,
+        resource: QnapPlaybackResource,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QnapPlaybackResource {
+    pub path: String,
+    pub mode: QnapPlaybackMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum QnapPlaybackMode {
+    Original,
+    PreTranscoded { height: u32 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackCctvMedia {
+    Refresh {
+        resource: String,
+        stream_name: String,
+        stream_kind: CctvPlaybackStreamKind,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CctvPlaybackStreamKind {
+    VideoHls,
+    AudioHls,
+    Http,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackAcFunMedia {
+    Refresh {
+        resource_kind: AcFunPlaybackResourceKind,
+        resource_id: String,
+        query: Option<String>,
+        quality_name: String,
+        quality_type: Option<String>,
+        format: AcFunPlaybackFormat,
+        bitrate: Option<u64>,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AcFunPlaybackResourceKind {
+    Video,
+    Bangumi,
+    Live,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AcFunPlaybackFormat {
+    Hls,
+    Flv,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackDouyuMedia {
+    Refresh {
+        room_id: String,
+        quality_name: String,
+        cdn: String,
+        rate: i64,
+        codec: DouyuPlaybackCodec,
+        format: DouyuPlaybackFormat,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DouyuPlaybackCodec {
+    Avc,
+    Hevc,
+    Aac,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DouyuPlaybackFormat {
+    Flv,
+    Hls,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackHuyaMedia {
+    Refresh {
+        resource_kind: HuyaPlaybackResourceKind,
+        resource_id: String,
+        quality_name: String,
+        cdn: String,
+        format: HuyaPlaybackFormat,
+        bitrate: Option<u64>,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HuyaPlaybackResourceKind {
+    Live,
+    Video,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HuyaPlaybackFormat {
+    Flv,
+    Hls,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -455,6 +910,133 @@ pub struct PlaybackExternalMedia {
     pub url: String,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub headers: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackTwitchMedia {
+    Refresh {
+        resource_kind: TwitchPlaybackResourceKind,
+        resource_id: String,
+        quality_name: String,
+        credential_owner_id: UserId,
+        provider_instance_name: Option<String>,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackYoutubeMedia {
+    Refresh {
+        video_id: String,
+        resource: YoutubePlaybackResource,
+        credential_owner_id: UserId,
+        provider_instance_name: Option<String>,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackDouyinMedia {
+    Refresh {
+        resource: DouyinPlaybackResource,
+        variant_key: String,
+        credential_owner_id: UserId,
+        provider_instance_name: Option<String>,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackTikTokMedia {
+    Refresh {
+        resource: TikTokPlaybackResource,
+        variant_key: String,
+        credential_owner_id: UserId,
+        provider_instance_name: Option<String>,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum TikTokPlaybackResource {
+    Video { video_id: String },
+    Live { unique_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum DouyinPlaybackResource {
+    Video { aweme_id: String },
+    Live { web_rid: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum YoutubePlaybackResource {
+    Format { itag: u32 },
+    HlsManifest,
+    DashManifest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TwitchPlaybackResourceKind {
+    Channel,
+    Video,
+    Clip,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -663,6 +1245,58 @@ pub enum PlaybackSubtitleProvider {
     Bilibili(PlaybackBilibiliSubtitle),
     DirectUrl(PlaybackDirectUrlSubtitle),
     Emby(PlaybackEmbySubtitle),
+    Fnos(PlaybackFnosSubtitle),
+    Qnap(PlaybackQnapSubtitle),
+    Synology(PlaybackSynologySubtitle),
+    Nextcloud(PlaybackNextcloudSubtitle),
+    Seafile(PlaybackSeafileSubtitle),
+    TrueNas(PlaybackTrueNasSubtitle),
+    Youtube(PlaybackYoutubeSubtitle),
+    TikTok(PlaybackTikTokSubtitle),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackYoutubeSubtitle {
+    Refresh {
+        video_id: String,
+        track_id: String,
+        target_language_code: Option<String>,
+        credential_owner_id: UserId,
+        provider_instance_name: Option<String>,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        subtitle_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackTikTokSubtitle {
+    Refresh {
+        resource: TikTokPlaybackResource,
+        language: String,
+        format: String,
+        credential_owner_id: UserId,
+        provider_instance_name: Option<String>,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        subtitle_index: usize,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -723,6 +1357,88 @@ pub struct PlaybackEmbySubtitle {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PlaybackFnosSubtitle {
+    pub version: String,
+    pub expires_at: i64,
+    pub mode_name: String,
+    pub subtitle_index: usize,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub headers: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackQnapSubtitle {
+    pub version: String,
+    pub expires_at: i64,
+    pub mode_name: String,
+    pub subtitle_index: usize,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackNextcloudSubtitle {
+    pub version: String,
+    pub expires_at: i64,
+    pub mode_name: String,
+    pub subtitle_index: usize,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackSeafileSubtitle {
+    pub version: String,
+    pub expires_at: i64,
+    pub mode_name: String,
+    pub subtitle_index: usize,
+    pub repository_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackTrueNasSubtitle {
+    pub version: String,
+    pub expires_at: i64,
+    pub mode_name: String,
+    pub subtitle_index: usize,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackSynologySubtitle {
+    File {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        subtitle_index: usize,
+        credential_owner_id: String,
+        server_id: String,
+        path: String,
+    },
+    VideoStation {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        subtitle_index: usize,
+        credential_owner_id: String,
+        server_id: String,
+        file_id: i64,
+        subtitle_id: String,
+        preview: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlaybackDanmaku {
     pub name: String,
     pub format: Option<String>,
@@ -740,6 +1456,110 @@ pub struct PlaybackDanmaku {
 pub enum PlaybackDanmakuProvider {
     External(PlaybackExternalDanmaku),
     Bilibili(PlaybackBilibiliDanmaku),
+    Twitch(PlaybackTwitchDanmaku),
+    Douyin(PlaybackDouyinDanmaku),
+    Huya(PlaybackHuyaDanmaku),
+    Douyu(PlaybackDouyuDanmaku),
+    AcFun(PlaybackAcFunDanmaku),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackAcFunDanmaku {
+    FileRefresh {
+        media_index: usize,
+    },
+    LiveRefresh {
+        media_index: usize,
+    },
+    FileProxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+    },
+    LiveProxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackDouyuDanmaku {
+    Refresh {
+        media_index: usize,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackHuyaDanmaku {
+    Refresh {
+        media_index: usize,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackTwitchDanmaku {
+    Refresh {
+        media_index: usize,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackDouyinDanmaku {
+    Refresh {
+        media_index: usize,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -805,6 +1625,85 @@ pub enum PlaybackMetadata {
     DirectUrl(DirectUrlPlaybackMetadata),
     LiveProxy(LiveProxyPlaybackMetadata),
     Live(LivePlaybackMetadata),
+    Twitch(TwitchPlaybackMetadata),
+    Youtube(YoutubePlaybackMetadata),
+    Douyin(DouyinPlaybackMetadata),
+    TikTok(TikTokPlaybackMetadata),
+    Huya(HuyaPlaybackMetadata),
+    Douyu(DouyuPlaybackMetadata),
+    AcFun(AcFunPlaybackMetadata),
+    Cctv(CctvPlaybackMetadata),
+    Fnos(FnosPlaybackMetadata),
+    Qnap(QnapPlaybackMetadata),
+    Synology(SynologyPlaybackMetadata),
+    Nextcloud(NextcloudPlaybackMetadata),
+    Seafile(SeafilePlaybackMetadata),
+    TrueNas(TrueNasPlaybackMetadata),
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct YoutubePlaybackMetadata {
+    pub video_id: String,
+    pub channel_id: String,
+    pub channel_name: String,
+    pub description: String,
+    pub view_count: Option<u64>,
+    pub publish_date: Option<String>,
+    pub upload_date: Option<String>,
+    pub category: Option<String>,
+    pub is_live: bool,
+    pub live_start: Option<String>,
+    pub live_end: Option<String>,
+    pub storyboard_spec: Option<String>,
+    pub automatic_caption_count: usize,
+    pub manual_caption_count: usize,
+    pub translation_languages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DouyinPlaybackMetadata {
+    pub id: String,
+    pub kind: String,
+    pub author_id: String,
+    pub author_sec_uid: String,
+    pub author_name: String,
+    pub description: String,
+    pub view_count: Option<u64>,
+    pub like_count: Option<u64>,
+    pub comment_count: Option<u64>,
+    pub share_count: Option<u64>,
+    pub collect_count: Option<u64>,
+    pub created_at: Option<i64>,
+    pub music_title: Option<String>,
+    pub music_author: Option<String>,
+    pub is_live: bool,
+    pub room_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TikTokPlaybackMetadata {
+    pub id: String,
+    pub kind: String,
+    pub author_id: String,
+    pub author_sec_uid: String,
+    pub author_unique_id: String,
+    pub author_name: String,
+    pub description: String,
+    pub view_count: Option<u64>,
+    pub like_count: Option<u64>,
+    pub comment_count: Option<u64>,
+    pub share_count: Option<u64>,
+    pub collect_count: Option<u64>,
+    pub concurrent_viewers: Option<u64>,
+    pub created_at: Option<i64>,
+    pub music_title: Option<String>,
+    pub music_author: Option<String>,
+    pub subtitle_count: usize,
+    pub is_live: bool,
+    pub room_id: Option<String>,
 }
 
 impl PlaybackMetadata {
@@ -962,13 +1861,18 @@ pub struct BilibiliDashManifest {
 #[serde(rename_all = "camelCase")]
 pub struct BilibiliDashVideoStream {
     pub id: u64,
+    pub quality_name: String,
     pub base_url: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub backup_urls: Vec<String>,
     pub mime_type: String,
     pub codecs: String,
     pub width: u64,
     pub height: u64,
     pub frame_rate: String,
     pub bandwidth: u64,
+    pub codecid: u32,
+    pub sar: String,
     pub start_with_sap: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub segment_base: Option<BilibiliDashSegmentBase>,
@@ -978,7 +1882,10 @@ pub struct BilibiliDashVideoStream {
 #[serde(rename_all = "camelCase")]
 pub struct BilibiliDashAudioStream {
     pub id: u64,
+    pub quality_name: String,
     pub base_url: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub backup_urls: Vec<String>,
     pub mime_type: String,
     pub codecs: String,
     pub bandwidth: u64,
@@ -1057,6 +1964,372 @@ pub struct LiveProxyPlaybackMetadata {
 pub struct LivePlaybackMetadata {
     pub media_id: MediaId,
     pub room_id: RoomId,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TwitchPlaybackMetadata {
+    pub resource_id: String,
+    pub title: String,
+    pub author: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chapters: Vec<TwitchChapterMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storyboard_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TwitchChapterMetadata {
+    pub title: String,
+    pub start_seconds: u64,
+    pub end_seconds: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HuyaPlaybackMetadata {
+    pub resource_id: String,
+    pub title: String,
+    pub author: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub like_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DouyuPlaybackMetadata {
+    pub room_id: String,
+    pub title: String,
+    pub author: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    pub is_replay: bool,
+    pub is_vip: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewer_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcFunPlaybackMetadata {
+    pub resource_id: String,
+    pub title: String,
+    pub author: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub like_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CctvPlaybackMetadata {
+    pub video_id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uploader: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<i64>,
+    pub protected: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chapters: Vec<CctvChapterMetadata>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CctvChapterMetadata {
+    pub id: String,
+    pub title: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum FnosPlaybackMetadata {
+    File(FnosFilePlaybackMetadata),
+    Media(FnosMediaPlaybackMetadata),
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FnosFilePlaybackMetadata {
+    pub name: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FnosMediaPlaybackMetadata {
+    pub item_guid: String,
+    pub media_guid: String,
+    pub title: String,
+    pub overview: Option<String>,
+    pub poster_url: Option<String>,
+    pub backdrop_url: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub video_codec: Option<String>,
+    pub video_profile: Option<String>,
+    pub bit_depth: Option<u32>,
+    pub dolby_vision_profile: Option<i32>,
+    pub frame_rate: Option<String>,
+    pub season_number: Option<u32>,
+    pub episode_number: Option<u32>,
+    pub progress_seconds: u64,
+    pub duration_seconds: u64,
+    pub watched: bool,
+    pub audio_tracks: Vec<FnosAudioTrackMetadata>,
+    pub subtitle_tracks: Vec<FnosSubtitleTrackMetadata>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FnosAudioTrackMetadata {
+    pub guid: Option<String>,
+    pub title: Option<String>,
+    pub language: Option<String>,
+    pub codec: Option<String>,
+    pub channels: u32,
+    pub bitrate: u64,
+    pub default: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FnosSubtitleTrackMetadata {
+    pub guid: Option<String>,
+    pub title: Option<String>,
+    pub language: Option<String>,
+    pub codec: Option<String>,
+    pub format: Option<String>,
+    pub external: bool,
+    pub default: bool,
+    pub forced: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QnapPlaybackMetadata {
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    pub modified_at: u64,
+    pub file_type: u64,
+    pub realtime_transcode: bool,
+    pub hardware_transcode: bool,
+    pub multimedia_codec: bool,
+    #[serde(default)]
+    pub pre_transcoded_heights: Vec<u32>,
+    #[serde(default)]
+    pub realtime_heights: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NextcloudPlaybackMetadata {
+    pub file_id: u64,
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_display_name: Option<String>,
+    pub favorite: bool,
+    pub has_preview: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blurhash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_millis: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeafilePlaybackMetadata {
+    pub repository_id: String,
+    pub object_id: String,
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    pub modified_at: String,
+    pub is_locked: bool,
+    pub can_preview: bool,
+    pub can_edit: bool,
+    pub has_thumbnail: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrueNasPlaybackMetadata {
+    pub realpath: String,
+    pub size: u64,
+    pub allocation_size: u64,
+    pub mode: u32,
+    pub mount_id: u64,
+    pub uid: u32,
+    pub gid: u32,
+    pub atime: f64,
+    pub mtime: f64,
+    pub ctime: f64,
+    pub btime: f64,
+    pub dev: u64,
+    pub inode: u64,
+    pub nlink: u64,
+    pub acl: bool,
+    pub is_mountpoint: bool,
+    pub is_ctldir: bool,
+    #[serde(default)]
+    pub attributes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SynologyPlaybackMetadata {
+    pub title: String,
+    pub summary: String,
+    pub tagline: String,
+    pub certificate: String,
+    pub rating: i32,
+    pub actors: Vec<String>,
+    pub directors: Vec<String>,
+    pub writers: Vec<String>,
+    pub genres: Vec<String>,
+    pub item_id: i64,
+    pub file_id: i64,
+    pub kind: String,
+    pub path: String,
+    pub size: u64,
+    pub duration_seconds: u64,
+    pub progress_seconds: u64,
+    pub width: u32,
+    pub height: u32,
+    pub video_codec: String,
+    pub audio_codec: String,
+    pub container: String,
+    pub video_bitrate: u64,
+    pub audio_bitrate: u64,
+    pub frame_rate_numerator: u64,
+    pub frame_rate_denominator: u64,
+    pub audio_channels: u32,
+    pub audio_frequency_hz: u32,
+    pub poster_url: Option<String>,
+    pub backdrop_url: Option<String>,
+    pub watched: bool,
+    pub watched_ratio: f64,
+    pub parental_controlled: bool,
+    pub create_time: i64,
+    pub last_watched: i64,
+    pub audio_tracks: Vec<SynologyAudioTrackMetadata>,
+    pub subtitles: Vec<SynologySubtitleMetadata>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SynologyAudioTrackMetadata {
+    pub id: i64,
+    pub language: String,
+    pub codec: String,
+    pub channels: u32,
+    pub bitrate: u64,
+    pub default: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SynologySubtitleMetadata {
+    pub id: String,
+    pub language: String,
+    pub title: String,
+    pub format: String,
+    pub embedded: bool,
 }
 
 // Helper implementations
@@ -1490,6 +2763,32 @@ impl PlaybackSubtitle {
             PlaybackSubtitleProvider::Bilibili(subtitle) => &subtitle.url,
             PlaybackSubtitleProvider::DirectUrl(subtitle) => &subtitle.url,
             PlaybackSubtitleProvider::Emby(subtitle) => &subtitle.url,
+            PlaybackSubtitleProvider::Fnos(subtitle) => &subtitle.url,
+            PlaybackSubtitleProvider::Qnap(subtitle) => &subtitle.path,
+            PlaybackSubtitleProvider::Nextcloud(subtitle) => &subtitle.path,
+            PlaybackSubtitleProvider::Seafile(subtitle) => &subtitle.path,
+            PlaybackSubtitleProvider::TrueNas(subtitle) => &subtitle.path,
+            PlaybackSubtitleProvider::Synology(PlaybackSynologySubtitle::File { path, .. }) => path,
+            PlaybackSubtitleProvider::Synology(PlaybackSynologySubtitle::VideoStation {
+                subtitle_id,
+                ..
+            }) => subtitle_id,
+            PlaybackSubtitleProvider::Youtube(PlaybackYoutubeSubtitle::Refresh {
+                video_id,
+                ..
+            }) => video_id,
+            PlaybackSubtitleProvider::Youtube(PlaybackYoutubeSubtitle::Proxy {
+                version, ..
+            }) => version,
+            PlaybackSubtitleProvider::TikTok(PlaybackTikTokSubtitle::Refresh {
+                resource, ..
+            }) => match resource {
+                TikTokPlaybackResource::Video { video_id } => video_id,
+                TikTokPlaybackResource::Live { unique_id } => unique_id,
+            },
+            PlaybackSubtitleProvider::TikTok(PlaybackTikTokSubtitle::Proxy { version, .. }) => {
+                version
+            }
         }
     }
 
@@ -1501,6 +2800,14 @@ impl PlaybackSubtitle {
             PlaybackSubtitleProvider::Bilibili(subtitle) => subtitle.headers.clone(),
             PlaybackSubtitleProvider::DirectUrl(subtitle) => subtitle.headers.clone(),
             PlaybackSubtitleProvider::Emby(subtitle) => subtitle.headers.clone(),
+            PlaybackSubtitleProvider::Fnos(subtitle) => subtitle.headers.clone(),
+            PlaybackSubtitleProvider::Qnap(_)
+            | PlaybackSubtitleProvider::Nextcloud(_)
+            | PlaybackSubtitleProvider::Seafile(_)
+            | PlaybackSubtitleProvider::TrueNas(_)
+            | PlaybackSubtitleProvider::Synology(_)
+            | PlaybackSubtitleProvider::Youtube(_)
+            | PlaybackSubtitleProvider::TikTok(_) => std::collections::HashMap::new(),
         }
     }
 }
@@ -1518,7 +2825,12 @@ impl PlaybackDanmaku {
             PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::File { url, .. }) => {
                 Some(url)
             }
-            PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live { .. }) => None,
+            PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live { .. })
+            | PlaybackDanmakuProvider::Twitch(_)
+            | PlaybackDanmakuProvider::Huya(_)
+            | PlaybackDanmakuProvider::Douyu(_)
+            | PlaybackDanmakuProvider::Douyin(_)
+            | PlaybackDanmakuProvider::AcFun(_) => None,
         }
     }
 
@@ -1529,9 +2841,12 @@ impl PlaybackDanmaku {
             PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::File {
                 headers, ..
             }) => headers.clone(),
-            PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live { .. }) => {
-                std::collections::HashMap::new()
-            }
+            PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live { .. })
+            | PlaybackDanmakuProvider::Twitch(_)
+            | PlaybackDanmakuProvider::Huya(_)
+            | PlaybackDanmakuProvider::Douyu(_)
+            | PlaybackDanmakuProvider::Douyin(_)
+            | PlaybackDanmakuProvider::AcFun(_) => std::collections::HashMap::new(),
         }
     }
 

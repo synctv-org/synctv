@@ -245,14 +245,39 @@ impl EmbyInterface for EmbyService {
     }
 
     async fn fs_list(&self, request: FsListReq) -> Result<FsListResp, EmbyError> {
+        use crate::transport_dto::emby::fs_list_req::Source;
         let client = self.authenticated_client(&request.host, &request.token, &request.user_id)?;
-
-        let path = opt_str(&request.path);
-
         let search_term = opt_str(&request.search_term);
-
+        let source = match request
+            .source
+            .ok_or_else(|| EmbyError::InvalidConfig("Emby list source is required".to_string()))?
+        {
+            Source::Folder(source) => super::EmbyListSource::Folder(
+                (!source.parent_id.is_empty()).then_some(source.parent_id),
+            ),
+            Source::FavoriteItems(source) => {
+                super::EmbyListSource::FavoriteItems(source.item_types)
+            }
+            Source::FavoritePeople(_) => super::EmbyListSource::FavoritePeople,
+            Source::PersonItems(source) => super::EmbyListSource::PersonItems {
+                person_id: source.person_id,
+                item_types: source.item_types,
+            },
+            Source::ContinueWatching(_) => super::EmbyListSource::ContinueWatching,
+            Source::NextUp(_) => super::EmbyListSource::NextUp,
+            Source::RecentlyAdded(source) => {
+                super::EmbyListSource::RecentlyAdded(source.item_types)
+            }
+            Source::Playlists(_) => super::EmbyListSource::Playlists,
+            Source::Collections(_) => super::EmbyListSource::Collections,
+            Source::Genres(source) => super::EmbyListSource::Genres(source.item_types),
+            Source::GenreItems(source) => super::EmbyListSource::GenreItems {
+                genre_id: source.genre_id,
+                item_types: source.item_types,
+            },
+        };
         let fs_response = client
-            .fs_list(path, request.start_index, request.limit, search_term)
+            .fs_list(source, request.start_index, request.limit, search_term)
             .await?;
 
         Ok(fs_response.into())

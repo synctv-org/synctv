@@ -45,6 +45,131 @@ pub fn bilibili_danmaku_sse_event(
     Ok(event)
 }
 
+pub fn twitch_chat_sse_event(
+    event: Result<synctv_proto::playback_provider::twitch::TwitchChatEvent, ApiError>,
+) -> Result<Event, Infallible> {
+    let event = match event {
+        Ok(event) => match serde_json::to_string(&event) {
+            Ok(data) => Event::default().event("danmaku").data(data),
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to serialize Twitch chat SSE event");
+                Event::default()
+                    .event("error")
+                    .data(r#"{"message":"Failed to serialize Twitch chat event"}"#)
+            }
+        },
+        Err(error) => Event::default().event("error").data(
+            serde_json::to_string(&ErrorMessage {
+                message: error.to_string(),
+                code: error.code(),
+                detail: String::new(),
+            })
+            .unwrap_or_else(|_| r#"{"message":"Failed to serialize provider error"}"#.to_string()),
+        ),
+    };
+    Ok(event)
+}
+
+pub fn huya_danmaku_sse_event(
+    event: Result<synctv_proto::playback_provider::huya::HuyaDanmakuEvent, ApiError>,
+) -> Result<Event, Infallible> {
+    let event = match event {
+        Ok(event) => match serde_json::to_string(&event) {
+            Ok(data) => Event::default().event("danmaku").data(data),
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to serialize Huya danmaku SSE event");
+                Event::default()
+                    .event("error")
+                    .data(r#"{"message":"Failed to serialize Huya danmaku event"}"#)
+            }
+        },
+        Err(error) => Event::default().event("error").data(
+            serde_json::to_string(&ErrorMessage {
+                message: error.to_string(),
+                code: error.code(),
+                detail: String::new(),
+            })
+            .unwrap_or_else(|_| r#"{"message":"Failed to serialize provider error"}"#.to_string()),
+        ),
+    };
+    Ok(event)
+}
+
+pub fn douyu_danmaku_sse_event(
+    event: Result<synctv_proto::playback_provider::douyu::DouyuDanmakuEvent, ApiError>,
+) -> Result<Event, Infallible> {
+    let event = match event {
+        Ok(event) => match serde_json::to_string(&event) {
+            Ok(data) => Event::default().event("danmaku").data(data),
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to serialize Douyu danmaku SSE event");
+                Event::default()
+                    .event("error")
+                    .data(r#"{"message":"Failed to serialize Douyu danmaku event"}"#)
+            }
+        },
+        Err(error) => Event::default().event("error").data(
+            serde_json::to_string(&ErrorMessage {
+                message: error.to_string(),
+                code: error.code(),
+                detail: String::new(),
+            })
+            .unwrap_or_else(|_| r#"{"message":"Failed to serialize provider error"}"#.to_string()),
+        ),
+    };
+    Ok(event)
+}
+
+pub fn douyin_danmaku_sse_event(
+    event: Result<synctv_proto::playback_provider::douyin::DouyinDanmakuEvent, ApiError>,
+) -> Result<Event, Infallible> {
+    let event = match event {
+        Ok(event) => match serde_json::to_string(&event) {
+            Ok(data) => Event::default().event("danmaku").data(data),
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to serialize Douyin danmaku SSE event");
+                Event::default()
+                    .event("error")
+                    .data(r#"{"message":"Failed to serialize Douyin danmaku event"}"#)
+            }
+        },
+        Err(error) => Event::default().event("error").data(
+            serde_json::to_string(&ErrorMessage {
+                message: error.to_string(),
+                code: error.code(),
+                detail: String::new(),
+            })
+            .unwrap_or_else(|_| r#"{"message":"Failed to serialize provider error"}"#.to_string()),
+        ),
+    };
+    Ok(event)
+}
+
+pub fn acfun_danmaku_sse_event(
+    event: Result<synctv_proto::playback_provider::acfun::AcFunDanmakuEvent, ApiError>,
+) -> Result<Event, Infallible> {
+    let event = match event {
+        Ok(event) => match serde_json::to_string(&event) {
+            Ok(data) => Event::default().event("danmaku").data(data),
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to serialize AcFun danmaku SSE event");
+                Event::default()
+                    .event("error")
+                    .data(r#"{"message":"Failed to serialize AcFun danmaku event"}"#)
+            }
+        },
+        Err(error) => Event::default().event("error").data(
+            serde_json::to_string(&ErrorMessage {
+                message: error.to_string(),
+                code: error.code(),
+                detail: String::new(),
+            })
+            .unwrap_or_else(|_| r#"{"message":"Failed to serialize provider error"}"#.to_string()),
+        ),
+    };
+    Ok(event)
+}
+
 pub fn query(raw_query: axum::extract::RawQuery) -> String {
     raw_query.0.unwrap_or_default()
 }

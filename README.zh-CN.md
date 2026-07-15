@@ -24,7 +24,7 @@ SyncTV 是使用 Rust 实现的实时同步观影平台，支持媒体 Provider 
 ## 核心能力
 
 - 房间内同步播放，实时同步播放状态。
-- 媒体 Provider 支持 Bilibili、Alist、Emby 兼容服务（Emby/Jellyfin）和直链。
+- 媒体 Provider 支持 Bilibili、Twitch、YouTube、抖音、TikTok、虎牙、斗鱼、AcFun、CCTV、Alist、Cloudreve、Emby/Jellyfin、FNOS、QNAP、Synology、Nextcloud、Seafile、TrueNAS、直链和直播来源。
 - 支持 RTMP 推/拉流、HLS 和 HTTP-FLV 直播。
 - 提供 HTTP REST、公开 gRPC、WebSocket、management gRPC、metrics、RTMP 和 STUN 等运行时入口。
 - PostgreSQL 持久化业务数据，可选 Redis 作为共享状态、缓存、限流和集群协调层。
@@ -65,19 +65,19 @@ docker compose up -d
 校验配置：
 
 ```bash
-cargo run -p synctv --bin synctv -- config validate
+cargo +nightly run -p synctv --bin synctv -- config validate
 ```
 
 可选 migration 预检。服务启动阶段也会自动执行 embedded SQLx migrations：
 
 ```bash
-cargo run -p synctv --bin synctv -- db migrate
+cargo +nightly run -p synctv --bin synctv -- db migrate
 ```
 
 本地启动：
 
 ```bash
-cargo run -p synctv --bin synctv -- serve
+cargo +nightly run -p synctv --bin synctv -- serve
 ```
 
 ## 文档
@@ -112,6 +112,8 @@ SYNCTV_DOCS_SITE=https://example.com SYNCTV_DOCS_BASE=/synctv npm run build
 - [认证与安全模型](./docs/src/content/docs/admin/authentication-security.mdx)
 - [管理员操作手册](./docs/src/content/docs/admin/index.mdx)
 - [房间、权限与用户偏好](./docs/src/content/docs/use/rooms-permissions.mdx)
+- [Provider 使用手册](./docs/src/content/docs/use/provider-guide.mdx)
+- [Provider 开发指南](./docs/src/content/docs/develop/provider-development.mdx)
 - [客户端集成指南](./docs/src/content/docs/develop/client-integration.mdx)
 - [配置文件如何工作](./docs/src/content/docs/configuration/how-configuration-works.mdx)
 - [完整配置示例](./docs/src/content/docs/configuration/full-example.mdx)

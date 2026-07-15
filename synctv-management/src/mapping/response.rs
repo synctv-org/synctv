@@ -25,6 +25,48 @@ fn source_provider_to_proto(provider: synctv_core::models::SourceProvider) -> i3
         synctv_core::models::SourceProvider::Cloudreve => {
             source_config_proto::SourceProvider::Cloudreve as i32
         }
+        synctv_core::models::SourceProvider::Twitch => {
+            source_config_proto::SourceProvider::Twitch as i32
+        }
+        synctv_core::models::SourceProvider::Huya => {
+            source_config_proto::SourceProvider::Huya as i32
+        }
+        synctv_core::models::SourceProvider::Douyu => {
+            source_config_proto::SourceProvider::Douyu as i32
+        }
+        synctv_core::models::SourceProvider::Douyin => {
+            source_config_proto::SourceProvider::Douyin as i32
+        }
+        synctv_core::models::SourceProvider::TikTok => {
+            source_config_proto::SourceProvider::Tiktok as i32
+        }
+        synctv_core::models::SourceProvider::AcFun => {
+            source_config_proto::SourceProvider::Acfun as i32
+        }
+        synctv_core::models::SourceProvider::Cctv => {
+            source_config_proto::SourceProvider::Cctv as i32
+        }
+        synctv_core::models::SourceProvider::Fnos => {
+            source_config_proto::SourceProvider::Fnos as i32
+        }
+        synctv_core::models::SourceProvider::Qnap => {
+            source_config_proto::SourceProvider::Qnap as i32
+        }
+        synctv_core::models::SourceProvider::Synology => {
+            source_config_proto::SourceProvider::Synology as i32
+        }
+        synctv_core::models::SourceProvider::Nextcloud => {
+            source_config_proto::SourceProvider::Nextcloud as i32
+        }
+        synctv_core::models::SourceProvider::Seafile => {
+            source_config_proto::SourceProvider::Seafile as i32
+        }
+        synctv_core::models::SourceProvider::TrueNas => {
+            source_config_proto::SourceProvider::Truenas as i32
+        }
+        synctv_core::models::SourceProvider::Youtube => {
+            source_config_proto::SourceProvider::Youtube as i32
+        }
     }
 }
 
@@ -34,6 +76,107 @@ fn playlist_source_config_to_proto(
     use source_config_proto::playlist_source_config::Provider;
 
     let provider = match config.clone() {
+        synctv_core::models::PlaylistSourceConfig::Bilibili(config) => {
+            use source_config_proto::bilibili_playlist_source_config::Source;
+            let source = match config.source {
+                synctv_core::models::BilibiliPlaylistSource::VideoParts { bvid, aid } => {
+                    Source::VideoParts(source_config_proto::BilibiliVideoPartsPlaylistSource {
+                        bvid,
+                        aid,
+                    })
+                }
+                synctv_core::models::BilibiliPlaylistSource::Popular => {
+                    Source::Popular(source_config_proto::BilibiliPopularPlaylistSource {})
+                }
+                synctv_core::models::BilibiliPlaylistSource::Recommended => {
+                    Source::Recommended(source_config_proto::BilibiliRecommendedPlaylistSource {})
+                }
+                synctv_core::models::BilibiliPlaylistSource::UpVideos { mid, keyword } => {
+                    Source::UpVideos(source_config_proto::BilibiliUpVideosPlaylistSource {
+                        mid,
+                        keyword,
+                    })
+                }
+                synctv_core::models::BilibiliPlaylistSource::FavoriteVideos { media_id } => {
+                    Source::FavoriteVideos(
+                        source_config_proto::BilibiliFavoriteVideosPlaylistSource { media_id },
+                    )
+                }
+                synctv_core::models::BilibiliPlaylistSource::CollectionVideos {
+                    mid,
+                    season_id,
+                } => Source::CollectionVideos(
+                    source_config_proto::BilibiliCollectionVideosPlaylistSource { mid, season_id },
+                ),
+                synctv_core::models::BilibiliPlaylistSource::SeriesVideos { mid, series_id } => {
+                    Source::SeriesVideos(source_config_proto::BilibiliSeriesVideosPlaylistSource {
+                        mid,
+                        series_id,
+                    })
+                }
+                synctv_core::models::BilibiliPlaylistSource::WatchLater => {
+                    Source::WatchLater(source_config_proto::BilibiliWatchLaterPlaylistSource {})
+                }
+                synctv_core::models::BilibiliPlaylistSource::PgcSeason { season_id } => {
+                    Source::PgcSeason(source_config_proto::BilibiliPgcSeasonPlaylistSource {
+                        season_id,
+                    })
+                }
+                synctv_core::models::BilibiliPlaylistSource::LiveRecommended => {
+                    Source::LiveRecommended(
+                        source_config_proto::BilibiliLiveRecommendedPlaylistSource {},
+                    )
+                }
+                synctv_core::models::BilibiliPlaylistSource::LiveFollowed => {
+                    Source::LiveFollowed(source_config_proto::BilibiliLiveFollowedPlaylistSource {})
+                }
+                synctv_core::models::BilibiliPlaylistSource::LiveArea {
+                    parent_area_id,
+                    area_id,
+                } => Source::LiveArea(source_config_proto::BilibiliLiveAreaPlaylistSource {
+                    parent_area_id,
+                    area_id,
+                }),
+                synctv_core::models::BilibiliPlaylistSource::History { history_type } => {
+                    Source::History(source_config_proto::BilibiliHistoryPlaylistSource {
+                        r#type: match history_type {
+                            synctv_core::models::BilibiliHistoryType::All => {
+                                source_config_proto::BilibiliHistoryType::All as i32
+                            }
+                            synctv_core::models::BilibiliHistoryType::Archive => {
+                                source_config_proto::BilibiliHistoryType::Archive as i32
+                            }
+                            synctv_core::models::BilibiliHistoryType::Live => {
+                                source_config_proto::BilibiliHistoryType::Live as i32
+                            }
+                        },
+                    })
+                }
+                synctv_core::models::BilibiliPlaylistSource::PgcTimeline {
+                    timeline_type,
+                    before_days,
+                    after_days,
+                } => Source::PgcTimeline(source_config_proto::BilibiliPgcTimelinePlaylistSource {
+                    r#type: match timeline_type {
+                        synctv_core::models::BilibiliPgcTimelineType::Anime => {
+                            source_config_proto::BilibiliPgcTimelineType::Anime as i32
+                        }
+                        synctv_core::models::BilibiliPgcTimelineType::Cinema => {
+                            source_config_proto::BilibiliPgcTimelineType::Cinema as i32
+                        }
+                        synctv_core::models::BilibiliPgcTimelineType::Guochuang => {
+                            source_config_proto::BilibiliPgcTimelineType::Guochuang as i32
+                        }
+                    },
+                    before_days,
+                    after_days,
+                }),
+            };
+            Provider::Bilibili(source_config_proto::BilibiliPlaylistSourceConfig {
+                source: Some(source),
+                shared: config.shared,
+            })
+        }
         synctv_core::models::PlaylistSourceConfig::Alist(config) => {
             Provider::Alist(source_config_proto::AlistPlaylistSourceConfig {
                 server_id: config.server_id,
@@ -42,15 +185,334 @@ fn playlist_source_config_to_proto(
             })
         }
         synctv_core::models::PlaylistSourceConfig::Emby(config) => {
+            use source_config_proto::emby_playlist_source_config::Source;
+            let source = match config.source {
+                synctv_core::models::EmbyPlaylistSource::Folder { item_id } => {
+                    Source::Folder(source_config_proto::EmbyFolderPlaylistSource { item_id })
+                }
+                synctv_core::models::EmbyPlaylistSource::FavoriteItems { item_types } => {
+                    Source::FavoriteItems(source_config_proto::EmbyFavoriteItemsPlaylistSource {
+                        item_types,
+                    })
+                }
+                synctv_core::models::EmbyPlaylistSource::FavoritePeople => {
+                    Source::FavoritePeople(source_config_proto::EmbyFavoritePeoplePlaylistSource {})
+                }
+                synctv_core::models::EmbyPlaylistSource::PersonItems {
+                    person_id,
+                    item_types,
+                } => Source::PersonItems(source_config_proto::EmbyPersonItemsPlaylistSource {
+                    person_id,
+                    item_types,
+                }),
+                synctv_core::models::EmbyPlaylistSource::ContinueWatching => {
+                    Source::ContinueWatching(
+                        source_config_proto::EmbyContinueWatchingPlaylistSource {},
+                    )
+                }
+                synctv_core::models::EmbyPlaylistSource::NextUp => {
+                    Source::NextUp(source_config_proto::EmbyNextUpPlaylistSource {})
+                }
+                synctv_core::models::EmbyPlaylistSource::RecentlyAdded { item_types } => {
+                    Source::RecentlyAdded(source_config_proto::EmbyRecentlyAddedPlaylistSource {
+                        item_types,
+                    })
+                }
+                synctv_core::models::EmbyPlaylistSource::Playlists => {
+                    Source::Playlists(source_config_proto::EmbyPlaylistsPlaylistSource {})
+                }
+                synctv_core::models::EmbyPlaylistSource::Collections => {
+                    Source::Collections(source_config_proto::EmbyCollectionsPlaylistSource {})
+                }
+                synctv_core::models::EmbyPlaylistSource::Genres { item_types } => {
+                    Source::Genres(source_config_proto::EmbyGenresPlaylistSource { item_types })
+                }
+                synctv_core::models::EmbyPlaylistSource::GenreItems {
+                    genre_id,
+                    item_types,
+                } => Source::GenreItems(source_config_proto::EmbyGenreItemsPlaylistSource {
+                    genre_id,
+                    item_types,
+                }),
+            };
             Provider::Emby(source_config_proto::EmbyPlaylistSourceConfig {
                 server_id: config.server_id,
-                item_id: config.item_id,
+                source: Some(source),
             })
         }
         synctv_core::models::PlaylistSourceConfig::Cloudreve(config) => {
             Provider::Cloudreve(source_config_proto::CloudrevePlaylistSourceConfig {
                 server_id: config.server_id,
                 path: config.path,
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::Twitch(config) => {
+            use source_config_proto::twitch_playlist_source_config::{
+                CategoryLive, Channel, FollowedLive, SearchLive, Source,
+            };
+            let (shared, source) = match config {
+                synctv_core::models::TwitchPlaylistSourceConfig::Channel {
+                    channel,
+                    content,
+                    shared,
+                } => (
+                    shared,
+                    Source::Channel(Channel {
+                        channel,
+                        content: match content {
+                            synctv_core::models::TwitchPlaylistContent::Videos => {
+                                source_config_proto::TwitchPlaylistContent::Videos as i32
+                            }
+                            synctv_core::models::TwitchPlaylistContent::Highlights => {
+                                source_config_proto::TwitchPlaylistContent::Highlights as i32
+                            }
+                            synctv_core::models::TwitchPlaylistContent::Uploads => {
+                                source_config_proto::TwitchPlaylistContent::Uploads as i32
+                            }
+                            synctv_core::models::TwitchPlaylistContent::Clips => {
+                                source_config_proto::TwitchPlaylistContent::Clips as i32
+                            }
+                        },
+                    }),
+                ),
+                synctv_core::models::TwitchPlaylistSourceConfig::FollowedLive { shared } => {
+                    (shared, Source::FollowedLive(FollowedLive {}))
+                }
+                synctv_core::models::TwitchPlaylistSourceConfig::CategoryLive {
+                    category_id,
+                    category_name,
+                    shared,
+                } => (
+                    shared,
+                    Source::CategoryLive(CategoryLive {
+                        category_id,
+                        category_name,
+                    }),
+                ),
+                synctv_core::models::TwitchPlaylistSourceConfig::SearchLive { query, shared } => {
+                    (shared, Source::SearchLive(SearchLive { query }))
+                }
+            };
+            Provider::Twitch(source_config_proto::TwitchPlaylistSourceConfig {
+                shared,
+                source: Some(source),
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::Youtube(config) => {
+            use source_config_proto::youtube_playlist_source_config::{
+                Channel, LikedVideos, Playlist, Search, Source, Subscriptions, Trending, WatchLater,
+            };
+            let (shared, source) = match config {
+                synctv_core::models::YoutubePlaylistSourceConfig::Playlist {
+                    playlist_id,
+                    shared,
+                } => (shared, Source::Playlist(Playlist { playlist_id })),
+                synctv_core::models::YoutubePlaylistSourceConfig::Channel {
+                    channel_id,
+                    content,
+                    shared,
+                } => (
+                    shared,
+                    Source::Channel(Channel {
+                        channel_id,
+                        content: match content {
+                            synctv_core::models::YoutubeChannelContent::Videos => {
+                                source_config_proto::YoutubeChannelContent::Videos as i32
+                            }
+                            synctv_core::models::YoutubeChannelContent::Shorts => {
+                                source_config_proto::YoutubeChannelContent::Shorts as i32
+                            }
+                            synctv_core::models::YoutubeChannelContent::Live => {
+                                source_config_proto::YoutubeChannelContent::Live as i32
+                            }
+                        },
+                    }),
+                ),
+                synctv_core::models::YoutubePlaylistSourceConfig::Search { query, shared } => {
+                    (shared, Source::Search(Search { query }))
+                }
+                synctv_core::models::YoutubePlaylistSourceConfig::Trending { shared } => {
+                    (shared, Source::Trending(Trending {}))
+                }
+                synctv_core::models::YoutubePlaylistSourceConfig::Subscriptions { shared } => {
+                    (shared, Source::Subscriptions(Subscriptions {}))
+                }
+                synctv_core::models::YoutubePlaylistSourceConfig::LikedVideos { shared } => {
+                    (shared, Source::LikedVideos(LikedVideos {}))
+                }
+                synctv_core::models::YoutubePlaylistSourceConfig::WatchLater { shared } => {
+                    (shared, Source::WatchLater(WatchLater {}))
+                }
+            };
+            Provider::Youtube(source_config_proto::YoutubePlaylistSourceConfig {
+                shared,
+                source: Some(source),
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::Douyin(config) => {
+            Provider::Douyin(source_config_proto::DouyinPlaylistSourceConfig {
+                sec_uid: config.sec_uid,
+                shared: config.shared,
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::TikTok(config) => {
+            Provider::Tiktok(source_config_proto::TikTokPlaylistSourceConfig {
+                sec_uid: config.sec_uid,
+                shared: config.shared,
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::Fnos(config) => {
+            Provider::Fnos(source_config_proto::FnosPlaylistSourceConfig {
+                server_id: config.server_id,
+                source: Some(match config.source {
+                    synctv_core::models::FnosPlaylistSource::Files { path } => {
+                        source_config_proto::fnos_playlist_source_config::Source::Files(
+                            source_config_proto::FnosFilesPlaylistSourceConfig { path },
+                        )
+                    }
+                    synctv_core::models::FnosPlaylistSource::MediaLibrary {
+                        ancestor_guid,
+                        media_types,
+                    } => source_config_proto::fnos_playlist_source_config::Source::MediaLibrary(
+                        source_config_proto::FnosMediaLibraryPlaylistSourceConfig {
+                            ancestor_guid,
+                            media_types,
+                        },
+                    ),
+                    synctv_core::models::FnosPlaylistSource::Favorites { media_types } => {
+                        source_config_proto::fnos_playlist_source_config::Source::Favorites(
+                            source_config_proto::FnosFavoritesPlaylistSourceConfig { media_types },
+                        )
+                    }
+                    synctv_core::models::FnosPlaylistSource::History => {
+                        source_config_proto::fnos_playlist_source_config::Source::History(
+                            source_config_proto::FnosHistoryPlaylistSourceConfig {},
+                        )
+                    }
+                }),
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::Qnap(config) => {
+            Provider::Qnap(source_config_proto::QnapPlaylistSourceConfig {
+                server_id: config.server_id,
+                path: config.path,
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::Synology(config) => {
+            Provider::Synology(source_config_proto::SynologyPlaylistSourceConfig {
+                server_id: config.server_id,
+                source: Some(match config.source {
+                    synctv_core::models::SynologyPlaylistSource::Files { path } => {
+                        source_config_proto::synology_playlist_source_config::Source::Files(
+                            source_config_proto::SynologyFilesPlaylistSourceConfig { path },
+                        )
+                    }
+                    synctv_core::models::SynologyPlaylistSource::Movies { library_id } => {
+                        source_config_proto::synology_playlist_source_config::Source::Movies(
+                            source_config_proto::SynologyMoviesPlaylistSourceConfig { library_id },
+                        )
+                    }
+                    synctv_core::models::SynologyPlaylistSource::TvShows { library_id } => {
+                        source_config_proto::synology_playlist_source_config::Source::TvShows(
+                            source_config_proto::SynologyTvShowsPlaylistSourceConfig { library_id },
+                        )
+                    }
+                    synctv_core::models::SynologyPlaylistSource::Episodes {
+                        library_id,
+                        tv_show_id,
+                    } => source_config_proto::synology_playlist_source_config::Source::Episodes(
+                        source_config_proto::SynologyEpisodesPlaylistSourceConfig {
+                            library_id,
+                            tv_show_id,
+                        },
+                    ),
+                    synctv_core::models::SynologyPlaylistSource::HomeVideos { library_id } => {
+                        source_config_proto::synology_playlist_source_config::Source::HomeVideos(
+                            source_config_proto::SynologyHomeVideosPlaylistSourceConfig {
+                                library_id,
+                            },
+                        )
+                    }
+                    synctv_core::models::SynologyPlaylistSource::TvRecordings { library_id } => {
+                        source_config_proto::synology_playlist_source_config::Source::TvRecordings(
+                            source_config_proto::SynologyTvRecordingsPlaylistSourceConfig {
+                                library_id,
+                            },
+                        )
+                    }
+                }),
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::Nextcloud(config) => {
+            Provider::Nextcloud(source_config_proto::NextcloudPlaylistSourceConfig {
+                server_id: config.server_id,
+                source: Some(match config.source {
+                    synctv_core::models::NextcloudPlaylistSource::Folder { path } => {
+                        source_config_proto::nextcloud_playlist_source_config::Source::Folder(
+                            source_config_proto::NextcloudFolderPlaylistSourceConfig { path },
+                        )
+                    }
+                    synctv_core::models::NextcloudPlaylistSource::Favorites => {
+                        source_config_proto::nextcloud_playlist_source_config::Source::Favorites(
+                            source_config_proto::NextcloudFavoritesPlaylistSourceConfig {},
+                        )
+                    }
+                    synctv_core::models::NextcloudPlaylistSource::Search { path, query } => {
+                        source_config_proto::nextcloud_playlist_source_config::Source::Search(
+                            source_config_proto::NextcloudSearchPlaylistSourceConfig {
+                                path,
+                                query,
+                            },
+                        )
+                    }
+                }),
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::Seafile(config) => {
+            Provider::Seafile(source_config_proto::SeafilePlaylistSourceConfig {
+                server_id: config.server_id,
+                source: Some(match config.source {
+                    synctv_core::models::SeafilePlaylistSource::Folder {
+                        repository_id,
+                        path,
+                    } => source_config_proto::seafile_playlist_source_config::Source::Folder(
+                        source_config_proto::SeafileFolderPlaylistSourceConfig {
+                            repository_id,
+                            path,
+                        },
+                    ),
+                    synctv_core::models::SeafilePlaylistSource::Starred => {
+                        source_config_proto::seafile_playlist_source_config::Source::Starred(
+                            source_config_proto::SeafileStarredPlaylistSourceConfig {},
+                        )
+                    }
+                    synctv_core::models::SeafilePlaylistSource::Search {
+                        repository_id,
+                        query,
+                    } => source_config_proto::seafile_playlist_source_config::Source::Search(
+                        source_config_proto::SeafileSearchPlaylistSourceConfig {
+                            repository_id,
+                            query,
+                        },
+                    ),
+                }),
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::TrueNas(config) => {
+            Provider::Truenas(source_config_proto::TrueNasPlaylistSourceConfig {
+                server_id: config.server_id,
+                source: Some(match config.source {
+                    synctv_core::models::TrueNasPlaylistSource::Folder { path } => {
+                        source_config_proto::true_nas_playlist_source_config::Source::Folder(
+                            source_config_proto::TrueNasFolderPlaylistSourceConfig { path },
+                        )
+                    }
+                    synctv_core::models::TrueNasPlaylistSource::Search { path, query } => {
+                        source_config_proto::true_nas_playlist_source_config::Source::Search(
+                            source_config_proto::TrueNasSearchPlaylistSourceConfig { path, query },
+                        )
+                    }
+                }),
             })
         }
     };
@@ -165,6 +627,185 @@ fn media_source_config_to_proto(
                 path: config.path,
             })
         }
+        synctv_core::models::MediaSourceConfig::Twitch(config) => {
+            use source_config_proto::twitch_media_source_config::Source;
+            let source = match config {
+                synctv_core::models::TwitchMediaSourceConfig::Live { channel, shared } => {
+                    Source::Live(source_config_proto::TwitchLiveSourceConfig { channel, shared })
+                }
+                synctv_core::models::TwitchMediaSourceConfig::Video { video_id, shared } => {
+                    Source::Video(source_config_proto::TwitchVideoSourceConfig { video_id, shared })
+                }
+                synctv_core::models::TwitchMediaSourceConfig::Clip { slug, shared } => {
+                    Source::Clip(source_config_proto::TwitchClipSourceConfig { slug, shared })
+                }
+            };
+            Provider::Twitch(source_config_proto::TwitchMediaSourceConfig {
+                source: Some(source),
+            })
+        }
+        synctv_core::models::MediaSourceConfig::Youtube(config) => {
+            Provider::Youtube(source_config_proto::YoutubeMediaSourceConfig {
+                video_id: config.video_id,
+                shared: config.shared,
+            })
+        }
+        synctv_core::models::MediaSourceConfig::Douyin(config) => {
+            use source_config_proto::douyin_media_source_config::Source;
+            let source = match config {
+                synctv_core::models::DouyinMediaSourceConfig::Video { aweme_id, shared } => {
+                    Source::Video(source_config_proto::DouyinVideoSourceConfig { aweme_id, shared })
+                }
+                synctv_core::models::DouyinMediaSourceConfig::Live { web_rid, shared } => {
+                    Source::Live(source_config_proto::DouyinLiveSourceConfig { web_rid, shared })
+                }
+            };
+            Provider::Douyin(source_config_proto::DouyinMediaSourceConfig {
+                source: Some(source),
+            })
+        }
+        synctv_core::models::MediaSourceConfig::TikTok(config) => {
+            use source_config_proto::tik_tok_media_source_config::Source;
+            let source = match config {
+                synctv_core::models::TikTokMediaSourceConfig::Video { video_id, shared } => {
+                    Source::Video(source_config_proto::TikTokVideoSourceConfig { video_id, shared })
+                }
+                synctv_core::models::TikTokMediaSourceConfig::Live { unique_id, shared } => {
+                    Source::Live(source_config_proto::TikTokLiveSourceConfig { unique_id, shared })
+                }
+            };
+            Provider::Tiktok(source_config_proto::TikTokMediaSourceConfig {
+                source: Some(source),
+            })
+        }
+        synctv_core::models::MediaSourceConfig::Huya(config) => {
+            use source_config_proto::huya_media_source_config::Source;
+            let source = match config {
+                synctv_core::models::HuyaMediaSourceConfig::Live { room_id } => {
+                    Source::Live(source_config_proto::HuyaLiveSourceConfig { room_id })
+                }
+                synctv_core::models::HuyaMediaSourceConfig::Video { video_id } => {
+                    Source::Video(source_config_proto::HuyaVideoSourceConfig { video_id })
+                }
+            };
+            Provider::Huya(source_config_proto::HuyaMediaSourceConfig {
+                source: Some(source),
+            })
+        }
+        synctv_core::models::MediaSourceConfig::Douyu(config) => {
+            Provider::Douyu(source_config_proto::DouyuMediaSourceConfig { room: config.room })
+        }
+        synctv_core::models::MediaSourceConfig::AcFun(config) => {
+            use source_config_proto::ac_fun_media_source_config::Source;
+            let source = match config {
+                synctv_core::models::AcFunMediaSourceConfig::Video { video_id } => {
+                    Source::Video(source_config_proto::AcFunVideoSourceConfig { video_id })
+                }
+                synctv_core::models::AcFunMediaSourceConfig::Bangumi {
+                    bangumi_id,
+                    episode_query,
+                } => Source::Bangumi(source_config_proto::AcFunBangumiSourceConfig {
+                    bangumi_id,
+                    episode_query,
+                }),
+                synctv_core::models::AcFunMediaSourceConfig::Live { author_id } => {
+                    Source::Live(source_config_proto::AcFunLiveSourceConfig { author_id })
+                }
+            };
+            Provider::AcFun(source_config_proto::AcFunMediaSourceConfig {
+                source: Some(source),
+            })
+        }
+        synctv_core::models::MediaSourceConfig::Cctv(config) => {
+            Provider::Cctv(source_config_proto::CctvMediaSourceConfig {
+                resource: config.resource,
+            })
+        }
+        synctv_core::models::MediaSourceConfig::Fnos(config) => {
+            Provider::Fnos(source_config_proto::FnosMediaSourceConfig {
+                server_id: config.server_id,
+                source: Some(match config.source {
+                    synctv_core::models::FnosMediaSource::File { path } => {
+                        source_config_proto::fnos_media_source_config::Source::File(
+                            source_config_proto::FnosFileSourceConfig { path },
+                        )
+                    }
+                    synctv_core::models::FnosMediaSource::LibraryItem {
+                        item_guid,
+                        media_guid,
+                    } => source_config_proto::fnos_media_source_config::Source::LibraryItem(
+                        source_config_proto::FnosLibraryItemSourceConfig {
+                            item_guid,
+                            media_guid,
+                        },
+                    ),
+                }),
+            })
+        }
+        synctv_core::models::MediaSourceConfig::Qnap(config) => {
+            Provider::Qnap(source_config_proto::QnapMediaSourceConfig {
+                server_id: config.server_id,
+                path: config.path,
+            })
+        }
+        synctv_core::models::MediaSourceConfig::Synology(config) => {
+            Provider::Synology(source_config_proto::SynologyMediaSourceConfig {
+                server_id: config.server_id,
+                source: Some(match config.source {
+                    synctv_core::models::SynologyMediaSource::File { path } => {
+                        source_config_proto::synology_media_source_config::Source::File(
+                            source_config_proto::SynologyFileSourceConfig { path },
+                        )
+                    }
+                    synctv_core::models::SynologyMediaSource::LibraryItem {
+                        kind,
+                        item_id,
+                        file_id,
+                    } => source_config_proto::synology_media_source_config::Source::LibraryItem(
+                        source_config_proto::SynologyLibraryItemSourceConfig {
+                            kind: match kind {
+                                synctv_core::models::SynologyLibraryItemKind::Movie => {
+                                    source_config_proto::SynologyLibraryItemKind::Movie as i32
+                                }
+                                synctv_core::models::SynologyLibraryItemKind::Episode => {
+                                    source_config_proto::SynologyLibraryItemKind::Episode as i32
+                                }
+                                synctv_core::models::SynologyLibraryItemKind::HomeVideo => {
+                                    source_config_proto::SynologyLibraryItemKind::HomeVideo as i32
+                                }
+                                synctv_core::models::SynologyLibraryItemKind::TvRecording => {
+                                    source_config_proto::SynologyLibraryItemKind::TvRecording as i32
+                                }
+                            },
+                            item_id,
+                            file_id,
+                        },
+                    ),
+                }),
+            })
+        }
+        synctv_core::models::MediaSourceConfig::Nextcloud(config) => {
+            Provider::Nextcloud(source_config_proto::NextcloudMediaSourceConfig {
+                server_id: config.server_id,
+                path: config.path,
+                file_id: config.file_id,
+            })
+        }
+        synctv_core::models::MediaSourceConfig::Seafile(config) => {
+            Provider::Seafile(source_config_proto::SeafileMediaSourceConfig {
+                server_id: config.server_id,
+                repository_id: config.repository_id,
+                path: config.path,
+                object_id: config.object_id,
+                has_thumbnail: config.has_thumbnail,
+            })
+        }
+        synctv_core::models::MediaSourceConfig::TrueNas(config) => {
+            Provider::Truenas(source_config_proto::TrueNasMediaSourceConfig {
+                server_id: config.server_id,
+                path: config.path,
+            })
+        }
     };
 
     source_config_proto::MediaSourceConfig {
@@ -193,19 +834,87 @@ fn media_resource_metadata_to_proto(
                 format!("live:{}", live.room_id)
             }
         },
-        synctv_core::models::MediaSourceConfig::Alist(config) => {
-            format!(
-                "alist://{}/{}",
-                config.server_id,
-                config.path.trim_start_matches('/')
-            )
-        }
-        synctv_core::models::MediaSourceConfig::Emby(config) => {
-            format!("emby://{}/{}", config.server_id, config.item_id)
-        }
+        synctv_core::models::MediaSourceConfig::Alist(config) => config.path.clone(),
+        synctv_core::models::MediaSourceConfig::Emby(config) => config.item_id.clone(),
         synctv_core::models::MediaSourceConfig::Rtmp(_) => "rtmp".to_string(),
         synctv_core::models::MediaSourceConfig::LiveProxy(config) => config.url.clone(),
         synctv_core::models::MediaSourceConfig::Cloudreve(config) => config.path.clone(),
+        synctv_core::models::MediaSourceConfig::Twitch(config) => match config {
+            synctv_core::models::TwitchMediaSourceConfig::Live { channel, .. } => {
+                format!("https://www.twitch.tv/{channel}")
+            }
+            synctv_core::models::TwitchMediaSourceConfig::Video { video_id, .. } => {
+                format!("https://www.twitch.tv/videos/{video_id}")
+            }
+            synctv_core::models::TwitchMediaSourceConfig::Clip { slug, .. } => {
+                format!("https://clips.twitch.tv/{slug}")
+            }
+        },
+        synctv_core::models::MediaSourceConfig::Youtube(config) => {
+            format!("https://www.youtube.com/watch?v={}", config.video_id)
+        }
+        synctv_core::models::MediaSourceConfig::Douyin(config) => match config {
+            synctv_core::models::DouyinMediaSourceConfig::Video { aweme_id, .. } => {
+                format!("https://www.douyin.com/video/{aweme_id}")
+            }
+            synctv_core::models::DouyinMediaSourceConfig::Live { web_rid, .. } => {
+                format!("https://live.douyin.com/{web_rid}")
+            }
+        },
+        synctv_core::models::MediaSourceConfig::TikTok(config) => match config {
+            synctv_core::models::TikTokMediaSourceConfig::Video { video_id, .. } => {
+                format!("https://www.tiktok.com/@_/video/{video_id}")
+            }
+            synctv_core::models::TikTokMediaSourceConfig::Live { unique_id, .. } => {
+                format!("https://www.tiktok.com/@{unique_id}/live")
+            }
+        },
+        synctv_core::models::MediaSourceConfig::Huya(config) => match config {
+            synctv_core::models::HuyaMediaSourceConfig::Live { room_id } => {
+                format!("https://www.huya.com/{room_id}")
+            }
+            synctv_core::models::HuyaMediaSourceConfig::Video { video_id } => {
+                format!("https://www.huya.com/video/play/{video_id}.html")
+            }
+        },
+        synctv_core::models::MediaSourceConfig::Douyu(config) => {
+            format!("https://www.douyu.com/{}", config.room)
+        }
+        synctv_core::models::MediaSourceConfig::AcFun(config) => match config {
+            synctv_core::models::AcFunMediaSourceConfig::Video { video_id } => {
+                format!("https://www.acfun.cn/v/{video_id}")
+            }
+            synctv_core::models::AcFunMediaSourceConfig::Bangumi {
+                bangumi_id,
+                episode_query,
+            } => format!(
+                "https://www.acfun.cn/bangumi/{bangumi_id}{}",
+                episode_query
+                    .as_deref()
+                    .map(|query| format!("?{query}"))
+                    .unwrap_or_default()
+            ),
+            synctv_core::models::AcFunMediaSourceConfig::Live { author_id } => {
+                format!("https://live.acfun.cn/live/{author_id}")
+            }
+        },
+        synctv_core::models::MediaSourceConfig::Cctv(config) => config.resource.clone(),
+        synctv_core::models::MediaSourceConfig::Fnos(config) => match &config.source {
+            synctv_core::models::FnosMediaSource::File { path } => path.clone(),
+            synctv_core::models::FnosMediaSource::LibraryItem { item_guid, .. } => {
+                item_guid.clone()
+            }
+        },
+        synctv_core::models::MediaSourceConfig::Qnap(config) => config.path.clone(),
+        synctv_core::models::MediaSourceConfig::Synology(config) => match &config.source {
+            synctv_core::models::SynologyMediaSource::File { path } => path.clone(),
+            synctv_core::models::SynologyMediaSource::LibraryItem { item_id, .. } => {
+                item_id.to_string()
+            }
+        },
+        synctv_core::models::MediaSourceConfig::Nextcloud(config) => config.path.clone(),
+        synctv_core::models::MediaSourceConfig::Seafile(config) => config.path.clone(),
+        synctv_core::models::MediaSourceConfig::TrueNas(config) => config.path.clone(),
     };
 
     client_proto::ResourceMetadata {

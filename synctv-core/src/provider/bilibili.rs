@@ -5,7 +5,9 @@
 use super::{
     access::BilibiliAccess,
     provider_client::{create_remote_bilibili_client, BilibiliClientArc, ProviderClientManager},
-    MediaProvider, PlaybackInfo, PlaybackResult, PreparedSourceConfig, ProviderContext,
+    DirectoryItem, DirectoryItemSourceConfig, DirectoryItemThumbnail, DynamicFolder,
+    DynamicListQuery, DynamicListResult, DynamicPagination, ItemType, MediaProvider, NextPlayItem,
+    PlaybackInfo, PlaybackResult, PreparedSourceConfig, ProviderContext,
     ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
 };
 use aes_gcm::{
@@ -16,6 +18,7 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use futures::StreamExt;
 use hmac::{Hmac, Mac};
+use rand::prelude::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::HashMap;
@@ -27,13 +30,15 @@ use crate::models::media::{
     BilibiliDashAudioStream, BilibiliDashManifest, BilibiliDashManifestSlot,
     BilibiliDashSegmentBase, BilibiliDashVideoStream, BilibiliPlaybackMetadata,
     PlaybackBilibiliDanmaku, PlaybackBilibiliMedia, PlaybackBilibiliSubtitle, PlaybackDanmaku,
-    PlaybackDanmakuProvider, PlaybackExternalSubtitle, PlaybackMedia, PlaybackMediaProvider,
-    PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
+    PlaybackDanmakuProvider, PlaybackExternalDanmaku, PlaybackExternalSubtitle, PlaybackMedia,
+    PlaybackMediaProvider, PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
 };
 use crate::models::{
-    normalize_provider_instance_name, validate_provider_instance_name,
-    BilibiliMediaSourceConfig as BilibiliSourceConfig, MediaSourceConfig, ProviderCredential,
-    UserId, UserProviderCredential,
+    normalize_provider_instance_name, validate_provider_instance_name, BilibiliHistoryType,
+    BilibiliMediaSourceConfig as BilibiliSourceConfig, BilibiliPgcTimelineType,
+    BilibiliPlaylistSource, BilibiliPlaylistSourceConfig, BilibiliTarget, MediaSourceConfig,
+    PlayMode, PlaylistSourceConfig, ProviderCredential, ProviderTarget, UserId,
+    UserProviderCredential,
 };
 use crate::repository::UserProviderCredentialRepository;
 use crate::service::RemoteProviderManager;
@@ -49,6 +54,13 @@ const SMS_LOGIN_DOMAIN_SEPARATOR: &[u8] = b"synctv-bilibili-sms-login";
 const SMS_LOGIN_TOKEN_NONCE_SIZE: usize = 12;
 type HmacSha256 = Hmac<sha2::Sha256>;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BilibiliHistoryCursor {
+    max: u64,
+    view_at: i64,
+    business: String,
+}
+
 /// Bilibili `MediaProvider`
 ///
 /// Holds a reference to `RemoteProviderManager` to select appropriate provider instance.
@@ -62,11 +74,16 @@ pub struct BilibiliProvider {
 #[derive(Debug, Clone, Serialize)]
 pub struct BilibiliVideoInfo {
     pub bvid: String,
+    pub aid: u64,
     pub cid: u64,
     pub epid: u64,
+    pub page: u32,
     pub name: String,
     pub cover_image: String,
     pub r#live: bool,
+    pub duration_seconds: u64,
+    pub width: u64,
+    pub height: u64,
 }
 
 /// Bilibili page info response
@@ -75,6 +92,111 @@ pub struct BilibiliPageInfo {
     pub title: String,
     pub actors: Vec<String>,
     pub videos: Vec<BilibiliVideoInfo>,
+    pub season_id: u64,
+    pub cover: String,
+    pub collection: Option<BilibiliCollectionInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BilibiliCollectionInfo {
+    pub mid: u64,
+    pub season_id: u64,
+    pub title: String,
+    pub cover: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BilibiliLiveArea {
+    pub id: u64,
+    pub parent_id: u64,
+    pub name: String,
+    pub parent_name: String,
+    pub picture: String,
+    pub hot: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BilibiliFavoriteFolder {
+    pub media_id: u64,
+    pub title: String,
+    pub media_count: u64,
+    pub private: bool,
+    pub default_folder: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BilibiliFollowedPgcSeason {
+    pub season_id: u64,
+    pub title: String,
+    pub cover: String,
+    pub description: String,
+    pub latest_episode: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BilibiliFollowedPgcPage {
+    pub items: Vec<BilibiliFollowedPgcSeason>,
+    pub total: u64,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BilibiliHistoryItem {
+    pub title: String,
+    pub subtitle: String,
+    pub cover: String,
+    pub author: String,
+    pub viewed_at: i64,
+    pub progress_seconds: i64,
+    pub duration_seconds: u64,
+    pub source_config: MediaSourceConfig,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BilibiliHistoryPage {
+    pub items: Vec<BilibiliHistoryItem>,
+    pub cursor: Option<String>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BilibiliPgcTimelineItem {
+    pub episode_id: u64,
+    pub season_id: u64,
+    pub title: String,
+    pub episode_title: String,
+    pub cover: String,
+    pub episode_cover: String,
+    pub publish_at: i64,
+    pub published: bool,
+    pub date: String,
+    pub day_of_week: u32,
+    pub delayed: bool,
+    pub delay_reason: String,
+    pub source_config: Option<MediaSourceConfig>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BilibiliPgcSeasonIndexItem {
+    pub season_id: u64,
+    pub media_id: u64,
+    pub first_episode_id: u64,
+    pub title: String,
+    pub subtitle: String,
+    pub cover: String,
+    pub first_episode_cover: String,
+    pub badge: String,
+    pub progress: String,
+    pub score: String,
+    pub finished: bool,
+    pub season_type: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BilibiliPgcSeasonIndexPage {
+    pub items: Vec<BilibiliPgcSeasonIndexItem>,
+    pub total: u64,
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -84,8 +206,23 @@ pub struct BilibiliMatchRequest {
 
 #[derive(Debug, Clone)]
 pub struct BilibiliMatchResponse {
-    pub content_type: String,
-    pub id: String,
+    pub normalized_url: String,
+    pub resource: BilibiliMatchedResource,
+}
+
+#[derive(Debug, Clone)]
+pub enum BilibiliMatchedResource {
+    Video { bvid: String, aid: u64, page: u32 },
+    PgcEpisode { episode_id: u64 },
+    PgcSeason { season_id: u64 },
+    Live { room_id: u64 },
+    LiveRecommended,
+    LiveArea { parent_area_id: u64, area_id: u64 },
+    UpVideos { mid: u64 },
+    FavoriteVideos { media_id: u64 },
+    CollectionVideos { mid: u64, season_id: u64 },
+    SeriesVideos { mid: u64, series_id: u64 },
+    WatchLater,
 }
 
 #[derive(Debug, Clone)]
@@ -295,6 +432,7 @@ pub struct BilibiliUserInfoRequest {
 #[derive(Debug, Clone)]
 pub struct BilibiliUserInfoResponse {
     pub is_login: bool,
+    pub user_id: u64,
     pub username: String,
     pub face: String,
     pub is_vip: bool,
@@ -568,9 +706,67 @@ impl BilibiliProvider {
             .r#match(bilibili_match_request(req))
             .await
             .map_err(ProviderError::from)?;
+        let resource = match resp.resource.ok_or_else(|| {
+            ProviderError::ParseError("Bilibili match response is missing resource".to_string())
+        })? {
+            bilibili_upstream::match_resp::Resource::Video(resource) => {
+                BilibiliMatchedResource::Video {
+                    bvid: resource.bvid,
+                    aid: resource.aid,
+                    page: resource.page,
+                }
+            }
+            bilibili_upstream::match_resp::Resource::PgcEpisode(resource) => {
+                BilibiliMatchedResource::PgcEpisode {
+                    episode_id: resource.episode_id,
+                }
+            }
+            bilibili_upstream::match_resp::Resource::PgcSeason(resource) => {
+                BilibiliMatchedResource::PgcSeason {
+                    season_id: resource.season_id,
+                }
+            }
+            bilibili_upstream::match_resp::Resource::Live(resource) => {
+                BilibiliMatchedResource::Live {
+                    room_id: resource.room_id,
+                }
+            }
+            bilibili_upstream::match_resp::Resource::LiveRecommended(_) => {
+                BilibiliMatchedResource::LiveRecommended
+            }
+            bilibili_upstream::match_resp::Resource::LiveArea(resource) => {
+                BilibiliMatchedResource::LiveArea {
+                    parent_area_id: resource.parent_area_id,
+                    area_id: resource.area_id,
+                }
+            }
+            bilibili_upstream::match_resp::Resource::UpVideos(resource) => {
+                BilibiliMatchedResource::UpVideos { mid: resource.mid }
+            }
+            bilibili_upstream::match_resp::Resource::FavoriteVideos(resource) => {
+                BilibiliMatchedResource::FavoriteVideos {
+                    media_id: resource.media_id,
+                }
+            }
+            bilibili_upstream::match_resp::Resource::CollectionVideos(resource) => {
+                BilibiliMatchedResource::CollectionVideos {
+                    mid: resource.mid,
+                    season_id: resource.season_id,
+                }
+            }
+            bilibili_upstream::match_resp::Resource::SeriesVideos(resource) => {
+                BilibiliMatchedResource::SeriesVideos {
+                    mid: resource.mid,
+                    series_id: resource.series_id,
+                }
+            }
+            bilibili_upstream::match_resp::Resource::WatchLater(_) => {
+                BilibiliMatchedResource::WatchLater
+            }
+        };
         Ok(BilibiliMatchResponse {
-            content_type: resp.r#type,
-            id: resp.id,
+            normalized_url: resp.normalized_url,
+            resource,
         })
     }
 
@@ -623,6 +819,285 @@ impl BilibiliProvider {
             .await
             .map_err(ProviderError::from)?;
         Ok(Self::page_info_from_provider(resp))
+    }
+
+    /// List the live-area hierarchy used by live-area dynamic playlists.
+    pub async fn list_live_areas_with_context(
+        &self,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<Vec<BilibiliLiveArea>, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
+        let response = client
+            .list_live_areas(bilibili_upstream::ListLiveAreasReq {})
+            .await
+            .map_err(ProviderError::from)?;
+        Ok(response
+            .items
+            .into_iter()
+            .map(|area| BilibiliLiveArea {
+                id: area.id,
+                parent_id: area.parent_id,
+                name: area.name,
+                parent_name: area.parent_name,
+                picture: area.picture,
+                hot: area.hot,
+            })
+            .collect())
+    }
+
+    pub async fn list_favorite_folders_with_context(
+        &self,
+        cookies: HashMap<String, String>,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<Vec<BilibiliFavoriteFolder>, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
+        let response = client
+            .list_favorite_folders(bilibili_upstream::ListFavoriteFoldersReq { cookies })
+            .await
+            .map_err(ProviderError::from)?;
+        Ok(response
+            .items
+            .into_iter()
+            .map(|folder| BilibiliFavoriteFolder {
+                media_id: folder.media_id,
+                title: folder.title,
+                media_count: folder.media_count,
+                private: folder.private,
+                default_folder: folder.default_folder,
+            })
+            .collect())
+    }
+
+    pub async fn list_followed_pgc_with_context(
+        &self,
+        cookies: HashMap<String, String>,
+        season_type: u32,
+        page: u64,
+        page_size: u32,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<BilibiliFollowedPgcPage, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
+        let response = client
+            .list_followed_pgc(bilibili_upstream::ListFollowedPgcReq {
+                cookies,
+                season_type,
+                page,
+                page_size,
+            })
+            .await
+            .map_err(ProviderError::from)?;
+        Ok(BilibiliFollowedPgcPage {
+            items: response
+                .items
+                .into_iter()
+                .map(|season| BilibiliFollowedPgcSeason {
+                    season_id: season.season_id,
+                    title: season.title,
+                    cover: season.cover,
+                    description: season.description,
+                    latest_episode: season.latest_episode,
+                })
+                .collect(),
+            total: response.total,
+            has_more: response.has_more,
+        })
+    }
+
+    pub async fn list_history_with_context(
+        &self,
+        cookies: HashMap<String, String>,
+        history_type: BilibiliHistoryType,
+        cursor: Option<&str>,
+        page_size: u32,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<BilibiliHistoryPage, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
+        let response = client
+            .list_history(bilibili_upstream::ListHistoryReq {
+                cookies,
+                r#type: match history_type {
+                    BilibiliHistoryType::All => bilibili_upstream::HistoryType::All as i32,
+                    BilibiliHistoryType::Archive => bilibili_upstream::HistoryType::Archive as i32,
+                    BilibiliHistoryType::Live => bilibili_upstream::HistoryType::Live as i32,
+                },
+                cursor: Self::decode_history_cursor(cursor)?,
+                page_size: page_size.clamp(1, 30),
+            })
+            .await
+            .map_err(ProviderError::from)?;
+        let items = response
+            .items
+            .into_iter()
+            .map(|item| {
+                let target = Self::history_target(&item)?;
+                let ProviderTarget::Bilibili(target) = target else {
+                    unreachable!();
+                };
+                Ok(BilibiliHistoryItem {
+                    title: item.title,
+                    subtitle: item.subtitle,
+                    cover: item.cover,
+                    author: item.author,
+                    viewed_at: item.viewed_at,
+                    progress_seconds: item.progress_seconds,
+                    duration_seconds: item.duration_seconds,
+                    source_config: Self::media_config_for_target(
+                        &BilibiliPlaylistSourceConfig {
+                            source: BilibiliPlaylistSource::History { history_type },
+                            shared: false,
+                        },
+                        &target,
+                    )?,
+                })
+            })
+            .collect::<Result<Vec<_>, ProviderError>>()?;
+        Ok(BilibiliHistoryPage {
+            items,
+            cursor: Self::encode_history_cursor(response.cursor)?,
+            has_more: response.has_more,
+        })
+    }
+
+    pub async fn list_pgc_timeline_with_context(
+        &self,
+        cookies: HashMap<String, String>,
+        timeline_type: BilibiliPgcTimelineType,
+        before_days: u32,
+        after_days: u32,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<Vec<BilibiliPgcTimelineItem>, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
+        let response = client
+            .list_pgc_timeline(bilibili_upstream::ListPgcTimelineReq {
+                cookies,
+                r#type: match timeline_type {
+                    BilibiliPgcTimelineType::Anime => {
+                        bilibili_upstream::PgcTimelineType::Anime as i32
+                    }
+                    BilibiliPgcTimelineType::Cinema => {
+                        bilibili_upstream::PgcTimelineType::Cinema as i32
+                    }
+                    BilibiliPgcTimelineType::Guochuang => {
+                        bilibili_upstream::PgcTimelineType::Guochuang as i32
+                    }
+                },
+                before_days,
+                after_days,
+            })
+            .await
+            .map_err(ProviderError::from)?;
+        Ok(response
+            .items
+            .into_iter()
+            .map(|item| BilibiliPgcTimelineItem {
+                source_config: (item.published && item.cid > 0).then_some({
+                    MediaSourceConfig::Bilibili(BilibiliSourceConfig::Pgc(
+                        crate::models::BilibiliPgcSourceConfig {
+                            epid: item.episode_id,
+                            cid: item.cid,
+                            shared: false,
+                        },
+                    ))
+                }),
+                episode_id: item.episode_id,
+                season_id: item.season_id,
+                title: item.title,
+                episode_title: item.episode_title,
+                cover: item.cover,
+                episode_cover: item.episode_cover,
+                publish_at: item.publish_at,
+                published: item.published,
+                date: item.date,
+                day_of_week: item.day_of_week,
+                delayed: item.delayed,
+                delay_reason: item.delay_reason,
+            })
+            .collect())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn list_pgc_seasons_with_context(
+        &self,
+        cookies: HashMap<String, String>,
+        season_type: u32,
+        page: u64,
+        page_size: u32,
+        order: u32,
+        ascending: bool,
+        finished: Option<bool>,
+        area: Option<String>,
+        year: Option<String>,
+        style_id: Option<u64>,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<BilibiliPgcSeasonIndexPage, ProviderError> {
+        let season_type = i32::try_from(season_type).map_err(|_| {
+            ProviderError::InvalidConfig("Bilibili season type exceeds i32".to_string())
+        })?;
+        let order = i32::try_from(order).map_err(|_| {
+            ProviderError::InvalidConfig("Bilibili season order exceeds i32".to_string())
+        })?;
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
+        let response = client
+            .list_pgc_seasons(bilibili_upstream::ListPgcSeasonsReq {
+                cookies,
+                r#type: season_type,
+                page,
+                page_size,
+                order,
+                ascending,
+                finished,
+                area,
+                year,
+                style_id,
+            })
+            .await
+            .map_err(ProviderError::from)?;
+        Ok(BilibiliPgcSeasonIndexPage {
+            items: response
+                .items
+                .into_iter()
+                .map(|item| {
+                    Ok(BilibiliPgcSeasonIndexItem {
+                        season_id: item.season_id,
+                        media_id: item.media_id,
+                        first_episode_id: item.first_episode_id,
+                        title: item.title,
+                        subtitle: item.subtitle,
+                        cover: item.cover,
+                        first_episode_cover: item.first_episode_cover,
+                        badge: item.badge,
+                        progress: item.progress,
+                        score: item.score,
+                        finished: item.finished,
+                        season_type: u32::try_from(item.r#type).map_err(|_| {
+                            ProviderError::ApiError(
+                                "Bilibili returned a negative season type".to_string(),
+                            )
+                        })?,
+                    })
+                })
+                .collect::<Result<Vec<_>, ProviderError>>()?,
+            total: response.total,
+            has_more: response.has_more,
+        })
     }
 
     /// Generate QR code for login
@@ -980,6 +1455,7 @@ impl BilibiliProvider {
             .map_err(ProviderError::from)?;
         Ok(BilibiliUserInfoResponse {
             is_login: resp.is_login,
+            user_id: resp.user_id,
             username: resp.username,
             face: resp.face,
             is_vip: resp.is_vip,
@@ -1034,13 +1510,28 @@ impl BilibiliProvider {
                 .into_iter()
                 .map(|video| BilibiliVideoInfo {
                     bvid: video.bvid,
+                    aid: video.aid,
                     cid: video.cid,
                     epid: video.epid,
+                    page: video.page,
                     name: video.name,
                     cover_image: video.cover_image,
                     r#live: video.live,
+                    duration_seconds: video.duration_seconds,
+                    width: video.width,
+                    height: video.height,
                 })
                 .collect(),
+            season_id: page_info.season_id,
+            cover: page_info.cover,
+            collection: page_info
+                .collection
+                .map(|collection| BilibiliCollectionInfo {
+                    mid: collection.mid,
+                    season_id: collection.season_id,
+                    title: collection.title,
+                    cover: collection.cover,
+                }),
         }
     }
 
@@ -1188,15 +1679,6 @@ impl BilibiliSourceConfig {
             )),
         }
     }
-
-    fn from_source_config(source_config: SourceConfig<'_>) -> Result<&Self, ProviderError> {
-        match source_config {
-            SourceConfig::Media(config) => Self::from_media_config(config),
-            SourceConfig::DynamicPlaylist(_) => Err(ProviderError::InvalidConfig(
-                "Bilibili supports media source_config".to_string(),
-            )),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1280,12 +1762,12 @@ fn dash_playback_urls(
     non_empty_playback_urls(
         dash.video_streams
             .iter()
-            .map(|stream| stream.base_url.clone())
-            .chain(
-                dash.audio_streams
-                    .iter()
-                    .map(|stream| stream.base_url.clone()),
-            ),
+            .flat_map(|stream| {
+                std::iter::once(stream.base_url.clone()).chain(stream.backup_urls.clone())
+            })
+            .chain(dash.audio_streams.iter().flat_map(|stream| {
+                std::iter::once(stream.base_url.clone()).chain(stream.backup_urls.clone())
+            })),
         context,
     )
 }
@@ -1342,13 +1824,17 @@ fn dash_manifest_from_upstream(dash: &bilibili_upstream::DashInfo) -> BilibiliDa
 fn dash_video_from_upstream(stream: &bilibili_upstream::VideoStream) -> BilibiliDashVideoStream {
     BilibiliDashVideoStream {
         id: stream.id,
+        quality_name: stream.quality_name.clone(),
         base_url: stream.base_url.clone(),
+        backup_urls: stream.backup_urls.clone(),
         mime_type: stream.mime_type.clone(),
         codecs: stream.codecs.clone(),
         width: stream.width,
         height: stream.height,
         frame_rate: stream.frame_rate.clone(),
         bandwidth: stream.bandwidth,
+        codecid: stream.codecid,
+        sar: stream.sar.clone(),
         start_with_sap: stream.start_with_sap,
         segment_base: stream
             .segment_base
@@ -1360,7 +1846,9 @@ fn dash_video_from_upstream(stream: &bilibili_upstream::VideoStream) -> Bilibili
 fn dash_audio_from_upstream(stream: &bilibili_upstream::AudioStream) -> BilibiliDashAudioStream {
     BilibiliDashAudioStream {
         id: stream.id,
+        quality_name: stream.quality_name.clone(),
         base_url: stream.base_url.clone(),
+        backup_urls: stream.backup_urls.clone(),
         mime_type: stream.mime_type.clone(),
         codecs: stream.codecs.clone(),
         bandwidth: stream.bandwidth,
@@ -1462,13 +1950,30 @@ where
             if stream.base_url.trim().is_empty() {
                 continue;
             }
-            let base_url = url_for(url_index, &stream.base_url);
-            url_index += 1;
+            let mut base_urls = String::new();
+            for upstream_url in std::iter::once(&stream.base_url).chain(&stream.backup_urls) {
+                if upstream_url.trim().is_empty() {
+                    continue;
+                }
+                let resolved_url = url_for(url_index, upstream_url);
+                url_index += 1;
+                let _ = write!(
+                    base_urls,
+                    "<BaseURL>{}</BaseURL>",
+                    xml_escape(&resolved_url)
+                );
+            }
             let segment_base = segment_base_xml(stream.segment_base.as_ref());
+            let sar_attr = if stream.sar.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" sar=\"{}\"", xml_escape(&stream.sar))
+            };
             let _ = write!(
                 xml,
-                r#"<Representation id="video-{}" mimeType="{}" codecs="{}" width="{}" height="{}" bandwidth="{}" startWithSAP="{}"{}><BaseURL>{}</BaseURL>{}</Representation>"#,
+                r#"<Representation id="video-{}-{}" mimeType="{}" codecs="{}" width="{}" height="{}" bandwidth="{}" startWithSAP="{}"{}{}><Label>{}</Label>{}{}</Representation>"#,
                 stream.id,
+                stream.codecid,
                 xml_escape(&stream.mime_type),
                 xml_escape(&stream.codecs),
                 stream.width,
@@ -1476,7 +1981,9 @@ where
                 stream.bandwidth,
                 stream.start_with_sap,
                 frame_rate_attr(&stream.frame_rate),
-                xml_escape(&base_url),
+                sar_attr,
+                xml_escape(&stream.quality_name),
+                base_urls,
                 segment_base,
             );
         }
@@ -1489,8 +1996,19 @@ where
             if stream.base_url.trim().is_empty() {
                 continue;
             }
-            let base_url = url_for(url_index, &stream.base_url);
-            url_index += 1;
+            let mut base_urls = String::new();
+            for upstream_url in std::iter::once(&stream.base_url).chain(&stream.backup_urls) {
+                if upstream_url.trim().is_empty() {
+                    continue;
+                }
+                let resolved_url = url_for(url_index, upstream_url);
+                url_index += 1;
+                let _ = write!(
+                    base_urls,
+                    "<BaseURL>{}</BaseURL>",
+                    xml_escape(&resolved_url)
+                );
+            }
             let segment_base = segment_base_xml(stream.segment_base.as_ref());
             let sampling_rate_attr = if stream.audio_sampling_rate == 0 {
                 String::new()
@@ -1499,14 +2017,16 @@ where
             };
             let _ = write!(
                 xml,
-                r#"<Representation id="audio-{}" mimeType="{}" codecs="{}" bandwidth="{}" startWithSAP="{}"{}><BaseURL>{}</BaseURL>{}</Representation>"#,
+                r#"<Representation id="audio-{}-{}" mimeType="{}" codecs="{}" bandwidth="{}" startWithSAP="{}"{}><Label>{}</Label>{}{}</Representation>"#,
                 stream.id,
+                xml_escape(&stream.codecs),
                 xml_escape(&stream.mime_type),
                 xml_escape(&stream.codecs),
                 stream.bandwidth,
                 stream.start_with_sap,
                 sampling_rate_attr,
-                xml_escape(&base_url),
+                xml_escape(&stream.quality_name),
+                base_urls,
                 segment_base,
             );
         }
@@ -1749,6 +2269,587 @@ async fn resolve_optional_bilibili_cookies(
     Ok((access.cookies, access.credential_cache_partition))
 }
 
+impl BilibiliProvider {
+    fn playlist_config(
+        config: &PlaylistSourceConfig,
+    ) -> Result<&BilibiliPlaylistSourceConfig, ProviderError> {
+        match config {
+            PlaylistSourceConfig::Bilibili(config) => Ok(config),
+            _ => Err(ProviderError::InvalidConfig(
+                "Bilibili requires Bilibili playlist source_config".to_string(),
+            )),
+        }
+    }
+
+    fn playlist_source_request(
+        source: &BilibiliPlaylistSource,
+    ) -> Result<bilibili_upstream::list_videos_req::Source, ProviderError> {
+        use bilibili_upstream::list_videos_req::Source;
+        Ok(match source {
+            BilibiliPlaylistSource::VideoParts { .. } => {
+                return Err(ProviderError::InvalidConfig(
+                    "Bilibili video parts use the dedicated parts endpoint".to_string(),
+                ));
+            }
+            BilibiliPlaylistSource::Popular => {
+                Source::Popular(bilibili_upstream::PopularVideoSource {})
+            }
+            BilibiliPlaylistSource::Recommended => {
+                Source::Recommended(bilibili_upstream::RecommendedVideoSource {})
+            }
+            BilibiliPlaylistSource::UpVideos { mid, keyword } => {
+                Source::UpVideos(bilibili_upstream::UpVideosSource {
+                    mid: *mid,
+                    keyword: keyword.clone(),
+                })
+            }
+            BilibiliPlaylistSource::FavoriteVideos { media_id } => {
+                Source::FavoriteVideos(bilibili_upstream::FavoriteVideosSource {
+                    media_id: *media_id,
+                })
+            }
+            BilibiliPlaylistSource::CollectionVideos { mid, season_id } => {
+                Source::CollectionVideos(bilibili_upstream::CollectionVideosSource {
+                    mid: *mid,
+                    season_id: *season_id,
+                })
+            }
+            BilibiliPlaylistSource::SeriesVideos { mid, series_id } => {
+                Source::SeriesVideos(bilibili_upstream::SeriesVideosSource {
+                    mid: *mid,
+                    series_id: *series_id,
+                })
+            }
+            BilibiliPlaylistSource::WatchLater => {
+                Source::WatchLater(bilibili_upstream::WatchLaterVideosSource {})
+            }
+            BilibiliPlaylistSource::PgcSeason { season_id } => {
+                Source::PgcSeason(bilibili_upstream::PgcSeasonVideosSource {
+                    season_id: *season_id,
+                })
+            }
+            BilibiliPlaylistSource::LiveRecommended
+            | BilibiliPlaylistSource::LiveFollowed
+            | BilibiliPlaylistSource::LiveArea { .. }
+            | BilibiliPlaylistSource::History { .. }
+            | BilibiliPlaylistSource::PgcTimeline { .. } => {
+                return Err(ProviderError::InvalidConfig(
+                    "Bilibili live playlists use the live-room endpoint".to_string(),
+                ));
+            }
+        })
+    }
+
+    const fn playlist_requires_credential(source: &BilibiliPlaylistSource) -> bool {
+        matches!(
+            source,
+            BilibiliPlaylistSource::FavoriteVideos { .. }
+                | BilibiliPlaylistSource::WatchLater
+                | BilibiliPlaylistSource::LiveFollowed
+                | BilibiliPlaylistSource::History { .. }
+        )
+    }
+
+    async fn playlist_access(
+        ctx: &ProviderContext<'_>,
+        config: &BilibiliPlaylistSourceConfig,
+    ) -> Result<BilibiliAccess, ProviderError> {
+        let user_id = if config.shared {
+            ctx.credential_owner_id()
+        } else {
+            ctx.user_id()
+        }
+        .ok_or_else(|| {
+            ProviderError::Internal("Bilibili playlist user context is unavailable".to_string())
+        })?;
+        let access_service = ctx.provider_access_service.as_ref().ok_or_else(|| {
+            ProviderError::Internal(
+                "provider_access_service not available in ProviderContext".to_string(),
+            )
+        })?;
+        let access = access_service
+            .bilibili_access(*user_id, ctx.request_context())
+            .await?;
+        if Self::playlist_requires_credential(&config.source) && !access.authenticated {
+            return Err(ProviderError::CredentialRequired);
+        }
+        Ok(access)
+    }
+
+    async fn list_playlist_page(
+        &self,
+        ctx: &ProviderContext<'_>,
+        config: &BilibiliPlaylistSourceConfig,
+        page: usize,
+        page_size: usize,
+    ) -> Result<bilibili_upstream::ListVideosResp, ProviderError> {
+        let access = Self::playlist_access(ctx, config).await?;
+        let client = self
+            .get_client_with_context(
+                super::bound_provider_instance_name(ctx),
+                ctx.request_context(),
+            )
+            .await?;
+        client
+            .list_videos(bilibili_upstream::ListVideosReq {
+                cookies: access.cookies,
+                source: Some(Self::playlist_source_request(&config.source)?),
+                page: u64::try_from(page).map_err(|_| {
+                    ProviderError::InvalidConfig("Bilibili page exceeds u64::MAX".to_string())
+                })?,
+                page_size: u32::try_from(page_size).map_err(|_| {
+                    ProviderError::InvalidConfig("Bilibili page size exceeds u32::MAX".to_string())
+                })?,
+            })
+            .await
+            .map_err(ProviderError::from)
+    }
+
+    async fn video_parts(
+        &self,
+        ctx: &ProviderContext<'_>,
+        config: &BilibiliPlaylistSourceConfig,
+        bvid: &str,
+        aid: u64,
+    ) -> Result<bilibili_upstream::ListVideoPartsResp, ProviderError> {
+        let access = Self::playlist_access(ctx, config).await?;
+        let client = self
+            .get_client_with_context(
+                super::bound_provider_instance_name(ctx),
+                ctx.request_context(),
+            )
+            .await?;
+        client
+            .list_video_parts(bilibili_upstream::ListVideoPartsReq {
+                cookies: access.cookies,
+                bvid: bvid.to_string(),
+                aid,
+            })
+            .await
+            .map_err(ProviderError::from)
+    }
+
+    async fn list_live_playlist_page(
+        &self,
+        ctx: &ProviderContext<'_>,
+        config: &BilibiliPlaylistSourceConfig,
+        page: usize,
+        page_size: usize,
+    ) -> Result<bilibili_upstream::ListLiveRoomsResp, ProviderError> {
+        use bilibili_upstream::list_live_rooms_req::Source;
+
+        let access = Self::playlist_access(ctx, config).await?;
+        let source = match &config.source {
+            BilibiliPlaylistSource::LiveRecommended => {
+                Source::Recommended(bilibili_upstream::RecommendedLiveRoomsSource {})
+            }
+            BilibiliPlaylistSource::LiveFollowed => {
+                Source::Followed(bilibili_upstream::FollowedLiveRoomsSource {})
+            }
+            BilibiliPlaylistSource::LiveArea {
+                parent_area_id,
+                area_id,
+            } => Source::Area(bilibili_upstream::AreaLiveRoomsSource {
+                parent_area_id: *parent_area_id,
+                area_id: *area_id,
+            }),
+            _ => {
+                return Err(ProviderError::InvalidConfig(
+                    "Bilibili live playlist source is required".to_string(),
+                ));
+            }
+        };
+        let client = self
+            .get_client_with_context(
+                super::bound_provider_instance_name(ctx),
+                ctx.request_context(),
+            )
+            .await?;
+        client
+            .list_live_rooms(bilibili_upstream::ListLiveRoomsReq {
+                cookies: access.cookies,
+                source: Some(source),
+                page: u64::try_from(page).map_err(|_| {
+                    ProviderError::InvalidConfig("Bilibili page exceeds u64::MAX".to_string())
+                })?,
+                page_size: u32::try_from(page_size).map_err(|_| {
+                    ProviderError::InvalidConfig("Bilibili page size exceeds u32::MAX".to_string())
+                })?,
+            })
+            .await
+            .map_err(ProviderError::from)
+    }
+
+    fn decode_history_cursor(
+        cursor: Option<&str>,
+    ) -> Result<Option<bilibili_upstream::HistoryCursor>, ProviderError> {
+        let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(None);
+        };
+        let bytes = URL_SAFE_NO_PAD.decode(cursor).map_err(|_| {
+            ProviderError::InvalidConfig("Bilibili history cursor is invalid".to_string())
+        })?;
+        let cursor: BilibiliHistoryCursor = serde_json::from_slice(&bytes).map_err(|_| {
+            ProviderError::InvalidConfig("Bilibili history cursor is invalid".to_string())
+        })?;
+        Ok(Some(bilibili_upstream::HistoryCursor {
+            max: cursor.max,
+            view_at: cursor.view_at,
+            business: cursor.business,
+        }))
+    }
+
+    fn encode_history_cursor(
+        cursor: Option<bilibili_upstream::HistoryCursor>,
+    ) -> Result<Option<String>, ProviderError> {
+        cursor
+            .map(|cursor| {
+                serde_json::to_vec(&BilibiliHistoryCursor {
+                    max: cursor.max,
+                    view_at: cursor.view_at,
+                    business: cursor.business,
+                })
+                .map(|bytes| URL_SAFE_NO_PAD.encode(bytes))
+                .map_err(|error| ProviderError::Internal(error.to_string()))
+            })
+            .transpose()
+    }
+
+    async fn list_history_page(
+        &self,
+        ctx: &ProviderContext<'_>,
+        config: &BilibiliPlaylistSourceConfig,
+        cursor: Option<&str>,
+        page_size: usize,
+    ) -> Result<bilibili_upstream::ListHistoryResp, ProviderError> {
+        let BilibiliPlaylistSource::History { history_type } = config.source else {
+            return Err(ProviderError::InvalidConfig(
+                "Bilibili history source is required".to_string(),
+            ));
+        };
+        let access = Self::playlist_access(ctx, config).await?;
+        let client = self
+            .get_client_with_context(
+                super::bound_provider_instance_name(ctx),
+                ctx.request_context(),
+            )
+            .await?;
+        client
+            .list_history(bilibili_upstream::ListHistoryReq {
+                cookies: access.cookies,
+                r#type: match history_type {
+                    BilibiliHistoryType::All => bilibili_upstream::HistoryType::All as i32,
+                    BilibiliHistoryType::Archive => bilibili_upstream::HistoryType::Archive as i32,
+                    BilibiliHistoryType::Live => bilibili_upstream::HistoryType::Live as i32,
+                },
+                cursor: Self::decode_history_cursor(cursor)?,
+                page_size: u32::try_from(page_size).map_err(|_| {
+                    ProviderError::InvalidConfig(
+                        "Bilibili history page size exceeds u32::MAX".to_string(),
+                    )
+                })?,
+            })
+            .await
+            .map_err(ProviderError::from)
+    }
+
+    async fn list_pgc_timeline(
+        &self,
+        ctx: &ProviderContext<'_>,
+        config: &BilibiliPlaylistSourceConfig,
+    ) -> Result<bilibili_upstream::ListPgcTimelineResp, ProviderError> {
+        let BilibiliPlaylistSource::PgcTimeline {
+            timeline_type,
+            before_days,
+            after_days,
+        } = config.source
+        else {
+            return Err(ProviderError::InvalidConfig(
+                "Bilibili PGC timeline source is required".to_string(),
+            ));
+        };
+        let access = Self::playlist_access(ctx, config).await?;
+        let client = self
+            .get_client_with_context(
+                super::bound_provider_instance_name(ctx),
+                ctx.request_context(),
+            )
+            .await?;
+        client
+            .list_pgc_timeline(bilibili_upstream::ListPgcTimelineReq {
+                cookies: access.cookies,
+                r#type: match timeline_type {
+                    BilibiliPgcTimelineType::Anime => {
+                        bilibili_upstream::PgcTimelineType::Anime as i32
+                    }
+                    BilibiliPgcTimelineType::Cinema => {
+                        bilibili_upstream::PgcTimelineType::Cinema as i32
+                    }
+                    BilibiliPgcTimelineType::Guochuang => {
+                        bilibili_upstream::PgcTimelineType::Guochuang as i32
+                    }
+                },
+                before_days,
+                after_days,
+            })
+            .await
+            .map_err(ProviderError::from)
+    }
+
+    fn history_target(
+        item: &bilibili_upstream::BilibiliHistoryItem,
+    ) -> Result<ProviderTarget, ProviderError> {
+        use bilibili_upstream::bilibili_history_item::Target;
+        match item.target.as_ref() {
+            Some(Target::Video(video)) => Ok(ProviderTarget::bilibili_video_part(
+                video.bvid.clone(),
+                video.aid,
+                video.cid,
+                1,
+            )),
+            Some(Target::Pgc(pgc)) => Ok(ProviderTarget::bilibili_pgc_episode(pgc.epid, pgc.cid)),
+            Some(Target::Live(live)) => Ok(ProviderTarget::bilibili_live(live.room_id)),
+            None => Err(ProviderError::InvalidConfig(
+                "Bilibili history item target is missing".to_string(),
+            )),
+        }
+    }
+
+    fn list_item_target(item: &bilibili_upstream::BilibiliVideoListItem) -> ProviderTarget {
+        if item.epid > 0 {
+            ProviderTarget::bilibili_pgc_episode(item.epid, item.cid)
+        } else if item.part_count > 1 {
+            ProviderTarget::bilibili_video(item.bvid.clone(), item.aid)
+        } else {
+            ProviderTarget::bilibili_video_part(item.bvid.clone(), item.aid, item.cid, 1)
+        }
+    }
+
+    fn media_config_for_target(
+        config: &BilibiliPlaylistSourceConfig,
+        target: &BilibiliTarget,
+    ) -> Result<MediaSourceConfig, ProviderError> {
+        match target {
+            BilibiliTarget::Video { .. } => Err(ProviderError::InvalidConfig(
+                "Bilibili video node requires selecting a part".to_string(),
+            )),
+            BilibiliTarget::VideoPart { bvid, aid, cid, .. } => Ok(MediaSourceConfig::Bilibili(
+                BilibiliSourceConfig::Video(crate::models::BilibiliVideoSourceConfig {
+                    bvid: (!bvid.is_empty()).then(|| bvid.clone()),
+                    aid: (*aid > 0).then_some(*aid),
+                    cid: *cid,
+                    shared: config.shared,
+                }),
+            )),
+            BilibiliTarget::PgcEpisode { epid, cid } => Ok(MediaSourceConfig::Bilibili(
+                BilibiliSourceConfig::Pgc(crate::models::BilibiliPgcSourceConfig {
+                    epid: *epid,
+                    cid: *cid,
+                    shared: config.shared,
+                }),
+            )),
+            BilibiliTarget::Live { room_id } => Ok(MediaSourceConfig::Bilibili(
+                BilibiliSourceConfig::Live(crate::models::BilibiliLiveSourceConfig {
+                    room_id: *room_id,
+                    shared: config.shared,
+                }),
+            )),
+        }
+    }
+
+    fn directory_source_config_for_target(
+        config: &BilibiliPlaylistSourceConfig,
+        target: &ProviderTarget,
+    ) -> Result<DirectoryItemSourceConfig, ProviderError> {
+        let ProviderTarget::Bilibili(target) = target else {
+            return Err(ProviderError::InvalidConfig(
+                "Bilibili target is required".to_string(),
+            ));
+        };
+        match target {
+            BilibiliTarget::Video { bvid, aid } => Ok(DirectoryItemSourceConfig::Playlist(
+                PlaylistSourceConfig::Bilibili(BilibiliPlaylistSourceConfig {
+                    source: BilibiliPlaylistSource::VideoParts {
+                        bvid: bvid.clone(),
+                        aid: (*aid > 0).then_some(*aid),
+                    },
+                    shared: config.shared,
+                }),
+            )),
+            BilibiliTarget::VideoPart { .. }
+            | BilibiliTarget::PgcEpisode { .. }
+            | BilibiliTarget::Live { .. } => Ok(DirectoryItemSourceConfig::Media(
+                Self::media_config_for_target(config, target)?,
+            )),
+        }
+    }
+
+    fn next_play_item(
+        config: &BilibiliPlaylistSourceConfig,
+        name: String,
+        target: ProviderTarget,
+    ) -> Result<NextPlayItem, ProviderError> {
+        let ProviderTarget::Bilibili(bilibili_target) = &target else {
+            return Err(ProviderError::InvalidConfig(
+                "Bilibili target is required".to_string(),
+            ));
+        };
+        Ok(NextPlayItem {
+            name,
+            item_type: ItemType::Media,
+            source_config: Self::media_config_for_target(config, bilibili_target)?,
+            target,
+        })
+    }
+
+    async fn first_playable_for_target(
+        &self,
+        ctx: &ProviderContext<'_>,
+        config: &BilibiliPlaylistSourceConfig,
+        name: String,
+        target: ProviderTarget,
+    ) -> Result<Option<NextPlayItem>, ProviderError> {
+        match &target {
+            ProviderTarget::Bilibili(BilibiliTarget::Video { bvid, aid }) => {
+                let parts = self.video_parts(ctx, config, bvid, *aid).await?;
+                let Some(part) = parts.parts.first() else {
+                    return Ok(None);
+                };
+                let part_target = ProviderTarget::bilibili_video_part(
+                    part.bvid.clone(),
+                    part.aid,
+                    part.cid,
+                    part.page,
+                );
+                let part_name = if parts.parts.len() > 1 {
+                    format!("{} - {}", name, part.title)
+                } else {
+                    name
+                };
+                Self::next_play_item(config, part_name, part_target).map(Some)
+            }
+            ProviderTarget::Bilibili(_) => Self::next_play_item(config, name, target).map(Some),
+            _ => Err(ProviderError::InvalidConfig(
+                "Bilibili target is required".to_string(),
+            )),
+        }
+    }
+
+    async fn next_live_room(
+        &self,
+        ctx: &ProviderContext<'_>,
+        config: &BilibiliPlaylistSourceConfig,
+        current_room_id: u64,
+        play_mode: PlayMode,
+    ) -> Result<Option<NextPlayItem>, ProviderError> {
+        const PAGE_SIZE: usize = 50;
+        const MAX_SHUFFLE_ITEMS: usize = 200;
+        let mut page = 1;
+        let mut first: Option<(String, u64)> = None;
+        let mut found_current = false;
+        let mut shuffle_items = Vec::new();
+
+        loop {
+            let response = self
+                .list_live_playlist_page(ctx, config, page, PAGE_SIZE)
+                .await?;
+            for room in response.items {
+                if first.is_none() {
+                    first = Some((room.title.clone(), room.room_id));
+                }
+                if play_mode == PlayMode::Shuffle {
+                    if room.room_id != current_room_id {
+                        shuffle_items.push((room.title, room.room_id));
+                    }
+                    continue;
+                }
+                if found_current {
+                    return Self::next_play_item(
+                        config,
+                        room.title,
+                        ProviderTarget::bilibili_live(room.room_id),
+                    )
+                    .map(Some);
+                }
+                found_current = room.room_id == current_room_id;
+            }
+            if !response.has_more
+                || (play_mode == PlayMode::Shuffle && shuffle_items.len() >= MAX_SHUFFLE_ITEMS)
+            {
+                break;
+            }
+            page = page.saturating_add(1);
+        }
+
+        if play_mode == PlayMode::Shuffle {
+            shuffle_items.truncate(MAX_SHUFFLE_ITEMS);
+            let selected = {
+                let mut rng = rand::rng();
+                shuffle_items.choose(&mut rng).cloned()
+            };
+            return match selected {
+                Some((name, room_id)) => {
+                    Self::next_play_item(config, name, ProviderTarget::bilibili_live(room_id))
+                        .map(Some)
+                }
+                None => Ok(None),
+            };
+        }
+        if found_current && play_mode == PlayMode::RepeatAll {
+            if let Some((name, room_id)) = first {
+                return Self::next_play_item(config, name, ProviderTarget::bilibili_live(room_id))
+                    .map(Some);
+            }
+        }
+        Ok(None)
+    }
+
+    fn root_target_matches(current: &BilibiliTarget, candidate: &ProviderTarget) -> bool {
+        let ProviderTarget::Bilibili(candidate) = candidate else {
+            return false;
+        };
+        match (current, candidate) {
+            (
+                BilibiliTarget::Video { bvid, aid },
+                BilibiliTarget::Video {
+                    bvid: other_bvid,
+                    aid: other_aid,
+                }
+                | BilibiliTarget::VideoPart {
+                    bvid: other_bvid,
+                    aid: other_aid,
+                    ..
+                },
+            )
+            | (
+                BilibiliTarget::VideoPart { bvid, aid, .. },
+                BilibiliTarget::Video {
+                    bvid: other_bvid,
+                    aid: other_aid,
+                }
+                | BilibiliTarget::VideoPart {
+                    bvid: other_bvid,
+                    aid: other_aid,
+                    ..
+                },
+            ) => (!bvid.is_empty() && bvid == other_bvid) || (*aid > 0 && *aid == *other_aid),
+            (
+                BilibiliTarget::PgcEpisode { epid, .. },
+                BilibiliTarget::PgcEpisode {
+                    epid: other_epid, ..
+                },
+            ) => epid == other_epid,
+            (
+                BilibiliTarget::Live { room_id },
+                BilibiliTarget::Live {
+                    room_id: other_room_id,
+                },
+            ) => room_id == other_room_id,
+            _ => false,
+        }
+    }
+}
+
 #[async_trait]
 impl MediaProvider for BilibiliProvider {
     #[cfg(test)]
@@ -1808,10 +2909,69 @@ impl MediaProvider for BilibiliProvider {
 
     async fn validate_source_config(
         &self,
-        _ctx: &ProviderContext<'_>,
+        ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
-        let config = BilibiliSourceConfig::from_source_config(source_config)?;
+        let SourceConfig::Media(media_config) = source_config else {
+            let SourceConfig::DynamicPlaylist(playlist_config) = source_config else {
+                unreachable!();
+            };
+            let config = Self::playlist_config(playlist_config)?;
+            match &config.source {
+                BilibiliPlaylistSource::VideoParts { bvid, aid }
+                    if bvid.trim().is_empty() && aid.is_none_or(|aid| aid == 0) =>
+                {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili video parts require a bvid or aid".to_string(),
+                    ));
+                }
+                BilibiliPlaylistSource::UpVideos { mid, .. } if *mid == 0 => {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili UP playlist mid must be non-zero".to_string(),
+                    ));
+                }
+                BilibiliPlaylistSource::FavoriteVideos { media_id } if *media_id == 0 => {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili favorite playlist media_id must be non-zero".to_string(),
+                    ));
+                }
+                BilibiliPlaylistSource::CollectionVideos { mid, season_id }
+                    if *mid == 0 || *season_id == 0 =>
+                {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili collection playlist mid and season_id must be non-zero"
+                            .to_string(),
+                    ));
+                }
+                BilibiliPlaylistSource::SeriesVideos { mid, series_id }
+                    if *mid == 0 || *series_id == 0 =>
+                {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili series playlist mid and series_id must be non-zero".to_string(),
+                    ));
+                }
+                BilibiliPlaylistSource::PgcSeason { season_id } if *season_id == 0 => {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili PGC season_id must be non-zero".to_string(),
+                    ));
+                }
+                BilibiliPlaylistSource::PgcTimeline {
+                    before_days,
+                    after_days,
+                    ..
+                } if *before_days > 7 || *after_days > 7 => {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili PGC timeline day range must be at most seven".to_string(),
+                    ));
+                }
+                _ => {}
+            }
+            if Self::playlist_requires_credential(&config.source) {
+                Self::playlist_access(ctx, config).await?;
+            }
+            return Ok(());
+        };
+        let config = BilibiliSourceConfig::from_media_config(media_config)?;
 
         match &config {
             BilibiliSourceConfig::Video(config) => {
@@ -1851,28 +3011,58 @@ impl MediaProvider for BilibiliProvider {
         ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<Vec<ProviderCredentialDependency>, ProviderError> {
-        let config = BilibiliSourceConfig::from_source_config(source_config)?;
-        if config.shared() {
+        let (shared, required) = match source_config {
+            SourceConfig::Media(config) => {
+                let shared = BilibiliSourceConfig::from_media_config(config)?.shared();
+                (shared, shared)
+            }
+            SourceConfig::DynamicPlaylist(config) => {
+                let config = Self::playlist_config(config)?;
+                (
+                    config.shared,
+                    config.shared || Self::playlist_requires_credential(&config.source),
+                )
+            }
+        };
+        if shared {
             let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
                 ProviderError::Internal(
                     "credential_owner_id not available in ProviderContext".to_string(),
                 )
             })?;
-            return Ok(vec![ProviderCredentialDependency::new(
-                Self::NAME,
-                credential_owner_id.to_string(),
-                bilibili_credential_server_id(),
-            )]);
+            let dependency = if required {
+                ProviderCredentialDependency::new(
+                    Self::NAME,
+                    credential_owner_id.to_string(),
+                    bilibili_credential_server_id(),
+                )
+            } else {
+                ProviderCredentialDependency::optional(
+                    Self::NAME,
+                    credential_owner_id.to_string(),
+                    bilibili_credential_server_id(),
+                )
+            };
+            return Ok(vec![dependency]);
         }
 
         let viewer_id = ctx.user_id().ok_or_else(|| {
             ProviderError::Internal("user_id not available in ProviderContext".to_string())
         })?;
-        Ok(vec![ProviderCredentialDependency::optional(
-            Self::NAME,
-            viewer_id.to_string(),
-            bilibili_credential_server_id(),
-        )])
+        let dependency = if required {
+            ProviderCredentialDependency::new(
+                Self::NAME,
+                viewer_id.to_string(),
+                bilibili_credential_server_id(),
+            )
+        } else {
+            ProviderCredentialDependency::optional(
+                Self::NAME,
+                viewer_id.to_string(),
+                bilibili_credential_server_id(),
+            )
+        };
+        Ok(vec![dependency])
     }
 
     async fn source_cover(
@@ -1880,8 +3070,76 @@ impl MediaProvider for BilibiliProvider {
         ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<Option<SourceCover>, ProviderError> {
-        let config = BilibiliSourceConfig::from_source_config(source_config)?;
-        self.resolve_source_cover(ctx, config).await
+        match source_config {
+            SourceConfig::Media(config) => {
+                let config = BilibiliSourceConfig::from_media_config(config)?;
+                self.resolve_source_cover(ctx, config).await
+            }
+            SourceConfig::DynamicPlaylist(config) => {
+                let config = Self::playlist_config(config)?;
+                if let BilibiliPlaylistSource::VideoParts { bvid, aid } = &config.source {
+                    let response = self
+                        .video_parts(ctx, config, bvid, aid.unwrap_or_default())
+                        .await?;
+                    return Ok(response
+                        .parts
+                        .first()
+                        .map(|part| part.cover.trim())
+                        .filter(|cover| !cover.is_empty())
+                        .map(|cover| SourceCover::Url {
+                            url: cover.to_string(),
+                        }));
+                }
+                if matches!(
+                    config.source,
+                    BilibiliPlaylistSource::LiveRecommended
+                        | BilibiliPlaylistSource::LiveFollowed
+                        | BilibiliPlaylistSource::LiveArea { .. }
+                ) {
+                    let response = self.list_live_playlist_page(ctx, config, 1, 1).await?;
+                    return Ok(response
+                        .items
+                        .first()
+                        .map(|item| item.cover.trim())
+                        .filter(|cover| !cover.is_empty())
+                        .map(|cover| SourceCover::Url {
+                            url: cover.to_string(),
+                        }));
+                }
+                if matches!(config.source, BilibiliPlaylistSource::History { .. }) {
+                    let response = self.list_history_page(ctx, config, None, 1).await?;
+                    return Ok(response
+                        .items
+                        .first()
+                        .map(|item| item.cover.trim())
+                        .filter(|cover| !cover.is_empty())
+                        .map(|cover| SourceCover::Url {
+                            url: cover.to_string(),
+                        }));
+                }
+                if matches!(config.source, BilibiliPlaylistSource::PgcTimeline { .. }) {
+                    let response = self.list_pgc_timeline(ctx, config).await?;
+                    return Ok(response
+                        .items
+                        .iter()
+                        .find(|item| item.published && item.cid > 0)
+                        .map(|item| item.episode_cover.trim())
+                        .filter(|cover| !cover.is_empty())
+                        .map(|cover| SourceCover::Url {
+                            url: cover.to_string(),
+                        }));
+                }
+                let response = self.list_playlist_page(ctx, config, 1, 1).await?;
+                Ok(response
+                    .items
+                    .first()
+                    .map(|item| item.cover.trim())
+                    .filter(|cover| !cover.is_empty())
+                    .map(|cover| SourceCover::Url {
+                        url: cover.to_string(),
+                    }))
+            }
+        }
     }
 
     async fn prepare_source_config(
@@ -1889,8 +3147,19 @@ impl MediaProvider for BilibiliProvider {
         _ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<PreparedSourceConfig, ProviderError> {
-        let _config = BilibiliSourceConfig::from_source_config(source_config)?;
+        match source_config {
+            SourceConfig::Media(config) => {
+                BilibiliSourceConfig::from_media_config(config)?;
+            }
+            SourceConfig::DynamicPlaylist(config) => {
+                Self::playlist_config(config)?;
+            }
+        }
         Ok(source_config.into())
+    }
+
+    fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
+        Some(self)
     }
 
     fn as_bilibili_live_danmaku_provider(&self) -> Option<&dyn super::BilibiliLiveDanmakuProvider> {
@@ -1898,9 +3167,662 @@ impl MediaProvider for BilibiliProvider {
     }
 }
 
+#[async_trait]
+impl DynamicFolder for BilibiliProvider {
+    async fn list_playlist(
+        &self,
+        ctx: &ProviderContext<'_>,
+        playlist: &crate::models::Playlist,
+        target: Option<&ProviderTarget>,
+        query: DynamicListQuery,
+    ) -> Result<DynamicListResult, ProviderError> {
+        let source_config = playlist
+            .source_config
+            .as_ref()
+            .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
+        let config = Self::playlist_config(source_config)?;
+        if matches!(config.source, BilibiliPlaylistSource::History { .. }) {
+            if target.is_some() {
+                return Err(ProviderError::InvalidConfig(
+                    "Bilibili history has a flat root".to_string(),
+                ));
+            }
+            if query
+                .search
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+            {
+                return Err(ProviderError::InvalidConfig(
+                    "Bilibili history does not expose server-side search".to_string(),
+                ));
+            }
+            let cursor = match &query.pagination {
+                DynamicPagination::Cursor { cursor } => cursor.as_deref(),
+                DynamicPagination::Page { page: 1 } => None,
+                DynamicPagination::Page { .. } => {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili history requires cursor pagination after the first page"
+                            .to_string(),
+                    ));
+                }
+            };
+            let response = self
+                .list_history_page(ctx, config, cursor, query.page_size.clamp(1, 30))
+                .await?;
+            let items = response
+                .items
+                .into_iter()
+                .map(|item| {
+                    let target = Self::history_target(&item)?;
+                    let description = [
+                        (!item.author.trim().is_empty()).then_some(item.author),
+                        (!item.subtitle.trim().is_empty()).then_some(item.subtitle),
+                        (item.progress_seconds >= 0).then(|| {
+                            format!("{}s / {}s", item.progress_seconds, item.duration_seconds)
+                        }),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                    Ok(DirectoryItem {
+                        name: item.title,
+                        item_type: ItemType::Media,
+                        source_config: Some(Self::directory_source_config_for_target(
+                            config, &target,
+                        )?),
+                        target,
+                        size: None,
+                        thumbnail: (!item.cover.trim().is_empty())
+                            .then_some(DirectoryItemThumbnail::Url(item.cover)),
+                        description: (!description.is_empty()).then_some(description),
+                        modified_at: (item.viewed_at > 0).then_some(item.viewed_at),
+                    })
+                })
+                .collect::<Result<Vec<_>, ProviderError>>()?;
+            return Ok(DynamicListResult {
+                items,
+                pagination: DynamicPagination::Cursor {
+                    cursor: Self::encode_history_cursor(response.cursor)?,
+                },
+                has_more: response.has_more,
+            });
+        }
+        let DynamicPagination::Page { page } = query.pagination else {
+            return Err(ProviderError::InvalidConfig(
+                "Bilibili uses page pagination".to_string(),
+            ));
+        };
+        let page = page.max(1);
+        let page_size = query.page_size.clamp(1, 50);
+
+        if matches!(config.source, BilibiliPlaylistSource::PgcTimeline { .. }) {
+            if target.is_some() {
+                return Err(ProviderError::InvalidConfig(
+                    "Bilibili PGC timeline has a flat root".to_string(),
+                ));
+            }
+            let response = self.list_pgc_timeline(ctx, config).await?;
+            let playable = response
+                .items
+                .into_iter()
+                .filter(|item| item.published && item.cid > 0)
+                .collect::<Vec<_>>();
+            let start = page.saturating_sub(1).saturating_mul(page_size);
+            let total = playable.len();
+            let items = playable
+                .into_iter()
+                .skip(start)
+                .take(page_size)
+                .map(|item| {
+                    let target = ProviderTarget::bilibili_pgc_episode(item.episode_id, item.cid);
+                    let name = if item.episode_title.trim().is_empty() {
+                        item.title
+                    } else {
+                        format!("{} - {}", item.title, item.episode_title)
+                    };
+                    let description = [
+                        (!item.date.trim().is_empty()).then_some(item.date),
+                        item.delayed.then_some(item.delay_reason),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .filter(|value| !value.trim().is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                    let cover = if item.episode_cover.trim().is_empty() {
+                        item.cover
+                    } else {
+                        item.episode_cover
+                    };
+                    Ok(DirectoryItem {
+                        name,
+                        item_type: ItemType::Media,
+                        source_config: Some(Self::directory_source_config_for_target(
+                            config, &target,
+                        )?),
+                        target,
+                        size: None,
+                        thumbnail: (!cover.trim().is_empty())
+                            .then_some(DirectoryItemThumbnail::Url(cover)),
+                        description: (!description.is_empty()).then_some(description),
+                        modified_at: (item.publish_at > 0).then_some(item.publish_at),
+                    })
+                })
+                .collect::<Result<Vec<_>, ProviderError>>()?;
+            return Ok(DynamicListResult {
+                has_more: start.saturating_add(items.len()) < total,
+                items,
+                pagination: DynamicPagination::Page { page },
+            });
+        }
+
+        if matches!(
+            &config.source,
+            BilibiliPlaylistSource::LiveRecommended
+                | BilibiliPlaylistSource::LiveFollowed
+                | BilibiliPlaylistSource::LiveArea { .. }
+        ) {
+            if target.is_some() {
+                return Err(ProviderError::InvalidConfig(
+                    "Bilibili live playlists have a flat root".to_string(),
+                ));
+            }
+            let response = self
+                .list_live_playlist_page(ctx, config, page, page_size)
+                .await?;
+            let items = response
+                .items
+                .into_iter()
+                .map(|room| {
+                    let target = ProviderTarget::bilibili_live(room.room_id);
+                    let description = [
+                        (!room.author.trim().is_empty()).then_some(room.author),
+                        (!room.parent_area_name.trim().is_empty()).then_some(room.parent_area_name),
+                        (!room.area_name.trim().is_empty()).then_some(room.area_name),
+                        (room.online > 0).then(|| format!("{} online", room.online)),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                    Ok(DirectoryItem {
+                        name: room.title,
+                        item_type: ItemType::Media,
+                        source_config: Some(Self::directory_source_config_for_target(
+                            config, &target,
+                        )?),
+                        target,
+                        size: None,
+                        thumbnail: (!room.cover.trim().is_empty())
+                            .then_some(DirectoryItemThumbnail::Url(room.cover)),
+                        description: (!description.is_empty()).then_some(description),
+                        modified_at: None,
+                    })
+                })
+                .collect::<Result<Vec<_>, ProviderError>>()?;
+            return Ok(DynamicListResult {
+                items,
+                pagination: DynamicPagination::Page { page },
+                has_more: response.has_more,
+            });
+        }
+
+        if let BilibiliPlaylistSource::VideoParts { bvid, aid } = &config.source {
+            if target.is_some() {
+                return Err(ProviderError::InvalidConfig(
+                    "Bilibili video-parts playlists have a flat root".to_string(),
+                ));
+            }
+            let response = self
+                .video_parts(ctx, config, bvid, aid.unwrap_or_default())
+                .await?;
+            let start = page.saturating_sub(1).saturating_mul(page_size);
+            let total = response.parts.len();
+            let items = response
+                .parts
+                .into_iter()
+                .skip(start)
+                .take(page_size)
+                .map(|part| {
+                    let target = ProviderTarget::bilibili_video_part(
+                        part.bvid, part.aid, part.cid, part.page,
+                    );
+                    Ok(DirectoryItem {
+                        name: part.title,
+                        item_type: ItemType::Media,
+                        source_config: Some(Self::directory_source_config_for_target(
+                            config, &target,
+                        )?),
+                        target,
+                        size: None,
+                        thumbnail: (!part.cover.trim().is_empty())
+                            .then_some(DirectoryItemThumbnail::Url(part.cover)),
+                        description: Some(format!(
+                            "{}x{} · {}s",
+                            part.width, part.height, part.duration_seconds
+                        )),
+                        modified_at: None,
+                    })
+                })
+                .collect::<Result<Vec<_>, ProviderError>>()?;
+            return Ok(DynamicListResult {
+                has_more: start.saturating_add(items.len()) < total,
+                items,
+                pagination: DynamicPagination::Page { page },
+            });
+        }
+
+        if let Some(target) = target {
+            let ProviderTarget::Bilibili(BilibiliTarget::Video { bvid, aid }) = target else {
+                return Err(ProviderError::InvalidConfig(
+                    "Bilibili browse target must be a video node".to_string(),
+                ));
+            };
+            let response = self.video_parts(ctx, config, bvid, *aid).await?;
+            let start = page.saturating_sub(1).saturating_mul(page_size);
+            let total = response.parts.len();
+            let items = response
+                .parts
+                .into_iter()
+                .skip(start)
+                .take(page_size)
+                .map(|part| {
+                    let target = ProviderTarget::bilibili_video_part(
+                        part.bvid, part.aid, part.cid, part.page,
+                    );
+                    Ok(DirectoryItem {
+                        name: part.title,
+                        item_type: ItemType::Media,
+                        source_config: Some(Self::directory_source_config_for_target(
+                            config, &target,
+                        )?),
+                        target,
+                        size: None,
+                        thumbnail: (!part.cover.trim().is_empty())
+                            .then_some(DirectoryItemThumbnail::Url(part.cover)),
+                        description: Some(format!(
+                            "{}x{} · {}s",
+                            part.width, part.height, part.duration_seconds
+                        )),
+                        modified_at: None,
+                    })
+                })
+                .collect::<Result<Vec<_>, ProviderError>>()?;
+            return Ok(DynamicListResult {
+                has_more: start.saturating_add(items.len()) < total,
+                items,
+                pagination: DynamicPagination::Page { page },
+            });
+        }
+
+        let mut effective_config = config.clone();
+        if let (BilibiliPlaylistSource::UpVideos { keyword, .. }, Some(search)) =
+            (&mut effective_config.source, query.search)
+        {
+            *keyword = search;
+        }
+        let response = self
+            .list_playlist_page(ctx, &effective_config, page, page_size)
+            .await?;
+        let items = response
+            .items
+            .into_iter()
+            .map(|item| {
+                let target = Self::list_item_target(&item);
+                let item_type = if item.epid == 0 && item.part_count > 1 {
+                    ItemType::Playlist
+                } else {
+                    ItemType::Media
+                };
+                Ok(DirectoryItem {
+                    name: item.title,
+                    item_type,
+                    source_config: Some(Self::directory_source_config_for_target(config, &target)?),
+                    target,
+                    size: None,
+                    thumbnail: (!item.cover.trim().is_empty())
+                        .then_some(DirectoryItemThumbnail::Url(item.cover)),
+                    description: (!item.description.trim().is_empty()).then_some(item.description),
+                    modified_at: (item.published_at > 0).then_some(item.published_at),
+                })
+            })
+            .collect::<Result<Vec<_>, ProviderError>>()?;
+        Ok(DynamicListResult {
+            items,
+            pagination: DynamicPagination::Page { page },
+            has_more: response.has_more,
+        })
+    }
+
+    async fn resolve_item(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        playlist: &crate::models::Playlist,
+        target: &ProviderTarget,
+    ) -> Result<Option<NextPlayItem>, ProviderError> {
+        let source_config = playlist
+            .source_config
+            .as_ref()
+            .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
+        let config = Self::playlist_config(source_config)?;
+        let ProviderTarget::Bilibili(target_value) = target else {
+            return Err(ProviderError::InvalidConfig(
+                "Bilibili target is required".to_string(),
+            ));
+        };
+        if matches!(target_value, BilibiliTarget::Video { .. }) {
+            return Ok(None);
+        }
+        Self::next_play_item(config, "Bilibili".to_string(), target.clone()).map(Some)
+    }
+
+    async fn next(
+        &self,
+        ctx: &ProviderContext<'_>,
+        playlist: &crate::models::Playlist,
+        target: &ProviderTarget,
+        play_mode: PlayMode,
+    ) -> Result<Option<NextPlayItem>, ProviderError> {
+        const PAGE_SIZE: usize = 50;
+
+        if play_mode == PlayMode::RepeatOne {
+            return Ok(None);
+        }
+        let source_config = playlist
+            .source_config
+            .as_ref()
+            .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
+        let config = Self::playlist_config(source_config)?;
+        let ProviderTarget::Bilibili(current) = target else {
+            return Err(ProviderError::InvalidConfig(
+                "Bilibili target is required".to_string(),
+            ));
+        };
+
+        if matches!(
+            &config.source,
+            BilibiliPlaylistSource::LiveRecommended
+                | BilibiliPlaylistSource::LiveFollowed
+                | BilibiliPlaylistSource::LiveArea { .. }
+        ) {
+            let BilibiliTarget::Live { room_id } = current else {
+                return Err(ProviderError::InvalidConfig(
+                    "Bilibili live playlist requires a live-room target".to_string(),
+                ));
+            };
+            return self.next_live_room(ctx, config, *room_id, play_mode).await;
+        }
+
+        if matches!(config.source, BilibiliPlaylistSource::History { .. }) {
+            const PAGE_SIZE: usize = 30;
+            const MAX_SHUFFLE_ITEMS: usize = 200;
+            let mut cursor = None;
+            let mut first: Option<DirectoryItem> = None;
+            let mut found_current = false;
+            let mut candidates = Vec::new();
+            loop {
+                let result = self
+                    .list_playlist(
+                        ctx,
+                        playlist,
+                        None,
+                        DynamicListQuery {
+                            pagination: DynamicPagination::Cursor { cursor },
+                            page_size: PAGE_SIZE,
+                            ..DynamicListQuery::default()
+                        },
+                    )
+                    .await?;
+                let next_cursor = match &result.pagination {
+                    DynamicPagination::Cursor { cursor } if result.has_more => cursor.clone(),
+                    _ => None,
+                };
+                for item in result.items {
+                    first.get_or_insert_with(|| item.clone());
+                    if play_mode == PlayMode::Shuffle {
+                        if !Self::root_target_matches(current, &item.target) {
+                            candidates.push(item);
+                        }
+                        continue;
+                    }
+                    if found_current {
+                        return self
+                            .first_playable_for_target(ctx, config, item.name, item.target)
+                            .await;
+                    }
+                    found_current = Self::root_target_matches(current, &item.target);
+                }
+                if play_mode == PlayMode::Shuffle && candidates.len() >= MAX_SHUFFLE_ITEMS {
+                    break;
+                }
+                let Some(next_cursor) = next_cursor else {
+                    break;
+                };
+                cursor = Some(next_cursor);
+            }
+            if play_mode == PlayMode::Shuffle {
+                candidates.truncate(MAX_SHUFFLE_ITEMS);
+                let selected = {
+                    let mut rng = rand::rng();
+                    candidates.choose(&mut rng).cloned()
+                };
+                return match selected {
+                    Some(item) => {
+                        self.first_playable_for_target(ctx, config, item.name, item.target)
+                            .await
+                    }
+                    None => Ok(None),
+                };
+            }
+            if found_current && play_mode == PlayMode::RepeatAll {
+                if let Some(first) = first {
+                    return self
+                        .first_playable_for_target(ctx, config, first.name, first.target)
+                        .await;
+                }
+            }
+            return Ok(None);
+        }
+
+        if matches!(config.source, BilibiliPlaylistSource::PgcTimeline { .. }) {
+            const PAGE_SIZE: usize = 50;
+            let mut page = 1;
+            let mut first: Option<DirectoryItem> = None;
+            let mut found_current = false;
+            let mut candidates = Vec::new();
+            loop {
+                let result = self
+                    .list_playlist(
+                        ctx,
+                        playlist,
+                        None,
+                        DynamicListQuery {
+                            pagination: DynamicPagination::Page { page },
+                            page_size: PAGE_SIZE,
+                            ..DynamicListQuery::default()
+                        },
+                    )
+                    .await?;
+                for item in result.items {
+                    first.get_or_insert_with(|| item.clone());
+                    if play_mode == PlayMode::Shuffle {
+                        if !Self::root_target_matches(current, &item.target) {
+                            candidates.push(item);
+                        }
+                    } else if found_current {
+                        return self
+                            .first_playable_for_target(ctx, config, item.name, item.target)
+                            .await;
+                    } else {
+                        found_current = Self::root_target_matches(current, &item.target);
+                    }
+                }
+                if !result.has_more {
+                    break;
+                }
+                page = page.saturating_add(1);
+            }
+            if play_mode == PlayMode::Shuffle {
+                let selected = {
+                    let mut rng = rand::rng();
+                    candidates.choose(&mut rng).cloned()
+                };
+                return match selected {
+                    Some(item) => {
+                        self.first_playable_for_target(ctx, config, item.name, item.target)
+                            .await
+                    }
+                    None => Ok(None),
+                };
+            }
+            if found_current && play_mode == PlayMode::RepeatAll {
+                if let Some(first) = first {
+                    return self
+                        .first_playable_for_target(ctx, config, first.name, first.target)
+                        .await;
+                }
+            }
+            return Ok(None);
+        }
+
+        if let BilibiliPlaylistSource::VideoParts { bvid, aid } = &config.source {
+            let BilibiliTarget::VideoPart { cid, page, .. } = current else {
+                return Err(ProviderError::InvalidConfig(
+                    "Bilibili video-parts playback requires a part target".to_string(),
+                ));
+            };
+            let response = self
+                .video_parts(ctx, config, bvid, aid.unwrap_or_default())
+                .await?;
+            let current_index = response
+                .parts
+                .iter()
+                .position(|part| part.cid == *cid || part.page == *page)
+                .ok_or(ProviderError::NotFound)?;
+            let selected = match play_mode {
+                PlayMode::Sequential => response.parts.get(current_index + 1),
+                PlayMode::RepeatAll => response
+                    .parts
+                    .get(current_index + 1)
+                    .or_else(|| response.parts.first()),
+                PlayMode::Shuffle => {
+                    let candidates = response
+                        .parts
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, part)| (index != current_index).then_some(part))
+                        .collect::<Vec<_>>();
+                    let mut rng = rand::rng();
+                    candidates.choose(&mut rng).copied()
+                }
+                PlayMode::RepeatOne => unreachable!(),
+            };
+            let Some(part) = selected else {
+                return Ok(None);
+            };
+            let next_target = ProviderTarget::bilibili_video_part(
+                part.bvid.clone(),
+                part.aid,
+                part.cid,
+                part.page,
+            );
+            return Self::next_play_item(config, part.title.clone(), next_target).map(Some);
+        }
+
+        if let BilibiliTarget::VideoPart {
+            bvid,
+            aid,
+            cid,
+            page,
+        } = current
+        {
+            let parts = self.video_parts(ctx, config, bvid, *aid).await?;
+            if let Some(next_part) = parts.parts.iter().find(|part| {
+                part.page > *page || (part.page == page.saturating_add(1) && part.cid != *cid)
+            }) {
+                let next_target = ProviderTarget::bilibili_video_part(
+                    next_part.bvid.clone(),
+                    next_part.aid,
+                    next_part.cid,
+                    next_part.page,
+                );
+                return Self::next_play_item(config, next_part.title.clone(), next_target)
+                    .map(Some);
+            }
+        }
+
+        if play_mode == PlayMode::Shuffle {
+            const MAX_ITEMS: usize = 200;
+            let mut candidates = Vec::new();
+            let mut page = 1;
+            loop {
+                let response = self
+                    .list_playlist_page(ctx, config, page, PAGE_SIZE)
+                    .await?;
+                candidates.extend(response.items.into_iter().map(|item| {
+                    let target = Self::list_item_target(&item);
+                    (item.title, target)
+                }));
+                if !response.has_more || candidates.len() >= MAX_ITEMS {
+                    break;
+                }
+                page = page.saturating_add(1);
+            }
+            candidates.truncate(MAX_ITEMS);
+            let selected = {
+                let mut rng = rand::rng();
+                candidates.choose(&mut rng).cloned()
+            };
+            let Some((name, selected_target)) = selected else {
+                return Ok(None);
+            };
+            return self
+                .first_playable_for_target(ctx, config, name, selected_target)
+                .await;
+        }
+
+        let mut page = 1;
+        let mut found_current = false;
+        let mut first: Option<(String, ProviderTarget)> = None;
+        loop {
+            let response = self
+                .list_playlist_page(ctx, config, page, PAGE_SIZE)
+                .await?;
+            for item in response.items {
+                let candidate_target = Self::list_item_target(&item);
+                if first.is_none() {
+                    first = Some((item.title.clone(), candidate_target.clone()));
+                }
+                if found_current {
+                    return self
+                        .first_playable_for_target(ctx, config, item.title, candidate_target)
+                        .await;
+                }
+                if Self::root_target_matches(current, &candidate_target) {
+                    found_current = true;
+                }
+            }
+            if !response.has_more {
+                break;
+            }
+            page = page.saturating_add(1);
+        }
+
+        if found_current && play_mode == PlayMode::RepeatAll {
+            if let Some((name, first_target)) = first {
+                return self
+                    .first_playable_for_target(ctx, config, name, first_target)
+                    .await;
+            }
+        }
+        Ok(None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BilibiliSmsLoginSession, BilibiliSmsLoginTokenCodec};
+    use super::{BilibiliProvider, BilibiliSmsLoginSession, BilibiliSmsLoginTokenCodec};
 
     type TestResult<T = ()> = anyhow::Result<T>;
 
@@ -1972,6 +3894,26 @@ mod tests {
         assert!(codec.decode(&tampered).is_err());
         let expired_token = provider_ok(codec.encode(&expired))?;
         assert!(codec.decode(&expired_token).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn history_cursor_round_trips_as_an_opaque_cursor() -> TestResult {
+        let encoded = provider_ok(BilibiliProvider::encode_history_cursor(Some(
+            super::bilibili_upstream::HistoryCursor {
+                max: 77,
+                view_at: 123_456,
+                business: "archive".to_string(),
+            },
+        )))?
+        .ok_or_else(|| anyhow::anyhow!("encoded cursor should exist"))?;
+        assert!(!encoded.contains("archive"));
+
+        let decoded = provider_ok(BilibiliProvider::decode_history_cursor(Some(&encoded)))?
+            .ok_or_else(|| anyhow::anyhow!("decoded cursor should exist"))?;
+        assert_eq!(decoded.max, 77);
+        assert_eq!(decoded.view_at, 123_456);
+        assert_eq!(decoded.business, "archive");
         Ok(())
     }
 }
@@ -2376,6 +4318,17 @@ fn bilibili_live_danmaku_track(ctx: &ProviderContext<'_>) -> Option<PlaybackDanm
     })
 }
 
+fn bilibili_vod_danmaku_track(cid: u64) -> PlaybackDanmaku {
+    PlaybackDanmaku {
+        name: "Bilibili danmaku".to_string(),
+        format: Some("xml".to_string()),
+        provider: PlaybackDanmakuProvider::External(PlaybackExternalDanmaku {
+            url: format!("https://api.bilibili.com/x/v1/dm/list.so?oid={cid}"),
+            headers: bilibili_headers(),
+        }),
+    }
+}
+
 fn bilibili_dash_video_url_request(
     cookies: &HashMap<String, String>,
     aid: u64,
@@ -2475,14 +4428,17 @@ impl BilibiliProvider {
 
         let mode_info = |medias: Vec<PlaybackMedia>,
                          subtitles: Vec<PlaybackSubtitle>,
-                         danmakus: Vec<PlaybackDanmaku>| PlaybackInfo {
-            thumbnail: None,
-            medias,
-            default_media_index: None,
-            subtitles,
-            default_subtitle_index: None,
-            danmakus,
-            default_danmaku_index: None,
+                         danmakus: Vec<PlaybackDanmaku>| {
+            let default_danmaku_index = (!danmakus.is_empty()).then_some(0);
+            PlaybackInfo {
+                thumbnail: None,
+                medias,
+                default_media_index: None,
+                subtitles,
+                default_subtitle_index: None,
+                danmakus,
+                default_danmaku_index,
+            }
         };
 
         match config {
@@ -2544,6 +4500,7 @@ impl BilibiliProvider {
 
                 let expires_at = Some(crate::SystemClock.now().timestamp() + 2 * 3600);
                 let mut playback_infos = HashMap::new();
+                let danmakus = vec![bilibili_vod_danmaku_track(cid)];
 
                 let default_mode = if let Some(dash_resp) = dash_resp {
                     let dash = dash_resp.dash.as_ref().ok_or_else(|| {
@@ -2585,7 +4542,7 @@ impl BilibiliProvider {
                                 bilibili_headers(),
                             ),
                             subtitles.clone(),
-                            Vec::new(),
+                            danmakus.clone(),
                         ),
                     );
                     if let Some(hevc_urls) = hevc_urls {
@@ -2600,7 +4557,7 @@ impl BilibiliProvider {
                                     bilibili_headers(),
                                 ),
                                 subtitles,
-                                Vec::new(),
+                                danmakus,
                             ),
                         );
                     }
@@ -2632,7 +4589,7 @@ impl BilibiliProvider {
                                 bilibili_headers(),
                             ),
                             subtitles,
-                            Vec::new(),
+                            danmakus,
                         ),
                     );
                     "mp4".to_string()
@@ -2699,6 +4656,7 @@ impl BilibiliProvider {
 
                 let expires_at = Some(crate::SystemClock.now().timestamp() + 2 * 3600);
                 let mut playback_infos = HashMap::new();
+                let danmakus = vec![bilibili_vod_danmaku_track(cid)];
 
                 let default_mode = if let Some(dash_resp) = dash_resp {
                     let dash = dash_resp.dash.as_ref().ok_or_else(|| {
@@ -2740,7 +4698,7 @@ impl BilibiliProvider {
                                 bilibili_headers(),
                             ),
                             subtitles.clone(),
-                            Vec::new(),
+                            danmakus.clone(),
                         ),
                     );
                     if let Some(hevc_urls) = hevc_urls {
@@ -2755,7 +4713,7 @@ impl BilibiliProvider {
                                     bilibili_headers(),
                                 ),
                                 subtitles,
-                                Vec::new(),
+                                danmakus,
                             ),
                         );
                     }
@@ -2783,7 +4741,7 @@ impl BilibiliProvider {
                                 bilibili_headers(),
                             ),
                             subtitles,
-                            Vec::new(),
+                            danmakus,
                         ),
                     );
                     "mp4".to_string()

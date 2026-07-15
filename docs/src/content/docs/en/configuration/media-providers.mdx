@@ -1,16 +1,17 @@
 ---
 title: Media Providers
-description: General configuration model for Alist, Emby-compatible servers, Bilibili, and other media providers.
+description: Configure built-in and remote media Providers, request timeouts, credential encryption, and Provider instances.
 ---
 
 ## What Providers Are
 
 Media providers are SyncTV's integration points for external media sources, including:
 
-- Alist.
-- Emby-compatible servers (Emby/Jellyfin), exposed through provider type `emby`.
-- Bilibili.
-- Remote provider instances.
+- Video platforms: Bilibili, Twitch, YouTube, Douyin, TikTok, Huya, Douyu, AcFun, and CCTV.
+- Media servers and file services: Alist, Cloudreve, and Emby/Jellyfin.
+- NAS and private cloud: FNOS, QNAP, Synology, Nextcloud, Seafile, and TrueNAS.
+- Direct URL, RTMP, and live proxy.
+- Remote Provider instances.
 
 `media_providers` only configures local built-in provider adapters in this SyncTV process. Each provider has explicit fields:
 
@@ -30,6 +31,14 @@ media_providers:
 Remote provider instances are not configured in this YAML object. They are persisted through the management API/CLI and only store connection details that SyncTV needs to reach the remote provider, such as `endpoint`, `tls`, `jwt_secret`, `custom_ca`, `timeout`, `insecure_tls`, and `providers`. The remote provider's own Alist, Emby, or Bilibili configuration belongs in the remote provider deployment.
 
 For scenario-based setup guidance for Alist, Emby/Jellyfin, Bilibili, direct URLs, RTMP, or remote Providers, start with [Add Media](../../use/media-sources/).
+
+See the [Provider User Guide](../../use/provider-guide/) for binding, resource, and dynamic-playlist capabilities. See the [Provider Development Guide](../../develop/provider-development/) for implementation and extension workflows.
+
+## Provider Instances
+
+Every source can select a Provider instance. An empty instance name selects the default local instance. Named instances can point at separately configured local or remote gRPC backends. Administrators configure endpoint, TLS, authentication secret, timeout, and allowed Provider names through Provider-instance management APIs.
+
+User credentials retain `provider_instance_name`. Binding one upstream through several instances creates independent credential scopes. The App stores the selected instance with media and playlist bindings, and playback, covers, and dynamic lists reuse it.
 
 ## Local Provider Timeout Fields
 
@@ -67,6 +76,14 @@ media_providers:
     request_timeout_seconds: 30
     connect_timeout_seconds: 10
 ```
+
+Other built-in Providers use the same timeout contract. Upstream endpoints, Cookies, tokens, account passwords, and API keys are persisted through user binding APIs.
+
+## Page and Cursor Capabilities
+
+Provider list APIs report page or cursor mode through a protobuf oneof. Cloudreve reports the mode supported by the current server. Bilibili history, Twitch, and YouTube use native upstream cursors. Traditional folders and indexes usually use page or offset semantics.
+
+Clients treat cursors as opaque tokens. Deployers do not configure cursor generation.
 
 ## Header Ownership
 
@@ -114,5 +131,7 @@ Without a stable credential encryption key, creating or updating encrypted provi
 ## Continue Reading
 
 - [Add Media](../../use/media-sources/)
+- [Provider User Guide](../../use/provider-guide/)
+- [Provider Development Guide](../../develop/provider-development/)
 - [Playback and Proxy Model](../../use/playback-and-proxy/)
 - [Security Hardening and Rotation](../../operations/security-hardening-and-rotation/)

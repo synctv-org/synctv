@@ -49,7 +49,9 @@ fn emby_playlist_source_config(
 ) -> crate::models::PlaylistSourceConfig {
     crate::models::PlaylistSourceConfig::Emby(crate::models::EmbyPlaylistSourceConfig {
         server_id: server_id.into(),
-        item_id: item_id.into(),
+        source: crate::models::EmbyPlaylistSource::Folder {
+            item_id: item_id.into(),
+        },
     })
 }
 

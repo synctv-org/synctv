@@ -6,6 +6,10 @@ use super::bilibili::{
     bilibili_server::Bilibili, Empty, GetDashPgcurlReq, GetDashPgcurlResp, GetDashVideoUrlReq,
     GetDashVideoUrlResp, GetLiveDanmuInfoReq, GetLiveDanmuInfoResp, GetLiveStreamsReq,
     GetLiveStreamsResp, GetPgcurlReq, GetSubtitlesReq, GetSubtitlesResp, GetVideoUrlReq,
+    ListFavoriteFoldersReq, ListFavoriteFoldersResp, ListFollowedPgcReq, ListFollowedPgcResp,
+    ListHistoryReq, ListHistoryResp, ListLiveAreasReq, ListLiveAreasResp, ListLiveRoomsReq,
+    ListLiveRoomsResp, ListPgcSeasonsReq, ListPgcSeasonsResp, ListPgcTimelineReq,
+    ListPgcTimelineResp, ListVideoPartsReq, ListVideoPartsResp, ListVideosReq, ListVideosResp,
     LoginWithQrCodeReq, LoginWithQrCodeResp, LoginWithSmsReq, LoginWithSmsResp, MatchReq,
     MatchResp, NewCaptchaResp, NewQrCodeResp, NewSmsReq, NewSmsResp, ParseLivePageReq,
     ParsePgcPageReq, ParseVideoPageReq, UserInfoReq, UserInfoResp, VideoPageInfo, VideoUrl,
@@ -336,6 +340,165 @@ impl Bilibili for BilibiliService {
             .get_live_danmu_info(req)
             .await
             .map_err(|e| map_bilibili_error("get_live_danmu_info", &e))?;
+        Ok(Response::new(resp))
+    }
+
+    async fn list_videos(
+        &self,
+        request: Request<ListVideosReq>,
+    ) -> Result<Response<ListVideosResp>, Status> {
+        let req = request.into_inner();
+        if req.source.is_none() {
+            return Err(Status::invalid_argument("source is required"));
+        }
+        if req.page == 0 {
+            return Err(Status::invalid_argument("page must be at least one"));
+        }
+        if req.page_size == 0 {
+            return Err(Status::invalid_argument("page_size must be at least one"));
+        }
+        let resp = self
+            .service
+            .list_videos(req)
+            .await
+            .map_err(|error| map_bilibili_error("list_videos", &error))?;
+        Ok(Response::new(resp))
+    }
+
+    async fn list_video_parts(
+        &self,
+        request: Request<ListVideoPartsReq>,
+    ) -> Result<Response<ListVideoPartsResp>, Status> {
+        let req = request.into_inner();
+        if req.aid == 0 && req.bvid.is_empty() {
+            return Err(Status::invalid_argument(
+                "either aid or bvid must be provided",
+            ));
+        }
+        let resp = self
+            .service
+            .list_video_parts(req)
+            .await
+            .map_err(|error| map_bilibili_error("list_video_parts", &error))?;
+        Ok(Response::new(resp))
+    }
+
+    async fn list_live_rooms(
+        &self,
+        request: Request<ListLiveRoomsReq>,
+    ) -> Result<Response<ListLiveRoomsResp>, Status> {
+        let req = request.into_inner();
+        if req.source.is_none() {
+            return Err(Status::invalid_argument("source is required"));
+        }
+        if req.page == 0 {
+            return Err(Status::invalid_argument("page must be at least one"));
+        }
+        if req.page_size == 0 {
+            return Err(Status::invalid_argument("page_size must be at least one"));
+        }
+        let resp = self
+            .service
+            .list_live_rooms(req)
+            .await
+            .map_err(|error| map_bilibili_error("list_live_rooms", &error))?;
+        Ok(Response::new(resp))
+    }
+
+    async fn list_live_areas(
+        &self,
+        request: Request<ListLiveAreasReq>,
+    ) -> Result<Response<ListLiveAreasResp>, Status> {
+        let resp = self
+            .service
+            .list_live_areas(request.into_inner())
+            .await
+            .map_err(|error| map_bilibili_error("list_live_areas", &error))?;
+        Ok(Response::new(resp))
+    }
+
+    async fn list_favorite_folders(
+        &self,
+        request: Request<ListFavoriteFoldersReq>,
+    ) -> Result<Response<ListFavoriteFoldersResp>, Status> {
+        let resp = self
+            .service
+            .list_favorite_folders(request.into_inner())
+            .await
+            .map_err(|error| map_bilibili_error("list_favorite_folders", &error))?;
+        Ok(Response::new(resp))
+    }
+
+    async fn list_followed_pgc(
+        &self,
+        request: Request<ListFollowedPgcReq>,
+    ) -> Result<Response<ListFollowedPgcResp>, Status> {
+        let req = request.into_inner();
+        if !matches!(req.season_type, 1 | 2) {
+            return Err(Status::invalid_argument("season_type must be 1 or 2"));
+        }
+        if req.page == 0 || req.page_size == 0 {
+            return Err(Status::invalid_argument(
+                "page and page_size must be at least one",
+            ));
+        }
+        let resp = self
+            .service
+            .list_followed_pgc(req)
+            .await
+            .map_err(|error| map_bilibili_error("list_followed_pgc", &error))?;
+        Ok(Response::new(resp))
+    }
+
+    async fn list_history(
+        &self,
+        request: Request<ListHistoryReq>,
+    ) -> Result<Response<ListHistoryResp>, Status> {
+        let req = request.into_inner();
+        if req.page_size == 0 {
+            return Err(Status::invalid_argument("page_size must be at least one"));
+        }
+        let resp = self
+            .service
+            .list_history(req)
+            .await
+            .map_err(|error| map_bilibili_error("list_history", &error))?;
+        Ok(Response::new(resp))
+    }
+
+    async fn list_pgc_timeline(
+        &self,
+        request: Request<ListPgcTimelineReq>,
+    ) -> Result<Response<ListPgcTimelineResp>, Status> {
+        let req = request.into_inner();
+        if req.before_days > 7 || req.after_days > 7 {
+            return Err(Status::invalid_argument(
+                "before_days and after_days must be at most seven",
+            ));
+        }
+        let resp = self
+            .service
+            .list_pgc_timeline(req)
+            .await
+            .map_err(|error| map_bilibili_error("list_pgc_timeline", &error))?;
+        Ok(Response::new(resp))
+    }
+
+    async fn list_pgc_seasons(
+        &self,
+        request: Request<ListPgcSeasonsReq>,
+    ) -> Result<Response<ListPgcSeasonsResp>, Status> {
+        let req = request.into_inner();
+        if req.page == 0 || req.page_size == 0 {
+            return Err(Status::invalid_argument(
+                "page and page_size must be at least one",
+            ));
+        }
+        let resp = self
+            .service
+            .list_pgc_seasons(req)
+            .await
+            .map_err(|error| map_bilibili_error("list_pgc_seasons", &error))?;
         Ok(Response::new(resp))
     }
 

@@ -27,6 +27,8 @@ Provider 签名在生成 playback 时完成。共享 helper 只做机械的 `pro
 
 `VersionedPlayback` 是缓存 payload 和 proxy 查找索引。`version` 用于把 Provider 生成的 `/stream`、`/m3u8`、`/mpd`、字幕、danmaku、thumbnail、FLV 和 HLS segment URL 解析回同一个播放结果。Response finalization 只把当前请求的 signing key、room/user binding、version 和 expiry 交给 Provider 的 rewrite callback；mode、默认值、header 暴露、manifest metadata 和直播生命周期仍由该 Provider 决定。
 
+需要释放上游资源的 Provider 在资源创建成功后写入 `provider_playback_sessions`。`session` JSONB 由 Rust `ProviderPlaybackSession` enum 直接完成 SQLx encode/decode；数据库只保存房间、播放 generation、credential owner、租约、清理 fence 和关系约束。Provider 的 session 字段、enum 变体和数值规则全部在应用层定义。播放 source 变化时 generation 递增，上一代 session 进入清理队列；进度位置继续读取当前 `RoomPlaybackState`。
+
 App 客户端通常可以消费 provider 原生 URL，因此 upstream/direct mode 和 proxy sibling 同时可用时，Provider 应同时返回两类 mode。Provider 按 source 选择最稳妥的默认 mode：带 header 的 HLS 或 DASH 可以默认使用 `proxy_*`，简单直连文件可以默认使用 upstream URL。
 
 Proxy 生成和 proxy 解析是同一个契约。Provider 只要生成 `/stream`、`/m3u8`、`/mpd`、字幕、danmaku、thumbnail、FLV、HLS playlist 或 HLS segment URL，就必须在同一个 Provider 中实现并测试对应 resolver。缓存命中和刷新生成的 playback 需要保持相同可用的 URL 形态。
@@ -111,8 +113,8 @@ Single-object 上传 session 仍使用服务端决定的 manifest plan，但通�
 Repository 代码使用 SQLx checked macros。保留 checked macro 做查询形状校验，SQL 变化时同步更新 `.sqlx`：
 
 ```bash
-cargo sqlx prepare --workspace -- --all-targets
-SQLX_OFFLINE=true cargo check --workspace --all-targets
+cargo +nightly sqlx prepare --workspace -- --all-targets
+SQLX_OFFLINE=true cargo +nightly check --workspace --all-targets
 ```
 
 SQL 或查询返回列变化时，`.sqlx` metadata 属于同一个改动。

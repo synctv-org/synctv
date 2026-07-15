@@ -35,6 +35,7 @@ mod cover;
 mod dynamic;
 mod helpers;
 pub use cover::{CreateMediaCoverUploadSession, CreateMediaThumbnailUploadSession};
+pub use dynamic::DynamicPlaylistPreviewRequest;
 use helpers::{
     batch_media_position, dedup_media_ids, ensure_media_creator_can_edit,
     media_source_config_error, media_source_prepare_error, validate_media_name, MAX_BATCH_SIZE,
@@ -207,6 +208,7 @@ impl MediaService {
         &'a self,
         mut ctx: ProviderContext<'a>,
     ) -> ProviderContext<'a> {
+        ctx = ctx.with_db(self.media_repo.pool());
         if let Some(ref enc) = self.credential_encryption {
             ctx = ctx.with_credential_encryption(enc);
         }

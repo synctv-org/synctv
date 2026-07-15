@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+package douyin;
+
+message PushHeader {
+  string key = 1;
+  string value = 2;
+}
+
+message PushFrame {
+  uint64 seq_id = 1;
+  uint64 log_id = 2;
+  int32 service = 3;
+  int32 method = 4;
+  repeated PushHeader headers = 5;
+  string payload_encoding = 6;
+  string payload_type = 7;
+  bytes payload = 8;
+  string log_id_new = 9;
+}
+
+message Response {
+  repeated Message messages = 1;
+  string cursor = 2;
+  uint64 fetch_interval = 3;
+  uint64 now = 4;
+  string internal_ext = 5;
+  int32 fetch_type = 6;
+  map<string, string> route_params = 7;
+  uint64 heartbeat_duration = 8;
+  bool need_ack = 9;
+}
+
+message Message {
+  string method = 1;
+  bytes payload = 2;
+  uint64 msg_id = 3;
+  int32 msg_type = 4;
+}
+
+message Common {
+  string method = 1;
+  uint64 msg_id = 2;
+  uint64 room_id = 3;
+  uint64 create_time = 4;
+}
+
+message User {
+  uint64 id = 1;
+  uint64 short_id = 2;
+  string nickname = 3;
+  string sec_uid = 46;
+}
+
+message TextFormat {
+  string color = 1;
+}
+
+message Text {
+  string key = 1;
+  string default_pattern = 2;
+  TextFormat default_format = 3;
+}
+
+message ChatMessage {
+  Common common = 1;
+  User user = 2;
+  string content = 3;
+  uint64 event_time = 15;
+  Text rtf_content = 40;
+  Text rtf_content_v2 = 41;
+}
+
+message ControlMessage {
+  uint64 action = 2;
+  string tips = 3;
+}

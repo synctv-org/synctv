@@ -205,6 +205,7 @@ async fn write_playback_cache_refreshes_l1_when_l2_is_configured() {
         position: 10.0,
         speed: 1.0,
         is_playing: false,
+        playback_generation: 0,
         updated_at: crate::SystemClock.now(),
         version: 3,
     };
@@ -219,6 +220,7 @@ async fn write_playback_cache_refreshes_l1_when_l2_is_configured() {
         position: 42.0,
         speed: 1.0,
         is_playing: true,
+        playback_generation: 0,
         updated_at: crate::SystemClock.now(),
         version: 4,
     };
@@ -293,6 +295,7 @@ fn test_position_update_requires_current_playback_source() {
         position: 0.0,
         speed: 1.0,
         is_playing: false,
+        playback_generation: 0,
         updated_at: crate::SystemClock.now(),
         version: 1,
     };
@@ -376,6 +379,7 @@ async fn test_invalidation_listener_stops_after_cache_invalidation_service_stop(
         position: 42.0,
         speed: 1.0,
         is_playing: true,
+        playback_generation: 0,
         updated_at: crate::SystemClock.now(),
         version: 7,
     };
@@ -425,6 +429,7 @@ async fn test_start_can_restart_playback_invalidation_listener_after_shutdown() 
         position: 64.0,
         speed: 1.0,
         is_playing: true,
+        playback_generation: 0,
         updated_at: crate::SystemClock.now(),
         version: 9,
     };
@@ -497,6 +502,7 @@ async fn test_start_activates_invalidation_listener_after_wiring_service() {
         position: 88.0,
         speed: 1.0,
         is_playing: true,
+        playback_generation: 0,
         updated_at: crate::SystemClock.now(),
         version: 11,
     };
@@ -776,6 +782,7 @@ mod version_check_tests {
             position,
             speed: 1.0,
             is_playing: false,
+            playback_generation: 0,
             updated_at: crate::SystemClock.now(),
             version,
         }

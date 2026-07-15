@@ -138,6 +138,9 @@ pub(super) async fn execute_provider(provider_command: ProviderCommand) -> Resul
         ProviderSubcommand::Alist(command) => execute_provider_alist(command).await,
         ProviderSubcommand::Emby(command) => execute_provider_emby(command).await,
         ProviderSubcommand::Bilibili(command) => execute_provider_bilibili(command).await,
+        ProviderSubcommand::Douyin(command) => execute_provider_douyin(command).await,
+        ProviderSubcommand::Tiktok(command) => execute_provider_tiktok(command).await,
+        ProviderSubcommand::Twitch(command) => execute_provider_twitch(command).await,
         ProviderSubcommand::Rtmp(command) => execute_provider_rtmp(command).await,
     }
 }

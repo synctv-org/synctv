@@ -6,18 +6,46 @@
 // docs/src/content/docs/en/develop/implementation-contracts.mdx.
 
 use synctv_proto::client::o_auth2_service_server::OAuth2ServiceServer;
+use synctv_proto::playback_provider::acfun::ac_fun_playback_provider_service_server::AcFunPlaybackProviderServiceServer;
 use synctv_proto::playback_provider::alist::alist_playback_provider_service_server::AlistPlaybackProviderServiceServer;
 use synctv_proto::playback_provider::bilibili::bilibili_playback_provider_service_server::BilibiliPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::cctv::cctv_playback_provider_service_server::CctvPlaybackProviderServiceServer;
 use synctv_proto::playback_provider::direct_url::direct_url_playback_provider_service_server::DirectUrlPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::douyin::douyin_playback_provider_service_server::DouyinPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::douyu::douyu_playback_provider_service_server::DouyuPlaybackProviderServiceServer;
 use synctv_proto::playback_provider::emby::emby_playback_provider_service_server::EmbyPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::fnos::fnos_playback_provider_service_server::FnosPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::huya::huya_playback_provider_service_server::HuyaPlaybackProviderServiceServer;
 use synctv_proto::playback_provider::live_proxy::live_proxy_playback_provider_service_server::LiveProxyPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::nextcloud::nextcloud_playback_provider_service_server::NextcloudPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::qnap::qnap_playback_provider_service_server::QnapPlaybackProviderServiceServer;
 use synctv_proto::playback_provider::rtmp::rtmp_playback_provider_service_server::RtmpPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::seafile::seafile_playback_provider_service_server::SeafilePlaybackProviderServiceServer;
+use synctv_proto::playback_provider::synology::synology_playback_provider_service_server::SynologyPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::tiktok::tik_tok_playback_provider_service_server::TikTokPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::truenas::true_nas_playback_provider_service_server::TrueNasPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::twitch::twitch_playback_provider_service_server::TwitchPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::youtube::youtube_playback_provider_service_server::YoutubePlaybackProviderServiceServer;
+use synctv_proto::providers::acfun::ac_fun_provider_service_server::AcFunProviderServiceServer;
 use synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer;
 use synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer;
+use synctv_proto::providers::cctv::cctv_provider_service_server::CctvProviderServiceServer;
 use synctv_proto::providers::cloudreve::cloudreve_provider_service_server::CloudreveProviderServiceServer;
 use synctv_proto::providers::common::provider_common_service_server::ProviderCommonServiceServer;
+use synctv_proto::providers::douyin::douyin_provider_service_server::DouyinProviderServiceServer;
+use synctv_proto::providers::douyu::douyu_provider_service_server::DouyuProviderServiceServer;
 use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer;
+use synctv_proto::providers::fnos::fnos_provider_service_server::FnosProviderServiceServer;
+use synctv_proto::providers::huya::huya_provider_service_server::HuyaProviderServiceServer;
+use synctv_proto::providers::nextcloud::nextcloud_provider_service_server::NextcloudProviderServiceServer;
+use synctv_proto::providers::qnap::qnap_provider_service_server::QnapProviderServiceServer;
 use synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer;
+use synctv_proto::providers::seafile::seafile_provider_service_server::SeafileProviderServiceServer;
+use synctv_proto::providers::synology::synology_provider_service_server::SynologyProviderServiceServer;
+use synctv_proto::providers::tiktok::tik_tok_provider_service_server::TikTokProviderServiceServer;
+use synctv_proto::providers::truenas::true_nas_provider_service_server::TrueNasProviderServiceServer;
+use synctv_proto::providers::twitch::twitch_provider_service_server::TwitchProviderServiceServer;
+use synctv_proto::providers::youtube::youtube_provider_service_server::YoutubeProviderServiceServer;
 use synctv_realtime::grpc::RealtimePresenceServiceServer;
 use tonic::codec::CompressionEncoding;
 
@@ -116,17 +144,45 @@ impl_grpc_service_ext!(<T> synctv_proto::client::notification_service_server::No
 impl_grpc_service_ext!(<T> synctv_proto::client::o_auth2_service_server::OAuth2ServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::admin::admin_service_server::AdminServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::acfun::ac_fun_provider_service_server::AcFunProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::cctv::cctv_provider_service_server::CctvProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::cloudreve::cloudreve_provider_service_server::CloudreveProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::common::provider_common_service_server::ProviderCommonServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::twitch::twitch_provider_service_server::TwitchProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::youtube::youtube_provider_service_server::YoutubeProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::douyin::douyin_provider_service_server::DouyinProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::douyu::douyu_provider_service_server::DouyuProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::tiktok::tik_tok_provider_service_server::TikTokProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::fnos::fnos_provider_service_server::FnosProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::huya::huya_provider_service_server::HuyaProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::qnap::qnap_provider_service_server::QnapProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::nextcloud::nextcloud_provider_service_server::NextcloudProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::seafile::seafile_provider_service_server::SeafileProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::synology::synology_provider_service_server::SynologyProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::truenas::true_nas_provider_service_server::TrueNasProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::playback_provider::direct_url::direct_url_playback_provider_service_server::DirectUrlPlaybackProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::playback_provider::alist::alist_playback_provider_service_server::AlistPlaybackProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::playback_provider::emby::emby_playback_provider_service_server::EmbyPlaybackProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::playback_provider::bilibili::bilibili_playback_provider_service_server::BilibiliPlaybackProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::playback_provider::rtmp::rtmp_playback_provider_service_server::RtmpPlaybackProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::playback_provider::live_proxy::live_proxy_playback_provider_service_server::LiveProxyPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::twitch::twitch_playback_provider_service_server::TwitchPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::youtube::youtube_playback_provider_service_server::YoutubePlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::huya::huya_playback_provider_service_server::HuyaPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::douyu::douyu_playback_provider_service_server::DouyuPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::douyin::douyin_playback_provider_service_server::DouyinPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::tiktok::tik_tok_playback_provider_service_server::TikTokPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::acfun::ac_fun_playback_provider_service_server::AcFunPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::cctv::cctv_playback_provider_service_server::CctvPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::fnos::fnos_playback_provider_service_server::FnosPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::qnap::qnap_playback_provider_service_server::QnapPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::nextcloud::nextcloud_playback_provider_service_server::NextcloudPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::seafile::seafile_playback_provider_service_server::SeafilePlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::synology::synology_playback_provider_service_server::SynologyPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::truenas::true_nas_playback_provider_service_server::TrueNasPlaybackProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_livestream::StreamRelayServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_cluster::grpc::ClusterServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_cluster::grpc::ServerStateServiceServer<T>);
@@ -331,12 +387,25 @@ async fn set_registered_grpc_services_with_status(
     );
 
     if state.provider_services_registered {
+        use synctv_proto::providers::acfun::ac_fun_provider_service_server::AcFunProviderServiceServer;
         use synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer;
         use synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer;
+        use synctv_proto::providers::cctv::cctv_provider_service_server::CctvProviderServiceServer;
         use synctv_proto::providers::cloudreve::cloudreve_provider_service_server::CloudreveProviderServiceServer;
         use synctv_proto::providers::common::provider_common_service_server::ProviderCommonServiceServer;
+        use synctv_proto::providers::douyin::douyin_provider_service_server::DouyinProviderServiceServer;
+        use synctv_proto::providers::douyu::douyu_provider_service_server::DouyuProviderServiceServer;
         use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer;
+        use synctv_proto::providers::fnos::fnos_provider_service_server::FnosProviderServiceServer;
+        use synctv_proto::providers::huya::huya_provider_service_server::HuyaProviderServiceServer;
+        use synctv_proto::providers::nextcloud::nextcloud_provider_service_server::NextcloudProviderServiceServer;
+        use synctv_proto::providers::qnap::qnap_provider_service_server::QnapProviderServiceServer;
         use synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer;
+        use synctv_proto::providers::seafile::seafile_provider_service_server::SeafileProviderServiceServer;
+        use synctv_proto::providers::synology::synology_provider_service_server::SynologyProviderServiceServer;
+        use synctv_proto::providers::tiktok::tik_tok_provider_service_server::TikTokProviderServiceServer;
+        use synctv_proto::providers::twitch::twitch_provider_service_server::TwitchProviderServiceServer;
+        use synctv_proto::providers::youtube::youtube_provider_service_server::YoutubeProviderServiceServer;
 
         set_service_status!(
             health_reporter,
@@ -367,6 +436,71 @@ async fn set_registered_grpc_services_with_status(
             health_reporter,
             true,
             RtmpProviderServiceServer<providers::rtmp::RtmpProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            TwitchProviderServiceServer<providers::twitch::TwitchProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            HuyaProviderServiceServer<providers::huya::HuyaProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            DouyuProviderServiceServer<providers::douyu::DouyuProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            AcFunProviderServiceServer<providers::acfun::AcFunProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            CctvProviderServiceServer<providers::cctv::CctvProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            YoutubeProviderServiceServer<providers::youtube::YoutubeProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            DouyinProviderServiceServer<providers::douyin::DouyinProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            TikTokProviderServiceServer<providers::tiktok::TikTokProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            FnosProviderServiceServer<providers::fnos::FnosProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            QnapProviderServiceServer<providers::qnap::QnapProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            NextcloudProviderServiceServer<providers::nextcloud::NextcloudProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            SeafileProviderServiceServer<providers::seafile::SeafileProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            SynologyProviderServiceServer<providers::synology::SynologyProviderGrpcService>
         );
         set_service_status!(
             health_reporter,
@@ -408,6 +542,97 @@ async fn set_registered_grpc_services_with_status(
             true,
             LiveProxyPlaybackProviderServiceServer<
                 playback_provider::live_proxy::LiveProxyPlaybackProviderGrpcService,
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            TwitchPlaybackProviderServiceServer<
+                playback_provider::twitch::TwitchPlaybackProviderGrpcService,
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            YoutubePlaybackProviderServiceServer<
+                playback_provider::youtube::YoutubePlaybackProviderGrpcService,
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            HuyaPlaybackProviderServiceServer<
+                playback_provider::huya::HuyaPlaybackProviderGrpcService,
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            DouyuPlaybackProviderServiceServer<
+                playback_provider::douyu::DouyuPlaybackProviderGrpcService,
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            DouyinPlaybackProviderServiceServer<
+                playback_provider::douyin::DouyinPlaybackProviderGrpcService,
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            TikTokPlaybackProviderServiceServer<
+                playback_provider::tiktok::TikTokPlaybackProviderGrpcService,
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            AcFunPlaybackProviderServiceServer<
+                playback_provider::acfun::AcFunPlaybackProviderGrpcService,
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            CctvPlaybackProviderServiceServer<
+                playback_provider::cctv::CctvPlaybackProviderGrpcService,
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            FnosPlaybackProviderServiceServer<
+                playback_provider::fnos::FnosPlaybackProviderGrpcService,
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            QnapPlaybackProviderServiceServer<
+                playback_provider::qnap::QnapPlaybackProviderGrpcService,
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            NextcloudPlaybackProviderServiceServer<
+                playback_provider::nextcloud::NextcloudPlaybackProviderGrpcService,
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            SeafilePlaybackProviderServiceServer<
+                playback_provider::seafile::SeafilePlaybackProviderGrpcService,
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            SynologyPlaybackProviderServiceServer<
+                playback_provider::synology::SynologyPlaybackProviderGrpcService,
             >
         );
     }
@@ -556,11 +781,40 @@ pub struct GrpcServerOptions<'a> {
     pub rtmp_playback_provider_service: Arc<synctv_core::service::RtmpPlaybackProviderService>,
     pub live_proxy_playback_provider_service:
         Arc<synctv_core::service::LiveProxyPlaybackProviderService>,
+    pub twitch_playback_provider_service: Arc<synctv_core::service::TwitchPlaybackProviderService>,
+    pub youtube_playback_provider_service:
+        Arc<synctv_core::service::YoutubePlaybackProviderService>,
+    pub huya_playback_provider_service: Arc<synctv_core::service::HuyaPlaybackProviderService>,
+    pub douyu_playback_provider_service: Arc<synctv_core::service::DouyuPlaybackProviderService>,
+    pub douyin_playback_provider_service: Arc<synctv_core::service::DouyinPlaybackProviderService>,
+    pub tiktok_playback_provider_service: Arc<synctv_core::service::TikTokPlaybackProviderService>,
+    pub acfun_playback_provider_service: Arc<synctv_core::service::AcFunPlaybackProviderService>,
+    pub cctv_playback_provider_service: Arc<synctv_core::service::CctvPlaybackProviderService>,
+    pub fnos_playback_provider_service: Arc<synctv_core::service::FnosPlaybackProviderService>,
+    pub qnap_playback_provider_service: Arc<synctv_core::service::QnapPlaybackProviderService>,
+    pub synology_playback_provider_service:
+        Arc<synctv_core::service::SynologyPlaybackProviderService>,
+    pub nextcloud_playback_provider_service:
+        Arc<synctv_core::service::NextcloudPlaybackProviderService>,
+    pub seafile_playback_provider_service:
+        Arc<synctv_core::service::SeafilePlaybackProviderService>,
+    pub truenas_playback_provider_service:
+        Arc<synctv_core::service::TrueNasPlaybackProviderService>,
     pub provider_common_api: Arc<crate::impls::ProviderCommonApiImpl>,
     pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
     pub alist_api: Arc<crate::impls::AlistApiImpl>,
     pub emby_api: Arc<crate::impls::EmbyApiImpl>,
     pub cloudreve_api: Arc<crate::impls::CloudreveApiImpl>,
+    pub twitch_api: Arc<crate::impls::TwitchApiImpl>,
+    pub youtube_api: Arc<crate::impls::YoutubeApiImpl>,
+    pub douyin_api: Arc<crate::impls::DouyinApiImpl>,
+    pub tiktok_api: Arc<crate::impls::TikTokApiImpl>,
+    pub fnos_api: Arc<crate::impls::FnosApiImpl>,
+    pub qnap_api: Arc<crate::impls::QnapApiImpl>,
+    pub synology_api: Arc<crate::impls::SynologyApiImpl>,
+    pub nextcloud_api: Arc<crate::impls::NextcloudApiImpl>,
+    pub seafile_api: Arc<crate::impls::SeafileApiImpl>,
+    pub truenas_api: Arc<crate::impls::TrueNasApiImpl>,
     pub proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
     pub ssrf_guard: synctv_common::ssrf::SsrfGuard,
     pub proxy_http_client: reqwest::Client,
@@ -635,11 +889,36 @@ struct FallbackHttpAppStateDeps {
     rtmp_playback_provider_service: Arc<synctv_core::service::RtmpPlaybackProviderService>,
     live_proxy_playback_provider_service:
         Arc<synctv_core::service::LiveProxyPlaybackProviderService>,
+    twitch_playback_provider_service: Arc<synctv_core::service::TwitchPlaybackProviderService>,
+    youtube_playback_provider_service: Arc<synctv_core::service::YoutubePlaybackProviderService>,
+    huya_playback_provider_service: Arc<synctv_core::service::HuyaPlaybackProviderService>,
+    douyu_playback_provider_service: Arc<synctv_core::service::DouyuPlaybackProviderService>,
+    douyin_playback_provider_service: Arc<synctv_core::service::DouyinPlaybackProviderService>,
+    tiktok_playback_provider_service: Arc<synctv_core::service::TikTokPlaybackProviderService>,
+    acfun_playback_provider_service: Arc<synctv_core::service::AcFunPlaybackProviderService>,
+    cctv_playback_provider_service: Arc<synctv_core::service::CctvPlaybackProviderService>,
+    fnos_playback_provider_service: Arc<synctv_core::service::FnosPlaybackProviderService>,
+    qnap_playback_provider_service: Arc<synctv_core::service::QnapPlaybackProviderService>,
+    synology_playback_provider_service: Arc<synctv_core::service::SynologyPlaybackProviderService>,
+    nextcloud_playback_provider_service:
+        Arc<synctv_core::service::NextcloudPlaybackProviderService>,
+    seafile_playback_provider_service: Arc<synctv_core::service::SeafilePlaybackProviderService>,
+    truenas_playback_provider_service: Arc<synctv_core::service::TrueNasPlaybackProviderService>,
     provider_common_api: Arc<crate::impls::ProviderCommonApiImpl>,
     bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
     alist_api: Arc<crate::impls::AlistApiImpl>,
     emby_api: Arc<crate::impls::EmbyApiImpl>,
+    tiktok_api: Arc<crate::impls::TikTokApiImpl>,
     cloudreve_api: Arc<crate::impls::CloudreveApiImpl>,
+    twitch_api: Arc<crate::impls::TwitchApiImpl>,
+    youtube_api: Arc<crate::impls::YoutubeApiImpl>,
+    douyin_api: Arc<crate::impls::DouyinApiImpl>,
+    fnos_api: Arc<crate::impls::FnosApiImpl>,
+    qnap_api: Arc<crate::impls::QnapApiImpl>,
+    synology_api: Arc<crate::impls::SynologyApiImpl>,
+    nextcloud_api: Arc<crate::impls::NextcloudApiImpl>,
+    seafile_api: Arc<crate::impls::SeafileApiImpl>,
+    truenas_api: Arc<crate::impls::TrueNasApiImpl>,
     proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
     proxy_http_client: reqwest::Client,
@@ -701,11 +980,35 @@ fn build_fallback_http_app_state(
             emby_playback_provider_service: deps.emby_playback_provider_service,
             rtmp_playback_provider_service: deps.rtmp_playback_provider_service,
             live_proxy_playback_provider_service: deps.live_proxy_playback_provider_service,
+            twitch_playback_provider_service: deps.twitch_playback_provider_service,
+            youtube_playback_provider_service: deps.youtube_playback_provider_service,
+            huya_playback_provider_service: deps.huya_playback_provider_service,
+            douyu_playback_provider_service: deps.douyu_playback_provider_service,
+            douyin_playback_provider_service: deps.douyin_playback_provider_service,
+            tiktok_playback_provider_service: deps.tiktok_playback_provider_service,
+            acfun_playback_provider_service: deps.acfun_playback_provider_service,
+            cctv_playback_provider_service: deps.cctv_playback_provider_service,
+            fnos_playback_provider_service: deps.fnos_playback_provider_service,
+            qnap_playback_provider_service: deps.qnap_playback_provider_service,
+            synology_playback_provider_service: deps.synology_playback_provider_service,
+            nextcloud_playback_provider_service: deps.nextcloud_playback_provider_service,
+            seafile_playback_provider_service: deps.seafile_playback_provider_service,
+            truenas_playback_provider_service: deps.truenas_playback_provider_service,
             provider_common_api: deps.provider_common_api,
             bilibili_api: deps.bilibili_api,
             alist_api: deps.alist_api,
             emby_api: deps.emby_api,
             cloudreve_api: deps.cloudreve_api,
+            twitch_api: deps.twitch_api,
+            youtube_api: deps.youtube_api,
+            douyin_api: deps.douyin_api,
+            tiktok_api: deps.tiktok_api,
+            fnos_api: deps.fnos_api,
+            qnap_api: deps.qnap_api,
+            synology_api: deps.synology_api,
+            nextcloud_api: deps.nextcloud_api,
+            seafile_api: deps.seafile_api,
+            truenas_api: deps.truenas_api,
             shared_proxy_signing_key: deps.proxy_signing_key,
             builtin_stun_url: deps.builtin_stun_url,
             webrtc_status: deps.webrtc_status,
@@ -774,11 +1077,35 @@ async fn build_axum_router_with_health(
         emby_playback_provider_service,
         rtmp_playback_provider_service,
         live_proxy_playback_provider_service,
+        twitch_playback_provider_service,
+        youtube_playback_provider_service,
+        huya_playback_provider_service,
+        douyu_playback_provider_service,
+        douyin_playback_provider_service,
+        tiktok_playback_provider_service,
+        acfun_playback_provider_service,
+        cctv_playback_provider_service,
+        fnos_playback_provider_service,
+        qnap_playback_provider_service,
+        synology_playback_provider_service,
+        nextcloud_playback_provider_service,
+        seafile_playback_provider_service,
+        truenas_playback_provider_service,
         provider_common_api,
         bilibili_api,
         alist_api,
         emby_api,
         cloudreve_api,
+        twitch_api,
+        youtube_api,
+        douyin_api,
+        tiktok_api,
+        fnos_api,
+        qnap_api,
+        synology_api,
+        nextcloud_api,
+        seafile_api,
+        truenas_api,
         proxy_slice_cache,
         ssrf_guard,
         proxy_http_client,
@@ -845,11 +1172,35 @@ async fn build_axum_router_with_health(
             emby_playback_provider_service: emby_playback_provider_service.clone(),
             rtmp_playback_provider_service: rtmp_playback_provider_service.clone(),
             live_proxy_playback_provider_service: live_proxy_playback_provider_service.clone(),
+            twitch_playback_provider_service: twitch_playback_provider_service.clone(),
+            youtube_playback_provider_service: youtube_playback_provider_service.clone(),
+            huya_playback_provider_service: huya_playback_provider_service.clone(),
+            douyu_playback_provider_service: douyu_playback_provider_service.clone(),
+            douyin_playback_provider_service: douyin_playback_provider_service.clone(),
+            tiktok_playback_provider_service: tiktok_playback_provider_service.clone(),
+            acfun_playback_provider_service: acfun_playback_provider_service.clone(),
+            cctv_playback_provider_service: cctv_playback_provider_service.clone(),
+            fnos_playback_provider_service: fnos_playback_provider_service.clone(),
+            qnap_playback_provider_service: qnap_playback_provider_service.clone(),
+            synology_playback_provider_service: synology_playback_provider_service.clone(),
+            nextcloud_playback_provider_service: nextcloud_playback_provider_service.clone(),
+            seafile_playback_provider_service: seafile_playback_provider_service.clone(),
+            truenas_playback_provider_service: truenas_playback_provider_service.clone(),
             provider_common_api: provider_common_api.clone(),
             bilibili_api: bilibili_api.clone(),
             alist_api: alist_api.clone(),
             emby_api: emby_api.clone(),
             cloudreve_api: cloudreve_api.clone(),
+            twitch_api: twitch_api.clone(),
+            youtube_api: youtube_api.clone(),
+            douyin_api: douyin_api.clone(),
+            tiktok_api: tiktok_api.clone(),
+            fnos_api: fnos_api.clone(),
+            qnap_api: qnap_api.clone(),
+            synology_api: synology_api.clone(),
+            nextcloud_api: nextcloud_api.clone(),
+            seafile_api: seafile_api.clone(),
+            truenas_api: truenas_api.clone(),
             proxy_slice_cache: proxy_slice_cache.clone(),
             ssrf_guard: ssrf_guard.clone(),
             proxy_http_client: proxy_http_client.clone(),
@@ -1241,6 +1592,164 @@ async fn build_axum_router_with_health(
             ),
         );
         routes.add_service(
+            TwitchProviderServiceServer::new(providers::twitch::TwitchProviderGrpcService::new(
+                &shared_api_runtime,
+                shared_api_runtime.request_executor.clone(),
+                Arc::new(runtime_settings.clone()),
+            ))
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            HuyaProviderServiceServer::new(providers::huya::HuyaProviderGrpcService::new(
+                &shared_api_runtime,
+                shared_api_runtime.request_executor.clone(),
+                Arc::new(runtime_settings.clone()),
+            ))
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            DouyuProviderServiceServer::new(providers::douyu::DouyuProviderGrpcService::new(
+                &shared_api_runtime,
+                shared_api_runtime.request_executor.clone(),
+                Arc::new(runtime_settings.clone()),
+            ))
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            AcFunProviderServiceServer::new(providers::acfun::AcFunProviderGrpcService::new(
+                &shared_api_runtime,
+                shared_api_runtime.request_executor.clone(),
+                Arc::new(runtime_settings.clone()),
+            ))
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            CctvProviderServiceServer::new(providers::cctv::CctvProviderGrpcService::new(
+                &shared_api_runtime,
+                shared_api_runtime.request_executor.clone(),
+                Arc::new(runtime_settings.clone()),
+            ))
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            YoutubeProviderServiceServer::new(providers::youtube::YoutubeProviderGrpcService::new(
+                &shared_api_runtime,
+                shared_api_runtime.request_executor.clone(),
+                Arc::new(runtime_settings.clone()),
+            ))
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            DouyinProviderServiceServer::new(providers::douyin::DouyinProviderGrpcService::new(
+                &shared_api_runtime,
+                shared_api_runtime.request_executor.clone(),
+                Arc::new(runtime_settings.clone()),
+            ))
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            TikTokProviderServiceServer::new(providers::tiktok::TikTokProviderGrpcService::new(
+                &shared_api_runtime,
+                shared_api_runtime.request_executor.clone(),
+                Arc::new(runtime_settings.clone()),
+            ))
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            FnosProviderServiceServer::new(providers::fnos::FnosProviderGrpcService::new(
+                &shared_api_runtime,
+                shared_api_runtime.request_executor.clone(),
+                Arc::new(runtime_settings.clone()),
+            ))
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            QnapProviderServiceServer::new(providers::qnap::QnapProviderGrpcService::new(
+                &shared_api_runtime,
+                shared_api_runtime.request_executor.clone(),
+                Arc::new(runtime_settings.clone()),
+            ))
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            NextcloudProviderServiceServer::new(
+                providers::nextcloud::NextcloudProviderGrpcService::new(
+                    &shared_api_runtime,
+                    shared_api_runtime.request_executor.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            SeafileProviderServiceServer::new(providers::seafile::SeafileProviderGrpcService::new(
+                &shared_api_runtime,
+                shared_api_runtime.request_executor.clone(),
+                Arc::new(runtime_settings.clone()),
+            ))
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            TrueNasProviderServiceServer::new(providers::truenas::TrueNasProviderGrpcService::new(
+                &shared_api_runtime,
+                shared_api_runtime.request_executor.clone(),
+                Arc::new(runtime_settings.clone()),
+            ))
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            SynologyProviderServiceServer::new(
+                providers::synology::SynologyProviderGrpcService::new(
+                    &shared_api_runtime,
+                    shared_api_runtime.request_executor.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
             DirectUrlPlaybackProviderServiceServer::new(
                 playback_provider::direct_url::DirectUrlPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
@@ -1303,6 +1812,174 @@ async fn build_axum_router_with_health(
         routes.add_service(
             LiveProxyPlaybackProviderServiceServer::new(
                 playback_provider::live_proxy::LiveProxyPlaybackProviderGrpcService::new(
+                    playback_provider_state.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            TwitchPlaybackProviderServiceServer::new(
+                playback_provider::twitch::TwitchPlaybackProviderGrpcService::new(
+                    playback_provider_state.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            YoutubePlaybackProviderServiceServer::new(
+                playback_provider::youtube::YoutubePlaybackProviderGrpcService::new(
+                    playback_provider_state.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            DouyinPlaybackProviderServiceServer::new(
+                playback_provider::douyin::DouyinPlaybackProviderGrpcService::new(
+                    playback_provider_state.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            TikTokPlaybackProviderServiceServer::new(
+                playback_provider::tiktok::TikTokPlaybackProviderGrpcService::new(
+                    playback_provider_state.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            HuyaPlaybackProviderServiceServer::new(
+                playback_provider::huya::HuyaPlaybackProviderGrpcService::new(
+                    playback_provider_state.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            DouyuPlaybackProviderServiceServer::new(
+                playback_provider::douyu::DouyuPlaybackProviderGrpcService::new(
+                    playback_provider_state.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            AcFunPlaybackProviderServiceServer::new(
+                playback_provider::acfun::AcFunPlaybackProviderGrpcService::new(
+                    playback_provider_state.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            CctvPlaybackProviderServiceServer::new(
+                playback_provider::cctv::CctvPlaybackProviderGrpcService::new(
+                    playback_provider_state.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            FnosPlaybackProviderServiceServer::new(
+                playback_provider::fnos::FnosPlaybackProviderGrpcService::new(
+                    playback_provider_state.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            QnapPlaybackProviderServiceServer::new(
+                playback_provider::qnap::QnapPlaybackProviderGrpcService::new(
+                    playback_provider_state.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            NextcloudPlaybackProviderServiceServer::new(
+                playback_provider::nextcloud::NextcloudPlaybackProviderGrpcService::new(
+                    playback_provider_state.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            SeafilePlaybackProviderServiceServer::new(
+                playback_provider::seafile::SeafilePlaybackProviderGrpcService::new(
+                    playback_provider_state.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            TrueNasPlaybackProviderServiceServer::new(
+                playback_provider::truenas::TrueNasPlaybackProviderGrpcService::new(
+                    playback_provider_state.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
+            SynologyPlaybackProviderServiceServer::new(
+                playback_provider::synology::SynologyPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
                     Arc::new(runtime_settings.clone()),
                 ),
@@ -1996,6 +2673,10 @@ mod tests {
                 room_service: context.room_service.clone(),
                 permission_service: context.room_service.permission_service().clone(),
                 credential_encryption: None,
+                playback_session_repo:
+                    synctv_core::repository::ProviderPlaybackSessionRepository::new(
+                        context.credential_repo.pool().clone(),
+                    ),
                 credential_repo: context.credential_repo.clone(),
                 provider_access_service: provider_access_service.clone(),
             });
@@ -2022,8 +2703,58 @@ mod tests {
         let rtmp_playback_provider_service = Arc::new(
             synctv_core::service::RtmpPlaybackProviderService::new(playback_provider_deps.clone()),
         );
-        let live_proxy_playback_provider_service = Arc::new(
-            synctv_core::service::LiveProxyPlaybackProviderService::new(playback_provider_deps),
+        let live_proxy_playback_provider_service =
+            Arc::new(synctv_core::service::LiveProxyPlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let twitch_playback_provider_service =
+            Arc::new(synctv_core::service::TwitchPlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let huya_playback_provider_service = Arc::new(
+            synctv_core::service::HuyaPlaybackProviderService::new(playback_provider_deps.clone()),
+        );
+        let douyu_playback_provider_service = Arc::new(
+            synctv_core::service::DouyuPlaybackProviderService::new(playback_provider_deps.clone()),
+        );
+        let acfun_playback_provider_service = Arc::new(
+            synctv_core::service::AcFunPlaybackProviderService::new(playback_provider_deps.clone()),
+        );
+        let cctv_playback_provider_service = Arc::new(
+            synctv_core::service::CctvPlaybackProviderService::new(playback_provider_deps.clone()),
+        );
+        let fnos_playback_provider_service = Arc::new(
+            synctv_core::service::FnosPlaybackProviderService::new(playback_provider_deps.clone()),
+        );
+        let qnap_playback_provider_service = Arc::new(
+            synctv_core::service::QnapPlaybackProviderService::new(playback_provider_deps.clone()),
+        );
+        let synology_playback_provider_service =
+            Arc::new(synctv_core::service::SynologyPlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let nextcloud_playback_provider_service =
+            Arc::new(synctv_core::service::NextcloudPlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let seafile_playback_provider_service =
+            Arc::new(synctv_core::service::SeafilePlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let truenas_playback_provider_service =
+            Arc::new(synctv_core::service::TrueNasPlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let youtube_playback_provider_service =
+            Arc::new(synctv_core::service::YoutubePlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let douyin_playback_provider_service =
+            Arc::new(synctv_core::service::DouyinPlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let tiktok_playback_provider_service = Arc::new(
+            synctv_core::service::TikTokPlaybackProviderService::new(playback_provider_deps),
         );
         let ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService> =
             Arc::new(synctv_core::service::WsTicketService::local_only(None));
@@ -2130,6 +2861,46 @@ mod tests {
         ));
         let cloudreve_api = Arc::new(CloudreveApiImpl::new(
             credential_backed_providers.cloudreve.clone(),
+            event_service.clone(),
+        ));
+        let twitch_api = Arc::new(crate::impls::TwitchApiImpl::new(
+            credential_backed_providers.twitch.clone(),
+            event_service.clone(),
+        ));
+        let youtube_api = Arc::new(crate::impls::YoutubeApiImpl::new(
+            credential_backed_providers.youtube.clone(),
+            event_service.clone(),
+        ));
+        let douyin_api = Arc::new(crate::impls::DouyinApiImpl::new(
+            credential_backed_providers.douyin.clone(),
+            event_service.clone(),
+        ));
+        let tiktok_api = Arc::new(crate::impls::TikTokApiImpl::new(
+            credential_backed_providers.tiktok.clone(),
+            event_service.clone(),
+        ));
+        let fnos_api = Arc::new(crate::impls::FnosApiImpl::new(
+            credential_backed_providers.fnos.clone(),
+            event_service.clone(),
+        ));
+        let qnap_api = Arc::new(crate::impls::QnapApiImpl::new(
+            credential_backed_providers.qnap.clone(),
+            event_service.clone(),
+        ));
+        let synology_api = Arc::new(crate::impls::SynologyApiImpl::new(
+            credential_backed_providers.synology.clone(),
+            event_service.clone(),
+        ));
+        let nextcloud_api = Arc::new(crate::impls::NextcloudApiImpl::new(
+            credential_backed_providers.nextcloud.clone(),
+            event_service.clone(),
+        ));
+        let seafile_api = Arc::new(crate::impls::SeafileApiImpl::new(
+            credential_backed_providers.seafile.clone(),
+            event_service.clone(),
+        ));
+        let truenas_api = Arc::new(crate::impls::TrueNasApiImpl::new(
+            credential_backed_providers.truenas.clone(),
             event_service.clone(),
         ));
         let presence_service = Arc::new(synctv_core::service::OnlinePresenceService::local());
@@ -2247,11 +3018,35 @@ mod tests {
                 emby_playback_provider_service: emby_playback_provider_service.clone(),
                 rtmp_playback_provider_service: rtmp_playback_provider_service.clone(),
                 live_proxy_playback_provider_service: live_proxy_playback_provider_service.clone(),
+                twitch_playback_provider_service: twitch_playback_provider_service.clone(),
+                youtube_playback_provider_service: youtube_playback_provider_service.clone(),
+                huya_playback_provider_service: huya_playback_provider_service.clone(),
+                douyu_playback_provider_service: douyu_playback_provider_service.clone(),
+                douyin_playback_provider_service: douyin_playback_provider_service.clone(),
+                tiktok_playback_provider_service: tiktok_playback_provider_service.clone(),
+                acfun_playback_provider_service: acfun_playback_provider_service.clone(),
+                cctv_playback_provider_service: cctv_playback_provider_service.clone(),
+                fnos_playback_provider_service: fnos_playback_provider_service.clone(),
+                qnap_playback_provider_service: qnap_playback_provider_service.clone(),
+                synology_playback_provider_service: synology_playback_provider_service.clone(),
+                nextcloud_playback_provider_service: nextcloud_playback_provider_service.clone(),
+                seafile_playback_provider_service: seafile_playback_provider_service.clone(),
+                truenas_playback_provider_service: truenas_playback_provider_service.clone(),
                 provider_common_api: provider_common_api.clone(),
                 bilibili_api: bilibili_api.clone(),
                 alist_api: alist_api.clone(),
                 emby_api: emby_api.clone(),
                 cloudreve_api: cloudreve_api.clone(),
+                twitch_api: twitch_api.clone(),
+                youtube_api: youtube_api.clone(),
+                douyin_api: douyin_api.clone(),
+                tiktok_api: tiktok_api.clone(),
+                fnos_api: fnos_api.clone(),
+                qnap_api: qnap_api.clone(),
+                synology_api: synology_api.clone(),
+                nextcloud_api: nextcloud_api.clone(),
+                seafile_api: seafile_api.clone(),
+                truenas_api: truenas_api.clone(),
                 proxy_slice_cache: proxy_slice_cache.clone(),
                 ssrf_guard: ssrf_guard.clone(),
                 proxy_http_client: proxy_http_client.clone(),

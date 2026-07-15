@@ -25,7 +25,7 @@ const MAIN_PBJSON_PREFIXES: [&str; 5] = [
     ".synctv.admin",
 ];
 
-const PROVIDER_PROTO_FILES: [&str; 12] = [
+const PROVIDER_PROTO_FILES: [&str; 40] = [
     "proto/providers/bilibili.proto",
     "proto/providers/bilibili_service.proto",
     "proto/providers/alist.proto",
@@ -38,18 +38,60 @@ const PROVIDER_PROTO_FILES: [&str; 12] = [
     "proto/providers/rtmp_service.proto",
     "proto/providers/cloudreve.proto",
     "proto/providers/cloudreve_service.proto",
+    "proto/providers/twitch.proto",
+    "proto/providers/twitch_service.proto",
+    "proto/providers/huya.proto",
+    "proto/providers/huya_service.proto",
+    "proto/providers/douyu.proto",
+    "proto/providers/douyu_service.proto",
+    "proto/providers/acfun.proto",
+    "proto/providers/acfun_service.proto",
+    "proto/providers/cctv.proto",
+    "proto/providers/cctv_service.proto",
+    "proto/providers/youtube.proto",
+    "proto/providers/youtube_service.proto",
+    "proto/providers/douyin.proto",
+    "proto/providers/douyin_service.proto",
+    "proto/providers/tiktok.proto",
+    "proto/providers/tiktok_service.proto",
+    "proto/providers/fnos.proto",
+    "proto/providers/fnos_service.proto",
+    "proto/providers/qnap.proto",
+    "proto/providers/qnap_service.proto",
+    "proto/providers/synology.proto",
+    "proto/providers/synology_service.proto",
+    "proto/providers/nextcloud.proto",
+    "proto/providers/nextcloud_service.proto",
+    "proto/providers/seafile.proto",
+    "proto/providers/seafile_service.proto",
+    "proto/providers/truenas.proto",
+    "proto/providers/truenas_service.proto",
 ];
 const PROVIDER_PROTO_INCLUDES: [&str; 1] = ["."];
-const PROVIDER_PBJSON_PREFIXES: [&str; 6] = [
+const PROVIDER_PBJSON_PREFIXES: [&str; 20] = [
     ".synctv.provider.common",
     ".synctv.provider.rtmp",
     ".synctv.provider.bilibili",
     ".synctv.provider.alist",
     ".synctv.provider.emby",
     ".synctv.provider.cloudreve",
+    ".synctv.provider.twitch",
+    ".synctv.provider.huya",
+    ".synctv.provider.douyu",
+    ".synctv.provider.acfun",
+    ".synctv.provider.cctv",
+    ".synctv.provider.youtube",
+    ".synctv.provider.douyin",
+    ".synctv.provider.tiktok",
+    ".synctv.provider.fnos",
+    ".synctv.provider.qnap",
+    ".synctv.provider.synology",
+    ".synctv.provider.nextcloud",
+    ".synctv.provider.seafile",
+    ".synctv.provider.truenas",
 ];
 
-const PLAYBACK_PROVIDER_PROTO_FILES: [&str; 7] = [
+const PLAYBACK_PROVIDER_PROTO_FILES: [&str; 21] = [
     "proto/playback_provider/common.proto",
     "proto/playback_provider/direct_url.proto",
     "proto/playback_provider/alist.proto",
@@ -57,6 +99,20 @@ const PLAYBACK_PROVIDER_PROTO_FILES: [&str; 7] = [
     "proto/playback_provider/bilibili.proto",
     "proto/playback_provider/rtmp.proto",
     "proto/playback_provider/live_proxy.proto",
+    "proto/playback_provider/twitch.proto",
+    "proto/playback_provider/youtube.proto",
+    "proto/playback_provider/huya.proto",
+    "proto/playback_provider/douyu.proto",
+    "proto/playback_provider/douyin.proto",
+    "proto/playback_provider/tiktok.proto",
+    "proto/playback_provider/acfun.proto",
+    "proto/playback_provider/cctv.proto",
+    "proto/playback_provider/fnos.proto",
+    "proto/playback_provider/qnap.proto",
+    "proto/playback_provider/synology.proto",
+    "proto/playback_provider/nextcloud.proto",
+    "proto/playback_provider/seafile.proto",
+    "proto/playback_provider/truenas.proto",
 ];
 const PLAYBACK_PROVIDER_PROTO_INCLUDES: [&str; 1] = ["."];
 const PLAYBACK_PROVIDER_PBJSON_PREFIXES: [&str; 1] = [".synctv.playback_provider"];
@@ -94,9 +150,153 @@ fn match_count_as_i32(line: &str, needle: char) -> Result<i32, Box<dyn std::erro
     Ok(i32::try_from(line.matches(needle).count())?)
 }
 
+#[derive(Clone, Copy)]
+enum OpenApiSchemaKind {
+    Message,
+    Enum,
+}
+
+struct OpenApiSchemaAlias {
+    path: String,
+    attribute: String,
+    kind: OpenApiSchemaKind,
+}
+
+fn proto_type_declaration(line: &str) -> Option<(&str, OpenApiSchemaKind)> {
+    line.strip_prefix("message ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(|name| (name, OpenApiSchemaKind::Message))
+        .or_else(|| {
+            line.strip_prefix("enum ")
+                .and_then(|rest| rest.split_whitespace().next())
+                .map(|name| (name, OpenApiSchemaKind::Enum))
+        })
+}
+
+fn proto_named_block(line: &str, keyword: &str) -> Option<String> {
+    line.strip_prefix(keyword)
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(str::to_string)
+}
+
+fn proto_json_name(name: &str) -> String {
+    let mut segments = name.split('_');
+    let mut result = segments.next().unwrap_or_default().to_string();
+    for segment in segments {
+        let mut chars = segment.chars();
+        if let Some(first) = chars.next() {
+            result.extend(first.to_uppercase());
+            result.extend(chars);
+        }
+    }
+    result
+}
+
+fn proto_field_name(line: &str) -> Option<&str> {
+    let declaration = line.split_once('=')?.0.trim();
+    let name = declaration.split_whitespace().last()?;
+    (!name.is_empty()
+        && name
+            .chars()
+            .all(|character| character == '_' || character.is_ascii_alphanumeric()))
+    .then_some(name)
+}
+
+#[derive(Default)]
+struct OpenApiOneofAttributes {
+    fields: Vec<String>,
+    variants: Vec<(String, String)>,
+}
+
+fn collect_openapi_oneof_fields(
+    proto_file: impl AsRef<Path>,
+) -> Result<OpenApiOneofAttributes, Box<dyn std::error::Error>> {
+    let proto_file = proto_file.as_ref();
+    let source = fs::read_to_string(proto_file)?;
+    let package = source
+        .lines()
+        .map(str::trim)
+        .find_map(|line| {
+            line.strip_prefix("package ")
+                .and_then(|rest| rest.strip_suffix(';'))
+        })
+        .ok_or_else(|| format!("missing package declaration in {}", proto_file.display()))?;
+    let mut depth = 0_i32;
+    let mut messages = Vec::<(String, i32)>::new();
+    let mut attributes = OpenApiOneofAttributes::default();
+    let mut oneof: Option<(String, i32)> = None;
+
+    for raw_line in source.lines() {
+        let line = raw_line.trim();
+        if let Some(message_name) = proto_named_block(line, "message ") {
+            messages.push((message_name, depth));
+        } else if let Some(oneof_name) = proto_named_block(line, "oneof ") {
+            if !messages.is_empty() {
+                let message_path = messages
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                attributes
+                    .fields
+                    .push(format!(".{package}.{message_path}.{oneof_name}"));
+                oneof = Some((oneof_name, depth));
+            }
+        } else if let Some((oneof_name, _)) = oneof.as_ref() {
+            if let Some(field_name) = proto_field_name(line) {
+                let message_path = messages
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                attributes.variants.push((
+                    format!(".{package}.{message_path}.{oneof_name}.{field_name}"),
+                    proto_json_name(field_name),
+                ));
+            }
+        }
+
+        depth += match_count_as_i32(raw_line, '{')?;
+        depth -= match_count_as_i32(raw_line, '}')?;
+        if oneof
+            .as_ref()
+            .is_some_and(|(_, parent_depth)| depth <= *parent_depth)
+        {
+            oneof = None;
+        }
+        while messages
+            .last()
+            .is_some_and(|(_, parent_depth)| depth <= *parent_depth)
+        {
+            messages.pop();
+        }
+    }
+
+    Ok(attributes)
+}
+
+fn collect_openapi_oneof_fields_for(
+    proto_files: &[&str],
+) -> Result<OpenApiOneofAttributes, Box<dyn std::error::Error>> {
+    if !feature_enabled("openapi") {
+        return Ok(OpenApiOneofAttributes::default());
+    }
+    let collected = proto_files
+        .iter()
+        .copied()
+        .map(collect_openapi_oneof_fields)
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut merged = OpenApiOneofAttributes::default();
+    for mut attributes in collected {
+        merged.fields.append(&mut attributes.fields);
+        merged.variants.append(&mut attributes.variants);
+    }
+    Ok(merged)
+}
+
 fn collect_openapi_schema_aliases(
     proto_file: impl AsRef<Path>,
-) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+) -> Result<Vec<OpenApiSchemaAlias>, Box<dyn std::error::Error>> {
     let proto_file = proto_file.as_ref();
     let source = fs::read_to_string(proto_file)?;
 
@@ -112,27 +312,38 @@ fn collect_openapi_schema_aliases(
     let package_alias = package.replace('.', "_");
     let mut depth = 0_i32;
     let mut aliases = Vec::new();
+    let mut current_type: Option<(String, OpenApiSchemaKind, bool)> = None;
 
     for raw_line in source.lines() {
         let line = raw_line.trim();
         if depth == 0 {
-            let type_name = line
-                .strip_prefix("message ")
-                .or_else(|| line.strip_prefix("enum "))
-                .and_then(|rest| rest.split_whitespace().next());
-
-            if let Some(type_name) = type_name {
-                let fq_proto_type = format!(".{package}.{type_name}");
-                let schema_alias = format!("{package_alias}_{type_name}");
-                aliases.push((
-                    fq_proto_type,
-                    format!("#[cfg_attr(feature = \"openapi\", schema(as = {schema_alias}))]"),
-                ));
+            if let Some((type_name, kind)) = proto_type_declaration(line) {
+                current_type = Some((type_name.to_string(), kind, false));
+            }
+        } else if proto_type_declaration(line).is_some() {
+            if let Some((_, _, contains_nested_type)) = current_type.as_mut() {
+                *contains_nested_type = true;
             }
         }
 
         depth += match_count_as_i32(raw_line, '{')?;
         depth -= match_count_as_i32(raw_line, '}')?;
+
+        if depth == 0 {
+            if let Some((type_name, kind, contains_nested_type)) = current_type.take() {
+                if !contains_nested_type {
+                    let path = format!(".{package}.{type_name}");
+                    let schema_alias = format!("{package_alias}_{type_name}");
+                    aliases.push(OpenApiSchemaAlias {
+                        path,
+                        attribute: format!(
+                            "#[cfg_attr(feature = \"openapi\", schema(as = {schema_alias}))]"
+                        ),
+                        kind,
+                    });
+                }
+            }
+        }
     }
 
     Ok(aliases)
@@ -140,7 +351,7 @@ fn collect_openapi_schema_aliases(
 
 fn collect_openapi_schema_aliases_for(
     proto_files: &[&str],
-) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+) -> Result<Vec<OpenApiSchemaAlias>, Box<dyn std::error::Error>> {
     proto_files
         .iter()
         .copied()
@@ -151,7 +362,7 @@ fn collect_openapi_schema_aliases_for(
 
 fn collect_openapi_schema_aliases_when_enabled(
     proto_files: &[&str],
-) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+) -> Result<Vec<OpenApiSchemaAlias>, Box<dyn std::error::Error>> {
     if feature_enabled("openapi") {
         collect_openapi_schema_aliases_for(proto_files)
     } else {
@@ -161,7 +372,7 @@ fn collect_openapi_schema_aliases_when_enabled(
 
 fn add_openapi_attrs(
     mut builder: tonic_prost_build::Builder,
-    aliases: &[(String, String)],
+    aliases: &[OpenApiSchemaAlias],
     schema_prefixes: &[&str],
 ) -> tonic_prost_build::Builder {
     for prefix in schema_prefixes {
@@ -179,15 +390,89 @@ fn add_openapi_attrs(
                 "#[cfg_attr(feature = \"openapi\", schema(rename_all = \"camelCase\"))]",
             );
     }
-    for (path, attr) in aliases {
+    for alias in aliases {
         if schema_prefixes
             .iter()
-            .any(|prefix| path.starts_with(*prefix))
+            .any(|prefix| alias.path.starts_with(*prefix))
         {
-            builder = builder.type_attribute(path, attr);
+            builder = match alias.kind {
+                OpenApiSchemaKind::Message => {
+                    builder.message_attribute(&alias.path, &alias.attribute)
+                }
+                OpenApiSchemaKind::Enum => builder.enum_attribute(&alias.path, &alias.attribute),
+            };
         }
     }
     builder
+}
+
+fn add_openapi_oneof_attrs(
+    mut builder: tonic_prost_build::Builder,
+    oneof_attributes: &OpenApiOneofAttributes,
+) -> tonic_prost_build::Builder {
+    for field in &oneof_attributes.fields {
+        let schema_alias = field.trim_start_matches('.').replace('.', "_");
+        builder = builder.type_attribute(
+            field,
+            format!("#[cfg_attr(feature = \"openapi\", schema(as = {schema_alias}))]"),
+        );
+    }
+    for (field, json_name) in &oneof_attributes.variants {
+        builder = builder.field_attribute(
+            field,
+            format!("#[cfg_attr(feature = \"openapi\", serde(rename = \"{json_name}\"))]"),
+        );
+    }
+    builder
+}
+
+fn add_openapi_oneof_flatten_attrs(out_dir: &Path) -> io::Result<()> {
+    if !feature_enabled("openapi") {
+        return Ok(());
+    }
+    for entry in fs::read_dir(out_dir)? {
+        let path = entry?.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if path.is_dir() || !file_name.ends_with(".rs") || file_name.ends_with(".serde.rs") {
+            continue;
+        }
+
+        let source = fs::read_to_string(&path)?;
+        let mut output = Vec::new();
+        let mut in_prost_attribute = false;
+        let mut is_oneof_attribute = false;
+        for line in source.lines() {
+            output.push(line.to_string());
+            let trimmed = line.trim();
+            if trimmed.starts_with("#[prost(") {
+                in_prost_attribute = true;
+                is_oneof_attribute = trimmed.contains("oneof");
+            } else if in_prost_attribute && trimmed.contains("oneof") {
+                is_oneof_attribute = true;
+            }
+
+            if in_prost_attribute && trimmed.ends_with(")]") {
+                if is_oneof_attribute {
+                    let indent = &line[..line.len() - line.trim_start().len()];
+                    output.push(format!(
+                        "{indent}#[cfg_attr(feature = \"openapi\", serde(flatten))]"
+                    ));
+                }
+                in_prost_attribute = false;
+                is_oneof_attribute = false;
+            }
+        }
+        let mut generated = output.join("\n");
+        if source.ends_with('\n') {
+            generated.push('\n');
+        }
+        if generated != source {
+            fs::write(path, generated)?;
+        }
+    }
+    Ok(())
 }
 
 fn add_query_params_attrs(
@@ -506,6 +791,8 @@ fn build_main_protos(protoc: PathBuf, out_dir: &Path) -> Result<(), Box<dyn std:
             ".synctv.admin",
         ],
     );
+    let oneof_fields = collect_openapi_oneof_fields_for(&MAIN_PROTO_FILES[2..])?;
+    builder = add_openapi_oneof_attrs(builder, &oneof_fields);
     builder = add_query_params_attrs(
         builder,
         &[
@@ -558,6 +845,7 @@ fn build_main_protos(protoc: PathBuf, out_dir: &Path) -> Result<(), Box<dyn std:
         &MAIN_PROTO_FILES,
         &MAIN_PROTO_INCLUDES,
     )?;
+    add_openapi_oneof_flatten_attrs(out_dir)?;
     build_pbjson(out_dir, &MAIN_PBJSON_PREFIXES, &[])?;
     Ok(())
 }
@@ -586,6 +874,20 @@ fn build_provider_protos(
         "proto/providers/common.proto",
         "proto/providers/rtmp.proto",
         "proto/providers/cloudreve.proto",
+        "proto/providers/twitch.proto",
+        "proto/providers/huya.proto",
+        "proto/providers/douyu.proto",
+        "proto/providers/acfun.proto",
+        "proto/providers/cctv.proto",
+        "proto/providers/youtube.proto",
+        "proto/providers/douyin.proto",
+        "proto/providers/tiktok.proto",
+        "proto/providers/fnos.proto",
+        "proto/providers/qnap.proto",
+        "proto/providers/synology.proto",
+        "proto/providers/nextcloud.proto",
+        "proto/providers/seafile.proto",
+        "proto/providers/truenas.proto",
     ])?;
     let mut builder = tonic_prost_build::configure()
         .build_server(true)
@@ -601,14 +903,31 @@ fn build_provider_protos(
             ".synctv.provider.alist",
             ".synctv.provider.emby",
             ".synctv.provider.cloudreve",
+            ".synctv.provider.twitch",
+            ".synctv.provider.huya",
+            ".synctv.provider.douyu",
+            ".synctv.provider.acfun",
+            ".synctv.provider.cctv",
+            ".synctv.provider.youtube",
+            ".synctv.provider.douyin",
+            ".synctv.provider.tiktok",
+            ".synctv.provider.fnos",
+            ".synctv.provider.qnap",
+            ".synctv.provider.synology",
+            ".synctv.provider.nextcloud",
+            ".synctv.provider.seafile",
+            ".synctv.provider.truenas",
         ],
     );
+    let oneof_fields = collect_openapi_oneof_fields_for(&PROVIDER_PROTO_FILES)?;
+    builder = add_openapi_oneof_attrs(builder, &oneof_fields);
     builder = add_query_params_attrs(builder, &[".synctv.provider.common.ProviderInstanceQuery"]);
     builder.out_dir(out_dir).compile_with_config(
         prost_config,
         &PROVIDER_PROTO_FILES,
         &PROVIDER_PROTO_INCLUDES,
     )?;
+    add_openapi_oneof_flatten_attrs(out_dir)?;
     build_pbjson(
         out_dir,
         &PROVIDER_PBJSON_PREFIXES,
@@ -639,11 +958,14 @@ fn build_playback_provider_protos(
         .build_client(true)
         .file_descriptor_set_path(out_dir.join("descriptor.bin"));
     builder = add_openapi_attrs(builder, &aliases, &[".synctv.playback_provider"]);
+    let oneof_fields = collect_openapi_oneof_fields_for(&PLAYBACK_PROVIDER_PROTO_FILES)?;
+    builder = add_openapi_oneof_attrs(builder, &oneof_fields);
     builder.out_dir(out_dir).compile_with_config(
         prost_config,
         &PLAYBACK_PROVIDER_PROTO_FILES,
         &PLAYBACK_PROVIDER_PROTO_INCLUDES,
     )?;
+    add_openapi_oneof_flatten_attrs(out_dir)?;
     build_pbjson(out_dir, &PLAYBACK_PROVIDER_PBJSON_PREFIXES, &[])?;
     Ok(())
 }

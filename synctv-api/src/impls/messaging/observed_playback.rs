@@ -10,6 +10,8 @@ use crate::impls::playback::PlaybackService;
 
 const OBSERVED_PLAYBACK_LIFECYCLE_TICK_INTERVAL: Duration = Duration::from_secs(1);
 const OBSERVED_PLAYBACK_LIFECYCLE_CONCURRENCY: usize = 16;
+const PROVIDER_LIFECYCLE_REAPER_TIMEOUT: Duration = Duration::from_secs(10);
+const PROVIDER_LIFECYCLE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone)]
 pub struct ObservedPlaybackLifecycleEvent {
@@ -102,6 +104,15 @@ pub fn spawn_observed_playback_lifecycle_event_source(
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
+                    if tokio::time::timeout(
+                        PROVIDER_LIFECYCLE_REAPER_TIMEOUT,
+                        playback_service.reap_provider_playback_sessions(false),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        tracing::warn!("Provider playback lifecycle reaper timed out");
+                    }
                     publish_observed_playback_lifecycle_events(
                         Arc::clone(&playback_service),
                         subscribers.as_slice(),
@@ -110,6 +121,15 @@ pub fn spawn_observed_playback_lifecycle_event_source(
                 }
                 changed = shutdown_rx.changed() => {
                     if changed.is_err() || *shutdown_rx.borrow() {
+                        if tokio::time::timeout(
+                            PROVIDER_LIFECYCLE_SHUTDOWN_TIMEOUT,
+                            playback_service.reap_provider_playback_sessions(true),
+                        )
+                        .await
+                        .is_err()
+                        {
+                            tracing::warn!("Provider playback lifecycle shutdown cleanup timed out");
+                        }
                         break;
                     }
                 }

@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package acproto;
+
+message CommonNotifySignalLiveManagerState {
+	ManagerState state = 1;
+
+	enum ManagerState {
+		MANAGER_STATE_UNKNOWN = 0;
+		MANAGER_ADDED = 1;
+		MANAGER_REMOVED = 2;
+		IS_MANAGER = 3;
+	}
+}

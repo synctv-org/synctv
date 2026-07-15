@@ -16,6 +16,7 @@ pub struct RoomPlaybackState {
     pub position: f64, // playback position in seconds
     pub speed: f64,    // 0.5, 1.0, 1.5, 2.0, etc.
     pub is_playing: bool,
+    pub playback_generation: i64,
     pub updated_at: DateTime<Utc>,
     pub version: i64, // For optimistic locking
 }
@@ -154,6 +155,7 @@ impl RoomPlaybackState {
             position: 0.0,
             speed: 1.0,
             is_playing: false,
+            playback_generation: 0,
             updated_at: crate::SystemClock.now(),
             version: 0,
         }

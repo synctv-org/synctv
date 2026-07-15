@@ -14,11 +14,14 @@ mod types;
 
 pub use crate::error::ProviderClientError as BilibiliError;
 pub use client::{
-    BilibiliClient, BilibiliEndpoints, DanmakuMessage, HeartbeatConfig, LiveDanmakuConnection,
+    BilibiliClient, BilibiliEndpoints, BilibiliResource, DanmakuMessage, HeartbeatConfig,
+    HistoryCursor, HistoryItem, HistoryPage, HistoryResource, LiveDanmakuConnection,
+    MatchedBilibiliResource, PgcSeasonIndexItem, PgcSeasonIndexPage, PgcTimelineItem,
     ReconnectConfig, ReconnectResult, ReconnectableLiveDanmakuConnection,
 };
 pub use service::{BilibiliInterface, BilibiliLiveDanmakuStream, BilibiliService};
 pub use types::{
+    BilibiliVideoListItem, BilibiliVideoListPage, BilibiliVideoPart, BilibiliVideoParts,
     CodecEntry, DashAudio, DashInfo, DashPgcResp, DashPgcResult, DashVideo, DashVideoData,
     DashVideoResp, Dimension, DurlInfo, Episode, EpisodeId, EpisodeInfo, EpisodePage, FormatEntry,
     GetLiveDanmuInfoResp, GetLiveMasterInfoResp, GetLiveStreamResp, LiveDanmuData, LiveDanmuHost,

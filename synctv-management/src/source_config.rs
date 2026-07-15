@@ -89,7 +89,13 @@ pub(crate) fn emby_playlist_source_config(
             synctv_proto::source_config::playlist_source_config::Provider::Emby(
                 EmbyPlaylistSourceConfig {
                     server_id: trimmed_required("server_id", server_id)?,
-                    item_id: trimmed_required("item_id", item_id)?,
+                    source: Some(
+                        synctv_proto::source_config::emby_playlist_source_config::Source::Folder(
+                            synctv_proto::source_config::EmbyFolderPlaylistSource {
+                                item_id: trimmed_required("item_id", item_id)?,
+                            },
+                        ),
+                    ),
                 },
             ),
         ),

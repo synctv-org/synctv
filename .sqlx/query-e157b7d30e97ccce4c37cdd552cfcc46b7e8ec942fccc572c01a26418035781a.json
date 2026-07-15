@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT playback_generation AS \"playback_generation!\"\n               FROM room_playback_state\n               WHERE room_id = $1\n               FOR SHARE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "playback_generation!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "playback_generation"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e157b7d30e97ccce4c37cdd552cfcc46b7e8ec942fccc572c01a26418035781a"
+}

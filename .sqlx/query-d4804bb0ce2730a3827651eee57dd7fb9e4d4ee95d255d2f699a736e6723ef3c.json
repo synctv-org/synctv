@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT session AS \"session!: ProviderPlaybackSession\"\n               FROM provider_playback_sessions WHERE id = $1 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "session!: ProviderPlaybackSession",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "provider_playback_sessions",
+            "name": "session"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d4804bb0ce2730a3827651eee57dd7fb9e4d4ee95d255d2f699a736e6723ef3c"
+}

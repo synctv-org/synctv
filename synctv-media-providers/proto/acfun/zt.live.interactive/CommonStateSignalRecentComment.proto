@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package acproto;
+
+import "CommonActionSignalComment.proto";
+
+message CommonStateSignalRecentComment {
+	repeated CommonActionSignalComment comment = 1;
+}

@@ -315,6 +315,7 @@ pub(super) async fn apply_delete_entries_impact_in_tx(
                     current_progress_id = NULL,
                     speed = 1.0,
                     is_playing = false,
+                    playback_generation = playback_generation + 1,
                     version = version + 1,
                     updated_at = NOW()
                 FROM current_state
@@ -326,6 +327,7 @@ pub(super) async fn apply_delete_entries_impact_in_tx(
                           state.current_progress_id,
                           state.speed,
                           state.is_playing,
+                          state.playback_generation,
                           state.updated_at,
                           state.version
             )
@@ -337,6 +339,7 @@ pub(super) async fn apply_delete_entries_impact_in_tx(
                    0.0::DOUBLE PRECISION AS "position!",
                    speed AS "speed!",
                    is_playing AS "is_playing!",
+                   playback_generation AS "playback_generation!",
                    updated_at AS "updated_at!",
                    version AS "version!"
             FROM updated"#,

@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package acproto;
+
+import "UserInstance.proto";
+import "SettingInfo.proto";
+import "RequestBasicInfo.proto";
+import "FrontendInfo.proto";
+
+message UpstreamPayload {
+    string command = 1;
+    int64 seqId = 2;
+    uint32 retryCount = 3;
+    bytes payloadData = 4;
+    UserInstance userInstance = 5;
+    int32 errorCode = 6;
+    SettingInfo settingInfo = 7;
+    RequestBasicInfo requestBasicInfo = 8;
+    string subBiz = 9;
+    FrontendInfo frontendInfo = 10;
+    string kpn = 11;
+    bool anonymouseUser = 12;
+    string laneId = 13;
+}

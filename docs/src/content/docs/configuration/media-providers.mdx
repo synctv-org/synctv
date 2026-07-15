@@ -1,16 +1,17 @@
 ---
 title: 媒体 Provider
-description: Alist、Emby 兼容服务、Bilibili 等媒体 Provider 的通用配置方式。
+description: 内置与远程媒体 Provider、请求超时、凭据加密和 Provider instance 的配置方式。
 ---
 
 ## Provider 配置是什么？
 
 Media Provider 是 SyncTV 访问外部媒体来源的方式，例如：
 
-- Alist
-- Emby 兼容服务（Emby/Jellyfin），Provider type 为 `emby`
-- Bilibili
-- 远程 Provider 实例
+- 视频平台：Bilibili、Twitch、YouTube、抖音、TikTok、虎牙、斗鱼、AcFun、CCTV。
+- 媒体服务器与文件服务：Alist、Cloudreve、Emby/Jellyfin。
+- NAS 与私有云：FNOS、QNAP、Synology、Nextcloud、Seafile、TrueNAS。
+- Direct URL、RTMP、live proxy。
+- 远程 Provider instance。
 
 `media_providers` 只配置本进程内置的 local provider adapter。每个 provider 都有明确的配置项：
 
@@ -30,6 +31,14 @@ media_providers:
 远程 Provider instance 不是这个 YAML 对象。它通过管理 API/CLI 持久化到数据库，只保存 SyncTV 连接远程 Provider 所需的连接信息，例如 `endpoint`、`tls`、`jwt_secret`、`custom_ca`、`timeout`、`insecure_tls` 和 `providers`。远程 Provider 自己访问 Alist、Emby 或 Bilibili 所需的配置，应放在远程 Provider 服务自己的部署配置中。
 
 按场景接入 Alist、Emby/Jellyfin、Bilibili、直链、RTMP 或远程 Provider 时，先读 [添加媒体](../../use/media-sources/)。
+
+各 Provider 的绑定方式、资源类型和动态播放列表能力见 [Provider 使用手册](../../use/provider-guide/)。实现与扩展流程见 [Provider 开发指南](../../develop/provider-development/)。
+
+## Provider instance
+
+每个来源都可以指定 Provider instance。空 instance name 表示默认 local instance；具名 instance 可以指向本地独立配置或远程 gRPC backend。管理员通过 Provider instance 管理接口配置 `endpoint`、TLS、认证 secret、超时和允许的 Provider 列表。
+
+用户凭据会保存 `provider_instance_name`。同一个上游服务器通过多个 instance 绑定时会生成独立的凭据作用域。创建媒体和播放列表时，App 会把所选 instance 写入资源绑定，播放、封面和动态列表请求沿用该 instance。
 
 ## 本地 Provider 超时配置
 
@@ -69,6 +78,14 @@ media_providers:
     request_timeout_seconds: 30
     connect_timeout_seconds: 10
 ```
+
+其余内置 Provider 使用相同的 timeout contract。仅启用该 Provider 支持的配置项；协议端点、Cookie、token、账号密码和 API key 通过用户绑定接口持久化。
+
+## Page 与 Cursor 能力
+
+Provider 列表 API 通过 protobuf oneof 返回 page 或 cursor 模式。Cloudreve 会根据服务器能力返回当前模式；Bilibili 历史、Twitch 和 YouTube 使用上游原生 cursor；传统目录和索引通常使用 page/offset。
+
+客户端将 cursor 视为 opaque token。部署者无需配置 cursor 生成规则。
 
 ## Provider 请求头原则
 
@@ -122,5 +139,7 @@ security:
 ## 继续阅读
 
 - [添加媒体](../../use/media-sources/)
+- [Provider 使用手册](../../use/provider-guide/)
+- [Provider 开发指南](../../develop/provider-development/)
 - [播放与代理模型](../../use/playback-and-proxy/)
 - [安全加固与密钥轮换](../../operations/security-hardening-and-rotation/)

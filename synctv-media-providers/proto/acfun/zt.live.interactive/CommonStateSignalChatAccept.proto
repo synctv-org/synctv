@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package acproto;
+
+import "ChatMediaType.proto";
+
+message CommonStateSignalChatAccept {
+	string chatId = 1;
+	ChatMediaType mediaType = 2;
+	string aryaSignalInfo = 3;
+}

@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package synctv.provider.nextcloud;
+
+import "proto/providers/nextcloud.proto";
+
+service NextcloudProviderService {
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc StartLoginFlow(StartLoginFlowRequest) returns (StartLoginFlowResponse);
+  rpc PollLoginFlow(PollLoginFlowRequest) returns (LoginResponse);
+  rpc List(ListRequest) returns (ListResponse);
+  rpc ListFavorites(ListFavoritesRequest) returns (ListResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+}

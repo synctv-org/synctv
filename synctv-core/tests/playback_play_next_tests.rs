@@ -123,8 +123,7 @@ fn alist_target(cursor: &str) -> ProviderTarget {
 fn decode_alist_target(target: &ProviderTarget) -> String {
     match target {
         ProviderTarget::Alist(target) => target.relative_path.clone(),
-        ProviderTarget::Emby(_) => panic!("expected alist target"),
-        ProviderTarget::Cloudreve(_) => panic!("expected alist target"),
+        _ => panic!("expected alist target"),
     }
 }
 
@@ -366,6 +365,7 @@ impl DynamicFolder for TestDynamicProvider {
                     thumbnail: None,
                     description: None,
                     modified_at: None,
+                    source_config: None,
                 },
                 DirectoryItem {
                     name: self
@@ -378,6 +378,7 @@ impl DynamicFolder for TestDynamicProvider {
                     thumbnail: None,
                     description: None,
                     modified_at: None,
+                    source_config: None,
                 },
             ],
             _ => Vec::new(),

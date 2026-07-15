@@ -511,6 +511,13 @@ impl ProviderStoreResolver for ProviderStoreRegistry {
 
 // VersionedPlayback
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VersionedPlaybackContext {
+    pub room_id: crate::models::RoomId,
+    pub playback_generation: i64,
+    pub is_playing: bool,
+}
+
 /// Provider-owned playback result with a stable proxy lookup version.
 ///
 /// Providers cache their raw `PlaybackResult` here, then apply provider-owned
@@ -524,6 +531,7 @@ pub struct VersionedPlayback {
     pub version: String,
     pub result: super::PlaybackResult,
     pub expires_at: i64,
+    pub playback_context: Option<VersionedPlaybackContext>,
 }
 
 impl VersionedPlayback {
@@ -711,6 +719,7 @@ mod tests {
                 metadata: None,
             },
             expires_at: 0, // Already expired
+            playback_context: None,
         };
         assert!(vp.is_expired());
 

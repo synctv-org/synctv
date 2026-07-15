@@ -5,6 +5,8 @@ description: 普通用户和房间管理员如何添加直链、Alist、Emby/Jel
 
 import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
+各视频网站、媒体服务器和 NAS 的绑定、预览、动态播放列表与高级播放能力见 [Provider 使用手册](../provider-guide/)。
+
 ## 先选来源
 
 Provider 是 SyncTV 把外部媒体解析成播放结果的适配层。接入前先回答三个问题：
@@ -15,7 +17,7 @@ Provider 是 SyncTV 把外部媒体解析成播放结果的适配层。接入前
 | 上游是否要求特殊 header 或 Cookie | 决定客户端能否直连，或必须走 SyncTV proxy |
 | 凭据属于用户还是实例 | 决定是否需要用户绑定、Provider instance 或凭据加密 key |
 
-内置 Provider 类型包括 `alist`、`bilibili`、`emby`、`direct-url`、`rtmp` 和 `live-proxy`。远程 Provider instance 用数据库持久化的连接信息接入另一组 Provider 服务，不是 `media_providers` YAML 对象。
+内置 Provider 覆盖视频网站、直播平台、媒体服务器、文件服务、NAS、直链与直播来源。远程 Provider instance 用数据库持久化的连接信息接入另一组 Provider 服务。
 
 ## 添加前检查
 

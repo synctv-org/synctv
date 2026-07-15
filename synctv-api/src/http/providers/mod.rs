@@ -7,14 +7,28 @@
 //!
 //! Playback-provider routes live under `/api/playback-providers`.
 
+pub(crate) mod acfun;
 pub(crate) mod alist;
 pub(crate) mod bilibili;
+pub(crate) mod cctv;
 pub(crate) mod cloudreve;
 pub(crate) mod common;
+pub(crate) mod douyin;
+pub(crate) mod douyu;
 pub(crate) mod emby;
+pub(crate) mod fnos;
+pub(crate) mod huya;
 pub(crate) mod live;
+pub(crate) mod nextcloud;
 pub(crate) mod playback_provider;
+pub(crate) mod qnap;
 pub(crate) mod rtmp;
+pub(crate) mod seafile;
+pub(crate) mod synology;
+pub(crate) mod tiktok;
+pub(crate) mod truenas;
+pub(crate) mod twitch;
+pub(crate) mod youtube;
 
 #[cfg(test)]
 use axum::http::header;

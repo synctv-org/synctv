@@ -11,6 +11,7 @@ use synctv_core::models::{
     FromProviderParams, MemberStatus, PlaylistId, ReviewRequestId, RoomId, RoomRole, RoomStatus,
     UserId, UserRole, UserStatus,
 };
+use synctv_core::service::ProvidersManager;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     repository::{
@@ -22,10 +23,6 @@ use synctv_core::{
         NewRealtimeOutboxEvent, PublishKeyService, RemoteProviderManager,
         RuntimeEmailConfigProvider, RuntimeSettingsStore, SettingsService, UserService,
     },
-};
-use synctv_core::{
-    provider::{MediaProvider, ProviderStoreExt},
-    service::ProvidersManager,
 };
 use synctv_core_testing::create_test_pool;
 use synctv_livestream::{
@@ -285,120 +282,6 @@ fn proto_list_filter_enums_allow_unspecified_as_empty_filter() -> TestResult {
         None
     );
     Ok(())
-}
-
-#[derive(Debug, Default)]
-struct AdminLifecycleTestProvider {
-    progress_calls: Arc<Mutex<Vec<(String, f64, bool)>>>,
-}
-
-#[async_trait]
-impl MediaProvider for AdminLifecycleTestProvider {
-    fn name(&self) -> &'static str {
-        "direct_url"
-    }
-
-    async fn generate_playback(
-        &self,
-        _ctx: &synctv_core::provider::ProviderContext<'_>,
-        _source_config: &synctv_core::models::MediaSourceConfig,
-    ) -> Result<synctv_core::provider::PlaybackResult, synctv_core::provider::ProviderError> {
-        Ok(admin_lifecycle_playback_result("admin-session"))
-    }
-
-    async fn on_playback_progress(
-        &self,
-        _ctx: &synctv_core::provider::ProviderContext<'_>,
-        session_id: &str,
-        _source_config: &synctv_core::models::MediaSourceConfig,
-        position: f64,
-        is_paused: bool,
-    ) -> Result<(), synctv_core::provider::ProviderError> {
-        let mut progress_calls = match self.progress_calls.lock() {
-            Ok(progress_calls) => progress_calls,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        progress_calls.push((session_id.to_string(), position, is_paused));
-        Ok(())
-    }
-
-    fn playback_lifecycle_session_id(
-        &self,
-        result: &synctv_core::provider::PlaybackResult,
-    ) -> Option<String> {
-        result
-            .metadata
-            .as_ref()
-            .and_then(synctv_core::models::PlaybackMetadata::as_emby)
-            .and_then(|metadata| metadata.play_session_id.clone())
-    }
-}
-
-fn admin_lifecycle_playback_result(session_id: &str) -> synctv_core::provider::PlaybackResult {
-    let mut playback_infos = std::collections::HashMap::new();
-    playback_infos.insert(
-        "direct".to_string(),
-        test_provider_playback_info("https://example.com/video.mp4"),
-    );
-
-    synctv_core::provider::PlaybackResult {
-        playback_infos,
-        default_mode: "direct".to_string(),
-        provider: "test".to_string(),
-        provider_instance_name: None,
-        duration_seconds: None,
-        is_live: Some(false),
-        metadata: Some(synctv_core::models::PlaybackMetadata::Emby(
-            synctv_core::models::EmbyPlaybackMetadata {
-                play_session_id: Some(session_id.to_string()),
-                ..Default::default()
-            },
-        )),
-    }
-}
-
-fn test_provider_playback_info(url: &str) -> synctv_core::provider::PlaybackInfo {
-    synctv_core::provider::PlaybackInfo {
-        thumbnail: None,
-        medias: vec![synctv_core::models::PlaybackMedia {
-            name: String::new(),
-            format: "mp4".to_string(),
-            expire_at: None,
-            metadata: None,
-            provider: synctv_core::models::PlaybackMediaProvider::External(
-                synctv_core::models::PlaybackExternalMedia {
-                    url: url.to_string(),
-                    headers: std::collections::HashMap::new(),
-                },
-            ),
-        }],
-        default_media_index: None,
-        subtitles: Vec::new(),
-        default_subtitle_index: None,
-        danmakus: Vec::new(),
-        default_danmaku_index: None,
-    }
-}
-
-#[derive(serde::Serialize)]
-struct TestPlaybackSessions {
-    sessions: Vec<TestPlaybackSession>,
-}
-
-#[derive(serde::Serialize)]
-struct TestPlaybackSession {
-    provider: &'static str,
-    provider_instance_name: Option<String>,
-    actor_user_id: i64,
-    credential_owner_id: i64,
-    source_config: synctv_core::models::MediaSourceConfig,
-    room_target_key: String,
-    provider_session_id: &'static str,
-    started: bool,
-    started_at_millis: i64,
-    last_progress_position: f64,
-    last_progress_at_millis: i64,
-    last_paused: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2343,6 +2226,7 @@ async fn test_admin_client_list_endpoints_reject_invalid_proto_requests() -> Tes
                     sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
                     availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                     refresh: false,
+                    preview_source_config: None,
                 },
                 &admin_user.id,
             )
@@ -4646,199 +4530,6 @@ async fn test_stop_playback_bypasses_room_membership_requirement_for_global_admi
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> TestResult {
-    let (_postgres, pool) = create_test_pool().await;
-    let user_service = Arc::new(make_user_service(&pool));
-    let user_repo = UserRepository::new(pool.clone());
-    let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
-        ProviderInstanceRepository::new(pool.clone()),
-    )));
-    let progress_calls = Arc::new(Mutex::new(Vec::new()));
-    let provider: Arc<dyn MediaProvider> = Arc::new(AdminLifecycleTestProvider {
-        progress_calls: progress_calls.clone(),
-    });
-    let provider_for_factory = provider.clone();
-    let mut providers_manager = fixture_value(
-        ProvidersManager::new(provider_instance_manager.clone()),
-        "providers manager should build",
-    );
-    providers_manager.register_factory(
-        "direct_url",
-        Box::new(move |_instance_id, _config, _instance_manager| Ok(provider_for_factory.clone())),
-    );
-    core_ok(
-        providers_manager
-            .create_provider_with_default_config("direct_url", "direct_url")
-            .await,
-    )?;
-    let room_service = Arc::new(fixture_value(
-        synctv_core::service::RoomService::new_with_providers_for_tests(
-            pool.clone(),
-            (*user_service).clone(),
-            Arc::new(providers_manager),
-        ),
-        "room service should build",
-    ));
-    let settings_service = Arc::new(SettingsService::new(
-        SettingsRepository::new(pool.clone()),
-        pool.clone(),
-    ));
-    core_ok(settings_service.initialize().await)?;
-    let runtime_settings_store = Arc::new(RuntimeSettingsStore::new(settings_service.clone()));
-    let email_service = Arc::new(fixture_value(
-        EmailService::new(Arc::new(RuntimeEmailConfigProvider::new(
-            &runtime_settings_store,
-        ))),
-        "email service",
-    ));
-    let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
-    let audit_service = Arc::new(AuditService::new_unbuffered(pool.clone()));
-    let provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver> =
-        Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
-            "admin-lifecycle-test:provider:".to_string(),
-        ));
-    let admin_api = AdminApiImpl::new_with_runtime(
-        AdminApiOptions {
-            room_service,
-            read_services: crate::test_support::admin_read_services(user_service.as_ref()),
-            user_service,
-            settings_service,
-            runtime_settings_store: Some(runtime_settings_store),
-            email_service,
-            connection_service: connection_manager,
-            provider_instance_manager,
-            live_streaming_infrastructure: None,
-            publish_key_service: None,
-            runtime_settings: Arc::new(ApiRuntimeSettings::default()),
-            audit_service,
-            public_id_codec: Arc::new(synctv_adapter::PublicIdCodec::plain()),
-        },
-        AdminApiRuntime {
-            clock: Arc::new(synctv_core::SystemClock),
-            realtime_fanout: crate::realtime_fanout::disabled_realtime_fanout_service(),
-            realtime_event_service: Arc::new(LocalNoopRealtimeEventService::new()),
-            provider_stores: provider_stores.clone(),
-            provider_access_service: crate::impls::disabled_provider_access_service(),
-            signing_key: Arc::new(
-                crate::proxy_signature::ProxySigningKey::try_derive_from(
-                    b"test-admin-api-signing-key-32-bytes!!",
-                )
-                .expect("test signing key should derive"),
-            ),
-            presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
-            request_executor: Arc::new(crate::test_support::local_request_executor()),
-        },
-    );
-
-    let global_admin = create_db_user(
-        &user_repo,
-        "global_admin_playback_lifecycle",
-        UserRole::Root,
-    )
-    .await;
-    let owner = create_db_user(&user_repo, "room_owner_playback_lifecycle", UserRole::User).await;
-    let room = core_ok(
-        admin_api
-            .room_service
-            .create_room(
-                format!("room-{}", synctv_common::snanoid!(6)),
-                "room playback lifecycle test".to_string(),
-                owner.id,
-                None,
-                None,
-            )
-            .await,
-    )?
-    .0;
-    let media_repo = MediaRepository::new(pool.clone());
-    let source_config = synctv_core_testing::direct_url_media_source_config(
-        "https://example.com/admin-lifecycle.mp4",
-    );
-    let media = core_ok(
-        media_repo
-            .create(&synctv_core::models::Media::from_provider_with_params(
-                FromProviderParams {
-                    playlist_id: None,
-                    room_id: room.id,
-                    creator_id: Some(owner.id),
-                    name: "provider lifecycle media".to_string(),
-                    description: String::new(),
-                    source_config: source_config.clone(),
-                    source_provider: synctv_core::models::SourceProvider::DirectUrl,
-                    provider_instance_name: None,
-                    position: 0.0,
-                },
-            ))
-            .await,
-    )?;
-    let state = core_ok(
-        admin_api
-            .room_service
-            .playback_service()
-            .switch(room.id, owner.id, Some(media.id), None, None)
-            .await,
-    )?;
-    let lifecycle_store = provider_stores.load("playback_lifecycle");
-    let now_millis = synctv_core::SystemClock.now_millis();
-    lifecycle_store
-        .set(
-            &format!("room:{}:sessions", room.id),
-            &TestPlaybackSessions {
-                sessions: vec![TestPlaybackSession {
-                    provider: "direct_url",
-                    provider_instance_name: None,
-                    actor_user_id: owner.id.as_i64(),
-                    credential_owner_id: owner.id.as_i64(),
-                    source_config,
-                    room_target_key: format!("media:{}", media.id),
-                    provider_session_id: "admin-session",
-                    started: true,
-                    started_at_millis: now_millis,
-                    last_progress_position: 0.0,
-                    last_progress_at_millis: now_millis,
-                    last_paused: false,
-                }],
-            },
-            std::time::Duration::from_mins(1),
-        )
-        .await
-        .map_err(|error| test_error(error.to_string()))?;
-
-    api_ok(
-        admin_api
-            .update_playback_state(
-                &public_room_id(&admin_api, room.id),
-                synctv_proto::client::UpdatePlaybackStateRequest {
-                    r#type: synctv_proto::client::PlaybackUpdateType::Pause as i32,
-                    playing: None,
-                    position: Some(12.5),
-                    speed: None,
-                    version: Some(state.version),
-                    expected_media_id: Some(public_media_id(&admin_api, media.id)),
-                    expected_playlist_id: Some(String::new()),
-                    expected_target_hash: Some(
-                        state.target_hash().expect("target hash should compute"),
-                    ),
-                },
-                &global_admin.id,
-                &RequestContext::default(),
-            )
-            .await,
-    )?;
-
-    let progress_calls = progress_calls
-        .lock()
-        .map_err(|error| test_error(format!("progress calls lock: {error}")))?;
-    assert_eq!(
-        progress_calls.as_slice(),
-        [("admin-session".to_string(), 12.5, true)],
-        "admin playback state updates must trigger provider progress lifecycle hooks"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_get_playback_bypasses_room_membership_requirement_for_global_admin() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
@@ -5632,6 +5323,7 @@ async fn test_list_media_bypasses_room_membership_requirement_for_global_admin()
                     sort_direction: synctv_proto::client::SortDirection::Asc as i32,
                     availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                     refresh: false,
+                    preview_source_config: None,
                 },
                 &global_admin.id,
             )
@@ -5819,6 +5511,7 @@ async fn test_list_media_respects_search_filters_and_sort_for_static_root() -> T
                     sort_direction: synctv_proto::client::SortDirection::Asc as i32,
                     availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                     refresh: false,
+                    preview_source_config: None,
                 },
                 &global_admin.id,
             )

@@ -9,7 +9,7 @@ import { Aside, FileTree, Steps } from '@astrojs/starlight/components';
 
 SyncTV 是 Rust workspace，开发时通常需要：
 
-- Rust stable toolchain。
+- Rust nightly toolchain（由仓库根目录的 `rust-toolchain.toml` 管理）。
 - PostgreSQL。
 - Redis。
 - Node.js 和 npm，用于 `docs/` 文档站。
@@ -20,7 +20,7 @@ SyncTV 是 Rust workspace，开发时通常需要：
 
 ```bash
 rustc --version
-cargo --version
+cargo +nightly --version
 docker --version
 docker compose version
 node --version
@@ -84,7 +84,7 @@ make dev-down
 make dev-clean
 ```
 
-开发 Compose 只启动本地依赖服务，SyncTV 后端由宿主机 `cargo run` 启动。
+开发 Compose 只启动本地依赖服务，SyncTV 后端由宿主机 `cargo +nightly run` 启动。
 
 Casdoor/OAuth2 provider 仍然通过 runtime settings 配置。启动 Casdoor 后，在 Casdoor 控制台创建应用，再用 `synctv settings update oauth2` 写入 `oauth2.providers`。
 
@@ -96,7 +96,7 @@ Makefile 已经内置本机运行需要的环境变量：
 make dev-serve
 ```
 
-这个目标会先启动 PostgreSQL 和 Redis，然后用本机 `cargo run` 启动 SyncTV。需要完整依赖时，先运行 `make dev-stack`。
+这个目标会先启动 PostgreSQL 和 Redis，然后用本机 `cargo +nightly run` 启动 SyncTV。需要完整依赖时，先运行 `make dev-stack`。
 开发启动默认使用 `debug` 日志级别，因此会输出 HTTP 请求日志；可通过 `.env.synctv` 中的 `SYNCTV_LOGGING_LEVEL` 覆盖。
 
 后台运行使用同一套开发配置：
@@ -134,13 +134,13 @@ make dev-stop
 3. 校验配置：
 
    ```bash
-   cargo run -p synctv --bin synctv -- config validate
+   cargo +nightly run -p synctv --bin synctv -- config validate
    ```
 
 4. 启动服务：
 
    ```bash
-   cargo run -p synctv --bin synctv -- serve
+   cargo +nightly run -p synctv --bin synctv -- serve
    ```
 
 </Steps>
@@ -148,19 +148,19 @@ make dev-stop
 导出上述环境变量后，也可以直接运行：
 
 ```bash
-cargo run -p synctv --bin synctv -- serve
+cargo +nightly run -p synctv --bin synctv -- serve
 ```
 
 使用指定配置文件：
 
 ```bash
-cargo run -p synctv --bin synctv -- serve --config synctv.yaml
+cargo +nightly run -p synctv --bin synctv -- serve --config synctv.yaml
 ```
 
 只验证配置、不真正启动：
 
 ```bash
-cargo run -p synctv --bin synctv -- serve --config synctv.yaml --dry-run
+cargo +nightly run -p synctv --bin synctv -- serve --config synctv.yaml --dry-run
 ```
 
 ## 配置校验
@@ -168,14 +168,14 @@ cargo run -p synctv --bin synctv -- serve --config synctv.yaml --dry-run
 开发时修改配置结构后，先跑：
 
 ```bash
-cargo run -p synctv --bin synctv -- config --config synctv.yaml validate
+cargo +nightly run -p synctv --bin synctv -- config --config synctv.yaml validate
 ```
 
 查看最终合并后的配置，secret 会被隐藏：
 
 ```bash
-cargo run -p synctv --bin synctv -- config --config synctv.yaml show
-cargo run -p synctv --bin synctv -- config --config synctv.yaml show --output json
+cargo +nightly run -p synctv --bin synctv -- config --config synctv.yaml show
+cargo +nightly run -p synctv --bin synctv -- config --config synctv.yaml show --output json
 ```
 
 配置来源优先级和环境变量规则见 [配置文件如何工作](../../configuration/how-configuration-works/)。
@@ -185,13 +185,13 @@ cargo run -p synctv --bin synctv -- config --config synctv.yaml show --output js
 服务启动阶段会自动执行 embedded SQLx migrations。需要在不启动服务的情况下预检数据库状态时，可以单独执行：
 
 ```bash
-cargo run -p synctv --bin synctv -- db migrate
+cargo +nightly run -p synctv --bin synctv -- db migrate
 ```
 
 检查数据库连接和迁移状态：
 
 ```bash
-cargo run -p synctv --bin synctv -- db status
+cargo +nightly run -p synctv --bin synctv -- db status
 ```
 
 开发中如果数据库状态异常，优先检查：
@@ -215,46 +215,52 @@ cargo run -p synctv --bin synctv -- db status
 
 ## 测试
 
-CI 等价的非 ignored 测试：
+完整 workspace 测试（包含 Testcontainers 和 ignored 集成测试）：
 
 ```bash
-cargo nextest run --workspace --locked --run-ignored default --nff
+make nextest
+```
+
+快速运行非 ignored 测试：
+
+```bash
+cargo +nightly nextest run --workspace --locked --run-ignored default --nff
 ```
 
 文档测试：
 
 ```bash
-cargo test --workspace --doc --locked
+cargo +nightly test --workspace --doc --locked
 ```
 
 需要 Docker/PostgreSQL/Redis 的 ignored 测试：
 
 ```bash
-cargo nextest run --workspace --locked --run-ignored only --nff
+cargo +nightly nextest run --workspace --locked --run-ignored only --nff
 ```
 
 只跑某个 crate：
 
 ```bash
-cargo nextest run -p synctv-api --locked --run-ignored default --nff
+cargo +nightly nextest run -p synctv-api --locked --run-ignored default --nff
 ```
 
 只跑某个测试：
 
 ```bash
-cargo nextest run -p synctv-api test_name --locked --run-ignored default --nff
+cargo +nightly nextest run -p synctv-api test_name --locked --run-ignored default --nff
 ```
 
 格式检查：
 
 ```bash
-cargo fmt --all --check
+cargo +nightly fmt --all --check
 ```
 
 Clippy：
 
 ```bash
-cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo +nightly clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 不要对整个 workspace 使用 `--all-features`：部分 feature 组合是刻意互斥的，
@@ -267,12 +273,12 @@ webpki roots，因为 lettre 编译 rustls 时要求至少启用一个 verifier/
 修改 TLS 相关代码时至少检查 provider 与 root 的四个组合：
 
 ```bash
-cargo check -p synctv --no-default-features --locked
-cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-webpki-roots" --locked
-cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-native-roots" --locked
-cargo check -p synctv --no-default-features --features "tls-ring,tls-webpki-roots" --locked
-cargo check -p synctv --no-default-features --features "tls-ring,tls-native-roots" --locked
-cargo check -p synctv --no-default-features --features "k8s,mimalloc,tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
+cargo +nightly check -p synctv --no-default-features --locked
+cargo +nightly check -p synctv --no-default-features --features "tls-aws-lc,tls-webpki-roots" --locked
+cargo +nightly check -p synctv --no-default-features --features "tls-aws-lc,tls-native-roots" --locked
+cargo +nightly check -p synctv --no-default-features --features "tls-ring,tls-webpki-roots" --locked
+cargo +nightly check -p synctv --no-default-features --features "tls-ring,tls-native-roots" --locked
+cargo +nightly check -p synctv --no-default-features --features "k8s,mimalloc,tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
 ```
 
 如果修改了特定功能，优先跑对应的聚焦测试，再跑更大的测试集。编译通过只是最低检查。
@@ -285,8 +291,9 @@ cargo check -p synctv --no-default-features --features "k8s,mimalloc,tls-aws-lc,
 - 使用 `synctv` CLI 创建用户、房间、Provider、媒体、动态播放列表、RTMP publish key 和播放状态；
 - 使用真实 WebSocket 让房间进入 active 状态；
 - 使用 `curl` 请求每个返回的 direct/proxy URL、manifest、indexed segment、字幕、danmaku、thumbnail 和 Range URL；
-- 覆盖 Direct URL、Alist、Emby、Jellyfin、Bilibili 匿名播放、RTMP、live proxy、HLS、FLV、cache MISS/HIT、URL 过期和资源清理；
+- 覆盖 Direct URL、Alist、Cloudreve、Emby/Jellyfin、Bilibili、Twitch、YouTube、抖音、TikTok、虎牙、斗鱼、AcFun、CCTV、FNOS、QNAP、Synology、Nextcloud、Seafile、TrueNAS、RTMP 和 live proxy；
 - 覆盖动态 playlist 的路径返回、媒体解析、播放、切换、封面/thumbnail 路由和自动切换后的 target 变化；
+- 覆盖 App 的 typed source-config codec、Provider binding、解析/预览、部分选择、动态播放列表创建和播放 mode 选择；
 - RTMP/live proxy 使用真实上游推流，验证 stream info、HLS playlist/segment、FLV、断开后的 idle cleanup；
 - CLI 缺少某个工作流时，先补 `synctv` CLI，再把该工作流纳入手动 E2E。
 
@@ -313,12 +320,12 @@ make dev-up
 local_database_url="postgresql://synctv:synctv@localhost:5432/synctv"
 
 SYNCTV_DATABASE_URL="$local_database_url" \
-cargo run -p synctv --bin synctv -- db migrate
+cargo +nightly run -p synctv --bin synctv -- db migrate
 
 DATABASE_URL="$local_database_url" \
-cargo sqlx prepare --workspace
+cargo +nightly sqlx prepare --workspace
 
-SQLX_OFFLINE=true cargo check --workspace --all-targets
+SQLX_OFFLINE=true cargo +nightly check --workspace --all-targets
 ```
 
 ## OpenAPI 功能
@@ -328,13 +335,13 @@ SQLX_OFFLINE=true cargo check --workspace --all-targets
 常用检查：
 
 ```bash
-cargo check --workspace --all-targets --features openapi
+cargo +nightly check --workspace --all-targets --features openapi
 ```
 
 启动带 Swagger UI 的服务：
 
 ```bash
-cargo run -p synctv --features openapi --bin synctv -- serve
+cargo +nightly run -p synctv --features openapi --bin synctv -- serve
 ```
 
 ## 文档站开发
@@ -378,9 +385,9 @@ SYNCTV_DOCS_SITE=https://example.com SYNCTV_DOCS_BASE=/synctv npm run build
 CLI 定义在 `synctv/src/cli/`。修改命令或参数后至少检查：
 
 ```bash
-cargo run -p synctv --bin synctv -- --help
-cargo run -p synctv --bin synctv -- user --help
-cargo run -p synctv --bin synctv -- provider --help
+cargo +nightly run -p synctv --bin synctv -- --help
+cargo +nightly run -p synctv --bin synctv -- user --help
+cargo +nightly run -p synctv --bin synctv -- provider --help
 ```
 
 如果新增命令，也要更新 [CLI 参考](../../reference/cli/)。

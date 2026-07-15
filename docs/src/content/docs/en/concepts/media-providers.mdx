@@ -9,7 +9,7 @@ SyncTV does not store media files. It resolves external media into playback resu
 
 | Capability | Meaning |
 | --- | --- |
-| Browse and search | List media from Alist, Emby/Jellyfin, Bilibili, remote services, or other backends |
+| Browse and search | List media from video platforms, live platforms, Alist, Cloudreve, Emby/Jellyfin, NAS systems, or remote services |
 | Resolve playback | Return playback URLs, proxy URLs, headers, subtitles, variants, or metadata |
 | Manage credentials | Store tokens, cookies, API keys, or account credentials for upstream services |
 | Expose behavior | Tell clients whether direct play, proxying, Range, livestreaming, or backend features are available |
@@ -40,6 +40,8 @@ HTTP, gRPC, and management APIs treat `PlaybackResult` as the source of truth. T
 | Bilibili | anonymous playback, DASH/MPD proxy default, proxy manifest segments, subtitles, danmaku, thumbnails, cache metadata, CDN headers. |
 | RTMP | publish key, stream info, HLS playlist/segment, FLV, provider-proxy URL, idle cleanup. |
 | live proxy | external RTMP/HTTP-FLV pull, HLS/FLV provider-proxy URL, publisher registration, idle cleanup unregister. |
+| Video platforms | Native quality/CDN choices, subtitles, danmaku or chat, covers, short-lived URL refresh, and account feeds. |
+| NAS/private cloud | File/media-library paths, previews, Range, native transcode/remux, playback progress, and favorite state. |
 
 Every URL returned to clients needs a real request test. When adding a mode, add the resolver, cache hit/expiry handling, URL expiry handling, and manual E2E coverage at the same time.
 
@@ -51,6 +53,11 @@ Every URL returned to clients needs a real request test. When adding a mode, add
 | Alist | Cloud drive and file browsing | Upstream auth, directory permissions, Range support |
 | Emby/Jellyfin | Existing media libraries | Transcoding, subtitles, bitrate, upstream user permissions |
 | Bilibili | Platform video resolving | Cookie, Referer, UA, and upstream policy changes |
+| Twitch/YouTube/Douyin/TikTok | Live, video, channel, and account feeds | OAuth scopes, Cookies, region, and short-lived playback URLs |
+| Huya/Douyu/AcFun/CCTV | Public live and video resolution | Upstream page and signing protocol changes |
+| Cloudreve | Private-cloud files and folders | Servers can use page or cursor pagination |
+| FNOS/QNAP/Synology | NAS files and native media libraries | Firmware, media-service, and transcoding capability differences |
+| Nextcloud/Seafile/TrueNAS | Private-cloud files, favorites, and search | App passwords, library unlock, and storage-path permissions |
 | Remote Provider | Isolating media resolving into another service | Auth, network, and version compatibility |
 | RTMP/live | Room livestreaming | Multi-replica HLS backend or publisher-node proxy |
 
@@ -69,3 +76,5 @@ The verification target is the full `PlaybackResult`: every mode, URL, manifest,
 - Add media by source: [Add Media](../../use/media-sources/).
 - Understand direct/proxy playback: [Playback Model](../playback-model/).
 - Configure Provider behavior: [Media Providers](../../configuration/media-providers/).
+- Use each Provider: [Provider User Guide](../../use/provider-guide/).
+- Develop Providers: [Provider Development Guide](../../develop/provider-development/).

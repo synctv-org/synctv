@@ -3679,6 +3679,7 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
             position: 12.0,
             speed: 1.0,
             is_playing: true,
+            playback_generation: 0,
             updated_at: now(),
             version: 2,
         },
@@ -3792,6 +3793,7 @@ async fn test_observed_playback_ignores_play_pause_state_updates() {
             position: 12.0,
             speed: 1.0,
             is_playing: false,
+            playback_generation: 0,
             updated_at: now(),
             version: 2,
         },
@@ -4110,6 +4112,7 @@ async fn test_playback_auto_advance_subscriber_runs_for_playing_observed_state()
                 position: 11.0,
                 speed: 1.0,
                 is_playing: true,
+                playback_generation: 0,
                 updated_at: now(),
                 version: 1,
             },
@@ -4154,6 +4157,7 @@ async fn test_playback_auto_advance_subscriber_skips_paused_state() {
                 position: 11.0,
                 speed: 1.0,
                 is_playing: false,
+                playback_generation: 0,
                 updated_at: now(),
                 version: 1,
             },
@@ -4764,6 +4768,7 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
             position: 5.0,
             speed: 1.0,
             is_playing: true,
+            playback_generation: 0,
             updated_at: now(),
             version: 2,
         },
@@ -5044,6 +5049,7 @@ async fn test_observe_playlist_items_without_cursor_sends_snapshot_immediately()
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
                 availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
+                preview_source_config: None,
             },
         )),
     }]);
@@ -5120,6 +5126,7 @@ async fn test_observed_playlist_items_batch_coalesces_identical_snapshot_loads()
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
+        preview_source_config: None,
     };
 
     handler
@@ -5415,6 +5422,7 @@ async fn test_observed_playlist_items_refresh_flag_is_not_persisted() {
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: true,
+        preview_source_config: None,
     };
 
     handler
@@ -5471,6 +5479,7 @@ async fn test_resource_event_send_failure_propagates_and_removes_observation() {
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
+        preview_source_config: None,
     };
 
     handler
@@ -5572,6 +5581,7 @@ async fn test_other_subscriber_send_failure_does_not_fail_refresh_caller() {
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
+        preview_source_config: None,
     };
 
     failing_handler
@@ -5659,6 +5669,7 @@ async fn test_stale_refresh_after_unobserve_does_not_send_resource_event() {
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
+        preview_source_config: None,
     };
 
     handler
@@ -5734,6 +5745,7 @@ async fn test_stale_refresh_failure_after_unobserve_does_not_send_observe_error(
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
+        preview_source_config: None,
     };
 
     handler
@@ -5813,6 +5825,7 @@ async fn test_observed_playlist_items_singleflight_coalesces_concurrent_connecti
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
+        preview_source_config: None,
     };
     let message_a = ClientMessage {
         message: Some(observe_playlist_items_message_with_sequence(
@@ -5876,6 +5889,7 @@ async fn test_room_event_refresh_without_durable_cursor_refreshes_best_effort() 
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
+        preview_source_config: None,
     };
 
     handler
@@ -5987,6 +6001,7 @@ async fn test_media_resource_hub_coalesces_event_refresh_and_fans_out() {
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
+        preview_source_config: None,
     };
 
     handler_a
@@ -6129,6 +6144,7 @@ async fn test_media_resource_hub_refresh_dedupe_tracks_subscription_generation()
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
+        preview_source_config: None,
     };
     let request_b = synctv_proto::client::ListPlaylistItemsRequest {
         search: "generation-dedupe-b".to_string(),
@@ -6411,6 +6427,7 @@ async fn test_observe_playlist_items_sends_current_snapshot() {
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
                 availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
+                preview_source_config: None,
             },
         )),
     }]);
@@ -6486,6 +6503,7 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
                 availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
+                preview_source_config: None,
             },
         )),
     }]);
@@ -6894,6 +6912,7 @@ fn test_playback_state_changed_event_conversion() {
             position: 123.456,
             speed: 1.5,
             is_playing: true,
+            playback_generation: 0,
             updated_at: now(),
             version: 7,
         },
@@ -6925,6 +6944,7 @@ fn test_playback_state_changed_event_does_not_validate_direct_message_payload() 
             position: f64::NAN,
             speed: 0.0,
             is_playing: false,
+            playback_generation: 0,
             updated_at: now(),
             version: -1,
         },

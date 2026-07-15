@@ -44,9 +44,13 @@ use futures::StreamExt;
 use std::sync::{Arc, LazyLock};
 use synctv_core::provider::PlaybackTransportServices;
 use synctv_core::service::{
-    AlistPlaybackProviderService, BilibiliPlaybackProviderService,
-    DirectUrlPlaybackProviderService, EmbyPlaybackProviderService,
-    LiveProxyPlaybackProviderService, RoomService, RtmpPlaybackProviderService, UserService,
+    AcFunPlaybackProviderService, AlistPlaybackProviderService, BilibiliPlaybackProviderService,
+    CctvPlaybackProviderService, DirectUrlPlaybackProviderService, DouyuPlaybackProviderService,
+    EmbyPlaybackProviderService, FnosPlaybackProviderService, HuyaPlaybackProviderService,
+    LiveProxyPlaybackProviderService, NextcloudPlaybackProviderService,
+    QnapPlaybackProviderService, RoomService, RtmpPlaybackProviderService,
+    SynologyPlaybackProviderService, TrueNasPlaybackProviderService, TwitchPlaybackProviderService,
+    UserService,
 };
 use synctv_livestream::LiveStreamingInfrastructure;
 use synctv_realtime::fanout::RealtimeEventService;
@@ -308,11 +312,37 @@ pub struct RouterOptions {
     pub emby_playback_provider_service: Arc<EmbyPlaybackProviderService>,
     pub rtmp_playback_provider_service: Arc<RtmpPlaybackProviderService>,
     pub live_proxy_playback_provider_service: Arc<LiveProxyPlaybackProviderService>,
+    pub twitch_playback_provider_service: Arc<TwitchPlaybackProviderService>,
+    pub youtube_playback_provider_service:
+        Arc<synctv_core::service::YoutubePlaybackProviderService>,
+    pub douyin_playback_provider_service: Arc<synctv_core::service::DouyinPlaybackProviderService>,
+    pub tiktok_playback_provider_service: Arc<synctv_core::service::TikTokPlaybackProviderService>,
+    pub huya_playback_provider_service: Arc<HuyaPlaybackProviderService>,
+    pub douyu_playback_provider_service: Arc<DouyuPlaybackProviderService>,
+    pub acfun_playback_provider_service: Arc<AcFunPlaybackProviderService>,
+    pub cctv_playback_provider_service: Arc<CctvPlaybackProviderService>,
+    pub fnos_playback_provider_service: Arc<FnosPlaybackProviderService>,
+    pub qnap_playback_provider_service: Arc<QnapPlaybackProviderService>,
+    pub synology_playback_provider_service: Arc<SynologyPlaybackProviderService>,
+    pub nextcloud_playback_provider_service: Arc<NextcloudPlaybackProviderService>,
+    pub seafile_playback_provider_service:
+        Arc<synctv_core::service::SeafilePlaybackProviderService>,
+    pub truenas_playback_provider_service: Arc<TrueNasPlaybackProviderService>,
     pub provider_common_api: Arc<crate::impls::ProviderCommonApiImpl>,
     pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
     pub alist_api: Arc<crate::impls::AlistApiImpl>,
     pub emby_api: Arc<crate::impls::EmbyApiImpl>,
     pub cloudreve_api: Arc<crate::impls::CloudreveApiImpl>,
+    pub twitch_api: Arc<crate::impls::TwitchApiImpl>,
+    pub youtube_api: Arc<crate::impls::YoutubeApiImpl>,
+    pub douyin_api: Arc<crate::impls::DouyinApiImpl>,
+    pub tiktok_api: Arc<crate::impls::TikTokApiImpl>,
+    pub fnos_api: Arc<crate::impls::FnosApiImpl>,
+    pub qnap_api: Arc<crate::impls::QnapApiImpl>,
+    pub synology_api: Arc<crate::impls::SynologyApiImpl>,
+    pub nextcloud_api: Arc<crate::impls::NextcloudApiImpl>,
+    pub seafile_api: Arc<crate::impls::SeafileApiImpl>,
+    pub truenas_api: Arc<crate::impls::TrueNasApiImpl>,
     /// Shared proxy signing key reused across transports.
     pub shared_proxy_signing_key: Arc<ProxySigningKey>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
@@ -500,6 +530,16 @@ pub(crate) fn build_shared_api_runtime(
         alist_api: options.alist_api.clone(),
         emby_api: options.emby_api.clone(),
         cloudreve_api: options.cloudreve_api.clone(),
+        twitch_api: options.twitch_api.clone(),
+        youtube_api: options.youtube_api.clone(),
+        douyin_api: options.douyin_api.clone(),
+        tiktok_api: options.tiktok_api.clone(),
+        fnos_api: options.fnos_api.clone(),
+        qnap_api: options.qnap_api.clone(),
+        synology_api: options.synology_api.clone(),
+        nextcloud_api: options.nextcloud_api.clone(),
+        seafile_api: options.seafile_api.clone(),
+        truenas_api: options.truenas_api.clone(),
         provider_access_service,
         provider_stores,
         playback_transport_services: options.playback_transport_services.clone(),
@@ -509,6 +549,20 @@ pub(crate) fn build_shared_api_runtime(
         emby_playback_provider_service: options.emby_playback_provider_service.clone(),
         rtmp_playback_provider_service: options.rtmp_playback_provider_service.clone(),
         live_proxy_playback_provider_service: options.live_proxy_playback_provider_service.clone(),
+        twitch_playback_provider_service: options.twitch_playback_provider_service.clone(),
+        youtube_playback_provider_service: options.youtube_playback_provider_service.clone(),
+        douyin_playback_provider_service: options.douyin_playback_provider_service.clone(),
+        tiktok_playback_provider_service: options.tiktok_playback_provider_service.clone(),
+        huya_playback_provider_service: options.huya_playback_provider_service.clone(),
+        douyu_playback_provider_service: options.douyu_playback_provider_service.clone(),
+        acfun_playback_provider_service: options.acfun_playback_provider_service.clone(),
+        cctv_playback_provider_service: options.cctv_playback_provider_service.clone(),
+        fnos_playback_provider_service: options.fnos_playback_provider_service.clone(),
+        qnap_playback_provider_service: options.qnap_playback_provider_service.clone(),
+        synology_playback_provider_service: options.synology_playback_provider_service.clone(),
+        nextcloud_playback_provider_service: options.nextcloud_playback_provider_service.clone(),
+        seafile_playback_provider_service: options.seafile_playback_provider_service.clone(),
+        truenas_playback_provider_service: options.truenas_playback_provider_service.clone(),
         proxy_signing_key,
         webrtc_status: options.webrtc_status.clone(),
         server_state_runtime: Arc::new(crate::status::server_state_runtime_from_router_options(
@@ -1241,6 +1295,233 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
+            "/api/playback-providers/twitch/{version}/resources/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::twitch::get_twitch_resource)
+                .head(providers::playback_provider::twitch::head_twitch_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/twitch/{version}/segments",
+            get(providers::playback_provider::twitch::get_twitch_segment)
+                .head(providers::playback_provider::twitch::head_twitch_segment)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/twitch/{version}/chats/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::twitch::watch_twitch_chat)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/youtube/{version}/resources/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::youtube::get_youtube_resource)
+                .head(providers::playback_provider::youtube::head_youtube_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/youtube/{version}/segments",
+            get(providers::playback_provider::youtube::get_youtube_segment)
+                .head(providers::playback_provider::youtube::head_youtube_segment)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/youtube/{version}/subtitles/{modeName}/{subtitleIndex}",
+            get(providers::playback_provider::youtube::get_youtube_subtitle)
+                .head(providers::playback_provider::youtube::head_youtube_subtitle)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/huya/{version}/resources/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::huya::get_huya_resource)
+                .head(providers::playback_provider::huya::head_huya_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/huya/{version}/segments",
+            get(providers::playback_provider::huya::get_huya_segment)
+                .head(providers::playback_provider::huya::head_huya_segment)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/huya/{version}/danmakus/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::huya::watch_huya_danmaku)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/douyu/{version}/resources/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::douyu::get_douyu_resource)
+                .head(providers::playback_provider::douyu::head_douyu_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/douyin/{version}/resources/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::douyin::get_resource)
+                .head(providers::playback_provider::douyin::head_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/douyin/{version}/segments",
+            get(providers::playback_provider::douyin::get_segment)
+                .head(providers::playback_provider::douyin::head_segment)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/douyin/{version}/danmakus/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::douyin::watch_danmaku)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/tiktok/{version}/resources/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::tiktok::get_tiktok_resource)
+                .head(providers::playback_provider::tiktok::head_tiktok_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/tiktok/{version}/segments",
+            get(providers::playback_provider::tiktok::get_tiktok_segment)
+                .head(providers::playback_provider::tiktok::head_tiktok_segment)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/tiktok/{version}/subtitles/{modeName}/{subtitleIndex}",
+            get(providers::playback_provider::tiktok::get_tiktok_subtitle)
+                .head(providers::playback_provider::tiktok::head_tiktok_subtitle)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/douyu/{version}/segments",
+            get(providers::playback_provider::douyu::get_douyu_segment)
+                .head(providers::playback_provider::douyu::head_douyu_segment)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/douyu/{version}/danmakus/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::douyu::watch_douyu_danmaku)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/acfun/{version}/resources/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::acfun::get_acfun_resource)
+                .head(providers::playback_provider::acfun::head_acfun_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/acfun/{version}/segments",
+            get(providers::playback_provider::acfun::get_acfun_segment)
+                .head(providers::playback_provider::acfun::head_acfun_segment)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/acfun/{version}/danmaku-files/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::acfun::get_acfun_danmaku_file)
+                .head(providers::playback_provider::acfun::head_acfun_danmaku_file)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/acfun/{version}/danmakus/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::acfun::watch_acfun_danmaku)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/cctv/{version}/resources/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::cctv::get_cctv_resource)
+                .head(providers::playback_provider::cctv::head_cctv_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/cctv/{version}/segments",
+            get(providers::playback_provider::cctv::get_cctv_segment)
+                .head(providers::playback_provider::cctv::head_cctv_segment)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/fnos/{version}/resources/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::fnos::get_fnos_resource)
+                .head(providers::playback_provider::fnos::head_fnos_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/fnos/{version}/segments",
+            get(providers::playback_provider::fnos::get_fnos_segment)
+                .head(providers::playback_provider::fnos::head_fnos_segment)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/fnos/{version}/subtitles/{modeName}/{subtitleIndex}",
+            get(providers::playback_provider::fnos::get_fnos_subtitle)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/fnos/{version}/thumbnail",
+            get(providers::playback_provider::fnos::get_fnos_thumbnail)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/qnap/{version}/resources/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::qnap::get_qnap_resource)
+                .head(providers::playback_provider::qnap::head_qnap_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/qnap/{version}/subtitles/{modeName}/{subtitleIndex}",
+            get(providers::playback_provider::qnap::get_qnap_subtitle)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/qnap/{version}/thumbnail",
+            get(providers::playback_provider::qnap::get_qnap_thumbnail)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/synology/{version}/resources/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::synology::get_synology_resource)
+                .head(providers::playback_provider::synology::head_synology_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/nextcloud/{version}/resources/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::nextcloud::get_nextcloud_resource)
+                .head(providers::playback_provider::nextcloud::head_nextcloud_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/nextcloud/{version}/subtitles/{modeName}/{subtitleIndex}",
+            get(providers::playback_provider::nextcloud::get_nextcloud_subtitle)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/seafile/{version}/resources/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::seafile::get_seafile_resource)
+                .head(providers::playback_provider::seafile::head_seafile_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/seafile/{version}/subtitles/{modeName}/{subtitleIndex}",
+            get(providers::playback_provider::seafile::get_seafile_subtitle)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/truenas/{version}/resources/{modeName}/{mediaIndex}",
+            get(providers::playback_provider::truenas::get_truenas_resource)
+                .head(providers::playback_provider::truenas::head_truenas_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/truenas/{version}/subtitles/{modeName}/{subtitleIndex}",
+            get(providers::playback_provider::truenas::get_truenas_subtitle)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/synology/{version}/subtitles/{modeName}/{subtitleIndex}",
+            get(providers::playback_provider::synology::get_synology_subtitle)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/synology/{version}/segments",
+            get(providers::playback_provider::synology::get_synology_segment)
+                .head(providers::playback_provider::synology::head_synology_segment)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
             "/api/playback-providers/alist/{version}/files/{modeName}/{urlIndex}",
             get(providers::playback_provider::alist::get_alist_file_stream)
                 .head(providers::playback_provider::alist::head_alist_file_stream)
@@ -1376,6 +1657,40 @@ fn register_provider_management_routes() -> Router<AppState> {
                     "/api/providers/cloudreve",
                     providers::cloudreve::cloudreve_auth_routes(),
                 )
+                .nest(
+                    "/api/providers/twitch",
+                    providers::twitch::twitch_auth_routes(),
+                )
+                .nest(
+                    "/api/providers/youtube",
+                    providers::youtube::youtube_auth_routes(),
+                )
+                .nest(
+                    "/api/providers/douyin",
+                    providers::douyin::douyin_auth_routes(),
+                )
+                .nest(
+                    "/api/providers/tiktok",
+                    providers::tiktok::tiktok_auth_routes(),
+                )
+                .nest("/api/providers/fnos", providers::fnos::fnos_auth_routes())
+                .nest("/api/providers/qnap", providers::qnap::qnap_auth_routes())
+                .nest(
+                    "/api/providers/synology",
+                    providers::synology::synology_auth_routes(),
+                )
+                .nest(
+                    "/api/providers/nextcloud",
+                    providers::nextcloud::nextcloud_auth_routes(),
+                )
+                .nest(
+                    "/api/providers/seafile",
+                    providers::seafile::seafile_auth_routes(),
+                )
+                .nest(
+                    "/api/providers/truenas",
+                    providers::truenas::truenas_auth_routes(),
+                )
                 .nest("/api/providers/emby", providers::emby::emby_auth_routes()),
         )
         .merge(
@@ -1391,6 +1706,44 @@ fn register_provider_management_routes() -> Router<AppState> {
                 .nest(
                     "/api/providers/cloudreve",
                     providers::cloudreve::cloudreve_read_routes(),
+                )
+                .nest(
+                    "/api/providers/twitch",
+                    providers::twitch::twitch_read_routes(),
+                )
+                .nest("/api/providers/huya", providers::huya::huya_routes())
+                .nest("/api/providers/douyu", providers::douyu::douyu_routes())
+                .nest("/api/providers/acfun", providers::acfun::acfun_routes())
+                .nest("/api/providers/cctv", providers::cctv::cctv_routes())
+                .nest(
+                    "/api/providers/youtube",
+                    providers::youtube::youtube_read_routes(),
+                )
+                .nest(
+                    "/api/providers/douyin",
+                    providers::douyin::douyin_read_routes(),
+                )
+                .nest(
+                    "/api/providers/tiktok",
+                    providers::tiktok::tiktok_read_routes(),
+                )
+                .nest("/api/providers/fnos", providers::fnos::fnos_read_routes())
+                .nest("/api/providers/qnap", providers::qnap::qnap_read_routes())
+                .nest(
+                    "/api/providers/synology",
+                    providers::synology::synology_read_routes(),
+                )
+                .nest(
+                    "/api/providers/nextcloud",
+                    providers::nextcloud::nextcloud_read_routes(),
+                )
+                .nest(
+                    "/api/providers/seafile",
+                    providers::seafile::seafile_read_routes(),
+                )
+                .nest(
+                    "/api/providers/truenas",
+                    providers::truenas::truenas_read_routes(),
                 )
                 .nest("/api/providers/emby", providers::emby::emby_read_routes()),
         )

@@ -731,6 +731,224 @@ impl AdminApiImpl {
                                 .map_err(ApiError::Internal)?,
                             )
                         }
+                        Some(DirectoryItemThumbnail::Fnos {
+                            server_id,
+                            credential_owner_id,
+                            image_path,
+                        }) => {
+                            let public_room_id = self
+                                .public_id_codec
+                                .encode_room_id(rid)
+                                .map_err(ApiError::Internal)?;
+                            let public_user_id = self
+                                .public_id_codec
+                                .encode_user_id(*admin_user_id)
+                                .map_err(ApiError::Internal)?;
+                            let public_owner_id = self
+                                .public_id_codec
+                                .encode_user_id(credential_owner_id)
+                                .map_err(ApiError::Internal)?;
+                            let thumbnail = crate::fnos_thumbnail_urls::fnos_thumbnail_url(
+                                &server_id,
+                                &public_owner_id,
+                                &image_path,
+                                400,
+                            );
+                            Some(
+                                crate::fnos_thumbnail_urls::sign_fnos_thumbnail_url(
+                                    &thumbnail,
+                                    &public_room_id,
+                                    &public_user_id,
+                                    self.signing_key.as_ref(),
+                                )
+                                .map_err(ApiError::Internal)?,
+                            )
+                        }
+                        Some(DirectoryItemThumbnail::Qnap {
+                            server_id,
+                            credential_owner_id,
+                            path,
+                        }) => {
+                            let public_room_id = self
+                                .public_id_codec
+                                .encode_room_id(rid)
+                                .map_err(ApiError::Internal)?;
+                            let public_user_id = self
+                                .public_id_codec
+                                .encode_user_id(*admin_user_id)
+                                .map_err(ApiError::Internal)?;
+                            let public_owner_id = self
+                                .public_id_codec
+                                .encode_user_id(credential_owner_id)
+                                .map_err(ApiError::Internal)?;
+                            let thumbnail = crate::qnap_thumbnail_urls::qnap_thumbnail_url(
+                                &server_id,
+                                &public_owner_id,
+                                &path,
+                                320,
+                            );
+                            Some(
+                                crate::qnap_thumbnail_urls::sign_qnap_thumbnail_url(
+                                    &thumbnail,
+                                    &public_room_id,
+                                    &public_user_id,
+                                    self.signing_key.as_ref(),
+                                )
+                                .map_err(ApiError::Internal)?,
+                            )
+                        }
+                        Some(DirectoryItemThumbnail::Nextcloud {
+                            server_id,
+                            credential_owner_id,
+                            file_id,
+                        }) => {
+                            let public_room_id = self
+                                .public_id_codec
+                                .encode_room_id(rid)
+                                .map_err(ApiError::Internal)?;
+                            let public_user_id = self
+                                .public_id_codec
+                                .encode_user_id(*admin_user_id)
+                                .map_err(ApiError::Internal)?;
+                            let public_owner_id = self
+                                .public_id_codec
+                                .encode_user_id(credential_owner_id)
+                                .map_err(ApiError::Internal)?;
+                            let preview = crate::nextcloud_preview_urls::nextcloud_preview_url(
+                                &server_id,
+                                &public_owner_id,
+                                file_id,
+                                320,
+                                320,
+                                true,
+                            );
+                            Some(
+                                crate::nextcloud_preview_urls::sign_nextcloud_preview_url(
+                                    &preview,
+                                    &public_room_id,
+                                    &public_user_id,
+                                    self.signing_key.as_ref(),
+                                )
+                                .map_err(ApiError::Internal)?,
+                            )
+                        }
+                        Some(DirectoryItemThumbnail::Seafile {
+                            server_id,
+                            credential_owner_id,
+                            repository_id,
+                            path,
+                        }) => {
+                            let room_id = self
+                                .public_id_codec
+                                .encode_room_id(rid)
+                                .map_err(ApiError::Internal)?;
+                            let user_id = self
+                                .public_id_codec
+                                .encode_user_id(*admin_user_id)
+                                .map_err(ApiError::Internal)?;
+                            let owner_id = self
+                                .public_id_codec
+                                .encode_user_id(credential_owner_id)
+                                .map_err(ApiError::Internal)?;
+                            let thumbnail = crate::seafile_thumbnail_urls::seafile_thumbnail_url(
+                                &server_id,
+                                &owner_id,
+                                &repository_id,
+                                &path,
+                                320,
+                            );
+                            Some(
+                                crate::seafile_thumbnail_urls::sign_seafile_thumbnail_url(
+                                    &thumbnail,
+                                    &room_id,
+                                    &user_id,
+                                    self.signing_key.as_ref(),
+                                )
+                                .map_err(ApiError::Internal)?,
+                            )
+                        }
+                        Some(DirectoryItemThumbnail::SynologyFile {
+                            server_id,
+                            credential_owner_id,
+                            path,
+                        }) => {
+                            let public_room_id = self
+                                .public_id_codec
+                                .encode_room_id(rid)
+                                .map_err(ApiError::Internal)?;
+                            let public_user_id = self
+                                .public_id_codec
+                                .encode_user_id(*admin_user_id)
+                                .map_err(ApiError::Internal)?;
+                            let public_owner_id = self
+                                .public_id_codec
+                                .encode_user_id(credential_owner_id)
+                                .map_err(ApiError::Internal)?;
+                            let image = crate::synology_image_urls::synology_file_image_url(
+                                &server_id,
+                                &public_owner_id,
+                                &path,
+                                "medium",
+                            );
+                            Some(
+                                crate::synology_image_urls::sign_synology_image_url(
+                                    &image,
+                                    crate::synology_image_urls::SynologyImageScope::File {
+                                        server_id: &server_id,
+                                        credential_owner_id: &public_owner_id,
+                                        path: &path,
+                                        size: "medium",
+                                    },
+                                    &public_room_id,
+                                    &public_user_id,
+                                    self.signing_key.as_ref(),
+                                )
+                                .map_err(ApiError::Internal)?,
+                            )
+                        }
+                        Some(DirectoryItemThumbnail::SynologyPoster {
+                            server_id,
+                            credential_owner_id,
+                            item_id,
+                            media_type,
+                            poster_mtime,
+                        }) => {
+                            let public_room_id = self
+                                .public_id_codec
+                                .encode_room_id(rid)
+                                .map_err(ApiError::Internal)?;
+                            let public_user_id = self
+                                .public_id_codec
+                                .encode_user_id(*admin_user_id)
+                                .map_err(ApiError::Internal)?;
+                            let public_owner_id = self
+                                .public_id_codec
+                                .encode_user_id(credential_owner_id)
+                                .map_err(ApiError::Internal)?;
+                            let image = crate::synology_image_urls::synology_poster_url(
+                                &server_id,
+                                &public_owner_id,
+                                item_id,
+                                &media_type,
+                                poster_mtime.as_deref(),
+                            );
+                            Some(
+                                crate::synology_image_urls::sign_synology_image_url(
+                                    &image,
+                                    crate::synology_image_urls::SynologyImageScope::Poster {
+                                        server_id: &server_id,
+                                        credential_owner_id: &public_owner_id,
+                                        item_id,
+                                        media_type: &media_type,
+                                        poster_mtime: poster_mtime.as_deref(),
+                                    },
+                                    &public_room_id,
+                                    &public_user_id,
+                                    self.signing_key.as_ref(),
+                                )
+                                .map_err(ApiError::Internal)?,
+                            )
+                        }
                         None => None,
                     };
 
@@ -742,6 +960,7 @@ impl AdminApiImpl {
                         thumbnail,
                         modified_at: item.modified_at,
                         description: item.description.unwrap_or_default(),
+                        source_config: None,
                     })
                 })
                 .collect::<Result<Vec<_>, ApiError>>()?;

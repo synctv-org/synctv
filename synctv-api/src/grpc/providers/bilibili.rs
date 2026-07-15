@@ -10,10 +10,13 @@ use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
 // Import generated proto types from synctv_proto
 use synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderService;
 use synctv_proto::providers::bilibili::{
-    CheckQrRequest, GetBindsRequest, GetBindsResponse, LoginQrRequest, LoginSmsRequest,
-    LoginSmsResponse, LogoutRequest, LogoutResponse, ParseRequest, ParseResponse, QrCodeResponse,
-    QrStatusResponse, SendSmsRequest, SendSmsResponse, StartSmsLoginRequest, StartSmsLoginResponse,
-    UserInfoRequest, UserInfoResponse,
+    CheckQrRequest, GetBindsRequest, GetBindsResponse, ListFavoriteFoldersRequest,
+    ListFavoriteFoldersResponse, ListFollowedPgcRequest, ListFollowedPgcResponse,
+    ListHistoryRequest, ListHistoryResponse, ListLiveAreasRequest, ListLiveAreasResponse,
+    ListPgcSeasonsRequest, ListPgcSeasonsResponse, ListPgcTimelineRequest, ListPgcTimelineResponse,
+    LoginQrRequest, LoginSmsRequest, LoginSmsResponse, LogoutRequest, LogoutResponse, ParseRequest,
+    ParseResponse, QrCodeResponse, QrStatusResponse, SendSmsRequest, SendSmsResponse,
+    StartSmsLoginRequest, StartSmsLoginResponse, UserInfoRequest, UserInfoResponse,
 };
 
 /// Bilibili Provider gRPC Service
@@ -102,6 +105,177 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                     api.login_qr_with_context(req, instance_name.as_deref(), Some(&request_control))
                         .await
                         .map_err(crate::impls::ApiError::from)
+                },
+            )
+            .await
+            .map(Response::new)
+            .map_err(crate::grpc::map_api_error)
+    }
+
+    async fn list_live_areas(
+        &self,
+        request: Request<ListLiveAreasRequest>,
+    ) -> Result<Response<ListLiveAreasResponse>, Status> {
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
+        let api = self.api.clone();
+
+        self.request_executor
+            .execute_user_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |request_control, _| async move {
+                    api.list_live_areas_with_context(
+                        req,
+                        instance_name.as_deref(),
+                        Some(&request_control),
+                    )
+                    .await
+                    .map_err(crate::impls::ApiError::from)
+                },
+            )
+            .await
+            .map(Response::new)
+            .map_err(crate::grpc::map_api_error)
+    }
+
+    async fn list_favorite_folders(
+        &self,
+        request: Request<ListFavoriteFoldersRequest>,
+    ) -> Result<Response<ListFavoriteFoldersResponse>, Status> {
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
+        let api = self.api.clone();
+
+        self.request_executor
+            .execute_user_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |request_control, authenticated| async move {
+                    api.list_favorite_folders_with_context(
+                        &authenticated.user_id,
+                        req,
+                        instance_name.as_deref(),
+                        Some(&request_control),
+                    )
+                    .await
+                    .map_err(crate::impls::ApiError::from)
+                },
+            )
+            .await
+            .map(Response::new)
+            .map_err(crate::grpc::map_api_error)
+    }
+
+    async fn list_followed_pgc(
+        &self,
+        request: Request<ListFollowedPgcRequest>,
+    ) -> Result<Response<ListFollowedPgcResponse>, Status> {
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
+        let api = self.api.clone();
+
+        self.request_executor
+            .execute_user_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |request_control, authenticated| async move {
+                    api.list_followed_pgc_with_context(
+                        &authenticated.user_id,
+                        req,
+                        instance_name.as_deref(),
+                        Some(&request_control),
+                    )
+                    .await
+                    .map_err(crate::impls::ApiError::from)
+                },
+            )
+            .await
+            .map(Response::new)
+            .map_err(crate::grpc::map_api_error)
+    }
+
+    async fn list_history(
+        &self,
+        request: Request<ListHistoryRequest>,
+    ) -> Result<Response<ListHistoryResponse>, Status> {
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
+        let api = self.api.clone();
+
+        self.request_executor
+            .execute_user_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |request_control, authenticated| async move {
+                    api.list_history_with_context(
+                        &authenticated.user_id,
+                        req,
+                        instance_name.as_deref(),
+                        Some(&request_control),
+                    )
+                    .await
+                    .map_err(crate::impls::ApiError::from)
+                },
+            )
+            .await
+            .map(Response::new)
+            .map_err(crate::grpc::map_api_error)
+    }
+
+    async fn list_pgc_timeline(
+        &self,
+        request: Request<ListPgcTimelineRequest>,
+    ) -> Result<Response<ListPgcTimelineResponse>, Status> {
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
+        let api = self.api.clone();
+        self.request_executor
+            .execute_user_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |request_control, authenticated| async move {
+                    api.list_pgc_timeline_with_context(
+                        &authenticated.user_id,
+                        req,
+                        instance_name.as_deref(),
+                        Some(&request_control),
+                    )
+                    .await
+                    .map_err(crate::impls::ApiError::from)
+                },
+            )
+            .await
+            .map(Response::new)
+            .map_err(crate::grpc::map_api_error)
+    }
+
+    async fn list_pgc_seasons(
+        &self,
+        request: Request<ListPgcSeasonsRequest>,
+    ) -> Result<Response<ListPgcSeasonsResponse>, Status> {
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
+        let api = self.api.clone();
+        self.request_executor
+            .execute_user_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |request_control, authenticated| async move {
+                    api.list_pgc_seasons_with_context(
+                        &authenticated.user_id,
+                        req,
+                        instance_name.as_deref(),
+                        Some(&request_control),
+                    )
+                    .await
+                    .map_err(crate::impls::ApiError::from)
                 },
             )
             .await

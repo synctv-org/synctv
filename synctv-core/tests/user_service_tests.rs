@@ -810,8 +810,9 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
 
     sqlx::query!(
         "INSERT INTO room_playback_state
-             (room_id, playing_media_id, playing_playlist_id, target, current_progress_id, speed, is_playing, updated_at, version)
-         VALUES ($1, $2, NULL, NULL, $3, 1.0, TRUE, NOW(), 0)",
+             (room_id, playing_media_id, playing_playlist_id, target, current_progress_id,
+              speed, is_playing, playback_generation, updated_at, version)
+         VALUES ($1, $2, NULL, NULL, $3, 1.0, TRUE, 0, NOW(), 0)",
         foreign_room.id.as_i64(),
         foreign_media.id.as_i64(),
         foreign_progress_id

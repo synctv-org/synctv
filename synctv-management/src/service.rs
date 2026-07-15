@@ -61,34 +61,41 @@ use crate::proto::{
     BilibiliStartSmsLoginRequest, CreateAlistPlaylistRequest, CreateEmbyPlaylistRequest,
     CreatePlaylistRequest, CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest,
     DeleteMediaRequest, DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest,
-    EditMediaRequest, EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
-    EmbyLogoutRequest, EvictExpiredSliceCacheRequest, FavoriteRoomRequest, GetPlaybackRequest,
-    GetPlaylistRequest, GetRoomMembersRequest, GetRoomRequest, GetRoomSettingsRequest,
-    GetServerStateRequest, GetServerStateResponse, GetServiceStateRequest, GetSettingsRequest,
-    GetSliceCacheStatsRequest, GetStreamInfoRequest, GetUserPreferencesRequest, GetUserRequest,
-    GetUserRoomsRequest, KickMemberRequest, KickRoomStreamRequest, KickStreamRequest,
-    ListActiveStreamsRequest, ListAdminsRequest, ListBanRecordsRequest, ListFavoriteRoomsRequest,
-    ListMediaRequest, ListPlaylistsRequest, ListRoomCreationReviewsRequest,
-    ListRoomJoinReviewsRequest, ListRoomStreamsRequest, ListRoomsRequest,
-    ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest, MovePlaylistRequest,
-    PurgeSliceCacheRequest, RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
-    RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
-    SearchChatMessagesRequest, SendTestEmailRequest, SetUserPasswordRequest,
-    ShutdownMode as ProtoShutdownMode, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
-    StopServerRequest, TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest,
-    UnfavoriteRoomRequest, UpdateMemberDisplayTagRequest, UpdateMemberPermissionsRequest,
-    UpdateMemberRemarkNameRequest, UpdatePlaybackStateRequest, UpdatePlaylistRequest,
-    UpdateRoomPasswordRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
-    UpdateUserUsernameRequest, UserRef,
+    DouyinBindRequest, DouyinGetBindsRequest, DouyinListUserPostsRequest, DouyinResolveRequest,
+    DouyinUnbindRequest, EditMediaRequest, EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest,
+    EmbyLoginRequest, EmbyLogoutRequest, EvictExpiredSliceCacheRequest, FavoriteRoomRequest,
+    GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest, GetRoomRequest,
+    GetRoomSettingsRequest, GetServerStateRequest, GetServerStateResponse, GetServiceStateRequest,
+    GetSettingsRequest, GetSliceCacheStatsRequest, GetStreamInfoRequest, GetUserPreferencesRequest,
+    GetUserRequest, GetUserRoomsRequest, KickMemberRequest, KickRoomStreamRequest,
+    KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest, ListBanRecordsRequest,
+    ListFavoriteRoomsRequest, ListMediaRequest, ListPlaylistsRequest,
+    ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest, ListRoomStreamsRequest,
+    ListRoomsRequest, ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
+    MovePlaylistRequest, PurgeSliceCacheRequest, RejectRoomCreationReviewRequest,
+    RejectRoomJoinReviewRequest, RejectUserRegistrationReviewRequest, RemoveAdminRequest,
+    ResetRoomSettingsRequest, SearchChatMessagesRequest, SendTestEmailRequest,
+    SetUserPasswordRequest, ShutdownMode as ProtoShutdownMode, StartPlaybackRequest,
+    StopPlaybackRequest, StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest,
+    UnbanRoomRequest, UnbanUserRequest, UnfavoriteRoomRequest, UpdateMemberDisplayTagRequest,
+    UpdateMemberPermissionsRequest, UpdateMemberRemarkNameRequest, UpdatePlaybackStateRequest,
+    UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateUserPreferencesRequest,
+    UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef,
+};
+use crate::proto::{
+    TikTokBindRequest, TikTokGetBindsRequest, TikTokGetUserRequest, TikTokListUserPostsRequest,
+    TikTokResolveRequest, TikTokUnbindRequest, TwitchBindRequest, TwitchGetBindsRequest,
+    TwitchListChannelItemsRequest, TwitchResolveRequest, TwitchUnbindRequest,
 };
 use crate::provider_runtime::{
     AddProviderInstanceCommand, AlistListQuery, AlistLoginCommand, AlistLoginCredential,
     AlistRuntime, AlistSearchQuery, BilibiliCheckQrQuery, BilibiliLoginQrCommand,
     BilibiliLoginSmsCommand, BilibiliLogoutCommand, BilibiliParseQuery, BilibiliRuntime,
-    BilibiliSendSmsCommand, BilibiliStartSmsLoginCommand, BilibiliUserInfoQuery, EmbyListQuery,
-    EmbyLoginCommand, EmbyLoginCredential, EmbyRuntime, ListAvailableProviderInstancesQuery,
-    ListProviderBackendsQuery, ProviderCommonRuntime, ProviderCredentialServerQuery,
-    ProviderInstanceNameCommand, UpdateProviderInstanceCommand,
+    BilibiliSendSmsCommand, BilibiliStartSmsLoginCommand, BilibiliUserInfoQuery, DouyinRuntime,
+    EmbyListQuery, EmbyLoginCommand, EmbyLoginCredential, EmbyRuntime,
+    ListAvailableProviderInstancesQuery, ListProviderBackendsQuery, ProviderCommonRuntime,
+    ProviderCredentialServerQuery, ProviderInstanceNameCommand, TikTokRuntime, TwitchRuntime,
+    UpdateProviderInstanceCommand,
 };
 use crate::request_context::RequestContext;
 use crate::server::ManagementRuntimeSettings;
@@ -108,7 +115,8 @@ use synctv_proto::{
     admin as admin_proto, client as client_proto, common as common_proto,
     providers::{
         alist as alist_proto, bilibili as bilibili_proto, common as provider_common_proto,
-        emby as emby_proto, rtmp as rtmp_proto,
+        douyin as douyin_proto, emby as emby_proto, rtmp as rtmp_proto, tiktok as tiktok_proto,
+        twitch as twitch_proto,
     },
 };
 use synctv_realtime::fanout::{
@@ -150,6 +158,9 @@ pub struct ManagementServiceImpl {
     alist_api: Arc<dyn AlistRuntime>,
     bilibili_api: Arc<dyn BilibiliRuntime>,
     emby_api: Arc<dyn EmbyRuntime>,
+    douyin_api: Arc<dyn DouyinRuntime>,
+    tiktok_api: Arc<dyn TikTokRuntime>,
+    twitch_api: Arc<dyn TwitchRuntime>,
     slice_cache_runtime: Arc<synctv_core::service::SliceCacheManagementService>,
     server_state_runtime: Arc<synctv_core::service::ServerStateService>,
     lifecycle_controller: Arc<ManagementLifecycleController>,
@@ -173,6 +184,9 @@ pub struct ManagementServiceDependencies {
     pub alist_api: Arc<dyn AlistRuntime>,
     pub bilibili_api: Arc<dyn BilibiliRuntime>,
     pub emby_api: Arc<dyn EmbyRuntime>,
+    pub douyin_api: Arc<dyn DouyinRuntime>,
+    pub tiktok_api: Arc<dyn TikTokRuntime>,
+    pub twitch_api: Arc<dyn TwitchRuntime>,
     pub slice_cache_runtime: Arc<synctv_core::service::SliceCacheManagementService>,
     pub server_state_runtime: Arc<synctv_core::service::ServerStateService>,
     pub lifecycle_controller: Arc<ManagementLifecycleController>,
@@ -198,6 +212,9 @@ impl ManagementServiceImpl {
             alist_api,
             bilibili_api,
             emby_api,
+            douyin_api,
+            tiktok_api,
+            twitch_api,
             slice_cache_runtime,
             server_state_runtime,
             lifecycle_controller,
@@ -219,6 +236,9 @@ impl ManagementServiceImpl {
             alist_api,
             bilibili_api,
             emby_api,
+            douyin_api,
+            tiktok_api,
+            twitch_api,
             slice_cache_runtime,
             server_state_runtime,
             lifecycle_controller,
@@ -3295,6 +3315,301 @@ impl ManagementService for ManagementServiceImpl {
         let response = map_api_result(
             self.emby_api
                 .get_binds(&actor_user_id, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
+
+    async fn douyin_bind(
+        &self,
+        request: Request<DouyinBindRequest>,
+    ) -> Result<Response<douyin_proto::BindResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, mut provider_request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        provider_request.instance_name.clear();
+        let response = map_classified_result(
+            self.douyin_api
+                .bind(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
+
+    async fn douyin_get_binds(
+        &self,
+        request: Request<DouyinGetBindsRequest>,
+    ) -> Result<Response<douyin_proto::GetBindsResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = map_classified_result(
+            self.douyin_api
+                .get_binds(&actor_user_id, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
+
+    async fn douyin_unbind(
+        &self,
+        request: Request<DouyinUnbindRequest>,
+    ) -> Result<Response<douyin_proto::UnbindResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let response = map_classified_result(
+            self.douyin_api
+                .unbind(&actor_user_id, provider_request)
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
+
+    async fn douyin_resolve(
+        &self,
+        request: Request<DouyinResolveRequest>,
+    ) -> Result<Response<douyin_proto::ResolveResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, mut provider_request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        provider_request.instance_name.clear();
+        let response = map_classified_result(
+            self.douyin_api
+                .resolve(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
+
+    async fn douyin_list_user_posts(
+        &self,
+        request: Request<DouyinListUserPostsRequest>,
+    ) -> Result<Response<douyin_proto::ListUserPostsResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, mut provider_request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        provider_request.instance_name.clear();
+        let response = map_classified_result(
+            self.douyin_api
+                .list_user_posts(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
+
+    async fn tik_tok_bind(
+        &self,
+        request: Request<TikTokBindRequest>,
+    ) -> Result<Response<tiktok_proto::BindResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, mut provider_request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        provider_request.instance_name.clear();
+        let response = map_classified_result(
+            self.tiktok_api
+                .bind(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
+
+    async fn tik_tok_get_binds(
+        &self,
+        request: Request<TikTokGetBindsRequest>,
+    ) -> Result<Response<tiktok_proto::GetBindsResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = map_classified_result(
+            self.tiktok_api
+                .get_binds(&actor_user_id, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
+
+    async fn tik_tok_unbind(
+        &self,
+        request: Request<TikTokUnbindRequest>,
+    ) -> Result<Response<tiktok_proto::UnbindResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let response = map_classified_result(
+            self.tiktok_api
+                .unbind(&actor_user_id, provider_request)
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
+
+    async fn tik_tok_resolve(
+        &self,
+        request: Request<TikTokResolveRequest>,
+    ) -> Result<Response<tiktok_proto::ResolveResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, mut provider_request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        provider_request.instance_name.clear();
+        let response = map_classified_result(
+            self.tiktok_api
+                .resolve(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
+
+    async fn tik_tok_get_user(
+        &self,
+        request: Request<TikTokGetUserRequest>,
+    ) -> Result<Response<tiktok_proto::GetUserResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, mut provider_request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        provider_request.instance_name.clear();
+        let response = map_classified_result(
+            self.tiktok_api
+                .get_user(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
+
+    async fn tik_tok_list_user_posts(
+        &self,
+        request: Request<TikTokListUserPostsRequest>,
+    ) -> Result<Response<tiktok_proto::ListUserPostsResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, mut provider_request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        provider_request.instance_name.clear();
+        let response = map_classified_result(
+            self.tiktok_api
+                .list_user_posts(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
+
+    async fn twitch_bind(
+        &self,
+        request: Request<TwitchBindRequest>,
+    ) -> Result<Response<twitch_proto::BindResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, mut provider_request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        provider_request.instance_name.clear();
+        let response = map_classified_result(
+            self.twitch_api
+                .bind(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
+
+    async fn twitch_get_binds(
+        &self,
+        request: Request<TwitchGetBindsRequest>,
+    ) -> Result<Response<twitch_proto::GetBindsResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = map_classified_result(
+            self.twitch_api
+                .get_binds(&actor_user_id, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
+
+    async fn twitch_unbind(
+        &self,
+        request: Request<TwitchUnbindRequest>,
+    ) -> Result<Response<twitch_proto::UnbindResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let response = map_classified_result(
+            self.twitch_api
+                .unbind(&actor_user_id, provider_request)
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
+
+    async fn twitch_resolve(
+        &self,
+        request: Request<TwitchResolveRequest>,
+    ) -> Result<Response<twitch_proto::ResolveResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, mut provider_request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        provider_request.instance_name.clear();
+        let response = map_classified_result(
+            self.twitch_api
+                .resolve(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
+
+    async fn twitch_list_channel_items(
+        &self,
+        request: Request<TwitchListChannelItemsRequest>,
+    ) -> Result<Response<twitch_proto::ListChannelItemsResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, mut provider_request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        provider_request.instance_name.clear();
+        let response = map_classified_result(
+            self.twitch_api
+                .list_channel_items(&actor_user_id, provider_request, instance_name.as_deref())
                 .await,
         )?;
         Ok(Response::new(response))

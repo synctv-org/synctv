@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package synctv.provider.acfun;
+
+import "proto/buf/validate/validate.proto";
+import "proto/source_config.proto";
+
+enum ResourceKind {
+  RESOURCE_KIND_UNSPECIFIED = 0;
+  RESOURCE_KIND_VIDEO = 1;
+  RESOURCE_KIND_BANGUMI = 2;
+  RESOURCE_KIND_LIVE = 3;
+}
+
+enum StreamFormat {
+  STREAM_FORMAT_UNSPECIFIED = 0;
+  STREAM_FORMAT_HLS = 1;
+  STREAM_FORMAT_FLV = 2;
+}
+
+message ResolveRequest {
+  string resource = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message Metadata {
+  string id = 1;
+  string title = 2;
+  string author = 3;
+  optional string author_id = 4;
+  optional string category = 5;
+  optional string thumbnail_url = 6;
+  optional string avatar_url = 7;
+  optional string description = 8;
+  repeated string tags = 9;
+  bool is_live = 10;
+  optional double duration_seconds = 11;
+  optional uint64 view_count = 12;
+  optional uint64 like_count = 13;
+  optional uint64 comment_count = 14;
+  optional int64 published_at = 15;
+  optional int64 started_at = 16;
+  bool has_danmaku = 17;
+  bool has_live_danmaku = 18;
+}
+
+message Quality {
+  string name = 1;
+  string url = 2;
+  StreamFormat format = 3;
+  optional uint64 bitrate = 4;
+  optional uint32 width = 5;
+  optional uint32 height = 6;
+  optional uint32 fps = 7;
+  optional string codec = 8;
+  optional string quality_type = 9;
+}
+
+message ResolveResponse {
+  ResourceKind kind = 1;
+  Metadata metadata = 2;
+  repeated Quality qualities = 3;
+  synctv.source_config.AcFunMediaSourceConfig source_config = 4;
+}

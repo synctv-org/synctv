@@ -25,7 +25,11 @@ fn emby_target(item_id: &str) -> Option<synctv_proto::client::ProviderTarget> {
     Some(synctv_proto::client::ProviderTarget {
         target: Some(synctv_proto::client::provider_target::Target::Emby(
             synctv_proto::client::EmbyTarget {
-                item_id: item_id.to_string(),
+                target: Some(synctv_proto::client::emby_target::Target::Item(
+                    synctv_proto::client::EmbyItemTarget {
+                        item_id: item_id.to_string(),
+                    },
+                )),
             },
         )),
     })
@@ -298,6 +302,7 @@ fn test_list_playlist_items_request_allows_room_root_with_empty_playlist_id() {
         sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
+        preview_source_config: None,
     };
 
     let json = serde_json::to_value(&request).expect("serialize list request");
@@ -617,7 +622,25 @@ fn test_playlist_source_config_oneof_only_contains_dynamic_playlist_providers() 
         .collect::<Vec<_>>();
     fields.sort();
 
-    assert_eq!(fields, ["alist", "cloudreve", "emby"]);
+    assert_eq!(
+        fields,
+        [
+            "alist",
+            "bilibili",
+            "cloudreve",
+            "douyin",
+            "emby",
+            "fnos",
+            "nextcloud",
+            "qnap",
+            "seafile",
+            "synology",
+            "tiktok",
+            "truenas",
+            "twitch",
+            "youtube"
+        ]
+    );
 }
 
 #[test]
@@ -941,6 +964,7 @@ fn test_list_playlist_items_request_rejects_invalid_provider_filters() {
         sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
+        preview_source_config: None,
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -984,6 +1008,7 @@ fn test_list_playlist_items_request_rejects_too_long_search() {
         sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
+        preview_source_config: None,
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");

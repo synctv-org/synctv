@@ -27,13 +27,27 @@ pub(crate) mod upstream_transport;
 mod live_helpers;
 
 // MediaProvider implementations (adapters)
+mod acfun;
 mod alist;
 mod bilibili;
+mod cctv;
 mod cloudreve;
 mod direct_url;
+mod douyin;
+mod douyu;
 mod emby;
+mod fnos;
+mod huya;
 mod live_proxy;
+mod nextcloud;
+mod qnap;
 mod rtmp;
+mod seafile;
+mod synology;
+mod tiktok;
+mod truenas;
+mod twitch;
+mod youtube;
 
 use std::sync::{Arc, LazyLock};
 
@@ -47,19 +61,23 @@ pub use playback_profile::{
     PlaybackAudioCapability, PlaybackClientProfile, PlaybackContainer, PlaybackStreamPreference,
     PlaybackSubtitlePreference, PlaybackVideoCodec,
 };
-pub use playback_transport::{LiveFlvAccess, PlaybackTransportAction, PlaybackTransportServices};
+pub use playback_transport::{
+    LiveFlvAccess, PlaybackTransportAction, PlaybackTransportServices,
+    StatefulPlaybackResourceRequest,
+};
 pub use provider_client::ProviderClientManager;
 pub use store::{
     InMemoryProviderStore, PrefixedProviderStore, ProviderStore, ProviderStoreExt,
     ProviderStoreRegistry, ProviderStoreResolver, RedisProviderStore, StoreError, StoreLockGuard,
-    VersionedPlayback,
+    VersionedPlayback, VersionedPlaybackContext,
 };
 pub use synctv_common::{ExecutionControl, ExecutionControlError};
 pub use traits::{
     BilibiliLiveDanmakuEvent, BilibiliLiveDanmakuEventKind, BilibiliLiveDanmakuProvider,
-    BilibiliLiveDanmakuStream, DirectoryItem, DirectoryItemThumbnail, DynamicBrowsePathSegment,
-    DynamicFolder, DynamicListQuery, DynamicListResult, DynamicPagination, ItemType, MediaProvider,
-    NextPlayItem, PlaybackInfo, PlaybackResult, PreparedSourceConfig, ProviderCredentialDependency,
+    BilibiliLiveDanmakuStream, DirectoryItem, DirectoryItemSourceConfig, DirectoryItemThumbnail,
+    DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, DynamicListResult,
+    DynamicPagination, ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult,
+    PreparedSourceConfig, ProviderCredentialDependency, ProviderPlaybackSessionLifecycle,
     SourceConfig, SourceConfigKind, SourceCover,
 };
 
@@ -69,6 +87,51 @@ use std::future::Future;
 use std::time::Duration;
 
 use crate::cache::{SingleFlight, SingleFlightError};
+
+pub(crate) fn playback_session_registration(
+    ctx: &ProviderContext<'_>,
+    resource_key: String,
+    resource_version: Option<String>,
+    session: crate::models::ProviderPlaybackSession,
+) -> Result<
+    Option<(
+        crate::repository::ProviderPlaybackSessionRepository,
+        crate::repository::NewProviderPlaybackSession,
+    )>,
+    ProviderError,
+> {
+    let Some(playback_generation) = ctx.playback_generation() else {
+        return Ok(None);
+    };
+    let room_id = ctx.room_id().copied().ok_or_else(|| {
+        ProviderError::Internal(
+            "playback generation requires room_id in provider context".to_string(),
+        )
+    })?;
+    let credential_owner_id = ctx
+        .credential_owner_or_user_id()
+        .copied()
+        .ok_or(ProviderError::CredentialRequired)?;
+    let db = ctx.db.ok_or_else(|| {
+        ProviderError::Internal(
+            "playback session registration requires database context".to_string(),
+        )
+    })?;
+    Ok(Some((
+        crate::repository::ProviderPlaybackSessionRepository::new(db.clone()),
+        crate::repository::NewProviderPlaybackSession {
+            room_id,
+            playback_generation,
+            provider_instance_name: normalize_provider_instance_name(ctx.provider_instance_name())
+                .map(str::to_owned),
+            credential_owner_id,
+            resource_key,
+            resource_version,
+            session,
+            paused: !ctx.playback_is_playing().unwrap_or(false),
+        },
+    )))
+}
 
 pub(crate) fn subtitle_headers_for_proxy(
     media_headers: &std::collections::HashMap<String, String>,
@@ -80,6 +143,7 @@ pub(crate) fn subtitle_headers_for_proxy(
 }
 
 // Re-export providers
+pub use acfun::{AcFunDanmakuStream, AcFunLiveDanmakuEvent, AcFunProvider};
 pub use alist::{
     AlistListItem, AlistListRequest, AlistListResponse, AlistLoginAndPersistRequest,
     AlistLoginCredential, AlistLoginRequest, AlistMeRequest, AlistMeResponse,
@@ -88,24 +152,42 @@ pub use alist::{
 };
 pub use bilibili::{
     BilibiliCaptchaResponse, BilibiliDashManifestMode, BilibiliDashProxyUrlMapper,
-    BilibiliLiveDanmuHost, BilibiliLiveDanmuInfoRequest, BilibiliLiveDanmuInfoResponse,
-    BilibiliMatchRequest, BilibiliMatchResponse, BilibiliPageInfo, BilibiliParseLivePageRequest,
+    BilibiliFavoriteFolder, BilibiliFollowedPgcPage, BilibiliFollowedPgcSeason,
+    BilibiliHistoryItem, BilibiliHistoryPage, BilibiliLiveArea, BilibiliLiveDanmuHost,
+    BilibiliLiveDanmuInfoRequest, BilibiliLiveDanmuInfoResponse, BilibiliMatchRequest,
+    BilibiliMatchResponse, BilibiliMatchedResource, BilibiliPageInfo, BilibiliParseLivePageRequest,
     BilibiliParsePgcPageRequest, BilibiliParseVideoPageRequest, BilibiliPersistedQrLoginResponse,
+    BilibiliPgcSeasonIndexItem, BilibiliPgcSeasonIndexPage, BilibiliPgcTimelineItem,
     BilibiliProvider, BilibiliQrCodeResponse, BilibiliQrLoginRequest, BilibiliQrLoginResponse,
     BilibiliQrLoginStatus, BilibiliSmsLoginRequest, BilibiliSmsLoginResponse,
     BilibiliSmsLoginTokenCodec, BilibiliSmsRequest, BilibiliSmsResponse, BilibiliUserInfoRequest,
     BilibiliUserInfoResponse, BilibiliVideoInfo, DASH_MANIFEST_METADATA_KEY, LIVE_DANMAKU_FORMAT,
     LIVE_DANMAKU_TRACK_NAME,
 };
+pub use cctv::CctvProvider;
 pub use cloudreve::{CloudreveBind, CloudreveListResponse, CloudreveProvider};
 pub use direct_url::DirectUrlProvider;
+pub use douyin::{DouyinBind, DouyinDanmakuEvent, DouyinDanmakuStream, DouyinProvider};
+pub use douyu::{DouyuDanmakuEvent, DouyuDanmakuStream, DouyuProvider};
 pub use emby::{
     EmbyListItem, EmbyListRequest, EmbyListResponse, EmbyLoginAndPersistRequest,
     EmbyLoginCredential, EmbyLoginRequest, EmbyLoginResponse, EmbyMeRequest, EmbyMeResponse,
     EmbyPersistedLoginResponse, EmbyProvider, EmbyUserPolicy,
 };
+pub use fnos::{FnosBind, FnosLoginResult, FnosProvider};
+pub use huya::{HuyaDanmakuEvent, HuyaDanmakuStream, HuyaProvider};
 pub use live_proxy::LiveProxyProvider;
+pub use nextcloud::{NextcloudBind, NextcloudListResponse, NextcloudProvider};
+pub use qnap::{QnapBind, QnapCapabilities, QnapListItem, QnapListResponse, QnapProvider};
 pub use rtmp::RtmpProvider;
+pub use seafile::{SeafileBind, SeafileListRequest, SeafileListResponse, SeafileProvider};
+pub use synology::{
+    SynologyBind, SynologyProvider, SynologyVideoEntry, SynologyVideoEntryKind, SynologyVideoPage,
+};
+pub use tiktok::{TikTokBind, TikTokProvider};
+pub use truenas::{TrueNasBind, TrueNasListResponse, TrueNasProvider};
+pub use twitch::{TwitchBind, TwitchChatEvent, TwitchChatStream, TwitchProvider};
+pub use youtube::{YoutubeBind, YoutubeProvider};
 
 fn playback_info_is_hls(mode_name: &str, info: &PlaybackInfo) -> bool {
     info.medias.iter().any(|media| {
@@ -137,6 +219,14 @@ fn signed_playback_default_needs_proxy(result: &PlaybackResult) -> bool {
 /// provider-specific impl modules.
 #[derive(Clone)]
 pub struct ProviderSet {
+    pub acfun: std::sync::Arc<AcFunProvider>,
+    pub cctv: std::sync::Arc<CctvProvider>,
+    pub fnos: std::sync::Arc<FnosProvider>,
+    pub qnap: std::sync::Arc<QnapProvider>,
+    pub synology: std::sync::Arc<SynologyProvider>,
+    pub nextcloud: std::sync::Arc<NextcloudProvider>,
+    pub seafile: std::sync::Arc<SeafileProvider>,
+    pub truenas: std::sync::Arc<TrueNasProvider>,
     pub alist: std::sync::Arc<AlistProvider>,
     pub bilibili: std::sync::Arc<BilibiliProvider>,
     pub emby: std::sync::Arc<EmbyProvider>,
@@ -144,6 +234,12 @@ pub struct ProviderSet {
     pub rtmp: std::sync::Arc<RtmpProvider>,
     pub live_proxy: std::sync::Arc<LiveProxyProvider>,
     pub cloudreve: std::sync::Arc<CloudreveProvider>,
+    pub twitch: std::sync::Arc<TwitchProvider>,
+    pub youtube: std::sync::Arc<YoutubeProvider>,
+    pub huya: std::sync::Arc<HuyaProvider>,
+    pub douyu: std::sync::Arc<DouyuProvider>,
+    pub douyin: std::sync::Arc<DouyinProvider>,
+    pub tiktok: std::sync::Arc<TikTokProvider>,
 }
 
 fn provider_http_client_for_ssrf_guard(
@@ -181,6 +277,24 @@ impl ProviderSet {
             ProviderClientManager::new_with_provider_http_client(provider_http_client.clone()),
         );
         Self {
+            acfun: std::sync::Arc::new(AcFunProvider::with_http_client(
+                provider_http_client.clone(),
+            )),
+            cctv: std::sync::Arc::new(CctvProvider::with_http_client(provider_http_client.clone())),
+            fnos: std::sync::Arc::new(FnosProvider::new(ssrf_guard.clone())),
+            qnap: std::sync::Arc::new(QnapProvider::with_http_client(provider_http_client.clone())),
+            synology: std::sync::Arc::new(SynologyProvider::with_http_client(
+                provider_http_client.clone(),
+            )),
+            nextcloud: std::sync::Arc::new(NextcloudProvider::with_http_client(
+                provider_http_client.clone(),
+            )),
+            seafile: std::sync::Arc::new(SeafileProvider::with_http_client(
+                provider_http_client.clone(),
+            )),
+            truenas: std::sync::Arc::new(TrueNasProvider::with_http_client(
+                provider_http_client.clone(),
+            )),
             alist: std::sync::Arc::new(AlistProvider::with_client_manager(
                 provider_instance_manager.clone(),
                 client_manager.clone(),
@@ -199,8 +313,22 @@ impl ProviderSet {
             rtmp: std::sync::Arc::new(RtmpProvider::new()),
             live_proxy: std::sync::Arc::new(LiveProxyProvider::new_with_ssrf_guard(ssrf_guard)),
             cloudreve: std::sync::Arc::new(CloudreveProvider::with_http_client(
-                provider_http_client,
+                provider_http_client.clone(),
             )),
+            huya: std::sync::Arc::new(HuyaProvider::with_http_client(provider_http_client.clone())),
+            douyu: std::sync::Arc::new(DouyuProvider::with_http_client(
+                provider_http_client.clone(),
+            )),
+            douyin: std::sync::Arc::new(DouyinProvider::with_http_client(
+                provider_http_client.clone(),
+            )),
+            twitch: std::sync::Arc::new(TwitchProvider::with_http_client(
+                provider_http_client.clone(),
+            )),
+            youtube: std::sync::Arc::new(YoutubeProvider::with_http_client(
+                provider_http_client.clone(),
+            )),
+            tiktok: std::sync::Arc::new(TikTokProvider::with_http_client(provider_http_client)),
         }
     }
 
@@ -210,13 +338,27 @@ impl ProviderSet {
         credential_repo: Arc<crate::repository::UserProviderCredentialRepository>,
     ) -> Self {
         Self {
+            acfun: self.acfun.clone(),
+            cctv: self.cctv.clone(),
+            fnos: Arc::new(self.fnos.with_credential_repo(credential_repo.clone())),
+            qnap: Arc::new(self.qnap.with_credential_repo(credential_repo.clone())),
+            synology: Arc::new(self.synology.with_credential_repo(credential_repo.clone())),
+            nextcloud: Arc::new(self.nextcloud.with_credential_repo(credential_repo.clone())),
+            seafile: Arc::new(self.seafile.with_credential_repo(credential_repo.clone())),
+            truenas: Arc::new(self.truenas.with_credential_repo(credential_repo.clone())),
             alist: Arc::new(self.alist.with_credential_repo(credential_repo.clone())),
             bilibili: Arc::new(self.bilibili.with_credential_repo(credential_repo.clone())),
             emby: Arc::new(self.emby.with_credential_repo(credential_repo.clone())),
             direct_url: self.direct_url.clone(),
             rtmp: self.rtmp.clone(),
             live_proxy: self.live_proxy.clone(),
-            cloudreve: Arc::new(self.cloudreve.with_credential_repo(credential_repo)),
+            cloudreve: Arc::new(self.cloudreve.with_credential_repo(credential_repo.clone())),
+            twitch: Arc::new(self.twitch.with_credential_repo(credential_repo.clone())),
+            youtube: Arc::new(self.youtube.with_credential_repo(credential_repo.clone())),
+            huya: self.huya.clone(),
+            douyu: self.douyu.clone(),
+            douyin: Arc::new(self.douyin.with_credential_repo(credential_repo.clone())),
+            tiktok: Arc::new(self.tiktok.with_credential_repo(credential_repo)),
         }
     }
 }
@@ -357,7 +499,16 @@ static SOURCE_COVER_CACHE: LazyLock<ProviderSourceCoverCache> =
 
 #[must_use]
 pub fn provider_requires_credential_repo(provider_name: &str) -> bool {
-    matches!(provider_name, AlistProvider::NAME | EmbyProvider::NAME)
+    matches!(
+        provider_name,
+        AlistProvider::NAME
+            | EmbyProvider::NAME
+            | CloudreveProvider::NAME
+            | FnosProvider::NAME
+            | QnapProvider::NAME
+            | TwitchProvider::NAME
+            | YoutubeProvider::NAME
+    )
 }
 
 #[must_use]
@@ -558,6 +709,14 @@ async fn cache_versioned_playback(
         version: synctv_common::snanoid!(16),
         result: result.clone(),
         expires_at,
+        playback_context: match (ctx.room_id().copied(), ctx.playback_generation()) {
+            (Some(room_id), Some(playback_generation)) => Some(VersionedPlaybackContext {
+                room_id,
+                playback_generation,
+                is_playing: ctx.playback_is_playing().unwrap_or(false),
+            }),
+            _ => None,
+        },
     };
 
     if let Some(store) = ctx.store.as_ref() {

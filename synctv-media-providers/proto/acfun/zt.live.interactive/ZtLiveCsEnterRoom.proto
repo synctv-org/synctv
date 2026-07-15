@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package acproto;
+
+message ZtLiveCsEnterRoom {
+	bool isAuthor = 1;
+	int32 reconnectCount = 2;
+	int32 lastErrorCode = 3;
+	string enterRoomAttach = 4;
+	string clientLiveSdkVersion =5;
+}
+
+message ZtLiveCsEnterRoomAck {
+	int64 heartbeatIntervalMs = 1;
+}

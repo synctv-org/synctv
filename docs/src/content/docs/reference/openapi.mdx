@@ -10,19 +10,19 @@ SyncTV 内置 OpenAPI JSON 和 Swagger UI。二进制必须启用 `openapi` feat
 本地启动带 OpenAPI 的服务：
 
 ```bash
-cargo run -p synctv --features openapi --bin synctv -- serve
+cargo +nightly run -p synctv --features openapi --bin synctv -- serve
 ```
 
 如果还要指定配置文件：
 
 ```bash
-cargo run -p synctv --features openapi --bin synctv -- serve --config synctv.yaml
+cargo +nightly run -p synctv --features openapi --bin synctv -- serve --config synctv.yaml
 ```
 
 编译检查：
 
 ```bash
-cargo check --workspace --all-targets --features openapi
+cargo +nightly check --workspace --all-targets --features openapi
 ```
 
 ## Swagger UI 地址

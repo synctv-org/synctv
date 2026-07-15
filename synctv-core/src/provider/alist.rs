@@ -2307,6 +2307,7 @@ impl DynamicFolder for AlistProvider {
                         thumbnail: None,
                         description: None,
                         modified_at: None,
+                        source_config: None,
                     })
                 })
                 .collect::<Result<Vec<_>, ProviderError>>()?
@@ -2349,6 +2350,7 @@ impl DynamicFolder for AlistProvider {
                         },
                         description: None,
                         modified_at: Some(alist_modified_to_i64(file_item.modified)?),
+                        source_config: None,
                     })
                 })
                 .collect::<Result<Vec<_>, ProviderError>>()?

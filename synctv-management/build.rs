@@ -41,6 +41,18 @@ fn prost_config() -> tonic_prost_build::Config {
         ".synctv.provider.common",
         "::synctv_proto::providers::common",
     );
+    config.extern_path(
+        ".synctv.provider.douyin",
+        "::synctv_proto::providers::douyin",
+    );
+    config.extern_path(
+        ".synctv.provider.tiktok",
+        "::synctv_proto::providers::tiktok",
+    );
+    config.extern_path(
+        ".synctv.provider.twitch",
+        "::synctv_proto::providers::twitch",
+    );
     config.extern_path(".synctv.provider.emby", "::synctv_proto::providers::emby");
     config.extern_path(".synctv.provider.rtmp", "::synctv_proto::providers::rtmp");
     config

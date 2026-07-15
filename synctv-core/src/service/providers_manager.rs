@@ -6,8 +6,11 @@
 
 use crate::models::normalize_provider_instance_name;
 use crate::provider::{
-    AlistProvider, BilibiliProvider, CloudreveProvider, DirectUrlProvider, EmbyProvider,
-    LiveProxyProvider, MediaProvider, ProviderClientManager, RtmpProvider,
+    AcFunProvider, AlistProvider, BilibiliProvider, CctvProvider, CloudreveProvider,
+    DirectUrlProvider, DouyinProvider, DouyuProvider, EmbyProvider, FnosProvider, HuyaProvider,
+    LiveProxyProvider, MediaProvider, NextcloudProvider, ProviderClientManager, QnapProvider,
+    RtmpProvider, SeafileProvider, SynologyProvider, TikTokProvider, TrueNasProvider,
+    TwitchProvider, YoutubeProvider,
 };
 use crate::service::RemoteProviderManager;
 use crate::Result;
@@ -302,6 +305,262 @@ impl ProvidersManager {
             Box::new(|_instance_id, _config, _instance_manager| Ok(Arc::new(RtmpProvider::new()))),
         );
 
+        let ssrf_guard_twitch = self.ssrf_guard.clone();
+        self.register_factory(
+            TwitchProvider::NAME,
+            Box::new(move |_instance_id, config, _instance_manager| {
+                let client = match provider_http_client_from_config(config, &ssrf_guard_twitch)? {
+                    Some(client) => client,
+                    None => synctv_media_providers::build_provider_http_client(
+                        ssrf_guard_twitch.clone(),
+                    )
+                    .map_err(|error| {
+                        crate::Error::Internal(format!(
+                            "Failed to build Twitch HTTP client: {error}"
+                        ))
+                    })?,
+                };
+                Ok(Arc::new(TwitchProvider::with_http_client(client)))
+            }),
+        );
+
+        let ssrf_guard_youtube = self.ssrf_guard.clone();
+        self.register_factory(
+            YoutubeProvider::NAME,
+            Box::new(move |_instance_id, config, _instance_manager| {
+                let client = match provider_http_client_from_config(config, &ssrf_guard_youtube)? {
+                    Some(client) => client,
+                    None => synctv_media_providers::build_provider_http_client(
+                        ssrf_guard_youtube.clone(),
+                    )
+                    .map_err(|error| {
+                        crate::Error::Internal(format!(
+                            "Failed to build YouTube HTTP client: {error}"
+                        ))
+                    })?,
+                };
+                Ok(Arc::new(YoutubeProvider::with_http_client(client)))
+            }),
+        );
+
+        let ssrf_guard_huya = self.ssrf_guard.clone();
+        self.register_factory(
+            HuyaProvider::NAME,
+            Box::new(move |_instance_name, config, _instance_manager| {
+                let client = match provider_http_client_from_config(config, &ssrf_guard_huya)? {
+                    Some(client) => client,
+                    None => {
+                        synctv_media_providers::build_provider_http_client(ssrf_guard_huya.clone())
+                            .map_err(|error| {
+                                crate::Error::Internal(format!(
+                                    "Failed to build Huya provider HTTP client: {error}"
+                                ))
+                            })?
+                    }
+                };
+                Ok(Arc::new(HuyaProvider::with_http_client(client)))
+            }),
+        );
+
+        let ssrf_guard_douyu = self.ssrf_guard.clone();
+        self.register_factory(
+            DouyuProvider::NAME,
+            Box::new(move |_instance_name, config, _instance_manager| {
+                let client = match provider_http_client_from_config(config, &ssrf_guard_douyu)? {
+                    Some(client) => client,
+                    None => {
+                        synctv_media_providers::build_provider_http_client(ssrf_guard_douyu.clone())
+                            .map_err(|error| {
+                                crate::Error::Internal(format!(
+                                    "Failed to build Douyu provider HTTP client: {error}"
+                                ))
+                            })?
+                    }
+                };
+                Ok(Arc::new(DouyuProvider::with_http_client(client)))
+            }),
+        );
+
+        let ssrf_guard_douyin = self.ssrf_guard.clone();
+        self.register_factory(
+            DouyinProvider::NAME,
+            Box::new(move |_instance_name, config, _instance_manager| {
+                let client = match provider_http_client_from_config(config, &ssrf_guard_douyin)? {
+                    Some(client) => client,
+                    None => synctv_media_providers::build_provider_http_client(
+                        ssrf_guard_douyin.clone(),
+                    )
+                    .map_err(|error| {
+                        crate::Error::Internal(format!(
+                            "Failed to build Douyin provider HTTP client: {error}"
+                        ))
+                    })?,
+                };
+                Ok(Arc::new(DouyinProvider::with_http_client(client)))
+            }),
+        );
+
+        let ssrf_guard_tiktok = self.ssrf_guard.clone();
+        self.register_factory(
+            TikTokProvider::NAME,
+            Box::new(move |_instance_name, config, _instance_manager| {
+                let client = match provider_http_client_from_config(config, &ssrf_guard_tiktok)? {
+                    Some(client) => client,
+                    None => synctv_media_providers::build_provider_http_client(
+                        ssrf_guard_tiktok.clone(),
+                    )
+                    .map_err(|error| {
+                        crate::Error::Internal(format!(
+                            "Failed to build TikTok provider HTTP client: {error}"
+                        ))
+                    })?,
+                };
+                Ok(Arc::new(TikTokProvider::with_http_client(client)))
+            }),
+        );
+
+        let ssrf_guard_acfun = self.ssrf_guard.clone();
+        self.register_factory(
+            AcFunProvider::NAME,
+            Box::new(move |_instance_name, config, _instance_manager| {
+                let client = match provider_http_client_from_config(config, &ssrf_guard_acfun)? {
+                    Some(client) => client,
+                    None => {
+                        synctv_media_providers::build_provider_http_client(ssrf_guard_acfun.clone())
+                            .map_err(|error| {
+                                crate::Error::Internal(format!(
+                                    "Failed to build AcFun provider HTTP client: {error}"
+                                ))
+                            })?
+                    }
+                };
+                Ok(Arc::new(AcFunProvider::with_http_client(client)))
+            }),
+        );
+
+        let ssrf_guard_cctv = self.ssrf_guard.clone();
+        self.register_factory(
+            CctvProvider::NAME,
+            Box::new(move |_instance_name, config, _instance_manager| {
+                let client = match provider_http_client_from_config(config, &ssrf_guard_cctv)? {
+                    Some(client) => client,
+                    None => {
+                        synctv_media_providers::build_provider_http_client(ssrf_guard_cctv.clone())
+                            .map_err(|error| {
+                                crate::Error::Internal(format!(
+                                    "Failed to build CCTV provider HTTP client: {error}"
+                                ))
+                            })?
+                    }
+                };
+                Ok(Arc::new(CctvProvider::with_http_client(client)))
+            }),
+        );
+
+        let ssrf_guard_fnos = self.ssrf_guard.clone();
+        self.register_factory(
+            FnosProvider::NAME,
+            Box::new(move |_instance_name, _config, _instance_manager| {
+                Ok(Arc::new(FnosProvider::new(ssrf_guard_fnos.clone())))
+            }),
+        );
+
+        let ssrf_guard_qnap = self.ssrf_guard.clone();
+        self.register_factory(
+            QnapProvider::NAME,
+            Box::new(move |_instance_name, config, _instance_manager| {
+                let client = match provider_http_client_from_config(config, &ssrf_guard_qnap)? {
+                    Some(client) => client,
+                    None => {
+                        synctv_media_providers::build_provider_http_client(ssrf_guard_qnap.clone())
+                            .map_err(|error| {
+                                crate::Error::Internal(format!(
+                                    "Failed to build QNAP provider HTTP client: {error}"
+                                ))
+                            })?
+                    }
+                };
+                Ok(Arc::new(QnapProvider::with_http_client(client)))
+            }),
+        );
+
+        let ssrf_guard_synology = self.ssrf_guard.clone();
+        self.register_factory(
+            SynologyProvider::NAME,
+            Box::new(move |_instance_name, config, _instance_manager| {
+                let client = match provider_http_client_from_config(config, &ssrf_guard_synology)? {
+                    Some(client) => client,
+                    None => synctv_media_providers::build_provider_http_client(
+                        ssrf_guard_synology.clone(),
+                    )
+                    .map_err(|error| {
+                        crate::Error::Internal(format!(
+                            "Failed to build Synology provider HTTP client: {error}"
+                        ))
+                    })?,
+                };
+                Ok(Arc::new(SynologyProvider::with_http_client(client)))
+            }),
+        );
+
+        let ssrf_guard_nextcloud = self.ssrf_guard.clone();
+        self.register_factory(
+            NextcloudProvider::NAME,
+            Box::new(move |_instance_name, config, _instance_manager| {
+                let client = match provider_http_client_from_config(config, &ssrf_guard_nextcloud)?
+                {
+                    Some(client) => client,
+                    None => synctv_media_providers::build_provider_http_client(
+                        ssrf_guard_nextcloud.clone(),
+                    )
+                    .map_err(|error| {
+                        crate::Error::Internal(format!(
+                            "Failed to build Nextcloud provider HTTP client: {error}"
+                        ))
+                    })?,
+                };
+                Ok(Arc::new(NextcloudProvider::with_http_client(client)))
+            }),
+        );
+
+        let ssrf_guard_seafile = self.ssrf_guard.clone();
+        self.register_factory(
+            SeafileProvider::NAME,
+            Box::new(move |_instance_name, config, _instance_manager| {
+                let client = match provider_http_client_from_config(config, &ssrf_guard_seafile)? {
+                    Some(client) => client,
+                    None => synctv_media_providers::build_provider_http_client(
+                        ssrf_guard_seafile.clone(),
+                    )
+                    .map_err(|error| {
+                        crate::Error::Internal(format!(
+                            "Failed to build Seafile provider HTTP client: {error}"
+                        ))
+                    })?,
+                };
+                Ok(Arc::new(SeafileProvider::with_http_client(client)))
+            }),
+        );
+
+        let ssrf_guard_truenas = self.ssrf_guard.clone();
+        self.register_factory(
+            TrueNasProvider::NAME,
+            Box::new(move |_instance_name, config, _instance_manager| {
+                let client = match provider_http_client_from_config(config, &ssrf_guard_truenas)? {
+                    Some(client) => client,
+                    None => synctv_media_providers::build_provider_http_client(
+                        ssrf_guard_truenas.clone(),
+                    )
+                    .map_err(|error| {
+                        crate::Error::Internal(format!(
+                            "Failed to build TrueNAS provider HTTP client: {error}"
+                        ))
+                    })?,
+                };
+                Ok(Arc::new(TrueNasProvider::with_http_client(client)))
+            }),
+        );
+
         // DirectUrl factory
         let ssrf_guard = self.ssrf_guard.clone();
         self.register_factory(
@@ -543,6 +802,7 @@ mod tests {
     }
 
     fn test_manager() -> ProvidersManager {
+        crate::install_process_crypto_provider();
         ProvidersManager::new(test_instance_manager()).checked("providers manager should build")
     }
 
@@ -567,6 +827,15 @@ mod tests {
         assert!(manager.has_factory("direct_url"));
         assert!(manager.has_factory("live_proxy"));
         assert!(manager.has_factory("cloudreve"));
+        assert!(manager.has_factory("twitch"));
+        assert!(manager.has_factory("youtube"));
+        assert!(manager.has_factory("huya"));
+        assert!(manager.has_factory("fnos"));
+        assert!(manager.has_factory("qnap"));
+        assert!(manager.has_factory("synology"));
+        assert!(manager.has_factory("nextcloud"));
+        assert!(manager.has_factory("seafile"));
+        assert!(manager.has_factory("truenas"));
         assert!(!manager.has_factory("unknown"));
     }
 
@@ -579,7 +848,21 @@ mod tests {
         assert!(types.contains(&"bilibili".to_string()));
         assert!(types.contains(&"live_proxy".to_string()));
         assert!(types.contains(&"cloudreve".to_string()));
-        assert_eq!(types.len(), 7);
+        assert!(types.contains(&"twitch".to_string()));
+        assert!(types.contains(&"youtube".to_string()));
+        assert!(types.contains(&"huya".to_string()));
+        assert!(types.contains(&"douyu".to_string()));
+        assert!(types.contains(&"douyin".to_string()));
+        assert!(types.contains(&"tiktok".to_string()));
+        assert!(types.contains(&"acfun".to_string()));
+        assert!(types.contains(&"cctv".to_string()));
+        assert!(types.contains(&"fnos".to_string()));
+        assert!(types.contains(&"qnap".to_string()));
+        assert!(types.contains(&"synology".to_string()));
+        assert!(types.contains(&"nextcloud".to_string()));
+        assert!(types.contains(&"seafile".to_string()));
+        assert!(types.contains(&"truenas".to_string()));
+        assert_eq!(types.len(), 21);
     }
 
     #[tokio::test]

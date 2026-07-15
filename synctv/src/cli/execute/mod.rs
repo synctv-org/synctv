@@ -44,8 +44,11 @@ mod playlist_provider;
 mod provider;
 mod provider_alist;
 mod provider_bilibili;
+mod provider_douyin;
 mod provider_emby;
 mod provider_rtmp;
+mod provider_tiktok;
+mod provider_twitch;
 mod review;
 mod room;
 mod room_playback;
@@ -67,8 +70,11 @@ use playlist_provider::execute_playlist_provider;
 use provider::execute_provider;
 use provider_alist::execute_provider_alist;
 use provider_bilibili::execute_provider_bilibili;
+use provider_douyin::execute_provider_douyin;
 use provider_emby::execute_provider_emby;
 use provider_rtmp::execute_provider_rtmp;
+use provider_tiktok::execute_provider_tiktok;
+use provider_twitch::execute_provider_twitch;
 use review::execute_review;
 use room::execute_room;
 use room_playback::execute_room_playback_state_update;
@@ -441,6 +447,60 @@ fn merge_provider_command_globals(command: &mut ProviderCommand, root: &GlobalCo
                 merge_remote_access_args(&mut args.access.remote, root);
             }
             ProviderBilibiliSubcommand::Binds(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+        ProviderSubcommand::Douyin(command) => match &mut command.command {
+            ProviderDouyinSubcommand::Bind(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderDouyinSubcommand::Binds(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderDouyinSubcommand::Unbind(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderDouyinSubcommand::Resolve(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderDouyinSubcommand::Posts(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+        ProviderSubcommand::Tiktok(command) => match &mut command.command {
+            ProviderTikTokSubcommand::Bind(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderTikTokSubcommand::Binds(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderTikTokSubcommand::Unbind(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderTikTokSubcommand::Resolve(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderTikTokSubcommand::User(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderTikTokSubcommand::Posts(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+        ProviderSubcommand::Twitch(command) => match &mut command.command {
+            ProviderTwitchSubcommand::Bind(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderTwitchSubcommand::Binds(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderTwitchSubcommand::Unbind(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderTwitchSubcommand::Resolve(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderTwitchSubcommand::Items(args) => {
                 merge_remote_access_args(&mut args.access.remote, root);
             }
         },
@@ -836,55 +896,143 @@ fn media_source_config_json_to_proto(
     raw: &str,
 ) -> Result<synctv_proto::source_config::MediaSourceConfig> {
     use synctv_proto::source_config::{
-        media_source_config, AlistMediaSourceConfig, BilibiliMediaSourceConfig,
-        CloudreveMediaSourceConfig, DirectUrlMediaSourceConfig, EmbyMediaSourceConfig,
-        LiveProxyMediaSourceConfig, RtmpMediaSourceConfig,
+        media_source_config, AcFunMediaSourceConfig, AlistMediaSourceConfig,
+        BilibiliMediaSourceConfig, CctvMediaSourceConfig, CloudreveMediaSourceConfig,
+        DirectUrlMediaSourceConfig, DouyinMediaSourceConfig, DouyuMediaSourceConfig,
+        EmbyMediaSourceConfig, FnosMediaSourceConfig, HuyaMediaSourceConfig,
+        LiveProxyMediaSourceConfig, NextcloudMediaSourceConfig, QnapMediaSourceConfig,
+        RtmpMediaSourceConfig, SeafileMediaSourceConfig, SynologyMediaSourceConfig,
+        TikTokMediaSourceConfig, TrueNasMediaSourceConfig, TwitchMediaSourceConfig,
+        YoutubeMediaSourceConfig,
     };
 
-    let provider = match provider {
-        CliSourceProvider::DirectUrl => {
-            media_source_config::Provider::DirectUrl(parse_cli_json::<DirectUrlMediaSourceConfig>(
-                "directUrl media sourceConfig",
-                raw,
-            )?)
-        }
-        CliSourceProvider::Bilibili => {
-            media_source_config::Provider::Bilibili(parse_cli_json::<BilibiliMediaSourceConfig>(
-                "bilibili media sourceConfig",
-                raw,
-            )?)
-        }
-        CliSourceProvider::Alist => {
-            media_source_config::Provider::Alist(parse_cli_json::<AlistMediaSourceConfig>(
-                "alist media sourceConfig",
-                raw,
-            )?)
-        }
-        CliSourceProvider::Emby => {
-            media_source_config::Provider::Emby(parse_cli_json::<EmbyMediaSourceConfig>(
-                "emby media sourceConfig",
-                raw,
-            )?)
-        }
-        CliSourceProvider::Rtmp => {
-            media_source_config::Provider::Rtmp(parse_cli_json::<RtmpMediaSourceConfig>(
-                "rtmp media sourceConfig",
-                raw,
-            )?)
-        }
-        CliSourceProvider::LiveProxy => {
-            media_source_config::Provider::LiveProxy(parse_cli_json::<LiveProxyMediaSourceConfig>(
-                "liveProxy media sourceConfig",
-                raw,
-            )?)
-        }
-        CliSourceProvider::Cloudreve => {
-            media_source_config::Provider::Cloudreve(parse_cli_json::<CloudreveMediaSourceConfig>(
-                "cloudreve media sourceConfig",
-                raw,
-            )?)
-        }
-    };
+    let provider =
+        match provider {
+            CliSourceProvider::DirectUrl => {
+                media_source_config::Provider::DirectUrl(parse_cli_json::<
+                    DirectUrlMediaSourceConfig,
+                >(
+                    "directUrl media sourceConfig", raw
+                )?)
+            }
+            CliSourceProvider::Bilibili => media_source_config::Provider::Bilibili(
+                parse_cli_json::<BilibiliMediaSourceConfig>("bilibili media sourceConfig", raw)?,
+            ),
+            CliSourceProvider::Alist => {
+                media_source_config::Provider::Alist(parse_cli_json::<AlistMediaSourceConfig>(
+                    "alist media sourceConfig",
+                    raw,
+                )?)
+            }
+            CliSourceProvider::Emby => {
+                media_source_config::Provider::Emby(parse_cli_json::<EmbyMediaSourceConfig>(
+                    "emby media sourceConfig",
+                    raw,
+                )?)
+            }
+            CliSourceProvider::Rtmp => {
+                media_source_config::Provider::Rtmp(parse_cli_json::<RtmpMediaSourceConfig>(
+                    "rtmp media sourceConfig",
+                    raw,
+                )?)
+            }
+            CliSourceProvider::LiveProxy => {
+                media_source_config::Provider::LiveProxy(parse_cli_json::<
+                    LiveProxyMediaSourceConfig,
+                >(
+                    "liveProxy media sourceConfig", raw
+                )?)
+            }
+            CliSourceProvider::Cloudreve => {
+                media_source_config::Provider::Cloudreve(parse_cli_json::<
+                    CloudreveMediaSourceConfig,
+                >(
+                    "cloudreve media sourceConfig", raw
+                )?)
+            }
+            CliSourceProvider::Twitch => {
+                media_source_config::Provider::Twitch(parse_cli_json::<TwitchMediaSourceConfig>(
+                    "twitch media sourceConfig",
+                    raw,
+                )?)
+            }
+            CliSourceProvider::Youtube => {
+                media_source_config::Provider::Youtube(parse_cli_json::<YoutubeMediaSourceConfig>(
+                    "YouTube media sourceConfig",
+                    raw,
+                )?)
+            }
+            CliSourceProvider::Huya => {
+                media_source_config::Provider::Huya(parse_cli_json::<HuyaMediaSourceConfig>(
+                    "huya media sourceConfig",
+                    raw,
+                )?)
+            }
+            CliSourceProvider::Douyu => {
+                media_source_config::Provider::Douyu(parse_cli_json::<DouyuMediaSourceConfig>(
+                    "douyu media sourceConfig",
+                    raw,
+                )?)
+            }
+            CliSourceProvider::Douyin => {
+                media_source_config::Provider::Douyin(parse_cli_json::<DouyinMediaSourceConfig>(
+                    "Douyin media sourceConfig",
+                    raw,
+                )?)
+            }
+            CliSourceProvider::Tiktok => {
+                media_source_config::Provider::Tiktok(parse_cli_json::<TikTokMediaSourceConfig>(
+                    "TikTok media sourceConfig",
+                    raw,
+                )?)
+            }
+            CliSourceProvider::Acfun => {
+                media_source_config::Provider::AcFun(parse_cli_json::<AcFunMediaSourceConfig>(
+                    "AcFun media sourceConfig",
+                    raw,
+                )?)
+            }
+            CliSourceProvider::Cctv => {
+                media_source_config::Provider::Cctv(parse_cli_json::<CctvMediaSourceConfig>(
+                    "CCTV media sourceConfig",
+                    raw,
+                )?)
+            }
+            CliSourceProvider::Fnos => {
+                media_source_config::Provider::Fnos(parse_cli_json::<FnosMediaSourceConfig>(
+                    "FNOS media sourceConfig",
+                    raw,
+                )?)
+            }
+            CliSourceProvider::Qnap => {
+                media_source_config::Provider::Qnap(parse_cli_json::<QnapMediaSourceConfig>(
+                    "QNAP media sourceConfig",
+                    raw,
+                )?)
+            }
+            CliSourceProvider::Synology => media_source_config::Provider::Synology(
+                parse_cli_json::<SynologyMediaSourceConfig>("Synology media sourceConfig", raw)?,
+            ),
+            CliSourceProvider::Nextcloud => {
+                media_source_config::Provider::Nextcloud(parse_cli_json::<
+                    NextcloudMediaSourceConfig,
+                >(
+                    "Nextcloud media sourceConfig", raw
+                )?)
+            }
+            CliSourceProvider::Seafile => {
+                media_source_config::Provider::Seafile(parse_cli_json::<SeafileMediaSourceConfig>(
+                    "Seafile media sourceConfig",
+                    raw,
+                )?)
+            }
+            CliSourceProvider::Truenas => {
+                media_source_config::Provider::Truenas(parse_cli_json::<TrueNasMediaSourceConfig>(
+                    "TrueNAS media sourceConfig",
+                    raw,
+                )?)
+            }
+        };
     Ok(synctv_proto::source_config::MediaSourceConfig {
         provider: Some(provider),
     })
@@ -895,11 +1043,21 @@ fn playlist_source_config_json_to_proto(
     raw: &str,
 ) -> Result<synctv_proto::source_config::PlaylistSourceConfig> {
     use synctv_proto::source_config::{
-        playlist_source_config, AlistPlaylistSourceConfig, CloudrevePlaylistSourceConfig,
-        EmbyPlaylistSourceConfig,
+        playlist_source_config, AlistPlaylistSourceConfig, BilibiliPlaylistSourceConfig,
+        CloudrevePlaylistSourceConfig, DouyinPlaylistSourceConfig, EmbyPlaylistSourceConfig,
+        FnosPlaylistSourceConfig, NextcloudPlaylistSourceConfig, QnapPlaylistSourceConfig,
+        SeafilePlaylistSourceConfig, SynologyPlaylistSourceConfig, TikTokPlaylistSourceConfig,
+        TrueNasPlaylistSourceConfig, TwitchPlaylistSourceConfig, YoutubePlaylistSourceConfig,
     };
 
     let provider = match provider {
+        CliSourceProvider::Bilibili => {
+            playlist_source_config::Provider::Bilibili(parse_cli_json::<
+                BilibiliPlaylistSourceConfig,
+            >(
+                "Bilibili playlist sourceConfig", raw
+            )?)
+        }
         CliSourceProvider::Alist => {
             playlist_source_config::Provider::Alist(parse_cli_json::<AlistPlaylistSourceConfig>(
                 "alist playlist sourceConfig",
@@ -919,37 +1077,73 @@ fn playlist_source_config_json_to_proto(
                 "cloudreve playlist sourceConfig", raw
             )?)
         }
+        CliSourceProvider::Twitch => {
+            playlist_source_config::Provider::Twitch(parse_cli_json::<TwitchPlaylistSourceConfig>(
+                "twitch playlist sourceConfig",
+                raw,
+            )?)
+        }
+        CliSourceProvider::Youtube => playlist_source_config::Provider::Youtube(parse_cli_json::<
+            YoutubePlaylistSourceConfig,
+        >(
+            "YouTube playlist sourceConfig",
+            raw,
+        )?),
+        CliSourceProvider::Douyin => {
+            playlist_source_config::Provider::Douyin(parse_cli_json::<DouyinPlaylistSourceConfig>(
+                "Douyin playlist sourceConfig",
+                raw,
+            )?)
+        }
+        CliSourceProvider::Tiktok => {
+            playlist_source_config::Provider::Tiktok(parse_cli_json::<TikTokPlaylistSourceConfig>(
+                "TikTok playlist sourceConfig",
+                raw,
+            )?)
+        }
+        CliSourceProvider::Fnos => {
+            playlist_source_config::Provider::Fnos(parse_cli_json::<FnosPlaylistSourceConfig>(
+                "FNOS playlist sourceConfig",
+                raw,
+            )?)
+        }
+        CliSourceProvider::Qnap => {
+            playlist_source_config::Provider::Qnap(parse_cli_json::<QnapPlaylistSourceConfig>(
+                "QNAP playlist sourceConfig",
+                raw,
+            )?)
+        }
+        CliSourceProvider::Synology => {
+            playlist_source_config::Provider::Synology(parse_cli_json::<
+                SynologyPlaylistSourceConfig,
+            >(
+                "Synology playlist sourceConfig", raw
+            )?)
+        }
+        CliSourceProvider::Nextcloud => {
+            playlist_source_config::Provider::Nextcloud(parse_cli_json::<
+                NextcloudPlaylistSourceConfig,
+            >(
+                "Nextcloud playlist sourceConfig", raw
+            )?)
+        }
+        CliSourceProvider::Seafile => playlist_source_config::Provider::Seafile(parse_cli_json::<
+            SeafilePlaylistSourceConfig,
+        >(
+            "Seafile playlist sourceConfig",
+            raw,
+        )?),
+        CliSourceProvider::Truenas => playlist_source_config::Provider::Truenas(parse_cli_json::<
+            TrueNasPlaylistSourceConfig,
+        >(
+            "TrueNAS playlist sourceConfig",
+            raw,
+        )?),
         other => bail!("{other:?} does not support playlist source_config"),
     };
     Ok(synctv_proto::source_config::PlaylistSourceConfig {
         provider: Some(provider),
     })
-}
-
-#[cfg(test)]
-mod source_config_tests {
-    use super::*;
-
-    type TestResult<T = ()> = anyhow::Result<T>;
-
-    #[test]
-    fn parses_cloudreve_playlist_source_config() -> TestResult {
-        let config = playlist_source_config_json_to_proto(
-            CliSourceProvider::Cloudreve,
-            r#"{"serverId":"cloudreve-server","path":"cloudreve://my/Shows"}"#,
-        )?;
-
-        let Some(synctv_proto::source_config::playlist_source_config::Provider::Cloudreve(config)) =
-            config.provider
-        else {
-            return Err(anyhow::anyhow!(
-                "Cloudreve playlist config did not produce its provider oneof"
-            ));
-        };
-        assert_eq!(config.server_id, "cloudreve-server");
-        assert_eq!(config.path, "cloudreve://my/Shows");
-        Ok(())
-    }
 }
 
 pub(in crate::cli) fn parse_cli_json<T>(label: &str, raw: &str) -> Result<T>
@@ -1111,4 +1305,251 @@ pub(in crate::cli) fn normalized_provider_types(providers: &[CliSourceProvider])
 
 pub fn version_string() -> String {
     format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+}
+
+#[cfg(test)]
+mod source_config_tests {
+    use super::*;
+
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    #[test]
+    fn parses_cloudreve_playlist_source_config() -> TestResult {
+        let config = playlist_source_config_json_to_proto(
+            CliSourceProvider::Cloudreve,
+            r#"{"serverId":"cloudreve-server","path":"cloudreve://my/Shows"}"#,
+        )?;
+
+        let Some(synctv_proto::source_config::playlist_source_config::Provider::Cloudreve(config)) =
+            config.provider
+        else {
+            return Err(anyhow::anyhow!(
+                "Cloudreve playlist config did not produce its provider oneof"
+            ));
+        };
+        assert_eq!(config.server_id, "cloudreve-server");
+        assert_eq!(config.path, "cloudreve://my/Shows");
+        Ok(())
+    }
+
+    #[test]
+    fn parses_youtube_media_source_config() -> TestResult {
+        let config = media_source_config_json_to_proto(
+            CliSourceProvider::Youtube,
+            r#"{"videoId":"dQw4w9WgXcQ","shared":true}"#,
+        )?;
+
+        let Some(synctv_proto::source_config::media_source_config::Provider::Youtube(config)) =
+            config.provider
+        else {
+            return Err(anyhow::anyhow!(
+                "YouTube media config did not produce its provider oneof"
+            ));
+        };
+        assert_eq!(config.video_id, "dQw4w9WgXcQ");
+        assert!(config.shared);
+        Ok(())
+    }
+
+    #[test]
+    fn parses_douyin_media_and_playlist_source_configs() -> TestResult {
+        use synctv_proto::source_config::douyin_media_source_config::Source;
+
+        let media = media_source_config_json_to_proto(
+            CliSourceProvider::Douyin,
+            r#"{"live":{"webRid":"123456","shared":true}}"#,
+        )?;
+        let Some(synctv_proto::source_config::media_source_config::Provider::Douyin(media)) =
+            media.provider
+        else {
+            return Err(anyhow::anyhow!(
+                "Douyin media config did not produce its provider oneof"
+            ));
+        };
+        assert!(matches!(media.source, Some(Source::Live(_))));
+
+        let playlist = playlist_source_config_json_to_proto(
+            CliSourceProvider::Douyin,
+            r#"{"secUid":"MS4wLjABAAAAexample","shared":true}"#,
+        )?;
+        let Some(synctv_proto::source_config::playlist_source_config::Provider::Douyin(config)) =
+            playlist.provider
+        else {
+            return Err(anyhow::anyhow!(
+                "Douyin playlist config did not produce its provider oneof"
+            ));
+        };
+        assert_eq!(config.sec_uid, "MS4wLjABAAAAexample");
+        assert!(config.shared);
+        Ok(())
+    }
+
+    #[test]
+    fn parses_tiktok_media_and_playlist_source_configs() -> TestResult {
+        use synctv_proto::source_config::tik_tok_media_source_config::Source;
+
+        let media = media_source_config_json_to_proto(
+            CliSourceProvider::Tiktok,
+            r#"{"live":{"uniqueId":"creator_name","shared":true}}"#,
+        )?;
+        let Some(synctv_proto::source_config::media_source_config::Provider::Tiktok(media)) =
+            media.provider
+        else {
+            return Err(anyhow::anyhow!(
+                "TikTok media config did not produce its provider oneof"
+            ));
+        };
+        assert!(matches!(media.source, Some(Source::Live(_))));
+
+        let playlist = playlist_source_config_json_to_proto(
+            CliSourceProvider::Tiktok,
+            r#"{"secUid":"MS4wLjABAAAAexample","shared":true}"#,
+        )?;
+        let Some(synctv_proto::source_config::playlist_source_config::Provider::Tiktok(config)) =
+            playlist.provider
+        else {
+            return Err(anyhow::anyhow!(
+                "TikTok playlist config did not produce its provider oneof"
+            ));
+        };
+        assert_eq!(config.sec_uid, "MS4wLjABAAAAexample");
+        assert!(config.shared);
+        Ok(())
+    }
+
+    #[test]
+    fn parses_twitch_media_and_playlist_source_configs() -> TestResult {
+        use synctv_proto::source_config::twitch_media_source_config::Source;
+
+        let media = media_source_config_json_to_proto(
+            CliSourceProvider::Twitch,
+            r#"{"video":{"videoId":"1234","shared":true}}"#,
+        )?;
+        let Some(synctv_proto::source_config::media_source_config::Provider::Twitch(media)) =
+            media.provider
+        else {
+            return Err(anyhow::anyhow!(
+                "Twitch media config did not produce its provider oneof"
+            ));
+        };
+        assert!(matches!(media.source, Some(Source::Video(_))));
+
+        let playlist = playlist_source_config_json_to_proto(
+            CliSourceProvider::Twitch,
+            r#"{"channel":{"channel":"streamer","content":4},"shared":true}"#,
+        )?;
+        let Some(synctv_proto::source_config::playlist_source_config::Provider::Twitch(config)) =
+            playlist.provider
+        else {
+            return Err(anyhow::anyhow!(
+                "Twitch playlist config did not produce its provider oneof"
+            ));
+        };
+        let Some(synctv_proto::source_config::twitch_playlist_source_config::Source::Channel(
+            channel,
+        )) = config.source
+        else {
+            return Err(anyhow::anyhow!("expected Twitch channel playlist source"));
+        };
+        assert_eq!(channel.channel, "streamer");
+        assert_eq!(
+            channel.content,
+            synctv_proto::source_config::TwitchPlaylistContent::Clips as i32
+        );
+        assert!(config.shared);
+        Ok(())
+    }
+
+    #[test]
+    fn parses_huya_live_and_video_source_configs() -> TestResult {
+        use synctv_proto::source_config::huya_media_source_config::Source;
+
+        for (raw, expected) in [
+            (r#"{"live":{"roomId":"660000"}}"#, "live"),
+            (r#"{"video":{"videoId":"1002412640"}}"#, "video"),
+        ] {
+            let media = media_source_config_json_to_proto(CliSourceProvider::Huya, raw)?;
+            let Some(synctv_proto::source_config::media_source_config::Provider::Huya(config)) =
+                media.provider
+            else {
+                return Err(anyhow::anyhow!(
+                    "Huya media config did not produce its provider oneof"
+                ));
+            };
+            let actual = match config.source {
+                Some(Source::Live(_)) => "live",
+                Some(Source::Video(_)) => "video",
+                None => "missing",
+            };
+            assert_eq!(actual, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parses_all_youtube_playlist_source_variants() -> TestResult {
+        use synctv_proto::source_config::youtube_playlist_source_config::Source;
+
+        for (raw, expected) in [
+            (
+                r#"{"shared":true,"playlist":{"playlistId":"PL-example"}}"#,
+                "playlist",
+            ),
+            (
+                r#"{"shared":false,"channel":{"channelId":"UC-example"}}"#,
+                "channel",
+            ),
+            (
+                r#"{"shared":false,"search":{"query":"rust media server"}}"#,
+                "search",
+            ),
+            (r#"{"shared":false,"trending":{}}"#, "trending"),
+            (r#"{"shared":true,"subscriptions":{}}"#, "subscriptions"),
+            (r#"{"shared":true,"likedVideos":{}}"#, "likedVideos"),
+            (r#"{"shared":true,"watchLater":{}}"#, "watchLater"),
+        ] {
+            let config = playlist_source_config_json_to_proto(CliSourceProvider::Youtube, raw)?;
+            let Some(synctv_proto::source_config::playlist_source_config::Provider::Youtube(
+                config,
+            )) = config.provider
+            else {
+                return Err(anyhow::anyhow!(
+                    "YouTube playlist config did not produce its provider oneof"
+                ));
+            };
+            let actual = match config.source {
+                Some(Source::Playlist(_)) => "playlist",
+                Some(Source::Channel(_)) => "channel",
+                Some(Source::Search(_)) => "search",
+                Some(Source::Trending(_)) => "trending",
+                Some(Source::Subscriptions(_)) => "subscriptions",
+                Some(Source::LikedVideos(_)) => "likedVideos",
+                Some(Source::WatchLater(_)) => "watchLater",
+                None => "missing",
+            };
+            assert_eq!(actual, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parses_truenas_playlist_source_config() -> TestResult {
+        let config = playlist_source_config_json_to_proto(
+            CliSourceProvider::Truenas,
+            r#"{"serverId":"nas-home","search":{"path":"/mnt/tank","query":"movie"}}"#,
+        )?;
+        let Some(synctv_proto::source_config::playlist_source_config::Provider::Truenas(config)) =
+            config.provider
+        else {
+            return Err(anyhow::anyhow!(
+                "TrueNAS playlist config did not produce its provider oneof"
+            ));
+        };
+        assert_eq!(config.server_id, "nas-home");
+        assert!(matches!(
+            config.source,
+            Some(synctv_proto::source_config::true_nas_playlist_source_config::Source::Search(_))
+        ));
+        Ok(())
+    }
 }

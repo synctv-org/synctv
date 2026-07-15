@@ -415,7 +415,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let ctx = self.attach_provider_store(
+        let mut ctx = self.attach_provider_store(
             self.build_provider_context(
                 user_id,
                 media.creator_id.as_ref(),
@@ -427,25 +427,15 @@ impl ClientApiImpl {
             )?,
             provider.as_ref(),
         );
+        if let Some(state) = state {
+            ctx = ctx
+                .with_playback_generation(state.playback_generation)
+                .with_playback_is_playing(state.is_playing);
+        }
         let provider_result = provider
             .generate_playback(&ctx, &media.source_config)
             .await
             .map_err(ApiError::from)?;
-        if let Some(state) = state {
-            self.register_provider_playback_session(
-                super::playback_lifecycle::ProviderPlaybackRegistration {
-                    state,
-                    actor_user_id: user_id,
-                    provider: provider.as_ref(),
-                    provider_name: media.source_provider.as_str(),
-                    provider_instance_name: media.provider_instance_name.as_deref(),
-                    credential_owner_id: media.creator_id.as_ref(),
-                    source_config: &media.source_config,
-                    result: &provider_result,
-                },
-            )
-            .await?;
-        }
         let source_metadata = resolve_playback_source_metadata(
             &self.room_service,
             self.provider_stores.as_ref(),
@@ -557,7 +547,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let ctx = self.attach_provider_store(
+        let mut ctx = self.attach_provider_store(
             self.build_provider_context(
                 user_id,
                 playlist.creator_id.as_ref(),
@@ -569,25 +559,15 @@ impl ClientApiImpl {
             )?,
             provider.as_ref(),
         );
+        if let Some(state) = state {
+            ctx = ctx
+                .with_playback_generation(state.playback_generation)
+                .with_playback_is_playing(state.is_playing);
+        }
         let provider_result = provider
             .generate_playback(&ctx, &item.source_config)
             .await
             .map_err(ApiError::from)?;
-        if let Some(state) = state {
-            self.register_provider_playback_session(
-                super::playback_lifecycle::ProviderPlaybackRegistration {
-                    state,
-                    actor_user_id: user_id,
-                    provider: provider.as_ref(),
-                    provider_name: provider.name(),
-                    provider_instance_name: source_fields.provider_instance_name,
-                    credential_owner_id: playlist.creator_id.as_ref(),
-                    source_config: &item.source_config,
-                    result: &provider_result,
-                },
-            )
-            .await?;
-        }
 
         let source_metadata = resolve_playback_source_metadata(
             &self.room_service,
@@ -1101,6 +1081,16 @@ impl crate::impls::playback::PlaybackService for ClientApiImpl {
                 room_id = %state.room_id,
                 error = %error,
                 "Provider playback progress report failed"
+            );
+        }
+    }
+
+    async fn reap_provider_playback_sessions(&self, force: bool) {
+        if let Err(error) = self.reap_provider_lifecycle_sessions(force).await {
+            tracing::warn!(
+                error = %error,
+                force,
+                "Provider playback lifecycle reaper failed"
             );
         }
     }

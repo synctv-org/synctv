@@ -9,7 +9,7 @@ import { Aside, FileTree, Steps } from '@astrojs/starlight/components';
 
 SyncTV is a Rust workspace. Local development usually needs:
 
-- Rust stable toolchain.
+- Rust nightly toolchain (managed by the repository-root `rust-toolchain.toml`).
 - PostgreSQL.
 - Redis.
 - Node.js and npm for the `docs/` site.
@@ -20,7 +20,7 @@ Check versions:
 
 ```bash
 rustc --version
-cargo --version
+cargo +nightly --version
 docker --version
 docker compose version
 node --version
@@ -84,7 +84,7 @@ Remove containers and volumes:
 make dev-clean
 ```
 
-Development Compose only starts local dependency services. The SyncTV backend runs on the host with `cargo run`.
+Development Compose only starts local dependency services. The SyncTV backend runs on the host with `cargo +nightly run`.
 
 Casdoor/OAuth2 providers are configured through runtime settings. After Casdoor starts, create an application in the Casdoor console, then write `oauth2.providers` with `synctv settings update oauth2`.
 
@@ -96,7 +96,7 @@ The Makefile exports the local runtime environment:
 make dev-serve
 ```
 
-This starts PostgreSQL and Redis first, then runs SyncTV with local `cargo run`. Start `make dev-stack` first when the full dependency set is needed.
+This starts PostgreSQL and Redis first, then runs SyncTV with local `cargo +nightly run`. Start `make dev-stack` first when the full dependency set is needed.
 Development startup defaults to the `debug` log level so HTTP request logs are visible. Override it with `SYNCTV_LOGGING_LEVEL` in `.env.synctv`.
 
 For a background process with the same development settings:
@@ -133,26 +133,26 @@ Manual flow:
 3. Validate configuration:
 
    ```bash
-   cargo run -p synctv --bin synctv -- config validate
+   cargo +nightly run -p synctv --bin synctv -- config validate
    ```
 
 4. Start the service:
 
    ```bash
-   cargo run -p synctv --bin synctv -- serve
+   cargo +nightly run -p synctv --bin synctv -- serve
    ```
 </Steps>
 
 With a config file:
 
 ```bash
-cargo run -p synctv --bin synctv -- serve --config synctv.yaml
+cargo +nightly run -p synctv --bin synctv -- serve --config synctv.yaml
 ```
 
 Dry-run startup:
 
 ```bash
-cargo run -p synctv --bin synctv -- serve --config synctv.yaml --dry-run
+cargo +nightly run -p synctv --bin synctv -- serve --config synctv.yaml --dry-run
 ```
 
 ## Configuration Validation
@@ -160,14 +160,14 @@ cargo run -p synctv --bin synctv -- serve --config synctv.yaml --dry-run
 After changing configuration structures:
 
 ```bash
-cargo run -p synctv --bin synctv -- config --config synctv.yaml validate
+cargo +nightly run -p synctv --bin synctv -- config --config synctv.yaml validate
 ```
 
 Inspect effective config with secrets redacted:
 
 ```bash
-cargo run -p synctv --bin synctv -- config --config synctv.yaml show
-cargo run -p synctv --bin synctv -- config --config synctv.yaml show --output json
+cargo +nightly run -p synctv --bin synctv -- config --config synctv.yaml show
+cargo +nightly run -p synctv --bin synctv -- config --config synctv.yaml show --output json
 ```
 
 See [How Configuration Works](../../configuration/how-configuration-works/) for precedence and environment variable naming.
@@ -177,13 +177,13 @@ See [How Configuration Works](../../configuration/how-configuration-works/) for 
 Service startup runs embedded SQLx migrations automatically. To preflight database state without starting the service, run:
 
 ```bash
-cargo run -p synctv --bin synctv -- db migrate
+cargo +nightly run -p synctv --bin synctv -- db migrate
 ```
 
 Check database and migration state:
 
 ```bash
-cargo run -p synctv --bin synctv -- db status
+cargo +nightly run -p synctv --bin synctv -- db status
 ```
 
 If database state looks wrong, check:
@@ -207,46 +207,52 @@ User-facing labels and display names, such as room names, are product policy by 
 
 ## Tests and Checks
 
-CI-equivalent non-ignored tests:
+Complete workspace suite, including Testcontainers and ignored integration tests:
 
 ```bash
-cargo nextest run --workspace --locked --run-ignored default --nff
+make nextest
+```
+
+Fast non-ignored tests:
+
+```bash
+cargo +nightly nextest run --workspace --locked --run-ignored default --nff
 ```
 
 Documentation tests:
 
 ```bash
-cargo test --workspace --doc --locked
+cargo +nightly test --workspace --doc --locked
 ```
 
 Ignored tests that require Docker/PostgreSQL/Redis:
 
 ```bash
-cargo nextest run --workspace --locked --run-ignored only --nff
+cargo +nightly nextest run --workspace --locked --run-ignored only --nff
 ```
 
 One crate:
 
 ```bash
-cargo nextest run -p synctv-api --locked --run-ignored default --nff
+cargo +nightly nextest run -p synctv-api --locked --run-ignored default --nff
 ```
 
 One test:
 
 ```bash
-cargo nextest run -p synctv-api test_name --locked --run-ignored default --nff
+cargo +nightly nextest run -p synctv-api test_name --locked --run-ignored default --nff
 ```
 
 Format:
 
 ```bash
-cargo fmt --all --check
+cargo +nightly fmt --all --check
 ```
 
 Clippy:
 
 ```bash
-cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo +nightly clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 Do not use `--all-features` for the full workspace: some feature pairs are
@@ -262,12 +268,12 @@ compiled. When changing TLS-related code, check all four provider/root
 combinations:
 
 ```bash
-cargo check -p synctv --no-default-features --locked
-cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-webpki-roots" --locked
-cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-native-roots" --locked
-cargo check -p synctv --no-default-features --features "tls-ring,tls-webpki-roots" --locked
-cargo check -p synctv --no-default-features --features "tls-ring,tls-native-roots" --locked
-cargo check -p synctv --no-default-features --features "k8s,mimalloc,tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
+cargo +nightly check -p synctv --no-default-features --locked
+cargo +nightly check -p synctv --no-default-features --features "tls-aws-lc,tls-webpki-roots" --locked
+cargo +nightly check -p synctv --no-default-features --features "tls-aws-lc,tls-native-roots" --locked
+cargo +nightly check -p synctv --no-default-features --features "tls-ring,tls-webpki-roots" --locked
+cargo +nightly check -p synctv --no-default-features --features "tls-ring,tls-native-roots" --locked
+cargo +nightly check -p synctv --no-default-features --features "k8s,mimalloc,tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
 ```
 
 Run focused tests first for the area you changed, then broader checks.
@@ -280,8 +286,9 @@ After changing Providers, playback URL signing, proxying, manifests, subtitles, 
 - use the `synctv` CLI to create users, rooms, Providers, media, dynamic playlists, RTMP publish keys, and playback state;
 - keep a room active with a real WebSocket connection;
 - use `curl` to request every returned direct/proxy URL, manifest, indexed segment, subtitle, danmaku, thumbnail, and Range URL;
-- cover Direct URL, Alist, Emby, Jellyfin, Bilibili anonymous playback, RTMP, live proxy, HLS, FLV, cache MISS/HIT, URL expiry, and resource cleanup;
+- cover Direct URL, Alist, Cloudreve, Emby/Jellyfin, Bilibili, Twitch, YouTube, Douyin, TikTok, Huya, Douyu, AcFun, CCTV, FNOS, QNAP, Synology, Nextcloud, Seafile, TrueNAS, RTMP, and live proxy;
 - cover dynamic playlist returned paths, media resolution, playback, switching, cover/thumbnail routes, and target changes after auto-advance;
+- cover the App's typed source-config codecs, Provider bindings, parse/preview flows, partial selection, dynamic-playlist creation, and playback-mode selection;
 - test RTMP/live proxy with a real upstream publisher, then verify stream info, HLS playlists and segments, FLV, and idle cleanup after disconnect;
 - add `synctv` CLI coverage before accepting a workflow missing CLI support.
 
@@ -308,12 +315,12 @@ make dev-up
 local_database_url="postgresql://synctv:synctv@localhost:5432/synctv"
 
 SYNCTV_DATABASE_URL="$local_database_url" \
-cargo run -p synctv --bin synctv -- db migrate
+cargo +nightly run -p synctv --bin synctv -- db migrate
 
 DATABASE_URL="$local_database_url" \
-cargo sqlx prepare --workspace
+cargo +nightly sqlx prepare --workspace
 
-SQLX_OFFLINE=true cargo check --workspace --all-targets
+SQLX_OFFLINE=true cargo +nightly check --workspace --all-targets
 ```
 
 ## OpenAPI Feature
@@ -323,13 +330,13 @@ Built-in OpenAPI docs require the `openapi` feature.
 Check:
 
 ```bash
-cargo check --workspace --all-targets --features openapi
+cargo +nightly check --workspace --all-targets --features openapi
 ```
 
 Run with Swagger UI:
 
 ```bash
-cargo run -p synctv --features openapi --bin synctv -- serve
+cargo +nightly run -p synctv --features openapi --bin synctv -- serve
 ```
 
 See [OpenAPI Access](../../reference/openapi/) for URLs.
@@ -380,9 +387,9 @@ SYNCTV_DOCS_SITE=https://example.com SYNCTV_DOCS_BASE=/synctv npm run build
 CLI definitions live under `synctv/src/cli/`. After changing commands or arguments, check:
 
 ```bash
-cargo run -p synctv --bin synctv -- --help
-cargo run -p synctv --bin synctv -- user --help
-cargo run -p synctv --bin synctv -- provider --help
+cargo +nightly run -p synctv --bin synctv -- --help
+cargo +nightly run -p synctv --bin synctv -- user --help
+cargo +nightly run -p synctv --bin synctv -- provider --help
 ```
 
 Update [CLI Reference](../../reference/cli/) for new commands.

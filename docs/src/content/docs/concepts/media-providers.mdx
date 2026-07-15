@@ -9,7 +9,7 @@ SyncTV 不保存媒体文件。它把外部媒体源解析成播放结果，再�
 
 | 能力 | 说明 |
 | --- | --- |
-| 浏览和搜索 | 从 Alist、Emby/Jellyfin、Bilibili、远程服务或其他后端列出媒体 |
+| 浏览和搜索 | 从视频网站、直播平台、Alist、Cloudreve、Emby/Jellyfin、NAS 或远程服务列出媒体 |
 | 解析播放 | 把选中的媒体转换成播放 URL、代理 URL、header、字幕或变体 |
 | 管理凭据 | 保存访问外部服务需要的 token、Cookie、API key 或账号信息 |
 | 暴露能力 | 告诉客户端是否支持直连、代理、Range、直播或特定后端能力 |
@@ -36,6 +36,8 @@ HTTP、gRPC 和管理 API 以 `PlaybackResult` 为事实来源，只做传输参
 | Bilibili | 匿名播放、DASH/MPD proxy default、proxy manifest segments、字幕、danmaku、thumbnail、缓存 metadata、CDN headers。 |
 | RTMP | publish key、stream info、HLS playlist/segment、FLV、provider-proxy URL、idle cleanup。 |
 | live proxy | 外部 RTMP/HTTP-FLV 拉流、HLS/FLV provider-proxy URL、publisher 注册、idle cleanup 注销。 |
+| 视频平台 | 平台原生清晰度/CDN、字幕、弹幕或聊天、封面、短期 URL 刷新和账号 feed。 |
+| NAS/私有云 | 文件/媒体库双路径、Preview/thumbnail、Range、原生转码/remux、播放进度或收藏状态。 |
 
 每个返回给客户端的 URL 都需要真实请求验证。新增 mode 时，同步实现 resolver、缓存命中/失效、URL 过期和手动 E2E 覆盖。
 
@@ -47,6 +49,11 @@ HTTP、gRPC 和管理 API 以 `PlaybackResult` 为事实来源，只做传输参
 | Alist | 聚合网盘或文件服务 | 上游认证、目录权限和 Range 支持会影响播放 |
 | Emby/Jellyfin | 私有媒体库 | 转码、字幕、码率和用户权限来自上游 |
 | Bilibili | 平台视频解析 | Cookie、Referer、UA 和风控变化会影响可用性 |
+| Twitch/YouTube/抖音/TikTok | 直播、视频、频道和账号 feed | OAuth scope、Cookie、地区与短期播放 URL |
+| 虎牙/斗鱼/AcFun/CCTV | 公开直播与视频解析 | 上游页面和签名协议变化 |
+| Cloudreve | 私有云文件与目录 | 服务器可能使用 page 或 cursor 分页 |
+| FNOS/QNAP/Synology | NAS 文件与原生媒体库 | 固件版本、媒体服务和转码能力差异 |
+| Nextcloud/Seafile/TrueNAS | 私有云文件、收藏与搜索 | 应用密码、资料库解锁和存储路径权限 |
 | 远程 Provider | 把媒体解析能力放到独立服务 | 需要稳定的认证、网络和版本约定 |
 | RTMP/直播 | 房间内直播和推流 | 多副本时要明确 HLS backend 或 publisher-node proxy |
 
@@ -65,3 +72,5 @@ Provider 凭据属于敏感信息。生产环境应配置 `security.credential_e
 - 按来源接入媒体：读 [添加媒体](../../use/media-sources/)。
 - 理解直连、代理和播放信息：读 [播放模型](../playback-model/)。
 - 配置 Provider 行为：读 [媒体 Provider 配置](../../configuration/media-providers/)。
+- 逐个 Provider 使用：读 [Provider 使用手册](../../use/provider-guide/)。
+- 开发 Provider：读 [Provider 开发指南](../../develop/provider-development/)。

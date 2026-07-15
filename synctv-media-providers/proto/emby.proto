@@ -156,11 +156,41 @@ message SystemInfoResp {
 message FsListReq {
   string host = 1;
   string token = 2;
-  string path = 3;
-  uint64 start_index = 4;
-  uint64 limit = 5;
-  string search_term = 6;
-  string user_id = 7;
+  string user_id = 3;
+  oneof source {
+    EmbyFolderListSource folder = 4;
+    EmbyFavoriteItemsListSource favorite_items = 5;
+    EmbyFavoritePeopleListSource favorite_people = 6;
+    EmbyPersonItemsListSource person_items = 7;
+    EmbyContinueWatchingListSource continue_watching = 8;
+    EmbyNextUpListSource next_up = 9;
+    EmbyRecentlyAddedListSource recently_added = 10;
+    EmbyPlaylistsListSource playlists = 11;
+    EmbyCollectionsListSource collections = 12;
+    EmbyGenresListSource genres = 13;
+    EmbyGenreItemsListSource genre_items = 14;
+  }
+  uint64 start_index = 15;
+  uint64 limit = 16;
+  string search_term = 17;
+}
+
+message EmbyFolderListSource { string parent_id = 1; }
+message EmbyFavoriteItemsListSource { repeated string item_types = 1; }
+message EmbyFavoritePeopleListSource {}
+message EmbyPersonItemsListSource {
+  string person_id = 1;
+  repeated string item_types = 2;
+}
+message EmbyContinueWatchingListSource {}
+message EmbyNextUpListSource {}
+message EmbyRecentlyAddedListSource { repeated string item_types = 1; }
+message EmbyPlaylistsListSource {}
+message EmbyCollectionsListSource {}
+message EmbyGenresListSource { repeated string item_types = 1; }
+message EmbyGenreItemsListSource {
+  string genre_id = 1;
+  repeated string item_types = 2;
 }
 
 message Path {

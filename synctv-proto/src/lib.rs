@@ -196,6 +196,186 @@ pub mod providers {
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[allow(clippy::pedantic)]
+    pub mod twitch {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.twitch.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.twitch.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod huya {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.huya.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.huya.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod douyu {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.douyu.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.douyu.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod acfun {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.acfun.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.acfun.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod cctv {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.cctv.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.cctv.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod youtube {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.youtube.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.youtube.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod douyin {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.douyin.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.douyin.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod tiktok {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.tiktok.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.tiktok.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod fnos {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.fnos.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.fnos.serde.rs"
+        ));
+    }
+
+    pub mod qnap {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.qnap.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.qnap.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod synology {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.synology.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.synology.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod nextcloud {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.nextcloud.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.nextcloud.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod seafile {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.seafile.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.seafile.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod truenas {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.truenas.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.truenas.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
     pub mod alist {
         include!(concat!(
             env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
@@ -316,6 +496,186 @@ pub mod playback_provider {
             "/synctv.playback_provider.live_proxy.serde.rs"
         ));
     }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod twitch {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.twitch.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.twitch.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod youtube {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.youtube.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.youtube.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod huya {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.huya.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.huya.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod douyu {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.douyu.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.douyu.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod douyin {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.douyin.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.douyin.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod tiktok {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.tiktok.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.tiktok.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod acfun {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.acfun.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.acfun.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod cctv {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.cctv.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.cctv.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod fnos {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.fnos.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.fnos.serde.rs"
+        ));
+    }
+
+    pub mod qnap {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.qnap.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.qnap.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod synology {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.synology.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.synology.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod nextcloud {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.nextcloud.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.nextcloud.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod seafile {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.seafile.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.seafile.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod truenas {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.truenas.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.truenas.serde.rs"
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -403,7 +763,11 @@ mod tests {
         crate::client::ProviderTarget {
             target: Some(crate::client::provider_target::Target::Emby(
                 crate::client::EmbyTarget {
-                    item_id: item_id.to_string(),
+                    target: Some(crate::client::emby_target::Target::Item(
+                        crate::client::EmbyItemTarget {
+                            item_id: item_id.to_string(),
+                        },
+                    )),
                 },
             )),
         }
@@ -1005,8 +1369,7 @@ mod tests {
 
     #[test]
     fn http_json_start_playback_request_accepts_structured_target() {
-        let json =
-            r#"{"playlistId":"playlist-123","target":{"emby":{"itemId":"provider-item-1"}}}"#;
+        let json = r#"{"playlistId":"playlist-123","target":{"emby":{"item":{"itemId":"provider-item-1"}}}}"#;
 
         let decoded: crate::client::StartPlaybackRequest =
             serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
@@ -1938,6 +2301,7 @@ mod tests {
             sort_direction: 99,
             availability: 99,
             refresh: false,
+            preview_source_config: None,
         };
 
         for error in [
@@ -1977,6 +2341,7 @@ mod tests {
             sort_direction: crate::client::SortDirection::Unspecified as i32,
             availability: crate::client::ResourceAvailabilityFilter::All as i32,
             refresh: false,
+            preview_source_config: None,
         })
         .unwrap();
     }

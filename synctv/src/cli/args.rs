@@ -666,6 +666,20 @@ pub enum CliSourceProvider {
     Rtmp,
     LiveProxy,
     Cloudreve,
+    Twitch,
+    Huya,
+    Douyu,
+    Douyin,
+    Acfun,
+    Cctv,
+    Fnos,
+    Qnap,
+    Synology,
+    Nextcloud,
+    Seafile,
+    Truenas,
+    Youtube,
+    Tiktok,
 }
 
 impl CliSourceProvider {
@@ -678,6 +692,20 @@ impl CliSourceProvider {
             Self::Rtmp => synctv_proto::source_config::SourceProvider::Rtmp,
             Self::LiveProxy => synctv_proto::source_config::SourceProvider::LiveProxy,
             Self::Cloudreve => synctv_proto::source_config::SourceProvider::Cloudreve,
+            Self::Twitch => synctv_proto::source_config::SourceProvider::Twitch,
+            Self::Huya => synctv_proto::source_config::SourceProvider::Huya,
+            Self::Douyu => synctv_proto::source_config::SourceProvider::Douyu,
+            Self::Douyin => synctv_proto::source_config::SourceProvider::Douyin,
+            Self::Acfun => synctv_proto::source_config::SourceProvider::Acfun,
+            Self::Cctv => synctv_proto::source_config::SourceProvider::Cctv,
+            Self::Fnos => synctv_proto::source_config::SourceProvider::Fnos,
+            Self::Qnap => synctv_proto::source_config::SourceProvider::Qnap,
+            Self::Synology => synctv_proto::source_config::SourceProvider::Synology,
+            Self::Nextcloud => synctv_proto::source_config::SourceProvider::Nextcloud,
+            Self::Seafile => synctv_proto::source_config::SourceProvider::Seafile,
+            Self::Truenas => synctv_proto::source_config::SourceProvider::Truenas,
+            Self::Youtube => synctv_proto::source_config::SourceProvider::Youtube,
+            Self::Tiktok => synctv_proto::source_config::SourceProvider::Tiktok,
         }
     }
 

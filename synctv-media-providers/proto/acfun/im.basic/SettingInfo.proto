@@ -1,0 +1,8 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+message SettingInfo {
+	string locale = 1;
+	sint32 timezone = 2;
+}

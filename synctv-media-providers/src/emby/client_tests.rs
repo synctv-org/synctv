@@ -1,9 +1,45 @@
 use super::*;
+use wiremock::matchers::{header, method, path, query_param};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 fn missing(message: &'static str) -> Box<dyn std::error::Error + Send + Sync> {
     anyhow::anyhow!(message).into()
+}
+
+async fn mount_api_prefix_probe(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/System/Info/Public"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Id": "server-1",
+            "ServerName": "Test Emby",
+            "Version": "4.9.0"
+        })))
+        .mount(server)
+        .await;
+}
+
+fn authenticated_client(server: &MockServer) -> Result<EmbyClient, EmbyError> {
+    crate::install_process_crypto_provider();
+    EmbyClient::with_credentials_and_http_client(
+        server.uri(),
+        "token-1",
+        "user-1",
+        reqwest::Client::new(),
+    )
+}
+
+fn items_response(item_type: &str) -> serde_json::Value {
+    serde_json::json!({
+        "Items": [{
+            "Id": "item-1",
+            "Name": "Item One",
+            "Type": item_type,
+            "IsFolder": false
+        }],
+        "TotalRecordCount": 1
+    })
 }
 
 #[test]
@@ -347,5 +383,183 @@ fn test_endpoint_url_uses_host_path_prefix() -> TestResult {
         client.endpoint_url_with_prefix("System/Info", "/custom-prefix")?,
         "https://media.example.com/custom-prefix/System/Info"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn fs_list_favorite_items_uses_emby_favorite_filter() -> TestResult {
+    let server = MockServer::start().await;
+    mount_api_prefix_probe(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/Users/user-1/Items"))
+        .and(header("x-emby-token", "token-1"))
+        .and(query_param("StartIndex", "20"))
+        .and(query_param("Limit", "10"))
+        .and(query_param("Recursive", "true"))
+        .and(query_param("Filters", "IsFavorite"))
+        .and(query_param("IncludeItemTypes", "Movie,Episode"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(items_response("Movie")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let response = authenticated_client(&server)?
+        .fs_list(
+            EmbyListSource::FavoriteItems(vec!["Movie".to_string(), "Episode".to_string()]),
+            20,
+            10,
+            None,
+        )
+        .await?;
+
+    assert_eq!(response.total, 1);
+    assert_eq!(response.items[0].id, "item-1");
+    Ok(())
+}
+
+#[tokio::test]
+async fn fs_list_favorite_people_uses_persons_endpoint_and_user_filter() -> TestResult {
+    let server = MockServer::start().await;
+    mount_api_prefix_probe(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/Persons"))
+        .and(header("x-emby-token", "token-1"))
+        .and(query_param("StartIndex", "0"))
+        .and(query_param("Limit", "25"))
+        .and(query_param("IsFavorite", "true"))
+        .and(query_param("UserId", "user-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(items_response("Person")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let response = authenticated_client(&server)?
+        .fs_list(EmbyListSource::FavoritePeople, 0, 25, None)
+        .await?;
+
+    assert_eq!(response.total, 1);
+    assert_eq!(response.items[0].item_type, "Person");
+    Ok(())
+}
+
+#[tokio::test]
+async fn fs_list_person_items_preserves_actor_and_media_type_filters() -> TestResult {
+    let server = MockServer::start().await;
+    mount_api_prefix_probe(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/Users/user-1/Items"))
+        .and(header("x-emby-token", "token-1"))
+        .and(query_param("StartIndex", "50"))
+        .and(query_param("Limit", "50"))
+        .and(query_param("Recursive", "true"))
+        .and(query_param("PersonIds", "person-7"))
+        .and(query_param("IncludeItemTypes", "Movie,Video"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(items_response("Movie")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let response = authenticated_client(&server)?
+        .fs_list(
+            EmbyListSource::PersonItems {
+                person_id: "person-7".to_string(),
+                item_types: vec!["Movie".to_string(), "Video".to_string()],
+            },
+            50,
+            50,
+            None,
+        )
+        .await?;
+
+    assert_eq!(response.total, 1);
+    assert_eq!(response.items[0].name, "Item One");
+    Ok(())
+}
+
+#[tokio::test]
+async fn fs_list_supports_home_video_collections() -> TestResult {
+    let server = MockServer::start().await;
+    mount_api_prefix_probe(&server).await;
+    for (query_name, query_value) in [
+        ("Filters", "IsResumable"),
+        ("SortBy", "DateCreated"),
+        ("IncludeItemTypes", "Playlist"),
+        ("IncludeItemTypes", "BoxSet"),
+    ] {
+        Mock::given(method("GET"))
+            .and(path("/Users/user-1/Items"))
+            .and(query_param(query_name, query_value))
+            .respond_with(ResponseTemplate::new(200).set_body_json(items_response("Movie")))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/Shows/NextUp"))
+        .and(query_param("UserId", "user-1"))
+        .and(query_param("StartIndex", "5"))
+        .and(query_param("Limit", "10"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(items_response("Episode")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/Genres"))
+        .and(query_param("UserId", "user-1"))
+        .and(query_param("IncludeItemTypes", "Movie,Series"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(items_response("Genre")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/Users/user-1/Items"))
+        .and(query_param("GenreIds", "genre-1"))
+        .and(query_param("IncludeItemTypes", "Movie"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(items_response("Movie")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = authenticated_client(&server)?;
+    client
+        .fs_list(EmbyListSource::ContinueWatching, 0, 20, None)
+        .await?;
+    client
+        .fs_list(
+            EmbyListSource::RecentlyAdded(vec!["Movie".to_string(), "Episode".to_string()]),
+            0,
+            20,
+            None,
+        )
+        .await?;
+    client
+        .fs_list(EmbyListSource::Playlists, 0, 20, None)
+        .await?;
+    client
+        .fs_list(EmbyListSource::Collections, 0, 20, None)
+        .await?;
+    let next_up = client.fs_list(EmbyListSource::NextUp, 5, 10, None).await?;
+    let genres = client
+        .fs_list(
+            EmbyListSource::Genres(vec!["Movie".to_string(), "Series".to_string()]),
+            0,
+            20,
+            None,
+        )
+        .await?;
+    client
+        .fs_list(
+            EmbyListSource::GenreItems {
+                genre_id: "genre-1".to_string(),
+                item_types: vec!["Movie".to_string()],
+            },
+            0,
+            20,
+            None,
+        )
+        .await?;
+
+    assert_eq!(next_up.items[0].item_type, "Episode");
+    assert_eq!(genres.items[0].item_type, "Genre");
     Ok(())
 }

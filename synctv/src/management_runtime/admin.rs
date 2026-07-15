@@ -1289,6 +1289,7 @@ impl AdminRuntime for ManagementAdminRuntime {
             sort_direction: query.sort_direction,
             availability: query.availability,
             refresh: query.refresh,
+            preview_source_config: None,
         };
         self.inner
             .list_media(&query.room_id, req, admin_user_id)

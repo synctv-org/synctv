@@ -5,7 +5,7 @@ use synctv_core::models::{ProviderInstanceListQuery, SourceProvider};
 use synctv_core::provider::ProviderError;
 use synctv_proto::providers::{
     alist as alist_proto, bilibili as bilibili_proto, common as provider_common_proto,
-    emby as emby_proto,
+    douyin as douyin_proto, emby as emby_proto, tiktok as tiktok_proto, twitch as twitch_proto,
 };
 
 #[derive(Debug, Clone)]
@@ -227,6 +227,121 @@ pub trait EmbyRuntime: Send + Sync {
         caller_user_id: &UserId,
         instance_name: Option<&str>,
     ) -> Result<emby_proto::GetBindsResponse, RuntimeError>;
+}
+
+#[tonic::async_trait]
+pub trait DouyinRuntime: Send + Sync {
+    async fn bind(
+        &self,
+        caller_user_id: &UserId,
+        request: douyin_proto::BindRequest,
+        instance_name: Option<&str>,
+    ) -> Result<douyin_proto::BindResponse, ProviderError>;
+
+    async fn get_binds(
+        &self,
+        caller_user_id: &UserId,
+        instance_name: Option<&str>,
+    ) -> Result<douyin_proto::GetBindsResponse, ProviderError>;
+
+    async fn unbind(
+        &self,
+        caller_user_id: &UserId,
+        request: douyin_proto::UnbindRequest,
+    ) -> Result<douyin_proto::UnbindResponse, ProviderError>;
+
+    async fn resolve(
+        &self,
+        caller_user_id: &UserId,
+        request: douyin_proto::ResolveRequest,
+        instance_name: Option<&str>,
+    ) -> Result<douyin_proto::ResolveResponse, ProviderError>;
+
+    async fn list_user_posts(
+        &self,
+        caller_user_id: &UserId,
+        request: douyin_proto::ListUserPostsRequest,
+        instance_name: Option<&str>,
+    ) -> Result<douyin_proto::ListUserPostsResponse, ProviderError>;
+}
+
+#[tonic::async_trait]
+pub trait TikTokRuntime: Send + Sync {
+    async fn bind(
+        &self,
+        caller_user_id: &UserId,
+        request: tiktok_proto::BindRequest,
+        instance_name: Option<&str>,
+    ) -> Result<tiktok_proto::BindResponse, ProviderError>;
+
+    async fn get_binds(
+        &self,
+        caller_user_id: &UserId,
+        instance_name: Option<&str>,
+    ) -> Result<tiktok_proto::GetBindsResponse, ProviderError>;
+
+    async fn unbind(
+        &self,
+        caller_user_id: &UserId,
+        request: tiktok_proto::UnbindRequest,
+    ) -> Result<tiktok_proto::UnbindResponse, ProviderError>;
+
+    async fn resolve(
+        &self,
+        caller_user_id: &UserId,
+        request: tiktok_proto::ResolveRequest,
+        instance_name: Option<&str>,
+    ) -> Result<tiktok_proto::ResolveResponse, ProviderError>;
+
+    async fn get_user(
+        &self,
+        caller_user_id: &UserId,
+        request: tiktok_proto::GetUserRequest,
+        instance_name: Option<&str>,
+    ) -> Result<tiktok_proto::GetUserResponse, ProviderError>;
+
+    async fn list_user_posts(
+        &self,
+        caller_user_id: &UserId,
+        request: tiktok_proto::ListUserPostsRequest,
+        instance_name: Option<&str>,
+    ) -> Result<tiktok_proto::ListUserPostsResponse, ProviderError>;
+}
+
+#[tonic::async_trait]
+pub trait TwitchRuntime: Send + Sync {
+    async fn bind(
+        &self,
+        caller_user_id: &UserId,
+        request: twitch_proto::BindRequest,
+        instance_name: Option<&str>,
+    ) -> Result<twitch_proto::BindResponse, ProviderError>;
+
+    async fn get_binds(
+        &self,
+        caller_user_id: &UserId,
+        instance_name: Option<&str>,
+    ) -> Result<twitch_proto::GetBindsResponse, ProviderError>;
+
+    async fn unbind(
+        &self,
+        caller_user_id: &UserId,
+        request: twitch_proto::UnbindRequest,
+    ) -> Result<twitch_proto::UnbindResponse, ProviderError>;
+
+    async fn resolve(
+        &self,
+        caller_user_id: &UserId,
+        request: twitch_proto::ResolveRequest,
+        instance_name: Option<&str>,
+    ) -> Result<twitch_proto::ResolveResponse, ProviderError>;
+
+    async fn list_channel_items(
+        &self,
+        caller_user_id: &UserId,
+        request: twitch_proto::ListChannelItemsRequest,
+        instance_name: Option<&str>,
+    ) -> Result<twitch_proto::ListChannelItemsResponse, ProviderError>;
 }
 
 #[tonic::async_trait]

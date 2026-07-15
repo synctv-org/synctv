@@ -148,6 +148,107 @@ enum StoredProviderCredential {
         email: String,
         password: EncryptedCredentialValue,
     },
+    #[serde(rename = "twitch")]
+    Twitch {
+        login: String,
+        twitch_user_id: String,
+        client_id: String,
+        #[serde(default)]
+        scopes: Vec<String>,
+        auth_token: EncryptedCredentialValue,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_id: Option<EncryptedCredentialValue>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_integrity: Option<EncryptedCredentialValue>,
+    },
+    #[serde(rename = "youtube")]
+    Youtube {
+        label: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        visitor_data: Option<EncryptedCredentialValue>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        po_token: Option<EncryptedCredentialValue>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cookie: Option<EncryptedCredentialValue>,
+    },
+    #[serde(rename = "douyin")]
+    Douyin {
+        label: String,
+        cookie: EncryptedCredentialValue,
+    },
+    #[serde(rename = "tiktok")]
+    TikTok {
+        label: String,
+        cookie: EncryptedCredentialValue,
+    },
+    #[serde(rename = "fnos")]
+    Fnos {
+        endpoint: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        webdav_endpoint: Option<String>,
+        username: String,
+        password: EncryptedCredentialValue,
+        token: EncryptedCredentialValue,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        long_token: Option<EncryptedCredentialValue>,
+        secret: EncryptedCredentialValue,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        media_endpoint: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        media_token: Option<EncryptedCredentialValue>,
+    },
+    #[serde(rename = "qnap")]
+    Qnap {
+        endpoint: String,
+        username: String,
+        password: EncryptedCredentialValue,
+        sid: EncryptedCredentialValue,
+        server_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+        support_rtt: bool,
+    },
+    #[serde(rename = "synology")]
+    Synology {
+        endpoint: String,
+        username: String,
+        password: EncryptedCredentialValue,
+        file_sid: EncryptedCredentialValue,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        video_sid: Option<EncryptedCredentialValue>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_id: Option<EncryptedCredentialValue>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        synotoken: Option<EncryptedCredentialValue>,
+        apis: std::collections::HashMap<String, crate::models::SynologyApiBinding>,
+    },
+    #[serde(rename = "nextcloud")]
+    Nextcloud {
+        endpoint: String,
+        username: String,
+        user_id: String,
+        app_password: EncryptedCredentialValue,
+        version: String,
+        edition: String,
+        capabilities: serde_json::Value,
+    },
+    #[serde(rename = "seafile")]
+    Seafile {
+        endpoint: String,
+        username: String,
+        token: EncryptedCredentialValue,
+        version: String,
+        features: Vec<String>,
+        library_passwords: EncryptedCredentialValue,
+    },
+    #[serde(rename = "truenas")]
+    TrueNas {
+        endpoint: String,
+        api_key: EncryptedCredentialValue,
+        hostname: String,
+        version: String,
+        system_product: String,
+    },
 }
 
 impl StoredProviderCredential {
@@ -194,6 +295,177 @@ impl StoredProviderCredential {
                 email: email.clone(),
                 password: EncryptedCredentialValue::encrypt_string(encryption, password)?,
             }),
+            ProviderCredential::Twitch {
+                login,
+                twitch_user_id,
+                client_id,
+                scopes,
+                auth_token,
+                device_id,
+                client_integrity,
+            } => Ok(Self::Twitch {
+                login: login.clone(),
+                twitch_user_id: twitch_user_id.clone(),
+                client_id: client_id.clone(),
+                scopes: scopes.clone(),
+                auth_token: EncryptedCredentialValue::encrypt_string(encryption, auth_token)?,
+                device_id: device_id
+                    .as_deref()
+                    .map(|value| EncryptedCredentialValue::encrypt_string(encryption, value))
+                    .transpose()?,
+                client_integrity: client_integrity
+                    .as_deref()
+                    .map(|value| EncryptedCredentialValue::encrypt_string(encryption, value))
+                    .transpose()?,
+            }),
+            ProviderCredential::Youtube {
+                label,
+                visitor_data,
+                po_token,
+                cookie,
+            } => Ok(Self::Youtube {
+                label: label.clone(),
+                visitor_data: visitor_data
+                    .as_deref()
+                    .map(|value| EncryptedCredentialValue::encrypt_string(encryption, value))
+                    .transpose()?,
+                po_token: po_token
+                    .as_deref()
+                    .map(|value| EncryptedCredentialValue::encrypt_string(encryption, value))
+                    .transpose()?,
+                cookie: cookie
+                    .as_deref()
+                    .map(|value| EncryptedCredentialValue::encrypt_string(encryption, value))
+                    .transpose()?,
+            }),
+            ProviderCredential::Douyin { label, cookie } => Ok(Self::Douyin {
+                label: label.clone(),
+                cookie: EncryptedCredentialValue::encrypt_string(encryption, cookie)?,
+            }),
+            ProviderCredential::TikTok { label, cookie } => Ok(Self::TikTok {
+                label: label.clone(),
+                cookie: EncryptedCredentialValue::encrypt_string(encryption, cookie)?,
+            }),
+            ProviderCredential::Fnos {
+                endpoint,
+                webdav_endpoint,
+                username,
+                password,
+                token,
+                long_token,
+                secret,
+                media_endpoint,
+                media_token,
+            } => Ok(Self::Fnos {
+                endpoint: endpoint.clone(),
+                webdav_endpoint: webdav_endpoint.clone(),
+                username: username.clone(),
+                password: EncryptedCredentialValue::encrypt_string(encryption, password)?,
+                token: EncryptedCredentialValue::encrypt_string(encryption, token)?,
+                long_token: long_token
+                    .as_deref()
+                    .map(|value| EncryptedCredentialValue::encrypt_string(encryption, value))
+                    .transpose()?,
+                secret: EncryptedCredentialValue::encrypt_string(encryption, secret)?,
+                media_endpoint: media_endpoint.clone(),
+                media_token: media_token
+                    .as_deref()
+                    .map(|value| EncryptedCredentialValue::encrypt_string(encryption, value))
+                    .transpose()?,
+            }),
+            ProviderCredential::Qnap {
+                endpoint,
+                username,
+                password,
+                sid,
+                server_name,
+                version,
+                support_rtt,
+            } => Ok(Self::Qnap {
+                endpoint: endpoint.clone(),
+                username: username.clone(),
+                password: EncryptedCredentialValue::encrypt_string(encryption, password)?,
+                sid: EncryptedCredentialValue::encrypt_string(encryption, sid)?,
+                server_name: server_name.clone(),
+                version: version.clone(),
+                support_rtt: *support_rtt,
+            }),
+            ProviderCredential::Synology {
+                endpoint,
+                username,
+                password,
+                file_sid,
+                video_sid,
+                device_id,
+                synotoken,
+                apis,
+            } => Ok(Self::Synology {
+                endpoint: endpoint.clone(),
+                username: username.clone(),
+                password: EncryptedCredentialValue::encrypt_string(encryption, password)?,
+                file_sid: EncryptedCredentialValue::encrypt_string(encryption, file_sid)?,
+                video_sid: video_sid
+                    .as_deref()
+                    .map(|value| EncryptedCredentialValue::encrypt_string(encryption, value))
+                    .transpose()?,
+                device_id: device_id
+                    .as_deref()
+                    .map(|value| EncryptedCredentialValue::encrypt_string(encryption, value))
+                    .transpose()?,
+                synotoken: synotoken
+                    .as_deref()
+                    .map(|value| EncryptedCredentialValue::encrypt_string(encryption, value))
+                    .transpose()?,
+                apis: apis.clone(),
+            }),
+            ProviderCredential::Nextcloud {
+                endpoint,
+                username,
+                user_id,
+                app_password,
+                version,
+                edition,
+                capabilities,
+            } => Ok(Self::Nextcloud {
+                endpoint: endpoint.clone(),
+                username: username.clone(),
+                user_id: user_id.clone(),
+                app_password: EncryptedCredentialValue::encrypt_string(encryption, app_password)?,
+                version: version.clone(),
+                edition: edition.clone(),
+                capabilities: capabilities.clone(),
+            }),
+            ProviderCredential::Seafile {
+                endpoint,
+                username,
+                token,
+                version,
+                features,
+                library_passwords,
+            } => Ok(Self::Seafile {
+                endpoint: endpoint.clone(),
+                username: username.clone(),
+                token: EncryptedCredentialValue::encrypt_string(encryption, token)?,
+                version: version.clone(),
+                features: features.clone(),
+                library_passwords: EncryptedCredentialValue::encrypt_json(
+                    encryption,
+                    &serde_json::to_value(library_passwords)?,
+                )?,
+            }),
+            ProviderCredential::TrueNas {
+                endpoint,
+                api_key,
+                hostname,
+                version,
+                system_product,
+            } => Ok(Self::TrueNas {
+                endpoint: endpoint.clone(),
+                api_key: EncryptedCredentialValue::encrypt_string(encryption, api_key)?,
+                hostname: hostname.clone(),
+                version: version.clone(),
+                system_product: system_product.clone(),
+            }),
         }
     }
 
@@ -236,6 +508,176 @@ impl StoredProviderCredential {
                 host: host.clone(),
                 email: email.clone(),
                 password: password.decrypt_string(encryption)?,
+            }),
+            Self::Twitch {
+                login,
+                twitch_user_id,
+                client_id,
+                scopes,
+                auth_token,
+                device_id,
+                client_integrity,
+            } => Ok(ProviderCredential::Twitch {
+                login: login.clone(),
+                twitch_user_id: twitch_user_id.clone(),
+                client_id: client_id.clone(),
+                scopes: scopes.clone(),
+                auth_token: auth_token.decrypt_string(encryption)?,
+                device_id: device_id
+                    .as_ref()
+                    .map(|value| value.decrypt_string(encryption))
+                    .transpose()?,
+                client_integrity: client_integrity
+                    .as_ref()
+                    .map(|value| value.decrypt_string(encryption))
+                    .transpose()?,
+            }),
+            Self::Youtube {
+                label,
+                visitor_data,
+                po_token,
+                cookie,
+            } => Ok(ProviderCredential::Youtube {
+                label: label.clone(),
+                visitor_data: visitor_data
+                    .as_ref()
+                    .map(|value| value.decrypt_string(encryption))
+                    .transpose()?,
+                po_token: po_token
+                    .as_ref()
+                    .map(|value| value.decrypt_string(encryption))
+                    .transpose()?,
+                cookie: cookie
+                    .as_ref()
+                    .map(|value| value.decrypt_string(encryption))
+                    .transpose()?,
+            }),
+            Self::Douyin { label, cookie } => Ok(ProviderCredential::Douyin {
+                label: label.clone(),
+                cookie: cookie.decrypt_string(encryption)?,
+            }),
+            Self::TikTok { label, cookie } => Ok(ProviderCredential::TikTok {
+                label: label.clone(),
+                cookie: cookie.decrypt_string(encryption)?,
+            }),
+            Self::Fnos {
+                endpoint,
+                webdav_endpoint,
+                username,
+                password,
+                token,
+                long_token,
+                secret,
+                media_endpoint,
+                media_token,
+            } => Ok(ProviderCredential::Fnos {
+                endpoint: endpoint.clone(),
+                webdav_endpoint: webdav_endpoint.clone(),
+                username: username.clone(),
+                password: password.decrypt_string(encryption)?,
+                token: token.decrypt_string(encryption)?,
+                long_token: long_token
+                    .as_ref()
+                    .map(|value| value.decrypt_string(encryption))
+                    .transpose()?,
+                secret: secret.decrypt_string(encryption)?,
+                media_endpoint: media_endpoint.clone(),
+                media_token: media_token
+                    .as_ref()
+                    .map(|value| value.decrypt_string(encryption))
+                    .transpose()?,
+            }),
+            Self::Qnap {
+                endpoint,
+                username,
+                password,
+                sid,
+                server_name,
+                version,
+                support_rtt,
+            } => Ok(ProviderCredential::Qnap {
+                endpoint: endpoint.clone(),
+                username: username.clone(),
+                password: password.decrypt_string(encryption)?,
+                sid: sid.decrypt_string(encryption)?,
+                server_name: server_name.clone(),
+                version: version.clone(),
+                support_rtt: *support_rtt,
+            }),
+            Self::Synology {
+                endpoint,
+                username,
+                password,
+                file_sid,
+                video_sid,
+                device_id,
+                synotoken,
+                apis,
+            } => Ok(ProviderCredential::Synology {
+                endpoint: endpoint.clone(),
+                username: username.clone(),
+                password: password.decrypt_string(encryption)?,
+                file_sid: file_sid.decrypt_string(encryption)?,
+                video_sid: video_sid
+                    .as_ref()
+                    .map(|value| value.decrypt_string(encryption))
+                    .transpose()?,
+                device_id: device_id
+                    .as_ref()
+                    .map(|value| value.decrypt_string(encryption))
+                    .transpose()?,
+                synotoken: synotoken
+                    .as_ref()
+                    .map(|value| value.decrypt_string(encryption))
+                    .transpose()?,
+                apis: apis.clone(),
+            }),
+            Self::Nextcloud {
+                endpoint,
+                username,
+                user_id,
+                app_password,
+                version,
+                edition,
+                capabilities,
+            } => Ok(ProviderCredential::Nextcloud {
+                endpoint: endpoint.clone(),
+                username: username.clone(),
+                user_id: user_id.clone(),
+                app_password: app_password.decrypt_string(encryption)?,
+                version: version.clone(),
+                edition: edition.clone(),
+                capabilities: capabilities.clone(),
+            }),
+            Self::Seafile {
+                endpoint,
+                username,
+                token,
+                version,
+                features,
+                library_passwords,
+            } => Ok(ProviderCredential::Seafile {
+                endpoint: endpoint.clone(),
+                username: username.clone(),
+                token: token.decrypt_string(encryption)?,
+                version: version.clone(),
+                features: features.clone(),
+                library_passwords: serde_json::from_value(
+                    library_passwords.decrypt_json(encryption)?,
+                )?,
+            }),
+            Self::TrueNas {
+                endpoint,
+                api_key,
+                hostname,
+                version,
+                system_product,
+            } => Ok(ProviderCredential::TrueNas {
+                endpoint: endpoint.clone(),
+                api_key: api_key.decrypt_string(encryption)?,
+                hostname: hostname.clone(),
+                version: version.clone(),
+                system_product: system_product.clone(),
             }),
         }
     }
@@ -824,6 +1266,11 @@ impl std::fmt::Debug for UserProviderCredentialRepository {
 }
 
 impl UserProviderCredentialRepository {
+    #[must_use]
+    pub const fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     fn encrypt_credential_with(
         encryption: Option<&CredentialEncryption>,
         data: &ProviderCredential,

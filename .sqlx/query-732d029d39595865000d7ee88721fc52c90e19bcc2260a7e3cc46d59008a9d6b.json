@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT pg_advisory_xact_lock(hashtextextended('file_upload_session_user_limit', $1))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pg_advisory_xact_lock",
+        "type_info": "Void",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "732d029d39595865000d7ee88721fc52c90e19bcc2260a7e3cc46d59008a9d6b"
+}

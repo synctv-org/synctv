@@ -14,6 +14,7 @@ const DOMAIN_SEPARATOR: &[u8] = b"synctv-proxy-sign";
 
 /// Default proxy URL lifetime (30 minutes).
 const DEFAULT_EXPIRY_SECS: i64 = 30 * 60;
+const MAX_EXPIRY_SECS: i64 = 24 * 60 * 60;
 
 /// HMAC-SHA256 signing key for proxy URLs.
 ///
@@ -49,6 +50,8 @@ pub enum ProxySignatureError {
     InvalidSignature,
     /// The URL has expired.
     Expired,
+    /// The signed lifetime is invalid or exceeds the maximum.
+    InvalidLifetime,
 }
 
 impl fmt::Display for ProxySignatureError {
@@ -57,6 +60,7 @@ impl fmt::Display for ProxySignatureError {
             Self::InvalidSigningKey => write!(f, "invalid proxy signing key"),
             Self::InvalidSignature => write!(f, "invalid proxy signature"),
             Self::Expired => write!(f, "proxy URL expired"),
+            Self::InvalidLifetime => write!(f, "invalid proxy URL lifetime"),
         }
     }
 }
@@ -79,15 +83,20 @@ impl ProxySigningKey {
         Ok(Self { key })
     }
 
-    /// Sign claims and return the hex-encoded HMAC-SHA256 signature.
+    /// Sign claims and return the signing timestamp plus hex-encoded HMAC-SHA256.
     #[must_use]
     pub fn sign(&self, claims: &ProxyUrlClaims) -> String {
-        let mut mac = self.key.clone();
-        mac.update(Self::canonical_message(claims).as_bytes());
-        hex::encode(mac.finalize().into_bytes())
+        let issued_at = synctv_core::SystemClock.now().timestamp();
+        self.sign_at(claims, issued_at)
     }
 
-    /// Verify claims against a hex-encoded signature.
+    fn sign_at(&self, claims: &ProxyUrlClaims, issued_at: i64) -> String {
+        let mut mac = self.key.clone();
+        mac.update(Self::canonical_message(claims, issued_at).as_bytes());
+        format!("{issued_at}.{}", hex::encode(mac.finalize().into_bytes()))
+    }
+
+    /// Verify claims against a signing timestamp and hex-encoded signature.
     pub fn verify(
         &self,
         claims: &ProxyUrlClaims,
@@ -97,23 +106,37 @@ impl ProxySigningKey {
         if now > claims.expires_at {
             return Err(ProxySignatureError::Expired);
         }
+        let (issued_at, signature) = signature
+            .split_once('.')
+            .ok_or(ProxySignatureError::InvalidSignature)?;
+        let issued_at = issued_at
+            .parse::<i64>()
+            .map_err(|_| ProxySignatureError::InvalidSignature)?;
+        let lifetime = claims
+            .expires_at
+            .checked_sub(issued_at)
+            .ok_or(ProxySignatureError::InvalidLifetime)?;
+        if issued_at > now || !(1..=MAX_EXPIRY_SECS).contains(&lifetime) {
+            return Err(ProxySignatureError::InvalidLifetime);
+        }
 
         let sig_bytes =
             hex::decode(signature).map_err(|_| ProxySignatureError::InvalidSignature)?;
         let mut mac = self.key.clone();
-        mac.update(Self::canonical_message(claims).as_bytes());
+        mac.update(Self::canonical_message(claims, issued_at).as_bytes());
         mac.verify_slice(&sig_bytes)
             .map_err(|_| ProxySignatureError::InvalidSignature)
     }
 
-    fn canonical_message(claims: &ProxyUrlClaims) -> String {
+    fn canonical_message(claims: &ProxyUrlClaims, issued_at: i64) -> String {
         let mut message = format!(
-            "{}:{}:{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}:{}:{}",
             claims.provider,
             claims.version,
             claims.resource,
             claims.room_id,
             claims.user_id,
+            issued_at,
             claims.expires_at
         );
         if let Some(target_url) = &claims.target_url {
@@ -391,6 +414,20 @@ mod tests {
         assert!(matches!(
             key.verify(&claims, &sig),
             Err(ProxySignatureError::Expired)
+        ));
+    }
+
+    #[test]
+    fn verify_rejects_lifetime_over_24_hours_after_time_has_elapsed() {
+        let key = test_key();
+        let now = synctv_core::SystemClock.now().timestamp();
+        let mut claims = test_claims();
+        claims.expires_at = now + 23 * 60 * 60;
+        let signature = key.sign_at(&claims, now - 2 * 60 * 60);
+
+        assert!(matches!(
+            key.verify(&claims, &signature),
+            Err(ProxySignatureError::InvalidLifetime)
         ));
     }
 

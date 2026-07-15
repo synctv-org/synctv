@@ -79,6 +79,11 @@ impl SecurityOptions {
     #[must_use]
     pub fn ssrf_guard(&self) -> synctv_common::ssrf::SsrfGuard {
         if !self.ssrf.enabled {
+            tracing::warn!(
+                "SSRF protection is disabled by configuration. Proxy routes will forward \
+                 requests to any host including private network addresses. \
+                 Do not use this setting in production."
+            );
             return synctv_common::ssrf::SsrfGuard::disabled();
         }
 

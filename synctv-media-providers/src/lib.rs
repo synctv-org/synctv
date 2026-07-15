@@ -73,6 +73,7 @@ pub use credential::{
 pub fn provider_http_client_builder(
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
 ) -> synctv_common::http::SsrfSafeClientBuilder {
+    install_process_crypto_provider();
     synctv_common::http::SsrfSafeClientBuilder::new()
         .ssrf_guard(ssrf_guard)
         .connect_timeout(std::time::Duration::from_secs(10))

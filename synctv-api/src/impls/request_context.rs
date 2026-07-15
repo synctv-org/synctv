@@ -169,6 +169,12 @@ pub struct RequestMetadata {
     pub transport: TransportProtocol,
     pub authorization: Option<String>,
     pub client_ip: Option<IpAddr>,
+    /// Raw peer/socket IP before any proxy-header processing.
+    ///
+    /// Used as a rate-limit key fallback when `client_ip` is `None` (i.e. the
+    /// resolved client IP is unavailable) so that unauthenticated requests do
+    /// not all collapse into a single shared `anon:unknown` bucket.
+    pub socket_ip: Option<IpAddr>,
     pub user_agent: Option<String>,
     pub endpoint_scope: Option<EndpointRateLimitScope>,
     /// Optional request budget extracted from the transport layer.
@@ -186,6 +192,7 @@ impl RequestMetadata {
             transport,
             authorization: None,
             client_ip: None,
+            socket_ip: None,
             user_agent: None,
             endpoint_scope: None,
             timeout: None,
@@ -201,6 +208,12 @@ impl RequestMetadata {
     #[must_use]
     pub const fn with_client_ip(mut self, client_ip: Option<IpAddr>) -> Self {
         self.client_ip = client_ip;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_socket_ip(mut self, socket_ip: Option<IpAddr>) -> Self {
+        self.socket_ip = socket_ip;
         self
     }
 
@@ -805,8 +818,12 @@ impl RequestExecutor {
         );
         let subject_key = authenticated.map_or_else(
             || {
+                // Prefer the proxy-resolved client IP; fall back to the raw
+                // socket IP so that unauthenticated requests from different
+                // peers are not bucketed together into a single shared key.
                 metadata
                     .client_ip
+                    .or(metadata.socket_ip)
                     .map_or_else(|| "anon:unknown".to_string(), |ip| format!("anon:{ip}"))
             },
             |authenticated| format!("user:{}", authenticated.user_id),

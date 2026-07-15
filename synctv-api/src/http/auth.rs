@@ -52,7 +52,11 @@ async fn extract_auth_request(
 }
 
 fn map_json_rejection(err: &axum::extract::rejection::JsonRejection) -> ApiError {
-    ApiError::InvalidInput(err.body_text())
+    if err.status() == axum::http::StatusCode::PAYLOAD_TOO_LARGE {
+        ApiError::PayloadTooLarge("Request body exceeds the 64 KB limit".to_string())
+    } else {
+        ApiError::InvalidInput(err.body_text())
+    }
 }
 
 async fn parse_auth_json<T>(request: Request) -> Result<T, ApiError>
@@ -75,6 +79,7 @@ where
         responses(
             (status = 200, description = "OPAQUE registration challenge created", body = StartOpaqueRegistrationResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -114,6 +119,7 @@ pub async fn start_opaque_registration(
         responses(
             (status = 200, description = "OPAQUE registration succeeded", body = RegisterResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -153,6 +159,7 @@ pub async fn finish_opaque_registration(
         responses(
             (status = 200, description = "Direct password registration succeeded", body = RegisterResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -197,6 +204,7 @@ pub async fn register_with_direct_password(
             (status = 200, description = "Direct password login succeeded", body = LoginResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Invalid credentials", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -238,6 +246,7 @@ pub async fn login_with_direct_password(
             (status = 200, description = "Email login confirmed", body = LoginResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Invalid credentials", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -285,6 +294,7 @@ pub async fn confirm_email_login(
             (status = 200, description = "Guest token issued for a public room", body = CreateGuestTokenResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 403, description = "Guest access is not allowed", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -326,6 +336,7 @@ pub async fn create_guest_token(
         responses(
             (status = 200, description = "OPAQUE login challenge created", body = StartOpaqueLoginResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -368,6 +379,7 @@ pub async fn start_opaque_login(
             (status = 200, description = "OPAQUE login succeeded", body = LoginResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Invalid credentials", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -407,6 +419,7 @@ pub async fn finish_opaque_login(
         responses(
             (status = 200, description = "Passkey registration challenge created", body = StartPasskeyRegistrationResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -448,6 +461,7 @@ pub async fn start_passkey_registration(
             (status = 200, description = "Passkey registration succeeded", body = RegisterResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Invalid credentials", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -492,6 +506,7 @@ pub async fn finish_passkey_registration(
         responses(
             (status = 200, description = "Passkey login challenge created", body = StartPasskeyLoginResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -533,6 +548,7 @@ pub async fn start_passkey_login(
             (status = 200, description = "Passkey login succeeded", body = LoginResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Invalid credentials", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -582,6 +598,7 @@ fn require_email_api(
         responses(
             (status = 200, description = "Email login request accepted", body = RequestEmailLoginResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -624,6 +641,7 @@ pub async fn request_email_login(
         responses(
             (status = 200, description = "Email registration request accepted", body = RequestEmailRegistrationResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -667,6 +685,7 @@ pub async fn request_email_registration(
         responses(
             (status = 200, description = "Email registration confirmed", body = RegisterResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -710,6 +729,7 @@ pub async fn confirm_email_registration(
         responses(
             (status = 200, description = "MFA email code request accepted", body = RequestMfaEmailCodeResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 503, description = "Email service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         )
@@ -752,6 +772,7 @@ pub async fn request_mfa_email_code(
             (status = 200, description = "MFA email code verified", body = LoginResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Invalid MFA challenge or code", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 503, description = "Email service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         )
@@ -802,6 +823,7 @@ pub async fn verify_mfa_email_code(
         responses(
             (status = 200, description = "MFA passkey challenge created", body = StartMfaPasskeyResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -840,6 +862,7 @@ pub async fn start_mfa_passkey(
             (status = 200, description = "MFA passkey verified", body = LoginResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Invalid MFA challenge or credential", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -881,6 +904,7 @@ pub async fn finish_mfa_passkey(
         responses(
             (status = 200, description = "Token refresh succeeded", body = RefreshTokenResponse),
             (status = 401, description = "Invalid refresh token", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
@@ -972,8 +996,57 @@ pub async fn logout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+        response::IntoResponse,
+        routing::post,
+        Router,
+    };
+    use tower::ServiceExt;
 
     type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    #[tokio::test]
+    async fn oversized_auth_json_returns_structured_payload_too_large() -> TestResult {
+        async fn parse(request: Request<Body>) -> AppResult<impl IntoResponse> {
+            parse_auth_json::<serde_json::Value>(request)
+                .await
+                .map_err(AppError::from)?;
+            Ok(StatusCode::NO_CONTENT)
+        }
+
+        let app =
+            Router::new()
+                .route("/auth", post(parse))
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    super::super::body_limits::AUTH,
+                ));
+        let body = format!(
+            r#"{{"value":"{}"}}"#,
+            "x".repeat(super::super::body_limits::AUTH)
+        );
+        let response = app
+            .oneshot(
+                Request::post("/auth")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))?,
+            )
+            .await?;
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = to_bytes(response.into_body(), 64 * 1024).await?;
+        let json: serde_json::Value = serde_json::from_slice(&body)?;
+        assert_eq!(json["code"], tonic::Code::ResourceExhausted as i32);
+        assert_eq!(json["message"], "Request body exceeds the 64 KB limit");
+        assert!(json["details"].as_array().is_some_and(|details| {
+            details.iter().any(|detail| {
+                detail["@type"] == "type.googleapis.com/google.rpc.ErrorInfo"
+                    && detail["reason"] == "PAYLOAD_TOO_LARGE"
+            })
+        }));
+        Ok(())
+    }
 
     #[test]
     fn test_passkey_http_response_serializes_options_object() -> TestResult {

@@ -228,6 +228,7 @@ fn websocket_request_metadata(
     headers: &HeaderMap,
     direct_peer_ip: Option<std::net::IpAddr>,
 ) -> Result<ApiRequestMetadata, AppError> {
+    super::reject_duplicate_header(headers, &header::AUTHORIZATION)?;
     let authorization = headers
         .get(header::AUTHORIZATION)
         .map(|value| {
@@ -252,6 +253,7 @@ fn websocket_request_metadata(
     Ok(ApiRequestMetadata::new(TransportProtocol::Http)
         .with_authorization(authorization)
         .with_client_ip(client_ip)
+        .with_socket_ip(direct_peer_ip)
         .with_user_agent(user_agent)
         .with_endpoint_scope(Some(EndpointRateLimitScope::Realtime))
         .with_timeout(Some(WEBSOCKET_HANDSHAKE_TIMEOUT)))
@@ -458,6 +460,8 @@ fn validate_websocket_origin(
     direct_peer_ip: Option<std::net::IpAddr>,
     server_config: &crate::ApiServerSettings,
 ) -> Result<(), AppError> {
+    super::reject_duplicate_header(headers, &header::ORIGIN)?;
+    super::reject_duplicate_header(headers, &header::HOST)?;
     let Some(origin) = headers.get(header::ORIGIN) else {
         // Non-browser clients typically omit Origin. Keep supporting them.
         return Ok(());
@@ -487,14 +491,18 @@ fn validate_websocket_origin(
             .to_str()
             .map_err(|_| AppError::forbidden("Invalid Host header: non-UTF-8 value"))?;
         let forwarded_proto = match direct_peer_ip {
-            Some(peer_ip) if server_config.is_trusted_proxy(&peer_ip) => headers
-                .get("x-forwarded-proto")
-                .map(|value| {
-                    value.to_str().map_err(|_| {
-                        AppError::forbidden("Invalid x-forwarded-proto header: non-UTF-8 value")
+            Some(peer_ip) if server_config.is_trusted_proxy(&peer_ip) => {
+                let header_name = header::HeaderName::from_static("x-forwarded-proto");
+                super::reject_duplicate_header(headers, &header_name)?;
+                headers
+                    .get(&header_name)
+                    .map(|value| {
+                        value.to_str().map_err(|_| {
+                            AppError::forbidden("Invalid x-forwarded-proto header: non-UTF-8 value")
+                        })
                     })
-                })
-                .transpose()?,
+                    .transpose()?
+            }
             _ => None,
         };
         if same_origin_as_host(&parsed_origin, host, forwarded_proto)? {

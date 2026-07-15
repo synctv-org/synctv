@@ -11,7 +11,7 @@ use crate::{
         FileRangeRequest, FileReferenceMetadata, FileUploadPolicy, FileUploadRange,
         FileUploadSession, GetFileObject, StoreFileUpload, StoreFileUploadResult,
     },
-    repository::{FileStorageRepository, UpsertFileObject},
+    repository::{FileStorageRepository, UpsertFileObject, UpsertFileUploadSession},
     service::file_upload_policies::{chat_attachment_upload_policy, user_avatar_upload_policy},
 };
 
@@ -330,6 +330,115 @@ async fn upsert_uncompressed_blob(
     );
 }
 
+async fn upsert_limit_test_upload_session(
+    repository: &FileStorageRepository,
+    user_id: UserId,
+    index: usize,
+) -> crate::Result<()> {
+    let object_key = format!("test/files/pending-limit/{index}");
+    let upload_session_key = format!("test/files/pending-limit/sessions/{index}");
+    let content_manifest_sha256 = format!("{index:064x}");
+    let metadata = crate::models::FileMetadata::default();
+    let policy = generic_binary_upload_policy(1);
+    let file_id = format!("pending-limit-{index}");
+    let session_metadata = upload_session_metadata(UploadSessionMetadataInput {
+        file_id: &file_id,
+        user_id,
+        storage_scope: "test/files",
+        client_file_id: None,
+        filename: None,
+        width: None,
+        height: None,
+        metadata: metadata.clone(),
+        upload_policy: &policy,
+    });
+
+    let mut admission = repository
+        .begin_upload_session_admission(user_id, "pending-limit-test", &upload_session_key)
+        .await?;
+    admission
+        .upsert_pending_object(UpsertFileObject {
+            storage_backend: "pending-limit-test",
+            object_key: &object_key,
+            mime_type: "application/pdf",
+            size_bytes: 1,
+            content_manifest_sha256: &content_manifest_sha256,
+            metadata: &metadata,
+        })
+        .await?;
+    admission
+        .commit_upload_session(UpsertFileUploadSession {
+            storage_backend: "pending-limit-test",
+            upload_session_key: &upload_session_key,
+            object_key: &object_key,
+            session_kind: FileUploadSessionKind::DatabaseSingle,
+            upload_id: None,
+            user_id,
+            storage_scope: "test/files",
+            mime_type: "application/pdf",
+            size_bytes: 1,
+            content_manifest_sha256: &content_manifest_sha256,
+            part_size_bytes: 1,
+            metadata: &session_metadata,
+            expires_at: crate::SystemClock.now() + chrono::Duration::minutes(15),
+        })
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn pending_upload_session_limit_is_atomic_and_allows_existing_session_updates() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = FileStorageRepository::new(pool.clone());
+    let user_id = UserId::expect_positive(1);
+
+    for index in 0..49 {
+        ok(
+            upsert_limit_test_upload_session(&repository, user_id, index).await,
+            "pending upload session should be inserted",
+        );
+    }
+
+    let (first, second) = tokio::join!(
+        upsert_limit_test_upload_session(&repository, user_id, 49),
+        upsert_limit_test_upload_session(&repository, user_id, 50),
+    );
+    assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+    for result in [&first, &second] {
+        if let Err(error) = result {
+            assert!(matches!(error, Error::RateLimited(_)));
+        }
+    }
+
+    let accepted_index = if first.is_ok() { 49 } else { 50 };
+    let rejected_index = if first.is_ok() { 50 } else { 49 };
+    assert!(ok(
+        repository
+            .get_object(
+                "pending-limit-test",
+                &format!("test/files/pending-limit/{rejected_index}"),
+            )
+            .await,
+        "rejected upload object lookup should succeed",
+    )
+    .is_none());
+    ok(
+        upsert_limit_test_upload_session(&repository, user_id, accepted_index).await,
+        "an existing upload session should remain reusable at the limit",
+    );
+    let pending_count: i64 = ok(
+        sqlx::query_scalar!(
+            "SELECT COUNT(*) AS \"pending_count!\" FROM file_upload_sessions \
+             WHERE user_id = $1 AND completed_at IS NULL AND expires_at > NOW()",
+            user_id.as_i64(),
+        )
+        .fetch_one(&pool)
+        .await,
+        "pending upload sessions should be counted",
+    );
+    assert_eq!(pending_count, 50);
+}
+
 fn upload_access_parts(session: &FileUploadSession, context: &str) -> (String, String) {
     let access = some(session.upload_object_access.as_ref(), context);
     (access.encoded_object_key.clone(), access.read_token.clone())
@@ -625,6 +734,7 @@ async fn routed_database_storage_reads_objects_from_token_backend() {
         FileStorageBackendRegistry::new(backends).routed("database"),
         "database backend should route",
     );
+    assert!(routed.repository().is_some());
 
     let payload = b"avatar";
     let policy = generic_binary_upload_policy(payload_size(payload));
@@ -1482,7 +1592,7 @@ async fn database_storage_rejects_checksum_reuse_when_existing_mime_violates_pol
     upsert_uncompressed_blob(
         repository.as_ref(),
         "database",
-        "database/chat/attachments/animated.gif",
+        "database/users/avatars/animated.gif",
         "image/gif",
         payload,
     )
@@ -1629,7 +1739,7 @@ async fn database_storage_strips_ownership_proof_from_prepared_files() {
     upsert_uncompressed_blob(
         repository.as_ref(),
         "database",
-        "database/users/avatars/avatar.pdf",
+        "database/test/files/avatar.pdf",
         "application/pdf",
         payload,
     )
@@ -1712,7 +1822,7 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
     upsert_uncompressed_blob(
         repository.as_ref(),
         "database",
-        "database/users/avatars/shared.pdf",
+        "database/test/files/shared.pdf",
         "application/pdf",
         payload,
     )
@@ -2117,7 +2227,7 @@ async fn deleting_file_object_cannot_be_reused_or_referenced() {
     assert!(claimed_for_delete);
     assert!(ok(
         repository
-            .get_object_by_manifest("primary_db", &checksum, 8)
+            .get_object_by_manifest("primary_db", "database/chat/attachments/", &checksum, 8)
             .await,
         "manifest lookup should succeed"
     )
@@ -2323,7 +2433,7 @@ async fn pending_file_object_is_not_reused_but_can_be_cleaned_up() {
 
     let reusable = ok(
         repository
-            .get_object_by_manifest("s3_public", &content_manifest_sha256, 7)
+            .get_object_by_manifest("s3_public", "files/sha256/", &content_manifest_sha256, 7)
             .await,
         "manifest lookup should succeed",
     );
@@ -2399,7 +2509,7 @@ async fn pending_file_object_becomes_reusable_after_validation() {
     let reusable = some(
         ok(
             repository
-                .get_object_by_manifest("s3_public", &content_manifest_sha256, 9)
+                .get_object_by_manifest("s3_public", "files/sha256/", &content_manifest_sha256, 9)
                 .await,
             "manifest lookup should succeed",
         ),
@@ -2407,6 +2517,57 @@ async fn pending_file_object_becomes_reusable_after_validation() {
     );
     assert_eq!(reusable.object_key, "files/sha256/validated.webp");
     assert!(reusable.validated_at.is_some());
+}
+
+#[tokio::test]
+async fn validated_file_reuse_is_scoped_to_the_object_namespace() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = FileStorageRepository::new(pool);
+    let content_manifest_sha256 = hex::encode(Sha256::digest(b"shared-manifest"));
+    let avatar_key = "database/users/avatars/manifest/shared.png";
+
+    ok(
+        repository
+            .upsert_object(UpsertFileObject {
+                storage_backend: "database",
+                object_key: avatar_key,
+                mime_type: "image/png",
+                size_bytes: 128,
+                content_manifest_sha256: &content_manifest_sha256,
+                metadata: &crate::models::FileMetadata::default(),
+            })
+            .await,
+        "avatar object should be inserted",
+    );
+
+    let avatar = some(
+        ok(
+            repository
+                .get_object_by_manifest(
+                    "database",
+                    "database/users/avatars/",
+                    &content_manifest_sha256,
+                    128,
+                )
+                .await,
+            "avatar manifest lookup should succeed",
+        ),
+        "avatar should be reusable in its namespace",
+    );
+    assert_eq!(avatar.object_key, avatar_key);
+
+    assert!(ok(
+        repository
+            .get_object_by_manifest(
+                "database",
+                "database/chat/attachments/",
+                &content_manifest_sha256,
+                128,
+            )
+            .await,
+        "chat manifest lookup should succeed",
+    )
+    .is_none());
 }
 
 #[tokio::test]
@@ -4096,6 +4257,7 @@ async fn s3_storage_multipart_completion_rejects_manifest_mismatch() {
         repository
             .get_object_by_manifest(
                 "s3_public",
+                "files/",
                 &expected_content_manifest_sha256,
                 payload_size(&expected_payload),
             )

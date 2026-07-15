@@ -479,6 +479,7 @@ async fn test_cache_populated_with_correct_version_after_db_miss() {
     // UserRepository::create doesn't insert version (DB defaults to 0),
     // so we insert the user first and then update version via raw SQL.
     let user = insert_user(&pool, &make_user(UserStatus::Active, version)).await;
+    set_version(&pool, &user.id, version).await;
     let user_service = Arc::new(create_user_service(&pool));
 
     let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()));

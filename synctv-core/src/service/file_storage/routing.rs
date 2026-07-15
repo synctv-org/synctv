@@ -69,6 +69,19 @@ impl FileStorageService for RoutedFileStorageService {
             .is_ok_and(|backend| backend.supports_reuse_grants())
     }
 
+    fn repository(&self) -> Option<Arc<crate::repository::FileStorageRepository>> {
+        self.registry
+            .backend(&self.write_backend)
+            .ok()
+            .and_then(|backend| backend.repository())
+            .or_else(|| {
+                self.registry
+                    .backends
+                    .values()
+                    .find_map(|backend| backend.repository())
+            })
+    }
+
     fn public_object_url(&self, storage_backend: &str, object_key: &str) -> Result<Option<String>> {
         self.registry
             .backend(storage_backend)?

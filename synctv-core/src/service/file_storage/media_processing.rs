@@ -185,7 +185,7 @@ pub(crate) async fn attach_variants_to_files(
 
 pub(crate) async fn attach_variants_to_chat_attachments(
     storage: &dyn FileStorageService,
-    repository: &FileStorageRepository,
+    repository: Option<&FileStorageRepository>,
     attachments: &mut [crate::models::ChatAttachment],
     object_kind: FileObjectKind,
 ) -> Result<()> {
@@ -199,14 +199,18 @@ pub(crate) async fn attach_variants_to_chat_attachments(
             attachment.url =
                 storage.public_object_url(&attachment.storage_backend, &attachment.object_key)?;
         }
-        let variants = object_variants_with_urls(
-            storage,
-            repository,
-            &attachment.storage_backend,
-            &attachment.object_key,
-            object_kind,
-        )
-        .await?;
+        let variants = if let Some(repository) = repository {
+            object_variants_with_urls(
+                storage,
+                repository,
+                &attachment.storage_backend,
+                &attachment.object_key,
+                object_kind,
+            )
+            .await?
+        } else {
+            Vec::new()
+        };
         if let Some(preview) = preferred_preview_variant(&variants) {
             attachment.url.clone_from(&preview.url);
             attachment.object_access.clone_from(&preview.object_access);

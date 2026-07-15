@@ -170,7 +170,7 @@ impl SecurityPipeline {
             .await?
             .version;
 
-        if claims.pv < password_version {
+        if claims.pv != password_version {
             return Err(Error::Authentication(
                 "Token invalidated due to password change. Please log in again.".to_string(),
             ));
@@ -242,9 +242,12 @@ impl SecurityPipeline {
         key_builder: &KeyBuilder,
         claims: &Claims,
     ) -> Result<()> {
-        // Skip check if JTI is empty (shouldn't happen for valid tokens)
+        // Reject tokens with empty JTI — a missing JTI would bypass the
+        // blacklist check entirely, allowing crafted tokens to survive logout.
         if claims.jti.is_empty() {
-            return Ok(());
+            return Err(Error::Authentication(
+                "Invalid token: missing token identifier".to_string(),
+            ));
         }
 
         let key = key_builder.access_token_blacklist(&claims.jti);

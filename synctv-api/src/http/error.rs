@@ -42,6 +42,10 @@ impl AppError {
         Self::new(StatusCode::TOO_MANY_REQUESTS, message)
     }
 
+    pub fn payload_too_large(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::PAYLOAD_TOO_LARGE, message)
+    }
+
     pub fn too_many_requests_with_retry(message: impl Into<String>, retry_after: u64) -> Self {
         let api_error = crate::impls::ApiError::RateLimitedWithRetry {
             message: message.into(),
@@ -280,6 +284,7 @@ fn api_error_from_status(status: StatusCode, message: String) -> crate::impls::A
         StatusCode::FORBIDDEN => crate::impls::ApiError::Authorization(message),
         StatusCode::NOT_FOUND => crate::impls::ApiError::NotFound(message),
         StatusCode::CONFLICT => crate::impls::ApiError::Conflict(message),
+        StatusCode::PAYLOAD_TOO_LARGE => crate::impls::ApiError::PayloadTooLarge(message),
         StatusCode::TOO_MANY_REQUESTS => crate::impls::ApiError::RateLimited(message),
         StatusCode::SERVICE_UNAVAILABLE => crate::impls::ApiError::ServiceUnavailable(message),
         StatusCode::BAD_GATEWAY => {

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT storage_backend, object_key, mime_type, size_bytes,\n                   content_manifest_sha256, metadata AS \"metadata!: FileMetadata\",\n                   created_at, validated_at, deleting_at\n            FROM file_objects\n            WHERE storage_backend = $1\n              AND content_manifest_sha256 = $2\n              AND size_bytes = $3\n              AND validated_at IS NOT NULL\n              AND deleting_at IS NULL\n            ORDER BY created_at ASC\n            LIMIT 1\n            ",
+  "query": "\n            SELECT storage_backend, object_key, mime_type, size_bytes,\n                   content_manifest_sha256, metadata AS \"metadata!: FileMetadata\",\n                   created_at, validated_at, deleting_at\n            FROM file_objects\n            WHERE storage_backend = $1\n              AND starts_with(object_key, $2)\n              AND content_manifest_sha256 = $3\n              AND size_bytes = $4\n              AND validated_at IS NOT NULL\n              AND deleting_at IS NULL\n            ORDER BY created_at ASC\n            LIMIT 1\n            ",
   "describe": {
     "columns": [
       {
@@ -107,6 +107,7 @@
       "Left": [
         "Text",
         "Text",
+        "Text",
         "Int8"
       ]
     },
@@ -122,5 +123,5 @@
       true
     ]
   },
-  "hash": "3072114cb9eaa8fb1f7e9b53ac3cf968c67671a8e34f6ce3fd14f0cede1c9af2"
+  "hash": "60e274c9c9f9e7e13dc59a381ef087df5e25f2bceba18b75d90552b7435f8c62"
 }

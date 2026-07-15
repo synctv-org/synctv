@@ -1856,25 +1856,11 @@ impl ChatService {
         viewer_user_id: Option<&UserId>,
     ) -> Result<()> {
         let upload_policy = super::chat_attachment_upload_policy();
-        let Some(repository) = self.file_storage_service.repository() else {
-            if viewer_user_id.is_none() {
-                return Ok(());
-            }
-            for message in messages {
-                attach_chat_attachment_reuse_grants(
-                    self.file_storage_service.as_ref(),
-                    viewer_user_id
-                        .copied()
-                        .ok_or_else(|| Error::Internal("viewer_user_id disappeared".to_string()))?,
-                    &mut message.attachments,
-                )?;
-            }
-            return Ok(());
-        };
+        let repository = self.file_storage_service.repository();
         for message in messages.iter_mut() {
             crate::service::file_storage::attach_variants_to_chat_attachments(
                 self.file_storage_service.as_ref(),
-                repository.as_ref(),
+                repository.as_deref(),
                 &mut message.attachments,
                 upload_policy.object_kind,
             )

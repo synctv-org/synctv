@@ -468,6 +468,7 @@ pub enum ApiError {
         message: String,
         violations: Vec<ApiFieldViolation>,
     },
+    PayloadTooLarge(String),
     RangeNotSatisfiable {
         total_size: u64,
     },
@@ -669,7 +670,9 @@ impl ApiError {
             | Self::RangeNotSatisfiable { .. } => ErrorKind::InvalidArgument,
             Self::BadGateway(_) => ErrorKind::ServiceUnavailable,
             Self::RequestTimeout(_) | Self::Timeout(_) => ErrorKind::Timeout,
-            Self::RateLimited(_) | Self::RateLimitedWithRetry { .. } => ErrorKind::RateLimited,
+            Self::PayloadTooLarge(_)
+            | Self::RateLimited(_)
+            | Self::RateLimitedWithRetry { .. } => ErrorKind::RateLimited,
             Self::ServiceUnavailable(_) | Self::OAuth2ProviderExchangeFailed { .. } => {
                 ErrorKind::ServiceUnavailable
             }
@@ -699,6 +702,7 @@ impl ApiError {
             | Self::AlreadyExists(msg)
             | Self::Conflict(msg)
             | Self::InvalidInput(msg)
+            | Self::PayloadTooLarge(msg)
             | Self::BadGateway(msg)
             | Self::RequestTimeout(msg)
             | Self::RateLimited(msg)

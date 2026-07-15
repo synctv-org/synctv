@@ -58,9 +58,16 @@ impl S3CompatibleFileStorageService {
             .clamp(60, FILE_UPLOAD_EXPIRES_SECONDS);
         let expires_at = now + chrono::Duration::seconds(expires);
         let repository = self.repository()?;
+
+        let object_base_path = file_storage_object_base_path(
+            &self.config.base_path,
+            &request.policy.storage_namespace,
+        );
+        let object_key_prefix = format!("{object_base_path}/");
         if let Some(existing) = repository
             .get_object_by_manifest(
                 &self.config.storage_backend,
+                &object_key_prefix,
                 &content_manifest_sha256,
                 request.size_bytes,
             )
@@ -127,10 +134,6 @@ impl S3CompatibleFileStorageService {
                 }));
             }
         }
-        let object_base_path = file_storage_object_base_path(
-            &self.config.base_path,
-            &request.policy.storage_namespace,
-        );
         let existing_session = repository
             .get_pending_upload_session_by_manifest(
                 &self.config.storage_backend,
@@ -159,19 +162,13 @@ impl S3CompatibleFileStorageService {
         } else {
             FileUploadSessionKind::S3Multipart
         };
-        let upload_id = if single_object_upload {
+        let existing_upload_id = if single_object_upload {
             None
-        } else if let Some(session) = existing_session
-            .as_ref()
-            .filter(|session| session.completed_at.is_none() && session.expires_at > now)
-            .and_then(|session| session.upload_id.clone())
-        {
-            Some(session)
         } else {
-            Some(
-                self.create_multipart_upload(&object_key, &request.mime_type)
-                    .await?,
-            )
+            existing_session
+                .as_ref()
+                .filter(|session| session.completed_at.is_none() && session.expires_at > now)
+                .and_then(|session| session.upload_id.clone())
         };
         let file_id = if let Some(existing) = existing_session.as_ref() {
             upload_session_file_id(&existing.metadata)?
@@ -191,7 +188,14 @@ impl S3CompatibleFileStorageService {
         });
         let session_metadata =
             upload_session_metadata_with_manifest(&session_metadata, &request.parts);
-        repository
+        let mut admission = repository
+            .begin_upload_session_admission(
+                request.user_id,
+                &self.config.storage_backend,
+                &upload_session_key,
+            )
+            .await?;
+        admission
             .upsert_pending_object(UpsertFileObject {
                 storage_backend: &self.config.storage_backend,
                 object_key: &object_key,
@@ -201,8 +205,17 @@ impl S3CompatibleFileStorageService {
                 metadata: &request.metadata,
             })
             .await?;
-        repository
-            .upsert_upload_session(UpsertFileUploadSession {
+        let created_upload_id = if single_object_upload || existing_upload_id.is_some() {
+            None
+        } else {
+            Some(
+                self.create_multipart_upload(&object_key, &request.mime_type)
+                    .await?,
+            )
+        };
+        let upload_id = existing_upload_id.or_else(|| created_upload_id.clone());
+        let session_result = admission
+            .commit_upload_session(UpsertFileUploadSession {
                 storage_backend: &self.config.storage_backend,
                 upload_session_key: &upload_session_key,
                 object_key: &object_key,
@@ -217,7 +230,23 @@ impl S3CompatibleFileStorageService {
                 metadata: &session_metadata,
                 expires_at,
             })
-            .await?;
+            .await;
+        if let Err(error) = session_result {
+            if let Some(upload_id) = created_upload_id.as_deref() {
+                if let Err(abort_error) =
+                    self.abort_s3_multipart_upload(&object_key, upload_id).await
+                {
+                    tracing::warn!(
+                        error = %abort_error,
+                        storage_backend = %self.config.storage_backend,
+                        object_key,
+                        upload_id,
+                        "Failed to abort S3 multipart upload after session commit failure"
+                    );
+                }
+            }
+            return Err(error);
+        }
         let public_url = optional_file_storage_public_url(&self.config, &object_key)?;
         let mut file = NewStoredFile {
             id: file_id,

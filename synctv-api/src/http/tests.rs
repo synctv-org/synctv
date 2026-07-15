@@ -696,6 +696,51 @@ fn optional_header_str_rejects_non_utf8_header() -> TestResult {
 }
 
 #[test]
+fn required_header_str_rejects_duplicate_values() -> TestResult {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.append(
+        "x-upload-token",
+        axum::http::HeaderValue::from_static("first"),
+    );
+    headers.append(
+        "x-upload-token",
+        axum::http::HeaderValue::from_static("second"),
+    );
+
+    let error = app_err(required_header_str(
+        &headers,
+        "x-upload-token",
+        "Missing upload token",
+    ))?;
+
+    assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.message().contains("Multiple x-upload-token headers"));
+    Ok(())
+}
+
+#[test]
+fn optional_header_str_rejects_duplicate_values() -> TestResult {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.append(
+        axum::http::header::CONTENT_RANGE,
+        axum::http::HeaderValue::from_static("bytes 0-1/4"),
+    );
+    headers.append(
+        axum::http::header::CONTENT_RANGE,
+        axum::http::HeaderValue::from_static("bytes 2-3/4"),
+    );
+
+    let error = app_err(optional_header_str(
+        &headers,
+        &axum::http::header::CONTENT_RANGE,
+    ))?;
+
+    assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.message().contains("Multiple content-range headers"));
+    Ok(())
+}
+
+#[test]
 fn forwarded_proto_is_https_accepts_trusted_proxy_https() -> TestResult {
     let mut server = crate::ApiServerSettings::default();
     server.trusted_proxies = vec!["10.0.0.0/8".to_string()];

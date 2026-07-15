@@ -25,7 +25,14 @@ pub struct GoogleApiError {
 impl GoogleApiError {
     #[must_use]
     pub fn from_api_error(err: &crate::impls::ApiError) -> Self {
-        let classification = ErrorClassification::from_kind(err.classify());
+        let classification = match err {
+            crate::impls::ApiError::PayloadTooLarge(_) => ErrorClassification {
+                grpc_code: Code::ResourceExhausted,
+                http_status: StatusCode::PAYLOAD_TOO_LARGE,
+                reason: "PAYLOAD_TOO_LARGE",
+            },
+            _ => ErrorClassification::from_kind(err.classify()),
+        };
         let message = err.message().to_string();
         let mut metadata = HashMap::from([
             (ERROR_CODE_METADATA_KEY.to_string(), err.code().to_string()),
@@ -215,6 +222,7 @@ impl ErrorClassification {
 fn http_status_for_error(err: &crate::impls::ApiError, default_status: StatusCode) -> StatusCode {
     match err {
         crate::impls::ApiError::RangeNotSatisfiable { .. } => StatusCode::RANGE_NOT_SATISFIABLE,
+        crate::impls::ApiError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
         crate::impls::ApiError::BadGateway(_) => StatusCode::BAD_GATEWAY,
         crate::impls::ApiError::RequestTimeout(_) => StatusCode::REQUEST_TIMEOUT,
         _ => default_status,

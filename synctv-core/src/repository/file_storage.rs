@@ -14,6 +14,10 @@ use crate::{
     Error, Result,
 };
 
+const MAX_PENDING_UPLOAD_SESSIONS_PER_USER: i64 = 50;
+const PENDING_UPLOAD_SESSION_LIMIT_MESSAGE: &str =
+    "Too many pending upload sessions. Complete or cancel existing uploads first.";
+
 fn scalar_value<T>(value: Option<T>, query_description: &str) -> Result<T> {
     value.ok_or_else(|| {
         Error::Internal(format!(
@@ -254,6 +258,125 @@ pub struct UpsertFileUploadSessionPart<'a> {
     pub etag: Option<&'a str>,
 }
 
+pub struct FileUploadSessionAdmission {
+    transaction: Transaction<'static, Postgres>,
+}
+
+impl FileUploadSessionAdmission {
+    pub async fn upsert_pending_object(
+        &mut self,
+        object: UpsertFileObject<'_>,
+    ) -> Result<FileObject> {
+        validate_file_object_fields(
+            object.storage_backend,
+            object.object_key,
+            object.size_bytes,
+            object.content_manifest_sha256,
+        )?;
+        let object = sqlx::query_as!(
+            FileObject,
+            r#"
+            INSERT INTO file_objects (
+                storage_backend, object_key, mime_type, size_bytes,
+                content_manifest_sha256, metadata, validated_at, deleting_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL)
+            ON CONFLICT (storage_backend, object_key)
+            DO UPDATE SET
+                mime_type = EXCLUDED.mime_type,
+                size_bytes = EXCLUDED.size_bytes,
+                content_manifest_sha256 = EXCLUDED.content_manifest_sha256,
+                metadata = EXCLUDED.metadata,
+                validated_at = NULL,
+                deleting_at = NULL
+            WHERE file_objects.deleting_at IS NULL
+            RETURNING storage_backend, object_key, mime_type, size_bytes,
+                      content_manifest_sha256, metadata AS "metadata!: FileMetadata",
+                      created_at, validated_at, deleting_at
+            "#,
+            object.storage_backend,
+            object.object_key,
+            object.mime_type,
+            object.size_bytes,
+            object.content_manifest_sha256.trim().to_ascii_lowercase(),
+            object.metadata as _,
+        )
+        .fetch_optional(&mut *self.transaction)
+        .await?;
+        object.ok_or_else(|| {
+            Error::Conflict("file object is already scheduled for deletion".to_string())
+        })
+    }
+
+    pub async fn commit_upload_session(
+        mut self,
+        session: UpsertFileUploadSession<'_>,
+    ) -> Result<FileUploadSessionRecord> {
+        validate_file_object_fields(
+            session.storage_backend,
+            session.object_key,
+            session.size_bytes,
+            session.content_manifest_sha256,
+        )?;
+        validate_required_text(session.storage_scope, "file storage_scope", 512)?;
+        if session.part_size_bytes <= 0 {
+            return Err(Error::InvalidInput(
+                "file upload part_size_bytes must be positive".to_string(),
+            ));
+        }
+
+        let session = sqlx::query_as!(
+            FileUploadSessionRecord,
+            r#"
+            INSERT INTO file_upload_sessions (
+                storage_backend, upload_session_key, object_key, session_kind, upload_id, user_id,
+                storage_scope, mime_type, size_bytes, content_manifest_sha256,
+                part_size_bytes, metadata, expires_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            ON CONFLICT (storage_backend, upload_session_key)
+            DO UPDATE SET
+                object_key = EXCLUDED.object_key,
+                session_kind = EXCLUDED.session_kind,
+                upload_id = EXCLUDED.upload_id,
+                user_id = EXCLUDED.user_id,
+                storage_scope = EXCLUDED.storage_scope,
+                mime_type = EXCLUDED.mime_type,
+                size_bytes = EXCLUDED.size_bytes,
+                content_manifest_sha256 = EXCLUDED.content_manifest_sha256,
+                part_size_bytes = EXCLUDED.part_size_bytes,
+                metadata = EXCLUDED.metadata,
+                expires_at = EXCLUDED.expires_at,
+                completed_at = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            RETURNING storage_backend, upload_session_key, object_key,
+                      session_kind AS "session_kind!: FileUploadSessionKind",
+                      upload_id, user_id,
+                      storage_scope, mime_type, size_bytes, content_manifest_sha256,
+                      part_size_bytes, metadata AS "metadata!: FileUploadSessionMetadata",
+                      expires_at, completed_at, created_at, updated_at
+            "#,
+            session.storage_backend,
+            session.upload_session_key,
+            session.object_key,
+            i16::from(session.session_kind),
+            session.upload_id,
+            session.user_id.as_i64(),
+            session.storage_scope,
+            session.mime_type,
+            session.size_bytes,
+            session.content_manifest_sha256.trim().to_ascii_lowercase(),
+            session.part_size_bytes,
+            session.metadata as _,
+            session.expires_at,
+        )
+        .fetch_one(&mut *self.transaction)
+        .await?;
+        self.transaction.commit().await?;
+        Ok(session)
+    }
+}
+
 impl FileStorageRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
@@ -414,10 +537,16 @@ impl FileStorageRepository {
     pub async fn get_object_by_manifest(
         &self,
         storage_backend: &str,
+        object_key_prefix: &str,
         content_manifest_sha256: &str,
         size_bytes: i64,
     ) -> Result<Option<FileObject>> {
         validate_required_sha256(content_manifest_sha256, "content_manifest_sha256")?;
+        if object_key_prefix.trim().is_empty() {
+            return Err(Error::InvalidInput(
+                "object_key_prefix is required".to_string(),
+            ));
+        }
         let object = sqlx::query_as!(
             FileObject,
             r#"
@@ -426,14 +555,16 @@ impl FileStorageRepository {
                    created_at, validated_at, deleting_at
             FROM file_objects
             WHERE storage_backend = $1
-              AND content_manifest_sha256 = $2
-              AND size_bytes = $3
+              AND starts_with(object_key, $2)
+              AND content_manifest_sha256 = $3
+              AND size_bytes = $4
               AND validated_at IS NOT NULL
               AND deleting_at IS NULL
             ORDER BY created_at ASC
             LIMIT 1
             "#,
             storage_backend,
+            object_key_prefix,
             content_manifest_sha256.trim().to_ascii_lowercase(),
             size_bytes,
         )
@@ -1556,70 +1687,59 @@ impl FileStorageRepository {
         Ok(promoted)
     }
 
-    pub async fn upsert_upload_session(
+    pub async fn begin_upload_session_admission(
         &self,
-        session: UpsertFileUploadSession<'_>,
-    ) -> Result<FileUploadSessionRecord> {
-        validate_file_object_fields(
-            session.storage_backend,
-            session.object_key,
-            session.size_bytes,
-            session.content_manifest_sha256,
+        user_id: UserId,
+        storage_backend: &str,
+        upload_session_key: &str,
+    ) -> Result<FileUploadSessionAdmission> {
+        validate_required_text(
+            storage_backend,
+            "file storage_backend",
+            FILE_STORAGE_BACKEND_MAX_CHARS,
         )?;
-        validate_required_text(session.storage_scope, "file storage_scope", 512)?;
-        if session.part_size_bytes <= 0 {
-            return Err(Error::InvalidInput(
-                "file upload part_size_bytes must be positive".to_string(),
-            ));
-        }
-        let session = sqlx::query_as!(
-            FileUploadSessionRecord,
-            r#"
-            INSERT INTO file_upload_sessions (
-                storage_backend, upload_session_key, object_key, session_kind, upload_id, user_id,
-                storage_scope, mime_type, size_bytes, content_manifest_sha256,
-                part_size_bytes, metadata, expires_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            ON CONFLICT (storage_backend, upload_session_key)
-            DO UPDATE SET
-                object_key = EXCLUDED.object_key,
-                session_kind = EXCLUDED.session_kind,
-                upload_id = EXCLUDED.upload_id,
-                user_id = EXCLUDED.user_id,
-                storage_scope = EXCLUDED.storage_scope,
-                mime_type = EXCLUDED.mime_type,
-                size_bytes = EXCLUDED.size_bytes,
-                content_manifest_sha256 = EXCLUDED.content_manifest_sha256,
-                part_size_bytes = EXCLUDED.part_size_bytes,
-                metadata = EXCLUDED.metadata,
-                expires_at = EXCLUDED.expires_at,
-                completed_at = NULL,
-                updated_at = CURRENT_TIMESTAMP
-            RETURNING storage_backend, upload_session_key, object_key,
-                      session_kind AS "session_kind!: FileUploadSessionKind",
-                      upload_id, user_id,
-                      storage_scope, mime_type, size_bytes, content_manifest_sha256,
-                      part_size_bytes, metadata AS "metadata!: FileUploadSessionMetadata",
-                      expires_at, completed_at, created_at, updated_at
-            "#,
-            session.storage_backend,
-            session.upload_session_key,
-            session.object_key,
-            i16::from(session.session_kind),
-            session.upload_id,
-            session.user_id.as_i64(),
-            session.storage_scope,
-            session.mime_type,
-            session.size_bytes,
-            session.content_manifest_sha256.trim().to_ascii_lowercase(),
-            session.part_size_bytes,
-            session.metadata as _,
-            session.expires_at,
+        validate_required_text(
+            upload_session_key,
+            "file upload_session_key",
+            FILE_OBJECT_KEY_MAX_CHARS,
+        )?;
+
+        // Hold this lock through all session-creation side effects and the final insert.
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query!(
+            "SELECT pg_advisory_xact_lock(\
+                 hashtextextended('file_upload_session_user_limit', $1)\
+             )",
+            user_id.as_i64(),
         )
-        .fetch_one(&self.pool)
+        .execute(&mut *transaction)
         .await?;
-        Ok(session)
+
+        let existing_session = sqlx::query_scalar!(
+            "SELECT EXISTS(\
+                 SELECT 1 FROM file_upload_sessions \
+                 WHERE storage_backend = $1 AND upload_session_key = $2\
+             ) AS \"existing_session!\"",
+            storage_backend,
+            upload_session_key,
+        )
+        .fetch_one(&mut *transaction)
+        .await?;
+        if !existing_session {
+            let pending_count = sqlx::query_scalar!(
+                "SELECT COUNT(*) AS \"pending_count!\" FROM file_upload_sessions \
+                 WHERE user_id = $1 AND completed_at IS NULL AND expires_at > NOW()",
+                user_id.as_i64(),
+            )
+            .fetch_one(&mut *transaction)
+            .await?;
+            if pending_count >= MAX_PENDING_UPLOAD_SESSIONS_PER_USER {
+                return Err(Error::RateLimited(
+                    PENDING_UPLOAD_SESSION_LIMIT_MESSAGE.to_string(),
+                ));
+            }
+        }
+        Ok(FileUploadSessionAdmission { transaction })
     }
 
     pub async fn get_upload_session(

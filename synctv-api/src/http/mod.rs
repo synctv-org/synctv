@@ -70,13 +70,26 @@ pub use health::{create_metrics_router, liveness_check};
 pub use middleware::{hsts_header, security_headers_middleware};
 pub use websocket::{websocket_handler, AuthMethod};
 
+pub(crate) fn reject_duplicate_header(headers: &HeaderMap, name: &HeaderName) -> AppResult<()> {
+    let mut values = headers.get_all(name).iter();
+    let _ = values.next();
+    if values.next().is_some() {
+        return Err(AppError::bad_request(format!(
+            "Multiple {name} headers are not allowed"
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn required_header_str<'a>(
     headers: &'a HeaderMap,
     name: &'static str,
     missing_message: &'static str,
 ) -> AppResult<&'a str> {
+    let header_name = HeaderName::from_static(name);
+    reject_duplicate_header(headers, &header_name)?;
     let value = headers
-        .get(name)
+        .get(&header_name)
         .ok_or_else(|| AppError::bad_request(missing_message))
         .and_then(|value| {
             value
@@ -93,6 +106,7 @@ pub(crate) fn optional_header_str<'a>(
     headers: &'a HeaderMap,
     name: &'static HeaderName,
 ) -> AppResult<Option<&'a str>> {
+    reject_duplicate_header(headers, name)?;
     headers
         .get(name)
         .map(|value| {

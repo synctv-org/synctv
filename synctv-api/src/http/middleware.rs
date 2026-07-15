@@ -47,6 +47,7 @@ where
                     .map_err(|error| AppError::bad_request(error.to_string()))
                 })
                 .transpose()?;
+            super::reject_duplicate_header(&parts.headers, &axum::http::header::AUTHORIZATION)?;
             let authorization = parts
                 .headers
                 .get(axum::http::header::AUTHORIZATION)
@@ -64,6 +65,7 @@ where
                 crate::impls::RequestMetadata::new(crate::impls::TransportProtocol::Http)
                     .with_authorization(authorization)
                     .with_client_ip(client_ip)
+                    .with_socket_ip(peer_ip)
                     .with_user_agent(user_agent)
                     .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT)),
             ))

@@ -4,6 +4,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 COMPOSE ?= docker compose
+CARGO := cargo +nightly
 DEV_COMPOSE_FILE ?= docker-compose.dev.yml
 DEV_PROJECT ?= synctv-dev
 DEV_BASE_SERVICES ?= postgres redis
@@ -14,6 +15,10 @@ DEV_WAIT_TIMEOUT ?= 120
 DEV_LOG_TAIL ?= 100
 DEV_START_TIMEOUT ?= 120
 DEV_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 1)
+DEV_FEATURES ?=
+DEV_CARGO_FEATURE_ARGS := $(if $(strip $(DEV_FEATURES)),--features "$(DEV_FEATURES)",)
+DEV_SSRF_ENABLED ?= false
+DEV_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS ?= false
 
 DEV_DATA_DIR := $(CURDIR)/.dev-data
 DEV_SOCKET := $(DEV_DATA_DIR)/run/synctv.sock
@@ -49,8 +54,8 @@ export SYNCTV_JWT_SECRET="$(DEV_JWT_SECRET)"; \
 export SYNCTV_CLUSTER_SECRET="$(DEV_CLUSTER_SECRET)"; \
 export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(DEV_CREDENTIAL_KEY)"; \
 export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(DEV_OPAQUE_SECRET)"; \
-export SYNCTV_SECURITY_SSRF_ENABLED=false; \
-export SYNCTV_SECURITY_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS=false; \
+export SYNCTV_SECURITY_SSRF_ENABLED="$(DEV_SSRF_ENABLED)"; \
+export SYNCTV_SECURITY_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS="$(DEV_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS)"; \
 export SYNCTV_FILE_STORAGE_DEFAULT_BACKEND=database; \
 export SYNCTV_FILE_STORAGE_CHAT_ATTACHMENTS_BACKEND=database; \
 export SYNCTV_FILE_STORAGE_USER_AVATARS_BACKEND=database; \
@@ -75,8 +80,9 @@ help: ## Show development targets.
 dev-check: ## Check required local tools.
 	@command -v docker >/dev/null
 	@$(COMPOSE) version >/dev/null
-	@command -v cargo >/dev/null
-	@printf "Docker, Docker Compose, and Cargo are available.\n"
+	@command -v rustup >/dev/null
+	@$(CARGO) --version >/dev/null
+	@printf "Docker, Docker Compose, and Cargo nightly are available.\n"
 
 dev-env: ## Print local service URLs and credentials.
 	@printf "SyncTV:    http://127.0.0.1:8080  root / %s\n" "$(DEV_ROOT_PASSWORD)"
@@ -101,12 +107,12 @@ dev-stack: dev-up ## Start OpenList, Emby, Jellyfin, RustFS, and Casdoor after c
 	@$(MAKE) dev-env
 
 dev-build: ## Build the local SyncTV binary used by background dev commands.
-	SQLX_OFFLINE=true cargo build -p synctv --bin synctv
+	SQLX_OFFLINE=true $(CARGO) build -p synctv --bin synctv $(DEV_CARGO_FEATURE_ARGS)
 
 dev-serve: dev-up ## Run SyncTV locally with development defaults.
 	mkdir -p "$(DEV_DATA_DIR)/run"
 	$(DEV_ENV_EXPORTS); \
-	SQLX_OFFLINE=true cargo run -p synctv --bin synctv -- serve
+	SQLX_OFFLINE=true $(CARGO) run -p synctv --bin synctv $(DEV_CARGO_FEATURE_ARGS) -- serve
 
 dev-start: dev-up dev-build ## Start SyncTV in the background with development defaults.
 	@mkdir -p "$(DEV_DATA_DIR)/run"
@@ -157,7 +163,7 @@ dev-stop: ## Stop locally running SyncTV processes started by dev-serve/dev-star
 			printf "Stopped local SyncTV process: %s\n" "$$pid"; \
 		fi; \
 	fi
-	@pids="$$(pgrep -f '[/]synctv serve|[c]argo run -p synctv .* serve' || true)"; \
+	@pids="$$(pgrep -f '[/]synctv serve|[c]argo (\+nightly )?run -p synctv .* serve' || true)"; \
 	if [ -n "$$pids" ]; then \
 		kill $$pids; \
 		printf "Stopped local SyncTV process(es): %s\n" "$$pids"; \
@@ -236,29 +242,29 @@ dev-shell: dev-up ## Open a shell with SyncTV development environment variables.
 		$${SHELL:-/bin/bash}
 
 dev-migrate: dev-up ## Run database migrations against the local PostgreSQL container.
-	DATABASE_URL="$(DEV_DATABASE_URL)" cargo sqlx migrate run
+	DATABASE_URL="$(DEV_DATABASE_URL)" $(CARGO) sqlx migrate run
 
 dev-dropdb: dev-up ## Drop and recreate the local development PostgreSQL database.
 	$(COMPOSE_DEV) exec -T postgres sh -lc 'dropdb -U synctv --if-exists synctv && createdb -U synctv synctv'
 
 sqlx-prepare: dev-migrate ## Refresh SQLx offline metadata in .sqlx.
-	DATABASE_URL="$(DEV_DATABASE_URL)" cargo sqlx prepare --workspace -- --all-targets
+	DATABASE_URL="$(DEV_DATABASE_URL)" $(CARGO) sqlx prepare --workspace -- --all-targets
 
 fmt: ## Format all Rust code.
-	cargo fmt --all
+	$(CARGO) fmt --all
 
 check: ## Check workspace library and binary targets.
-	SQLX_OFFLINE=true cargo check -j "$(DEV_JOBS)" --workspace
+	SQLX_OFFLINE=true $(CARGO) check -j "$(DEV_JOBS)" --workspace
 
 check-all-targets: ## Check all workspace targets, including tests, benches, and examples.
-	SQLX_OFFLINE=true cargo check -j "$(DEV_JOBS)" --workspace --all-targets
+	SQLX_OFFLINE=true $(CARGO) check -j "$(DEV_JOBS)" --workspace --all-targets
 
 nextest: ## Run the full workspace nextest suite, including ignored tests.
-	SQLX_OFFLINE=true cargo nextest run --workspace --run-ignored all -j "$(DEV_JOBS)" --nff --status-level fail
+	SQLX_OFFLINE=true $(CARGO) nextest run --workspace --run-ignored all -j "$(DEV_JOBS)" --nff --status-level fail
 
 clippy: ## Apply Clippy fixes, then require a clean workspace lint pass.
-	SQLX_OFFLINE=true cargo clippy -j "$(DEV_JOBS)" --workspace --all-targets --fix --allow-dirty
-	SQLX_OFFLINE=true cargo clippy -j "$(DEV_JOBS)" --workspace --all-targets
+	SQLX_OFFLINE=true $(CARGO) clippy -j "$(DEV_JOBS)" --workspace --all-targets --fix --allow-dirty
+	SQLX_OFFLINE=true $(CARGO) clippy -j "$(DEV_JOBS)" --workspace --all-targets
 
 dev-db: dev-up ## Open psql inside the PostgreSQL container.
 	$(COMPOSE_DEV) exec postgres psql -U synctv -d synctv

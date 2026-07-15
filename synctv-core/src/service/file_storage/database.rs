@@ -574,10 +574,13 @@ impl FileStorageService for DatabaseFileStorageService {
         });
         let now = crate::SystemClock.now();
         let expires_at = now + chrono::Duration::seconds(FILE_UPLOAD_EXPIRES_SECONDS);
+        let object_base_path = database_file_namespace_base_path(&request.policy.storage_namespace);
+        let object_key_prefix = format!("{object_base_path}/");
         if let Some(existing) = self
             .repository
             .get_object_by_manifest(
                 &self.storage_backend,
+                &object_key_prefix,
                 &content_manifest_sha256,
                 request.size_bytes,
             )
@@ -669,7 +672,7 @@ impl FileStorageService for DatabaseFileStorageService {
             )
             .await?;
         let object_key = file_object_key(
-            &database_file_namespace_base_path(&request.policy.storage_namespace),
+            &object_base_path,
             "manifest",
             &content_manifest_sha256,
             &request.mime_type,
@@ -677,12 +680,7 @@ impl FileStorageService for DatabaseFileStorageService {
         let upload_session_key = if let Some(existing) = existing_session.as_ref() {
             existing.upload_session_key.clone()
         } else {
-            file_object_key(
-                &database_file_namespace_base_path(&request.policy.storage_namespace),
-                "sessions",
-                &file_id,
-                &request.mime_type,
-            )
+            file_object_key(&object_base_path, "sessions", &file_id, &request.mime_type)
         };
         let file_id = if let Some(existing) = existing_session.as_ref() {
             upload_session_file_id(&existing.metadata)?
@@ -740,7 +738,15 @@ impl FileStorageService for DatabaseFileStorageService {
             &self.upload_token_secret,
         )?);
         validate_session_file_for_storage(&file)?;
-        self.repository
+        let mut admission = self
+            .repository
+            .begin_upload_session_admission(
+                request.user_id,
+                &self.storage_backend,
+                &upload_session_key,
+            )
+            .await?;
+        admission
             .upsert_pending_object(UpsertFileObject {
                 storage_backend: &self.storage_backend,
                 object_key: &file.object_key,
@@ -754,7 +760,7 @@ impl FileStorageService for DatabaseFileStorageService {
             })
             .await?;
         if !single_object_upload {
-            self.repository
+            admission
                 .upsert_pending_object(UpsertFileObject {
                     storage_backend: &self.storage_backend,
                     object_key: &upload_session_key,
@@ -767,8 +773,8 @@ impl FileStorageService for DatabaseFileStorageService {
                 })
                 .await?;
         }
-        self.repository
-            .upsert_upload_session(UpsertFileUploadSession {
+        admission
+            .commit_upload_session(UpsertFileUploadSession {
                 storage_backend: &self.storage_backend,
                 upload_session_key: &upload_session_key,
                 object_key: &file.object_key,

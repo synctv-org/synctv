@@ -17,6 +17,8 @@ DEV_START_TIMEOUT ?= 120
 DEV_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 1)
 DEV_FEATURES ?=
 DEV_CARGO_FEATURE_ARGS := $(if $(strip $(DEV_FEATURES)),--features "$(DEV_FEATURES)",)
+RELEASE_FEATURES ?=
+RELEASE_CARGO_FEATURE_ARGS := $(if $(strip $(RELEASE_FEATURES)),--features "$(RELEASE_FEATURES)",)
 DEV_SSRF_ENABLED ?= false
 DEV_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS ?= false
 
@@ -72,7 +74,7 @@ export SYNCTV_MANAGEMENT_TRANSPORT=unix; \
 export SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH="$(DEV_SOCKET)"
 endef
 
-.PHONY: help dev-check dev-env dev-up dev-stack dev-build dev-serve dev-start dev-stop dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-dropdb dev-db dev-redis dev-open dev-smoke fmt check check-all-targets sqlx-prepare nextest clippy
+.PHONY: help dev-check dev-env dev-up dev-stack dev-build release-build dev-serve dev-start dev-stop dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-dropdb dev-db dev-redis dev-open dev-smoke fmt check check-all-targets sqlx-prepare nextest clippy
 
 help: ## Show development targets.
 	@awk 'BEGIN {FS = ":.*##"; printf "SyncTV development targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -108,6 +110,9 @@ dev-stack: dev-up ## Start OpenList, Emby, Jellyfin, RustFS, and Casdoor after c
 
 dev-build: ## Build the local SyncTV binary used by background dev commands.
 	SQLX_OFFLINE=true $(CARGO) build -p synctv --bin synctv $(DEV_CARGO_FEATURE_ARGS)
+
+release-build: ## Build the optimized SyncTV release binary.
+	SQLX_OFFLINE=true $(CARGO) build --release -p synctv --bin synctv $(RELEASE_CARGO_FEATURE_ARGS)
 
 dev-serve: dev-up ## Run SyncTV locally with development defaults.
 	mkdir -p "$(DEV_DATA_DIR)/run"

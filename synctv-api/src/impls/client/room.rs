@@ -1,6 +1,7 @@
 //! Room operations: list, create, get, join, leave, delete, settings, chat, hot rooms, public settings
 
 use crate::impls::ApiError;
+use futures::{stream, StreamExt as _, TryStreamExt as _};
 use std::collections::HashMap;
 use synctv_core::models::{
     ChatMentionInput, ChatMessageEvent, ChatMessageType, ChatMessageWithAttachments, ChatPinEvent,
@@ -135,25 +136,20 @@ impl ClientApiImpl {
         &self,
         room: &synctv_core::models::Room,
     ) -> Result<synctv_proto::client::Room, ApiError> {
-        let settings = self
-            .room_service
-            .get_room_settings(&room.id)
-            .await
-            .map_err(ApiError::from)?;
-        let presence = self
-            .presence_service
-            .room_stats(room.id)
-            .await
-            .map_err(ApiError::from)?;
-        let availability = self
-            .room_service
-            .room_availability(room)
-            .await
-            .map_err(ApiError::from)?;
+        let (settings, presence, availability, member_count) = tokio::join!(
+            self.room_service.get_room_settings(&room.id),
+            self.presence_service.room_stats(room.id),
+            self.room_service.room_availability(room),
+            self.load_room_member_count(&room.id),
+        );
+        let settings = settings.map_err(ApiError::from)?;
+        let presence = presence.map_err(ApiError::from)?;
+        let availability = availability.map_err(ApiError::from)?;
+        let member_count = member_count?;
         self.room_to_proto_with_availability_presence_and_loaded_cover(
             room,
             Some(&settings),
-            self.load_room_member_count(&room.id).await?,
+            member_count,
             availability,
             Some(&presence),
             None,
@@ -424,12 +420,18 @@ impl ClientApiImpl {
             .favorite_room_ids_for_viewer(Some(uid), &room_ids)
             .await?;
 
-        let mut response_rooms = Vec::with_capacity(rooms.len());
-        for room in rooms {
-            let mut proto_room = self.room_to_proto_for_favorite_view(&room).await?;
-            proto_room.favorited = favorite_room_ids.contains(&room.id);
-            response_rooms.push(proto_room);
-        }
+        let rooms_ref = &rooms;
+        let favorite_room_ids_ref = &favorite_room_ids;
+        let response_rooms = stream::iter(0..rooms.len())
+            .map(|index| async move {
+                let room = &rooms_ref[index];
+                let mut proto_room = self.room_to_proto_for_favorite_view(room).await?;
+                proto_room.favorited = favorite_room_ids_ref.contains(&room.id);
+                Ok::<_, ApiError>(proto_room)
+            })
+            .buffered(16)
+            .try_collect()
+            .await?;
 
         Ok(synctv_proto::client::ListFavoriteRoomsResponse {
             rooms: response_rooms,
@@ -678,7 +680,7 @@ impl ClientApiImpl {
         let (complete, uploaded_size_bytes, uploaded_parts) = uploaded_parts_response_fields(&blob);
         Ok(synctv_proto::client::UploadRoomCoverObjectResponse {
             object: match blob {
-                StoreFileUploadResult::Complete(blob) => Some(room_cover_object_to_proto(&blob)),
+                StoreFileUploadResult::Complete(blob) => Some(room_cover_object_to_proto(blob)),
                 StoreFileUploadResult::PartAccepted { .. } => None,
             },
             complete,
@@ -707,7 +709,7 @@ impl ClientApiImpl {
             complete_upload_response_fields(&result);
         Ok(
             synctv_proto::client::CompleteRoomCoverUploadSessionResponse {
-                object: result.object.as_ref().map(room_cover_object_to_proto),
+                object: result.object.map(room_cover_object_to_proto),
                 complete,
                 uploaded_size_bytes,
                 uploaded_parts,
@@ -1945,7 +1947,7 @@ impl ClientApiImpl {
         Ok(synctv_proto::client::UploadChatAttachmentObjectResponse {
             object: match blob {
                 StoreFileUploadResult::Complete(blob) => {
-                    Some(chat_attachment_object_to_proto(&req.room_id, &blob))
+                    Some(chat_attachment_object_to_proto(&req.room_id, blob))
                 }
                 StoreFileUploadResult::PartAccepted { .. } => None,
             },
@@ -1984,7 +1986,6 @@ impl ClientApiImpl {
             synctv_proto::client::CompleteChatAttachmentUploadSessionResponse {
                 object: result
                     .object
-                    .as_ref()
                     .map(|blob| chat_attachment_object_to_proto(&room_id, blob)),
                 complete,
                 uploaded_size_bytes,

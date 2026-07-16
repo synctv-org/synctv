@@ -14,7 +14,7 @@ use {
         Unmarshal,
     },
     crate::streamhub::define::{FrameData, StatisticData, StatisticDataSender},
-    bytes::BytesMut,
+    bytes::{Bytes, BytesMut},
     errors::CacheError,
     gop::Gop,
     parking_lot::RwLock,
@@ -25,7 +25,7 @@ use {
 /// Updated infrequently (only on AVC sequence header).
 #[derive(Default)]
 pub struct VideoSeqCache {
-    pub data: BytesMut,
+    pub data: Bytes,
     pub timestamp: u32,
 }
 
@@ -33,7 +33,7 @@ pub struct VideoSeqCache {
 /// Updated infrequently (only on AAC sequence header).
 #[derive(Default)]
 pub struct AudioSeqCache {
-    pub data: BytesMut,
+    pub data: Bytes,
     pub timestamp: u32,
 }
 
@@ -86,7 +86,7 @@ impl SplitCache {
     }
 
     /// Save metadata frame (low frequency operation).
-    pub fn save_metadata(&self, chunk_body: &BytesMut, timestamp: u32) {
+    pub fn save_metadata(&self, chunk_body: &Bytes, timestamp: u32) {
         let mut meta = self.metadata.write();
         meta.data.save(chunk_body);
         meta.timestamp = timestamp;
@@ -102,28 +102,33 @@ impl SplitCache {
         } else {
             Some(FrameData::MetaData {
                 timestamp: meta.timestamp,
-                data: data.freeze(),
+                data,
             })
         }
     }
 
     /// Save audio data (high frequency operation).
     /// Uses separate locks for audio_seq and gops to minimize contention.
-    pub fn save_audio_data(&self, chunk_body: &BytesMut, timestamp: u32) -> Result<(), CacheError> {
+    pub fn save_audio_data(&self, chunk_body: &Bytes, timestamp: u32) -> Result<(), CacheError> {
         // Save to GOP cache first (most frequent operation)
         let channel_data = FrameData::Audio {
             timestamp,
-            data: bytes::Bytes::copy_from_slice(chunk_body),
+            data: chunk_body.clone(),
         };
         self.gops.write().save_frame_data(channel_data, false);
 
         // Parse header and check for sequence header (infrequent)
-        let mut reader = BytesReader::new(chunk_body.clone());
+        let mut reader = BytesReader::new(BytesMut::from(&chunk_body[..chunk_body.len().min(2)]));
         let tag_header = AudioTagHeader::unmarshal(&mut reader)?;
-        let remain_bytes = reader.extract_remaining_bytes();
+        let header_len = if tag_header.sound_format == define::SoundFormat::AAC as u8 {
+            2
+        } else {
+            1
+        };
+        let remaining_len = chunk_body.len().saturating_sub(header_len);
 
         // Update audio sequence header if this is an AAC config
-        if remain_bytes.len() >= 2
+        if remaining_len >= 2
             && tag_header.sound_format == define::SoundFormat::AAC as u8
             && tag_header.aac_packet_type == define::aac_packet_type::AAC_SEQHDR
         {
@@ -136,6 +141,7 @@ impl SplitCache {
             // Send codec statistics (non-blocking)
             if let Some(sender) = &self.statistic_data_sender {
                 let mut aac_processor = Mpeg4AacProcessor::default();
+                let remain_bytes = BytesMut::from(&chunk_body[header_len..]);
                 let aac = aac_processor
                     .extend_data(&remain_bytes)?
                     .audio_specific_config_load()?;
@@ -175,7 +181,7 @@ impl SplitCache {
         if !audio_seq.data.is_empty() {
             return Some(FrameData::Audio {
                 timestamp: audio_seq.timestamp,
-                data: bytes::Bytes::copy_from_slice(&audio_seq.data),
+                data: audio_seq.data.clone(),
             });
         }
         None
@@ -188,7 +194,7 @@ impl SplitCache {
         if !video_seq.data.is_empty() {
             return Some(FrameData::Video {
                 timestamp: video_seq.timestamp,
-                data: bytes::Bytes::copy_from_slice(&video_seq.data),
+                data: video_seq.data.clone(),
             });
         }
         None
@@ -196,16 +202,16 @@ impl SplitCache {
 
     /// Save video data (high frequency operation).
     /// Uses separate locks for video_seq and gops to minimize contention.
-    pub fn save_video_data(&self, chunk_body: &BytesMut, timestamp: u32) -> Result<(), CacheError> {
+    pub fn save_video_data(&self, chunk_body: &Bytes, timestamp: u32) -> Result<(), CacheError> {
         // Parse header first (before acquiring GOP lock)
-        let mut reader = BytesReader::new(chunk_body.clone());
+        let mut reader = BytesReader::new(BytesMut::from(&chunk_body[..chunk_body.len().min(5)]));
         let tag_header = VideoTagHeader::unmarshal(&mut reader)?;
         let is_key_frame = tag_header.frame_type == define::frame_type::KEY_FRAME;
 
         // Save to GOP cache (most frequent operation)
         let channel_data = FrameData::Video {
             timestamp,
-            data: bytes::Bytes::copy_from_slice(chunk_body),
+            data: chunk_body.clone(),
         };
         self.gops
             .write()
@@ -221,6 +227,14 @@ impl SplitCache {
 
             // Send codec statistics (non-blocking)
             if let Some(sender) = &self.statistic_data_sender {
+                let header_len = if tag_header.codec_id == define::AvcCodecId::H264 as u8
+                    || tag_header.codec_id == define::AvcCodecId::HEVC as u8
+                {
+                    5
+                } else {
+                    1
+                };
+                let mut reader = BytesReader::new(BytesMut::from(&chunk_body[header_len..]));
                 // Check codec type and use appropriate processor
                 if tag_header.codec_id == define::AvcCodecId::HEVC as u8 {
                     // HEVC (H.265) codec
@@ -404,7 +418,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let cache = SplitCache::new(1, None, Some(tx));
 
-        let hevc_data = create_hevc_sequence_header();
+        let hevc_data = create_hevc_sequence_header().freeze();
         let result = cache.save_video_data(&hevc_data, 0);
 
         assert!(result.is_ok(), "save_video_data should succeed for HEVC");
@@ -434,7 +448,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let cache = SplitCache::new(1, None, Some(tx));
 
-        let avc_data = create_avc_sequence_header();
+        let avc_data = create_avc_sequence_header().freeze();
         let result = cache.save_video_data(&avc_data, 0);
 
         // The save_video_data may fail if the SPS parsing fails, but that's expected
@@ -467,6 +481,7 @@ mod tests {
         data.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]);
         // Some NAL data
         data.extend_from_slice(&[0x00, 0x00, 0x00, 0x02, 0x02, 0xAA]);
+        let data = data.freeze();
 
         let result = cache.save_video_data(&data, 0);
         assert!(result.is_ok());

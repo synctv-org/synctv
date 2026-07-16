@@ -396,9 +396,7 @@ impl ClientApiImpl {
         let (complete, uploaded_size_bytes, uploaded_parts) = uploaded_parts_response_fields(&blob);
         Ok(synctv_proto::client::UploadPlaylistCoverObjectResponse {
             object: match blob {
-                StoreFileUploadResult::Complete(blob) => {
-                    Some(playlist_cover_object_to_proto(&blob))
-                }
+                StoreFileUploadResult::Complete(blob) => Some(playlist_cover_object_to_proto(blob)),
                 StoreFileUploadResult::PartAccepted { .. } => None,
             },
             complete,
@@ -428,7 +426,7 @@ impl ClientApiImpl {
             complete_upload_response_fields(&result);
         Ok(
             synctv_proto::client::CompletePlaylistCoverUploadSessionResponse {
-                object: result.object.as_ref().map(playlist_cover_object_to_proto),
+                object: result.object.map(playlist_cover_object_to_proto),
                 complete,
                 uploaded_size_bytes,
                 uploaded_parts,
@@ -752,22 +750,9 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let mut proto_playlists = Vec::with_capacity(playlists.len());
-        for entry in &playlists {
-            let item_count = i64_to_i32_api(
-                crate::impls::playlist_media_count_or_zero(&counts, &entry.playlist.id),
-                "playlist item count",
-            )?;
-            proto_playlists.push(
-                self.playlist_to_proto_for_viewer_with_loaded_cover(
-                    &entry.playlist,
-                    item_count,
-                    entry.is_available,
-                    actor.user_id(),
-                )
-                .await?,
-            );
-        }
+        let proto_playlists =
+            super::media::playlist_list_items_to_proto(self, &playlists, &counts, actor.user_id())
+                .await?;
 
         Ok(synctv_proto::client::ListPlaylistsResponse {
             playlists: proto_playlists,

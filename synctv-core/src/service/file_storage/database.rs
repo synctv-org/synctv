@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -1334,35 +1334,40 @@ impl FileStorageService for DatabaseFileStorageService {
                             Error::InvalidInput("file ownership proof is required".to_string())
                         })?;
                     let nonce = ownership_proof.nonce.as_str();
-                    let ranges = ownership_proof.ranges.clone();
-                    let mut chunks = Vec::with_capacity(ranges.len());
-                    for range in &ranges {
-                        let start = u64::try_from(range.offset).map_err(|_| {
-                            Error::Internal("file ownership proof range is invalid".to_string())
-                        })?;
-                        let length = u64::try_from(range.length).map_err(|_| {
-                            Error::Internal("file ownership proof range is invalid".to_string())
-                        })?;
-                        let end_inclusive = start
-                            .checked_add(length)
-                            .and_then(|end| end.checked_sub(1))
-                            .ok_or_else(|| {
+                    let ranges = &ownership_proof.ranges;
+                    let object_key_ref = object_key.as_str();
+                    let chunks = futures::stream::iter(0..ranges.len())
+                        .map(|index| async move {
+                            let range = &ranges[index];
+                            let start = u64::try_from(range.offset).map_err(|_| {
                                 Error::Internal("file ownership proof range is invalid".to_string())
                             })?;
-                        let data = self
-                            .load_range_data(
-                                &object_key,
+                            let length = u64::try_from(range.length).map_err(|_| {
+                                Error::Internal("file ownership proof range is invalid".to_string())
+                            })?;
+                            let end_inclusive = start
+                                .checked_add(length)
+                                .and_then(|end| end.checked_sub(1))
+                                .ok_or_else(|| {
+                                    Error::Internal(
+                                        "file ownership proof range is invalid".to_string(),
+                                    )
+                                })?;
+                            self.load_range_data(
+                                object_key_ref,
                                 Some(FileRangeRequest::Exact(FileByteRange {
                                     start,
                                     end_inclusive,
                                 })),
                             )
-                            .await?;
-                        chunks.push(data);
-                    }
+                            .await
+                        })
+                        .buffered(3)
+                        .try_collect::<Vec<_>>()
+                        .await?;
                     let expected = file_ownership_proof_digest(
                         nonce,
-                        &ranges,
+                        ranges,
                         &content_manifest_sha256,
                         size_bytes,
                         chunks.iter().map(Vec::as_slice),

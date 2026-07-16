@@ -280,7 +280,7 @@ impl TsMuxer {
                     };
                     let mut pcr_result: BytesWriter = BytesWriter::new();
                     utils::pcr_write(&mut pcr_result, pcr * 300)?;
-                    ts_header.write(&pcr_result.extract_current_bytes()[..])?;
+                    ts_header.write(pcr_result.as_slice())?;
                     ts_header.add_u8_at(4, 6)?;
                 }
 

@@ -771,6 +771,14 @@ fn build_main_protos(protoc: PathBuf, out_dir: &Path) -> Result<(), Box<dyn std:
     let mut prost_config = tonic_prost_build::Config::new();
     prost_config.protoc_executable(protoc);
     configure_well_known_types(&mut prost_config);
+    prost_config.bytes([
+        ".synctv.client.ChatAttachmentObjectResponse.data",
+        ".synctv.client.UserAvatarObjectResponse.data",
+        ".synctv.client.MediaCoverObjectResponse.data",
+        ".synctv.client.MediaThumbnailObjectResponse.data",
+        ".synctv.client.RoomCoverObjectResponse.data",
+        ".synctv.client.PlaylistCoverObjectResponse.data",
+    ]);
     prost_reflect_build::Builder::new()
         .descriptor_pool("crate::DESCRIPTOR_POOL")
         .file_descriptor_set_path(out_dir.join("descriptor.bin"))
@@ -840,6 +848,18 @@ fn build_main_protos(protoc: PathBuf, out_dir: &Path) -> Result<(), Box<dyn std:
         &[".synctv.admin.UpdateSettingsRequest.update_mask"],
         "#[cfg_attr(feature = \"openapi\", schema(value_type = String))]",
     );
+    builder = add_field_attrs(
+        builder,
+        &[
+            ".synctv.client.ChatAttachmentObjectResponse.data",
+            ".synctv.client.UserAvatarObjectResponse.data",
+            ".synctv.client.MediaCoverObjectResponse.data",
+            ".synctv.client.MediaThumbnailObjectResponse.data",
+            ".synctv.client.RoomCoverObjectResponse.data",
+            ".synctv.client.PlaylistCoverObjectResponse.data",
+        ],
+        "#[cfg_attr(feature = \"openapi\", schema(value_type = Vec<u8>))]",
+    );
     builder.out_dir(out_dir).compile_with_config(
         prost_config,
         &MAIN_PROTO_FILES,
@@ -867,28 +887,12 @@ fn build_provider_protos(
             &PROVIDER_PROTO_INCLUDES,
         )?;
 
-    let aliases = collect_openapi_schema_aliases_when_enabled(&[
-        "proto/providers/bilibili.proto",
-        "proto/providers/alist.proto",
-        "proto/providers/emby.proto",
-        "proto/providers/common.proto",
-        "proto/providers/rtmp.proto",
-        "proto/providers/cloudreve.proto",
-        "proto/providers/twitch.proto",
-        "proto/providers/huya.proto",
-        "proto/providers/douyu.proto",
-        "proto/providers/acfun.proto",
-        "proto/providers/cctv.proto",
-        "proto/providers/youtube.proto",
-        "proto/providers/douyin.proto",
-        "proto/providers/tiktok.proto",
-        "proto/providers/fnos.proto",
-        "proto/providers/qnap.proto",
-        "proto/providers/synology.proto",
-        "proto/providers/nextcloud.proto",
-        "proto/providers/seafile.proto",
-        "proto/providers/truenas.proto",
-    ])?;
+    let schema_files = PROVIDER_PROTO_FILES
+        .iter()
+        .copied()
+        .filter(|file| !file.ends_with("_service.proto"))
+        .collect::<Vec<_>>();
+    let aliases = collect_openapi_schema_aliases_when_enabled(&schema_files)?;
     let mut builder = tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
@@ -943,6 +947,7 @@ fn build_playback_provider_protos(
     let mut prost_config = tonic_prost_build::Config::new();
     prost_config.protoc_executable(protoc);
     configure_well_known_types(&mut prost_config);
+    prost_config.bytes([".synctv.playback_provider.common.StreamChunk.data"]);
     prost_reflect_build::Builder::new()
         .descriptor_pool("crate::PLAYBACK_PROVIDER_DESCRIPTOR_POOL")
         .file_descriptor_set_path(out_dir.join("descriptor.bin"))
@@ -960,6 +965,11 @@ fn build_playback_provider_protos(
     builder = add_openapi_attrs(builder, &aliases, &[".synctv.playback_provider"]);
     let oneof_fields = collect_openapi_oneof_fields_for(&PLAYBACK_PROVIDER_PROTO_FILES)?;
     builder = add_openapi_oneof_attrs(builder, &oneof_fields);
+    builder = add_field_attrs(
+        builder,
+        &[".synctv.playback_provider.common.StreamChunk.data"],
+        "#[cfg_attr(feature = \"openapi\", schema(value_type = Vec<u8>))]",
+    );
     builder.out_dir(out_dir).compile_with_config(
         prost_config,
         &PLAYBACK_PROVIDER_PROTO_FILES,

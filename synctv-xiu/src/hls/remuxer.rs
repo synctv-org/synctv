@@ -847,11 +847,11 @@ impl StreamProcessor {
                     let flv_data = match frame_data {
                         FrameData::Audio { timestamp, data } => FlvData::Audio {
                             timestamp,
-                            data: BytesMut::from(&data[..]),
+                            data: BytesMut::from(data),
                         },
                         FrameData::Video { timestamp, data } => FlvData::Video {
                             timestamp,
-                            data: BytesMut::from(&data[..]),
+                            data: BytesMut::from(data),
                         },
                         _ => continue,
                     };
@@ -938,8 +938,7 @@ impl StreamProcessor {
                 }
 
                 let mut flags = 0;
-                let mut payload = BytesMut::new();
-                payload.extend_from_slice(&video_data.data);
+                let payload = video_data.data;
 
                 // Check if keyframe and if we need new segment
                 if video_data.frame_type == frame_type::KEY_FRAME {
@@ -967,8 +966,7 @@ impl StreamProcessor {
                     return Ok(());
                 }
 
-                let mut payload = BytesMut::new();
-                payload.extend_from_slice(&audio_data.data);
+                let payload = audio_data.data;
 
                 (self.audio_pid, audio_data.pts, audio_data.dts, 0, payload)
             }

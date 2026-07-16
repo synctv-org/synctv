@@ -2,6 +2,7 @@ use std::io::Read;
 use std::pin::Pin;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use bytes::Bytes;
 use flate2::read::GzDecoder;
 use futures_util::{SinkExt, Stream, StreamExt};
 use prost::Message as _;
@@ -84,7 +85,7 @@ pub async fn watch_danmaku(
         loop {
             tokio::select! {
                 _ = heartbeat.tick() => {
-                    if writer.send(Message::Binary(HEARTBEAT.to_vec().into())).await.is_err() {
+                    if writer.send(Message::Binary(Bytes::from_static(HEARTBEAT))).await.is_err() {
                         break;
                     }
                 }

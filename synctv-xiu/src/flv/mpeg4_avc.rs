@@ -277,10 +277,8 @@ impl Mpeg4AvcProcessor {
                 h264_nal_type::H264_NAL_IDR if !sps_pps_flag => {
                     sps_pps_flag = true;
 
-                    bytes_writer
-                        .prepend(&self.mpeg4_avc.pps_annexb_data.get_current_bytes()[..])?;
-                    bytes_writer
-                        .prepend(&self.mpeg4_avc.sps_annexb_data.get_current_bytes()[..])?;
+                    bytes_writer.prepend(self.mpeg4_avc.pps_annexb_data.as_slice())?;
+                    bytes_writer.prepend(self.mpeg4_avc.sps_annexb_data.as_slice())?;
                 }
                 _ => {}
             }

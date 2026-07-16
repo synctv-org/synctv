@@ -1,9 +1,12 @@
+use futures::{stream, StreamExt as _, TryStreamExt as _};
 use synctv_core::{
     models::{
         MediaListQuery as CoreMediaListQuery, PlaylistListQuery as CorePlaylistListQuery, UserId,
     },
     provider::{DynamicListQuery, DynamicPagination},
 };
+
+const ADMIN_MEDIA_LOAD_CONCURRENCY: usize = 16;
 
 use crate::impls::client::convert::{
     optional_provider_target_to_proto, provider_target_from_proto,
@@ -29,9 +32,12 @@ impl AdminApiImpl {
         media: &synctv_core::models::Media,
         is_available: bool,
     ) -> Result<synctv_proto::client::Media, ApiError> {
-        let cover = self
-            .load_admin_file_reference(media.cover_file_reference_id)
-            .await?;
+        let (cover, thumbnail) = tokio::join!(
+            self.load_admin_file_reference(media.cover_file_reference_id),
+            self.load_admin_file_reference(media.thumbnail_file_reference_id),
+        );
+        let cover = cover?;
+        let thumbnail = thumbnail?;
         let cover_access = cover
             .as_ref()
             .map(|file| {
@@ -42,9 +48,6 @@ impl AdminApiImpl {
             })
             .transpose()?
             .flatten();
-        let thumbnail = self
-            .load_admin_file_reference(media.thumbnail_file_reference_id)
-            .await?;
         let thumbnail_access = thumbnail
             .as_ref()
             .map(|file| {
@@ -67,6 +70,59 @@ impl AdminApiImpl {
                 public_id_codec: &self.public_id_codec,
             },
         )
+    }
+
+    async fn playlist_items_to_proto_for_admin(
+        &self,
+        entries: &[synctv_core::service::PlaylistListItem],
+        counts: &std::collections::HashMap<synctv_core::models::PlaylistId, i64>,
+    ) -> Result<Vec<synctv_proto::client::Playlist>, ApiError> {
+        stream::iter(0..entries.len())
+            .map(|index| async move {
+                let entry = &entries[index];
+                let item_count = i64_to_i32_api(
+                    crate::impls::playlist_media_count_or_zero(counts, &entry.playlist.id),
+                    "playlist item count",
+                )?;
+                self.playlist_to_proto_for_admin_with_loaded_cover(
+                    &entry.playlist,
+                    item_count,
+                    entry.is_available,
+                )
+                .await
+            })
+            .buffered(ADMIN_MEDIA_LOAD_CONCURRENCY)
+            .try_collect()
+            .await
+    }
+
+    async fn media_items_to_proto_for_admin(
+        &self,
+        entries: &[synctv_core::service::MediaListItem],
+    ) -> Result<Vec<synctv_proto::client::Media>, ApiError> {
+        stream::iter(0..entries.len())
+            .map(|index| async move {
+                let entry = &entries[index];
+                self.media_to_proto_for_admin_with_loaded_cover(&entry.media, entry.is_available)
+                    .await
+            })
+            .buffered(ADMIN_MEDIA_LOAD_CONCURRENCY)
+            .try_collect()
+            .await
+    }
+
+    async fn media_models_to_proto_for_admin(
+        &self,
+        media: &[synctv_core::models::Media],
+    ) -> Result<Vec<synctv_proto::client::Media>, ApiError> {
+        stream::iter(0..media.len())
+            .map(|index| async move {
+                self.media_to_proto_for_admin_with_loaded_cover(&media[index], true)
+                    .await
+            })
+            .buffered(ADMIN_MEDIA_LOAD_CONCURRENCY)
+            .try_collect()
+            .await
     }
 
     async fn playlist_to_proto_for_admin_with_loaded_cover(
@@ -545,31 +601,10 @@ impl AdminApiImpl {
                 .count_playlist_media_batch(&folder_ids)
                 .await
                 .map_err(ApiError::from)?;
-            let mut proto_playlists = Vec::with_capacity(playlists.len());
-            for entry in &playlists {
-                let item_count = i64_to_i32_api(
-                    crate::impls::playlist_media_count_or_zero(&counts, &entry.playlist.id),
-                    "playlist item count",
-                )?;
-                proto_playlists.push(
-                    self.playlist_to_proto_for_admin_with_loaded_cover(
-                        &entry.playlist,
-                        item_count,
-                        entry.is_available,
-                    )
-                    .await?,
-                );
-            }
-            let mut proto_media = Vec::with_capacity(media.len());
-            for entry in &media {
-                proto_media.push(
-                    self.media_to_proto_for_admin_with_loaded_cover(
-                        &entry.media,
-                        entry.is_available,
-                    )
-                    .await?,
-                );
-            }
+            let (proto_playlists, proto_media) = tokio::try_join!(
+                self.playlist_items_to_proto_for_admin(&playlists, &counts),
+                self.media_items_to_proto_for_admin(&media),
+            )?;
 
             let mut response = synctv_proto::client::ListPlaylistItemsResponse {
                 playlists: proto_playlists,
@@ -1117,28 +1152,10 @@ impl AdminApiImpl {
             .count_playlist_media_batch(&folder_ids)
             .await
             .map_err(ApiError::from)?;
-        let mut proto_playlists = Vec::with_capacity(playlists.len());
-        for entry in &playlists {
-            let item_count = i64_to_i32_api(
-                crate::impls::playlist_media_count_or_zero(&counts, &entry.playlist.id),
-                "playlist item count",
-            )?;
-            proto_playlists.push(
-                self.playlist_to_proto_for_admin_with_loaded_cover(
-                    &entry.playlist,
-                    item_count,
-                    entry.is_available,
-                )
-                .await?,
-            );
-        }
-        let mut proto_media = Vec::with_capacity(media.len());
-        for entry in &media {
-            proto_media.push(
-                self.media_to_proto_for_admin_with_loaded_cover(&entry.media, entry.is_available)
-                    .await?,
-            );
-        }
+        let (proto_playlists, proto_media) = tokio::try_join!(
+            self.playlist_items_to_proto_for_admin(&playlists, &counts),
+            self.media_items_to_proto_for_admin(&media),
+        )?;
 
         let mut response = synctv_proto::client::ListPlaylistItemsResponse {
             playlists: proto_playlists,
@@ -1293,13 +1310,7 @@ impl AdminApiImpl {
 
         self.publish_room_cache_invalidation(&rid);
 
-        let mut proto_media = Vec::with_capacity(media.len());
-        for media in &media {
-            proto_media.push(
-                self.media_to_proto_for_admin_with_loaded_cover(media, true)
-                    .await?,
-            );
-        }
+        let proto_media = self.media_models_to_proto_for_admin(&media).await?;
 
         Ok(synctv_proto::client::MoveMediaResponse {
             moved_count: usize_to_i32_api(media.len(), "moved media count")?,

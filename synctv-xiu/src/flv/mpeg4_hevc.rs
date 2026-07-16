@@ -257,12 +257,9 @@ impl Mpeg4HevcProcessor {
                     vps_sps_pps_prepended = true;
 
                     // Prepend in order: VPS, SPS, PPS
-                    bytes_writer
-                        .prepend(&self.mpeg4_hevc.pps_annexb_data.get_current_bytes()[..])?;
-                    bytes_writer
-                        .prepend(&self.mpeg4_hevc.sps_annexb_data.get_current_bytes()[..])?;
-                    bytes_writer
-                        .prepend(&self.mpeg4_hevc.vps_annexb_data.get_current_bytes()[..])?;
+                    bytes_writer.prepend(self.mpeg4_hevc.pps_annexb_data.as_slice())?;
+                    bytes_writer.prepend(self.mpeg4_hevc.sps_annexb_data.as_slice())?;
+                    bytes_writer.prepend(self.mpeg4_hevc.vps_annexb_data.as_slice())?;
                 }
                 _ => {}
             }

@@ -1,11 +1,11 @@
 use {
     crate::bytesio::bytes_reader::BytesReader,
     crate::flv::amf0::{amf0_reader::Amf0Reader, Amf0ValueType},
-    bytes::BytesMut,
+    bytes::{Bytes, BytesMut},
 };
 #[derive(Clone)]
 pub struct MetaData {
-    chunk_body: BytesMut,
+    chunk_body: Bytes,
 }
 
 impl Default for MetaData {
@@ -18,18 +18,18 @@ impl MetaData {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            chunk_body: BytesMut::new(),
+            chunk_body: Bytes::new(),
         }
     }
 
-    pub fn save(&mut self, body: &BytesMut) {
+    pub fn save(&mut self, body: &Bytes) {
         if self.is_metadata(body) {
             self.chunk_body = body.clone();
         }
     }
 
-    pub fn is_metadata(&self, body: &BytesMut) -> bool {
-        let reader = BytesReader::new(body.clone());
+    pub fn is_metadata(&self, body: &[u8]) -> bool {
+        let reader = BytesReader::new(BytesMut::from(body));
         let result = Amf0Reader::new(reader).read_all();
 
         let values: Vec<Amf0ValueType> = match result {
@@ -59,7 +59,7 @@ impl MetaData {
     }
 
     #[must_use]
-    pub fn get_chunk_body(&self) -> BytesMut {
+    pub fn get_chunk_body(&self) -> Bytes {
         self.chunk_body.clone()
     }
 }

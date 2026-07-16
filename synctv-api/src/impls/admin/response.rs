@@ -1,3 +1,4 @@
+use futures::{stream, StreamExt as _, TryStreamExt as _};
 #[cfg(test)]
 use synctv_core::models::RoomId;
 use synctv_core::models::UserId;
@@ -7,6 +8,14 @@ use super::{
     try_admin_room_member_to_proto_with_settings, try_admin_user_to_proto,
     try_managed_room_to_proto, AdminApiImpl, ApiError,
 };
+
+const ADMIN_ROOM_ASSET_CONCURRENCY: usize = 16;
+const ADMIN_USER_LOAD_CONCURRENCY: usize = 16;
+
+pub(in crate::impls::admin) type AdminRoomCover = (
+    synctv_core::models::StoredFileReference,
+    crate::impls::stored_files::StoredFileObjectAccess,
+);
 
 fn stored_file_reference_rendered_url(
     storage: &dyn FileStorageService,
@@ -65,13 +74,7 @@ impl AdminApiImpl {
     pub(in crate::impls::admin) async fn room_cover_for_admin(
         &self,
         room: &synctv_core::models::Room,
-    ) -> Result<
-        Option<(
-            synctv_core::models::StoredFileReference,
-            crate::impls::stored_files::StoredFileObjectAccess,
-        )>,
-        ApiError,
-    > {
+    ) -> Result<Option<AdminRoomCover>, ApiError> {
         let Some(reference_id) = room.cover_file_reference_id else {
             return Ok(None);
         };
@@ -94,26 +97,66 @@ impl AdminApiImpl {
         Ok(access.map(|access| (file_reference, access)))
     }
 
+    pub(in crate::impls::admin) async fn load_admin_room_list_assets(
+        &self,
+        rooms: &[synctv_core::models::Room],
+        creators: &std::collections::HashMap<UserId, synctv_core::models::User>,
+    ) -> Result<
+        (
+            std::collections::HashMap<UserId, Option<String>>,
+            std::collections::HashMap<synctv_core::models::RoomId, Option<AdminRoomCover>>,
+        ),
+        ApiError,
+    > {
+        let avatar_urls = stream::iter(creators.keys().copied())
+            .map(|creator_id| async move {
+                let creator = &creators[&creator_id];
+                self.creator_avatar_url(creator)
+                    .await
+                    .map(|url| (creator_id, url))
+            })
+            .buffered(ADMIN_ROOM_ASSET_CONCURRENCY)
+            .try_collect::<std::collections::HashMap<_, _>>();
+        let room_covers = stream::iter(0..rooms.len())
+            .map(|index| async move {
+                let room = &rooms[index];
+                self.room_cover_for_admin(room)
+                    .await
+                    .map(|cover| (room.id, cover))
+            })
+            .buffered(ADMIN_ROOM_ASSET_CONCURRENCY)
+            .try_collect::<std::collections::HashMap<_, _>>();
+
+        tokio::try_join!(avatar_urls, room_covers)
+    }
+
     pub(in crate::impls::admin) async fn admin_user_to_proto_with_email(
         &self,
         user: &synctv_core::models::User,
     ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
-        let email = self
-            .user_service
-            .get_email(&user.id)
-            .await
-            .map_err(ApiError::from)?;
-        let presence = self
-            .presence_service
-            .user_stats(user.id)
-            .await
-            .map_err(ApiError::from)?;
+        let (email, presence) = tokio::join!(
+            self.user_service.get_email(&user.id),
+            self.presence_service.user_stats(user.id),
+        );
+        let email = email.map_err(ApiError::from)?;
+        let presence = presence.map_err(ApiError::from)?;
         try_admin_user_to_proto(
             user,
             email.as_deref(),
             Some(&presence),
             &self.public_id_codec,
         )
+    }
+
+    pub(in crate::impls::admin) async fn admin_users_to_proto_with_email(
+        &self,
+        users: &[synctv_core::models::User],
+    ) -> Result<Vec<synctv_proto::admin::AdminUser>, ApiError> {
+        stream::iter(0..users.len())
+            .map(|index| async move { self.admin_user_to_proto_with_email(&users[index]).await })
+            .buffered(ADMIN_USER_LOAD_CONCURRENCY)
+            .try_collect()
+            .await
     }
 
     pub(in crate::impls::admin) async fn admin_room_member_to_proto(

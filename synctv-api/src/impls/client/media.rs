@@ -1,7 +1,7 @@
 //! Media operations: add, remove, edit, swap, clear, batch operations, playlist items
 
 use crate::impls::ApiError;
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use hex::encode as hex_encode;
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
@@ -673,48 +673,48 @@ pub(crate) fn file_upload_session_to_playlist_cover_proto(
 }
 
 pub(crate) fn media_cover_object_to_proto(
-    blob: &FileBlob,
+    blob: FileBlob,
 ) -> synctv_proto::client::MediaCoverObjectResponse {
     synctv_proto::client::MediaCoverObjectResponse {
-        mime_type: blob.mime_type.clone(),
-        content_manifest_sha256: blob.content_manifest_sha256.clone(),
-        data: blob.data.clone(),
+        mime_type: blob.mime_type,
+        content_manifest_sha256: blob.content_manifest_sha256,
+        data: blob.data.into(),
         content_range: blob.range.map(file_byte_range_to_proto),
         total_size_bytes: blob.total_size_bytes,
     }
 }
 
 pub(crate) fn media_thumbnail_object_to_proto(
-    blob: &FileBlob,
+    blob: FileBlob,
 ) -> synctv_proto::client::MediaThumbnailObjectResponse {
     synctv_proto::client::MediaThumbnailObjectResponse {
-        mime_type: blob.mime_type.clone(),
-        content_manifest_sha256: blob.content_manifest_sha256.clone(),
-        data: blob.data.clone(),
+        mime_type: blob.mime_type,
+        content_manifest_sha256: blob.content_manifest_sha256,
+        data: blob.data.into(),
         content_range: blob.range.map(file_byte_range_to_proto),
         total_size_bytes: blob.total_size_bytes,
     }
 }
 
 pub(crate) fn room_cover_object_to_proto(
-    blob: &FileBlob,
+    blob: FileBlob,
 ) -> synctv_proto::client::RoomCoverObjectResponse {
     synctv_proto::client::RoomCoverObjectResponse {
-        mime_type: blob.mime_type.clone(),
-        content_manifest_sha256: blob.content_manifest_sha256.clone(),
-        data: blob.data.clone(),
+        mime_type: blob.mime_type,
+        content_manifest_sha256: blob.content_manifest_sha256,
+        data: blob.data.into(),
         content_range: blob.range.map(file_byte_range_to_proto),
         total_size_bytes: blob.total_size_bytes,
     }
 }
 
 pub(crate) fn playlist_cover_object_to_proto(
-    blob: &FileBlob,
+    blob: FileBlob,
 ) -> synctv_proto::client::PlaylistCoverObjectResponse {
     synctv_proto::client::PlaylistCoverObjectResponse {
-        mime_type: blob.mime_type.clone(),
-        content_manifest_sha256: blob.content_manifest_sha256.clone(),
-        data: blob.data.clone(),
+        mime_type: blob.mime_type,
+        content_manifest_sha256: blob.content_manifest_sha256,
+        data: blob.data.into(),
         content_range: blob.range.map(file_byte_range_to_proto),
         total_size_bytes: blob.total_size_bytes,
     }
@@ -1151,39 +1151,33 @@ fn map_availability_filter(filter: i32) -> Result<Option<bool>, ApiError> {
     }
 }
 
-async fn playlist_list_items_to_proto(
+pub(super) async fn playlist_list_items_to_proto(
     api: &ClientApiImpl,
     entries: &[PlaylistListItem],
     counts: &std::collections::HashMap<synctv_core::models::PlaylistId, i64>,
     viewer_id: Option<UserId>,
 ) -> Result<Vec<synctv_proto::client::Playlist>, ApiError> {
-    let mut indexed =
-        futures::stream::iter(entries.iter().cloned().enumerate().map(|(index, entry)| {
-            let api = api.clone();
+    futures::stream::iter(0..entries.len())
+        .map(|index| {
             let item_count = i64_to_i32_api(
-                crate::impls::playlist_media_count_or_zero(counts, &entry.playlist.id),
+                crate::impls::playlist_media_count_or_zero(counts, &entries[index].playlist.id),
                 "playlist item count",
             );
             async move {
+                let entry = &entries[index];
                 let item_count = item_count?;
-                let proto = api
-                    .playlist_to_proto_for_viewer_with_loaded_cover(
-                        &entry.playlist,
-                        item_count,
-                        entry.is_available,
-                        viewer_id,
-                    )
-                    .await?;
-                Ok::<_, ApiError>((index, proto))
+                api.playlist_to_proto_for_viewer_with_loaded_cover(
+                    &entry.playlist,
+                    item_count,
+                    entry.is_available,
+                    viewer_id,
+                )
+                .await
             }
-        }))
-        .buffer_unordered(16)
-        .collect::<Vec<_>>()
+        })
+        .buffered(16)
+        .try_collect()
         .await
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?;
-    indexed.sort_by_key(|(index, _)| *index);
-    Ok(indexed.into_iter().map(|(_, proto)| proto).collect())
 }
 
 async fn media_list_items_to_proto(
@@ -1191,27 +1185,34 @@ async fn media_list_items_to_proto(
     entries: &[MediaListItem],
     viewer_id: Option<UserId>,
 ) -> Result<Vec<synctv_proto::client::Media>, ApiError> {
-    let mut indexed =
-        futures::stream::iter(entries.iter().cloned().enumerate().map(|(index, entry)| {
-            let api = api.clone();
-            async move {
-                let proto = api
-                    .media_to_proto_for_viewer_with_loaded_cover(
-                        &entry.media,
-                        entry.is_available,
-                        viewer_id,
-                    )
-                    .await?;
-                Ok::<_, ApiError>((index, proto))
-            }
-        }))
-        .buffer_unordered(16)
-        .collect::<Vec<_>>()
+    futures::stream::iter(0..entries.len())
+        .map(|index| async move {
+            let entry = &entries[index];
+            api.media_to_proto_for_viewer_with_loaded_cover(
+                &entry.media,
+                entry.is_available,
+                viewer_id,
+            )
+            .await
+        })
+        .buffered(16)
+        .try_collect()
         .await
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?;
-    indexed.sort_by_key(|(index, _)| *index);
-    Ok(indexed.into_iter().map(|(_, proto)| proto).collect())
+}
+
+async fn media_models_to_proto(
+    api: &ClientApiImpl,
+    media: &[synctv_core::models::Media],
+    viewer_id: Option<UserId>,
+) -> Result<Vec<synctv_proto::client::Media>, ApiError> {
+    futures::stream::iter(0..media.len())
+        .map(|index| async move {
+            api.media_to_proto_for_viewer_with_loaded_cover(&media[index], true, viewer_id)
+                .await
+        })
+        .buffered(16)
+        .try_collect()
+        .await
 }
 
 pub(crate) fn require_dynamic_playlist_creator(
@@ -1637,7 +1638,7 @@ impl ClientApiImpl {
         let (complete, uploaded_size_bytes, uploaded_parts) = uploaded_parts_response_fields(&blob);
         Ok(synctv_proto::client::UploadMediaCoverObjectResponse {
             object: match blob {
-                StoreFileUploadResult::Complete(blob) => Some(media_cover_object_to_proto(&blob)),
+                StoreFileUploadResult::Complete(blob) => Some(media_cover_object_to_proto(blob)),
                 StoreFileUploadResult::PartAccepted { .. } => None,
             },
             complete,
@@ -1667,7 +1668,7 @@ impl ClientApiImpl {
             complete_upload_response_fields(&result);
         Ok(
             synctv_proto::client::CompleteMediaCoverUploadSessionResponse {
-                object: result.object.as_ref().map(media_cover_object_to_proto),
+                object: result.object.map(media_cover_object_to_proto),
                 complete,
                 uploaded_size_bytes,
                 uploaded_parts,
@@ -1787,7 +1788,7 @@ impl ClientApiImpl {
         Ok(synctv_proto::client::UploadMediaThumbnailObjectResponse {
             object: match blob {
                 StoreFileUploadResult::Complete(blob) => {
-                    Some(media_thumbnail_object_to_proto(&blob))
+                    Some(media_thumbnail_object_to_proto(blob))
                 }
                 StoreFileUploadResult::PartAccepted { .. } => None,
             },
@@ -1818,7 +1819,7 @@ impl ClientApiImpl {
             complete_upload_response_fields(&result);
         Ok(
             synctv_proto::client::CompleteMediaThumbnailUploadSessionResponse {
-                object: result.object.as_ref().map(media_thumbnail_object_to_proto),
+                object: result.object.map(media_thumbnail_object_to_proto),
                 complete,
                 uploaded_size_bytes,
                 uploaded_parts,
@@ -2026,13 +2027,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         prepared_outbox_fanout.publish_after_outbox_commit();
 
-        let mut results = Vec::with_capacity(media_list.len());
-        for media in media_list {
-            results.push(
-                self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(uid))
-                    .await?,
-            );
-        }
+        let results = media_models_to_proto(self, &media_list, Some(uid)).await?;
 
         Ok(synctv_proto::client::AddMediaBatchResponse { results })
     }
@@ -2080,13 +2075,7 @@ impl ClientApiImpl {
         prepared_outbox_fanout.publish_after_outbox_commit();
         self.room_cache_fanout.publish_invalidation(&rid);
 
-        let mut proto_media = Vec::with_capacity(media.len());
-        for media in &media {
-            proto_media.push(
-                self.media_to_proto_for_viewer_with_loaded_cover(media, true, Some(uid))
-                    .await?,
-            );
-        }
+        let proto_media = media_models_to_proto(self, &media, Some(uid)).await?;
 
         Ok(synctv_proto::client::MoveMediaResponse {
             moved_count: usize_to_i32_api(media.len(), "moved media count")?,

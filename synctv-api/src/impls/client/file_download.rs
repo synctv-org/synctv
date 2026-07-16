@@ -20,7 +20,7 @@ fn generic_chunk_stream<T, F>(
 ) -> impl futures::Stream<Item = Result<T, ApiError>> + Send + 'static
 where
     T: Send + 'static,
-    F: Fn(String, String, Vec<u8>, Option<synctv_proto::client::FileByteRange>, i64) -> T
+    F: Fn(String, String, bytes::Bytes, Option<synctv_proto::client::FileByteRange>, i64) -> T
         + Send
         + 'static,
 {
@@ -35,7 +35,7 @@ where
                 build_proto(
                     mime_type.clone(),
                     content_manifest_sha256.clone(),
-                    chunk.to_vec(),
+                    chunk,
                     content_range,
                     total_size_bytes,
                 )
@@ -209,7 +209,7 @@ mod tests {
             Some(5)
         );
         assert_eq!(chunks[0].total_size_bytes, 10);
-        assert_eq!(chunks[0].data, b"ab");
-        assert_eq!(chunks[1].data, b"cd");
+        assert_eq!(chunks[0].data.as_ref(), b"ab");
+        assert_eq!(chunks[1].data.as_ref(), b"cd");
     }
 }

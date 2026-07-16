@@ -3,8 +3,8 @@ use {
         bytes_errors::{BytesReadError, BytesReadErrorValue},
         net_io::TNetIO,
     },
-    byteorder::{ByteOrder, ReadBytesExt},
-    bytes::{BufMut, BytesMut},
+    byteorder::ByteOrder,
+    bytes::{Buf, BufMut, BytesMut},
     std::{io::Cursor, sync::Arc, time::Duration},
     tokio::sync::Mutex,
 };
@@ -49,22 +49,23 @@ impl BytesReader {
     }
 
     pub fn read_bytes(&mut self, bytes_num: usize) -> Result<BytesMut, BytesReadError> {
-        if self.buffer.len() < bytes_num {
-            return Err(BytesReadError {
-                value: BytesReadErrorValue::NotEnoughBytes,
-            });
-        }
+        self.ensure_available(bytes_num)?;
         Ok(self.buffer.split_to(bytes_num))
     }
 
     pub fn advance_bytes(&mut self, bytes_num: usize) -> Result<BytesMut, BytesReadError> {
+        self.ensure_available(bytes_num)?;
+
+        Ok(BytesMut::from(&self.buffer[..bytes_num]))
+    }
+
+    fn ensure_available(&self, bytes_num: usize) -> Result<(), BytesReadError> {
         if self.buffer.len() < bytes_num {
             return Err(BytesReadError {
                 value: BytesReadErrorValue::NotEnoughBytes,
             });
         }
-
-        Ok(BytesMut::from(&self.buffer[..bytes_num]))
+        Ok(())
     }
 
     pub fn read_bytes_cursor(
@@ -86,59 +87,60 @@ impl BytesReader {
     }
 
     pub fn read_u8(&mut self) -> Result<u8, BytesReadError> {
-        let mut cursor = self.read_bytes_cursor(1)?;
-
-        Ok(cursor.read_u8()?)
+        self.ensure_available(1)?;
+        Ok(self.buffer.get_u8())
     }
 
     pub fn advance_u8(&mut self) -> Result<u8, BytesReadError> {
-        let mut cursor = self.advance_bytes_cursor(1)?;
-        Ok(cursor.read_u8()?)
+        self.ensure_available(1)?;
+        Ok(self.buffer[0])
     }
 
     pub fn read_u16<T: ByteOrder>(&mut self) -> Result<u16, BytesReadError> {
-        let mut cursor = self.read_bytes_cursor(2)?;
-        let val = cursor.read_u16::<T>()?;
-        Ok(val)
+        self.ensure_available(2)?;
+        let value = T::read_u16(&self.buffer[..2]);
+        self.buffer.advance(2);
+        Ok(value)
     }
 
     pub fn read_u24<T: ByteOrder>(&mut self) -> Result<u32, BytesReadError> {
-        let mut cursor = self.read_bytes_cursor(3)?;
-        let val = cursor.read_u24::<T>()?;
-        Ok(val)
+        self.ensure_available(3)?;
+        let value = T::read_u24(&self.buffer[..3]);
+        self.buffer.advance(3);
+        Ok(value)
     }
 
     pub fn advance_u24<T: ByteOrder>(&mut self) -> Result<u32, BytesReadError> {
-        let mut cursor = self.advance_bytes_cursor(3)?;
-        Ok(cursor.read_u24::<T>()?)
+        self.ensure_available(3)?;
+        Ok(T::read_u24(&self.buffer[..3]))
     }
 
     pub fn read_u32<T: ByteOrder>(&mut self) -> Result<u32, BytesReadError> {
-        let mut cursor = self.read_bytes_cursor(4)?;
-        let val = cursor.read_u32::<T>()?;
-
-        Ok(val)
+        self.ensure_available(4)?;
+        let value = T::read_u32(&self.buffer[..4]);
+        self.buffer.advance(4);
+        Ok(value)
     }
 
     pub fn read_u48<T: ByteOrder>(&mut self) -> Result<u64, BytesReadError> {
-        let mut cursor = self.read_bytes_cursor(6)?;
-        let val = cursor.read_u48::<T>()?;
-
-        Ok(val)
+        self.ensure_available(6)?;
+        let value = T::read_u48(&self.buffer[..6]);
+        self.buffer.advance(6);
+        Ok(value)
     }
 
     pub fn read_f64<T: ByteOrder>(&mut self) -> Result<f64, BytesReadError> {
-        let mut cursor = self.read_bytes_cursor(8)?;
-        let val = cursor.read_f64::<T>()?;
-
-        Ok(val)
+        self.ensure_available(8)?;
+        let value = T::read_f64(&self.buffer[..8]);
+        self.buffer.advance(8);
+        Ok(value)
     }
 
     pub fn read_u64<T: ByteOrder>(&mut self) -> Result<u64, BytesReadError> {
-        let mut cursor = self.read_bytes_cursor(8)?;
-        let val = cursor.read_u64::<T>()?;
-
-        Ok(val)
+        self.ensure_available(8)?;
+        let value = T::read_u64(&self.buffer[..8]);
+        self.buffer.advance(8);
+        Ok(value)
     }
 
     pub fn get(&self, index: usize) -> Result<u8, BytesReadError> {

@@ -14,7 +14,7 @@ use super::types::{
     TwitchScheduleSegment, TwitchSession, TwitchSessionIdentity, TwitchStreamItem,
     TwitchStreamPage,
 };
-use crate::{fetch_json, ProviderClientError, PROVIDER_USER_AGENT};
+use crate::{fetch_json, text_with_limit, ProviderClientError, PROVIDER_USER_AGENT};
 
 const TWITCH_WEB_CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
 const CLIP_QUERY_HASH: &str = "993d9a5131f15a37bd16f32342c44ed1e0b1a9b968c6afdb662d2cddd595f6c5";
@@ -134,7 +134,7 @@ impl TwitchClient {
                     .send()
                     .await
                     .map_err(ProviderClientError::from)?;
-                let playlist = crate::check_response(playlist).await?.text().await?;
+                let playlist = text_with_limit(crate::check_response(playlist).await?).await?;
                 let qualities = parse_master_playlist(&playlist, &master_url)?;
                 Ok(TwitchPlayback {
                     resource: resource.clone(),
@@ -1181,6 +1181,56 @@ https://video.example.test/chunked/index.m3u8
             playback.token.expect("token should exist").signature,
             "signature"
         );
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_quality_playlist() {
+        crate::install_process_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/gql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "streamPlaybackAccessToken": {
+                        "signature": "signature",
+                        "value": "{\"channel\":\"synctv\"}"
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/api/v2/channel/hls/synctv.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![
+                b'x';
+                crate::MAX_RESPONSE_SIZE
+                    + 1
+            ]))
+            .mount(&server)
+            .await;
+        let client = TwitchClient::with_http_client(reqwest::Client::new()).with_endpoints(
+            TwitchEndpoints {
+                gql: format!("{}/gql", server.uri()),
+                usher: server.uri(),
+                helix: format!("{}/helix", server.uri()),
+                oauth_validate: format!("{}/oauth2/validate", server.uri()),
+            },
+        );
+
+        let error = client
+            .playback(
+                &TwitchResource {
+                    kind: TwitchResourceKind::Channel,
+                    id: "synctv".to_string(),
+                },
+                None,
+            )
+            .await
+            .expect_err("oversized playlist should fail");
+        assert!(matches!(
+            error,
+            ProviderClientError::ResponseTooLarge { .. }
+        ));
     }
 
     #[tokio::test]

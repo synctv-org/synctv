@@ -44,7 +44,7 @@ pub(crate) mod convert;
 #[cfg(test)]
 mod tests;
 
-use futures::future::BoxFuture;
+use futures::{future::BoxFuture, stream as futures_stream, StreamExt as _, TryStreamExt as _};
 use std::collections::HashMap;
 use std::sync::Arc;
 use synctv_core::models::{RoomId, RoomPermissionSet, RoomStatus};
@@ -81,6 +81,8 @@ use synctv_realtime::fanout::{
     LocalNoopRealtimeEventService, RealtimeEventService, RealtimeFanoutService,
 };
 use synctv_realtime::sync::ConnectionRuntime;
+
+const CLIENT_ASSET_LOAD_CONCURRENCY: usize = 16;
 
 /// Options for constructing a [`ClientApiImpl`].
 ///
@@ -628,23 +630,15 @@ impl ClientApiImpl {
             .into_iter()
             .collect();
 
-        // Batch load all avatar files in parallel using tokio::spawn
-        let mut tasks = Vec::new();
-        for ref_id in avatar_refs {
-            let self_clone = self.clone();
-            tasks.push(tokio::spawn(async move {
-                let file = self_clone.load_stored_file_reference(Some(ref_id)).await?;
-                Ok::<_, ApiError>((ref_id, file))
-            }));
-        }
-
-        let mut avatar_files = HashMap::new();
-        for task in tasks {
-            let (ref_id, file) = task
-                .await
-                .map_err(|e| ApiError::Internal(format!("Avatar loading task failed: {e}")))??;
-            avatar_files.insert(ref_id, file);
-        }
+        let avatar_files = futures_stream::iter(avatar_refs)
+            .map(|ref_id| async move {
+                self.load_stored_file_reference(Some(ref_id))
+                    .await
+                    .map(|file| (ref_id, file))
+            })
+            .buffered(CLIENT_ASSET_LOAD_CONCURRENCY)
+            .try_collect::<HashMap<_, _>>()
+            .await?;
 
         // Generate URLs and convert to proto
         let policy = synctv_core::service::user_avatar_upload_policy();
@@ -686,9 +680,12 @@ impl ClientApiImpl {
         settings: Option<&synctv_core::models::RoomSettings>,
         member_count: Option<i32>,
     ) -> Result<synctv_proto::client::Room, ApiError> {
-        let cover = self
-            .load_stored_file_reference(room.cover_file_reference_id)
-            .await?;
+        let (cover, creator) = tokio::join!(
+            self.load_stored_file_reference(room.cover_file_reference_id),
+            self.room_creator_public_view(room),
+        );
+        let cover = cover?;
+        let creator = creator?;
         let cover_access = cover
             .as_ref()
             .map(|file| {
@@ -699,12 +696,11 @@ impl ClientApiImpl {
             })
             .transpose()?
             .flatten();
-        let creator = Some(self.room_creator_public_view(room).await?);
         convert::try_room_to_proto_basic_with_cover(
             room,
             settings,
             member_count,
-            creator,
+            Some(creator),
             cover.as_ref(),
             cover_access.as_ref(),
             &self.public_id_codec,
@@ -720,9 +716,18 @@ impl ClientApiImpl {
         presence: Option<&synctv_core::service::OnlineRoomStats>,
         creator: Option<synctv_proto::client::UserPublicView>,
     ) -> Result<synctv_proto::client::Room, ApiError> {
-        let cover = self
-            .load_stored_file_reference(room.cover_file_reference_id)
-            .await?;
+        let creator = async {
+            match creator {
+                Some(creator) => Ok(creator),
+                None => self.room_creator_public_view(room).await,
+            }
+        };
+        let (cover, creator) = tokio::join!(
+            self.load_stored_file_reference(room.cover_file_reference_id),
+            creator,
+        );
+        let cover = cover?;
+        let creator = creator?;
         let cover_access = cover
             .as_ref()
             .map(|file| {
@@ -733,17 +738,13 @@ impl ClientApiImpl {
             })
             .transpose()?
             .flatten();
-        let creator = match creator {
-            Some(creator) => Some(creator),
-            None => Some(self.room_creator_public_view(room).await?),
-        };
         convert::try_room_to_proto_with_availability_presence_and_cover(
             room,
             settings,
             member_count,
             availability,
             presence,
-            creator,
+            Some(creator),
             cover.as_ref(),
             cover_access.as_ref(),
             &self.public_id_codec,
@@ -756,9 +757,12 @@ impl ClientApiImpl {
         is_available: bool,
         viewer_id: Option<synctv_core::models::UserId>,
     ) -> Result<synctv_proto::client::Media, ApiError> {
-        let cover = self
-            .load_stored_file_reference(media.cover_file_reference_id)
-            .await?;
+        let (cover, thumbnail) = tokio::join!(
+            self.load_stored_file_reference(media.cover_file_reference_id),
+            self.load_stored_file_reference(media.thumbnail_file_reference_id),
+        );
+        let cover = cover?;
+        let thumbnail = thumbnail?;
         let cover_access = cover
             .as_ref()
             .map(|file| {
@@ -792,9 +796,6 @@ impl ClientApiImpl {
         } else {
             None
         };
-        let thumbnail = self
-            .load_stored_file_reference(media.thumbnail_file_reference_id)
-            .await?;
         let thumbnail_access = thumbnail
             .as_ref()
             .map(|file| {

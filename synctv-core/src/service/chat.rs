@@ -724,7 +724,7 @@ impl ChatService {
         include_deleted: bool,
         viewer_user_id: Option<&UserId>,
     ) -> Result<ChatMessageWithAttachments> {
-        let message = self
+        let mut message = self
             .chat_repository
             .get_with_attachments_by_room_and_id_for_viewer(room_id, message_id, viewer_user_id)
             .await?
@@ -732,10 +732,9 @@ impl ChatService {
         if message.message.status == ChatMessageStatus::Deleted && !include_deleted {
             return Err(Error::NotFound("Message not found".to_string()));
         }
-        let mut messages = vec![message];
-        self.attach_attachment_view_metadata(&mut messages, viewer_user_id)
+        self.attach_attachment_view_metadata(std::slice::from_mut(&mut message), viewer_user_id)
             .await?;
-        Ok(messages.remove(0))
+        Ok(message)
     }
 
     pub async fn get_message_context(

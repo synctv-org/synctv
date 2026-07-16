@@ -110,18 +110,29 @@ impl BytesWriter {
     }
 
     pub fn write_random_bytes(&mut self, length: u32) -> Result<(), BytesWriteError> {
+        let length = usize::try_from(length).map_err(|_| BytesWriteError {
+            value: BytesWriteErrorValue::OutofIndex,
+        })?;
+        let start = self.bytes.len();
+        let end = start.checked_add(length).ok_or(BytesWriteError {
+            value: BytesWriteErrorValue::OutofIndex,
+        })?;
+        self.bytes.resize(end, 0);
         let mut rng = rand::rng();
-        for _ in 0..length {
-            self.bytes.write_u8(rng.random())?;
-        }
+        rng.fill(&mut self.bytes[start..]);
         Ok(())
     }
     pub fn extract_current_bytes(&mut self) -> BytesMut {
-        BytesMut::from(std::mem::take(&mut self.bytes).as_slice())
+        BytesMut::from(Bytes::from(std::mem::take(&mut self.bytes)))
     }
 
     pub fn extract_current_bytes_frozen(&mut self) -> Bytes {
         Bytes::from(std::mem::take(&mut self.bytes))
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[u8] {
+        self.bytes.as_slice()
     }
 
     pub fn clear(&mut self) {

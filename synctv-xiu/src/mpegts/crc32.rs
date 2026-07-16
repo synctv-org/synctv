@@ -7,8 +7,6 @@
 //! polynomial. This implementation uses a pre-computed lookup table for
 //! performance.
 
-use bytes::BytesMut;
-
 /// MPEG-TS CRC32 lookup table (polynomial: 0x04C11DB7)
 const CRC32_TABLE: [u32; 256] = [
     0x0000_0000,
@@ -278,11 +276,11 @@ const CRC32_TABLE: [u32; 256] = [
 /// # Returns
 /// The CRC32 checksum
 #[must_use]
-pub fn gen_crc32(crc: u32, buffer: BytesMut) -> u32 {
+pub fn gen_crc32(crc: u32, buffer: &[u8]) -> u32 {
     let mut result: u32 = crc;
 
-    for i in buffer {
-        let a = result ^ u32::from(i);
+    for &byte in buffer {
+        let a = result ^ u32::from(byte);
         let b = CRC32_TABLE[(a & 0xff) as usize];
         let c = result >> 8;
         result = b ^ c;
@@ -305,7 +303,7 @@ mod tests {
         let mut payload = BytesMut::new();
         payload.extend_from_slice(&data[..]);
 
-        let result = gen_crc32(0xffff_ffff, payload);
+        let result = gen_crc32(0xffff_ffff, &payload);
 
         let aa0 = result & 0xFF;
         let bb0 = (result >> 8) & 0xFF;
@@ -328,8 +326,8 @@ mod tests {
         payload2.extend_from_slice(data);
 
         // Calculate twice to ensure consistency
-        let crc1 = gen_crc32(0xFFFF_FFFF, payload1);
-        let crc2 = gen_crc32(0xFFFF_FFFF, payload2);
+        let crc1 = gen_crc32(0xFFFF_FFFF, &payload1);
+        let crc2 = gen_crc32(0xFFFF_FFFF, &payload2);
 
         assert_eq!(crc1, crc2, "CRC32 should be deterministic");
     }
@@ -337,7 +335,7 @@ mod tests {
     #[test]
     fn test_crc32_empty() {
         let payload = BytesMut::new();
-        let crc = gen_crc32(0xFFFF_FFFF, payload);
+        let crc = gen_crc32(0xFFFF_FFFF, &payload);
         assert_eq!(
             crc, 0xFFFF_FFFF,
             "CRC32 of empty data should equal initial value"

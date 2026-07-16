@@ -273,6 +273,7 @@ fn test_split_cache_metadata() {
     data.extend_from_slice(&[0x02]); // AMF0 string marker
     data.extend_from_slice(&[0x00, 0x0a]); // length 10
     data.extend_from_slice(b"onMetaData");
+    let data = data.freeze();
     cache.save_metadata(&data, 1000);
 
     // Retrieve metadata
@@ -289,7 +290,7 @@ fn test_split_cache_video_seq() {
     assert!(cache.get_video_seq().is_none());
 
     // Note: This is a minimal test - real H264 sequence headers are more complex
-    let data = BytesMut::new();
+    let data = BytesMut::new().freeze();
     assert!(
         cache.save_video_data(&data, 0).is_err(),
         "empty video data should fail header parsing"
@@ -307,7 +308,7 @@ fn test_split_cache_audio_seq() {
     // Initially no audio sequence
     assert!(cache.get_audio_seq().is_none());
 
-    let data = BytesMut::new();
+    let data = BytesMut::new().freeze();
     assert!(
         cache.save_audio_data(&data, 0).is_err(),
         "empty audio data should fail header parsing"
@@ -342,6 +343,7 @@ fn test_split_cache_concurrent_saves() {
         for i in 0..SPLIT_CACHE_CONCURRENT_SAVES_ITERATIONS {
             let mut data = BytesMut::new();
             data.extend_from_slice(&[usize_to_u8(i); 64]);
+            let data = data.freeze();
             let _result = cache_video.save_video_data(&data, usize_to_u32(i));
         }
     });
@@ -351,6 +353,7 @@ fn test_split_cache_concurrent_saves() {
         for i in 0..SPLIT_CACHE_CONCURRENT_SAVES_ITERATIONS {
             let mut data = BytesMut::new();
             data.extend_from_slice(&[usize_to_u8(i); 64]);
+            let data = data.freeze();
             let _result = cache_audio.save_audio_data(&data, usize_to_u32(i));
         }
     });
@@ -391,6 +394,7 @@ fn test_split_cache_high_contention() {
                 for i in 0..HIGH_CONTENTION_ITERATIONS {
                     let mut data = BytesMut::new();
                     data.extend_from_slice(&[usize_to_u8(tid), usize_to_u8(i)]);
+                    let data = data.freeze();
                     let ts = usize_to_u32(i);
 
                     let _result = match tid % 3 {

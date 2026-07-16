@@ -670,9 +670,9 @@ impl ApiError {
             | Self::RangeNotSatisfiable { .. } => ErrorKind::InvalidArgument,
             Self::BadGateway(_) => ErrorKind::ServiceUnavailable,
             Self::RequestTimeout(_) | Self::Timeout(_) => ErrorKind::Timeout,
-            Self::PayloadTooLarge(_)
-            | Self::RateLimited(_)
-            | Self::RateLimitedWithRetry { .. } => ErrorKind::RateLimited,
+            Self::PayloadTooLarge(_) | Self::RateLimited(_) | Self::RateLimitedWithRetry { .. } => {
+                ErrorKind::RateLimited
+            }
             Self::ServiceUnavailable(_) | Self::OAuth2ProviderExchangeFailed { .. } => {
                 ErrorKind::ServiceUnavailable
             }

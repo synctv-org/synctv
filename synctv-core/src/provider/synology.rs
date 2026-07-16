@@ -2264,11 +2264,6 @@ const fn stream_profile(profile: SynologyPlaybackProfile) -> SynologyStreamProfi
     }
 }
 
-#[allow(dead_code)]
-fn _assert_stream_profile_mapping(profile: SynologyPlaybackProfile) -> SynologyStreamProfile {
-    stream_profile(profile)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

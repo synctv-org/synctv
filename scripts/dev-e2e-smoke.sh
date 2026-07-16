@@ -7,7 +7,8 @@ cd "$ROOT_DIR"
 COMPOSE="${COMPOSE:-docker compose}"
 DEV_COMPOSE_FILE="${DEV_COMPOSE_FILE:-docker-compose.dev.yml}"
 DEV_PROJECT="${DEV_PROJECT:-synctv-dev}"
-COMPOSE_DEV=($COMPOSE -p "$DEV_PROJECT" -f "$DEV_COMPOSE_FILE")
+read -r -a COMPOSE_DEV <<<"$COMPOSE"
+COMPOSE_DEV+=(-p "$DEV_PROJECT" -f "$DEV_COMPOSE_FILE")
 
 DATA_DIR="$ROOT_DIR/.dev-data"
 RUN_DIR="$DATA_DIR/run"

@@ -115,7 +115,6 @@ impl AlistVideoPreview {
                 .into_iter()
                 .map(|sub| AlistSubtitleTask {
                     language: sub.language,
-                    status: sub.status,
                     url: sub.url,
                 })
                 .collect(),
@@ -144,8 +143,6 @@ pub struct AlistTranscodingTask {
 #[derive(Debug, Clone)]
 pub struct AlistSubtitleTask {
     pub language: String,
-    #[allow(dead_code)]
-    pub status: String,
     pub url: String,
 }
 

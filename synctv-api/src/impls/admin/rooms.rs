@@ -116,33 +116,29 @@ impl AdminApiImpl {
 
         let room_ids: Vec<synctv_core::models::RoomId> = rooms.iter().map(|room| room.id).collect();
         let room_id_refs: Vec<&synctv_core::models::RoomId> = room_ids.iter().collect();
-        let member_counts = self
-            .room_service
-            .get_member_count_batch(&room_id_refs)
-            .await
-            .map_err(ApiError::from)?;
-        let room_settings_map = self
-            .room_service
-            .get_room_settings_batch(&room_ids)
-            .await
-            .map_err(ApiError::from)?;
-        let presence_stats = self
-            .presence_service
-            .room_stats_batch(&room_ids)
-            .await
-            .map_err(ApiError::from)?;
+        let (member_counts, room_settings_map, presence_stats, room_assets) = tokio::join!(
+            self.room_service.get_member_count_batch(&room_id_refs),
+            self.room_service.get_room_settings_batch(&room_ids),
+            self.presence_service.room_stats_batch(&room_ids),
+            self.load_admin_room_list_assets(&rooms, &creator_user_map),
+        );
+        let member_counts = member_counts.map_err(ApiError::from)?;
+        let room_settings_map = room_settings_map.map_err(ApiError::from)?;
+        let presence_stats = presence_stats.map_err(ApiError::from)?;
+        let (creator_avatar_urls, room_covers) = room_assets?;
         let presence_by_room: std::collections::HashMap<synctv_core::models::RoomId, _> =
             presence_stats
                 .iter()
                 .map(|stats| (stats.room_id, stats))
                 .collect();
-
         let mut room_list = Vec::with_capacity(rooms.len());
         for r in rooms {
             let member_count = crate::impls::room_member_count_or_zero(&member_counts, &r.id);
             let creator = creator_user_from_map(&creator_user_map, &r)?;
-            let creator_avatar_url = self.creator_avatar_url(creator).await?;
-            let cover = self.room_cover_for_admin(&r).await?;
+            let creator_avatar_url = creator_avatar_urls
+                .get(&creator.id)
+                .and_then(Option::as_deref);
+            let cover = room_covers.get(&r.id).and_then(Option::as_ref);
             let settings = required_room_settings(&room_settings_map, &r.id)?;
             room_list.push(try_managed_room_to_proto(
                 &r,
@@ -150,9 +146,9 @@ impl AdminApiImpl {
                 Some(member_count),
                 Some(creator.username.as_str()),
                 creator.status,
-                creator_avatar_url.as_deref(),
-                cover.as_ref().map(|(reference, _)| reference),
-                cover.as_ref().map(|(_, access)| access),
+                creator_avatar_url,
+                cover.map(|(reference, _)| reference),
+                cover.map(|(_, access)| access),
                 presence_by_room.get(&r.id).copied(),
                 &self.public_id_codec,
             )?);
@@ -442,31 +438,25 @@ impl AdminApiImpl {
             .iter()
             .map(|member| member.user_id)
             .collect::<Vec<_>>();
-        let mut member_connection_counts = std::collections::HashMap::new();
-        for user_id in &member_user_ids {
-            let stats = self
-                .presence_service
-                .user_room_stats(*user_id, rid)
-                .await
-                .map_err(ApiError::from)?;
-            member_connection_counts.insert(*user_id, stats.connection_count);
-        }
+        let (member_stats, room_presence, room_settings) = tokio::join!(
+            self.presence_service
+                .user_room_stats_batch(&member_user_ids, rid),
+            self.presence_service.room_stats(rid),
+            self.room_service.get_room_settings(&rid),
+        );
+        let member_stats = member_stats.map_err(ApiError::from)?;
+        let room_presence = room_presence.map_err(ApiError::from)?;
+        let room_settings = room_settings.map_err(ApiError::from)?;
+        let member_connection_counts = member_user_ids
+            .into_iter()
+            .zip(member_stats)
+            .map(|(user_id, stats)| (user_id, stats.connection_count))
+            .collect::<std::collections::HashMap<_, _>>();
         for member in &mut members {
             member.is_online = member_connection_counts
                 .get(&member.user_id)
                 .is_some_and(|count| *count > 0);
         }
-        let room_presence = self
-            .presence_service
-            .room_stats(rid)
-            .await
-            .map_err(ApiError::from)?;
-        let room_settings = self
-            .room_service
-            .get_room_settings(&rid)
-            .await
-            .map_err(ApiError::from)?;
-
         let mut proto_members = try_members_to_proto(
             &members,
             &room_settings,
@@ -1045,21 +1035,16 @@ impl AdminApiImpl {
 
         let room_ids: Vec<synctv_core::models::RoomId> = rooms.iter().map(|room| room.id).collect();
         let room_id_refs: Vec<&synctv_core::models::RoomId> = room_ids.iter().collect();
-        let member_counts = self
-            .room_service
-            .get_member_count_batch(&room_id_refs)
-            .await
-            .map_err(ApiError::from)?;
-        let room_settings_map = self
-            .room_service
-            .get_room_settings_batch(&room_ids)
-            .await
-            .map_err(ApiError::from)?;
-        let presence_stats = self
-            .presence_service
-            .room_stats_batch(&room_ids)
-            .await
-            .map_err(ApiError::from)?;
+        let (member_counts, room_settings_map, presence_stats, room_assets) = tokio::join!(
+            self.room_service.get_member_count_batch(&room_id_refs),
+            self.room_service.get_room_settings_batch(&room_ids),
+            self.presence_service.room_stats_batch(&room_ids),
+            self.load_admin_room_list_assets(&rooms, &creator_user_map),
+        );
+        let member_counts = member_counts.map_err(ApiError::from)?;
+        let room_settings_map = room_settings_map.map_err(ApiError::from)?;
+        let presence_stats = presence_stats.map_err(ApiError::from)?;
+        let (creator_avatar_urls, room_covers) = room_assets?;
         let presence_by_room: std::collections::HashMap<synctv_core::models::RoomId, _> =
             presence_stats
                 .iter()
@@ -1068,8 +1053,10 @@ impl AdminApiImpl {
         let mut managed_rooms = Vec::with_capacity(rooms.len());
         for room in &rooms {
             let creator = creator_user_from_map(&creator_user_map, room)?;
-            let creator_avatar_url = self.creator_avatar_url(creator).await?;
-            let cover = self.room_cover_for_admin(room).await?;
+            let creator_avatar_url = creator_avatar_urls
+                .get(&creator.id)
+                .and_then(Option::as_deref);
+            let cover = room_covers.get(&room.id).and_then(Option::as_ref);
             let settings = required_room_settings(&room_settings_map, &room.id)?;
             let member_count = crate::impls::room_member_count_or_zero(&member_counts, &room.id);
             managed_rooms.push(try_managed_room_to_proto(
@@ -1078,9 +1065,9 @@ impl AdminApiImpl {
                 Some(member_count),
                 Some(creator.username.as_str()),
                 creator.status,
-                creator_avatar_url.as_deref(),
-                cover.as_ref().map(|(reference, _)| reference),
-                cover.as_ref().map(|(_, access)| access),
+                creator_avatar_url,
+                cover.map(|(reference, _)| reference),
+                cover.map(|(_, access)| access),
                 presence_by_room.get(&room.id).copied(),
                 &self.public_id_codec,
             )?);

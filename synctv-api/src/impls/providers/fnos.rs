@@ -400,11 +400,11 @@ fn file_item(file: synctv_media_providers::fnos::FnosFile) -> FileItem {
 
 fn media_item_matches_search(
     item: &synctv_media_providers::fnos::FnosMediaItem,
-    search: &str,
+    lowercase_search: &str,
 ) -> bool {
     item.display_title()
         .to_ascii_lowercase()
-        .contains(&search.to_ascii_lowercase())
+        .contains(lowercase_search)
 }
 
 fn retain_media_items(
@@ -413,6 +413,7 @@ fn retain_media_items(
     search: Option<&str>,
     require_favorite: bool,
 ) {
+    let lowercase_search = search.map(str::to_ascii_lowercase);
     items.retain(|item| {
         let in_source = req.ancestor_guid.as_deref().is_none_or(|ancestor| {
             item.parent_guid.as_deref() == Some(ancestor)
@@ -423,7 +424,9 @@ fn retain_media_items(
                 .media_types
                 .iter()
                 .any(|item_type| item.item_type.eq_ignore_ascii_case(item_type));
-        let has_search = search.is_none_or(|search| media_item_matches_search(item, search));
+        let has_search = lowercase_search
+            .as_deref()
+            .is_none_or(|search| media_item_matches_search(item, search));
         let in_collection = !require_favorite || item.is_favorite != 0;
         in_source && has_type && has_search && in_collection
     });

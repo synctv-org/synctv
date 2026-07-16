@@ -8,10 +8,11 @@ const starlightRoot = path.join(docsRoot, 'node_modules/@astrojs/starlight');
 
 const mdxFiles = listFiles(contentRoot, (file) => file.endsWith('.mdx'));
 const docsFiles = [...mdxFiles, path.join(docsRoot, 'astro.config.mjs')];
+const docsContent = new Map(docsFiles.map((file) => [file, fs.readFileSync(file, 'utf8')]));
 const pageUrls = new Set(mdxFiles.map(pageUrlForFile));
 
-const linkErrors = validateInternalLinks();
-const iconErrors = validateIcons();
+const { errors: linkErrors, count: relativeLinkCount } = validateInternalLinks();
+const { errors: iconErrors, count: iconCount } = validateIcons();
 const mirrorErrors = validateEnglishMirrors();
 const errors = [
   ...linkErrors,
@@ -26,7 +27,7 @@ if (errors.length > 0) {
 }
 
 console.log(
-  `Docs content validation passed (${pageUrls.size} pages, ${countRelativeLinks()} internal links, ${countIcons()} icons).`
+  `Docs content validation passed (${pageUrls.size} pages, ${relativeLinkCount} internal links, ${iconCount} icons).`
 );
 function listFiles(dir, predicate) {
   const files = [];
@@ -55,16 +56,18 @@ function pageUrlForFile(file) {
 
 function validateInternalLinks() {
   const errors = [];
+  let count = 0;
   const linkPattern = /\[[^\]]+\]\(([^)]+)\)|href=(['"])([^'"]+)\2|^\s*link:\s*['"]?([^'"\s]+)['"]?\s*$/gm;
 
   for (const file of mdxFiles) {
-    const text = fs.readFileSync(file, 'utf8');
+    const text = docsContent.get(file);
     const baseUrl = pageUrlForFile(file);
     let match;
 
     while ((match = linkPattern.exec(text))) {
       const raw = (match[1] || match[3] || match[4] || '').trim();
       if (!shouldValidateLink(raw)) continue;
+      count++;
 
       const targetWithoutHash = raw.split('#')[0];
       if (!targetWithoutHash) continue;
@@ -83,7 +86,7 @@ function validateInternalLinks() {
     }
   }
 
-  return errors;
+  return { errors, count };
 }
 
 function shouldValidateLink(raw) {
@@ -101,13 +104,15 @@ function normalizePagePath(urlPath) {
 function validateIcons() {
   const availableIcons = loadStarlightIcons();
   const errors = [];
+  let count = 0;
   const iconPattern = /icon=(['"])([^'"]+)\1|^\s*icon:\s*['"]?([A-Za-z0-9_.$:-]+)['"]?\s*$/gm;
 
   for (const file of docsFiles) {
-    const text = fs.readFileSync(file, 'utf8');
+    const text = docsContent.get(file);
     let match;
 
     while ((match = iconPattern.exec(text))) {
+      count++;
       const icon = match[2] || match[3];
       if (!availableIcons.has(icon)) {
         errors.push(`${relative(file)}:${lineForIndex(text, match.index)} uses unknown Starlight icon ${JSON.stringify(icon)}`);
@@ -115,7 +120,7 @@ function validateIcons() {
     }
   }
 
-  return errors;
+  return { errors, count };
 }
 
 function validateEnglishMirrors() {
@@ -150,29 +155,6 @@ function loadStarlightIcons() {
   }
 
   return icons;
-}
-
-function countRelativeLinks() {
-  let count = 0;
-  const linkPattern = /\[[^\]]+\]\(([^)]+)\)|href=(['"])([^'"]+)\2|^\s*link:\s*['"]?([^'"\s]+)['"]?\s*$/gm;
-  for (const file of mdxFiles) {
-    const text = fs.readFileSync(file, 'utf8');
-    let match;
-    while ((match = linkPattern.exec(text))) {
-      if (shouldValidateLink((match[1] || match[3] || match[4] || '').trim())) count++;
-    }
-  }
-  return count;
-}
-
-function countIcons() {
-  let count = 0;
-  const iconPattern = /icon=(['"])([^'"]+)\1|^\s*icon:\s*['"]?([A-Za-z0-9_.$:-]+)['"]?\s*$/gm;
-  for (const file of docsFiles) {
-    const text = fs.readFileSync(file, 'utf8');
-    while (iconPattern.exec(text)) count++;
-  }
-  return count;
 }
 
 function lineForIndex(text, index) {

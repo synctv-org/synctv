@@ -12,6 +12,7 @@ use crate::{
     },
     Error, Result,
 };
+use futures::{stream, StreamExt as _, TryStreamExt as _};
 
 impl S3CompatibleFileStorageService {
     pub(super) async fn complete_s3_upload_session(
@@ -163,14 +164,15 @@ impl S3CompatibleFileStorageService {
                     Error::InvalidInput("file ownership proof is required".to_string())
                 })?;
             let nonce = ownership_proof.nonce.as_str();
-            let ranges = ownership_proof.ranges.clone();
-            let mut chunks = Vec::with_capacity(ranges.len());
-            for range in &ranges {
-                chunks.push(self.read_object_range(&reference_object_key, range).await?);
-            }
+            let ranges = &ownership_proof.ranges;
+            let chunks = stream::iter(0..ranges.len())
+                .map(|index| self.read_object_range(&reference_object_key, &ranges[index]))
+                .buffered(3)
+                .try_collect::<Vec<_>>()
+                .await?;
             let expected = file_ownership_proof_digest(
                 nonce,
-                &ranges,
+                ranges,
                 &content_manifest_sha256,
                 size_bytes,
                 chunks.iter().map(Vec::as_slice),

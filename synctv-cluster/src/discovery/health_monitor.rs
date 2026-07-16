@@ -9,6 +9,7 @@
 //! registry recovers, the monitor resumes normal-interval checks.
 
 use async_trait::async_trait;
+use futures::{stream, StreamExt as _};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,6 +20,8 @@ use tokio_util::sync::CancellationToken;
 use super::node_registry::ClusterMode;
 use super::runtime::{ClusterHealthRuntime, ClusterNodeDirectory};
 use crate::error::Result;
+
+const NODE_PROBE_CONCURRENCY: usize = 16;
 
 /// Health status of a node
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -373,8 +376,8 @@ impl HealthMonitor {
         timeout_secs: i64,
     ) {
         let mut status = health_status.write().await;
-        let node_ids: std::collections::HashSet<String> =
-            nodes.iter().map(|n| n.node_id.clone()).collect();
+        let node_ids: std::collections::HashSet<&str> =
+            nodes.iter().map(|node| node.node_id.as_str()).collect();
 
         for node in nodes {
             // Only update to unhealthy based on heartbeat; probes may override
@@ -399,7 +402,7 @@ impl HealthMonitor {
         }
 
         // Remove nodes that are no longer in registry
-        status.retain(|node_id, _| node_ids.contains(node_id));
+        status.retain(|node_id, _| node_ids.contains(node_id.as_str()));
     }
 
     /// Perform active TCP probes on all nodes concurrently
@@ -438,18 +441,24 @@ impl HealthMonitor {
         // Probe all nodes concurrently via gRPC GetNodes
         let probe_timeout = probe_config.probe_timeout_secs;
         let secret = probe_config.cluster_secret.clone();
-        let probe_results: Vec<_> = futures::future::join_all(nodes_to_probe.iter().map(|node| {
-            let addr = node.api_address.clone();
-            let secret = secret.clone();
-            async move { Self::probe_node_api(&addr, probe_timeout, &secret).await }
-        }))
-        .await;
+        let probe_results: Vec<_> = stream::iter(0..nodes_to_probe.len())
+            .map(|index| {
+                let node = &nodes_to_probe[index];
+                let addr = node.api_address.clone();
+                let secret = secret.clone();
+                async move { Self::probe_node_api(&addr, probe_timeout, &secret).await }
+            })
+            .buffered(NODE_PROBE_CONCURRENCY)
+            .collect()
+            .await;
 
         // Process results
         let mut states = probe_states.write().await;
         let mut hs = health_status.write().await;
-        let active_node_ids: std::collections::HashSet<String> =
-            nodes_to_probe.iter().map(|n| n.node_id.clone()).collect();
+        let active_node_ids: std::collections::HashSet<&str> = nodes_to_probe
+            .iter()
+            .map(|node| node.node_id.as_str())
+            .collect();
 
         for (node, probe_success) in nodes_to_probe.iter().zip(probe_results) {
             let state = states.entry(node.node_id.clone()).or_default();
@@ -503,7 +512,7 @@ impl HealthMonitor {
         }
 
         // Prune probe_states for nodes no longer in the registry
-        states.retain(|node_id, _| active_node_ids.contains(node_id));
+        states.retain(|node_id, _| active_node_ids.contains(node_id.as_str()));
     }
 
     /// Probe a node's gRPC service on the shared API address by calling `GetNodes`.

@@ -30,10 +30,6 @@ struct InMemoryRegistryState {
 }
 
 impl InMemoryRegistryState {
-    fn insert_publisher(&mut self, key: PublisherKey, publisher: PublisherInfo) {
-        self.publishers.insert(key, publisher);
-    }
-
     fn remove_publisher(&mut self, key: &PublisherKey) -> Option<PublisherInfo> {
         self.publishers.remove(key)
     }
@@ -77,21 +73,18 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
         let mut state = self.state.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
 
-        match state.publishers.entry(key.clone()) {
+        match state.publishers.entry(key) {
             Entry::Occupied(_) => Ok(false),
-            Entry::Vacant(_) => {
+            Entry::Vacant(entry) => {
                 let epoch = self.next_epoch.fetch_add(1, Ordering::AcqRel);
-                state.insert_publisher(
-                    key,
-                    PublisherInfo {
-                        node_id: node_id.to_string(),
-                        api_address: api_address.to_string(),
-                        app_name: "live".to_string(),
-                        user_id: user_id.to_string(),
-                        started_at: synctv_core::SystemClock.now(),
-                        epoch,
-                    },
-                );
+                entry.insert(PublisherInfo {
+                    node_id: node_id.to_string(),
+                    api_address: api_address.to_string(),
+                    app_name: "live".to_string(),
+                    user_id: user_id.to_string(),
+                    started_at: synctv_core::SystemClock.now(),
+                    epoch,
+                });
                 Ok(true)
             }
         }
@@ -234,15 +227,9 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
 
     async fn cleanup_all_publishers_for_node(&self, node_id: &str) -> Result<()> {
         let mut state = self.state.lock().await;
-        let keys: Vec<_> = state
+        state
             .publishers
-            .iter()
-            .filter(|(_, publisher)| publisher.node_id == node_id)
-            .map(|(key, _)| key.clone())
-            .collect();
-        for key in keys {
-            state.remove_publisher(&key);
-        }
+            .retain(|_, publisher| publisher.node_id != node_id);
         Ok(())
     }
 }

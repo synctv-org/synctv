@@ -366,10 +366,10 @@ where
     let response = if method == Method::HEAD {
         response
     } else {
-        let first_data = bytes::Bytes::from(first_chunk.data);
+        let first_data = first_chunk.data;
         let body_stream = futures::stream::once(async move { Ok::<_, std::io::Error>(first_data) })
             .chain(stream.map(|item| match item {
-                Ok(chunk) => Ok(bytes::Bytes::from(chunk.data)),
+                Ok(chunk) => Ok(chunk.data),
                 Err(error) => Err(std::io::Error::other(error.message().to_string())),
             }));
         *response.body_mut() = Body::from_stream(body_stream);

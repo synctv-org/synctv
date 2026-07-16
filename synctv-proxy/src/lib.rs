@@ -639,11 +639,11 @@ where
         ));
     }
 
-    let m3u8_text = String::from_utf8(m3u8_bytes.to_vec())
+    let m3u8_text = std::str::from_utf8(&m3u8_bytes)
         .map_err(|e| anyhow::anyhow!("M3U8 response is not valid UTF-8: {e}"))?;
 
     let rewritten = manifest::rewrite_m3u8_with_url_mapper(
-        &m3u8_text,
+        m3u8_text,
         cfg.url,
         cfg.proxy_base,
         proxy_url_for_target,

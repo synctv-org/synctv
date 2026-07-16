@@ -210,14 +210,6 @@ fn duration_millis_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// Returns `true` if the error message indicates a Redis Sentinel failover is in progress.
-///
-/// During a Sentinel failover, the previous primary transitions to read-only mode
-/// (READONLY error) or the new primary may still be loading data (LOADING error).
-fn is_sentinel_failover_error(error_msg: &str) -> bool {
-    error_msg.contains("READONLY") || error_msg.contains("LOADING")
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeDiscoverySource {
     K8sDns,
@@ -942,7 +934,7 @@ impl NodeRegistry {
             }
             Err(ref error) => {
                 let error_str = error.to_string();
-                if is_sentinel_failover_error(&error_str) {
+                if crate::error::is_sentinel_failover_error(&error_str) {
                     tracing::warn!(
                         error = %error_str,
                         "Redis Sentinel failover detected in operation result, will reconnect"

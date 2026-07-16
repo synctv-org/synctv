@@ -190,7 +190,10 @@ async fn dispatch_event(
     realtime_manager: &RealtimeManager,
     event: RealtimeOutboxEvent,
 ) {
-    let realtime_event = event.payload.clone();
+    let outbox_id = event.id;
+    let attempts = event.attempts;
+    let realtime_event = event.payload;
+    let event_type = realtime_event.event_type();
 
     // The realtime outbox table is shared across cluster nodes, so any replica can
     // claim an event written by another replica. Redis envelopes use the claiming
@@ -206,44 +209,44 @@ async fn dispatch_event(
         realtime_manager.broadcast_local_outbox_side_effect(realtime_event.clone());
     if local_side_effects == 0 {
         debug!(
-            outbox_id = %event.id,
-            event_type = %realtime_event.event_type(),
+            outbox_id = %outbox_id,
+            event_type = %event_type,
             "Realtime outbox event had no local lifecycle side-effect consumers"
         );
     }
 
     match realtime_manager
-        .publish_only_confirmed(realtime_event.clone(), PUBLISH_CONFIRMATION_TIMEOUT)
+        .publish_only_confirmed(realtime_event, PUBLISH_CONFIRMATION_TIMEOUT)
         .await
     {
         Ok(()) => {
-            if let Err(error) = outbox.mark_sent(&event.id).await {
+            if let Err(error) = outbox.mark_sent(&outbox_id).await {
                 error!(
-                    outbox_id = %event.id,
-                    event_type = %realtime_event.event_type(),
+                    outbox_id = %outbox_id,
+                    event_type = %event_type,
                     error = %error,
                     "Realtime outbox event was published but could not be marked sent"
                 );
             } else {
                 debug!(
-                    outbox_id = %event.id,
-                    event_type = %realtime_event.event_type(),
+                    outbox_id = %outbox_id,
+                    event_type = %event_type,
                     "Realtime outbox event published"
                 );
             }
         }
         Err(error) => {
-            if let Err(mark_error) = outbox.mark_failed(&event.id, event.attempts, &error).await {
+            if let Err(mark_error) = outbox.mark_failed(&outbox_id, attempts, &error).await {
                 error!(
-                    outbox_id = %event.id,
-                    event_type = %realtime_event.event_type(),
+                    outbox_id = %outbox_id,
+                    event_type = %event_type,
                     error = %mark_error,
                     "Failed to mark realtime outbox event for retry"
                 );
             } else {
                 warn!(
-                    outbox_id = %event.id,
-                    event_type = %realtime_event.event_type(),
+                    outbox_id = %outbox_id,
+                    event_type = %event_type,
                     error = %error,
                     "Realtime outbox event publish was not confirmed; scheduled retry"
                 );

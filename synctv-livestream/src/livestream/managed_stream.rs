@@ -4,6 +4,7 @@ use crate::util::unix_now_secs;
 use anyhow::Result;
 use async_trait::async_trait;
 use dashmap::DashMap;
+use futures::{stream, StreamExt as _};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -194,6 +195,8 @@ pub(crate) struct StreamPool<S: ManagedStream> {
 }
 
 impl<S: ManagedStream> StreamPool<S> {
+    const STOP_CONCURRENCY: usize = 16;
+
     #[must_use]
     pub(crate) fn new(cleanup_check_interval: Duration, idle_timeout: Duration) -> Self {
         Self {
@@ -207,9 +210,11 @@ impl<S: ManagedStream> StreamPool<S> {
 
     pub(crate) async fn stop_all(&self) {
         let keys: Vec<String> = self.streams.iter().map(|e| e.key().clone()).collect();
-        for key in &keys {
-            self.remove_and_stop(key).await;
-        }
+        stream::iter(&keys)
+            .for_each_concurrent(Self::STOP_CONCURRENCY, |key| async move {
+                self.remove_and_stop(key).await;
+            })
+            .await;
         self.creation_locks.clear();
         debug!("Stopped all managed streams ({} removed)", keys.len());
     }
@@ -222,19 +227,27 @@ impl<S: ManagedStream> StreamPool<S> {
 
     /// Returns a healthy stream with its subscriber count already incremented.
     pub(crate) async fn get_existing(&self, stream_key: &str) -> Option<Arc<S>> {
-        if let Some(stream) = self.streams.get(stream_key) {
+        if let Some(stream) = self
+            .streams
+            .get(stream_key)
+            .map(|entry| Arc::clone(entry.value()))
+        {
             if stream.lifecycle().is_healthy().await {
                 stream.lifecycle().increment_subscriber_count();
 
                 if stream.lifecycle().is_healthy().await {
                     stream.lifecycle().update_last_active_time();
-                    return Some(stream.clone());
+                    return Some(stream);
                 }
 
                 stream.lifecycle().decrement_subscriber_count();
             }
-            drop(stream);
-            self.remove_and_stop(stream_key).await;
+            if let Some((_, removed)) = self
+                .streams
+                .remove_if(stream_key, |_, current| Arc::ptr_eq(current, &stream))
+            {
+                removed.stop_managed().await;
+            }
         }
         None
     }

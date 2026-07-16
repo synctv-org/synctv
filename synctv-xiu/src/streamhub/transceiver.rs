@@ -207,10 +207,12 @@ impl StreamDataTransceiver {
             let closed_ids = Self::fan_out_frame(cached_snapshot, &val);
 
             if !closed_ids.is_empty() {
+                let mut senders = frame_senders.lock().await;
                 for id in &closed_ids {
-                    frame_senders.lock().await.remove(id);
+                    senders.remove(id);
                     tracing::debug!("Removed closed frame subscriber: {}", id);
                 }
+                drop(senders);
                 generation.fetch_add(1, Ordering::Release);
                 // Force a snapshot rebuild on the next frame by making the
                 // cached generation differ from the bumped global generation.
@@ -285,10 +287,12 @@ impl StreamDataTransceiver {
             let closed_ids = Self::fan_out_packet(cached_snapshot, &val);
 
             if !closed_ids.is_empty() {
+                let mut senders = packet_senders.lock().await;
                 for id in &closed_ids {
-                    packet_senders.lock().await.remove(id);
+                    senders.remove(id);
                     tracing::debug!("Removed closed packet subscriber: {}", id);
                 }
+                drop(senders);
                 generation.fetch_add(1, Ordering::Release);
                 // Force a snapshot rebuild on the next packet by making the
                 // cached generation differ from the bumped global generation.

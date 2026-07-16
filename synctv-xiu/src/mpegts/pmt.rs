@@ -101,10 +101,9 @@ impl PmtMuxer {
         self.bytes_writer
             .write_u16::<BigEndian>(0xB000 | section_length)?;
 
-        self.bytes_writer
-            .write(&tmp_bytes_writer.extract_current_bytes()[..])?;
+        self.bytes_writer.write(tmp_bytes_writer.as_slice())?;
 
-        let crc32_value = crc32::gen_crc32(0xffff_ffff, self.bytes_writer.get_current_bytes());
+        let crc32_value = crc32::gen_crc32(0xffff_ffff, self.bytes_writer.as_slice());
         self.bytes_writer.write_u32::<LittleEndian>(crc32_value)?;
 
         Ok(self.bytes_writer.extract_current_bytes())

@@ -7953,6 +7953,7 @@ dependencies = [
  "base64 0.22.1",
  "boa_engine",
  "brotli",
+ "bytes",
  "cbc 0.2.1",
  "chrono",
  "flate2",

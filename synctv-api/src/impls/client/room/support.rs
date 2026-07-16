@@ -1,4 +1,5 @@
 use crate::impls::ApiError;
+use futures::{stream, StreamExt as _, TryStreamExt as _};
 use std::net::IpAddr;
 use synctv_core::models::{
     ChatMessageEvent, ChatMessageSelection, ChatMessageWithAttachments, DeleteChatMessage,
@@ -485,13 +486,13 @@ pub(super) fn chat_attachment_upload_create_result_to_proto(
 
 pub(super) fn chat_attachment_object_to_proto(
     room_id: &str,
-    blob: &FileBlob,
+    blob: FileBlob,
 ) -> synctv_proto::client::ChatAttachmentObjectResponse {
     synctv_proto::client::ChatAttachmentObjectResponse {
         room_id: room_id.to_string(),
-        mime_type: blob.mime_type.clone(),
-        content_manifest_sha256: blob.content_manifest_sha256.clone(),
-        data: blob.data.clone(),
+        mime_type: blob.mime_type,
+        content_manifest_sha256: blob.content_manifest_sha256,
+        data: blob.data.into(),
         content_range: blob
             .range
             .map(super::super::media::file_byte_range_to_proto),
@@ -618,25 +619,32 @@ pub(super) async fn chat_message_read_receipts_to_proto(
     api: &ClientApiImpl,
     page: synctv_core::models::ChatMessageReadReceiptsPage,
 ) -> Result<synctv_proto::client::GetChatMessageReadReceiptsResponse, ApiError> {
-    let mut readers = Vec::with_capacity(page.readers.len());
-    for reader in page.readers {
-        readers.push(synctv_proto::client::ChatMessageReadReceiptUser {
-            user: Some(
-                api.user_public_view_with_loaded_avatar(&reader.user)
-                    .await?,
-            ),
-            read_at: reader.read_at.timestamp(),
-        });
-    }
-    let mut unread_members = Vec::with_capacity(page.unread_members.len());
-    for member in page.unread_members {
-        unread_members.push(synctv_proto::client::ChatMessageUnreadMember {
-            user: Some(
-                api.user_public_view_with_loaded_avatar(&member.user)
-                    .await?,
-            ),
-        });
-    }
+    let readers = stream::iter(page.readers)
+        .map(|reader| async move {
+            Ok::<_, ApiError>(synctv_proto::client::ChatMessageReadReceiptUser {
+                user: Some(
+                    api.user_public_view_with_loaded_avatar(&reader.user)
+                        .await?,
+                ),
+                read_at: reader.read_at.timestamp(),
+            })
+        })
+        .buffered(16)
+        .try_collect::<Vec<_>>();
+    let unread_members = stream::iter(page.unread_members)
+        .map(|member| async move {
+            Ok::<_, ApiError>(synctv_proto::client::ChatMessageUnreadMember {
+                user: Some(
+                    api.user_public_view_with_loaded_avatar(&member.user)
+                        .await?,
+                ),
+            })
+        })
+        .buffered(16)
+        .try_collect::<Vec<_>>();
+    let (readers, unread_members) = tokio::join!(readers, unread_members);
+    let readers = readers?;
+    let unread_members = unread_members?;
     Ok(synctv_proto::client::GetChatMessageReadReceiptsResponse {
         readers,
         unread_members,

@@ -1,6 +1,7 @@
 use std::pin::Pin;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use bytes::Bytes;
 use futures_util::{SinkExt, Stream, StreamExt};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
@@ -44,7 +45,7 @@ pub async fn watch_danmaku(
             tokio::select! {
                 _ = heartbeat.tick() => {
                     if writer
-                        .send(Message::Binary(heartbeat_packet().to_vec().into()))
+                        .send(Message::Binary(Bytes::from_static(heartbeat_packet())))
                         .await
                         .is_err()
                     {

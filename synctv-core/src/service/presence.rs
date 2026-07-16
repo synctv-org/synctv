@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
+use futures::{stream, StreamExt, TryStreamExt};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -17,6 +18,7 @@ const PRESENCE_METADATA_TTL_SECONDS: i64 = 120;
 const PRESENCE_RENEWAL_INTERVAL_MS: i64 = 30_000;
 const PRESENCE_CHANNEL_CAPACITY: usize = 1024;
 const PRESENCE_L1_CACHE_TTL_MS: i64 = 3_000;
+const PRESENCE_BATCH_CONCURRENCY: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PresenceConnection {
@@ -454,11 +456,11 @@ impl OnlinePresenceService {
     }
 
     pub async fn room_stats_batch(&self, room_ids: &[RoomId]) -> Result<Vec<OnlineRoomStats>> {
-        let mut stats = Vec::with_capacity(room_ids.len());
-        for room_id in room_ids {
-            stats.push(self.room_stats(*room_id).await?);
-        }
-        Ok(stats)
+        stream::iter(room_ids.iter().copied())
+            .map(|room_id| self.room_stats(room_id))
+            .buffered(PRESENCE_BATCH_CONCURRENCY)
+            .try_collect()
+            .await
     }
 
     pub async fn hot_room_stats(&self) -> Result<Vec<OnlineRoomStats>> {
@@ -683,6 +685,18 @@ impl OnlinePresenceService {
             .user_room_stats
             .insert(cache_key, cache_entry(stats.clone(), now));
         Ok(stats)
+    }
+
+    pub async fn user_room_stats_batch(
+        &self,
+        user_ids: &[UserId],
+        room_id: RoomId,
+    ) -> Result<Vec<OnlineUserRoomStats>> {
+        stream::iter(user_ids.iter().copied())
+            .map(|user_id| self.user_room_stats(user_id, room_id))
+            .buffered(PRESENCE_BATCH_CONCURRENCY)
+            .try_collect()
+            .await
     }
 
     pub async fn room_stats_fresh(&self, room_id: RoomId) -> Result<OnlineRoomStats> {

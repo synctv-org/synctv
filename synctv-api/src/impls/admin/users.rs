@@ -288,10 +288,7 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let mut user_list = Vec::with_capacity(users.len());
-        for user in users {
-            user_list.push(self.admin_user_to_proto_with_email(&user).await?);
-        }
+        let user_list = self.admin_users_to_proto_with_email(&users).await?;
 
         Ok(synctv_proto::admin::ListUsersResponse {
             users: user_list,
@@ -630,10 +627,7 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let mut admins = Vec::with_capacity(users.len());
-        for user in users {
-            admins.push(self.admin_user_to_proto_with_email(&user).await?);
-        }
+        let admins = self.admin_users_to_proto_with_email(&users).await?;
 
         Ok(synctv_proto::admin::ListAdminsResponse {
             admins,

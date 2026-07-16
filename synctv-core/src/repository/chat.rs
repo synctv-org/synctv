@@ -4049,7 +4049,7 @@ impl ChatRepository {
     async fn attachments_for_messages_from_pool(
         &self,
         pool: &PgPool,
-        messages: &[ChatMessage],
+        messages: &[&ChatMessage],
     ) -> Result<Vec<ChatAttachment>> {
         if messages.is_empty() {
             return Ok(Vec::new());
@@ -4115,11 +4115,13 @@ impl ChatRepository {
         let visible_attachment_messages = messages
             .iter()
             .filter(|message| message.status != ChatMessageStatus::Deleted)
-            .cloned()
             .collect::<Vec<_>>();
-        let attachments = self
-            .attachments_for_messages_from_pool(pool, &visible_attachment_messages)
-            .await?;
+        let (attachments, mut reaction_grouped, mut mention_grouped, mut pin_grouped) = tokio::try_join!(
+            self.attachments_for_messages_from_pool(pool, &visible_attachment_messages),
+            self.reaction_summaries_for_messages_from_pool(pool, &messages, viewer_user_id),
+            self.mentions_for_messages_from_pool(pool, &messages),
+            self.pins_for_messages_from_pool(pool, &messages),
+        )?;
         let mut grouped = HashMap::<ChatMessageKey, Vec<ChatAttachment>>::new();
         for attachment in attachments {
             grouped
@@ -4127,14 +4129,6 @@ impl ChatRepository {
                 .or_default()
                 .push(attachment);
         }
-        let mut reaction_grouped = self
-            .reaction_summaries_for_messages_from_pool(pool, &messages, viewer_user_id)
-            .await?;
-        let mut mention_grouped = self
-            .mentions_for_messages_from_pool(pool, &messages)
-            .await?;
-        let mut pin_grouped = self.pins_for_messages_from_pool(pool, &messages).await?;
-
         Ok(messages
             .into_iter()
             .map(|message| {

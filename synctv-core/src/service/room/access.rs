@@ -377,10 +377,10 @@ impl RoomService {
     }
 
     async fn hydrate_room_with_count_items(&self, items: &mut [RoomWithCount]) -> Result<()> {
-        let mut rooms: Vec<Room> = items.iter().map(|item| item.room.clone()).collect();
-        self.hydrate_rooms_taxonomy(&mut rooms).await?;
-        for (item, room) in items.iter_mut().zip(rooms) {
-            item.room = room;
+        let room_ids = items.iter().map(|item| item.room.id).collect::<Vec<_>>();
+        let labels = self.taxonomy_repo.labels_for_rooms(&room_ids).await?;
+        for item in items {
+            item.room.labels = labels.get(&item.room.id).cloned().unwrap_or_default();
         }
         Ok(())
     }
@@ -389,10 +389,13 @@ impl RoomService {
         &self,
         items: &mut [(Room, RoomRole, MemberStatus, i32)],
     ) -> Result<()> {
-        let mut rooms: Vec<Room> = items.iter().map(|(room, _, _, _)| room.clone()).collect();
-        self.hydrate_rooms_taxonomy(&mut rooms).await?;
-        for ((room, _, _, _), hydrated) in items.iter_mut().zip(rooms) {
-            *room = hydrated;
+        let room_ids = items
+            .iter()
+            .map(|(room, _, _, _)| room.id)
+            .collect::<Vec<_>>();
+        let labels = self.taxonomy_repo.labels_for_rooms(&room_ids).await?;
+        for (room, _, _, _) in items {
+            room.labels = labels.get(&room.id).cloned().unwrap_or_default();
         }
         Ok(())
     }

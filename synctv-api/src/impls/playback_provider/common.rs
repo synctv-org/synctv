@@ -493,7 +493,7 @@ pub async fn get_live_hls_playlist_chunks(
     };
 
     Ok(direct_chunk_stream(
-        content.into_bytes(),
+        content,
         "application/vnd.apple.mpegurl",
         200,
         false,
@@ -532,7 +532,7 @@ pub async fn get_live_hls_segment_chunks(
     .map_err(|error| crate::impls::map_livestream_backend_error(error.as_ref()))?;
 
     Ok(direct_chunk_stream(
-        ts_data.to_vec(),
+        ts_data,
         live_hls_segment_content_type(disguised_as_png),
         200,
         false,
@@ -660,7 +660,8 @@ pub async fn playback_transport_action_to_chunk_stream(
             }
 
             // Check Content-Length BEFORE reading body to prevent DoS
-            if let Some(size) = response.content_length() {
+            let content_length = response.content_length();
+            if let Some(size) = content_length {
                 if size > MAX_MANIFEST_CONTENT_LENGTH {
                     return Err(ApiError::ServiceUnavailable(
                         "M3U8 manifest exceeded size limit".to_string(),
@@ -668,7 +669,11 @@ pub async fn playback_transport_action_to_chunk_stream(
                 }
             }
 
-            let mut body = bytes::BytesMut::with_capacity(8192);
+            let initial_capacity = content_length
+                .and_then(|size| usize::try_from(size).ok())
+                .unwrap_or(8192)
+                .min(MAX_MANIFEST_SIZE);
+            let mut body = bytes::BytesMut::with_capacity(initial_capacity);
             let mut stream = response.bytes_stream();
             while let Some(chunk_result) = stream.next().await {
                 let chunk = chunk_result.map_err(|error| map_reqwest_error(&error))?;
@@ -706,7 +711,7 @@ pub async fn playback_transport_action_to_chunk_stream(
                 ));
             };
             Ok(direct_chunk_stream(
-                rewritten.into_bytes(),
+                rewritten,
                 "application/vnd.apple.mpegurl",
                 200,
                 false,
@@ -795,7 +800,7 @@ async fn send_flv_chunk(
 ) -> FlvChunkSendResult {
     let chunk = chunk
         .map(|data| StreamChunk {
-            data: data.to_vec(),
+            data,
             status: 0,
             ..Default::default()
         })
@@ -897,7 +902,7 @@ fn response_to_chunk_stream(
     }
     let body_stream = response.bytes_stream().map(|chunk| match chunk {
         Ok(data) => Ok(StreamChunk {
-            data: data.to_vec(),
+            data,
             status: 0,
             ..Default::default()
         }),
@@ -917,7 +922,7 @@ fn axum_response_to_chunk_stream(
         .into_data_stream()
         .map(|chunk| match chunk {
             Ok(data) => Ok(StreamChunk {
-                data: data.to_vec(),
+                data,
                 status: 0,
                 ..Default::default()
             }),
@@ -927,15 +932,16 @@ fn axum_response_to_chunk_stream(
 }
 
 fn direct_chunk_stream(
-    body: Vec<u8>,
+    body: impl Into<Bytes>,
     content_type: &str,
     status: u16,
     head: bool,
 ) -> PlaybackProviderChunkStream {
+    let body = body.into();
     let content_type = content_type.to_string();
     Box::pin(futures::stream::once(async move {
         Ok(StreamChunk {
-            data: if head { Vec::new() } else { body },
+            data: if head { Bytes::new() } else { body },
             status: status.into(),
             content_type: Some(content_type),
             ..Default::default()
@@ -1045,7 +1051,7 @@ pub fn playback_provider_route_base(route_provider: &str, version: &str, resourc
 
 fn metadata_chunk(status: u16, metadata: StreamResponseMetadata) -> StreamChunk {
     StreamChunk {
-        data: Vec::new(),
+        data: Bytes::new(),
         status: status.into(),
         content_type: metadata.content_type,
         content_length: metadata.content_length,
@@ -1294,7 +1300,7 @@ mod tests {
             .await
             .ok_or_else(|| anyhow::anyhow!("rewritten manifest should emit one chunk"))?
             .map_err(|error| anyhow::anyhow!("{error:?}"))?;
-        let body = String::from_utf8(chunk.data)?;
+        let body = std::str::from_utf8(&chunk.data)?.to_string();
 
         assert_eq!(chunk.status, 200);
         assert!(body.contains("/api/playback-providers/direct-url/v1/hls-segments?"));

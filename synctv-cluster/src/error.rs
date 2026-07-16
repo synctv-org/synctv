@@ -6,6 +6,11 @@
 
 use thiserror::Error;
 
+/// Returns whether a Redis error indicates an in-progress Sentinel failover.
+pub(crate) fn is_sentinel_failover_error(error_message: &str) -> bool {
+    error_message.contains("READONLY") || error_message.contains("LOADING")
+}
+
 /// Cluster error types
 #[derive(Debug, Error)]
 pub enum Error {
@@ -41,3 +46,19 @@ pub enum Error {
 
 /// Result type for cluster operations
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::is_sentinel_failover_error;
+
+    #[test]
+    fn identifies_sentinel_failover_errors() {
+        assert!(is_sentinel_failover_error(
+            "READONLY You can't write against a read only replica"
+        ));
+        assert!(is_sentinel_failover_error(
+            "LOADING Redis is loading the dataset in memory"
+        ));
+        assert!(!is_sentinel_failover_error("connection refused"));
+    }
+}

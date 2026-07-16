@@ -172,16 +172,22 @@ pub(super) fn validate_file_upload_policy(policy: &FileUploadPolicy) -> Result<(
     Ok(())
 }
 
+fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
+    value
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
 pub(crate) fn validate_file_mime_type(policy: &FileUploadPolicy, mime_type: &str) -> Result<()> {
-    let normalized = mime_type.trim().to_ascii_lowercase();
+    let normalized = mime_type.trim();
     let allowed_exact = policy
         .allowed_mime_types
         .iter()
-        .any(|allowed| normalized == allowed.trim().to_ascii_lowercase());
+        .any(|allowed| normalized.eq_ignore_ascii_case(allowed.trim()));
     let allowed_prefix = policy
         .allowed_mime_prefixes
         .iter()
-        .any(|prefix| normalized.starts_with(&prefix.trim().to_ascii_lowercase()));
+        .any(|prefix| starts_with_ignore_ascii_case(normalized, prefix.trim()));
     if allowed_exact || allowed_prefix {
         return Ok(());
     }
@@ -197,7 +203,7 @@ pub(crate) fn validate_file_dimensions(
     width: Option<i32>,
     height: Option<i32>,
 ) -> Result<()> {
-    let is_image = mime_type.trim().to_ascii_lowercase().starts_with("image/");
+    let is_image = starts_with_ignore_ascii_case(mime_type.trim(), "image/");
     if !is_image {
         return Ok(());
     }
@@ -232,7 +238,7 @@ pub(crate) fn validate_file_audio_metadata(
     duration_seconds: Option<i32>,
     bitrate_bps: Option<i32>,
 ) -> Result<()> {
-    let is_audio = mime_type.trim().to_ascii_lowercase().starts_with("audio/");
+    let is_audio = starts_with_ignore_ascii_case(mime_type.trim(), "audio/");
     if !is_audio {
         return Ok(());
     }

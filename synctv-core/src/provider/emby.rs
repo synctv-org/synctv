@@ -1469,14 +1469,11 @@ impl EmbyProvider {
         // HashMap iteration order is non-deterministic (randomised per-process for
         // security reasons), so we sort the keys to guarantee a stable default
         // across server restarts and replicas.
-        let default_mode = {
-            let mut keys: Vec<&String> = playback_infos.keys().collect();
-            keys.sort();
-            keys.into_iter()
-                .next()
-                .cloned()
-                .unwrap_or_else(|| "direct".to_string())
-        };
+        let default_mode = playback_infos
+            .keys()
+            .min()
+            .cloned()
+            .unwrap_or_else(|| "direct".to_string());
 
         Ok(PlaybackResult {
             playback_infos,

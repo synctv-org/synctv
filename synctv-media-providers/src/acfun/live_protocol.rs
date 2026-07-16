@@ -1,7 +1,9 @@
+use std::borrow::Cow;
 use std::io::Read;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
+use bytes::BytesMut;
 use flate2::read::GzDecoder;
 use prost::Message;
 
@@ -136,7 +138,7 @@ impl LiveProtocol {
 
     pub(super) fn decode(
         &mut self,
-        buffer: &mut Vec<u8>,
+        buffer: &mut BytesMut,
     ) -> Result<Vec<Incoming>, ProviderClientError> {
         let mut events = Vec::new();
         loop {
@@ -158,26 +160,26 @@ impl LiveProtocol {
             if buffer.len() < packet_len {
                 break;
             }
-            let packet = buffer.drain(..packet_len).collect::<Vec<_>>();
+            let packet = buffer.split_to(packet_len);
             let header = proto::PacketHeader::decode(&packet[12..12 + header_len])?;
             self.header_sequence = header.seq_id;
             let encrypted = &packet[12 + header_len..];
             let payload = match header.encryption_mode() {
-                proto::packet_header::EncryptionMode::KEncryptionNone => encrypted.to_vec(),
+                proto::packet_header::EncryptionMode::KEncryptionNone => Cow::Borrowed(encrypted),
                 proto::packet_header::EncryptionMode::KEncryptionServiceToken => {
-                    decrypt(encrypted, &self.security_key)?
+                    Cow::Owned(decrypt(encrypted, &self.security_key)?)
                 }
-                proto::packet_header::EncryptionMode::KEncryptionSessionKey => decrypt(
+                proto::packet_header::EncryptionMode::KEncryptionSessionKey => Cow::Owned(decrypt(
                     encrypted,
                     self.session_key
                         .as_deref()
                         .ok_or_else(|| protocol_error("session key is unavailable"))?,
-                )?,
+                )?),
             };
             if payload.len() != header.decoded_payload_len as usize {
                 return Err(protocol_error("decoded payload length differs from header"));
             }
-            let downstream = proto::DownstreamPayload::decode(payload.as_slice())?;
+            let downstream = proto::DownstreamPayload::decode(payload.as_ref())?;
             events.extend(self.decode_payload(&downstream)?);
         }
         Ok(events)
@@ -488,5 +490,55 @@ mod tests {
         assert_eq!(event.user_name, "viewer");
         assert_eq!(event.badge_name.as_deref(), Some("fan"));
         assert_eq!(event.badge_level, Some(3));
+    }
+
+    #[test]
+    fn decode_preserves_partial_packets_and_consumes_coalesced_packets() {
+        let mut protocol = LiveProtocol::new(AcFunLiveSession {
+            user_id: 1,
+            author_id: 2,
+            device_id: "device".to_string(),
+            security_key: "AAAAAAAAAAAAAAAAAAAAAA==".to_string(),
+            service_token: "token".to_string(),
+            live_id: "live".to_string(),
+            tickets: vec!["ticket".to_string()],
+            enter_room_attach: String::new(),
+        })
+        .expect("protocol should initialize");
+        let payload = proto::DownstreamPayload {
+            command: KEEP_ALIVE.to_string(),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let payload_len = u32::try_from(payload.len()).expect("test payload should fit in u32");
+        let header = proto::PacketHeader {
+            encryption_mode: proto::packet_header::EncryptionMode::KEncryptionNone as i32,
+            decoded_payload_len: payload_len,
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let header_len = u32::try_from(header.len()).expect("test header should fit in u32");
+        let mut packet = Vec::with_capacity(12 + header.len() + payload.len());
+        packet.extend_from_slice(&MAGIC);
+        packet.extend_from_slice(&header_len.to_be_bytes());
+        packet.extend_from_slice(&payload_len.to_be_bytes());
+        packet.extend_from_slice(&header);
+        packet.extend_from_slice(&payload);
+
+        let split = packet.len() / 2;
+        let mut buffer = BytesMut::from(&packet[..split]);
+        assert!(protocol
+            .decode(&mut buffer)
+            .expect("partial packet should wait")
+            .is_empty());
+        assert_eq!(buffer.as_ref(), &packet[..split]);
+
+        buffer.extend_from_slice(&packet[split..]);
+        buffer.extend_from_slice(&packet);
+        assert!(protocol
+            .decode(&mut buffer)
+            .expect("packets should decode")
+            .is_empty());
+        assert!(buffer.is_empty());
     }
 }

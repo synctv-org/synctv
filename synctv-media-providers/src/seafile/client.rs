@@ -370,12 +370,7 @@ fn join_path(parent: &str, name: &str) -> String {
 }
 
 fn paginate(mut items: Vec<SeafileItem>, page: u64, page_size: u32) -> SeafileList {
-    items.sort_by(|left, right| {
-        right
-            .is_directory
-            .cmp(&left.is_directory)
-            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
-    });
+    items.sort_by_cached_key(|item| (!item.is_directory, item.name.to_lowercase()));
     let total = items.len() as u64;
     let page = page.max(1);
     let start = page.saturating_sub(1).saturating_mul(u64::from(page_size));

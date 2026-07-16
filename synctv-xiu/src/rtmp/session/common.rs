@@ -225,8 +225,7 @@ impl Common {
                 match data {
                     FrameData::Audio { timestamp, data } => {
                         let data_size = data.len();
-                        self.send_audio(BytesMut::from(&data[..]), timestamp)
-                            .await?;
+                        self.send_audio(BytesMut::from(data), timestamp).await?;
 
                         if let Some(sender) = &self.statistic_data_sender {
                             let statistic_audio_data = StatisticData::Audio {
@@ -242,8 +241,7 @@ impl Common {
                     }
                     FrameData::Video { timestamp, data } => {
                         let data_size = data.len();
-                        self.send_video(BytesMut::from(&data[..]), timestamp)
-                            .await?;
+                        self.send_video(BytesMut::from(data), timestamp).await?;
 
                         if let Some(sender) = &self.statistic_data_sender {
                             let statistic_video_data = StatisticData::Video {
@@ -259,8 +257,7 @@ impl Common {
                         }
                     }
                     FrameData::MetaData { timestamp, data } => {
-                        self.send_metadata(BytesMut::from(&data[..]), timestamp)
-                            .await?;
+                        self.send_metadata(BytesMut::from(data), timestamp).await?;
                     }
                     FrameData::MediaInfo { .. } => {}
                 }
@@ -340,13 +337,11 @@ impl Common {
             return Ok(());
         }
 
-        // Save to GOP cache first (borrows data), then zero-copy into channel.
-        self.stream_handler.save_video_data(data, timestamp)?;
-
-        // Zero-copy: split+freeze avoids a full memcpy on the hot path.
+        let frame = data.split().freeze();
+        self.stream_handler.save_video_data(&frame, timestamp)?;
         let channel_data = FrameData::Video {
             timestamp,
-            data: data.split().freeze(),
+            data: frame,
         };
 
         self.send_frame_to_channel(channel_data, "Video")
@@ -361,13 +356,11 @@ impl Common {
             return Ok(());
         }
 
-        // Save to GOP cache first (borrows data), then zero-copy into channel.
-        self.stream_handler.save_audio_data(data, timestamp)?;
-
-        // Zero-copy: split+freeze avoids a full memcpy on the hot path.
+        let frame = data.split().freeze();
+        self.stream_handler.save_audio_data(&frame, timestamp)?;
         let channel_data = FrameData::Audio {
             timestamp,
-            data: data.split().freeze(),
+            data: frame,
         };
 
         self.send_frame_to_channel(channel_data, "Audio")
@@ -382,12 +375,11 @@ impl Common {
             return Ok(());
         }
 
-        // Save to cache first (borrows data), then zero-copy into channel.
-        self.stream_handler.save_metadata(data, timestamp);
-
+        let frame = data.split().freeze();
+        self.stream_handler.save_metadata(&frame, timestamp);
         let channel_data = FrameData::MetaData {
             timestamp,
-            data: data.split().freeze(),
+            data: frame,
         };
 
         self.send_frame_to_channel(channel_data, "Metadata")
@@ -636,7 +628,7 @@ impl RtmpStreamHandler {
     /// Acquires write locks only on video_seq and gops, not on audio_seq or metadata.
     pub(crate) fn save_video_data(
         &self,
-        chunk_body: &BytesMut,
+        chunk_body: &bytes::Bytes,
         timestamp: u32,
     ) -> Result<(), CacheError> {
         if let Some(cache) = &*self.cache.read() {
@@ -649,7 +641,7 @@ impl RtmpStreamHandler {
     /// Acquires write locks only on audio_seq and gops, not on video_seq or metadata.
     pub(crate) fn save_audio_data(
         &self,
-        chunk_body: &BytesMut,
+        chunk_body: &bytes::Bytes,
         timestamp: u32,
     ) -> Result<(), CacheError> {
         if let Some(cache) = &*self.cache.read() {
@@ -660,7 +652,7 @@ impl RtmpStreamHandler {
 
     /// Save metadata to cache.
     /// Acquires write lock only on metadata, not on video_seq, audio_seq, or gops.
-    pub(crate) fn save_metadata(&self, chunk_body: &BytesMut, timestamp: u32) {
+    pub(crate) fn save_metadata(&self, chunk_body: &bytes::Bytes, timestamp: u32) {
         if let Some(cache) = &*self.cache.read() {
             cache.save_metadata(chunk_body, timestamp);
         }

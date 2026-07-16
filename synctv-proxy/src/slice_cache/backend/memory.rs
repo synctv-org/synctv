@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use dashmap::DashSet;
 use rayon::prelude::*;
 
 use super::SliceCacheBackend;
@@ -16,16 +15,11 @@ use crate::slice_cache::etag::StoredEntry;
 
 /// In-memory cache backend backed by [`moka::future::Cache`].
 ///
-/// Uses moka's built-in size-weighted eviction plus a parallel [`DashSet`]
-/// for key iteration (moka doesn't natively support iteration).
-///
 /// An [`AtomicU64`] tracks the approximate total data bytes stored.  Both
 /// explicit removals and moka-internal evictions keep this counter accurate
 /// via the eviction listener.
 pub struct MemoryBackend {
     cache: moka::future::Cache<String, StoredEntry>,
-    /// Shadow set for key enumeration (moka doesn't support iteration).
-    key_set: DashSet<String>,
     /// Approximate total data bytes stored.
     ///
     /// Wrapped in `Arc` so the moka eviction listener can decrement it when
@@ -45,13 +39,11 @@ impl MemoryBackend {
     /// - `time_to_idle`: hard upper bound TTL for moka's internal eviction.
     #[must_use]
     pub fn new(max_capacity: u64, time_to_idle: Duration) -> Self {
-        let key_set = DashSet::new();
         let total_bytes = Arc::new(AtomicU64::new(0));
         let access_times: Arc<dashmap::DashMap<String, std::time::SystemTime>> =
             Arc::new(dashmap::DashMap::new());
 
         // Clones for the eviction listener closure.
-        let key_set_clone = key_set.clone();
         let total_bytes_clone = Arc::clone(&total_bytes);
         let access_times_clone = Arc::clone(&access_times);
 
@@ -84,11 +76,7 @@ impl MemoryBackend {
                     );
                 }
 
-                // Only remove from key_set when the key truly no longer exists
-                // in the cache.  For `Replaced`, a new value was just inserted,
-                // so the key is still live.
                 if !matches!(cause, moka::notification::RemovalCause::Replaced) {
-                    key_set_clone.remove(key.as_ref());
                     access_times_clone.remove(key.as_ref());
                 }
             })
@@ -96,7 +84,6 @@ impl MemoryBackend {
 
         Self {
             cache,
-            key_set,
             total_bytes,
             access_times,
         }
@@ -132,7 +119,6 @@ impl SliceCacheBackend for MemoryBackend {
         // by the old size.  We only add the new size here -- no manual
         // get-then-subtract, which was racy with moka's internal Size eviction.
         self.cache.insert(key.to_string(), entry).await;
-        self.key_set.insert(key.to_string());
 
         // Ensure the `Replaced` listener fires before we add the new size,
         // so total_bytes transitions: old -> (old - old_size) -> (new_size).
@@ -144,7 +130,7 @@ impl SliceCacheBackend for MemoryBackend {
 
     async fn remove(&self, key: &str) {
         // Invalidate in moka.  The eviction listener (with `Explicit` cause)
-        // will decrement total_bytes and remove the key from key_set.
+        // will decrement total_bytes and remove the access timestamp.
         self.cache.remove(key).await;
         // Run pending tasks to ensure the eviction listener fires immediately,
         // so size tracking is accurate for callers that check current_size()
@@ -214,7 +200,10 @@ impl SliceCacheBackend for MemoryBackend {
     }
 
     async fn keys(&self) -> Vec<String> {
-        self.key_set.iter().map(|k| k.key().clone()).collect()
+        self.cache
+            .iter()
+            .map(|(key, _)| key.as_ref().clone())
+            .collect()
     }
 }
 

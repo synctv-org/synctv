@@ -42,6 +42,7 @@ html-escape.workspace = true
 # Utilities
 anyhow.workspace = true
 thiserror.workspace = true
+bytes.workspace = true
 regex.workspace = true
 oxc_allocator.workspace = true
 oxc_ast.workspace = true

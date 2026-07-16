@@ -631,7 +631,7 @@ impl RedisPubSub {
                                         continue;
                                     }
                                     let event_type = req.event.event_type();
-                                    match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), room_stream_ttl_secs, stream_max_length).await {
+                                    match Self::publish_event(&mut conn, &node_id, &key_prefix, &req.event, room_stream_ttl_secs, stream_max_length).await {
                                         Ok(_) => {
                                             req.acknowledge_success();
                                             debug!(event_type = event_type, label = $label, "Event flushed on shutdown");
@@ -685,7 +685,7 @@ impl RedisPubSub {
                             &mut conn,
                             &node_id,
                             &key_prefix,
-                            req.event.clone(),
+                            &req.event,
                             room_stream_ttl_secs,
                             stream_max_length,
                         )
@@ -1853,7 +1853,7 @@ impl RedisPubSub {
         conn: &mut redis::aio::MultiplexedConnection,
         node_id: &str,
         key_prefix: &str,
-        event: RealtimeEvent,
+        event: &RealtimeEvent,
         room_stream_ttl_secs: u64,
         stream_max_length: usize,
     ) -> Result<usize> {
@@ -1867,10 +1867,7 @@ impl RedisPubSub {
         };
 
         // Wrap event in envelope with node_id
-        let envelope = EventEnvelope {
-            node_id: node_id.to_string(),
-            event: event.clone(),
-        };
+        let envelope = EventEnvelopeRef { node_id, event };
 
         let payload =
             serde_json::to_string(&envelope).context("Failed to serialize event envelope")?;
@@ -2263,7 +2260,7 @@ async fn retry_publish_batch(
             conn,
             node_id,
             key_prefix,
-            req.event.clone(),
+            &req.event,
             room_stream_ttl_secs,
             stream_max_length,
         )
@@ -2297,6 +2294,12 @@ async fn retry_publish_batch(
 struct EventEnvelope {
     node_id: String,
     event: RealtimeEvent,
+}
+
+#[derive(serde::Serialize)]
+struct EventEnvelopeRef<'a> {
+    node_id: &'a str,
+    event: &'a RealtimeEvent,
 }
 
 #[cfg(test)]

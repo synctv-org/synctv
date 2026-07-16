@@ -89,12 +89,7 @@ impl TrueNasClient {
             let search = search.to_lowercase();
             items.retain(|item| item.name.to_lowercase().contains(&search));
         }
-        items.sort_by(|left, right| {
-            right
-                .is_directory()
-                .cmp(&left.is_directory())
-                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
-        });
+        items.sort_by_cached_key(|item| (!item.is_directory(), item.name.to_lowercase()));
         Ok(items)
     }
 

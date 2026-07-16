@@ -165,17 +165,28 @@ impl DirectUrlMediaResourceConfig {
 
 #[must_use]
 pub fn detect_direct_url_format(url: &str) -> &'static str {
-    let path = Url::parse(url).map_or_else(|_| url.to_string(), |url| url.path().to_string());
-    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    match ext.as_str() {
-        "m3u8" => "m3u8",
-        "mpd" => "mpd",
-        "flv" => "flv",
-        "mp4" | "m4v" | "mov" => "mp4",
-        "mkv" => "mkv",
-        "webm" => "webm",
-        "avi" => "avi",
-        _ => "video",
+    let parsed = Url::parse(url).ok();
+    let path = parsed.as_ref().map_or(url, Url::path);
+    let extension = path.rsplit('.').next().unwrap_or_default();
+    if extension.eq_ignore_ascii_case("m3u8") {
+        "m3u8"
+    } else if extension.eq_ignore_ascii_case("mpd") {
+        "mpd"
+    } else if extension.eq_ignore_ascii_case("flv") {
+        "flv"
+    } else if ["mp4", "m4v", "mov"]
+        .iter()
+        .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+    {
+        "mp4"
+    } else if extension.eq_ignore_ascii_case("mkv") {
+        "mkv"
+    } else if extension.eq_ignore_ascii_case("webm") {
+        "webm"
+    } else if extension.eq_ignore_ascii_case("avi") {
+        "avi"
+    } else {
+        "video"
     }
 }
 

@@ -1,8 +1,10 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use futures::Stream;
+use futures::{stream, Stream, StreamExt as _, TryStreamExt as _};
 use tonic::{Request, Response, Status};
+
+const MANAGEMENT_ROOM_LOAD_CONCURRENCY: usize = 16;
 
 use crate::access::ManagementAccessController;
 use crate::admin_runtime::{
@@ -639,21 +641,14 @@ impl ManagementServiceImpl {
         prepared_membership_fanout.publish_after_outbox_commit();
         self.room_cache_fanout.publish_invalidation(&room_id);
 
-        let settings = self
-            .room_service
-            .get_room_settings(&room_id)
-            .await
-            .map_err(map_core_error)?;
-        let member_count = self
-            .room_service
-            .get_member_count(&room_id)
-            .await
-            .map_err(map_core_error)?;
-        let creator = self
-            .user_service
-            .get_user(&room.created_by)
-            .await
-            .map_err(map_core_error)?;
+        let (settings, member_count, creator) = tokio::join!(
+            self.room_service.get_room_settings(&room_id),
+            self.room_service.get_member_count(&room_id),
+            self.user_service.get_user(&room.created_by),
+        );
+        let settings = settings.map_err(map_core_error)?;
+        let member_count = member_count.map_err(map_core_error)?;
+        let creator = creator.map_err(map_core_error)?;
 
         created_room_to_client_proto(
             &room,
@@ -669,21 +664,14 @@ impl ManagementServiceImpl {
         room: &Room,
         favorited: bool,
     ) -> Result<client_proto::Room, Status> {
-        let settings = self
-            .room_service
-            .get_room_settings(&room.id)
-            .await
-            .map_err(map_core_error)?;
-        let member_count = self
-            .room_service
-            .get_member_count(&room.id)
-            .await
-            .map_err(map_core_error)?;
-        let creator = self
-            .user_service
-            .get_user(&room.created_by)
-            .await
-            .map_err(map_core_error)?;
+        let (settings, member_count, creator) = tokio::join!(
+            self.room_service.get_room_settings(&room.id),
+            self.room_service.get_member_count(&room.id),
+            self.user_service.get_user(&room.created_by),
+        );
+        let settings = settings.map_err(map_core_error)?;
+        let member_count = member_count.map_err(map_core_error)?;
+        let creator = creator.map_err(map_core_error)?;
         let mut response = created_room_to_client_proto(
             room,
             &settings,
@@ -751,10 +739,15 @@ impl ManagementServiceImpl {
             .await
             .map_err(map_core_error)?;
 
-        let mut response_rooms = Vec::with_capacity(rooms.len());
-        for room in rooms {
-            response_rooms.push(self.client_room_for_favorite_response(&room, true).await?);
-        }
+        let rooms_ref = &rooms;
+        let response_rooms = stream::iter(0..rooms.len())
+            .map(|index| async move {
+                self.client_room_for_favorite_response(&rooms_ref[index], true)
+                    .await
+            })
+            .buffered(MANAGEMENT_ROOM_LOAD_CONCURRENCY)
+            .try_collect()
+            .await?;
 
         Ok(client_proto::ListFavoriteRoomsResponse {
             rooms: response_rooms,

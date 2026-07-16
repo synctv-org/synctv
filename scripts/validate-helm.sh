@@ -224,7 +224,8 @@ run_rendered_synctv_config_validation() {
 
 validate_rendered_synctv_config() {
   local rendered_manifest="$1"
-  local rendered_config="$tmp_dir/$(basename "$rendered_manifest" .yaml).synctv.yaml"
+  local rendered_config
+  rendered_config="$tmp_dir/$(basename "$rendered_manifest" .yaml).synctv.yaml"
   write_rendered_synctv_config "$rendered_manifest" "$rendered_config"
   run_rendered_synctv_config_validation "$rendered_config"
 }
@@ -236,7 +237,8 @@ validate_rendered_synctv_config_with_file_storage_s3_secret_files() {
   printf '%s\n' "file-storage-access-key" >"$secret_dir/access_key_id"
   printf '%s\n' "file-storage-secret-key" >"$secret_dir/secret_access_key"
 
-  local rendered_config="$tmp_dir/$(basename "$rendered_manifest" .yaml).synctv.yaml"
+  local rendered_config
+  rendered_config="$tmp_dir/$(basename "$rendered_manifest" .yaml).synctv.yaml"
   write_rendered_synctv_config "$rendered_manifest" "$rendered_config" "$secret_dir"
   run_rendered_synctv_config_validation "$rendered_config"
 }

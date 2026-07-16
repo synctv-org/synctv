@@ -103,7 +103,6 @@ impl<'a> S3SigningContext<'a> {
             .map(|(key, value)| (key.as_str(), value.as_str()))
             .collect::<Vec<_>>();
         signed_header_pairs.push(("host", host.as_str()));
-        signed_header_pairs.sort_by_key(|(key, _)| *key);
         let signed_headers_value = signed_headers(&signed_header_pairs);
         {
             let mut pairs = url.query_pairs_mut();
@@ -113,11 +112,12 @@ impl<'a> S3SigningContext<'a> {
             pairs.append_pair("X-Amz-Expires", &expires_seconds.to_string());
             pairs.append_pair("X-Amz-SignedHeaders", &signed_headers_value);
         }
-        let canonical_request = canonical_request(
+        let canonical_request = canonical_request_with_signed_headers(
             method,
             &url,
             &signed_header_pairs,
             &canonical_query(&url),
+            &signed_headers_value,
             UNSIGNED_PAYLOAD,
         )?;
         let string_to_sign = string_to_sign(date, self.region, &canonical_request);
@@ -142,15 +142,30 @@ impl<'a> S3SigningContext<'a> {
         date: DateTime<Utc>,
         payload_hash: &str,
     ) -> Result<String> {
-        let mut all_headers = headers.clone();
-        all_headers.insert("host".to_string(), host_header(url)?);
-        let header_pairs = all_headers
-            .iter()
-            .map(|(key, value)| (key.as_str(), value.as_str()))
-            .collect::<Vec<_>>();
+        let host = host_header(url)?;
+        let mut header_pairs = Vec::with_capacity(headers.len() + 1);
+        let mut has_host = false;
+        for (key, value) in headers {
+            if key == "host" {
+                header_pairs.push((key.as_str(), host.as_str()));
+                has_host = true;
+            } else {
+                header_pairs.push((key.as_str(), value.as_str()));
+            }
+        }
+        if !has_host {
+            header_pairs.push(("host", host.as_str()));
+        }
+        let signed_headers = signed_headers(&header_pairs);
         let canonical_query = canonical_query(url);
-        let canonical_request =
-            canonical_request(method, url, &header_pairs, &canonical_query, payload_hash)?;
+        let canonical_request = canonical_request_with_signed_headers(
+            method,
+            url,
+            &header_pairs,
+            &canonical_query,
+            &signed_headers,
+            payload_hash,
+        )?;
         let string_to_sign = string_to_sign(date, self.region, &canonical_request);
         let signature = sign_hex(
             self.secret_access_key.trim(),
@@ -158,7 +173,6 @@ impl<'a> S3SigningContext<'a> {
             self.region,
             &string_to_sign,
         )?;
-        let signed_headers = signed_headers(&header_pairs);
         Ok(format!(
             "{AWS4_ALGORITHM} Credential={}/{}, SignedHeaders={}, Signature={}",
             self.access_key_id.trim(),
@@ -280,11 +294,30 @@ pub(super) fn host_header(url: &url::Url) -> Result<String> {
     })
 }
 
+#[cfg(test)]
 pub(super) fn canonical_request(
     method: &str,
     url: &url::Url,
     headers: &[(&str, &str)],
     canonical_query: &str,
+    payload_hash: &str,
+) -> Result<String> {
+    canonical_request_with_signed_headers(
+        method,
+        url,
+        headers,
+        canonical_query,
+        &signed_headers(headers),
+        payload_hash,
+    )
+}
+
+fn canonical_request_with_signed_headers(
+    method: &str,
+    url: &url::Url,
+    headers: &[(&str, &str)],
+    canonical_query: &str,
+    signed_headers: &str,
     payload_hash: &str,
 ) -> Result<String> {
     let mut canonical_headers = headers
@@ -309,7 +342,7 @@ pub(super) fn canonical_request(
         canonical_uri(url),
         canonical_query,
         canonical_header_lines,
-        signed_headers(headers),
+        signed_headers,
         payload_hash
     ))
 }
@@ -504,5 +537,28 @@ mod tests {
         assert!(auth.starts_with("AWS4-HMAC-SHA256 Credential=access/"));
         assert!(auth.contains("SignedHeaders=host;x-amz-checksum-sha256"));
         assert!(auth.contains("Signature="));
+    }
+
+    #[test]
+    fn authorization_header_uses_url_host_for_an_explicit_host_header() {
+        let date = Utc
+            .with_ymd_and_hms(2026, 1, 2, 3, 4, 5)
+            .single()
+            .checked("date should build");
+        let signing = S3SigningContext::new("access", "secret", "us-east-1");
+        let url = url::Url::parse("https://storage.example.test/bucket/object.bin")
+            .checked("url should parse");
+        let mut headers = BTreeMap::new();
+        headers.insert("x-amz-checksum-sha256".to_string(), "abc".to_string());
+        let expected = signing
+            .authorization_header("PUT", &url, &headers, date, UNSIGNED_PAYLOAD)
+            .checked("authorization header should build");
+
+        headers.insert("host".to_string(), "ignored.example.test".to_string());
+        let actual = signing
+            .authorization_header("PUT", &url, &headers, date, UNSIGNED_PAYLOAD)
+            .checked("authorization header should build");
+
+        assert_eq!(actual, expected);
     }
 }

@@ -202,12 +202,7 @@ fn dav_scope(user_id: &str, path: &str) -> String {
 }
 
 fn escape_xml(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
+    quick_xml::escape::escape(value).into_owned()
 }
 
 #[cfg(test)]

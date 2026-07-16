@@ -201,7 +201,7 @@ async fn test_memory_backend_replace_updates_size() -> TestResult {
 }
 
 #[tokio::test]
-async fn test_memory_backend_eviction_listener_removes_from_key_set() -> TestResult {
+async fn test_memory_backend_keys_only_returns_live_entries() -> TestResult {
     let backend = MemoryBackend::new(150, Duration::from_hours(1));
 
     for i in 0..5u8 {
@@ -220,15 +220,12 @@ async fn test_memory_backend_eviction_listener_removes_from_key_set() -> TestRes
     );
 
     let keys = backend.keys().await;
-    let mut live_count = 0u64;
-    for key in &keys {
-        if backend.get(key).await.is_some() {
-            live_count += 1;
-        }
-    }
-    assert_eq!(
-        live_count, entry_count,
-        "Live keys ({live_count}) should match moka entry_count ({entry_count})"
+    assert_eq!(keys.len() as u64, entry_count);
+    assert!(
+        futures::future::join_all(keys.iter().map(|key| backend.get(key)))
+            .await
+            .into_iter()
+            .all(|entry| entry.is_some())
     );
     Ok(())
 }

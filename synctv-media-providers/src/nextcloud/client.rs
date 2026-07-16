@@ -198,12 +198,7 @@ impl NextcloudClient {
         let requested = normalize_path(path);
         let mut items = parse_multistatus(&xml, username)?;
         items.retain(|item| item.path != requested);
-        items.sort_by(|left, right| {
-            right
-                .is_directory
-                .cmp(&left.is_directory)
-                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
-        });
+        items.sort_by_cached_key(|item| (!item.is_directory, item.name.to_lowercase()));
         Ok(paginate(items, page, page_size))
     }
 

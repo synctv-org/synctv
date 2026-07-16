@@ -12,7 +12,7 @@
 //! DNS provides faster detection of newly-scaled pods; Redis provides the
 //! NodeRegistry, HealthMonitor, and LoadBalancer infrastructure.
 
-use futures::future::join_all;
+use futures::{stream, StreamExt as _};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -23,6 +23,8 @@ use super::node_registry::{NodeDiscoverySource, NodeInfo};
 use super::probe_node_identity;
 use super::runtime::ClusterNodeDirectory;
 use crate::error::{Error, Result};
+
+const DNS_PROBE_CONCURRENCY: usize = 16;
 
 /// Discovered peer from DNS resolution
 #[derive(Debug, Clone)]
@@ -234,12 +236,18 @@ impl K8sDnsDiscovery {
                 let count = new_peers.len();
 
                 if self.node_registry.is_some() {
-                    let probe_results = join_all(new_peers.iter().map(|peer| async move {
-                        let identity =
-                            probe_node_identity(&peer.api_address, 3, &self.cluster_secret).await;
-                        (peer, identity)
-                    }))
-                    .await;
+                    let peers = &new_peers;
+                    let probe_results = stream::iter(0..new_peers.len())
+                        .map(|index| async move {
+                            let peer = &peers[index];
+                            let identity =
+                                probe_node_identity(&peer.api_address, 3, &self.cluster_secret)
+                                    .await;
+                            (peer, identity)
+                        })
+                        .buffered(DNS_PROBE_CONCURRENCY)
+                        .collect::<Vec<_>>()
+                        .await;
 
                     let mut verified_peers = Vec::new();
                     for (peer, identity) in probe_results {

@@ -285,25 +285,20 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         let mut members = members;
         let member_user_ids: Vec<_> = members.iter().map(|member| member.user_id).collect();
-        let online_user_ids: std::collections::HashSet<_> = self
+        let member_stats = self
             .presence_service
-            .room_online_user_ids(rid, &member_user_ids)
+            .user_room_stats_batch(&member_user_ids, rid)
             .await
-            .map_err(ApiError::from)?
+            .map_err(ApiError::from)?;
+        let member_connection_counts = member_user_ids
             .into_iter()
-            .collect();
-        let mut member_connection_counts =
-            std::collections::HashMap::with_capacity(member_user_ids.len());
-        for user_id in &member_user_ids {
-            let stats = self
-                .presence_service
-                .user_room_stats(*user_id, rid)
-                .await
-                .map_err(ApiError::from)?;
-            member_connection_counts.insert(*user_id, stats.connection_count);
-        }
+            .zip(member_stats)
+            .map(|(user_id, stats)| (user_id, stats.connection_count))
+            .collect::<std::collections::HashMap<_, _>>();
         for member in &mut members {
-            member.is_online = online_user_ids.contains(&member.user_id);
+            member.is_online = member_connection_counts
+                .get(&member.user_id)
+                .is_some_and(|count| *count > 0);
         }
         let room_presence = self
             .presence_service

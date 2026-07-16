@@ -1,6 +1,7 @@
 use std::pin::Pin;
 use std::time::Duration;
 
+use bytes::BytesMut;
 use futures_util::{SinkExt, Stream, StreamExt};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -32,7 +33,7 @@ pub async fn watch_danmaku(
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         ticker.tick().await;
-        let mut buffer = Vec::new();
+        let mut buffer = BytesMut::new();
         let mut registered = false;
         let mut heartbeat_interval = Duration::from_secs(10);
         let mut last_heartbeat = Instant::now();

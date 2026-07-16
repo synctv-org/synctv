@@ -251,14 +251,14 @@ impl THandshakeServer for ComplexHandshakeServer {
         key.extend_from_slice(&define::RTMP_SERVER_KEY);
 
         let digest_processor = DigestProcessor::new(BytesMut::new(), key);
-        let tmp_key = digest_processor.make_digest(&Vec::from(&self.c1_digest[..]))?;
+        let tmp_key = digest_processor.make_digest(&self.c1_digest)?;
 
         // S2 digest covers the first 1504 bytes and is appended as the final 32 bytes.
         let mut data: BytesMut = BytesMut::new();
-        data.extend_from_slice(&writer.get_current_bytes()[..1504]);
+        data.extend_from_slice(&writer.as_slice()[..1504]);
 
         let digest_processor_2 = DigestProcessor::new(BytesMut::new(), tmp_key);
-        let digest = digest_processor_2.make_digest(&Vec::from(&data[..]))?;
+        let digest = digest_processor_2.make_digest(&data)?;
 
         let content = [data, digest].concat();
 

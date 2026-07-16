@@ -202,7 +202,7 @@ mod inner {
                     Error::new(ErrorKind::NotFound, format!("OSS read failed: {e}"))
                 })?;
 
-            let data = Bytes::from(buffer.to_vec());
+            let data = buffer.to_bytes();
 
             tracing::trace!(
                 "Read from OSS: {} ({} bytes) for {}/{}/{}",

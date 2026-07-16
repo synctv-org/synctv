@@ -332,6 +332,11 @@ impl InMemoryCredentialStorage {
     fn decrypt_data(&self, data: CredentialData) -> Result<CredentialData> {
         decrypt_credential_data(self.encryption.as_ref(), data)
     }
+
+    fn decrypt_credential(&self, mut credential: StoredCredential) -> Result<StoredCredential> {
+        credential.data = self.decrypt_data(credential.data)?;
+        Ok(credential)
+    }
 }
 
 #[async_trait]
@@ -343,17 +348,10 @@ impl CredentialStorage for InMemoryCredentialStorage {
         server_id: &str,
     ) -> Result<Option<StoredCredential>> {
         let key = Self::make_key(user_id, provider, server_id);
-        let credentials = self.credentials.read().await;
-        if let Some(cred) = credentials.get(&key) {
-            // Decrypt sensitive fields before returning
-            let decrypted_data = self.decrypt_data(cred.data.clone())?;
-            Ok(Some(StoredCredential {
-                data: decrypted_data,
-                ..cred.clone()
-            }))
-        } else {
-            Ok(None)
-        }
+        let credential = self.credentials.read().await.get(&key).cloned();
+        credential
+            .map(|credential| self.decrypt_credential(credential))
+            .transpose()
     }
 
     async fn set(
@@ -392,11 +390,7 @@ impl CredentialStorage for InMemoryCredentialStorage {
         drop(credentials);
 
         // Return credential with decrypted data for caller convenience
-        let decrypted_data = self.decrypt_data(credential.data.clone())?;
-        Ok(StoredCredential {
-            data: decrypted_data,
-            ..credential
-        })
+        self.decrypt_credential(credential)
     }
 
     async fn delete(&self, user_id: &str, provider: ProviderType, server_id: &str) -> Result<bool> {
@@ -406,20 +400,18 @@ impl CredentialStorage for InMemoryCredentialStorage {
     }
 
     async fn list_by_user(&self, user_id: &str) -> Result<Vec<StoredCredential>> {
-        let credentials = self.credentials.read().await;
-        let result = credentials
-            .values()
-            .filter(|c| c.user_id == user_id)
-            .map(|c| {
-                let decrypted_data = self.decrypt_data(c.data.clone())?;
-                Ok(StoredCredential {
-                    data: decrypted_data,
-                    ..c.clone()
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        drop(credentials);
-        Ok(result)
+        let credentials = {
+            let credentials = self.credentials.read().await;
+            credentials
+                .values()
+                .filter(|credential| credential.user_id == user_id)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        credentials
+            .into_iter()
+            .map(|credential| self.decrypt_credential(credential))
+            .collect()
     }
 
     async fn list_by_provider(
@@ -427,20 +419,20 @@ impl CredentialStorage for InMemoryCredentialStorage {
         user_id: &str,
         provider: ProviderType,
     ) -> Result<Vec<StoredCredential>> {
-        let credentials = self.credentials.read().await;
-        let result = credentials
-            .values()
-            .filter(|c| c.user_id == user_id && c.provider == provider)
-            .map(|c| {
-                let decrypted_data = self.decrypt_data(c.data.clone())?;
-                Ok(StoredCredential {
-                    data: decrypted_data,
-                    ..c.clone()
+        let credentials = {
+            let credentials = self.credentials.read().await;
+            credentials
+                .values()
+                .filter(|credential| {
+                    credential.user_id == user_id && credential.provider == provider
                 })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        drop(credentials);
-        Ok(result)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        credentials
+            .into_iter()
+            .map(|credential| self.decrypt_credential(credential))
+            .collect()
     }
 }
 

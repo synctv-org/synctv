@@ -91,8 +91,37 @@ impl ProxySigningKey {
     }
 
     fn sign_at(&self, claims: &ProxyUrlClaims, issued_at: i64) -> String {
+        self.sign_with_overrides_at(
+            claims,
+            &claims.resource,
+            claims.target_url.as_deref(),
+            issued_at,
+        )
+    }
+
+    fn sign_with_overrides(
+        &self,
+        claims: &ProxyUrlClaims,
+        resource: &str,
+        target_url: Option<&str>,
+    ) -> String {
+        self.sign_with_overrides_at(
+            claims,
+            resource,
+            target_url,
+            synctv_core::SystemClock.now().timestamp(),
+        )
+    }
+
+    fn sign_with_overrides_at(
+        &self,
+        claims: &ProxyUrlClaims,
+        resource: &str,
+        target_url: Option<&str>,
+        issued_at: i64,
+    ) -> String {
         let mut mac = self.key.clone();
-        mac.update(Self::canonical_message(claims, issued_at).as_bytes());
+        mac.update(Self::canonical_message(claims, resource, target_url, issued_at).as_bytes());
         format!("{issued_at}.{}", hex::encode(mac.finalize().into_bytes()))
     }
 
@@ -123,23 +152,36 @@ impl ProxySigningKey {
         let sig_bytes =
             hex::decode(signature).map_err(|_| ProxySignatureError::InvalidSignature)?;
         let mut mac = self.key.clone();
-        mac.update(Self::canonical_message(claims, issued_at).as_bytes());
+        mac.update(
+            Self::canonical_message(
+                claims,
+                &claims.resource,
+                claims.target_url.as_deref(),
+                issued_at,
+            )
+            .as_bytes(),
+        );
         mac.verify_slice(&sig_bytes)
             .map_err(|_| ProxySignatureError::InvalidSignature)
     }
 
-    fn canonical_message(claims: &ProxyUrlClaims, issued_at: i64) -> String {
+    fn canonical_message(
+        claims: &ProxyUrlClaims,
+        resource: &str,
+        target_url: Option<&str>,
+        issued_at: i64,
+    ) -> String {
         let mut message = format!(
             "{}:{}:{}:{}:{}:{}:{}",
             claims.provider,
             claims.version,
-            claims.resource,
+            resource,
             claims.room_id,
             claims.user_id,
             issued_at,
             claims.expires_at
         );
-        if let Some(target_url) = &claims.target_url {
+        if let Some(target_url) = target_url {
             message.push_str(":url:");
             message.push_str(target_url);
         }
@@ -227,14 +269,18 @@ impl From<ProxySignatureError> for ProxySignatureQueryError {
 #[must_use]
 pub fn build_signed_query(signing_key: &ProxySigningKey, claims: &ProxyUrlClaims) -> String {
     let sig = signing_key.sign(claims);
+    build_query(claims, &sig, claims.target_url.as_deref())
+}
+
+fn build_query(claims: &ProxyUrlClaims, sig: &str, target_url: Option<&str>) -> String {
     let mut query = format!(
         "sig={}&uid={}&rid={}&exp={}",
-        url_encode(&sig),
+        url_encode(sig),
         url_encode(&claims.user_id),
         url_encode(&claims.room_id),
         claims.expires_at
     );
-    if let Some(target_url) = &claims.target_url {
+    if let Some(target_url) = target_url {
         query.push_str("&targetUrl=");
         query.push_str(&url_encode(target_url));
     }
@@ -248,10 +294,8 @@ pub fn build_signed_query_with_target_url(
     resource: &str,
     target_url: &str,
 ) -> String {
-    let mut claims = claims.clone();
-    claims.resource = resource.to_string();
-    claims.target_url = Some(target_url.to_string());
-    build_signed_query(signing_key, &claims)
+    let sig = signing_key.sign_with_overrides(claims, resource, Some(target_url));
+    build_query(claims, &sig, Some(target_url))
 }
 
 pub fn parse_and_verify_query(

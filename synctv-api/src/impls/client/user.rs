@@ -216,11 +216,11 @@ fn avatar_upload_create_result_to_proto(
     )
 }
 
-fn avatar_object_to_proto(blob: &FileBlob) -> synctv_proto::client::UserAvatarObjectResponse {
+fn avatar_object_to_proto(blob: FileBlob) -> synctv_proto::client::UserAvatarObjectResponse {
     synctv_proto::client::UserAvatarObjectResponse {
-        mime_type: blob.mime_type.clone(),
-        content_manifest_sha256: blob.content_manifest_sha256.clone(),
-        data: blob.data.clone(),
+        mime_type: blob.mime_type,
+        content_manifest_sha256: blob.content_manifest_sha256,
+        data: blob.data.into(),
         content_range: blob.range.map(file_byte_range_to_proto),
         total_size_bytes: blob.total_size_bytes,
     }
@@ -531,7 +531,7 @@ impl ClientApiImpl {
         let (complete, uploaded_size_bytes, uploaded_parts) = uploaded_parts_response_fields(&blob);
         Ok(synctv_proto::client::UploadUserAvatarObjectResponse {
             object: match blob {
-                StoreFileUploadResult::Complete(blob) => Some(avatar_object_to_proto(&blob)),
+                StoreFileUploadResult::Complete(blob) => Some(avatar_object_to_proto(blob)),
                 StoreFileUploadResult::PartAccepted { .. } => None,
             },
             complete,
@@ -560,7 +560,7 @@ impl ClientApiImpl {
             complete_upload_response_fields(&result);
         Ok(
             synctv_proto::client::CompleteUserAvatarUploadSessionResponse {
-                object: result.object.as_ref().map(avatar_object_to_proto),
+                object: result.object.map(avatar_object_to_proto),
                 complete,
                 uploaded_size_bytes,
                 uploaded_parts,

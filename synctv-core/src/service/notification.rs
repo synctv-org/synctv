@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::{
-    Result,
     models::{MediaId, PlaylistId, RoomId, RoomSettings, UserId},
+    Result,
 };
 
 /// Guest kick reasons

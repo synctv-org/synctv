@@ -24,8 +24,8 @@ use uuid::Uuid;
 
 use crate::models::{MediaId, PlaylistId, RoomId, UserId};
 use crate::{
-    Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
-    redis_runtime_snapshot,
+    redis_runtime_snapshot, Error, RedisConnectionRuntime, Result, SharedStateMode,
+    SharedStateProfile,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1549,7 +1549,7 @@ async fn db_version_for_repair(pool: &PgPool, domain: &CacheDomain) -> Option<i6
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::{TestOptionExt, TestResultExt, failing_redis_runtime};
+    use crate::test_helpers::{failing_redis_runtime, TestOptionExt, TestResultExt};
 
     #[derive(Debug, Default)]
     struct CommitFailureRepairStore {

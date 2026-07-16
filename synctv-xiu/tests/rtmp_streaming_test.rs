@@ -12,7 +12,7 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 use synctv_xiu::streamhub::define::{
-    BroadcastEvent, DataSender, FrameData, PublishType, SubscribeType, TStreamHandler,
+    BroadcastEvent, DataSender, PublishType, SubscribeType, TStreamHandler,
 };
 use synctv_xiu::streamhub::errors::StreamHubError;
 

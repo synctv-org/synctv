@@ -209,9 +209,9 @@ where
 mod tests {
     use super::*;
     use crate::test_helpers::TestResultExt;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use tokio::time::{Duration, sleep};
+    use std::sync::Arc;
+    use tokio::time::{sleep, Duration};
 
     #[tokio::test]
     async fn test_singleflight_deduplicates_concurrent_requests() {

@@ -2,12 +2,12 @@
 
 use synctv_core::models::user::{SignupMethod, User, UserRole, UserStatus};
 use synctv_core::models::{
-    RoomAdminPermissionBits, RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomRole,
-    RoomSettings, RoomStatus,
     room_settings::{
         AdminAddedPermissions, AdminRemovedPermissions, MemberAddedPermissions,
         MemberRemovedPermissions,
     },
+    RoomAdminPermissionBits, RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomRole,
+    RoomSettings, RoomStatus,
 };
 
 fn ok<T, E: std::fmt::Debug>(result: Result<T, E>, context: &str) -> T {

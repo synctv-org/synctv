@@ -28,8 +28,8 @@
 //! ```
 
 use parking_lot::RwLock;
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::fmt::{self, Display};
 use std::hash::BuildHasherDefault;
 use std::sync::Arc;

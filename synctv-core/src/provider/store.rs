@@ -690,13 +690,11 @@ mod tests {
 
         // Different provider name creates a separate store
         let store3 = registry.load("emby");
-        assert!(
-            store3
-                .get_raw("key1")
-                .await
-                .checked("operation should succeed")
-                .is_none()
-        );
+        assert!(store3
+            .get_raw("key1")
+            .await
+            .checked("operation should succeed")
+            .is_none());
     }
 
     #[test]

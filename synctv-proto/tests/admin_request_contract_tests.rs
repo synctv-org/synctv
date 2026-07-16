@@ -1,13 +1,8 @@
 use synctv_proto::admin::{
-    AddAdminRequest, ApproveUserRegistrationReviewRequest, BanRoomRequest, BanUserRequest,
-    BatchBanRoomsRequest, BatchBanUsersRequest, BatchDeleteRoomsRequest, BatchDeleteUsersRequest,
-    DeleteRoomRequest, DeleteUserRequest, GetRoomMembersRequest, GetRoomRequest,
-    GetRoomSettingsRequest, GetUserRequest, GetUserRoomsRequest, KickStreamRequest,
-    ListActiveStreamsRequest, ListAdminsRequest, ListRoomLabelsRequest, ListRoomsRequest,
-    ListUsersRequest, RejectRoomCreationReviewRequest, RemoveAdminRequest,
-    ResetRoomSettingsRequest, RoomPathRequest, UnbanRoomRequest, UnbanUserRequest,
-    UpdateRoomPasswordRequest, UpdateRoomSettingsRequest, UpdateRoomTaxonomyRequest,
-    UpdateUserRoleRequest, UpsertRoomLabelRequest, UserPathRequest,
+    ApproveUserRegistrationReviewRequest, BatchDeleteRoomsRequest, GetRoomRequest, GetUserRequest,
+    GetUserRoomsRequest, KickStreamRequest, ListActiveStreamsRequest, ListRoomLabelsRequest,
+    ListRoomsRequest, ListUsersRequest, RejectRoomCreationReviewRequest, UpdateRoomTaxonomyRequest,
+    UpsertRoomLabelRequest,
 };
 
 #[test]

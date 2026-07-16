@@ -5,8 +5,8 @@
 //! knows that token revocation may not have succeeded.
 //!
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use synctv_core::service::{InMemoryTokenBlacklistStore, TokenBlacklistStore};
 use synctv_core_testing::{err, ok};
 

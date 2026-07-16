@@ -9,14 +9,15 @@ use crate::service::{OAuth2OidcProviderConfig, OAuth2ProviderPrivateConfig};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use jsonwebtoken::{
-    Algorithm, DecodingKey, Validation, decode, decode_header,
+    decode, decode_header,
     jwk::{Jwk, JwkSet, KeyOperations, PublicKeyUse},
+    Algorithm, DecodingKey, Validation,
 };
 use oauth2::{
+    basic::{BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenType},
     AuthUrl, Client, ClientId, ClientSecret, EndpointNotSet, EndpointSet, ExtraTokenFields,
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, StandardRevocableToken,
     StandardTokenIntrospectionResponse, StandardTokenResponse, TokenResponse, TokenUrl,
-    basic::{BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenType},
 };
 use reqwest::Client as ReqwestClient;
 use serde::{Deserialize, Serialize};
@@ -351,26 +352,27 @@ impl OidcProvider {
             .get_or_try_init(|| async {
                 let config = &self.init_config;
 
-                let (auth_url_str, token_url_str, userinfo_url, jwks_uri) =
-                    if let Some(static_ep) = &config.static_endpoints {
-                        (
-                            static_ep.auth.clone(),
-                            static_ep.token.clone(),
-                            static_ep.userinfo.clone(),
-                            static_ep.jwks.clone(),
-                        )
-                    } else {
-                        // Perform .well-known/openid-configuration discovery
-                        let discovery_url =
-                            format!("{}/.well-known/openid-configuration", config.issuer);
-                        validate_provider_url(
-                            &discovery_url,
-                            "Invalid OIDC discovery document URL",
-                            &self.ssrf_guard,
-                        )?;
-                        tracing::info!("OIDC: fetching discovery document from {}", discovery_url);
+                let (auth_url_str, token_url_str, userinfo_url, jwks_uri) = if let Some(static_ep) =
+                    &config.static_endpoints
+                {
+                    (
+                        static_ep.auth.clone(),
+                        static_ep.token.clone(),
+                        static_ep.userinfo.clone(),
+                        static_ep.jwks.clone(),
+                    )
+                } else {
+                    // Perform .well-known/openid-configuration discovery
+                    let discovery_url =
+                        format!("{}/.well-known/openid-configuration", config.issuer);
+                    validate_provider_url(
+                        &discovery_url,
+                        "Invalid OIDC discovery document URL",
+                        &self.ssrf_guard,
+                    )?;
+                    tracing::info!("OIDC: fetching discovery document from {}", discovery_url);
 
-                        let resp = self
+                    let resp = self
                         .http_client
                         .get(&discovery_url)
                         .send()
@@ -388,55 +390,55 @@ impl OidcProvider {
                             Error::Internal(format!("OIDC discovery endpoint returned error: {e}"))
                         })?;
 
-                        let doc: OidcDiscoveryDocument = resp.json().await.map_err(|e| {
-                            Error::Internal(format!("Failed to parse OIDC discovery document: {e}"))
-                        })?;
+                    let doc: OidcDiscoveryDocument = resp.json().await.map_err(|e| {
+                        Error::Internal(format!("Failed to parse OIDC discovery document: {e}"))
+                    })?;
 
-                        if doc.issuer.trim_end_matches('/') != config.issuer {
-                            return Err(Error::InvalidInput(format!(
-                                "OIDC discovery issuer '{}' does not match configured issuer '{}'",
-                                doc.issuer, config.issuer
-                            )));
-                        }
+                    if doc.issuer.trim_end_matches('/') != config.issuer {
+                        return Err(Error::InvalidInput(format!(
+                            "OIDC discovery issuer '{}' does not match configured issuer '{}'",
+                            doc.issuer, config.issuer
+                        )));
+                    }
 
-                        tracing::info!(
-                            "OIDC: discovered endpoints: auth={}, token={}, userinfo={:?}, jwks={}",
-                            doc.authorization_endpoint,
-                            doc.token_endpoint,
-                            doc.userinfo_endpoint,
-                            doc.jwks_uri
-                        );
+                    tracing::info!(
+                        "OIDC: discovered endpoints: auth={}, token={}, userinfo={:?}, jwks={}",
+                        doc.authorization_endpoint,
+                        doc.token_endpoint,
+                        doc.userinfo_endpoint,
+                        doc.jwks_uri
+                    );
 
+                    validate_provider_url(
+                        &doc.authorization_endpoint,
+                        "Invalid OIDC auth URL",
+                        &self.ssrf_guard,
+                    )?;
+                    validate_provider_url(
+                        &doc.token_endpoint,
+                        "Invalid OIDC token URL",
+                        &self.ssrf_guard,
+                    )?;
+                    validate_provider_url(
+                        &doc.jwks_uri,
+                        "Invalid OIDC JWKS URL",
+                        &self.ssrf_guard,
+                    )?;
+                    if let Some(userinfo) = doc.userinfo_endpoint.as_deref() {
                         validate_provider_url(
-                            &doc.authorization_endpoint,
-                            "Invalid OIDC auth URL",
+                            userinfo,
+                            "Invalid OIDC userinfo URL",
                             &self.ssrf_guard,
                         )?;
-                        validate_provider_url(
-                            &doc.token_endpoint,
-                            "Invalid OIDC token URL",
-                            &self.ssrf_guard,
-                        )?;
-                        validate_provider_url(
-                            &doc.jwks_uri,
-                            "Invalid OIDC JWKS URL",
-                            &self.ssrf_guard,
-                        )?;
-                        if let Some(userinfo) = doc.userinfo_endpoint.as_deref() {
-                            validate_provider_url(
-                                userinfo,
-                                "Invalid OIDC userinfo URL",
-                                &self.ssrf_guard,
-                            )?;
-                        }
+                    }
 
-                        (
-                            doc.authorization_endpoint,
-                            doc.token_endpoint,
-                            doc.userinfo_endpoint,
-                            doc.jwks_uri,
-                        )
-                    };
+                    (
+                        doc.authorization_endpoint,
+                        doc.token_endpoint,
+                        doc.userinfo_endpoint,
+                        doc.jwks_uri,
+                    )
+                };
 
                 let auth = AuthUrl::new(auth_url_str)
                     .map_err(|e| Error::InvalidInput(format!("Invalid OIDC auth URL: {e}")))?;

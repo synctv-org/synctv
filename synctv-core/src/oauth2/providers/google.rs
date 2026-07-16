@@ -9,8 +9,8 @@ use crate::service::{OAuth2GoogleProviderConfig, OAuth2ProviderPrivateConfig};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use oauth2::{
-    AuthUrl, ClientId, ClientSecret, EndpointNotSet, EndpointSet, PkceCodeChallenge,
-    PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl, basic::BasicClient,
+    basic::BasicClient, AuthUrl, ClientId, ClientSecret, EndpointNotSet, EndpointSet,
+    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -348,13 +348,11 @@ mod tests {
     #[test]
     fn test_factory_invalid_redirect_url() {
         let config = google_private_config("id", "secret", "://bad");
-        assert!(
-            google_factory_from_private_config(
-                &config,
-                &synctv_common::ssrf::SsrfGuard::strict_policy()
-            )
-            .is_err()
-        );
+        assert!(google_factory_from_private_config(
+            &config,
+            &synctv_common::ssrf::SsrfGuard::strict_policy()
+        )
+        .is_err());
     }
 
     #[test]

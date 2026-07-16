@@ -1,10 +1,10 @@
 use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{
-    EnvFilter,
     fmt::{self, format::FmtSpan},
     layer::SubscriberExt,
     util::SubscriberInitExt,
+    EnvFilter,
 };
 
 const SQLX_POSTGRES_NOTICE_TARGET: &str = "sqlx::postgres::notice";

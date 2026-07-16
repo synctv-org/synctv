@@ -1,6 +1,6 @@
 use super::*;
-use crate::RedisConnectionRuntime;
 use crate::test_helpers::failing_redis_runtime;
+use crate::RedisConnectionRuntime;
 use async_trait::async_trait;
 use std::time::Duration;
 use synctv_core_testing::start_redis;

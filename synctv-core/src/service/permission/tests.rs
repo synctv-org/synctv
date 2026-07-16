@@ -2,8 +2,8 @@ use super::*;
 use crate::cache::CacheKey;
 use crate::models::permission::Role as RoomRole;
 use crate::models::{
-    RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMember, RoomMemberPermissionBits,
-    room_settings::*,
+    room_settings::*, RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMember,
+    RoomMemberPermissionBits,
 };
 use async_trait::async_trait;
 use std::{collections::HashMap, sync::atomic::Ordering};
@@ -840,23 +840,19 @@ fn test_invalidate_cache_local_clear_works() {
                 .await,
             "member permission cache fixture should write",
         );
-        assert!(
-            service
-                .member_permission_cache
-                .get_l1(&cache_key)
-                .await
-                .is_some()
-        );
+        assert!(service
+            .member_permission_cache
+            .get_l1(&cache_key)
+            .await
+            .is_some());
 
         service.invalidate_cache(&room_id, &user_id).await;
 
-        assert!(
-            service
-                .member_permission_cache
-                .get_l1(&cache_key)
-                .await
-                .is_none()
-        );
+        assert!(service
+            .member_permission_cache
+            .get_l1(&cache_key)
+            .await
+            .is_none());
     });
 }
 
@@ -918,23 +914,19 @@ fn test_clear_cache_local_clear_works() {
                 .await,
             "member permission cache fixture should write",
         );
-        assert!(
-            service
-                .member_permission_cache
-                .get_l1(&cache_key)
-                .await
-                .is_some()
-        );
+        assert!(service
+            .member_permission_cache
+            .get_l1(&cache_key)
+            .await
+            .is_some());
 
         service.clear_cache().await;
 
-        assert!(
-            service
-                .member_permission_cache
-                .get_l1(&cache_key)
-                .await
-                .is_none()
-        );
+        assert!(service
+            .member_permission_cache
+            .get_l1(&cache_key)
+            .await
+            .is_none());
     });
 }
 

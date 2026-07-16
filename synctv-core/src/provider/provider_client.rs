@@ -142,32 +142,6 @@ impl ProviderClientManager {
         }
     }
 
-    /// Resolve a Bilibili client: use remote if a connection is provided, otherwise local.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn resolve_bilibili_client(
-        &self,
-        remote_connection: Option<RemoteProviderConnection>,
-    ) -> BilibiliClientArc {
-        match remote_connection {
-            Some(connection) => create_remote_bilibili_client(connection),
-            None => self.local_bilibili_client(),
-        }
-    }
-
-    /// Resolve an Emby client: use remote if a connection is provided, otherwise local.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn resolve_emby_client(
-        &self,
-        remote_connection: Option<RemoteProviderConnection>,
-    ) -> EmbyClientArc {
-        match remote_connection {
-            Some(connection) => create_remote_emby_client(connection),
-            None => self.local_emby_client(),
-        }
-    }
-
     #[cfg(test)]
     pub(crate) fn marker(&self) -> usize {
         self.marker

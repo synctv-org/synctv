@@ -49,14 +49,14 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::{
-    Result,
     models::{AuditAction, AuditDetails, AuditTargetType},
     repository::JsonbArray,
+    Result,
 };
 
 /// Default channel capacity for the audit event buffer
@@ -701,13 +701,6 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
-        match result {
-            Ok(value) => value,
-            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
-        }
-    }
 
     #[test]
     fn optional_reason_preserves_missing_and_trims_present_reason() {

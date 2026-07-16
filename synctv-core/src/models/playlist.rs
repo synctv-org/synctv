@@ -6,9 +6,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    PlaylistSourceConfig, SourceProvider,
     id::{PlaylistId, RoomId, UserId},
     query::SortDirection,
+    PlaylistSourceConfig, SourceProvider,
 };
 
 sort_field_enum! {

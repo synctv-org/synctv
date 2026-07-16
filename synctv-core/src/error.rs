@@ -467,11 +467,9 @@ mod tests {
             crate::provider::ProviderError::InvalidConfig("missing host".to_string());
         let core_err: Error = provider_err.into();
         assert!(matches!(core_err, Error::InvalidInput(_)));
-        assert!(
-            core_err
-                .to_string()
-                .contains("Invalid provider configuration")
-        );
+        assert!(core_err
+            .to_string()
+            .contains("Invalid provider configuration"));
     }
 
     #[test]
@@ -598,11 +596,9 @@ mod tests {
         let provider_err = crate::provider::ProviderError::EncryptionRequired("bilibili");
         let core_err: Error = provider_err.into();
         assert!(matches!(core_err, Error::InvalidInput(_)));
-        assert!(
-            core_err
-                .to_string()
-                .contains("Credential encryption required")
-        );
+        assert!(core_err
+            .to_string()
+            .contains("Credential encryption required"));
     }
 
     #[test]

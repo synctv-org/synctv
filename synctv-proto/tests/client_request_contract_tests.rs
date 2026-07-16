@@ -1,24 +1,20 @@
 use prost_reflect::Kind;
 use synctv_proto::client::{
-    AddMediaRequest, ApproveRoomJoinReviewRequest, CheckRoomRequest, ClearPlaylistRequest,
-    CreateRoomRequest, CreateWebSocketTicketRequest, DeleteEntriesRequest, DeleteMediaRequest,
-    DeleteNotificationRequest, DeletePlaylistRequest, EditMediaRequest,
-    ExchangeAuthorizationCodeRequest, GetAuthorizationUrlForBindRequest,
-    GetAuthorizationUrlRequest, GetChatHistoryRequest, GetNotificationRequest, GetPlaylistRequest,
-    GetRoomMembersRequest, GetRoomRequest, GetServerTimeRequest, ListMyRoomsRequest,
-    ListNotificationsRequest, ListPlaylistItemsRequest, ListPlaylistsRequest,
-    ListRoomJoinReviewsRequest, ListRoomLabelsRequest, ListRoomStreamsRequest, MarkAsReadRequest,
+    AddMediaRequest, ApproveRoomJoinReviewRequest, ClearPlaylistRequest, CreateRoomRequest,
+    CreateWebSocketTicketRequest, DeleteEntriesRequest, DeleteMediaRequest,
+    DeleteNotificationRequest, DeletePlaylistRequest, ExchangeAuthorizationCodeRequest,
+    GetAuthorizationUrlForBindRequest, GetAuthorizationUrlRequest, GetChatHistoryRequest,
+    GetNotificationRequest, GetRoomRequest, GetServerTimeRequest, ListPlaylistItemsRequest,
+    ListPlaylistsRequest, ListRoomJoinReviewsRequest, ListRoomLabelsRequest, MarkAsReadRequest,
     MoveMediaRequest, MovePlaylistRequest, OAuth2ProviderInstancePathRequest,
     OAuth2ProviderTypePathRequest, PasskeyAuthenticatorAssertionResponse,
-    RejectRoomJoinReviewRequest, RoomJoinReviewPathRequest, RoomMediaTargetPathRequest,
-    RoomMemberTargetPathRequest, RoomPathRequest, RoomPlaylistTargetPathRequest, RoomSettingsPatch,
-    RoomStreamListSortBy, SortDirection, StartOpaqueLoginRequest, StartPlaybackRequest,
-    TransferRoomOwnershipRequest, UnlinkProviderRequest, UpdatePlaybackStateRequest,
-    UpdatePlaylistRequest, UpdateRoomSettingsRequest, UploadUserAvatarObjectRequest,
+    RejectRoomJoinReviewRequest, RoomJoinReviewPathRequest, RoomMemberTargetPathRequest,
+    RoomPlaylistTargetPathRequest, RoomSettingsPatch, SortDirection, StartOpaqueLoginRequest,
+    StartPlaybackRequest, TransferRoomOwnershipRequest, UnlinkProviderRequest,
+    UpdatePlaybackStateRequest, UpdateRoomSettingsRequest, UploadUserAvatarObjectRequest,
     WebSocketConnectRequest,
 };
 use synctv_proto::providers::common::{ListProviderBackendsRequest, ProviderInstanceQuery};
-use synctv_proto::providers::rtmp::{CreatePublishKeyRequest, GetStreamInfoRequest};
 use synctv_proto::source_config::SourceProvider;
 
 fn emby_target(item_id: &str) -> Option<synctv_proto::client::ProviderTarget> {

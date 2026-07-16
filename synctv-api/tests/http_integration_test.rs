@@ -513,17 +513,9 @@ mod hsts_headers {
     }
 }
 
-mod health_endpoints {
-    use super::*;
-}
-
 mod auth_flow {
     use synctv_core::models::UserId;
     use synctv_core::service::JwtService;
-
-    fn jwt_service() -> JwtService {
-        JwtService::new("test-secret-key-for-jwt-that-is-long-enough-1234567890").unwrap()
-    }
 
     #[test]
     fn test_cross_secret_rejection() {

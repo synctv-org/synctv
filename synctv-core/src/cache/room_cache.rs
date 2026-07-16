@@ -10,11 +10,11 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Result;
 use crate::cache::l2_backend::CacheL2Backend;
 use crate::cache::tiered::{CacheKey, TieredCache, Timestamped};
-use crate::models::RoomId;
 use crate::models::room::RoomStatus;
+use crate::models::RoomId;
+use crate::Result;
 
 impl CacheKey for RoomId {
     fn cache_key(&self) -> String {
@@ -339,13 +339,11 @@ mod tests {
         let room = create_test_room("room1", "Test Room", "user1");
 
         // Cache miss
-        assert!(
-            cache
-                .get(&room_id)
-                .await
-                .checked("operation should succeed")
-                .is_none()
-        );
+        assert!(cache
+            .get(&room_id)
+            .await
+            .checked("operation should succeed")
+            .is_none());
 
         // Set and get
         cache
@@ -364,13 +362,11 @@ mod tests {
             .invalidate(&room_id)
             .await
             .checked("operation should succeed");
-        assert!(
-            cache
-                .get(&room_id)
-                .await
-                .checked("operation should succeed")
-                .is_none()
-        );
+        assert!(cache
+            .get(&room_id)
+            .await
+            .checked("operation should succeed")
+            .is_none());
     }
 
     #[tokio::test]

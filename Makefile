@@ -1,10 +1,15 @@
-SHELL := /bin/bash
+SHELL := bash
 .SHELLFLAGS := -eu -o pipefail -c
 
 .DEFAULT_GOAL := help
 
 COMPOSE ?= docker compose
-CARGO := cargo +nightly
+RUST_TOOLCHAIN ?= nightly
+CARGO ?= cargo +$(RUST_TOOLCHAIN)
+CROSS ?= cargo cross +$(RUST_TOOLCHAIN)
+CARGO_LOCKED ?= --locked
+CARGO_WORKSPACE_ARGS ?= --workspace
+CARGO_ALL_TARGETS_ARGS ?= --all-targets
 DEV_COMPOSE_FILE ?= docker-compose.dev.yml
 DEV_PROJECT ?= synctv-dev
 DEV_BASE_SERVICES ?= postgres redis
@@ -16,14 +21,28 @@ DEV_LOG_TAIL ?= 100
 DEV_START_TIMEOUT ?= 120
 CPU_COUNT ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 1)
 DEV_JOBS ?= $(CPU_COUNT)
+CARGO_JOBS_ARGS ?= -j "$(DEV_JOBS)"
+CARGO_BUILD_ARGS ?= $(CARGO_JOBS_ARGS) $(CARGO_LOCKED)
+CARGO_WORKSPACE_BUILD_ARGS ?= $(CARGO_BUILD_ARGS) $(CARGO_WORKSPACE_ARGS)
+CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS ?= $(CARGO_WORKSPACE_BUILD_ARGS) $(CARGO_ALL_TARGETS_ARGS)
 RUSTC_THREADS ?= $(CPU_COUNT)
 CONFIGURED_RUSTFLAGS := $(strip $(RUSTFLAGS))
 override RUSTFLAGS := $(strip $(CONFIGURED_RUSTFLAGS) -Zthreads=$(RUSTC_THREADS))
 export RUSTFLAGS
-DEV_FEATURES ?= tls-aws-lc tls-webpki-roots
-DEV_CARGO_FEATURE_ARGS := --no-default-features $(if $(strip $(DEV_FEATURES)),--features "$(DEV_FEATURES)",)
+DEV_FEATURES ?=
+DEV_CARGO_FEATURE_ARGS := $(if $(strip $(DEV_FEATURES)),--no-default-features --features "$(DEV_FEATURES)",)
 RELEASE_FEATURES ?=
 RELEASE_CARGO_FEATURE_ARGS := $(if $(strip $(RELEASE_FEATURES)),--features "$(RELEASE_FEATURES)",)
+FEATURE_CHECK_ARGS ?=
+CROSS_PACKAGE ?= synctv
+CROSS_FEATURE_ARGS ?=
+CROSS_LINUX_TARGET ?= x86_64-unknown-linux-gnu
+CROSS_WINDOWS_TARGET ?= x86_64-pc-windows-gnu
+CROSS_DARWIN_TARGET ?= aarch64-apple-darwin
+CROSS_CHECK_ARGS ?= $(CARGO_BUILD_ARGS) -p $(CROSS_PACKAGE) $(CARGO_ALL_TARGETS_ARGS) $(CROSS_FEATURE_ARGS)
+TLS_RING_KEY_CRATES := synctv-core synctv-api synctv-cluster synctv-realtime synctv-livestream synctv-media-providers synctv-proxy
+TLS_RING_KEY_PACKAGE_ARGS := $(foreach crate,$(TLS_RING_KEY_CRATES),-p $(crate))
+TLS_RING_KEY_FEATURE_ARGS := $(foreach crate,$(TLS_RING_KEY_CRATES),$(crate)/tls-ring $(crate)/tls-webpki-roots)
 DEV_SSRF_ENABLED ?= false
 DEV_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS ?= false
 
@@ -79,7 +98,7 @@ export SYNCTV_MANAGEMENT_TRANSPORT=unix; \
 export SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH="$(DEV_SOCKET)"
 endef
 
-.PHONY: help dev-check dev-env dev-up dev-stack dev-build release-build dev-serve dev-start dev-stop dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-dropdb dev-db dev-redis dev-open dev-smoke fmt check check-all-targets sqlx-prepare nextest clippy
+.PHONY: help dev-check dev-env dev-up dev-stack dev-build release-build dev-serve dev-start dev-stop dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-dropdb dev-db dev-redis dev-open dev-smoke fmt fmt-check check check-all-targets build-workspace proto-freshness feature-check feature-check-key-crates-tls-ring-webpki sqlx-prepare nextest nextest-default nextest-ignored doc-test clippy clippy-check install-cargo-audit audit audit-advisories install-cargo-deny deny-check deny-advisories deny-licenses deny-bans deny-sources install-cargo-udeps udeps cargo-workspace-version set-release-version validate-helm require-cross install-cross cross-linux-check cross-windows-check cross-darwin-check cross-linux-clippy cross-windows-clippy cross-darwin-clippy
 
 help: ## Show development targets.
 	@awk 'BEGIN {FS = ":.*##"; printf "SyncTV development targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -89,7 +108,7 @@ dev-check: ## Check required local tools.
 	@$(COMPOSE) version >/dev/null
 	@command -v rustup >/dev/null
 	@$(CARGO) --version >/dev/null
-	@printf "Docker, Docker Compose, and Cargo nightly are available.\n"
+	@printf "Docker, Docker Compose, and Cargo %s are available.\n" "$(RUST_TOOLCHAIN)"
 
 dev-env: ## Print local service URLs and credentials.
 	@printf "SyncTV:    http://127.0.0.1:8080  root / %s\n" "$(DEV_ROOT_PASSWORD)"
@@ -114,15 +133,15 @@ dev-stack: dev-up ## Start OpenList, Emby, Jellyfin, RustFS, and Casdoor after c
 	@$(MAKE) dev-env
 
 dev-build: ## Build the local SyncTV binary used by background dev commands.
-	SQLX_OFFLINE=true $(CARGO) build -j "$(DEV_JOBS)" -p synctv --bin synctv $(DEV_CARGO_FEATURE_ARGS)
+	SQLX_OFFLINE=true $(CARGO) build $(CARGO_BUILD_ARGS) -p synctv --bin synctv $(DEV_CARGO_FEATURE_ARGS)
 
 release-build: ## Build the optimized SyncTV release binary.
-	SQLX_OFFLINE=true $(CARGO) build --release -p synctv --bin synctv $(RELEASE_CARGO_FEATURE_ARGS)
+	SQLX_OFFLINE=true $(CARGO) build $(CARGO_BUILD_ARGS) --release -p synctv --bin synctv $(RELEASE_CARGO_FEATURE_ARGS)
 
 dev-serve: dev-up ## Run SyncTV locally with development defaults.
 	mkdir -p "$(DEV_DATA_DIR)/run"
 	$(DEV_ENV_EXPORTS); \
-	SQLX_OFFLINE=true $(CARGO) run -j "$(DEV_JOBS)" -p synctv --bin synctv $(DEV_CARGO_FEATURE_ARGS) -- serve
+	SQLX_OFFLINE=true $(CARGO) run $(CARGO_BUILD_ARGS) -p synctv --bin synctv $(DEV_CARGO_FEATURE_ARGS) -- serve
 
 dev-start: dev-up dev-build ## Start SyncTV in the background with development defaults.
 	@mkdir -p "$(DEV_DATA_DIR)/run"
@@ -263,18 +282,113 @@ sqlx-prepare: dev-migrate ## Refresh SQLx offline metadata in .sqlx.
 fmt: ## Format all Rust code.
 	$(CARGO) fmt --all
 
+fmt-check: ## Check Rust formatting without modifying files.
+	$(CARGO) fmt --all -- --check
+
 check: ## Check workspace library and binary targets.
-	SQLX_OFFLINE=true $(CARGO) check -j "$(DEV_JOBS)" --workspace
+	SQLX_OFFLINE=true $(CARGO) check $(CARGO_WORKSPACE_BUILD_ARGS)
 
 check-all-targets: ## Check all workspace targets, including tests, benches, and examples.
-	SQLX_OFFLINE=true $(CARGO) check -j "$(DEV_JOBS)" --workspace --all-targets
+	SQLX_OFFLINE=true $(CARGO) check $(CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS)
+
+build-workspace: ## Build the locked workspace dependency graph.
+	SQLX_OFFLINE=true $(CARGO) build $(CARGO_WORKSPACE_BUILD_ARGS) --verbose
+
+proto-freshness: ## Regenerate protobuf artifacts and require a clean generated diff.
+	SYNCTV_REGEN_PROTO=1 SQLX_OFFLINE=true $(CARGO) check $(CARGO_BUILD_ARGS) -p synctv-proto -p synctv-media-providers -p synctv-cluster -p synctv-livestream -p synctv-realtime -p synctv-proxy
+	git diff --exit-code -- synctv-proto/src synctv-media-providers/src/proto
+
+feature-check: ## Check synctv with FEATURE_CHECK_ARGS supplied by CI or the caller.
+	SQLX_OFFLINE=true $(CARGO) check $(CARGO_BUILD_ARGS) -p synctv $(FEATURE_CHECK_ARGS)
+
+feature-check-key-crates-tls-ring-webpki: ## Check key crates with the ring/webpki TLS feature pair.
+	SQLX_OFFLINE=true $(CARGO) check $(CARGO_BUILD_ARGS) $(TLS_RING_KEY_PACKAGE_ARGS) --no-default-features --features "$(TLS_RING_KEY_FEATURE_ARGS)"
 
 nextest: ## Run the full workspace nextest suite, including ignored tests.
-	SQLX_OFFLINE=true $(CARGO) nextest run --workspace --run-ignored all -j "$(DEV_JOBS)" --nff --status-level fail
+	SQLX_OFFLINE=true $(CARGO) nextest run $(CARGO_WORKSPACE_BUILD_ARGS) --run-ignored all --nff --status-level fail
+
+nextest-default: ## Run non-ignored workspace tests with nextest.
+	SQLX_OFFLINE=true $(CARGO) nextest run $(CARGO_WORKSPACE_BUILD_ARGS) --run-ignored default --nff
+
+nextest-ignored: ## Run ignored workspace tests with nextest.
+	SQLX_OFFLINE=true $(CARGO) nextest run $(CARGO_WORKSPACE_BUILD_ARGS) --run-ignored only --nff
+
+doc-test: ## Run locked workspace documentation tests.
+	SQLX_OFFLINE=true $(CARGO) test $(CARGO_WORKSPACE_BUILD_ARGS) --doc
 
 clippy: ## Apply Clippy fixes, then require a clean workspace lint pass.
-	SQLX_OFFLINE=true $(CARGO) clippy -j "$(DEV_JOBS)" --workspace --all-targets --fix --allow-dirty
-	SQLX_OFFLINE=true $(CARGO) clippy -j "$(DEV_JOBS)" --workspace --all-targets
+	SQLX_OFFLINE=true $(CARGO) clippy $(CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS) --fix --allow-dirty
+	SQLX_OFFLINE=true $(CARGO) clippy $(CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS)
+
+clippy-check: ## Run locked workspace Clippy checks without modifying files.
+	SQLX_OFFLINE=true $(CARGO) clippy $(CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS) -- -D warnings
+
+install-cargo-audit: ## Install cargo-audit for CI security checks.
+	$(CARGO) install cargo-audit $(CARGO_LOCKED)
+
+audit: ## Fail on RustSec audit warnings.
+	$(CARGO) audit --deny warnings
+
+audit-advisories: ## Print the complete RustSec advisory report.
+	$(CARGO) audit
+
+install-cargo-deny: ## Install cargo-deny for dependency policy checks.
+	$(CARGO) install cargo-deny $(CARGO_LOCKED)
+
+deny-check: ## Run all cargo-deny policy checks.
+	$(CARGO) deny check
+
+deny-advisories:
+	$(CARGO) deny check advisories
+
+deny-licenses:
+	$(CARGO) deny check licenses
+
+deny-bans:
+	$(CARGO) deny check bans
+
+deny-sources:
+	$(CARGO) deny check sources
+
+install-cargo-udeps: ## Install cargo-udeps for unused dependency checks.
+	$(CARGO) install cargo-udeps $(CARGO_LOCKED)
+
+udeps: ## Check all workspace targets for unused dependencies.
+	SQLX_OFFLINE=true $(CARGO) udeps $(CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS)
+
+cargo-workspace-version: ## Print the Cargo workspace version.
+	@$(CARGO) metadata --format-version 1 --no-deps $(CARGO_LOCKED) | node -e 'const fs = require("fs"); const meta = JSON.parse(fs.readFileSync(0, "utf8")); const id = meta.workspace_default_members[0]; process.stdout.write((meta.packages.find((pkg) => pkg.id === id) || meta.packages[0]).version);'
+
+set-release-version: ## Synchronize release files. Set VERSION=x.y.z.
+	@test -n "$(VERSION)" || { printf "VERSION is required.\n" >&2; exit 1; }
+	RUSTUP_TOOLCHAIN="$(RUST_TOOLCHAIN)" scripts/set-release-version.sh "$(VERSION)"
+
+validate-helm: ## Validate Helm charts and rendered SyncTV configuration.
+	RUSTUP_TOOLCHAIN="$(RUST_TOOLCHAIN)" scripts/validate-helm.sh
+
+require-cross:
+	@command -v cargo-cross >/dev/null || { printf "cargo-cross is required; run 'make install-cross'.\n" >&2; exit 1; }
+
+install-cross: ## Install cargo-cross using the configured Rust toolchain.
+	$(CARGO) install cargo-cross $(CARGO_LOCKED)
+
+cross-linux-check: require-cross ## Cross-check SyncTV for Linux.
+	SQLX_OFFLINE=true $(CROSS) check $(CROSS_CHECK_ARGS) --target "$(CROSS_LINUX_TARGET)"
+
+cross-windows-check: require-cross ## Cross-check SyncTV for Windows GNU.
+	SQLX_OFFLINE=true $(CROSS) check $(CROSS_CHECK_ARGS) --target "$(CROSS_WINDOWS_TARGET)"
+
+cross-darwin-check: require-cross ## Cross-check SyncTV for Darwin.
+	SQLX_OFFLINE=true $(CROSS) check $(CROSS_CHECK_ARGS) --target "$(CROSS_DARWIN_TARGET)"
+
+cross-linux-clippy: require-cross ## Run cross Clippy for Linux.
+	SQLX_OFFLINE=true $(CROSS) clippy $(CROSS_CHECK_ARGS) --target "$(CROSS_LINUX_TARGET)" -- -D warnings
+
+cross-windows-clippy: require-cross ## Run cross Clippy for Windows GNU.
+	SQLX_OFFLINE=true $(CROSS) clippy $(CROSS_CHECK_ARGS) --target "$(CROSS_WINDOWS_TARGET)" -- -D warnings
+
+cross-darwin-clippy: require-cross ## Run cross Clippy for Darwin.
+	SQLX_OFFLINE=true $(CROSS) clippy $(CROSS_CHECK_ARGS) --target "$(CROSS_DARWIN_TARGET)" -- -D warnings
 
 dev-db: dev-up ## Open psql inside the PostgreSQL container.
 	$(COMPOSE_DEV) exec postgres psql -U synctv -d synctv

@@ -36,7 +36,7 @@ jobs:
           components: rustfmt
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: make fmt-check
 
   # Build
   build:
@@ -56,7 +56,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --workspace --verbose --locked
+        run: make build-workspace
 
   proto-freshness:
     name: Proto Freshness
@@ -74,11 +74,8 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Regenerate proto artifacts
-        run: scripts/regen-proto.sh
-
       - name: Check generated proto artifacts
-        run: git diff --exit-code -- synctv-proto/src synctv-media-providers/src/proto
+        run: make proto-freshness
 
   # SQLx offline metadata
   sqlx-offline:
@@ -98,7 +95,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Check SQLx offline metadata
-        run: cargo check --workspace --all-targets --locked
+        run: make check-all-targets
 
   feature-check:
     name: Feature Check (${{ matrix.name }})
@@ -108,28 +105,29 @@ jobs:
       matrix:
         include:
           - name: synctv-no-default-features
-            command: cargo check -p synctv --no-default-features --locked
+            target: feature-check
+            args: --no-default-features
           - name: synctv-tls-aws-lc-webpki
-            command: cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-webpki-roots" --locked
+            target: feature-check
+            args: --no-default-features --features tls-aws-lc,tls-webpki-roots
           - name: synctv-tls-aws-lc-native
-            command: cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-native-roots" --locked
+            target: feature-check
+            args: --no-default-features --features tls-aws-lc,tls-native-roots
           - name: synctv-tls-ring-webpki
-            command: cargo check -p synctv --no-default-features --features "tls-ring,tls-webpki-roots" --locked
+            target: feature-check
+            args: --no-default-features --features tls-ring,tls-webpki-roots
           - name: synctv-tls-ring-native
-            command: cargo check -p synctv --no-default-features --features "tls-ring,tls-native-roots" --locked
+            target: feature-check
+            args: --no-default-features --features tls-ring,tls-native-roots
           - name: synctv-production-default
-            command: cargo check -p synctv --features "tls-native-roots" --locked
+            target: feature-check
+            args: --features tls-native-roots
           - name: synctv-openapi
-            command: cargo check -p synctv --features "openapi" --locked
+            target: feature-check
+            args: --features openapi
           - name: key-crates-tls-ring-webpki
-            command: |
-              cargo check -p synctv-core --no-default-features --features "tls-ring,tls-webpki-roots" --locked
-              cargo check -p synctv-api --no-default-features --features "tls-ring,tls-webpki-roots" --locked
-              cargo check -p synctv-cluster --no-default-features --features "tls-ring,tls-webpki-roots" --locked
-              cargo check -p synctv-realtime --no-default-features --features "tls-ring,tls-webpki-roots" --locked
-              cargo check -p synctv-livestream --no-default-features --features "tls-ring,tls-webpki-roots" --locked
-              cargo check -p synctv-media-providers --no-default-features --features "tls-ring,tls-webpki-roots" --locked
-              cargo check -p synctv-proxy --no-default-features --features "tls-ring,tls-webpki-roots" --locked
+            target: feature-check-key-crates-tls-ring-webpki
+            args: ""
 
     steps:
       - uses: actions/checkout@v5
@@ -144,7 +142,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run feature check
-        run: ${{ matrix.command }}
+        env:
+          FEATURE_CHECK_ARGS: ${{ matrix.args }}
+        run: make ${{ matrix.target }}
 
   # Test non-ignored cases
   test-default:
@@ -182,23 +182,24 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install protoc --yes
 
+      - name: Install Make on Windows
+        if: runner.os == 'Windows'
+        run: choco install make --yes --no-progress
+
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
 
       - name: Run clippy
         timeout-minutes: 60
-        run: |
-          cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: make clippy-check
 
       - name: Run non-ignored tests with nextest
         timeout-minutes: 60
-        run: |
-          cargo nextest run --workspace --locked --run-ignored default --nff
+        run: make nextest-default
 
       - name: Run documentation tests
         timeout-minutes: 20
-        run: |
-          cargo test --workspace --doc --locked
+        run: make doc-test
 
   # Test ignored cases
   test-ignored:
@@ -229,8 +230,7 @@ jobs:
 
       - name: Run ignored tests with nextest
         timeout-minutes: 60
-        run: |
-          cargo nextest run --workspace --locked --run-ignored only --nff
+        run: make nextest-ignored
 
   # Security audit
   security-audit:
@@ -243,14 +243,14 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        run: make install-cargo-audit
 
       - name: Run security audit
-        run: cargo audit --deny warnings
+        run: make audit
         # SECURITY: Audit failures should block the build
 
       - name: Run security audit (advisories)
-        run: cargo audit
+        run: make audit-advisories
         continue-on-error: true # Informational output
 
   # Dependency policy enforcement with cargo-deny
@@ -264,25 +264,25 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+        run: make install-cargo-deny
 
       - name: Run cargo-deny check
-        run: cargo deny check
+        run: make deny-check
 
       - name: Run cargo-deny check (advisories only - fail on vulnerabilities)
-        run: cargo deny check advisories
+        run: make deny-advisories
         continue-on-error: false
 
       - name: Run cargo-deny check (licenses)
-        run: cargo deny check licenses
+        run: make deny-licenses
         continue-on-error: true # Warn but don't fail
 
       - name: Run cargo-deny check (bans)
-        run: cargo deny check bans
+        run: make deny-bans
         continue-on-error: true # Warn about multiple versions
 
       - name: Run cargo-deny check (sources)
-        run: cargo deny check sources
+        run: make deny-sources
         continue-on-error: false # Fail on untrusted sources
 
   # Check for unused dependencies
@@ -299,8 +299,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Install cargo-udeps
-        run: cargo install cargo-udeps --locked
+        run: make install-cargo-udeps
 
       - name: Check for unused dependencies
-        run: cargo +nightly udeps --locked --all-targets
+        run: make udeps
         continue-on-error: true # Don't fail the build, just report

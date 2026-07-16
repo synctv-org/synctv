@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [features]
-default = ["k8s"]
+default = []
 # Enables integration-test hooks that mutate internal discovery state.
 test-support = []
 k8s = ["kube", "k8s-openapi"]

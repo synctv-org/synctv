@@ -848,10 +848,11 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    use super::{default_config_search_paths, user_home_dir};
     use super::{
-        default_config_search_paths, load_config, load_config_with_options,
-        load_public_id_config_with_options, public_id_config_extensions, user_home_dir,
-        ConfigLoadExtensions, LoadConfigOptions,
+        load_config, load_config_with_options, load_public_id_config_with_options,
+        public_id_config_extensions, ConfigLoadExtensions, LoadConfigOptions,
     };
     use std::fmt::Debug;
     use std::sync::{Mutex, MutexGuard, OnceLock};

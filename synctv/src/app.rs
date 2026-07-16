@@ -1111,28 +1111,12 @@ impl Application {
 
         let leader_cancel = shutdown.register_token("leader_election");
 
-        #[cfg(feature = "k8s")]
         let leader_runtime = build_managed_leader_runtime(
             leader_runtime_options(&infra.config)?,
             &infra.node_id,
             &runtime_plan.cache_shared_state_profile,
         )
         .await
-        .map_err(|e| {
-            error!(
-                error = %e,
-                mode = %infra.config.cluster.leader_election_mode,
-                "CRITICAL: leader election initialization failed"
-            );
-            e
-        })?;
-
-        #[cfg(not(feature = "k8s"))]
-        let leader_runtime = build_managed_leader_runtime(
-            leader_runtime_options(&infra.config)?,
-            &infra.node_id,
-            &runtime_plan.cache_shared_state_profile,
-        )
         .map_err(|e| {
             error!(
                 error = %e,

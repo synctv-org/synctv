@@ -39,6 +39,9 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v4
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
@@ -62,7 +65,7 @@ jobs:
           chart_name="$(ruby -ryaml -e 'puts YAML.load_file(ARGV.fetch(0)).fetch("name")' helm/synctv/Chart.yaml)"
           chart_version="$(ruby -ryaml -e 'puts YAML.load_file(ARGV.fetch(0)).fetch("version")' helm/synctv/Chart.yaml)"
           app_version="$(ruby -ryaml -e 'puts YAML.load_file(ARGV.fetch(0)).fetch("appVersion")' helm/synctv/Chart.yaml)"
-          cargo_version="$(cargo metadata --format-version 1 --no-deps | node -e 'const fs = require("fs"); const meta = JSON.parse(fs.readFileSync(0, "utf8")); process.stdout.write(meta.workspace_default_members.length ? meta.packages.find((pkg) => pkg.id === meta.workspace_default_members[0]).version : meta.packages[0].version);')"
+          cargo_version="$(make -s cargo-workspace-version)"
 
           if [ -z "$chart_name" ] || [ -z "$chart_version" ] || [ -z "$app_version" ] || [ -z "$cargo_version" ]; then
             echo "Chart.yaml must define name, version, and appVersion; Cargo.toml must define workspace.package.version." >&2
@@ -125,7 +128,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Validate chart
-        run: ./scripts/validate-helm.sh
+        run: make validate-helm
 
       - name: Package chart
         run: |

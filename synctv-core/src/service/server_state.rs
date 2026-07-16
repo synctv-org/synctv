@@ -15,6 +15,7 @@ use crate::{RedisConnectionRuntime, RedisDeploymentMode};
 const SERVER_STATE_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 const SERVER_STATE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const SERVER_STATE_FAN_OUT_CONCURRENCY: usize = 16;
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 const MEMORY_UNHEALTHY_THRESHOLD_PERCENT: f64 = 90.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

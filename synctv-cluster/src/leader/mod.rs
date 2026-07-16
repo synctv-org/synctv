@@ -431,22 +431,24 @@ pub fn build_managed_leader_runtime(
     options: LeaderRuntimeOptions,
     node_id: &str,
     shared_state_profile: &SharedStateProfile,
-) -> anyhow::Result<Arc<dyn ManagedLeaderRuntime>> {
-    if !options.cluster_enabled {
-        return Err(anyhow::anyhow!(
-            "Leader election runtime is cluster-only; standalone mode must use AlwaysLeader directly"
-        ));
-    }
-
-    match options.leader_election_mode {
-        LeaderElectionMode::K8sLease => Err(anyhow::anyhow!(
-            "K8s leader election mode 'k8s_lease' requires the 'k8s' feature. \
-             Rebuild with: cargo build --features k8s, or set cluster.leader_election_mode='redis'"
-        )),
-        LeaderElectionMode::Redis => {
-            build_redis_leader_runtime(&options, node_id, shared_state_profile)
+) -> impl std::future::Future<Output = anyhow::Result<Arc<dyn ManagedLeaderRuntime>>> {
+    let result = if options.cluster_enabled {
+        match options.leader_election_mode {
+            LeaderElectionMode::K8sLease => Err(anyhow::anyhow!(
+                "K8s leader election mode 'k8s_lease' requires the 'k8s' feature. \
+                 Rebuild with: cargo build --features k8s, or set cluster.leader_election_mode='redis'"
+            )),
+            LeaderElectionMode::Redis => {
+                build_redis_leader_runtime(&options, node_id, shared_state_profile)
+            }
         }
-    }
+    } else {
+        Err(anyhow::anyhow!(
+            "Leader election runtime is cluster-only; standalone mode must use AlwaysLeader directly"
+        ))
+    };
+
+    std::future::ready(result)
 }
 
 fn build_redis_leader_runtime(
@@ -1241,11 +1243,7 @@ mod tests {
         );
         let profile = SharedStateProfile::for_cluster_runtime(None, "synctv:", false);
 
-        #[cfg(feature = "k8s")]
         let result = build_managed_leader_runtime(options, "node-1", &profile).await;
-
-        #[cfg(not(feature = "k8s"))]
-        let result = build_managed_leader_runtime(options, "node-1", &profile);
 
         let Err(error) = result else {
             return Err(crate::Error::Configuration(
@@ -1271,11 +1269,7 @@ mod tests {
         );
         let profile = SharedStateProfile::for_cluster_runtime(None, "synctv:", true);
 
-        #[cfg(feature = "k8s")]
         let result = build_managed_leader_runtime(options, "node-1", &profile).await;
-
-        #[cfg(not(feature = "k8s"))]
-        let result = build_managed_leader_runtime(options, "node-1", &profile);
 
         let Err(error) = result else {
             return Err(crate::Error::Configuration(
@@ -1338,13 +1332,8 @@ mod tests {
             true,
         );
 
-        #[cfg(feature = "k8s")]
         let leader_runtime: Arc<dyn ManagedLeaderRuntime> =
             build_managed_leader_runtime(options, "node-1", &profile).await?;
-
-        #[cfg(not(feature = "k8s"))]
-        let leader_runtime: Arc<dyn ManagedLeaderRuntime> =
-            build_managed_leader_runtime(options, "node-1", &profile)?;
 
         assert_eq!(leader_runtime.mode_label(), "redis");
         assert_eq!(

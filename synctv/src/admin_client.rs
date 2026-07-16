@@ -460,6 +460,7 @@ mod tests {
         seen_authorization: Option<Arc<Mutex<Vec<Option<String>>>>>,
     }
 
+    #[cfg(unix)]
     fn unavailable_test_management_response<T>() -> std::result::Result<Response<T>, Status> {
         Err(Status::unavailable(
             "test management service method is not configured",

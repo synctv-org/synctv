@@ -39,10 +39,10 @@ jobs:
           echo "value=$version" >> "$GITHUB_OUTPUT"
 
       - name: Synchronize release version
-        run: ./scripts/set-release-version.sh "${{ steps.version.outputs.value }}"
+        run: make set-release-version VERSION="${{ steps.version.outputs.value }}"
 
       - name: Validate Helm chart
-        run: ./scripts/validate-helm.sh
+        run: make validate-helm
 
       - name: Create release preparation PR
         uses: peter-evans/create-pull-request@v7

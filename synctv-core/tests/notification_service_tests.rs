@@ -2,7 +2,7 @@
 //!
 //! Tests event construction, subscription, event type names, and serialization.
 
-use synctv_core::models::{MediaId, PlaylistId, RoomId, UserId};
+use synctv_core::models::{RoomId, UserId};
 use synctv_core::service::NotificationService;
 use synctv_core::service::RoomEvent;
 use synctv_core_testing::ok;

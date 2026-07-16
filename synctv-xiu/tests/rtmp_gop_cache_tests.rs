@@ -17,7 +17,7 @@
 
 #![allow(clippy::unwrap_used)]
 use bytes::Bytes;
-use synctv_xiu::rtmp::cache::gop::{Gop, Gops, DEFAULT_MAX_TOTAL_BYTES};
+use synctv_xiu::rtmp::cache::gop::{Gop, Gops};
 use synctv_xiu::streamhub::define::FrameData;
 
 // Helper Functions

@@ -1,6 +1,5 @@
 use super::{parse_shutdown_mode, stop_server_event_stream};
 use crate::lifecycle::{LifecycleStage, ManagementLifecycleController, ShutdownMode};
-use crate::proto::ShutdownMode as ProtoShutdownMode;
 use futures::TryStreamExt;
 use std::borrow::Cow;
 use synctv_adapter::error::{ClassifiedError, ErrorKind};

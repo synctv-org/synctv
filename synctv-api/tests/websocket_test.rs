@@ -8,7 +8,6 @@
 //! - E2E tests: full WebSocket lifecycle with real Postgres + Redis (`TestInfra`)
 
 #![allow(clippy::unwrap_used)]
-use synctv_api::AuthMethod;
 use synctv_proto::client::WebSocketConnectRequest;
 
 async fn wait_for_condition<F>(timeout: std::time::Duration, mut check: F)

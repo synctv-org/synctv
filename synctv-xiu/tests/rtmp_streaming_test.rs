@@ -43,13 +43,6 @@ impl TStreamHandler for MockHandler2 {
     }
 }
 
-fn expect_video_frame(frame: FrameData) -> (u32, Bytes) {
-    match frame {
-        FrameData::Video { timestamp, data } => (timestamp, data),
-        other => panic!("expected video frame, got {other:?}"),
-    }
-}
-
 fn expect_publish_event(
     event: BroadcastEvent,
 ) -> (synctv_xiu::streamhub::stream::StreamIdentifier, PublishType) {

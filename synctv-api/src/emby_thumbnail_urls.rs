@@ -41,38 +41,6 @@ pub(crate) fn emby_thumbnail_url(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn emby_upstream_url(host: &str, path_or_url: &str) -> Result<String, String> {
-    let path_or_url = path_or_url.trim();
-    if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
-        return Ok(path_or_url.to_string());
-    }
-
-    let parsed =
-        url::Url::parse(host).map_err(|error| format!("Invalid Emby host URL: {error}"))?;
-    let origin = parsed.origin().unicode_serialization();
-    let base_path = parsed.path().trim_end_matches('/');
-    let base_path = if base_path == "/" { "" } else { base_path };
-    let path = if path_or_url.starts_with('/') {
-        path_or_url.to_string()
-    } else {
-        format!("/{path_or_url}")
-    };
-
-    let path = if !base_path.is_empty()
-        && path != base_path
-        && !path
-            .strip_prefix(base_path)
-            .is_some_and(|suffix| suffix.starts_with('/') || suffix.starts_with('?'))
-    {
-        format!("{base_path}{path}")
-    } else {
-        path
-    };
-
-    Ok(format!("{origin}{path}"))
-}
-
 pub(crate) fn thumbnail_signature_version(scope: ThumbnailSignatureScope<'_>) -> String {
     let mut hasher = Sha256::new();
     hasher.update(scope.item_id.as_bytes());

@@ -1173,27 +1173,6 @@ fn make_test_room_model(created_by: &UserId) -> synctv_core::models::Room {
     }
 }
 
-fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
-    let now = synctv_core::SystemClock.now();
-    synctv_core::models::Room {
-        id: RoomId::expect_positive(101),
-        name: "Admin Test Room".to_string(),
-        description: "Room for admin tests".to_string(),
-        cover_file_reference_id: None,
-        category: None,
-        labels: Vec::new(),
-        created_by: UserId::expect_positive(102),
-        status,
-        is_banned: false,
-        closed_at: None,
-        created_at: now,
-        updated_at: now,
-        deleted_at: None,
-        version: 1,
-        last_activity_at: now,
-    }
-}
-
 #[test]
 fn username_from_loaded_user_rejects_empty_username() {
     let mut user = synctv_core::models::User::new(

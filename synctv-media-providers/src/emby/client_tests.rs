@@ -4,10 +4,6 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
-fn missing(message: &'static str) -> Box<dyn std::error::Error + Send + Sync> {
-    anyhow::anyhow!(message).into()
-}
-
 async fn mount_api_prefix_probe(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path("/System/Info/Public"))

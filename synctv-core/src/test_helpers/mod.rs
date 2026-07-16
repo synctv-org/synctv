@@ -4,8 +4,6 @@
 //! to reduce boilerplate and improve test consistency across the codebase.
 
 use crate::models::{PlaylistId, RoomId, UserId, UserRole, UserStatus};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 pub fn ok<T, E: std::fmt::Debug>(result: std::result::Result<T, E>, context: &str) -> T {
@@ -69,31 +67,6 @@ pub fn failing_redis_runtime() -> Arc<dyn crate::RedisConnectionRuntime> {
     Arc::new(FailingRedisRuntime)
 }
 
-fn stable_test_id(id: &str) -> i64 {
-    if let Ok(parsed) = id.parse::<i64>() {
-        return parsed.max(1);
-    }
-    let mut hasher = DefaultHasher::new();
-    id.hash(&mut hasher);
-    let bounded = (hasher.finish() % (i64::MAX as u64 - 1)) + 1;
-    match i64::try_from(bounded) {
-        Ok(value) => value,
-        Err(error) => std::panic::panic_any(format!("bounded test id should fit in i64: {error}")),
-    }
-}
-
-/// Create a test user ID
-#[must_use]
-pub fn test_user_id(id: &str) -> UserId {
-    UserId::expect_positive(stable_test_id(id))
-}
-
-/// Create a test room ID
-#[must_use]
-pub fn test_room_id(id: &str) -> RoomId {
-    RoomId::expect_positive(stable_test_id(id))
-}
-
 /// Generate a random user ID for testing
 #[must_use]
 pub fn random_user_id() -> UserId {
@@ -127,18 +100,6 @@ impl UserFixture {
     #[must_use]
     pub fn with_username(mut self, username: &str) -> Self {
         self.username = username.to_string();
-        self
-    }
-
-    #[must_use]
-    pub fn with_role(mut self, role: UserRole) -> Self {
-        self.role = role;
-        self
-    }
-
-    #[must_use]
-    pub fn with_status(mut self, status: UserStatus) -> Self {
-        self.status = status;
         self
     }
 
@@ -237,71 +198,6 @@ impl RoomFixture {
 }
 
 impl Default for RoomFixture {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Test fixture builder for chat messages
-pub struct ChatMessageFixture {
-    id: i64,
-    room_id: RoomId,
-    user_id: UserId,
-    content: String,
-}
-
-impl ChatMessageFixture {
-    pub fn new() -> Self {
-        Self {
-            id: 0,
-            room_id: random_room_id(),
-            user_id: random_user_id(),
-            content: "Test message".to_string(),
-        }
-    }
-
-    #[must_use]
-    pub fn with_room_id(mut self, room_id: RoomId) -> Self {
-        self.room_id = room_id;
-        self
-    }
-
-    #[must_use]
-    pub fn with_user_id(mut self, user_id: UserId) -> Self {
-        self.user_id = user_id;
-        self
-    }
-
-    #[must_use]
-    pub fn with_content(mut self, content: &str) -> Self {
-        self.content = content.to_string();
-        self
-    }
-
-    #[must_use]
-    pub fn build(self) -> crate::models::ChatMessage {
-        crate::models::ChatMessage {
-            id: self.id,
-            room_id: self.room_id,
-            user_id: Some(self.user_id),
-            client_message_id: None,
-            content: self.content,
-            message_type: crate::models::ChatMessageType::User,
-            status: crate::models::ChatMessageStatus::Active,
-            version: 1,
-            reply_to_message_id: None,
-            reply_to_message_created_at: None,
-            metadata: None,
-            edited_at: None,
-            deleted_at: None,
-            deleted_by: None,
-            delete_reason: None,
-            created_at: crate::SystemClock.now(),
-        }
-    }
-}
-
-impl Default for ChatMessageFixture {
     fn default() -> Self {
         Self::new()
     }

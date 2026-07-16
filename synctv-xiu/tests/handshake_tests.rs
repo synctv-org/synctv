@@ -21,11 +21,10 @@ use synctv_xiu::rtmp::handshake::{
         RTMP_HANDSHAKE_SIZE, RTMP_SERVER_KEY_FIRST_HALF, RTMP_VERSION,
     },
     digest::DigestProcessor,
-    errors::{DigestErrorValue, HandshakeError, HandshakeErrorValue},
+    errors::{HandshakeError, HandshakeErrorValue},
     handshake_client::SimpleHandshakeClient,
     handshake_server::{ComplexHandshakeServer, HandshakeServer, SimpleHandshakeServer},
     handshake_trait::THandshakeServer,
-    utils,
 };
 
 use async_trait::async_trait;

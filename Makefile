@@ -25,6 +25,7 @@ CARGO_JOBS_ARGS ?= -j "$(DEV_JOBS)"
 CARGO_BUILD_ARGS ?= $(CARGO_JOBS_ARGS) $(CARGO_LOCKED)
 CARGO_WORKSPACE_BUILD_ARGS ?= $(CARGO_BUILD_ARGS) $(CARGO_WORKSPACE_ARGS)
 CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS ?= $(CARGO_WORKSPACE_BUILD_ARGS) $(CARGO_ALL_TARGETS_ARGS)
+NEXTEST_STATUS_ARGS ?= --status-level slow --final-status-level slow
 RUSTC_THREADS ?= $(CPU_COUNT)
 CONFIGURED_RUSTFLAGS := $(strip $(RUSTFLAGS))
 override RUSTFLAGS := $(strip $(CONFIGURED_RUSTFLAGS) -Zthreads=$(RUSTC_THREADS))
@@ -305,13 +306,13 @@ feature-check-key-crates-tls-ring-webpki: ## Check key crates with the ring/webp
 	SQLX_OFFLINE=true $(CARGO) check $(CARGO_BUILD_ARGS) $(TLS_RING_KEY_PACKAGE_ARGS) --no-default-features --features "$(TLS_RING_KEY_FEATURE_ARGS)"
 
 nextest: ## Run the full workspace nextest suite, including ignored tests.
-	SQLX_OFFLINE=true $(CARGO) nextest run $(CARGO_WORKSPACE_BUILD_ARGS) --run-ignored all --nff --status-level fail
+	SQLX_OFFLINE=true $(CARGO) nextest run $(CARGO_WORKSPACE_BUILD_ARGS) --run-ignored all --nff $(NEXTEST_STATUS_ARGS)
 
 nextest-default: ## Run non-ignored workspace tests with nextest.
-	SQLX_OFFLINE=true $(CARGO) nextest run $(CARGO_WORKSPACE_BUILD_ARGS) --run-ignored default --nff
+	SQLX_OFFLINE=true $(CARGO) nextest run $(CARGO_WORKSPACE_BUILD_ARGS) --run-ignored default --nff $(NEXTEST_STATUS_ARGS)
 
 nextest-ignored: ## Run ignored workspace tests with nextest.
-	SQLX_OFFLINE=true $(CARGO) nextest run $(CARGO_WORKSPACE_BUILD_ARGS) --run-ignored only --nff
+	SQLX_OFFLINE=true $(CARGO) nextest run $(CARGO_WORKSPACE_BUILD_ARGS) --run-ignored only --nff $(NEXTEST_STATUS_ARGS)
 
 doc-test: ## Run locked workspace documentation tests.
 	SQLX_OFFLINE=true $(CARGO) test $(CARGO_WORKSPACE_BUILD_ARGS) --doc

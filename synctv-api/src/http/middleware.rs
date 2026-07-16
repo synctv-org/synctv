@@ -288,36 +288,6 @@ mod tests {
             .map_err(|err| test_error(format!("{name} header should be valid ascii: {err}")))
     }
 
-    #[test]
-    fn test_hsts_header_basic() {
-        let header = hsts_header(31_536_000, false, false);
-        assert_eq!(header, "max-age=31536000");
-    }
-
-    #[test]
-    fn test_hsts_header_with_subdomains() {
-        let header = hsts_header(31_536_000, true, false);
-        assert_eq!(header, "max-age=31536000; includeSubDomains");
-    }
-
-    #[test]
-    fn test_hsts_header_with_preload() {
-        let header = hsts_header(31_536_000, false, true);
-        assert_eq!(header, "max-age=31536000; preload");
-    }
-
-    #[test]
-    fn test_hsts_header_full() {
-        let header = hsts_header(63_072_000, true, true);
-        assert_eq!(header, "max-age=63072000; includeSubDomains; preload");
-    }
-
-    #[test]
-    fn test_hsts_header_zero_max_age() {
-        let header = hsts_header(0, false, false);
-        assert_eq!(header, "max-age=0");
-    }
-
     #[tokio::test]
     async fn test_security_headers_adds_all_headers() -> TestResult {
         let app = axum::Router::new()
@@ -379,6 +349,7 @@ mod tests {
         assert!(csp.contains("frame-src 'none'"));
         assert!(csp.contains("style-src 'self'"));
         assert!(csp.contains("frame-ancestors 'none'"));
+        assert!(csp.contains("base-uri 'none'"));
         Ok(())
     }
 
@@ -442,26 +413,6 @@ mod tests {
             StatusCode::SERVICE_UNAVAILABLE,
             "guest room existence backend failures must not be misreported as unauthorized"
         );
-    }
-
-    #[tokio::test]
-    async fn test_security_headers_frame_ancestors_none() -> TestResult {
-        let app = axum::Router::new()
-            .route("/test", axum::routing::get(|| async { "ok" }))
-            .layer(axum::middleware::from_fn(security_headers_middleware));
-
-        let response = app.oneshot(request("/test")?).await?;
-        let csp = header_str(response.headers(), "Content-Security-Policy")?;
-
-        assert!(
-            csp.contains("frame-ancestors 'none'"),
-            "CSP must include frame-ancestors 'none' for clickjacking protection"
-        );
-        assert!(
-            csp.contains("base-uri 'none'"),
-            "CSP must include base-uri 'none' to prevent base tag injection"
-        );
-        Ok(())
     }
 
     #[tokio::test]

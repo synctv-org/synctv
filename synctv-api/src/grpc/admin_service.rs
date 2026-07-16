@@ -1001,50 +1001,6 @@ mod tests {
     }
 
     #[test]
-    fn test_api_err_not_found() {
-        let err = crate::impls::ApiError::NotFound("user not found".to_string());
-        let status = map_api_error(err);
-        assert_eq!(status.code(), tonic::Code::NotFound);
-        assert!(status.message().contains("not found"));
-    }
-
-    #[test]
-    fn test_api_err_unauthenticated() {
-        let err = crate::impls::ApiError::Authentication("bad token".to_string());
-        let status = map_api_error(err);
-        assert_eq!(status.code(), tonic::Code::Unauthenticated);
-    }
-
-    #[test]
-    fn test_api_err_service_unavailable_stays_unavailable() {
-        let err =
-            crate::impls::ApiError::ServiceUnavailable("user backend unavailable".to_string());
-        let status = map_api_error(err);
-        assert_eq!(status.code(), tonic::Code::Unavailable);
-    }
-
-    #[test]
-    fn test_api_err_permission_denied() {
-        let err = crate::impls::ApiError::Authorization("not allowed".to_string());
-        let status = map_api_error(err);
-        assert_eq!(status.code(), tonic::Code::PermissionDenied);
-    }
-
-    #[test]
-    fn test_api_err_already_exists() {
-        let err = crate::impls::ApiError::AlreadyExists("duplicate".to_string());
-        let status = map_api_error(err);
-        assert_eq!(status.code(), tonic::Code::AlreadyExists);
-    }
-
-    #[test]
-    fn test_api_err_invalid_argument() {
-        let err = crate::impls::ApiError::InvalidInput("bad field".to_string());
-        let status = map_api_error(err);
-        assert_eq!(status.code(), tonic::Code::InvalidArgument);
-    }
-
-    #[test]
     fn test_api_err_internal_hides_details() {
         let err = crate::impls::ApiError::Internal(
             "database connection failed with password=secret123".to_string(),

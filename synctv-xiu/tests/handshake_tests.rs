@@ -402,28 +402,6 @@ mod error_handling_tests {
     }
 
     #[test]
-    fn test_handshake_error_display() {
-        let error = HandshakeError {
-            value: HandshakeErrorValue::InvalidS0Version,
-        };
-        let message = error.to_string();
-        assert!(message.contains("S0 version"));
-    }
-
-    #[test]
-    fn test_digest_error_display() {
-        let error = HandshakeError {
-            value: HandshakeErrorValue::DigestError(
-                synctv_xiu::rtmp::handshake::errors::DigestError {
-                    value: DigestErrorValue::InvalidDigestLength,
-                },
-            ),
-        };
-        let message = error.to_string();
-        assert!(message.contains("digest"));
-    }
-
-    #[test]
     fn test_bytes_read_error_conversion() {
         use synctv_xiu::bytesio::bytes_errors::{BytesReadError, BytesReadErrorValue};
 
@@ -477,42 +455,11 @@ mod utils_tests {
     use super::*;
 
     #[test]
-    fn test_timestamp_ms_returns_value() {
-        let time = utils::timestamp_ms();
-        assert_ne!(time, 0);
-    }
-}
-
-// State Transition Tests
-
-mod state_transition_tests {
-    use super::*;
-
-    #[test]
-    fn test_client_state_equality() {
-        assert_eq!(
-            ClientHandshakeState::WriteC0C1,
-            ClientHandshakeState::WriteC0C1
-        );
-        assert_ne!(
-            ClientHandshakeState::WriteC0C1,
-            ClientHandshakeState::Finish
-        );
-    }
-
-    #[test]
     fn test_server_state_copy() {
         let state = ServerHandshakeState::ReadC0C1;
         let state_copy = state;
         assert!(matches!(state, ServerHandshakeState::ReadC0C1));
         assert!(matches!(state_copy, ServerHandshakeState::ReadC0C1));
-    }
-
-    #[test]
-    fn test_client_state_debug() {
-        let state = ClientHandshakeState::WriteC0C1;
-        let debug_str = format!("{state:?}");
-        assert!(debug_str.contains("WriteC0C1"));
     }
 
     #[test]

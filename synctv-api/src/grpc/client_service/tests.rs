@@ -1,6 +1,4 @@
-use super::streaming::{
-    await_grpc_receive_or_response_close, GrpcReceiveOutcome, MESSAGE_STREAM_BUFFER_SIZE,
-};
+use super::streaming::{await_grpc_receive_or_response_close, GrpcReceiveOutcome};
 use super::*;
 use synctv_core::models::UserId;
 use synctv_proto::client::{ClientMessage, ServerMessage};
@@ -20,42 +18,6 @@ fn detail_error_code(status: &Status) -> Option<String> {
 }
 
 #[test]
-fn test_map_api_error_not_found() {
-    let err = crate::impls::ApiError::NotFound("room not found".to_string());
-    let status = map_api_error(err);
-    assert_eq!(status.code(), tonic::Code::NotFound);
-    assert!(status.message().contains("not found"));
-}
-
-#[test]
-fn test_map_api_error_unauthenticated() {
-    let err = crate::impls::ApiError::Authentication("invalid token".to_string());
-    let status = map_api_error(err);
-    assert_eq!(status.code(), tonic::Code::Unauthenticated);
-}
-
-#[test]
-fn test_map_api_error_permission_denied() {
-    let err = crate::impls::ApiError::Authorization("forbidden".to_string());
-    let status = map_api_error(err);
-    assert_eq!(status.code(), tonic::Code::PermissionDenied);
-}
-
-#[test]
-fn test_map_api_error_already_exists() {
-    let err = crate::impls::ApiError::AlreadyExists("user exists".to_string());
-    let status = map_api_error(err);
-    assert_eq!(status.code(), tonic::Code::AlreadyExists);
-}
-
-#[test]
-fn test_map_api_error_invalid_argument() {
-    let err = crate::impls::ApiError::InvalidInput("bad input".to_string());
-    let status = map_api_error(err);
-    assert_eq!(status.code(), tonic::Code::InvalidArgument);
-}
-
-#[test]
 fn test_map_api_error_internal_hides_details() {
     let err = crate::impls::ApiError::Internal("secret DB password=abc123".to_string());
     let status = map_api_error(err);
@@ -64,39 +26,6 @@ fn test_map_api_error_internal_hides_details() {
     assert_eq!(status.message(), "Internal error");
     assert!(!status.message().contains("password"));
     assert!(!status.message().contains("secret"));
-}
-
-#[test]
-fn test_create_publish_key_grpc_maps_service_unavailable() {
-    let err = crate::impls::ApiError::ServiceUnavailable("publish key backend unavailable".into());
-    let status = map_api_error(err);
-    assert_eq!(status.code(), tonic::Code::Unavailable);
-    assert_eq!(status.message(), "publish key backend unavailable");
-}
-
-#[test]
-fn test_get_stream_info_grpc_maps_not_found() {
-    let err = crate::impls::ApiError::NotFound("stream not found".into());
-    let status = map_api_error(err);
-    assert_eq!(status.code(), tonic::Code::NotFound);
-    assert_eq!(status.message(), "stream not found");
-}
-
-#[test]
-fn test_list_room_streams_grpc_maps_service_unavailable() {
-    let err = crate::impls::ApiError::ServiceUnavailable("livestream registry unavailable".into());
-    let status = map_api_error(err);
-    assert_eq!(status.code(), tonic::Code::Unavailable);
-    assert_eq!(status.message(), "livestream registry unavailable");
-}
-
-#[test]
-fn test_request_password_reset_grpc_maps_service_unavailable() {
-    let err =
-        crate::impls::ApiError::ServiceUnavailable("password reset backend unavailable".into());
-    let status = map_api_error(err);
-    assert_eq!(status.code(), tonic::Code::Unavailable);
-    assert_eq!(status.message(), "password reset backend unavailable");
 }
 
 #[test]
@@ -191,20 +120,6 @@ fn test_map_api_error_all_variants() {
 }
 
 #[test]
-fn test_grpc_message_sender_send_success() {
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<ServerMessage>(10);
-    let sender = GrpcMessageSender::new(tx);
-
-    let msg = ServerMessage::default();
-    let result = MessageSender::send(&sender, msg);
-    assert!(result.is_ok());
-
-    // Verify message was received
-    let received = rx.try_recv();
-    assert!(received.is_ok());
-}
-
-#[test]
 fn test_grpc_message_sender_channel_closed() -> TestResult {
     let (tx, rx) = tokio::sync::mpsc::channel::<ServerMessage>(10);
     let sender = GrpcMessageSender::new(tx);
@@ -286,13 +201,6 @@ async fn test_await_grpc_receive_or_response_close_prefers_received_message() ->
         }
     }
     Ok(())
-}
-
-#[test]
-fn test_message_stream_buffer_size_reasonable() {
-    // Buffer should be at least 10 and at most 1000
-    const { assert!(MESSAGE_STREAM_BUFFER_SIZE >= 10) };
-    const { assert!(MESSAGE_STREAM_BUFFER_SIZE <= 1000) };
 }
 
 #[test]

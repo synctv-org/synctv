@@ -272,13 +272,6 @@ fn test_merge_user_statuses_multi_user_multi_node() {
 
 /// Verify empty responses produce empty merge result.
 #[test]
-fn test_merge_user_statuses_empty() {
-    let merged = RealtimePresenceClient::merge_user_statuses(vec![]);
-    assert!(merged.is_empty());
-}
-
-/// Verify `node_id` is merged (comma-separated) for multi-node presence.
-#[test]
 fn test_merge_user_statuses_node_id_merged() {
     let statuses = vec![
         UserOnlineStatus {

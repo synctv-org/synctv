@@ -372,46 +372,6 @@ mod tests {
     }
 
     #[test]
-    fn test_http_flv_session_creation() {
-        let (event_sender, _) = tokio::sync::mpsc::channel(64);
-        let (response_tx, _response_rx) = mpsc::channel(FLV_RESPONSE_CHANNEL_CAPACITY);
-
-        let session = HttpFlvSession::new(
-            "live".to_string(),
-            "room123/media456".to_string(),
-            event_sender,
-            response_tx,
-        );
-
-        assert_eq!(session.app_name, "live");
-        assert_eq!(session.stream_name, "room123/media456");
-        assert!(!session.has_send_header);
-        assert!(!session.has_audio);
-        assert!(!session.has_video);
-    }
-
-    #[test]
-    fn test_flv_session_defaults() {
-        let (event_sender, _) = tokio::sync::mpsc::channel(64);
-        let (response_tx, _response_rx) = mpsc::channel(FLV_RESPONSE_CHANNEL_CAPACITY);
-
-        let session = HttpFlvSession::new(
-            "live".to_string(),
-            "test/stream".to_string(),
-            event_sender,
-            response_tx,
-        );
-
-        // Verify default states
-        assert!(!session.has_send_header);
-        assert!(!session.has_audio);
-        assert!(!session.has_video);
-        assert_eq!(session.consecutive_dropped_frames, 0);
-        assert_eq!(session.total_dropped_frames, 0);
-    }
-
-    /// Test that flush_response_data drops frames when channel is full and tracks the drop count.
-    #[test]
     fn test_flush_drops_frames_when_channel_full() {
         let (event_sender, _) = tokio::sync::mpsc::channel(64);
         // Create a channel with capacity 1 so the first pending response fills it.

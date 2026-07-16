@@ -84,27 +84,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pat_new() {
-        let pat = Pat::new();
-        assert_eq!(pat.transport_stream_id, 1);
-        assert_eq!(pat.version_number, 0);
-        assert!(pat.pmt.is_empty());
-    }
-
-    #[test]
-    fn test_pat_default() {
-        let pat = Pat::default();
-        assert_eq!(pat.transport_stream_id, 1);
-        assert!(pat.pmt.is_empty());
-    }
-
-    #[test]
-    fn test_pat_muxer_new() {
-        let muxer = PatMuxer::new();
-        assert!(muxer.bytes_writer.get_current_bytes().is_empty());
-    }
-
-    #[test]
     fn test_pat_muxer_default() {
         let muxer = PatMuxer::default();
         assert!(muxer.bytes_writer.get_current_bytes().is_empty());

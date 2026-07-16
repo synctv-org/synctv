@@ -397,28 +397,6 @@ mod tests {
 
     const TEST_STREAM_MESSAGE_TIMEOUT: Duration = Duration::from_millis(50);
     #[tokio::test]
-    async fn test_puller_creation() {
-        let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
-        let pool = GrpcConnectionPool::with_defaults();
-
-        let puller = GrpcStreamPuller::new(
-            "room123".to_string(),
-            "media456".to_string(),
-            "publisher-node:50051".to_string(),
-            7,
-            stream_hub_event_sender,
-            pool.clone(),
-        );
-
-        assert_eq!(puller.room_id, "room123");
-        assert_eq!(puller.media_id, "media456");
-        assert_eq!(puller.publisher_node_addr, "publisher-node:50051");
-        // Pool should be shared
-        assert!(puller.connection_pool.is_empty());
-        assert_eq!(puller.connection_pool.len(), pool.len());
-    }
-
-    #[tokio::test]
     async fn test_puller_with_cluster_secret() {
         let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
         let pool = GrpcConnectionPool::with_defaults();

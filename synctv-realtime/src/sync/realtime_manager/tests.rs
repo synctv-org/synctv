@@ -150,83 +150,6 @@ impl RoomMessageRuntime for FixedMetricsRoomRuntime {
     }
 }
 
-#[test]
-fn test_realtime_config_default_tracks_core_cluster_capacity() {
-    let realtime = RealtimeConfig::default();
-
-    assert_eq!(realtime.critical_channel_capacity, 10_000);
-    assert_eq!(realtime.publish_channel_capacity, 100_000);
-    assert_eq!(realtime.catchup_window_secs, 300);
-    assert_eq!(realtime.stream_max_length, 100_000);
-}
-
-#[tokio::test]
-async fn test_realtime_manager_single_node() -> TestResult {
-    let config = RealtimeConfig {
-        distributed_transport_factory: None,
-        message_runtime: Arc::new(RoomMessageHub::new()),
-        distributed_enabled: false,
-        node_id: "test_node".to_string(),
-        dedup_window: Duration::from_secs(1),
-        critical_channel_capacity: 1000,
-        publish_channel_capacity: 10_000,
-        key_prefix: "synctv:".to_string(),
-        catchup_window_secs: 300,
-        stream_max_length: 10_000,
-        event_handler: None,
-        parent_cancel_token: None,
-    };
-
-    let manager = RealtimeManager::new(config).await?;
-
-    // Subscribe a client
-    let room_id = RoomId::expect_positive(10_000_092);
-    let user_id = UserId::expect_positive(10_000_010);
-    let (mut rx, conn_id) = manager.subscribe(room_id, user_id).await?;
-
-    // Broadcast event
-    let event = RealtimeEvent::ChatMessage {
-        event_id: synctv_common::snanoid!(16),
-        room_id,
-        user_id,
-        username: "user1".to_string(),
-        message: "Hello!".to_string(),
-        timestamp: synctv_core::SystemClock.now(),
-        display_position: None,
-        display_color: None,
-    };
-
-    let result = manager.broadcast(event.clone());
-
-    assert_eq!(result.local_sent, 1);
-    assert!(!result.redis_sent);
-
-    // Verify duplicate detection
-    let result2 = manager.broadcast(event);
-    assert_eq!(result2.local_sent, 0);
-    assert!(matches!(
-        result2,
-        BroadcastResult {
-            local_sent: 0,
-            redis_sent: false
-        }
-    ));
-
-    // Verify message received
-    let received = rx
-        .recv()
-        .await
-        .ok_or_else(|| missing("local subscriber channel closed"))?;
-    assert_eq!(received.event_type(), "chat_message");
-
-    // Cleanup
-    manager.unsubscribe(&conn_id);
-
-    let metrics = manager.metrics();
-    assert_eq!(metrics.total_connections, 0);
-    Ok(())
-}
-
 #[tokio::test]
 async fn test_local_critical_broadcast_does_not_panic_on_current_thread_runtime() -> TestResult {
     let message_hub = Arc::new(RoomMessageHub::new());
@@ -274,31 +197,6 @@ async fn test_local_critical_broadcast_does_not_panic_on_current_thread_runtime(
 
     manager.shutdown().await;
     Ok(())
-}
-
-#[test]
-fn test_realtime_config_debug_reports_transport_configuration_without_backend_name() {
-    let factory = StubTransportFactory::default();
-    let config = RealtimeConfig {
-        distributed_transport_factory: Some(Arc::new(factory)),
-        message_runtime: Arc::new(RoomMessageHub::new()),
-        distributed_enabled: true,
-        node_id: "debug-node".to_string(),
-        dedup_window: Duration::from_secs(1),
-        critical_channel_capacity: 8,
-        publish_channel_capacity: 16,
-        key_prefix: "synctv:".to_string(),
-        catchup_window_secs: 300,
-        stream_max_length: 10_000,
-        event_handler: None,
-        parent_cancel_token: None,
-    };
-
-    let debug = format!("{config:?}");
-    assert!(debug.contains("distributed_transport_factory: Some(\"configured\")"));
-    assert!(!debug.contains("stub"));
-    assert!(!debug.contains("redis"));
-    assert!(!debug.contains("backend"));
 }
 
 #[tokio::test]

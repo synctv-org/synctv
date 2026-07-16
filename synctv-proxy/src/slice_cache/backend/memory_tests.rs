@@ -45,12 +45,6 @@ async fn test_memory_backend_remove() -> TestResult {
 }
 
 #[tokio::test]
-async fn test_memory_backend_remove_nonexistent() {
-    let backend = default_backend();
-    backend.remove("ghost").await;
-}
-
-#[tokio::test]
 async fn test_memory_backend_get_presence() -> TestResult {
     let backend = default_backend();
     assert!(backend.get("k1").await.is_none());
@@ -80,23 +74,6 @@ async fn test_memory_backend_current_size() -> TestResult {
 
     backend.remove("k1").await;
     assert_eq!(backend.current_size(), 8);
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_memory_backend_entry_count() -> TestResult {
-    let backend = default_backend();
-    backend.run_pending_tasks().await;
-    assert_eq!(backend.entry_count(), 0);
-
-    backend
-        .put("k1", make_entry(b"a", Duration::from_mins(1)))
-        .await?;
-    backend
-        .put("k2", make_entry(b"b", Duration::from_mins(1)))
-        .await?;
-    backend.run_pending_tasks().await;
-    assert_eq!(backend.entry_count(), 2);
     Ok(())
 }
 

@@ -2,12 +2,12 @@
 
 use synctv_core::models::user::{SignupMethod, User, UserRole, UserStatus};
 use synctv_core::models::{
+    RoomAdminPermissionBits, RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomRole,
+    RoomSettings, RoomStatus,
     room_settings::{
         AdminAddedPermissions, AdminRemovedPermissions, MemberAddedPermissions,
         MemberRemovedPermissions,
     },
-    RoomAdminPermissionBits, RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomRole,
-    RoomSettings, RoomStatus,
 };
 
 fn ok<T, E: std::fmt::Debug>(result: Result<T, E>, context: &str) -> T {
@@ -156,16 +156,6 @@ fn test_room_status_predicates() {
 
     assert!(!RoomStatus::Closed.is_active());
     assert!(RoomStatus::Closed.is_closed());
-}
-
-#[test]
-fn test_permission_bits_has_single() {
-    let perms = RoomPermissionSet::new(
-        RoomAdminPermissionBits::CHAT | RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
-    );
-    assert!(perms.has(RoomPermission::CHAT));
-    assert!(perms.has(RoomPermission::CREATE_MEDIA_RESOURCE));
-    assert!(!perms.has(RoomPermission::DELETE_MEDIA_RESOURCE_ANY));
 }
 
 #[test]

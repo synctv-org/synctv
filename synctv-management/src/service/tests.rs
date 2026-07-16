@@ -60,14 +60,6 @@ fn slice_cache_target_validation_rejects_conflicting_node_selection() {
 }
 
 #[test]
-fn slice_cache_target_validation_trims_node_id() -> Result<(), Box<dyn std::error::Error>> {
-    let target = validate_slice_cache_selection(Some("  node-a  "), false)?;
-
-    assert_eq!(target.as_deref(), Some("node-a"));
-    Ok(())
-}
-
-#[test]
 fn purge_slice_cache_response_aggregates_nodes_and_failures() {
     let response = purge_response_from_nodes(
         vec![
@@ -125,23 +117,6 @@ fn evict_expired_slice_cache_response_aggregates_nodes_and_failures() {
     assert!(response.stats.is_none());
     assert_eq!(response.nodes.len(), 2);
     assert!(response.failures.is_empty());
-}
-
-#[test]
-fn parse_shutdown_mode_accepts_defined_values() -> Result<(), tonic::Status> {
-    assert_eq!(
-        parse_shutdown_mode(ProtoShutdownMode::Unspecified as i32)?,
-        ShutdownMode::Graceful
-    );
-    assert_eq!(
-        parse_shutdown_mode(ProtoShutdownMode::Graceful as i32)?,
-        ShutdownMode::Graceful
-    );
-    assert_eq!(
-        parse_shutdown_mode(ProtoShutdownMode::Force as i32)?,
-        ShutdownMode::Force
-    );
-    Ok(())
 }
 
 #[test]

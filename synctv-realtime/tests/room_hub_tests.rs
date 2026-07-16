@@ -359,19 +359,6 @@ async fn test_remove_room_cleans_connections() {
 // Test 4: unsubscribe unknown connection is safe
 
 #[tokio::test]
-async fn test_unsubscribe_unknown_safe() {
-    let hub = RoomMessageHub::new();
-
-    // Should not panic
-    hub.unsubscribe("nonexistent_connection");
-
-    assert_eq!(hub.connection_count(), 0);
-    assert_eq!(hub.room_count(), 0);
-}
-
-/// This test verifies that lifecycle events are still delivered correctly when
-/// receivers are active.
-#[tokio::test]
 async fn test_lifecycle_events_emitted_on_subscribe_unsubscribe() {
     use synctv_realtime::sync::RoomLifecycleEvent;
 

@@ -2466,123 +2466,12 @@ mod tests {
     }
 
     #[test]
-    fn test_update_user_role_request_deserialization() -> TestResult {
-        let json = format!(
-            r#"{{"userId":"usr_body","role":{}}}"#,
-            synctv_proto::common::UserRole::Admin as i32
-        );
-        let mut req: admin::UpdateUserRoleRequest = serde_json::from_str(&json)?;
-        req.user_id = "usr_1".to_string();
-        assert_eq!(req.user_id, "usr_1");
-        assert_eq!(req.role, synctv_proto::common::UserRole::Admin as i32);
-        Ok(())
-    }
-
-    #[test]
-    fn test_update_user_role_request_all_roles() -> TestResult {
-        let role_mappings = [
-            (synctv_proto::common::UserRole::Root as i32),
-            (synctv_proto::common::UserRole::Admin as i32),
-            (synctv_proto::common::UserRole::User as i32),
-        ];
-
-        for expected in role_mappings {
-            let json = format!(r#"{{"userId":"usr_1","role":{expected}}}"#);
-            let req: admin::UpdateUserRoleRequest = serde_json::from_str(&json)?;
-            assert_eq!(req.role, expected);
-        }
-        Ok(())
-    }
-
-    #[test]
     fn test_update_user_role_request_rejects_string_role() {
         let err = serde_json::from_str::<admin::UpdateUserRoleRequest>(
             r#"{"userId":"usr_1","role":"admin"}"#,
         )
         .expect_err("string role should be rejected");
         assert!(err.is_data());
-    }
-
-    #[test]
-    fn test_update_room_settings_request_accepts_protojson_body() -> TestResult {
-        let json = r#"{"roomId":"room_body","settings":{"allowGuestJoin":true},"updateMask":"allowGuestJoin"}"#;
-        let mut req: admin::UpdateRoomSettingsRequest = serde_json::from_str(json)?;
-        req.room_id = "room_1".to_string();
-        assert_eq!(req.room_id, "room_1");
-        assert_eq!(req.settings.expect("settings").allow_guest_join, Some(true));
-        assert_eq!(
-            req.update_mask.expect("update mask").paths,
-            ["allow_guest_join"]
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_admin_user_path_request_deserializes_proto_field_name() -> TestResult {
-        let req: admin::UserPathRequest = serde_json::from_str(r#"{"userId":"usr_1"}"#)?;
-
-        assert_eq!(req.user_id, "usr_1");
-        Ok(())
-    }
-
-    #[test]
-    fn test_admin_room_path_request_deserializes_proto_field_name() -> TestResult {
-        let req: admin::RoomPathRequest = serde_json::from_str(r#"{"roomId":"room_1"}"#)?;
-
-        assert_eq!(req.room_id, "room_1");
-        Ok(())
-    }
-
-    #[test]
-    fn test_list_users_query_deserialization() -> TestResult {
-        let json = r#"{"page":2,"pageSize":50,"status":1,"role":2,"search":"test","sortBy":3,"sortDirection":1}"#;
-        let query: admin::ListUsersRequest = serde_json::from_str(json)?;
-        assert_eq!(query.page, 2);
-        assert_eq!(query.page_size, 50);
-        assert_eq!(
-            query.status,
-            synctv_proto::common::UserStatus::Active as i32
-        );
-        assert_eq!(query.role, synctv_proto::common::UserRole::Admin as i32);
-        assert_eq!(query.search, "test");
-        assert_eq!(query.sort_by, admin::UserListSortBy::Username as i32);
-        assert_eq!(query.sort_direction, admin::SortDirection::Asc as i32);
-        Ok(())
-    }
-
-    #[test]
-    fn test_list_rooms_query_deserialization() -> TestResult {
-        let json = r#"{"page":1,"pageSize":10,"status":1,"search":"room","creatorId":"user1","isBanned":false,"sortBy":3,"sortDirection":2}"#;
-        let query: admin::ListRoomsRequest = serde_json::from_str(json)?;
-        assert_eq!(query.page, 1);
-        assert_eq!(query.page_size, 10);
-        assert_eq!(
-            query.status,
-            synctv_proto::common::RoomStatus::Active as i32
-        );
-        assert_eq!(query.search, "room");
-        assert_eq!(query.creator_id, "user1");
-        assert_eq!(query.is_banned, Some(false));
-        assert_eq!(query.sort_by, admin::RoomListSortBy::LastActivityAt as i32);
-        assert_eq!(query.sort_direction, admin::SortDirection::Desc as i32);
-        Ok(())
-    }
-
-    #[test]
-    fn test_room_members_query_deserialization() -> TestResult {
-        let json =
-            r#"{"page":2,"pageSize":25,"search":"alice","role":2,"sortBy":2,"sortDirection":1}"#;
-        let query: admin::GetRoomMembersRequest = serde_json::from_str(json)?;
-        assert_eq!(query.page, 2);
-        assert_eq!(query.page_size, 25);
-        assert_eq!(query.search, "alice");
-        assert_eq!(
-            query.role,
-            synctv_proto::common::RoomMemberRole::Admin as i32
-        );
-        assert_eq!(query.sort_by, admin::RoomMemberListSortBy::Username as i32);
-        assert_eq!(query.sort_direction, admin::SortDirection::Asc as i32);
-        Ok(())
     }
 
     #[tokio::test]
@@ -2653,50 +2542,6 @@ mod tests {
             err.message(),
             "Admin service is not available on this server."
         );
-        Ok(())
-    }
-
-    #[test]
-    fn test_get_user_rooms_query_defaults_to_proto_zero_values() -> TestResult {
-        let query: admin::GetUserRoomsRequest = serde_urlencoded::from_str("")?;
-
-        assert!(query.user_id.is_empty());
-        assert_eq!(query.page, 0);
-        assert_eq!(query.page_size, 0);
-        assert_eq!(query.status, 0);
-        assert!(query.search.is_empty());
-        assert_eq!(query.is_banned, None);
-        assert_eq!(query.sort_by, 0);
-        assert_eq!(query.sort_direction, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn test_list_active_streams_query_deserializes_explicit_values() -> TestResult {
-        let query: admin::ListActiveStreamsRequest = serde_urlencoded::from_str(
-            "page=2&pageSize=25&roomId=room123&userId=user123&nodeId=node-a&search=live&sortBy=5&sortDirection=1",
-        )?;
-
-        assert_eq!(query.page, 2);
-        assert_eq!(query.page_size, 25);
-        assert_eq!(query.room_id, "room123");
-        assert_eq!(query.user_id, "user123");
-        assert_eq!(query.node_id, "node-a");
-        assert_eq!(query.search, "live");
-        assert_eq!(query.sort_by, admin::ActiveStreamListSortBy::NodeId as i32);
-        assert_eq!(query.sort_direction, admin::SortDirection::Asc as i32);
-        Ok(())
-    }
-
-    #[test]
-    fn test_list_admins_query_defaults_to_proto_zero_values() -> TestResult {
-        let query: admin::ListAdminsRequest = serde_urlencoded::from_str("")?;
-
-        assert_eq!(query.page, 0);
-        assert_eq!(query.page_size, 0);
-        assert!(query.search.is_empty());
-        assert_eq!(query.sort_by, 0);
-        assert_eq!(query.sort_direction, 0);
         Ok(())
     }
 }

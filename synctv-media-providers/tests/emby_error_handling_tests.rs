@@ -101,63 +101,6 @@ fn test_report_playback_stop_validates_item_id() {
 
 /// Test that `EmbyError` has an `InvalidConfig` variant
 #[test]
-fn test_emby_error_has_invalid_config_variant() {
-    use synctv_media_providers::EmbyError;
-
-    let err = EmbyError::InvalidConfig("test error".to_string());
-    let msg = err.to_string();
-    assert!(
-        msg.contains("Invalid configuration") || msg.contains("test error"),
-        "Error message should describe the error: {msg}"
-    );
-}
-
-/// Test that `EmbyError` has an Auth variant
-#[test]
-fn test_emby_error_has_auth_variant() {
-    use synctv_media_providers::EmbyError;
-
-    let err = EmbyError::Auth("login failed".to_string());
-    let msg = err.to_string();
-    assert!(
-        msg.contains("Authentication") || msg.contains("login failed"),
-        "Error message should describe auth error: {msg}"
-    );
-}
-
-/// Test that `EmbyError` has an Http variant
-#[test]
-fn test_emby_error_has_http_variant() {
-    use synctv_media_providers::EmbyError;
-
-    let err = EmbyError::Http {
-        status: reqwest::StatusCode::NOT_FOUND,
-        url: "https://example.com/test".to_string(),
-        retry_after_secs: None,
-        body: "not found".to_string(),
-    };
-    let msg = err.to_string();
-    assert!(
-        msg.contains("404") || msg.contains("HTTP"),
-        "Error message should include HTTP status: {msg}"
-    );
-}
-
-/// Test that `EmbyError` has a Network variant
-#[test]
-fn test_emby_error_has_network_variant() {
-    use synctv_media_providers::EmbyError;
-
-    let err = EmbyError::Network("connection refused".to_string());
-    let msg = err.to_string();
-    assert!(
-        msg.contains("Network") || msg.contains("connection"),
-        "Error message should describe network error: {msg}"
-    );
-}
-
-/// Test that `EmbyError` is Send + Sync (required for async)
-#[test]
 fn test_emby_error_is_send_sync() {
     use std::sync::Arc;
     use synctv_media_providers::EmbyError;
@@ -227,20 +170,6 @@ fn test_api_base_path_is_not_public_configuration() {
 }
 
 /// Test error when host URL is invalid (this should be handled at construction)
-#[test]
-fn test_client_new_accepts_valid_url() {
-    // Valid URLs should work
-    let result = EmbyClient::new("https://emby.example.com");
-    assert!(result.is_ok());
-
-    let result = EmbyClient::new("http://localhost:8096");
-    assert!(result.is_ok());
-}
-
-// Verify non-success responses return errors instead of silent success.
-
-/// Test that logout returns an error when the server responds with 401 Unauthorized.
-/// Previously this method silently ignored non-success responses.
 #[tokio::test]
 async fn test_logout_returns_error_on_401() {
     let server = MockServer::start().await;

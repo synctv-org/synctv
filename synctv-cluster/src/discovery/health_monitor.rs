@@ -634,19 +634,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_health_monitor_new() -> Result<()> {
-        let registry = make_registry()?;
-        let monitor = HealthMonitor::new(registry, 10);
-        let status = monitor.get_all_status().await;
-        assert!(status.is_empty(), "New monitor should have no statuses");
-        assert!(
-            !monitor.is_snapshot_stale(),
-            "monitor without a successful refresh is uninitialized, not stale"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn test_health_monitor_with_probe_config() -> Result<()> {
         let registry = make_registry()?;
         let config = HealthProbeConfig {

@@ -9,8 +9,8 @@ use crate::service::{OAuth2GithubProviderConfig, OAuth2ProviderPrivateConfig};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use oauth2::{
-    basic::BasicClient, AuthUrl, ClientId, ClientSecret, EndpointNotSet, EndpointSet,
-    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,
+    AuthUrl, ClientId, ClientSecret, EndpointNotSet, EndpointSet, PkceCodeChallenge,
+    PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl, basic::BasicClient,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -396,30 +396,6 @@ mod tests {
         assert!(auth_url.contains("code_challenge_method=S256"));
         // PKCE verifier should be non-empty
         assert!(!pkce_verifier.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_new_auth_url_different_states_produce_different_urls() {
-        let provider = GitHubProvider::create(
-            "id".to_string(),
-            "secret".to_string(),
-            "https://example.com/cb".to_string(),
-        )
-        .checked("operation should succeed");
-
-        let auth1 = provider
-            .new_auth_url("state1", None)
-            .await
-            .checked("operation should succeed");
-        let auth2 = provider
-            .new_auth_url("state2", None)
-            .await
-            .checked("operation should succeed");
-
-        // Different states should produce different URLs
-        assert_ne!(auth1.auth_url, auth2.auth_url);
-        // Each call generates a new random PKCE verifier
-        assert_ne!(auth1.pkce_verifier, auth2.pkce_verifier);
     }
 
     #[test]

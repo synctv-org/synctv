@@ -852,11 +852,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ssrf_dns_resolver_creation() {
-        assert!(SsrfGuard::strict_policy().dns_resolver().is_some());
-    }
-
-    #[test]
     fn test_disabled_policy_disables_ssrf_checks() {
         let guard = SsrfGuard::disabled();
         assert!(guard.acl().is_none());

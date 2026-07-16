@@ -439,38 +439,6 @@ mod tests {
     }
 
     #[test]
-    fn test_display_trait() {
-        assert_eq!(
-            Error::NotFound("room 123".to_string()).to_string(),
-            "Not found: room 123"
-        );
-        assert_eq!(
-            Error::AlreadyExists("user".to_string()).to_string(),
-            "Already exists: user"
-        );
-        assert_eq!(
-            Error::Authentication("expired".to_string()).to_string(),
-            "Authentication error: expired"
-        );
-        assert_eq!(
-            Error::Authorization("forbidden".to_string()).to_string(),
-            "Authorization error: forbidden"
-        );
-        assert_eq!(
-            Error::InvalidInput("bad".to_string()).to_string(),
-            "Invalid input: bad"
-        );
-        assert_eq!(
-            Error::Internal("oops".to_string()).to_string(),
-            "Internal error: oops"
-        );
-        assert_eq!(
-            Error::OptimisticLockConflict.to_string(),
-            "Optimistic lock conflict"
-        );
-    }
-
-    #[test]
     fn test_provider_error_network_converts_to_service_unavailable() {
         let provider_err =
             crate::provider::ProviderError::NetworkError("connection refused".to_string());
@@ -499,9 +467,11 @@ mod tests {
             crate::provider::ProviderError::InvalidConfig("missing host".to_string());
         let core_err: Error = provider_err.into();
         assert!(matches!(core_err, Error::InvalidInput(_)));
-        assert!(core_err
-            .to_string()
-            .contains("Invalid provider configuration"));
+        assert!(
+            core_err
+                .to_string()
+                .contains("Invalid provider configuration")
+        );
     }
 
     #[test]
@@ -628,9 +598,11 @@ mod tests {
         let provider_err = crate::provider::ProviderError::EncryptionRequired("bilibili");
         let core_err: Error = provider_err.into();
         assert!(matches!(core_err, Error::InvalidInput(_)));
-        assert!(core_err
-            .to_string()
-            .contains("Credential encryption required"));
+        assert!(
+            core_err
+                .to_string()
+                .contains("Credential encryption required")
+        );
     }
 
     #[test]

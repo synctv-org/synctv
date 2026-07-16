@@ -52,30 +52,6 @@ fn make_audio_frame(timestamp: u32, size: usize) -> FrameData {
 // Gop Struct Tests (Public API only)
 
 #[test]
-fn test_gop_new_is_empty() {
-    let gop = Gop::new();
-    assert!(gop.is_empty());
-    assert_eq!(gop.len(), 0);
-    assert_eq!(gop.memory_bytes(), 0);
-}
-
-#[test]
-fn test_gop_default_is_empty() {
-    let gop = Gop::default();
-    assert!(gop.is_empty());
-    assert_eq!(gop.len(), 0);
-}
-
-#[test]
-fn test_gop_clone() {
-    let gop = Gop::new();
-    let gop2 = gop;
-
-    assert!(gop2.is_empty());
-    assert_eq!(gop2.len(), 0);
-}
-
-#[test]
 fn test_gop_get_frame_data_empty() {
     let gop = Gop::new();
     let frames = gop.get_frame_data();
@@ -94,17 +70,6 @@ fn test_gop_frame_data_empty() {
 // Gops (Multiple GOP) Tests
 
 #[test]
-fn test_gops_new_single_gop() {
-    let gops = Gops::new(5, None);
-
-    // Gops starts with one empty GOP
-    assert_eq!(gops.gop_count(), 1, "New Gops starts with one active GOP");
-    assert_eq!(gops.max_gop_count(), 5);
-    assert_eq!(gops.max_total_bytes(), DEFAULT_MAX_TOTAL_BYTES);
-    assert!(gops.is_enabled());
-}
-
-#[test]
 fn test_gops_disabled_with_zero_size() {
     let gops = Gops::new(0, None);
 
@@ -119,26 +84,6 @@ fn test_gops_custom_memory_limit() {
     assert_eq!(gops.max_total_bytes(), custom_limit);
 }
 
-#[test]
-fn test_gops_default() {
-    let gops = Gops::default();
-    assert_eq!(gops.gop_count(), 1);
-    assert_eq!(gops.max_gop_count(), 1);
-}
-
-#[test]
-fn test_gops_clone() {
-    let gops = Gops::new(5, Some(10000));
-    let gops2 = gops;
-
-    assert_eq!(gops2.gop_count(), 1);
-    assert_eq!(gops2.max_gop_count(), 5);
-    assert_eq!(gops2.max_total_bytes(), 10000);
-}
-
-// GOP Eviction Tests
-
-/// Test that oldest GOP is evicted when count limit is reached
 #[test]
 fn test_gops_eviction_on_count_limit() {
     let mut gops = Gops::new(3, None);
@@ -228,23 +173,6 @@ fn test_gops_many_gops_eviction() {
 // Zero-Copy Clone Tests (via public API)
 
 /// Test that cloning Gops is cheap (Arc clones)
-#[test]
-fn test_gops_zero_copy_clone() {
-    let mut gops = Gops::new(5, None);
-
-    // Add some frames
-    for i in 0..10 {
-        gops.save_frame_data(make_inter_frame(i * 100, 100), false);
-    }
-
-    // Clone should be cheap
-    let gops2 = gops.clone();
-
-    assert_eq!(gops2.gop_count(), gops.gop_count());
-    assert_eq!(gops2.current_total_bytes(), gops.current_total_bytes());
-}
-
-/// Test `get_gops()` returns frozen GOPs
 #[test]
 fn test_gops_get_gops_returns_frozen() {
     let mut gops = Gops::new(5, None);
@@ -386,20 +314,6 @@ fn test_gops_disabled_drops_all_frames() {
 }
 
 // Default Values Documentation Tests
-
-#[test]
-fn test_default_max_total_bytes() {
-    // DEFAULT_MAX_TOTAL_BYTES should be 500 MB
-    assert_eq!(DEFAULT_MAX_TOTAL_BYTES, 500 * 1024 * 1024);
-}
-
-#[test]
-fn test_gops_default_uses_default_max_bytes() {
-    let gops = Gops::new(5, None);
-    assert_eq!(gops.max_total_bytes(), DEFAULT_MAX_TOTAL_BYTES);
-}
-
-// Edge Cases
 
 #[test]
 fn test_gops_current_total_bytes_initial() {

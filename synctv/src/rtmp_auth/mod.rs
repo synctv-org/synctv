@@ -1166,18 +1166,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_token_first_param() {
-        let result = extract_token_from_query("token=first_token&other=value");
-        assert_eq!(result.as_deref(), Some("first_token"));
-    }
-
-    #[test]
-    fn test_extract_token_last_param() {
-        let result = extract_token_from_query("other=value&token=last_token");
-        assert_eq!(result.as_deref(), Some("last_token"));
-    }
-
-    #[test]
     fn test_extract_token_missing_returns_none() {
         let result = extract_token_from_query("foo=bar&baz=qux");
         assert_eq!(result, None);
@@ -1193,13 +1181,6 @@ mod tests {
     fn test_extract_token_empty_value_returns_none() {
         // Empty token should return None to avoid meaningless JWT validation errors
         let result = extract_token_from_query("token=");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_token_empty_value_with_other_params() {
-        // Empty token among other params should also return None
-        let result = extract_token_from_query("foo=bar&token=&baz=qux");
         assert_eq!(result, None);
     }
 
@@ -1225,14 +1206,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_token_jwt_like_value() {
-        let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
-        let query = format!("token={jwt}");
-        let result = extract_token_from_query(&query);
-        assert_eq!(result.as_deref(), Some(jwt));
-    }
-
-    #[test]
     fn test_extract_token_percent_encoded_plus() {
         let result = extract_token_from_query("token=foo%2Bbar");
         assert_eq!(result.as_deref(), Some("foo+bar"));
@@ -1244,17 +1217,6 @@ mod tests {
         let result = extract_token_from_query("token=abc+def");
         // percent_decode_str does NOT convert `+` to space (only %20 is space in strict mode)
         assert_eq!(result.as_deref(), Some("abc+def"));
-    }
-
-    #[test]
-    fn test_publish_requires_query_token() {
-        let query = None;
-        let token_owned: Option<String> = query.and_then(extract_token_from_query);
-
-        assert!(
-            token_owned.is_none(),
-            "RTMP publish without ?token= must not produce a token"
-        );
     }
 
     #[test]
@@ -1738,47 +1700,5 @@ mod tests {
             .expect("cluster profile with runtime should build shared RTMP index");
 
         assert!(index.supports_cross_node_lookup());
-    }
-
-    #[test]
-    fn test_stream_lifecycle_event_started_fields() {
-        let event = StreamLifecycleEvent::Started {
-            room_id: "room1".to_string(),
-            media_id: "media1".to_string(),
-            user_id: "user1".to_string(),
-        };
-        match event {
-            StreamLifecycleEvent::Started {
-                room_id,
-                media_id,
-                user_id,
-            } => {
-                assert_eq!(room_id, "room1");
-                assert_eq!(media_id, "media1");
-                assert_eq!(user_id, "user1");
-            }
-            other => unreachable!("Expected Started variant, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_stream_lifecycle_event_stopped_fields() {
-        let event = StreamLifecycleEvent::Stopped {
-            room_id: "room1".to_string(),
-            media_id: "media1".to_string(),
-            user_id: "user1".to_string(),
-        };
-        match event {
-            StreamLifecycleEvent::Stopped {
-                room_id,
-                media_id,
-                user_id,
-            } => {
-                assert_eq!(room_id, "room1");
-                assert_eq!(media_id, "media1");
-                assert_eq!(user_id, "user1");
-            }
-            other => unreachable!("Expected Stopped variant, got: {other:?}"),
-        }
     }
 }

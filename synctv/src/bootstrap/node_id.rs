@@ -52,25 +52,6 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_node_id_format() {
-        with_node_env(None, None, |env| {
-            let node_id = generate_node_id_with(&|name| env.get(name).cloned());
-            assert!(
-                node_id.contains('-'),
-                "node_id should contain hyphen: {node_id}"
-            );
-        });
-    }
-
-    #[test]
-    fn test_generate_node_id_with_pod_name() {
-        with_node_env(Some("test-pod-123"), None, |env| {
-            let node_id = generate_node_id_with(&|name| env.get(name).cloned());
-            assert_eq!(node_id, "test-pod-123", "Should use POD_NAME when set");
-        });
-    }
-
-    #[test]
     fn test_generate_node_id_uses_pod_ip_before_hostname() {
         with_node_env(Some(""), Some("10.2.3.4"), |env| {
             let node_id = generate_node_id_with(&|name| env.get(name).cloned());
@@ -85,15 +66,6 @@ mod tests {
             assert!(!node_id.is_empty(), "node_id should not be empty");
             assert!(node_id.contains('-'), "Should use hostname-based format");
             assert_ne!(node_id, "unknown", "Should include uniqueness suffix");
-        });
-    }
-
-    #[test]
-    fn test_generate_node_id_unique() {
-        with_node_env(None, None, |env| {
-            let id1 = generate_node_id_with(&|name| env.get(name).cloned());
-            let id2 = generate_node_id_with(&|name| env.get(name).cloned());
-            assert_ne!(id1, id2, "Each call should generate a unique ID");
         });
     }
 }

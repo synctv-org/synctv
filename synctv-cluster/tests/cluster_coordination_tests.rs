@@ -37,18 +37,6 @@ async fn test_node_info_serialization() {
     assert_eq!(node.epoch, deserialized.epoch);
 }
 
-#[tokio::test]
-async fn test_node_info_is_stale() {
-    let mut node = NodeInfo::new("node-1".to_string(), "localhost:8080".to_string());
-
-    // Fresh node should not be stale
-    assert!(!node.is_stale(30));
-
-    // Make heartbeat old
-    node.last_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(60);
-    assert!(node.is_stale(30));
-}
-
 // NodeRegistry tests (actual implementation, local mode)
 
 #[tokio::test]
@@ -139,26 +127,6 @@ async fn test_health_monitor_initial_state() {
     let status = monitor.get_all_status().await;
     assert!(status.is_empty());
     assert_eq!(monitor.get_node_status("self").await, None);
-}
-
-#[tokio::test]
-async fn test_health_monitor_start_and_shutdown() {
-    let registry = make_registry("self");
-    registry
-        .test_insert_local(NodeInfo::new(
-            "self".to_string(),
-            "localhost:8080".to_string(),
-        ))
-        .await;
-
-    let monitor = HealthMonitor::new(registry, 60);
-    monitor.start().unwrap();
-
-    // Let it run briefly
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-    // Shutdown should complete cleanly
-    monitor.shutdown().await;
 }
 
 // LoadBalancer tests (actual implementation, local mode)

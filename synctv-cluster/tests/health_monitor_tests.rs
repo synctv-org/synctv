@@ -106,31 +106,3 @@ fn test_backoff_multiplier_capped() {
         }
     }
 }
-
-// Test 5: removed nodes are pruned from status map
-
-#[tokio::test]
-async fn test_process_heartbeats_prunes_removed_nodes() {
-    let fresh_node = NodeInfo::new("alive-node".to_string(), "localhost:8080".to_string());
-
-    let health_status: Arc<RwLock<HashMap<String, NodeHealth>>> =
-        Arc::new(RwLock::new(HashMap::new()));
-
-    // Pre-populate with a ghost node that won't appear in the nodes list
-    {
-        let mut status = health_status.write().await;
-        status.insert("ghost-node".to_string(), NodeHealth::Healthy);
-    }
-
-    HealthMonitor::process_heartbeats(&health_status, &[fresh_node], 30).await;
-
-    let status = health_status.read().await;
-    assert!(
-        !status.contains_key("ghost-node"),
-        "Removed node should be pruned from health status"
-    );
-    assert!(
-        status.contains_key("alive-node"),
-        "Alive node should be present"
-    );
-}

@@ -7449,14 +7449,6 @@ fn test_server_message_decode_invalid_data() {
 }
 
 #[test]
-fn test_server_message_encode_empty() {
-    let msg = ServerMessage { message: None };
-    let encoded = ProtoCodec::encode_server_message(&msg).checked("test value");
-    let decoded = ProtoCodec::decode_server_message(&encoded).checked("test value");
-    assert!(decoded.message.is_none());
-}
-
-#[test]
 fn test_message_concurrency_config_enforces_limit() {
     let config = super::MessageConcurrencyConfig::new(10);
     let semaphore = config.semaphore();

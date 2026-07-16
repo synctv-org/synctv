@@ -474,45 +474,6 @@ mod tests {
     type TestResult<T = ()> = anyhow::Result<T>;
 
     #[test]
-    fn test_exchange_authorization_code_request_deserializes_proto_body() -> TestResult {
-        let req: ExchangeAuthorizationCodeRequest = serde_json::from_str(
-            r#"{"code":"abc123._+-","state":"AbCdEfGh1234567890aBcDeFgHiJkLm"}"#,
-        )?;
-        assert_eq!(req.code, "abc123._+-");
-        assert_eq!(req.state, "AbCdEfGh1234567890aBcDeFgHiJkLm");
-        Ok(())
-    }
-
-    #[test]
-    fn test_oauth2_route_queries_deserialize_strict_public_fields() -> TestResult {
-        let authorize: AuthorizationUrlQuery =
-            serde_urlencoded::from_str("redirectUrl=http%3A%2F%2Flocalhost%2Fcallback")?;
-        let authorize = authorize.into_request("github-main".to_string());
-        assert_eq!(authorize.provider, "github-main");
-        assert_eq!(authorize.redirect_url, "http://localhost/callback");
-
-        let bind: BindAuthorizationUrlQuery = serde_urlencoded::from_str(
-            "redirectUrl=http%3A%2F%2Flocalhost%2Fbind&verificationId=verification-id",
-        )?;
-        let bind = bind.into_request("github-main".to_string());
-        assert_eq!(bind.provider, "github-main");
-        assert_eq!(bind.redirect_url, "http://localhost/bind");
-        assert_eq!(bind.verification_id, "verification-id");
-
-        let unlink: UnlinkProviderQuery = serde_urlencoded::from_str(
-            "providerUserId=remote-user-1&verificationId=verification-id&providerInstanceName=github-main",
-        )?;
-        let github_provider =
-            synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeGithub as i32;
-        let unlink = unlink.into_request(github_provider);
-        assert_eq!(unlink.provider, github_provider);
-        assert_eq!(unlink.verification_id, "verification-id");
-        assert_eq!(unlink.provider_user_id, "remote-user-1");
-        assert_eq!(unlink.provider_instance_name, "github-main");
-        Ok(())
-    }
-
-    #[test]
     fn test_oauth2_route_queries_ignore_path_fields() {
         let authorize = serde_urlencoded::from_str::<AuthorizationUrlQuery>(
             "provider=github-main&redirectUrl=http%3A%2F%2Flocalhost%2Fcallback",

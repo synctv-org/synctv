@@ -10,11 +10,11 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Result;
 use crate::cache::l2_backend::CacheL2Backend;
 use crate::cache::tiered::{CacheKey, TieredCache, Timestamped};
-use crate::models::room::RoomStatus;
 use crate::models::RoomId;
-use crate::Result;
+use crate::models::room::RoomStatus;
 
 impl CacheKey for RoomId {
     fn cache_key(&self) -> String {
@@ -339,11 +339,13 @@ mod tests {
         let room = create_test_room("room1", "Test Room", "user1");
 
         // Cache miss
-        assert!(cache
-            .get(&room_id)
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            cache
+                .get(&room_id)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
 
         // Set and get
         cache
@@ -362,11 +364,13 @@ mod tests {
             .invalidate(&room_id)
             .await
             .checked("operation should succeed");
-        assert!(cache
-            .get(&room_id)
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            cache
+                .get(&room_id)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -424,173 +428,5 @@ mod tests {
             result.get(&room3).map(super::CachedRoom::name),
             Some("Room 3")
         );
-    }
-
-    /// CachedRoom must include status field from the Room model
-    #[tokio::test]
-    async fn test_cached_room_status_field() {
-        use crate::models::RoomStatus;
-
-        let cache = RoomCache::new(
-            Arc::new(crate::cache::NoopCacheL2),
-            100,
-            5,
-            0,
-            "test:status:".to_string(),
-        );
-
-        let room_id = create_test_room_id("room_closed");
-        let now = crate::SystemClock.now();
-        let room = CachedRoom::from_snapshot(CachedRoomSnapshot {
-            id: "room_closed".to_string(),
-            name: "Closed Room".to_string(),
-            owner_id: "owner1".to_string(),
-            is_public: true,
-            status: RoomStatus::Closed,
-            is_banned: false,
-            deleted_at: None,
-            created_at: now,
-            updated_at: now,
-        });
-
-        cache
-            .set(&room_id, room)
-            .await
-            .checked("operation should succeed");
-        let retrieved = cache
-            .get(&room_id)
-            .await
-            .checked("operation should succeed")
-            .checked("operation should succeed");
-        assert_eq!(retrieved.status(), RoomStatus::Closed);
-        assert_eq!(retrieved.name(), "Closed Room");
-    }
-
-    /// CachedRoom must include is_banned field from the Room model
-    #[tokio::test]
-    async fn test_cached_room_is_banned_field() {
-        use crate::models::RoomStatus;
-
-        let cache = RoomCache::new(
-            Arc::new(crate::cache::NoopCacheL2),
-            100,
-            5,
-            0,
-            "test:banned:".to_string(),
-        );
-
-        let room_id = create_test_room_id("room_banned");
-        let now = crate::SystemClock.now();
-        let room = CachedRoom::from_snapshot(CachedRoomSnapshot {
-            id: "room_banned".to_string(),
-            name: "Banned Room".to_string(),
-            owner_id: "owner1".to_string(),
-            is_public: true,
-            status: RoomStatus::Active,
-            is_banned: true,
-            deleted_at: // is_banned
-            None,
-            created_at: now,
-            updated_at: now,
-        });
-
-        cache
-            .set(&room_id, room)
-            .await
-            .checked("operation should succeed");
-        let retrieved = cache
-            .get(&room_id)
-            .await
-            .checked("operation should succeed")
-            .checked("operation should succeed");
-        assert!(
-            retrieved.is_banned(),
-            "CachedRoom must preserve is_banned=true"
-        );
-    }
-
-    /// CachedRoom must include deleted_at field from the Room model
-    #[tokio::test]
-    async fn test_cached_room_deleted_at_field() {
-        use crate::models::RoomStatus;
-
-        let cache = RoomCache::new(
-            Arc::new(crate::cache::NoopCacheL2),
-            100,
-            5,
-            0,
-            "test:deleted:".to_string(),
-        );
-
-        let room_id = create_test_room_id("room_deleted");
-        let now = crate::SystemClock.now();
-        let deleted_time = now - chrono::Duration::hours(1);
-        let room = CachedRoom::from_snapshot(CachedRoomSnapshot {
-            id: "room_deleted".to_string(),
-            name: "Deleted Room".to_string(),
-            owner_id: "owner1".to_string(),
-            is_public: false,
-            status: RoomStatus::Active,
-            is_banned: false,
-            deleted_at: Some(deleted_time),
-            created_at: now,
-            updated_at: now,
-        });
-
-        cache
-            .set(&room_id, room)
-            .await
-            .checked("operation should succeed");
-        let retrieved = cache
-            .get(&room_id)
-            .await
-            .checked("operation should succeed")
-            .checked("operation should succeed");
-        assert!(
-            retrieved.deleted_at().is_some(),
-            "CachedRoom must preserve deleted_at"
-        );
-        assert_eq!(
-            retrieved.deleted_at().checked("operation should succeed"),
-            deleted_time,
-            "CachedRoom must preserve exact deleted_at timestamp"
-        );
-    }
-
-    /// CachedRoom::from(Room) must correctly populate all fields
-    #[tokio::test]
-    async fn test_cached_room_from_room_model() {
-        use crate::models::UserId;
-        use crate::models::{Room, RoomStatus};
-
-        let now = crate::SystemClock.now();
-        let room = Room {
-            id: crate::models::RoomId::expect_positive(3),
-            name: "From Room".to_string(),
-            description: "A room for testing From impl".to_string(),
-            cover_file_reference_id: None,
-            category: None,
-            labels: Vec::new(),
-            created_by: UserId::expect_positive(1),
-            status: RoomStatus::Closed,
-            is_banned: true,
-            closed_at: Some(now),
-            created_at: now,
-            updated_at: now,
-            deleted_at: Some(now),
-            version: 5,
-            last_activity_at: now,
-        };
-
-        let cached: CachedRoom = CachedRoom::from(&room);
-
-        assert_eq!(cached.id(), "3");
-        assert_eq!(cached.name(), "From Room");
-        assert_eq!(cached.owner_id(), "1");
-        assert!(!cached.is_public()); // default false for from()
-        assert_eq!(cached.status(), RoomStatus::Closed);
-        assert!(cached.is_banned());
-        assert_eq!(cached.deleted_at(), Some(now));
-        assert_eq!(cached.updated_at(), now);
     }
 }

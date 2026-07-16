@@ -1992,13 +1992,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fencing_token_new() {
-        let token = FencingToken::new("node1".to_string(), 3);
-        assert_eq!(token.node_id, "node1");
-        assert_eq!(token.epoch, 3);
-    }
-
-    #[test]
     fn test_fencing_token_is_newer_than() {
         let token1 = FencingToken::new("node1".to_string(), 3);
         let token2 = FencingToken::new("node1".to_string(), 5);
@@ -2181,20 +2174,6 @@ mod tests {
         );
         assert_eq!(nodes[0].node_id, redis_peer.node_id);
         Ok(())
-    }
-
-    #[test]
-    fn test_heartbeat_result_variants() {
-        // Test that HeartbeatResult variants exist and can be matched
-        let ok = HeartbeatResult::Ok;
-        let need_rereg = HeartbeatResult::NeedReregistration;
-        let epoch_mismatch = HeartbeatResult::EpochMismatch(42);
-        let empty_addr = HeartbeatResult::EmptyAddress;
-
-        assert!(matches!(ok, HeartbeatResult::Ok));
-        assert!(matches!(need_rereg, HeartbeatResult::NeedReregistration));
-        assert!(matches!(epoch_mismatch, HeartbeatResult::EpochMismatch(42)));
-        assert!(matches!(empty_addr, HeartbeatResult::EmptyAddress));
     }
 
     #[tokio::test]

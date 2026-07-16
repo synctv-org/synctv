@@ -1391,41 +1391,4 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].provider_instance_name, "github-main");
     }
-
-    #[test]
-    fn test_linked_provider_proto_includes_provider_user_id() {
-        let proto: synctv_proto::client::LinkedProvider = super::LinkedProviderInfo {
-            provider_type: synctv_core::models::OAuth2Provider::GitHub,
-            provider_instance_name: "github-main".to_string(),
-            provider_issuer: Some("https://github.com".to_string()),
-            provider_user_id: "gh_123".to_string(),
-            provider_username: "alice".to_string(),
-            linked_at: 1_700_000_000,
-        }
-        .into();
-
-        assert_eq!(
-            proto.provider_type,
-            synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeGithub as i32
-        );
-        assert_eq!(proto.provider_instance_name, "github-main");
-        assert_eq!(proto.provider_issuer.as_deref(), Some("https://github.com"));
-        assert_eq!(proto.provider_user_id, "gh_123");
-        assert_eq!(proto.provider_username, "alice");
-    }
-
-    #[test]
-    fn test_linked_provider_proto_preserves_missing_provider_issuer() {
-        let proto: synctv_proto::client::LinkedProvider = super::LinkedProviderInfo {
-            provider_type: synctv_core::models::OAuth2Provider::GitHub,
-            provider_instance_name: "github-main".to_string(),
-            provider_issuer: None,
-            provider_user_id: "gh_123".to_string(),
-            provider_username: "alice".to_string(),
-            linked_at: 1_700_000_000,
-        }
-        .into();
-
-        assert!(proto.provider_issuer.is_none());
-    }
 }

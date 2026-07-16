@@ -5,8 +5,8 @@
 //! knows that token revocation may not have succeeded.
 //!
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use synctv_core::service::{InMemoryTokenBlacklistStore, TokenBlacklistStore};
 use synctv_core_testing::{err, ok};
 
@@ -129,24 +129,6 @@ impl TokenBlacklistStore for RecordingTtlStore {
 }
 
 // Test 1: Blacklist success should work correctly
-
-#[tokio::test]
-async fn test_blacklist_success_returns_ok() {
-    // With a working store, blacklist should succeed
-    let store = InMemoryTokenBlacklistStore::new(10_000, 3600, 86400);
-
-    let result = store.blacklist("jti:test_token", 3600).await;
-    assert!(
-        result.is_ok(),
-        "Blacklist with working store should succeed"
-    );
-
-    // Verify token is blacklisted
-    assert!(ok(
-        store.is_blacklisted_checked("jti:test_token").await,
-        "blacklist lookup should succeed"
-    ));
-}
 
 // Test 2: Blacklist failure should return error (fail-closed)
 

@@ -1,7 +1,6 @@
 use super::*;
 use crate::impls::admin::response::active_room_stream_media_ids_for_infra;
 use crate::impls::admin::rooms::username_from_loaded_user;
-use crate::impls::ErrorKind;
 use crate::ApiRuntimeSettings;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -522,37 +521,6 @@ fn test_map_batch_result_error_sanitizes_service_unavailable_error() {
         "Operation failed because the service is temporarily unavailable"
     );
     assert!(!message.contains("Redis timeout"));
-}
-
-#[test]
-fn test_live_streaming_unavailable_error_is_service_unavailable() {
-    let err = live_streaming_unavailable_error();
-    assert!(matches!(err.classify(), ErrorKind::ServiceUnavailable));
-    assert_eq!(
-        err.message(),
-        "Live streaming is not available on this server."
-    );
-}
-
-#[test]
-fn test_publish_key_service_unavailable_error_is_service_unavailable() {
-    let err = crate::impls::providers::rtmp::publish_key_service_unavailable_error();
-    assert!(matches!(err.classify(), ErrorKind::ServiceUnavailable));
-    assert_eq!(
-        err.message(),
-        "Publish key service is not available on this server."
-    );
-}
-
-#[test]
-fn test_map_send_test_email_result_success_is_human_readable() {
-    let response = AdminApiImpl::map_send_test_email_result("test@example.com", Ok(()));
-
-    assert!(response.success);
-    assert_eq!(
-        response.message,
-        "Test email sent successfully to test@example.com"
-    );
 }
 
 #[test]
@@ -1224,129 +1192,6 @@ fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
         version: 1,
         last_activity_at: now,
     }
-}
-
-#[test]
-fn test_admin_room_to_proto_basic() -> TestResult {
-    let room = make_test_room(RoomStatus::Active);
-    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
-    let settings = synctv_core::models::RoomSettings::default();
-    let proto = try_managed_room_to_proto(
-        &room,
-        Some(&settings),
-        Some(10),
-        Some("creator_user"),
-        UserStatus::Active,
-        Some("https://cdn.example/avatar.png"),
-        None,
-        None,
-        None,
-        &public_id_codec,
-    )
-    .map_err(|error| test_error(format!("{error:?}")))?;
-
-    assert_eq!(
-        proto.id,
-        public_id_codec
-            .encode_room_id(room.id)
-            .map_err(test_error)?
-    );
-    assert_eq!(proto.name, "Admin Test Room");
-    assert_eq!(proto.description, "Room for admin tests");
-    assert_eq!(
-        proto.creator_id,
-        public_id_codec
-            .encode_user_id(room.created_by)
-            .map_err(test_error)?
-    );
-    assert_eq!(proto.creator_username, "creator_user");
-    assert_eq!(proto.creator_avatar_url, "https://cdn.example/avatar.png");
-    assert_eq!(
-        proto.creator_status,
-        synctv_proto::common::UserStatus::Active as i32
-    );
-    assert_eq!(proto.member_count, 10);
-    assert!(!proto.is_banned);
-    Ok(())
-}
-
-#[test]
-fn test_admin_room_to_proto_banned() -> TestResult {
-    let mut room = make_test_room(RoomStatus::Active);
-    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
-    let settings = synctv_core::models::RoomSettings::default();
-    room.is_banned = true;
-    let proto = try_managed_room_to_proto(
-        &room,
-        Some(&settings),
-        Some(0),
-        Some("creator_user"),
-        UserStatus::Banned,
-        None,
-        None,
-        None,
-        None,
-        &public_id_codec,
-    )
-    .map_err(|error| test_error(format!("{error:?}")))?;
-    assert!(proto.is_banned);
-    assert_eq!(proto.member_count, 0);
-    assert_eq!(
-        proto.creator_status,
-        synctv_proto::common::UserStatus::Banned as i32
-    );
-    Ok(())
-}
-
-#[test]
-fn test_admin_room_to_proto_uses_supplied_settings() -> TestResult {
-    let room = make_test_room(RoomStatus::Active);
-    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
-    let settings = synctv_core::models::RoomSettings {
-        allow_auto_join: synctv_core::models::room_settings::AllowAutoJoin(false),
-        ..Default::default()
-    };
-
-    let proto = try_managed_room_to_proto(
-        &room,
-        Some(&settings),
-        Some(0),
-        Some("creator_user"),
-        UserStatus::Active,
-        None,
-        None,
-        None,
-        None,
-        &public_id_codec,
-    )
-    .map_err(|error| test_error(format!("{error:?}")))?;
-    let rendered = proto.settings.expect("settings should be rendered");
-    assert!(!rendered.allow_auto_join);
-    Ok(())
-}
-
-#[test]
-fn test_admin_room_to_proto_different_statuses() -> TestResult {
-    for status in [RoomStatus::Active, RoomStatus::Closed] {
-        let room = make_test_room(status);
-        let public_id_codec = synctv_adapter::PublicIdCodec::plain();
-        let settings = synctv_core::models::RoomSettings::default();
-        let proto = try_managed_room_to_proto(
-            &room,
-            Some(&settings),
-            Some(0),
-            Some("creator_user"),
-            UserStatus::Active,
-            None,
-            None,
-            None,
-            None,
-            &public_id_codec,
-        )
-        .map_err(|error| test_error(format!("{error:?}")))?;
-        assert_eq!(proto.status, i32::from(status));
-    }
-    Ok(())
 }
 
 #[test]

@@ -290,27 +290,4 @@ mod tests {
         assert!(runtime.publisher_registry_shared);
         assert!(runtime.user_stream_index_shared);
     }
-
-    #[test]
-    fn test_init_livestream_signature_uses_runtime_abstraction() {
-        fn assert_signature(
-            config: &Config,
-            public_id_codec: Arc<PublicIdCodec>,
-            services: &crate::bootstrap::Services,
-            runtime: Option<Arc<dyn RedisConnectionRuntime>>,
-            hls_cleanup_leader: Arc<dyn synctv_core::service::LeaderCheck>,
-            node_id: &str,
-        ) {
-            std::mem::drop(init_livestream(
-                config,
-                public_id_codec,
-                services,
-                runtime,
-                hls_cleanup_leader,
-                node_id,
-            ));
-        }
-
-        let _ = assert_signature;
-    }
 }

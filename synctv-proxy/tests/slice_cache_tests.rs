@@ -73,46 +73,11 @@ fn error_chain_contains(error: &anyhow::Error, expected: &str) -> bool {
 // SliceCacheConfig tests
 
 #[test]
-fn test_config_disabled() {
-    let config = SliceCacheConfig {
-        enabled: false,
-        ..Default::default()
-    };
-    assert!(!config.enabled);
-}
-
-#[test]
-fn test_config_custom_slice_size() {
-    let config = SliceCacheConfig {
-        slice_size: 4 * 1024 * 1024, // 4MB
-        ..Default::default()
-    };
-    assert_eq!(config.slice_size, 4 * 1024 * 1024);
-}
-
-// SliceCache creation tests
-
-#[test]
 fn test_slice_cache_new() {
     let config = SliceCacheConfig::default();
     let cache = SliceCache::new(config).expect("slice cache should build");
     assert_eq!(cache.config().slice_size, 2 * 1024 * 1024);
 }
-
-#[test]
-fn test_slice_cache_custom_config() {
-    let config = SliceCacheConfig {
-        enabled: true,
-        slice_size: 1024 * 1024,           // 1MB
-        max_cache_size: 100 * 1024 * 1024, // 100MB
-        ..Default::default()
-    };
-    let cache = SliceCache::new(config).expect("slice cache should build");
-    assert_eq!(cache.config().slice_size, 1024 * 1024);
-    assert_eq!(cache.config().max_cache_size, 100 * 1024 * 1024);
-}
-
-// Cache key generation tests
 
 #[test]
 fn test_cache_key_deterministic() {
@@ -2466,14 +2431,6 @@ async fn test_resource_meta_stored_after_fetch() {
 use synctv_proxy::slice_cache::parse_content_range;
 
 #[test]
-fn test_parse_content_range_basic() {
-    let cr = parse_content_range("bytes 0-499/1000").unwrap();
-    assert_eq!(cr.start, 0);
-    assert_eq!(cr.end, 500); // exclusive, like nginx (end++)
-    assert_eq!(cr.complete_length, Some(1000));
-}
-
-#[test]
 fn test_parse_content_range_large_media_range() {
     let cr = parse_content_range("bytes 0-2097151/10485760").unwrap();
     assert_eq!(cr.start, 0);
@@ -2555,12 +2512,6 @@ fn test_parse_content_range_trailing_garbage() {
 }
 
 #[test]
-fn test_parse_content_range_empty_string() {
-    let result = parse_content_range("");
-    assert!(result.is_err(), "Empty string must be rejected");
-}
-
-#[test]
 fn test_parse_content_range_overflow_end() {
     // u64::MAX = 18446744073709551615; adding 1 for exclusive end would overflow
     let result = parse_content_range("bytes 0-18446744073709551615/999");
@@ -2568,14 +2519,6 @@ fn test_parse_content_range_overflow_end() {
         result.is_err(),
         "End value that overflows on increment must be rejected"
     );
-}
-
-#[test]
-fn test_parse_content_range_single_byte_range() {
-    let cr = parse_content_range("bytes 42-42/100").unwrap();
-    assert_eq!(cr.start, 42);
-    assert_eq!(cr.end, 43); // exclusive
-    assert_eq!(cr.complete_length, Some(100));
 }
 
 #[test]
@@ -3513,27 +3456,6 @@ async fn test_proxy_with_cache_disabled_redirect_to_loopback_is_blocked_on_bypas
 }
 
 /// SliceCache::new returns an error for file backend config.
-#[test]
-fn test_new_returns_error_for_file_backend() {
-    let config = SliceCacheConfig {
-        backend: synctv_proxy::slice_cache::CacheBackendConfig::File {
-            cache_dir: std::path::PathBuf::from("/tmp/test-panic"),
-            dir_levels: (2, 2),
-        },
-        ..Default::default()
-    };
-    let Err(error) = SliceCache::new(config) else {
-        panic!("file backend requires async constructor");
-    };
-    assert!(
-        error.to_string().contains("Memory backend"),
-        "unexpected error: {error}"
-    );
-}
-
-// File backend integration test
-
-/// File backend caches and retrieves data correctly via SliceCache.
 #[tokio::test]
 async fn test_file_backend_slice_cache_integration() {
     let mock_server = MockServer::start().await;

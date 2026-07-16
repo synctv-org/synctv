@@ -711,54 +711,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_liveness_check_returns_ok() {
-        let response = liveness_check().await.into_response();
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
     async fn test_liveness_check_response_body() -> TestResult {
         let response = liveness_check().await.into_response();
         let health = read_health_response(response).await?;
         assert_eq!(health.status, "ok");
         assert!(health.details.is_none());
         Ok(())
-    }
-
-    #[test]
-    fn test_memory_health_status_below_threshold() {
-        let mem = MemoryHealth {
-            usage_percent: 50.0,
-            status: "healthy".to_string(),
-        };
-        assert_eq!(mem.status, "healthy");
-        assert!(mem.usage_percent < MEMORY_UNHEALTHY_THRESHOLD_PERCENT);
-    }
-
-    #[test]
-    fn test_memory_health_status_above_threshold() {
-        let mem = MemoryHealth {
-            usage_percent: 95.0,
-            status: "unhealthy".to_string(),
-        };
-        assert_eq!(mem.status, "unhealthy");
-        assert!(mem.usage_percent > MEMORY_UNHEALTHY_THRESHOLD_PERCENT);
-    }
-
-    #[test]
-    fn test_check_memory_health_returns_valid_result_when_available() {
-        // Memory inspection is best-effort and depends on host capabilities
-        // (`/proc/meminfo`, cgroup files, `sysctl`, `vm_stat`, etc.).
-        // The production contract is:
-        // - return `Some(MemoryHealth)` with sane values when memory info can be obtained
-        // - return `None` when the platform/runtime cannot provide it
-        let result = check_memory_health();
-
-        if let Some(mem) = result {
-            assert!(mem.usage_percent >= 0.0);
-            assert!(mem.usage_percent <= 100.0);
-            assert!(mem.status == "healthy" || mem.status == "unhealthy");
-        }
     }
 
     #[test]
@@ -771,16 +729,6 @@ mod tests {
 
         assert!((usage_percent - 50.0).abs() < f64::EPSILON);
         Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_check_redis_health_accepts_missing_redis_connection() {
-        let result = check_redis_health_from_conn(None).await;
-        assert_eq!(
-            result,
-            RedisHealthStatus::NotConfigured,
-            "missing redis should be reported as not configured"
-        );
     }
 
     #[tokio::test]

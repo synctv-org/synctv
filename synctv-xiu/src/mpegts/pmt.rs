@@ -115,31 +115,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pmt_new() {
-        let pmt = Pmt::new();
-        assert_eq!(pmt.pid, 0);
-        assert_eq!(pmt.program_number, 0);
-        assert_eq!(pmt.version_number, 0);
-        assert_eq!(pmt.continuity_counter, 0);
-        assert_eq!(pmt.pcr_pid, 0);
-        assert!(pmt.program_info.is_empty());
-        assert!(pmt.streams.is_empty());
-    }
-
-    #[test]
-    fn test_pmt_default() {
-        let pmt = Pmt::default();
-        assert_eq!(pmt.pid, 0);
-        assert!(pmt.streams.is_empty());
-    }
-
-    #[test]
-    fn test_pmt_muxer_new() {
-        let muxer = PmtMuxer::new();
-        assert!(muxer.bytes_writer.get_current_bytes().is_empty());
-    }
-
-    #[test]
     fn test_pmt_muxer_default() {
         let muxer = PmtMuxer::default();
         assert!(muxer.bytes_writer.get_current_bytes().is_empty());

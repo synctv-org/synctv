@@ -37,21 +37,6 @@ mod ws_query {
     use super::*;
 
     #[test]
-    fn test_deserialize_with_ticket() {
-        let params = "ticket=abc123def456";
-        let query: WebSocketConnectRequest = serde_urlencoded::from_str(params).unwrap();
-        assert_eq!(query.ticket, "abc123def456");
-    }
-
-    #[test]
-    fn test_deserialize_empty() {
-        let params = "";
-        let query: WebSocketConnectRequest = serde_urlencoded::from_str(params).unwrap();
-        assert!(query.ticket.is_empty());
-        synctv_proto::validate(&query).expect("empty ticket should be allowed for header auth");
-    }
-
-    #[test]
     fn test_deserialize_rejects_unknown_params() {
         #[derive(Debug, serde::Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -72,27 +57,6 @@ mod ws_query {
         assert_eq!(query.ticket, "bad ticket");
         let error = synctv_proto::validate(&query).expect_err("ticket format must be invalid");
         assert!(error.to_string().contains("ticket"));
-    }
-}
-
-mod auth_method {
-    use super::*;
-
-    #[test]
-    fn test_header_method() {
-        let method = AuthMethod::Header;
-        assert_eq!(method, AuthMethod::Header);
-    }
-
-    #[test]
-    fn test_ticket_method() {
-        let method = AuthMethod::Ticket;
-        assert_eq!(method, AuthMethod::Ticket);
-    }
-
-    #[test]
-    fn test_methods_are_distinct() {
-        assert_ne!(AuthMethod::Header, AuthMethod::Ticket);
     }
 }
 
@@ -129,14 +93,7 @@ mod proto_codec {
 }
 
 mod ticket_types {
-    use synctv_proto::client::{CreateWebSocketTicketRequest, CreateWebSocketTicketResponse};
-
-    #[test]
-    fn test_create_ticket_request_deserialize() {
-        let json = r#"{"roomId": "room_abc"}"#;
-        let req: CreateWebSocketTicketRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.room_id.as_str(), "room_abc");
-    }
+    use synctv_proto::client::CreateWebSocketTicketResponse;
 
     #[test]
     fn test_ticket_response_serializes() {
@@ -151,22 +108,6 @@ mod ticket_types {
         assert_eq!(json["roomId"], "room_abc");
         assert_eq!(json["expiresInSecs"], "30");
         assert!(json["usage"].as_str().unwrap().contains("WebSocket"));
-    }
-
-    #[test]
-    fn test_ticket_response_fields_present() {
-        let resp = CreateWebSocketTicketResponse {
-            ticket: "t".to_string(),
-            room_id: "r".to_string(),
-            expires_in_secs: 30,
-            usage: "u".to_string(),
-        };
-        let json = serde_json::to_value(&resp).unwrap();
-        let obj = json.as_object().unwrap();
-        assert!(obj.contains_key("ticket"));
-        assert!(obj.contains_key("roomId"));
-        assert!(obj.contains_key("expiresInSecs"));
-        assert!(obj.contains_key("usage"));
     }
 
     #[test]

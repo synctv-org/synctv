@@ -65,47 +65,6 @@ mod tests {
     }
 
     #[test]
-    fn display_matches_as_str() {
-        let variants = [
-            CacheStatus::Hit,
-            CacheStatus::Miss,
-            CacheStatus::Expired,
-            CacheStatus::Stale,
-            CacheStatus::Updating,
-            CacheStatus::Revalidated,
-            CacheStatus::Bypass,
-        ];
-        for v in &variants {
-            assert_eq!(format!("{v}"), v.as_str());
-        }
-    }
-
-    #[test]
-    fn debug_includes_variant_name() {
-        // Debug should produce something like "Hit", "Miss", etc.
-        let dbg = format!("{:?}", CacheStatus::Hit);
-        assert!(dbg.contains("Hit"), "Debug output was: {dbg}");
-    }
-
-    #[test]
-    fn clone_and_copy_produce_equal_values() {
-        let original = CacheStatus::Stale;
-        let copied: CacheStatus = original;
-        let copied2: CacheStatus = original;
-        assert_eq!(original, copied);
-        assert_eq!(original, copied2);
-    }
-
-    #[test]
-    fn equality_works_across_variants() {
-        assert_eq!(CacheStatus::Hit, CacheStatus::Hit);
-        assert_ne!(CacheStatus::Hit, CacheStatus::Miss);
-        assert_ne!(CacheStatus::Expired, CacheStatus::Stale);
-        assert_ne!(CacheStatus::Updating, CacheStatus::Revalidated);
-        assert_ne!(CacheStatus::Miss, CacheStatus::Bypass);
-    }
-
-    #[test]
     fn all_seven_variants_have_distinct_strings() {
         let strs: Vec<&str> = [
             CacheStatus::Hit,

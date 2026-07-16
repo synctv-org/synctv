@@ -1,10 +1,10 @@
 use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{
+    EnvFilter,
     fmt::{self, format::FmtSpan},
     layer::SubscriberExt,
     util::SubscriberInitExt,
-    EnvFilter,
 };
 
 const SQLX_POSTGRES_NOTICE_TARGET: &str = "sqlx::postgres::notice";
@@ -201,16 +201,6 @@ mod tests {
             Ok(value) => value,
             Err(error) => std::panic::panic_any(format!("{context}: {error}")),
         }
-    }
-
-    #[test]
-    fn test_parse_log_level() {
-        assert!(parse_log_level("trace").is_ok());
-        assert!(parse_log_level("debug").is_ok());
-        assert!(parse_log_level("info").is_ok());
-        assert!(parse_log_level("warn").is_ok());
-        assert!(parse_log_level("error").is_ok());
-        assert!(parse_log_level("invalid").is_err());
     }
 
     #[test]

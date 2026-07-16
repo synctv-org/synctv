@@ -209,32 +209,3 @@ pub(crate) fn sign_emby_thumbnail_url(
 
     Ok(format!("{thumbnail_url}&{signed_query}"))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn emby_upstream_url_preserves_configured_base_path() {
-        assert_eq!(
-            emby_upstream_url(
-                "https://media.example.com/emby",
-                "/Items/abc/Images/Primary?maxHeight=300"
-            )
-            .expect("URL should build"),
-            "https://media.example.com/emby/Items/abc/Images/Primary?maxHeight=300"
-        );
-    }
-
-    #[test]
-    fn emby_upstream_url_keeps_absolute_provider_url() {
-        assert_eq!(
-            emby_upstream_url(
-                "https://media.example.com/emby",
-                "https://cdn.example.com/Items/abc/Images/Primary"
-            )
-            .expect("URL should build"),
-            "https://cdn.example.com/Items/abc/Images/Primary"
-        );
-    }
-}

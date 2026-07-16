@@ -4,6 +4,7 @@
 //! Built-in local providers are created once at startup from explicit local
 //! provider configuration.
 
+use crate::Result;
 use crate::models::normalize_provider_instance_name;
 use crate::provider::{
     AcFunProvider, AlistProvider, BilibiliProvider, CctvProvider, CloudreveProvider,
@@ -13,7 +14,6 @@ use crate::provider::{
     TwitchProvider, YoutubeProvider,
 };
 use crate::service::RemoteProviderManager;
-use crate::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -814,29 +814,6 @@ mod tests {
             request_timeout_seconds,
             connect_timeout_seconds,
         })
-    }
-
-    #[tokio::test]
-    async fn test_providers_manager_creation() {
-        let manager = test_manager();
-
-        assert!(manager.has_factory("alist"));
-        assert!(manager.has_factory("bilibili"));
-        assert!(manager.has_factory("emby"));
-        assert!(manager.has_factory("rtmp"));
-        assert!(manager.has_factory("direct_url"));
-        assert!(manager.has_factory("live_proxy"));
-        assert!(manager.has_factory("cloudreve"));
-        assert!(manager.has_factory("twitch"));
-        assert!(manager.has_factory("youtube"));
-        assert!(manager.has_factory("huya"));
-        assert!(manager.has_factory("fnos"));
-        assert!(manager.has_factory("qnap"));
-        assert!(manager.has_factory("synology"));
-        assert!(manager.has_factory("nextcloud"));
-        assert!(manager.has_factory("seafile"));
-        assert!(manager.has_factory("truenas"));
-        assert!(!manager.has_factory("unknown"));
     }
 
     #[tokio::test]

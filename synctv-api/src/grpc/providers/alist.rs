@@ -219,21 +219,3 @@ impl AlistProviderService for AlistProviderGrpcService {
         Ok(Response::new(provider_binds))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::grpc::map_api_error;
-    use crate::impls::ApiError;
-
-    #[test]
-    fn test_provider_binds_backend_outage_maps_to_unavailable() {
-        let status = map_api_error(ApiError::ServiceUnavailable(
-            "Provider bind information is temporarily unavailable".into(),
-        ));
-        assert_eq!(status.code(), tonic::Code::Unavailable);
-        assert_eq!(
-            status.message(),
-            "Provider bind information is temporarily unavailable"
-        );
-    }
-}

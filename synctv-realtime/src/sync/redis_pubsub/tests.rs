@@ -120,28 +120,6 @@ where
     }
 }
 
-#[test]
-fn test_config_accepts_trait_object_message_hub() -> TestResult {
-    let message_hub: Arc<dyn RoomMessageRuntime> = Arc::new(RoomMessageHub::new());
-    let (admin_event_tx, _) = tokio::sync::broadcast::channel(1);
-    let deduplicator = Arc::new(MessageDeduplicator::new(Duration::from_secs(1)));
-
-    let pubsub = RedisPubSub::from_config(
-        test_pubsub_config(
-            message_hub,
-            "runtime-node".to_string(),
-            admin_event_tx,
-            deduplicator,
-        )
-        .key_prefix("runtime-test:")
-        .catchup_window_secs(300)
-        .stream_max_length(DEFAULT_MAX_STREAM_LENGTH),
-    )?;
-
-    assert_eq!(pubsub.key_prefix, "runtime-test:");
-    Ok(())
-}
-
 #[tokio::test]
 async fn test_cache_invalidate_dispatch_calls_handler_and_notifies_admin_subscribers() -> TestResult
 {

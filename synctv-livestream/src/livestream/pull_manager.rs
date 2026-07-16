@@ -318,28 +318,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_pull_stream_manager_creation() {
-        let registry = Arc::new(TestStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
-        let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
-
-        let manager = PullStreamManager::new(registry, stream_hub_event_sender);
-
-        assert_eq!(manager.pool.streams.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_pull_stream_creation() {
-        let registry = Arc::new(TestStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
-        let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
-
-        let pull_stream = make_pull_stream(registry, stream_hub_event_sender);
-
-        assert_eq!(pull_stream.room_id, "room-123");
-        assert_eq!(pull_stream.media_id, "media-456");
-        assert_eq!(pull_stream.publisher_node, "publisher-node");
-    }
-
-    #[tokio::test]
     async fn test_subscriber_count() {
         let registry = Arc::new(TestStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
         let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);

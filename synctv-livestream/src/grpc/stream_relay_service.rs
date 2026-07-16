@@ -557,18 +557,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_service_creation() {
-        let (_event_sender, _) =
-            tokio::sync::mpsc::channel::<synctv_xiu::streamhub::define::StreamHubEvent>(64);
-        let node_id = "test_node".to_string();
-
-        // Verify the node_id is correct
-        assert_eq!(node_id, "test_node");
-
-        // Note: Full service creation requires StreamRegistry which needs Redis
-    }
-
     #[test]
     fn test_response_stream_type() {
         // Just verify the ResponseStream type alias compiles

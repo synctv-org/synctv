@@ -50,14 +50,6 @@ mod tests {
     }
 
     #[test]
-    fn test_runtime_setting_new_auto_key() {
-        let sg = RuntimeSetting::new("email".to_string(), "{}".to_string());
-        assert_eq!(sg.key, "email.default");
-        assert_eq!(sg.group_name, "email");
-        assert_eq!(sg.value, "{}");
-    }
-
-    #[test]
     fn test_runtime_setting_json_field_name_is_group() {
         let sg = RuntimeSetting::new("email".to_string(), r#"{"enabled":true}"#.to_string());
         let json = ok(

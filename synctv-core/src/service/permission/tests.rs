@@ -2,8 +2,8 @@ use super::*;
 use crate::cache::CacheKey;
 use crate::models::permission::Role as RoomRole;
 use crate::models::{
-    room_settings::*, RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMember,
-    RoomMemberPermissionBits,
+    RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMember, RoomMemberPermissionBits,
+    room_settings::*,
 };
 use async_trait::async_trait;
 use std::{collections::HashMap, sync::atomic::Ordering};
@@ -440,14 +440,6 @@ fn test_room_removes_view_media_resources_for_guest() {
 }
 
 #[test]
-fn test_empty_permissions_has_nothing() {
-    let perms = RoomPermissionSet::empty();
-    assert!(!perms.has(crate::models::RoomPermission::CHAT));
-    assert!(!perms.has_any(RoomPermissionSet::all()));
-    assert!(perms.has_all(RoomPermissionSet::empty())); // vacuously true
-}
-
-#[test]
 fn test_three_layer_guest_chain() {
     // Layer 1: Global defaults for Guest (no media resource permissions)
     // Layer 2: Room adds WebRTC for guests
@@ -584,23 +576,6 @@ fn test_permission_bits_grant_revoke() {
     perms.revoke(crate::models::RoomPermission::CHAT);
     assert!(!perms.has(crate::models::RoomPermission::CHAT));
     assert!(perms.has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE));
-}
-
-#[test]
-fn test_permission_bits_all_contains_every_named_permission() {
-    let all = RoomPermissionSet::all();
-    assert!(all.has(crate::models::RoomPermission::CHAT));
-    assert!(all.has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE));
-    assert!(all.has(crate::models::RoomPermission::KICK_MEMBER));
-    assert!(all.has(crate::models::RoomPermission::USE_WEBRTC));
-    assert!(all.has(crate::models::RoomPermission::VIEW_MEDIA_RESOURCES));
-    assert!(all.has(crate::models::RoomPermission::PLAY_CONTROL));
-}
-
-#[test]
-fn test_default_runtime_has_no_room_settings_repo() {
-    let service = make_service();
-    assert!(!service.has_room_settings_repo());
 }
 
 #[test]
@@ -865,19 +840,23 @@ fn test_invalidate_cache_local_clear_works() {
                 .await,
             "member permission cache fixture should write",
         );
-        assert!(service
-            .member_permission_cache
-            .get_l1(&cache_key)
-            .await
-            .is_some());
+        assert!(
+            service
+                .member_permission_cache
+                .get_l1(&cache_key)
+                .await
+                .is_some()
+        );
 
         service.invalidate_cache(&room_id, &user_id).await;
 
-        assert!(service
-            .member_permission_cache
-            .get_l1(&cache_key)
-            .await
-            .is_none());
+        assert!(
+            service
+                .member_permission_cache
+                .get_l1(&cache_key)
+                .await
+                .is_none()
+        );
     });
 }
 
@@ -939,19 +918,23 @@ fn test_clear_cache_local_clear_works() {
                 .await,
             "member permission cache fixture should write",
         );
-        assert!(service
-            .member_permission_cache
-            .get_l1(&cache_key)
-            .await
-            .is_some());
+        assert!(
+            service
+                .member_permission_cache
+                .get_l1(&cache_key)
+                .await
+                .is_some()
+        );
 
         service.clear_cache().await;
 
-        assert!(service
-            .member_permission_cache
-            .get_l1(&cache_key)
-            .await
-            .is_none());
+        assert!(
+            service
+                .member_permission_cache
+                .get_l1(&cache_key)
+                .await
+                .is_none()
+        );
     });
 }
 

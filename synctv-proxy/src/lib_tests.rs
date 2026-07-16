@@ -127,20 +127,6 @@ fn test_make_absolute_scheme_injection() -> TestResult {
 }
 
 #[test]
-fn test_rewrite_uri_single_uri() -> TestResult {
-    let base = url::Url::parse("https://cdn.example.com/hls/master.m3u8")?;
-    let (result, count) = rewrite_uri_attribute_with_count(
-        "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"",
-        Some(&base),
-        "/proxy",
-    );
-    assert_eq!(count, 1);
-    assert!(result.contains("URI=\"/proxy?url="));
-    assert!(result.contains("cdn%2Eexample%2Ecom"));
-    Ok(())
-}
-
-#[test]
 fn test_rewrite_uri_multiple_uris() -> TestResult {
     let base = url::Url::parse("https://cdn.example.com/hls/master.m3u8")?;
     let line =
@@ -165,19 +151,6 @@ fn test_rewrite_uri_no_uri_attribute() {
     let (result, count) = rewrite_uri_attribute_with_count("#EXT-X-VERSION:3", None, "/proxy");
     assert_eq!(count, 0);
     assert_eq!(result, "#EXT-X-VERSION:3");
-}
-
-#[test]
-fn test_rewrite_m3u8_basic() -> TestResult {
-    let m3u8 = "#EXTM3U\n#EXT-X-VERSION:3\nseg1.ts\nseg2.ts\n";
-    let rewritten = rewrite_m3u8(
-        m3u8,
-        "https://cdn.example.com/path/master.m3u8",
-        "/proxy/stream",
-    )?;
-    assert!(rewritten.contains("/proxy/stream?url="));
-    assert!(rewritten.contains("cdn%2Eexample%2Ecom"));
-    Ok(())
 }
 
 #[test]

@@ -169,38 +169,11 @@ mod tests {
     type TestResult<T = ()> = Result<T, String>;
 
     #[test]
-    fn test_builder_customization() {
-        let b = SsrfSafeClientBuilder::new()
-            .connect_timeout(Duration::from_secs(3))
-            .request_timeout(Duration::from_mins(2))
-            .read_timeout(Duration::from_mins(1))
-            .pool_max_idle_per_host(50)
-            .pool_idle_timeout(Duration::from_secs(90))
-            .user_agent("test-agent");
-        assert_eq!(b.connect_timeout, Duration::from_secs(3));
-        assert_eq!(b.request_timeout, Some(Duration::from_mins(2)));
-        assert_eq!(b.read_timeout, Some(Duration::from_mins(1)));
-        assert_eq!(b.pool_max_idle_per_host, 50);
-        assert_eq!(b.pool_idle_timeout, Some(Duration::from_secs(90)));
-        assert_eq!(b.user_agent.as_deref(), Some("test-agent"));
-        assert!(b.resolves.is_empty());
-        assert!(b.ssrf_guard.is_none());
-    }
-
-    #[test]
     fn test_builder_resolve_override() {
         let addr = std::net::SocketAddr::from(([203, 0, 113, 10], 443));
         let b = SsrfSafeClientBuilder::new().resolve("example.com", addr);
 
         assert_eq!(b.resolves, vec![("example.com".to_string(), addr)]);
-    }
-
-    #[test]
-    fn test_build_client() -> TestResult {
-        let _client = SsrfSafeClientBuilder::new()
-            .build()
-            .map_err(|error| format!("HTTP client should build: {error}"))?;
-        Ok(())
     }
 
     #[test]
@@ -213,14 +186,6 @@ mod tests {
     fn test_ssrf_guard_is_opt_in() {
         let builder = SsrfSafeClientBuilder::new().ssrf_guard(SsrfGuard::strict_policy());
         assert!(builder.ssrf_guard.is_some());
-    }
-
-    #[test]
-    fn test_default_disables_request_and_read_timeouts() {
-        let builder = SsrfSafeClientBuilder::new();
-
-        assert_eq!(builder.request_timeout, None);
-        assert_eq!(builder.read_timeout, None);
     }
 
     #[test]

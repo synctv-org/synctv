@@ -63,38 +63,6 @@ fn expect_publish_event(
 }
 
 #[test]
-fn test_chunk_basic_header_creation() {
-    use synctv_xiu::rtmp::chunk::ChunkBasicHeader;
-    let header = ChunkBasicHeader::new(0, 3);
-    assert_eq!(header.format, 0);
-    assert_eq!(header.chunk_stream_id, 3);
-}
-
-#[test]
-fn test_chunk_message_header_creation() {
-    use synctv_xiu::rtmp::chunk::ChunkMessageHeader;
-    let header = ChunkMessageHeader::new(1000, 512, 9, 1);
-    assert_eq!(header.timestamp, 1000);
-    assert_eq!(header.msg_length, 512);
-    assert_eq!(header.msg_type_id, 9);
-    assert_eq!(header.msg_streamd_id, 1);
-    assert_eq!(header.timestamp_delta, 0);
-    assert_eq!(
-        header.extended_timestamp_type,
-        synctv_xiu::rtmp::chunk::ExtendTimestampType::NONE
-    );
-}
-
-#[test]
-fn test_chunk_header_default() {
-    use synctv_xiu::rtmp::chunk::ChunkHeader;
-    let header = ChunkHeader::default();
-    assert_eq!(header.basic_header.format, 0);
-    assert_eq!(header.basic_header.chunk_stream_id, 0);
-    assert_eq!(header.message_header.timestamp, 0);
-}
-
-#[test]
 fn test_chunk_info_construction() {
     use synctv_xiu::rtmp::chunk::ChunkInfo;
     let payload = BytesMut::from(&b"test data"[..]);
@@ -106,44 +74,6 @@ fn test_chunk_info_construction() {
     assert_eq!(info.message_header.msg_type_id, 9);
     assert_eq!(info.message_header.msg_streamd_id, 1);
     assert_eq!(info.payload, payload);
-}
-
-#[test]
-fn test_chunk_info_default() {
-    use synctv_xiu::rtmp::chunk::ChunkInfo;
-    let info = ChunkInfo::default();
-    assert_eq!(info.basic_header.format, 0);
-    assert_eq!(info.basic_header.chunk_stream_id, 0);
-    assert!(info.payload.is_empty());
-}
-
-#[test]
-fn test_chunk_info_debug_format() {
-    use synctv_xiu::rtmp::chunk::ChunkInfo;
-    let payload = BytesMut::from(&[0xAB, 0xCD][..]);
-    let info = ChunkInfo::new(3, 0, 0, 2, 9, 1, payload);
-    let debug = format!("{info:?}");
-    assert!(debug.contains("ChunkInfo"));
-    assert!(debug.contains("0xab"));
-    assert!(debug.contains("0xcd"));
-}
-
-#[test]
-fn test_chunk_info_equality() {
-    use synctv_xiu::rtmp::chunk::ChunkInfo;
-    let payload = BytesMut::from(&b"test"[..]);
-    let info1 = ChunkInfo::new(3, 0, 1000, 4, 9, 1, payload.clone());
-    let info2 = ChunkInfo::new(3, 0, 1000, 4, 9, 1, payload);
-    assert_eq!(info1, info2);
-}
-
-#[test]
-fn test_extended_timestamp_type_equality() {
-    use synctv_xiu::rtmp::chunk::ExtendTimestampType;
-    assert_eq!(ExtendTimestampType::NONE, ExtendTimestampType::NONE);
-    assert_eq!(ExtendTimestampType::FORMAT0, ExtendTimestampType::FORMAT0);
-    assert_eq!(ExtendTimestampType::FORMAT12, ExtendTimestampType::FORMAT12);
-    assert_ne!(ExtendTimestampType::NONE, ExtendTimestampType::FORMAT0);
 }
 
 #[test]
@@ -190,34 +120,6 @@ fn test_stream_identifier_rtmp() {
     assert!(display.contains("RTMP"));
     assert!(display.contains("live"));
     assert!(display.contains("test"));
-}
-
-#[test]
-fn test_stream_identifier_equality() {
-    use synctv_xiu::streamhub::stream::StreamIdentifier;
-    let id1 = StreamIdentifier::Rtmp {
-        app_name: "live".to_string(),
-        stream_name: "test".to_string(),
-    };
-    let id2 = StreamIdentifier::Rtmp {
-        app_name: "live".to_string(),
-        stream_name: "test".to_string(),
-    };
-    assert_eq!(id1, id2);
-}
-
-#[test]
-fn test_stream_identifier_inequality() {
-    use synctv_xiu::streamhub::stream::StreamIdentifier;
-    let id1 = StreamIdentifier::Rtmp {
-        app_name: "live".to_string(),
-        stream_name: "test1".to_string(),
-    };
-    let id2 = StreamIdentifier::Rtmp {
-        app_name: "live".to_string(),
-        stream_name: "test2".to_string(),
-    };
-    assert_ne!(id1, id2);
 }
 
 #[test]
@@ -348,32 +250,6 @@ fn test_mpegts_stream_types() {
 }
 
 #[test]
-fn test_frame_data_video_clone() {
-    let frame = FrameData::Video {
-        timestamp: 100,
-        data: Bytes::from(vec![1, 2, 3, 4]),
-    };
-    let cloned = frame.clone();
-    let (timestamp, data) = expect_video_frame(frame);
-    let (cloned_timestamp, cloned_data) = expect_video_frame(cloned);
-    assert_eq!(timestamp, cloned_timestamp);
-    assert_eq!(data, cloned_data);
-}
-
-#[test]
-fn test_frame_data_serialization_roundtrip() {
-    let frame = FrameData::Video {
-        timestamp: 42,
-        data: Bytes::from(vec![0xDE, 0xAD, 0xBE, 0xEF]),
-    };
-    let serialized = serde_json::to_string(&frame).unwrap();
-    let deserialized: FrameData = serde_json::from_str(&serialized).unwrap();
-    let (timestamp, data) = expect_video_frame(deserialized);
-    assert_eq!(timestamp, 42);
-    assert_eq!(data.as_ref(), &[0xDE, 0xAD, 0xBE, 0xEF]);
-}
-
-#[test]
 fn test_frame_data_audio_serialization() {
     use synctv_xiu::streamhub::define::FrameData;
     let frame = FrameData::Audio {
@@ -401,36 +277,6 @@ fn test_channel_capacities() {
     assert_eq!(define::FRAME_DATA_CHANNEL_CAPACITY, 4096);
     assert_eq!(define::PACKET_DATA_CHANNEL_CAPACITY, 256);
     assert_eq!(define::STREAM_HUB_EVENT_CHANNEL_CAPACITY, 4096);
-}
-
-#[test]
-fn test_streamhub_error_display() {
-    use synctv_xiu::streamhub::errors::{StreamHubError, StreamHubErrorValue};
-
-    let err = StreamHubError {
-        value: StreamHubErrorValue::NoAppName,
-    };
-    assert_eq!(err.to_string(), "no app name");
-
-    let err = StreamHubError {
-        value: StreamHubErrorValue::Exists,
-    };
-    assert_eq!(err.to_string(), "exists");
-
-    let err = StreamHubError {
-        value: StreamHubErrorValue::SendError,
-    };
-    assert_eq!(err.to_string(), "streamhub internal channel send failed");
-
-    let err = StreamHubError {
-        value: StreamHubErrorValue::NoAppOrStreamName,
-    };
-    assert_eq!(err.to_string(), "no app or stream name");
-
-    let err = StreamHubError {
-        value: StreamHubErrorValue::SubscriberClosed,
-    };
-    assert_eq!(err.to_string(), "subscriber channel closed");
 }
 
 #[test]

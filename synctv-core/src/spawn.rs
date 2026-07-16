@@ -59,15 +59,8 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-
-    #[tokio::test]
-    async fn test_spawn_monitored_success() -> Result<(), tokio::task::JoinError> {
-        let result = spawn_monitored("test_success", async { 42 }).await?;
-        assert_eq!(result, 42);
-        Ok(())
-    }
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[tokio::test]
     async fn test_spawn_monitored_catches_panic() {

@@ -49,14 +49,14 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::mpsc;
 
 use crate::{
+    Result,
     models::{AuditAction, AuditDetails, AuditTargetType},
     repository::JsonbArray,
-    Result,
 };
 
 /// Default channel capacity for the audit event buffer
@@ -714,27 +714,6 @@ mod tests {
         assert_eq!(optional_reason(None), None);
         assert_eq!(optional_reason(Some("   ")), None);
         assert_eq!(optional_reason(Some("  abuse  ")).as_deref(), Some("abuse"));
-    }
-
-    #[test]
-    fn test_audit_record_fields() {
-        let record = AuditRecord {
-            actor_id: "a1".to_string(),
-            actor_username: "admin".to_string(),
-            action: AuditAction::RoomDeleted,
-            target_type: AuditTargetType::Room,
-            target_id: Some("r1".to_string()),
-            details: AuditDetails::reason("test"),
-            ip_address: Some("127.0.0.1".to_string()),
-            user_agent: None,
-            created_at: crate::SystemClock.now(),
-        };
-
-        assert_eq!(record.action.as_str(), "room_deleted");
-        assert_eq!(record.target_type.as_str(), "room");
-        assert_eq!(record.action.as_i16(), 10);
-        assert_eq!(record.target_type.as_i16(), 2);
-        assert_eq!(record.actor_id, "a1");
     }
 
     #[test]

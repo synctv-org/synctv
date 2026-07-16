@@ -209,26 +209,9 @@ where
 mod tests {
     use super::*;
     use crate::test_helpers::TestResultExt;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
-    use tokio::time::{sleep, Duration};
-
-    #[tokio::test]
-    async fn test_singleflight_single_request() {
-        let sf: SingleFlight<String, i32, String> = SingleFlight::new();
-        let counter = Arc::new(AtomicU32::new(0));
-
-        let counter_clone = counter.clone();
-        let result = sf
-            .do_work("key1".to_string(), async move {
-                counter_clone.fetch_add(1, Ordering::SeqCst);
-                Ok(42)
-            })
-            .await;
-
-        assert_eq!(result.checked("operation should succeed"), 42);
-        assert_eq!(counter.load(Ordering::SeqCst), 1);
-    }
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use tokio::time::{Duration, sleep};
 
     #[tokio::test]
     async fn test_singleflight_deduplicates_concurrent_requests() {

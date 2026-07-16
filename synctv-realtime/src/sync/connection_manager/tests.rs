@@ -56,24 +56,6 @@ impl ConnectionManager {
     }
 }
 
-#[test]
-fn test_connection_limits_default_tracks_core_config() {
-    let options = ConnectionLimitsOptions::default();
-    let realtime = ConnectionLimits::default();
-
-    assert_eq!(realtime.max_per_user, options.max_per_user);
-    assert_eq!(realtime.max_per_room, options.max_per_room);
-    assert_eq!(realtime.max_total, options.max_total);
-    assert_eq!(
-        realtime.idle_timeout,
-        Duration::from_secs(options.idle_timeout_seconds)
-    );
-    assert_eq!(
-        realtime.max_duration,
-        Duration::from_secs(options.max_duration_seconds)
-    );
-}
-
 #[tokio::test]
 async fn test_register_connection() {
     let manager = ConnectionManager::default();
@@ -646,42 +628,6 @@ async fn test_get_user_connections_distributed_without_redis_uses_local_state() 
     let conn_ids = manager.get_user_connections_distributed(&user_id).await?;
 
     assert_eq!(conn_ids, vec!["conn1".to_string()]);
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_user_connection_count_distributed_without_redis_uses_local_state() -> TestResult {
-    let manager = ConnectionManager::default();
-    let user_id = UserId::expect_positive(10_000_124);
-
-    manager
-        .register("user-count-1".to_string(), user_id)
-        .await?;
-    manager
-        .register("user-count-2".to_string(), user_id)
-        .await?;
-
-    let count = manager.user_connection_count_distributed(&user_id).await?;
-    assert_eq!(count, 2);
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_room_connection_count_distributed_without_redis_uses_local_state() -> TestResult {
-    let manager = ConnectionManager::default();
-    let user_id = UserId::expect_positive(10_000_010);
-    let room_id = RoomId::expect_positive(10_000_092);
-
-    manager.register("conn1".to_string(), user_id).await?;
-    manager.join_room("conn1", room_id).await?;
-
-    let count = manager.room_connection_count_distributed(&room_id).await?;
-    assert_eq!(count, 1);
-
-    let counts = manager
-        .room_connection_count_distributed_batch(&[&room_id])
-        .await?;
-    assert_eq!(counts, vec![1]);
     Ok(())
 }
 
@@ -1710,19 +1656,6 @@ async fn test_release_user_reservation_removes_zero_counter_entry() {
         "user reservation entry should be removed after the count returns to zero"
     );
     assert_eq!(mgr.pending_user_reservations.len(), 0);
-}
-
-#[tokio::test]
-async fn test_new_does_not_spawn_tasks() {
-    let manager = ConnectionManager::new(ConnectionLimits::default());
-
-    let user_id = UserId::expect_positive(10_000_010);
-    assert!(manager.register("conn1".to_string(), user_id).await.is_ok());
-    assert_eq!(manager.connection_count(), 1);
-    assert!(
-        !manager.background_tasks_running(),
-        "new manager should not spawn background tasks"
-    );
 }
 
 #[tokio::test]

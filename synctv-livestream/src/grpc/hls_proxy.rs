@@ -354,12 +354,6 @@ mod tests {
     }
 
     #[test]
-    fn test_hls_proxy_client_creation() {
-        let client = HlsProxyClient::with_defaults(Some("test-secret".to_string()));
-        assert!(client.cluster_secret.is_some());
-    }
-
-    #[test]
     fn test_hls_proxy_client_no_secret() {
         let client = HlsProxyClient::with_defaults(None);
         assert!(client.cluster_secret.is_none());

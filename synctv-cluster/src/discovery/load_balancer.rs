@@ -294,13 +294,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_load_balancer_new() -> Result<()> {
-        let registry = make_registry()?;
-        let _lb = LoadBalancer::new(registry, LoadBalancingStrategy::Random);
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn test_load_balancer_with_health_monitor() -> Result<()> {
         let registry = make_registry()?;
         let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));

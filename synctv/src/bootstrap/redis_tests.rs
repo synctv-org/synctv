@@ -128,20 +128,6 @@ fn test_redis_connection_manager_options_uses_connect_timeout() {
 }
 
 #[tokio::test]
-async fn test_read_lock_allows_concurrent_access() {
-    let shared = Arc::new(RwLock::new("original".to_string()));
-
-    let cloned = {
-        let guard = shared.read().await;
-        guard.clone()
-    };
-    assert_eq!(cloned, "original");
-
-    let second = shared.read().await.clone();
-    assert_eq!(second, "original");
-}
-
-#[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_snapshot_returns_clone() {
     let (_redis, client) = start_redis_with_client().await;

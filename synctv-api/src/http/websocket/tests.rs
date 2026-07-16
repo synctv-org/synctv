@@ -194,30 +194,6 @@ fn test_websocket_content_filter_reuses_shared_filter() -> TestResult {
 }
 
 #[test]
-fn test_ws_query_deserialization_empty() -> TestResult {
-    let json = "{}";
-    let query: WsQuery = serde_json::from_str(json)?;
-    assert!(query.ticket.is_empty());
-    Ok(())
-}
-
-#[test]
-fn test_ws_query_deserialization_with_ticket() -> TestResult {
-    let json = r#"{"ticket":"my_ticket"}"#;
-    let query: WsQuery = serde_json::from_str(json)?;
-    assert_eq!(query.ticket, "my_ticket");
-    Ok(())
-}
-
-#[test]
-fn test_ws_query_deserialization_ignores_extra_fields() -> TestResult {
-    let json = r#"{"ticket":"tix","extra":"ignored"}"#;
-    let query: WsQuery = serde_json::from_str(json)?;
-    assert_eq!(query.ticket, "tix");
-    Ok(())
-}
-
-#[test]
 fn test_resource_event_is_critical() {
     let message = ServerMessage {
         message: Some(

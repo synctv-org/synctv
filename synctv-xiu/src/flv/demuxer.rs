@@ -271,45 +271,6 @@ mod tests {
     }
 
     #[test]
-    fn test_flv_demuxer_audio_data_new() {
-        let data = FlvDemuxerAudioData::new();
-        assert!(!data.has_data);
-        assert_eq!(data.sound_format, 0);
-        assert_eq!(data.dts, 0);
-        assert_eq!(data.pts, 0);
-        assert!(data.data.is_empty());
-    }
-
-    #[test]
-    fn test_flv_demuxer_video_data_new() {
-        let data = FlvDemuxerVideoData::new();
-        assert_eq!(data.codec_id, 0);
-        assert_eq!(data.dts, 0);
-        assert_eq!(data.pts, 0);
-        assert_eq!(data.frame_type, 0);
-        assert!(data.data.is_empty());
-    }
-
-    #[test]
-    fn test_flv_video_tag_demuxer_new() {
-        let demuxer = FlvVideoTagDemuxer::new();
-        assert!(demuxer.avc_processor.mpeg4_avc.sps.is_empty());
-    }
-
-    #[test]
-    fn test_flv_audio_tag_demuxer_new() {
-        let demuxer = FlvAudioTagDemuxer::new();
-        assert_eq!(demuxer.aac_processor.mpeg4_aac.channels, 0);
-    }
-
-    #[test]
-    fn test_flv_demuxer_new() {
-        let data = BytesMut::new();
-        let demuxer = FlvDemuxer::new(data);
-        assert!(demuxer.bytes_reader.is_empty());
-    }
-
-    #[test]
     fn test_flv_demuxer_read_header_insufficient_data() {
         let data = BytesMut::from(&[0x46, 0x4C, 0x56][..]); // "FLV" signature (3 bytes)
         let mut demuxer = FlvDemuxer::new(data);

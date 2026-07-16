@@ -182,14 +182,6 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_builder() {
-        let wb = WhereClauseBuilder::new();
-        let (sql, next) = ok(wb.build(1), "empty WHERE clause should build");
-        assert_eq!(sql, "");
-        assert_eq!(next, 1);
-    }
-
-    #[test]
     fn test_escape_ilike() {
         assert_eq!(escape_ilike("hello"), "%hello%");
         assert_eq!(escape_ilike("100%"), "%100\\%%");

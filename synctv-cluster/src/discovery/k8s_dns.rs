@@ -353,18 +353,6 @@ mod tests {
     }
 
     #[test]
-    fn test_k8s_dns_discovery_new() {
-        let disc = K8sDnsDiscovery::new(
-            "synctv-headless.default.svc.cluster.local".to_string(),
-            8080,
-            "10.0.0.1".to_string(),
-        );
-        assert_eq!(disc.dns_name(), "synctv-headless.default.svc.cluster.local");
-        assert_eq!(disc.api_port, 8080);
-        assert_eq!(disc.self_ip, "10.0.0.1");
-    }
-
-    #[test]
     fn test_with_cluster_secret_sets_probe_secret() {
         let disc = K8sDnsDiscovery::new(
             "synctv-headless.default.svc.cluster.local".to_string(),

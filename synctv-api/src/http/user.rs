@@ -1114,49 +1114,9 @@ pub async fn close_account(
 
 #[cfg(test)]
 mod tests {
-    use super::UserAvatarObjectQuery;
     use synctv_proto::client::{CompleteUserAvatarUploadSessionRequest, DeletePasskeyRequest};
 
     type TestResult<T = ()> = anyhow::Result<T>;
-
-    #[test]
-    fn test_list_my_rooms_request_deserializes_numeric_fields() -> TestResult {
-        let query: synctv_proto::client::ListMyRoomsRequest = serde_urlencoded::from_str(
-            "page=2&pageSize=25&search=room&status=1&isBanned=false&relation=2&sortBy=5&sortDirection=1",
-        )?;
-
-        assert_eq!(query.page, 2);
-        assert_eq!(query.page_size, 25);
-        assert_eq!(query.search, "room");
-        assert_eq!(query.status, 1);
-        assert_eq!(query.is_banned, Some(false));
-        assert_eq!(query.relation, 2);
-        assert_eq!(query.sort_by, 5);
-        assert_eq!(query.sort_direction, 1);
-        Ok(())
-    }
-
-    #[test]
-    fn test_list_my_rooms_request_query_defaults_to_proto_zero_values() -> TestResult {
-        let query: synctv_proto::client::ListMyRoomsRequest = serde_urlencoded::from_str("")?;
-
-        assert_eq!(query.page, 0);
-        assert_eq!(query.page_size, 0);
-        assert!(query.search.is_empty());
-        assert_eq!(query.status, 0);
-        assert_eq!(query.is_banned, None);
-        assert_eq!(query.relation, 0);
-        assert_eq!(query.sort_by, 0);
-        assert_eq!(query.sort_direction, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn test_user_avatar_object_query_ignores_unknown_fields() -> TestResult {
-        let query = serde_urlencoded::from_str::<UserAvatarObjectQuery>("token=token&extra=true")?;
-        assert_eq!(query.token, "token");
-        Ok(())
-    }
 
     #[test]
     fn test_delete_passkey_request_overrides_path_credential_id() -> TestResult {

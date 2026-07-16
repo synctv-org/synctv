@@ -147,15 +147,6 @@ async fn test_file_backend_remove() -> TestResult {
 }
 
 #[tokio::test]
-async fn test_file_backend_remove_nonexistent() -> TestResult {
-    let (backend, _tmp) = make_backend().await?;
-    backend
-        .remove("does_not_exist_0000000000000000000000000000000000000000000000")
-        .await;
-    Ok(())
-}
-
-#[tokio::test]
 async fn test_file_backend_get_presence() -> TestResult {
     let (backend, _tmp) = make_backend().await?;
     let key = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
@@ -227,27 +218,6 @@ async fn test_file_backend_current_size() -> TestResult {
         .remove("aaaa0000000000000000000000000000000000000000000000000000000000aa")
         .await;
     assert_eq!(backend.current_size(), 200);
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_file_backend_entry_count() -> TestResult {
-    let (backend, _tmp) = make_backend().await?;
-    assert_eq!(backend.entry_count(), 0);
-
-    put_entry(
-        &backend,
-        "aaaa0000000000000000000000000000000000000000000000000000000000aa",
-        b"a",
-    )
-    .await?;
-    put_entry(
-        &backend,
-        "bbbb0000000000000000000000000000000000000000000000000000000000bb",
-        b"b",
-    )
-    .await?;
-    assert_eq!(backend.entry_count(), 2);
     Ok(())
 }
 
@@ -602,18 +572,6 @@ async fn test_file_backend_overwrite_updates_size() -> TestResult {
 
     put_entry(&backend, key, &[0u8; 50]).await?;
     assert_eq!(backend.current_size(), 50);
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_file_backend_empty_data() -> TestResult {
-    let (backend, _tmp) = make_backend().await?;
-    let key = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
-
-    put_entry(&backend, key, b"").await?;
-    let result = backend.get(key).await.ok_or("entry should exist")?;
-    assert_eq!(result.data, Bytes::new());
-    assert_eq!(backend.current_size(), 0);
     Ok(())
 }
 

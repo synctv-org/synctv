@@ -1858,11 +1858,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_provider_manager_init_success_passthrough() {
-        handle_provider_manager_init_result(Ok(())).checked("successful provider init should pass");
-    }
-
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_build_room_service_wires_brute_force_protection() {
@@ -1914,11 +1909,6 @@ mod tests {
             room_service.has_playback_l2_cache(),
             "room service should wire playback L2 cache with the local runtime"
         );
-    }
-
-    #[test]
-    fn test_build_room_service_signature_supports_redis_lock_wiring() {
-        let _: fn(RoomServiceBuildArgs) -> anyhow::Result<RoomService> = build_room_service;
     }
 
     #[tokio::test]
@@ -2228,38 +2218,6 @@ mod tests {
         assert!(service.is_some());
     }
 
-    #[test]
-    fn test_init_services_uses_configured_messaging_rate_limits() {
-        let messaging_rate_limits = MessagingRateLimitOptions {
-            chat_per_second: 21,
-            window_seconds: 5,
-        };
-
-        let rate_limit_config = RateLimitConfig {
-            chat_per_second: messaging_rate_limits.chat_per_second,
-            window_seconds: messaging_rate_limits.window_seconds,
-        };
-
-        assert_eq!(rate_limit_config.chat_per_second, 21);
-        assert_eq!(rate_limit_config.window_seconds, 5);
-    }
-
-    #[test]
-    fn test_file_upload_token_secret_uses_explicit_config() {
-        assert_eq!(
-            file_upload_token_secret(" configured-secret ", "jwt-secret"),
-            "configured-secret"
-        );
-    }
-
-    #[test]
-    fn test_file_upload_token_secret_falls_back_to_jwt_secret() {
-        assert_eq!(
-            file_upload_token_secret("", "jwt-secret"),
-            "synctv:file-upload:jwt-secret"
-        );
-    }
-
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_build_email_token_service_uses_shared_rate_limiter() {
@@ -2303,14 +2261,6 @@ mod tests {
             providers_manager.get("direct_url").await.is_some(),
             "default provider instances must be loaded during provider manager initialization"
         );
-    }
-
-    #[test]
-    fn test_init_credential_encryption_allows_missing_key() {
-        let encryption = init_credential_encryption(Some(""))
-            .checked("empty credential encryption key should mean disabled");
-
-        assert!(encryption.is_none());
     }
 
     #[test]

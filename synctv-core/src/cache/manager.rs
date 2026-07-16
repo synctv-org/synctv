@@ -227,20 +227,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cache_manager_creation() {
-        let (user_cache, room_cache) = make_caches();
-        let _manager = CacheManager::new(user_cache, room_cache, None);
-    }
-
-    #[tokio::test]
-    async fn test_clear_all_l1() {
-        let (user_cache, room_cache) = make_caches();
-        let manager = CacheManager::new(user_cache, room_cache, None);
-        // This should not panic
-        manager.clear_all_l1();
-    }
-
-    #[tokio::test]
     async fn test_invalidation_listener_user() {
         let (user_cache, room_cache) = make_caches();
         let manager = CacheManager::new(user_cache.clone(), room_cache.clone(), None);

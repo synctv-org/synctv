@@ -15,9 +15,9 @@ use axum::{
 use synctv_proto::client::{
     AddMediaBatchRequest, CreatePlaylistRequest, DeleteEntriesRequest, DeleteMediaQuery,
     DeletePlaylistQuery, EditMediaRequest, GetChatHistoryRequest, GetHotRoomsRequest,
-    GetRoomMembersRequest, JoinRoomRequest, ListPlaylistItemsRequest, ListPlaylistsRequest,
-    ListRoomsRequest, MoveMediaRequest, MovePlaylistRequest, StartRoomPasswordLoginRequest,
-    UpdatePlaybackStateRequest, UpdatePlaylistRequest,
+    JoinRoomRequest, ListPlaylistItemsRequest, ListPlaylistsRequest, MoveMediaRequest,
+    MovePlaylistRequest, StartRoomPasswordLoginRequest, UpdatePlaybackStateRequest,
+    UpdatePlaylistRequest,
 };
 use tower::ServiceExt;
 
@@ -36,67 +36,6 @@ fn app_err<T>(result: Result<T, crate::http::AppError>) -> TestResult<crate::htt
         Ok(_) => Err(test_error("expected HTTP route error")),
         Err(error) => Ok(error),
     }
-}
-
-#[test]
-fn test_update_playback_state_deserialize_playing_update() -> TestResult {
-    let json = r#"{"type":1,"playing":true}"#;
-    let req: UpdatePlaybackStateRequest = serde_json::from_str(json)?;
-    assert_eq!(
-        req.r#type,
-        synctv_proto::client::PlaybackUpdateType::Play as i32
-    );
-    assert_eq!(req.playing, Some(true));
-    assert!(req.position.is_none());
-    assert!(req.speed.is_none());
-    Ok(())
-}
-
-#[test]
-fn test_update_playback_state_deserialize_seek_update() -> TestResult {
-    let json = r#"{"type":3,"position": 42.5}"#;
-    let req: UpdatePlaybackStateRequest = serde_json::from_str(json)?;
-    assert_eq!(
-        req.r#type,
-        synctv_proto::client::PlaybackUpdateType::Seek as i32
-    );
-    let position = req
-        .position
-        .ok_or_else(|| test_error("seek update should include position"))?;
-    assert!((position - 42.5).abs() < f64::EPSILON);
-    assert!(req.speed.is_none());
-    Ok(())
-}
-
-#[test]
-fn test_update_playback_state_deserialize_speed_update() -> TestResult {
-    let json = r#"{"type":4,"speed": 2.0}"#;
-    let req: UpdatePlaybackStateRequest = serde_json::from_str(json)?;
-    assert_eq!(
-        req.r#type,
-        synctv_proto::client::PlaybackUpdateType::Speed as i32
-    );
-    assert!(req.position.is_none());
-    let speed = req
-        .speed
-        .ok_or_else(|| test_error("speed update should include speed"))?;
-    assert!((speed - 2.0).abs() < f64::EPSILON);
-    Ok(())
-}
-
-#[test]
-fn test_update_playback_state_deserialize_full_state() -> TestResult {
-    let json = r#"{"type":3,"playing":false,"position":42.5,"speed":1.25,"version":9}"#;
-    let req: UpdatePlaybackStateRequest = serde_json::from_str(json)?;
-    assert_eq!(
-        req.r#type,
-        synctv_proto::client::PlaybackUpdateType::Seek as i32
-    );
-    assert_eq!(req.playing, Some(false));
-    assert_eq!(req.position, Some(42.5));
-    assert_eq!(req.speed, Some(1.25));
-    assert_eq!(req.version, Some(9));
-    Ok(())
 }
 
 #[test]
@@ -367,28 +306,6 @@ fn test_build_get_playback_request_rejects_invalid_subtitle_preference() -> Test
 }
 
 #[test]
-fn test_members_query_params_deserialize_sorting_and_filters() -> TestResult {
-    let json = r#"{"page":2,"pageSize":25,"search":"alice","role":2,"sortBy":2,"sortDirection":1}"#;
-    let query: GetRoomMembersRequest = serde_json::from_str(json)?;
-    assert_eq!(query.page, 2);
-    assert_eq!(query.page_size, 25);
-    assert_eq!(query.search, "alice");
-    assert_eq!(
-        query.role,
-        Some(synctv_proto::common::RoomMemberRole::Admin as i32)
-    );
-    assert_eq!(
-        query.sort_by,
-        synctv_proto::client::RoomMemberListSortBy::Username as i32
-    );
-    assert_eq!(
-        query.sort_direction,
-        synctv_proto::client::SortDirection::Asc as i32
-    );
-    Ok(())
-}
-
-#[test]
 fn test_scalar_query_parsers_reject_invalid_values() {
     assert!(serde_urlencoded::from_str::<DeleteMediaQuery>("force=definitely").is_err());
     assert!(serde_urlencoded::from_str::<DeletePlaylistQuery>("force=definitely").is_err());
@@ -396,65 +313,6 @@ fn test_scalar_query_parsers_reject_invalid_values() {
     assert!(
         serde_urlencoded::from_str::<WatchPlaybackQuery>("deliveryMode=push_snapshot").is_err()
     );
-}
-
-#[test]
-fn test_list_rooms_query_deserializes_proto_defaults() -> TestResult {
-    let query: ListRoomsRequest = serde_urlencoded::from_str("")?;
-
-    assert_eq!(query.page, 0);
-    assert_eq!(query.page_size, 0);
-    assert!(query.search.is_empty());
-    assert_eq!(query.sort_by, 0);
-    assert_eq!(query.sort_direction, 0);
-    Ok(())
-}
-
-#[test]
-fn test_list_rooms_query_deserializes_explicit_values() -> TestResult {
-    let query: ListRoomsRequest =
-        serde_urlencoded::from_str("page=2&pageSize=25&search=room&sortBy=4&sortDirection=1")?;
-
-    assert_eq!(query.page, 2);
-    assert_eq!(query.page_size, 25);
-    assert_eq!(query.search, "room");
-    assert_eq!(
-        query.sort_by,
-        synctv_proto::client::RoomListSortBy::Name as i32
-    );
-    assert_eq!(
-        query.sort_direction,
-        synctv_proto::client::SortDirection::Asc as i32
-    );
-    Ok(())
-}
-
-#[test]
-fn test_check_room_path_deserializes_proto_field_name() -> TestResult {
-    let req: synctv_proto::client::CheckRoomRequest =
-        serde_json::from_str(r#"{"roomId":"room_1"}"#)?;
-
-    assert_eq!(req.room_id, "room_1");
-    Ok(())
-}
-
-#[test]
-fn test_room_path_request_deserializes_proto_field_name() -> TestResult {
-    let req: synctv_proto::client::RoomPathRequest =
-        serde_json::from_str(r#"{"roomId":"room_1"}"#)?;
-
-    assert_eq!(req.room_id, "room_1");
-    Ok(())
-}
-
-#[test]
-fn test_room_media_target_path_request_deserializes_proto_field_names() -> TestResult {
-    let req: synctv_proto::client::RoomMediaTargetPathRequest =
-        serde_json::from_str(r#"{"roomId":"room_1","mediaId":"med_1"}"#)?;
-
-    assert_eq!(req.room_id, "room_1");
-    assert_eq!(req.media_id, "med_1");
-    Ok(())
 }
 
 #[test]

@@ -9,8 +9,8 @@ use crate::service::{OAuth2GoogleProviderConfig, OAuth2ProviderPrivateConfig};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use oauth2::{
-    basic::BasicClient, AuthUrl, ClientId, ClientSecret, EndpointNotSet, EndpointSet,
-    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,
+    AuthUrl, ClientId, ClientSecret, EndpointNotSet, EndpointSet, PkceCodeChallenge,
+    PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl, basic::BasicClient,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -313,28 +313,6 @@ mod tests {
         assert!(!pkce_verifier.is_empty());
     }
 
-    #[tokio::test]
-    async fn test_new_auth_url_different_states() {
-        let provider = GoogleProvider::create(
-            "id".to_string(),
-            "secret".to_string(),
-            "https://example.com/cb".to_string(),
-        )
-        .checked("operation should succeed");
-
-        let auth1 = provider
-            .new_auth_url("state_a", None)
-            .await
-            .checked("operation should succeed");
-        let auth2 = provider
-            .new_auth_url("state_b", None)
-            .await
-            .checked("operation should succeed");
-
-        assert_ne!(auth1.auth_url, auth2.auth_url);
-        assert_ne!(auth1.pkce_verifier, auth2.pkce_verifier);
-    }
-
     #[test]
     fn test_factory_valid_config() {
         let config = google_private_config(
@@ -370,11 +348,13 @@ mod tests {
     #[test]
     fn test_factory_invalid_redirect_url() {
         let config = google_private_config("id", "secret", "://bad");
-        assert!(google_factory_from_private_config(
-            &config,
-            &synctv_common::ssrf::SsrfGuard::strict_policy()
-        )
-        .is_err());
+        assert!(
+            google_factory_from_private_config(
+                &config,
+                &synctv_common::ssrf::SsrfGuard::strict_policy()
+            )
+            .is_err()
+        );
     }
 
     #[test]

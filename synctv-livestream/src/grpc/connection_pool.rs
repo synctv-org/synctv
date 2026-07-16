@@ -118,13 +118,6 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn test_pool_creation() {
-        let pool = GrpcConnectionPool::with_defaults();
-        assert!(pool.is_empty());
-        assert_eq!(pool.len(), 0);
-    }
-
     #[tokio::test]
     async fn test_pool_invalidate_nonexistent() {
         let pool = GrpcConnectionPool::with_defaults();

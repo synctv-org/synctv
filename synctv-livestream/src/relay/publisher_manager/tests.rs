@@ -36,15 +36,6 @@ fn test_manager(
 }
 
 #[tokio::test]
-async fn test_publisher_manager_creation() {
-    let registry = Arc::new(TestStreamRegistry::new());
-
-    let (manager, _rx) = test_manager(registry, "test-node-1");
-    assert_eq!(manager.local_node_id, "test-node-1");
-    assert!(manager.active_publishers.is_empty());
-}
-
-#[tokio::test]
 async fn test_active_publishers_map() {
     let registry = Arc::new(TestStreamRegistry::new());
     let (manager, _rx) = test_manager(registry, "test-node");

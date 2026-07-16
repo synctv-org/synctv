@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::{
-    models::{MediaId, PlaylistId, RoomId, RoomSettings, UserId},
     Result,
+    models::{MediaId, PlaylistId, RoomId, RoomSettings, UserId},
 };
 
 /// Guest kick reasons
@@ -505,12 +505,6 @@ mod tests {
             Ok(value) => value,
             Err(error) => std::panic::panic_any(format!("{context}: {error}")),
         }
-    }
-
-    #[tokio::test]
-    async fn test_notification_service_creation() {
-        let service = NotificationService::default();
-        assert_eq!(service.config.channel_capacity, 1000);
     }
 
     #[tokio::test]

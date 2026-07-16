@@ -24,8 +24,8 @@ use uuid::Uuid;
 
 use crate::models::{MediaId, PlaylistId, RoomId, UserId};
 use crate::{
-    redis_runtime_snapshot, Error, RedisConnectionRuntime, Result, SharedStateMode,
-    SharedStateProfile,
+    Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
+    redis_runtime_snapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1549,7 +1549,7 @@ async fn db_version_for_repair(pool: &PgPool, domain: &CacheDomain) -> Option<i6
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::{failing_redis_runtime, TestOptionExt, TestResultExt};
+    use crate::test_helpers::{TestOptionExt, TestResultExt, failing_redis_runtime};
 
     #[derive(Debug, Default)]
     struct CommitFailureRepairStore {
@@ -2174,37 +2174,6 @@ mod tests {
                 .checked("operation should succeed"),
             vec![Some(8), None]
         );
-    }
-
-    #[test]
-    fn local_only_profile_uses_local_authoritative_fence() {
-        let profile = SharedStateProfile::local_only("test:");
-        let store = version_fence_store_from_shared_state_profile(&profile)
-            .checked("operation should succeed");
-
-        assert!(store.is_authoritative());
-    }
-
-    #[test]
-    fn best_effort_profile_without_redis_uses_local_authoritative_fence() {
-        let profile = SharedStateProfile::new(SharedStateMode::SharedBestEffort, None, "test:");
-        let store = version_fence_store_from_shared_state_profile(&profile)
-            .checked("operation should succeed");
-
-        assert!(store.is_authoritative());
-    }
-
-    #[test]
-    fn best_effort_profile_uses_redis_fence_when_redis_is_configured() {
-        let profile = SharedStateProfile::new(
-            SharedStateMode::SharedBestEffort,
-            Some(failing_redis_runtime()),
-            "test:",
-        );
-        let store = version_fence_store_from_shared_state_profile(&profile)
-            .checked("operation should succeed");
-
-        assert!(store.is_authoritative());
     }
 
     #[test]

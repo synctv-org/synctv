@@ -167,23 +167,6 @@ fn test_room_actor_executor_rejects_malformed_authorization_header() {
     );
 }
 
-#[tokio::test]
-async fn test_client_api_runtime_accepts_trait_object_redis_runtime() {
-    let runtime = synctv_core_testing::failing_redis_runtime();
-    let runtime_config = crate::impls::ClientApiRuntime {
-        redis_runtime: Some(runtime.clone()),
-        ..crate::test_support::client_api_runtime()
-    };
-
-    assert!(
-        runtime_config
-            .redis_runtime
-            .as_ref()
-            .is_some_and(|injected| Arc::ptr_eq(injected, &runtime)),
-        "client API runtime should retain the injected Redis runtime object"
-    );
-}
-
 #[test]
 fn test_client_api_config_accepts_trait_object_provider_store_resolver() {
     #[derive(Clone)]
@@ -476,28 +459,6 @@ fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::Us
 }
 
 #[test]
-fn test_user_to_proto_basic() -> TestResult {
-    let public_id_codec = test_public_id_codec();
-    let user = make_test_user(UserRole::User, UserStatus::Active);
-    let proto = api_ok(try_user_to_proto(
-        &user,
-        Some("test@example.com"),
-        &public_id_codec,
-    ))?;
-
-    assert_eq!(proto.id, codec_ok(public_id_codec.encode_user_id(user.id))?);
-    assert_eq!(proto.username, "testuser");
-    assert_eq!(proto.email, "test@example.com");
-    assert_eq!(proto.role, synctv_proto::common::UserRole::User as i32);
-    assert_eq!(
-        proto.status,
-        synctv_proto::common::UserStatus::Active as i32
-    );
-    assert!(!proto.is_banned);
-    Ok(())
-}
-
-#[test]
 fn test_provider_error_not_found_preserves_not_found_semantics() {
     let err = ApiError::from(synctv_core::provider::ProviderError::NotFound);
     assert!(matches!(err, ApiError::NotFound(_)));
@@ -579,57 +540,6 @@ fn test_provider_error_upstream_http_400_maps_to_invalid_input() -> TestResult {
             )));
         }
     }
-    Ok(())
-}
-
-#[test]
-fn test_user_to_proto_admin_role() -> TestResult {
-    let public_id_codec = test_public_id_codec();
-    let user = make_test_user(UserRole::Admin, UserStatus::Active);
-    let proto = api_ok(try_user_to_proto(
-        &user,
-        Some("test@example.com"),
-        &public_id_codec,
-    ))?;
-    assert_eq!(proto.role, synctv_proto::common::UserRole::Admin as i32);
-    Ok(())
-}
-
-#[test]
-fn test_user_to_proto_root_role() -> TestResult {
-    let public_id_codec = test_public_id_codec();
-    let user = make_test_user(UserRole::Root, UserStatus::Active);
-    let proto = api_ok(try_user_to_proto(
-        &user,
-        Some("test@example.com"),
-        &public_id_codec,
-    ))?;
-    assert_eq!(proto.role, synctv_proto::common::UserRole::Root as i32);
-    Ok(())
-}
-
-#[test]
-fn test_user_to_proto_banned_status() -> TestResult {
-    let public_id_codec = test_public_id_codec();
-    let user = make_test_user(UserRole::User, UserStatus::Banned);
-    let proto = api_ok(try_user_to_proto(
-        &user,
-        Some("test@example.com"),
-        &public_id_codec,
-    ))?;
-    assert_eq!(
-        proto.status,
-        synctv_proto::common::UserStatus::Banned as i32
-    );
-    Ok(())
-}
-
-#[test]
-fn test_user_to_proto_no_email() -> TestResult {
-    let public_id_codec = test_public_id_codec();
-    let user = make_test_user(UserRole::User, UserStatus::Active);
-    let proto = api_ok(try_user_to_proto(&user, None, &public_id_codec))?;
-    assert_eq!(proto.email, "");
     Ok(())
 }
 

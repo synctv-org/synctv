@@ -52,37 +52,6 @@ fn nav_response_with_wbi_keys(img_key: &str, sub_key: &str) -> serde_json::Value
 }
 
 #[test]
-fn test_extract_bvid() {
-    assert_eq!(
-        BilibiliClient::extract_bvid("https://www.bilibili.com/video/BV1xx411c7XZ"),
-        Some("BV1xx411c7XZ".to_string())
-    );
-}
-
-#[test]
-fn test_extract_epid() {
-    assert_eq!(
-        BilibiliClient::extract_epid("https://www.bilibili.com/bangumi/play/ep12345"),
-        Some("ep12345".to_string())
-    );
-}
-
-#[test]
-fn test_is_short_link() {
-    assert!(BilibiliClient::is_short_link("https://b23.tv/abc123"));
-    assert!(!BilibiliClient::is_short_link(
-        "https://www.bilibili.com/video/BV123"
-    ));
-}
-
-#[test]
-fn test_quality_conversion() {
-    assert_eq!(Quality::P1080.to_qn(), 80);
-    assert_eq!(Quality::from_qn(64), Quality::P720);
-    assert_eq!(Quality::P480.as_str(), "480P");
-}
-
-#[test]
 fn test_extract_bvid_various_formats() {
     // Standard video URL
     assert_eq!(

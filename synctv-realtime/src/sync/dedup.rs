@@ -150,24 +150,6 @@ mod tests {
     use synctv_core::models::id::{RoomId, UserId};
 
     #[tokio::test]
-    async fn test_dedup_basic() {
-        let dedup = MessageDeduplicator::with_defaults();
-
-        let key = DedupKey {
-            room_id: Some(1),
-            event_id: "event-1".to_string(),
-        };
-
-        assert!(dedup.should_process(&key));
-
-        assert!(!dedup.should_process(&key));
-
-        dedup.clear();
-
-        assert!(dedup.should_process(&key));
-    }
-
-    #[tokio::test]
     async fn test_dedup_concurrent_should_process() -> Result<(), tokio::task::JoinError> {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;

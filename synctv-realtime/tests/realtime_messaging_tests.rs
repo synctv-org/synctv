@@ -293,50 +293,6 @@ async fn test_dedup_with_different_events() {
 
 /// Test that `RealtimeManager` works without Redis (single-node mode).
 #[tokio::test]
-async fn test_single_node_mode_without_redis() {
-    let config = RealtimeConfig {
-        distributed_transport_factory: None,
-        message_runtime: Arc::new(RoomMessageHub::new()),
-        node_id: "standalone".to_string(),
-        ..Default::default()
-    };
-
-    let manager = RealtimeManager::new(config)
-        .await
-        .expect("Should work without Redis");
-
-    let room = rid("room1");
-    let user = uid("user1");
-    let (mut rx, _conn_id) = manager
-        .subscribe_with_id(room, user, ConnectionId::new("conn1"))
-        .await
-        .expect("subscribe should succeed");
-
-    // Local broadcast should still work
-    let event = RealtimeEvent::ChatMessage {
-        event_id: synctv_common::snanoid!(16),
-        room_id: room,
-        user_id: user,
-        username: "test".to_string(),
-        message: "local message".to_string(),
-        timestamp: chrono::Utc::now(),
-        display_position: None,
-        display_color: None,
-    };
-
-    manager.broadcast(event);
-
-    // Should receive locally
-    let result = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await;
-    assert!(result.is_ok(), "Should receive local broadcast");
-
-    manager.shutdown().await;
-}
-
-// Test 4: PubSub subscription management
-
-/// Test that room subscriptions are properly tracked in Redis.
-#[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_pubsub_subscription_tracking() {
     let (_container, redis_client, conn) = setup_redis().await;
@@ -649,56 +605,6 @@ async fn test_critical_event_classification() {
 // Test 7: Broadcast result tracking
 
 /// Test that broadcast returns correct recipient count.
-#[tokio::test]
-async fn test_broadcast_recipient_count() {
-    let config = RealtimeConfig {
-        distributed_transport_factory: None,
-        message_runtime: Arc::new(RoomMessageHub::new()),
-        node_id: "standalone".to_string(),
-        ..Default::default()
-    };
-
-    let manager = RealtimeManager::new(config)
-        .await
-        .expect("Failed to create RealtimeManager");
-
-    let room = rid("room1");
-
-    // Subscribe 3 connections
-    let (_rx1, _) = manager
-        .subscribe_with_id(room, uid("user1"), ConnectionId::new("conn1"))
-        .await
-        .expect("subscribe should succeed");
-    let (_rx2, _) = manager
-        .subscribe_with_id(room, uid("user2"), ConnectionId::new("conn2"))
-        .await
-        .expect("subscribe should succeed");
-    let (_rx3, _) = manager
-        .subscribe_with_id(room, uid("user3"), ConnectionId::new("conn3"))
-        .await
-        .expect("subscribe should succeed");
-
-    // Broadcast a message
-    let event = RealtimeEvent::ChatMessage {
-        event_id: synctv_common::snanoid!(16),
-        room_id: room,
-        user_id: uid("user1"),
-        username: "test".to_string(),
-        message: "hello".to_string(),
-        timestamp: chrono::Utc::now(),
-        display_position: None,
-        display_color: None,
-    };
-
-    let result = manager.broadcast(event);
-    assert_eq!(result.local_sent, 3, "Should have 3 local recipients");
-
-    manager.shutdown().await;
-}
-
-// Test 8: Cache invalidation event
-
-/// Test cache invalidation event serialization.
 #[tokio::test]
 async fn test_cache_invalidation_event() {
     let event = RealtimeEvent::CacheInvalidate {

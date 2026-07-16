@@ -233,11 +233,6 @@ fn test_percent_encode_special_chars() {
 }
 
 #[test]
-fn test_percent_encode_empty_string() {
-    assert_eq!(percent_encode(""), "");
-}
-
-#[test]
 fn test_percent_encode_already_safe() {
     // NON_ALPHANUMERIC encodes everything except A-Z, a-z, 0-9.
     // Characters like -, _, ., ~ ARE encoded by this encode set.
@@ -518,19 +513,6 @@ fn test_provider_headers_forwarded_with_referer() {
 }
 
 // PX3: Body size scan() combinator (unit-level)
-
-#[test]
-fn test_max_proxy_body_size_constant() {
-    // Verify the constant is 256 MB
-    // We can't access MAX_PROXY_BODY_SIZE directly (private), but we can
-    // verify it indirectly through behavior: Content-Length > 256MB rejects.
-    // Verify the ACL allows public IPs that would serve large files.
-    use std::net::IpAddr;
-    let ip: IpAddr = "93.184.216.34".parse().unwrap();
-    assert!(!synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(&ip));
-}
-
-// Proxy SSRF ACL - additional edge cases
 
 #[test]
 fn test_ssrf_acl_ipv6_loopback_blocked() {

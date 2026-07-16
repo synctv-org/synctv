@@ -456,41 +456,6 @@ mod tests {
     }
 
     #[test]
-    fn test_bad_request() {
-        let err = AppError::bad_request("invalid field");
-        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(err.message(), "invalid field");
-    }
-
-    #[test]
-    fn test_unauthorized() {
-        let err = AppError::unauthorized("not logged in");
-        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(err.message(), "not logged in");
-    }
-
-    #[test]
-    fn test_forbidden() {
-        let err = AppError::forbidden("no access");
-        assert_eq!(err.status(), StatusCode::FORBIDDEN);
-        assert_eq!(err.message(), "no access");
-    }
-
-    #[test]
-    fn test_not_found() {
-        let err = AppError::not_found("room not found");
-        assert_eq!(err.status(), StatusCode::NOT_FOUND);
-        assert_eq!(err.message(), "room not found");
-    }
-
-    #[test]
-    fn test_conflict() {
-        let err = AppError::conflict("already exists");
-        assert_eq!(err.status(), StatusCode::CONFLICT);
-        assert_eq!(err.message(), "already exists");
-    }
-
-    #[test]
     fn test_internal_server_error() {
         let err = AppError::internal_server_error("boom");
         assert_eq!(err.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -552,81 +517,6 @@ mod tests {
 
         assert_eq!(err.status(), StatusCode::FORBIDDEN);
         assert_eq!(err.message(), "Not a member of this room");
-    }
-
-    #[test]
-    fn test_invalid_credentials() {
-        let err = AppError::invalid_credentials();
-        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
-        assert!(err.message().contains("Invalid username or password"));
-    }
-
-    #[test]
-    fn test_session_expired() {
-        let err = AppError::session_expired();
-        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
-        assert!(err.message().contains("expired"));
-    }
-
-    #[test]
-    fn test_token_invalid() {
-        let err = AppError::token_invalid();
-        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
-        assert!(err.message().contains("Invalid"));
-    }
-
-    #[test]
-    fn test_permission_denied() {
-        let err = AppError::permission_denied();
-        assert_eq!(err.status(), StatusCode::FORBIDDEN);
-        assert!(err.message().contains("permission"));
-    }
-
-    #[test]
-    fn test_resource_not_found() {
-        let err = AppError::resource_not_found("Room");
-        assert_eq!(err.status(), StatusCode::NOT_FOUND);
-        assert_eq!(err.message(), "Room not found");
-    }
-
-    #[test]
-    fn test_validation_failed() {
-        let err = AppError::validation_failed("email", "must contain @");
-        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
-        assert!(err.message().contains("email"));
-        assert!(err.message().contains("must contain @"));
-    }
-
-    #[test]
-    fn test_rate_limited() {
-        let err = AppError::rate_limited(60);
-        assert_eq!(err.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert!(err.message().contains("60 seconds"));
-    }
-
-    #[test]
-    fn test_service_unavailable() {
-        let err = AppError::service_unavailable();
-        assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert!(err.message().contains("temporarily unavailable"));
-    }
-
-    #[test]
-    fn test_into_response_status_code() {
-        use axum::response::IntoResponse;
-
-        let err = AppError::not_found("missing");
-        let response = err.into_response();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[test]
-    fn test_into_response_bad_request() {
-        use axum::response::IntoResponse;
-
-        let err = AppError::bad_request("invalid");
-        let response = err.into_response();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]

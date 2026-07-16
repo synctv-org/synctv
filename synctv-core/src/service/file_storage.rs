@@ -135,10 +135,9 @@ pub(super) fn file_blob_to_download(blob: FileBlob) -> FileObjectDownload {
         metadata: blob.metadata,
         created_at: blob.created_at,
     };
-    let data = bytes::Bytes::from(blob.data);
     FileObjectDownload {
         metadata,
-        stream: futures::stream::once(async move { Ok(data) }).boxed(),
+        stream: futures::stream::once(async move { Ok(blob.data) }).boxed(),
     }
 }
 
@@ -224,7 +223,7 @@ pub(super) async fn collect_file_object_download(
         ));
     }
     let mut blob = download.metadata.empty_blob();
-    blob.data = data;
+    blob.data = data.into();
     Ok(blob)
 }
 
@@ -443,7 +442,7 @@ pub(super) const fn upload_session_is_multipart(kind: FileUploadSessionKind) -> 
 
 pub(super) fn session_record_blob(
     session: &FileUploadSessionRecord,
-    data: Vec<u8>,
+    data: bytes::Bytes,
     metadata: FileMetadata,
 ) -> FileBlob {
     FileBlob {
@@ -697,7 +696,7 @@ pub trait FileStorageService: Send + Sync {
                 upload_token: upload_token.to_string(),
                 content_type: content_type.map(str::to_string),
                 range: None,
-                data,
+                data: data.into(),
             })
             .await?
         {

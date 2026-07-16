@@ -176,7 +176,7 @@ async fn rustfs_s3_server_mediated_multipart_upload_reads_and_deletes_object() {
                     end_inclusive: PART_SIZE_BYTES - 1,
                     total_size: payload_size(&payload),
                 }),
-                data: first_part,
+                data: first_part.into(),
             })
             .await,
         "first RustFS S3 multipart part should upload",
@@ -204,7 +204,7 @@ async fn rustfs_s3_server_mediated_multipart_upload_reads_and_deletes_object() {
                     end_inclusive: payload_size(&payload) - 1,
                     total_size: payload_size(&payload),
                 }),
-                data: second_part,
+                data: second_part.into(),
             })
             .await,
         "second RustFS S3 multipart part should complete object",
@@ -326,7 +326,7 @@ async fn rustfs_s3_rejects_part_outside_declared_manifest() {
                 end_inclusive: payload_size(&payload) - 1,
                 total_size: payload_size(&payload),
             }),
-            data: second_part,
+            data: second_part.into(),
         })
         .await
         .expect_err("out-of-manifest part should fail");

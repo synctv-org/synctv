@@ -11,6 +11,7 @@ pub(super) struct FileIndexEntry {
     pub inserted_at_millis: u64,
     pub ttl_secs: u64,
     pub last_accessed: AtomicU64,
+    pub persisted_last_accessed: AtomicU64,
 }
 
 /// The in-memory index that mirrors what is on disk.

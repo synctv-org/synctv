@@ -99,6 +99,18 @@ impl BytesWriter {
         Ok(())
     }
 
+    pub fn write_repeat(&mut self, byte: u8, length: usize) -> Result<(), BytesWriteError> {
+        let end = self
+            .bytes
+            .len()
+            .checked_add(length)
+            .ok_or(BytesWriteError {
+                value: BytesWriteErrorValue::OutofIndex,
+            })?;
+        self.bytes.resize(end, byte);
+        Ok(())
+    }
+
     pub fn prepend(&mut self, buf: &[u8]) -> Result<(), BytesWriteError> {
         self.bytes.reserve(buf.len());
         self.bytes.splice(0..0, buf.iter().copied());
@@ -253,5 +265,14 @@ mod tests {
 
         assert!(rv.is_ok(), "FLV header should write to vector");
         assert_eq!(10, v.len());
+    }
+
+    #[test]
+    fn test_write_repeat_appends_exact_bytes() {
+        let mut writer = super::BytesWriter::new();
+        writer.write_u8(0x01).unwrap();
+        writer.write_repeat(0xFF, 4).unwrap();
+
+        assert_eq!(writer.as_slice(), &[0x01, 0xFF, 0xFF, 0xFF, 0xFF]);
     }
 }

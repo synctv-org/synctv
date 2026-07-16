@@ -37,6 +37,8 @@ pub(crate) use support::{
 #[cfg(test)]
 pub(crate) use support::{chat_reaction_count, chat_reaction_summary_to_proto};
 
+const CLIENT_ROOM_LOAD_CONCURRENCY: usize = 16;
+
 fn required_room_availability(
     availability_map: &HashMap<synctv_core::models::RoomId, ClientResourceAvailability>,
     room_id: &synctv_core::models::RoomId,
@@ -219,56 +221,77 @@ impl ClientApiImpl {
             .list_rooms(&query)
             .await
             .map_err(ApiError::from)?;
-        let availability_map = self
-            .room_service
-            .room_availability_batch(&rooms)
-            .await
-            .map_err(ApiError::from)?;
-
         let room_ids: Vec<synctv_core::models::RoomId> = rooms.iter().map(|room| room.id).collect();
         let room_id_refs: Vec<&synctv_core::models::RoomId> = room_ids.iter().collect();
-        let member_counts = self
-            .room_service
-            .get_member_count_batch(&room_id_refs)
-            .await
-            .map_err(ApiError::from)?;
-        let room_settings_map = self
-            .room_service
-            .get_room_settings_batch(&room_ids)
-            .await
-            .map_err(ApiError::from)?;
-        let presence_stats = self
-            .presence_service
-            .room_stats_batch(&room_ids)
-            .await
-            .map_err(ApiError::from)?;
+        let (
+            availability_map,
+            member_counts,
+            room_settings_map,
+            presence_stats,
+            creator_views,
+            favorite_room_ids,
+        ) = tokio::try_join!(
+            async {
+                self.room_service
+                    .room_availability_batch(&rooms)
+                    .await
+                    .map_err(ApiError::from)
+            },
+            async {
+                self.room_service
+                    .get_member_count_batch(&room_id_refs)
+                    .await
+                    .map_err(ApiError::from)
+            },
+            async {
+                self.room_service
+                    .get_room_settings_batch(&room_ids)
+                    .await
+                    .map_err(ApiError::from)
+            },
+            async {
+                self.presence_service
+                    .room_stats_batch(&room_ids)
+                    .await
+                    .map_err(ApiError::from)
+            },
+            self.load_room_creator_public_views(&rooms),
+            self.favorite_room_ids_for_viewer(viewer_id, &room_ids),
+        )?;
         let presence_by_room: HashMap<synctv_core::models::RoomId, _> = presence_stats
             .iter()
             .map(|stats| (stats.room_id, stats))
             .collect();
-        let creator_views = self.load_room_creator_public_views(&rooms).await?;
-        let favorite_room_ids = self
-            .favorite_room_ids_for_viewer(viewer_id, &room_ids)
+        let room_list = stream::iter(rooms)
+            .map(|room| {
+                let availability_map = &availability_map;
+                let member_counts = &member_counts;
+                let room_settings_map = &room_settings_map;
+                let presence_by_room = &presence_by_room;
+                let creator_views = &creator_views;
+                let favorite_room_ids = &favorite_room_ids;
+                async move {
+                    let member_count =
+                        crate::impls::room_member_count_or_zero(member_counts, &room.id);
+                    let availability = required_room_availability(availability_map, &room.id)?;
+                    let settings = required_room_settings(room_settings_map, &room.id)?;
+                    let mut proto_room = self
+                        .room_to_proto_with_availability_presence_and_loaded_cover(
+                            &room,
+                            Some(settings),
+                            Some(member_count),
+                            availability,
+                            presence_by_room.get(&room.id).copied(),
+                            Some(Self::required_creator_public_view(creator_views, &room)?),
+                        )
+                        .await?;
+                    proto_room.favorited = favorite_room_ids.contains(&room.id);
+                    Ok::<_, ApiError>(proto_room)
+                }
+            })
+            .buffered(CLIENT_ROOM_LOAD_CONCURRENCY)
+            .try_collect()
             .await?;
-
-        let mut room_list = Vec::with_capacity(rooms.len());
-        for r in &rooms {
-            let member_count = crate::impls::room_member_count_or_zero(&member_counts, &r.id);
-            let availability = required_room_availability(&availability_map, &r.id)?;
-            let settings = required_room_settings(&room_settings_map, &r.id)?;
-            let mut proto_room = self
-                .room_to_proto_with_availability_presence_and_loaded_cover(
-                    r,
-                    Some(settings),
-                    Some(member_count),
-                    availability,
-                    presence_by_room.get(&r.id).copied(),
-                    Some(Self::required_creator_public_view(&creator_views, r)?),
-                )
-                .await?;
-            proto_room.favorited = favorite_room_ids.contains(&r.id);
-            room_list.push(proto_room);
-        }
 
         Ok(synctv_proto::client::ListRoomsResponse {
             rooms: room_list,
@@ -292,62 +315,68 @@ impl ClientApiImpl {
         // Batch-fetch room settings for full permission calculation.
         let room_ids: Vec<synctv_core::models::RoomId> =
             rooms.iter().map(|(room, _, _, _)| room.id).collect();
-        let room_settings_map = self
-            .room_service
-            .get_room_settings_batch(&room_ids)
-            .await
-            .map_err(ApiError::from)?;
-        let presence_stats = self
-            .presence_service
-            .room_stats_batch(&room_ids)
-            .await
-            .map_err(ApiError::from)?;
+        let room_models: Vec<synctv_core::models::Room> =
+            rooms.iter().map(|(room, _, _, _)| room.clone()).collect();
+        let (room_settings_map, presence_stats, creator_views, favorite_room_ids) = tokio::try_join!(
+            async {
+                self.room_service
+                    .get_room_settings_batch(&room_ids)
+                    .await
+                    .map_err(ApiError::from)
+            },
+            async {
+                self.presence_service
+                    .room_stats_batch(&room_ids)
+                    .await
+                    .map_err(ApiError::from)
+            },
+            self.load_room_creator_public_views(&room_models),
+            self.favorite_room_ids_for_viewer(Some(uid), &room_ids),
+        )?;
         let presence_by_room: HashMap<synctv_core::models::RoomId, _> = presence_stats
             .iter()
             .map(|stats| (stats.room_id, stats))
             .collect();
-        let room_models: Vec<synctv_core::models::Room> =
-            rooms.iter().map(|(room, _, _, _)| room.clone()).collect();
-        let creator_views = self.load_room_creator_public_views(&room_models).await?;
-        let favorite_room_ids = self
-            .favorite_room_ids_for_viewer(Some(uid), &room_ids)
+        let room_list = stream::iter(rooms)
+            .map(|(room, role, _status, member_count)| {
+                let room_settings_map = &room_settings_map;
+                let presence_by_room = &presence_by_room;
+                let creator_views = &creator_views;
+                let favorite_room_ids = &favorite_room_ids;
+                async move {
+                    let settings = required_room_settings(room_settings_map, &room.id)?;
+                    let permissions = self
+                        .room_service
+                        .permission_service()
+                        .calculate_role_default_permissions(&role, settings)
+                        .0;
+                    let relation = if room.created_by == uid {
+                        synctv_proto::client::MyRoomRelation::Created as i32
+                    } else {
+                        synctv_proto::client::MyRoomRelation::Participating as i32
+                    };
+                    let mut proto_room = self
+                        .room_to_proto_with_availability_presence_and_loaded_cover(
+                            &room,
+                            Some(settings),
+                            Some(member_count),
+                            synctv_core::service::ClientResourceAvailability::Available,
+                            presence_by_room.get(&room.id).copied(),
+                            Some(Self::required_creator_public_view(creator_views, &room)?),
+                        )
+                        .await?;
+                    proto_room.favorited = favorite_room_ids.contains(&room.id);
+                    Ok::<_, ApiError>(synctv_proto::client::MyRoom {
+                        room: Some(proto_room),
+                        permissions,
+                        role: room_role_to_proto(role),
+                        relation,
+                    })
+                }
+            })
+            .buffered(CLIENT_ROOM_LOAD_CONCURRENCY)
+            .try_collect()
             .await?;
-
-        let mut room_list = Vec::with_capacity(rooms.len());
-        for (room, role, _status, member_count) in &rooms {
-            // Use the full permission calculation instead of role.permissions(),
-            // which only gives role-level defaults. calculate_role_default_permissions applies:
-            //   1. Global default permissions (from RuntimeSettingsStore)
-            //   2. Room-level overrides (room_added / room_removed)
-            let settings = required_room_settings(&room_settings_map, &room.id)?;
-            let permissions = self
-                .room_service
-                .permission_service()
-                .calculate_role_default_permissions(role, settings)
-                .0;
-            let relation = if room.created_by == uid {
-                synctv_proto::client::MyRoomRelation::Created as i32
-            } else {
-                synctv_proto::client::MyRoomRelation::Participating as i32
-            };
-            let mut proto_room = self
-                .room_to_proto_with_availability_presence_and_loaded_cover(
-                    room,
-                    Some(settings),
-                    Some(*member_count),
-                    synctv_core::service::ClientResourceAvailability::Available,
-                    presence_by_room.get(&room.id).copied(),
-                    Some(Self::required_creator_public_view(&creator_views, room)?),
-                )
-                .await?;
-            proto_room.favorited = favorite_room_ids.contains(&room.id);
-            room_list.push(synctv_proto::client::MyRoom {
-                room: Some(proto_room),
-                permissions,
-                role: room_role_to_proto(*role),
-                relation,
-            });
-        }
 
         Ok(synctv_proto::client::ListMyRoomsResponse {
             rooms: room_list,
@@ -565,35 +594,45 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let playback_state = self.load_room_playback_state_proto(&rid).await?;
-        let settings = self
-            .room_service
-            .get_room_settings(&rid)
-            .await
-            .map_err(ApiError::from)?;
-        let presence = self
-            .presence_service
-            .room_stats(rid)
-            .await
-            .map_err(ApiError::from)?;
+        let favorite = async {
+            match actor.user_id() {
+                Some(user_id) => self
+                    .room_service
+                    .is_room_favorited_by_user(&user_id, &rid)
+                    .await
+                    .map_err(ApiError::from),
+                None => Ok(false),
+            }
+        };
+        let (playback_state, settings, presence, member_count, favorited) = tokio::try_join!(
+            self.load_room_playback_state_proto(&rid),
+            async {
+                self.room_service
+                    .get_room_settings(&rid)
+                    .await
+                    .map_err(ApiError::from)
+            },
+            async {
+                self.presence_service
+                    .room_stats(rid)
+                    .await
+                    .map_err(ApiError::from)
+            },
+            self.load_room_member_count(&rid),
+            favorite,
+        )?;
 
         let mut proto_room = self
             .room_to_proto_with_availability_presence_and_loaded_cover(
                 &room,
                 Some(&settings),
-                self.load_room_member_count(&rid).await?,
+                member_count,
                 synctv_core::service::ClientResourceAvailability::Available,
                 Some(&presence),
                 None,
             )
             .await?;
-        if let Some(user_id) = actor.user_id() {
-            proto_room.favorited = self
-                .room_service
-                .is_room_favorited_by_user(&user_id, &rid)
-                .await
-                .map_err(ApiError::from)?;
-        }
+        proto_room.favorited = favorited;
 
         Ok(synctv_proto::client::GetRoomResponse {
             room: Some(proto_room),
@@ -614,21 +653,22 @@ impl ClientApiImpl {
         room: &synctv_core::models::Room,
     ) -> Result<synctv_proto::client::GetRoomResponse, ApiError> {
         let rid = room.id;
-        let settings = self
-            .room_service
-            .get_room_settings(&rid)
-            .await
-            .map_err(ApiError::from)?;
+        let (settings, member_count, playback_state) = tokio::try_join!(
+            async {
+                self.room_service
+                    .get_room_settings(&rid)
+                    .await
+                    .map_err(ApiError::from)
+            },
+            self.load_room_member_count(&rid),
+            self.load_room_playback_state_proto(&rid),
+        )?;
         Ok(synctv_proto::client::GetRoomResponse {
             room: Some(
-                self.room_to_proto_basic_with_loaded_cover(
-                    room,
-                    Some(&settings),
-                    self.load_room_member_count(&rid).await?,
-                )
-                .await?,
+                self.room_to_proto_basic_with_loaded_cover(room, Some(&settings), member_count)
+                    .await?,
             ),
-            playback_state: Some(self.load_room_playback_state_proto(&rid).await?),
+            playback_state: Some(playback_state),
         })
     }
 
@@ -1646,60 +1686,75 @@ impl ClientApiImpl {
 
         let selected_rooms: Vec<synctv_core::models::Room> =
             top_rooms.iter().map(|(room, _)| room.clone()).collect();
-        let availability_map = self
-            .room_service
-            .room_availability_batch(&selected_rooms)
-            .await
-            .map_err(ApiError::from)?;
-
         let room_ids: Vec<synctv_core::models::RoomId> =
             top_rooms.iter().map(|(room, _)| room.id).collect();
         let top_room_id_refs: Vec<&synctv_core::models::RoomId> = room_ids.iter().collect();
-        let member_counts = self
-            .room_service
-            .get_member_count_batch(&top_room_id_refs)
-            .await
-            .map_err(ApiError::from)?;
-
-        let settings_map = self
-            .room_service
-            .get_room_settings_batch(&room_ids)
-            .await
-            .map_err(ApiError::from)?;
-        let selected_presence_stats = self
-            .presence_service
-            .room_stats_batch(&room_ids)
-            .await
-            .map_err(ApiError::from)?;
+        let (availability_map, member_counts, settings_map, selected_presence_stats, creator_views) =
+            tokio::try_join!(
+                async {
+                    self.room_service
+                        .room_availability_batch(&selected_rooms)
+                        .await
+                        .map_err(ApiError::from)
+                },
+                async {
+                    self.room_service
+                        .get_member_count_batch(&top_room_id_refs)
+                        .await
+                        .map_err(ApiError::from)
+                },
+                async {
+                    self.room_service
+                        .get_room_settings_batch(&room_ids)
+                        .await
+                        .map_err(ApiError::from)
+                },
+                async {
+                    self.presence_service
+                        .room_stats_batch(&room_ids)
+                        .await
+                        .map_err(ApiError::from)
+                },
+                self.load_room_creator_public_views(&selected_rooms),
+            )?;
         let selected_presence_by_room: HashMap<synctv_core::models::RoomId, _> =
             selected_presence_stats
                 .iter()
                 .map(|stats| (stats.room_id, stats))
                 .collect();
-        let creator_views = self.load_room_creator_public_views(&selected_rooms).await?;
+        let hot_rooms = stream::iter(top_rooms)
+            .map(|(room, online_count)| {
+                let member_counts = &member_counts;
+                let settings_map = &settings_map;
+                let availability_map = &availability_map;
+                let selected_presence_by_room = &selected_presence_by_room;
+                let creator_views = &creator_views;
+                async move {
+                    let total_members =
+                        crate::impls::room_member_count_or_zero(member_counts, &room.id);
+                    let settings = required_room_settings(settings_map, &room.id)?;
+                    let availability = required_room_availability(availability_map, &room.id)?;
 
-        let mut hot_rooms = Vec::with_capacity(top_rooms.len());
-        for (room, online_count) in top_rooms {
-            let total_members = crate::impls::room_member_count_or_zero(&member_counts, &room.id);
-            let settings = required_room_settings(&settings_map, &room.id)?;
-            let availability = required_room_availability(&availability_map, &room.id)?;
-
-            hot_rooms.push(synctv_proto::client::RoomWithStats {
-                room: Some(
-                    self.room_to_proto_with_availability_presence_and_loaded_cover(
-                        &room,
-                        Some(settings),
-                        Some(total_members),
-                        availability,
-                        selected_presence_by_room.get(&room.id).copied(),
-                        Some(Self::required_creator_public_view(&creator_views, &room)?),
-                    )
-                    .await?,
-                ),
-                online_count,
-                total_members,
-            });
-        }
+                    Ok::<_, ApiError>(synctv_proto::client::RoomWithStats {
+                        room: Some(
+                            self.room_to_proto_with_availability_presence_and_loaded_cover(
+                                &room,
+                                Some(settings),
+                                Some(total_members),
+                                availability,
+                                selected_presence_by_room.get(&room.id).copied(),
+                                Some(Self::required_creator_public_view(creator_views, &room)?),
+                            )
+                            .await?,
+                        ),
+                        online_count,
+                        total_members,
+                    })
+                }
+            })
+            .buffered(CLIENT_ROOM_LOAD_CONCURRENCY)
+            .try_collect()
+            .await?;
 
         Ok(synctv_proto::client::GetHotRoomsResponse { rooms: hot_rooms })
     }
@@ -2441,10 +2496,15 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
-        let before = self.chat_messages_to_proto(context.before).await?;
-        let username = username_for_chat_message(self, &context.anchor.message).await?;
-        let message = chat_message_to_proto(self, &context.anchor, username)?;
-        let after = self.chat_messages_to_proto(context.after).await?;
+        let before_messages = context.before;
+        let anchor = context.anchor;
+        let after_messages = context.after;
+        let (before, username, after) = tokio::try_join!(
+            self.chat_messages_to_proto(before_messages),
+            username_for_chat_message(self, &anchor.message),
+            self.chat_messages_to_proto(after_messages),
+        )?;
+        let message = chat_message_to_proto(self, &anchor, username)?;
         Ok(synctv_proto::client::GetChatMessageContextResponse {
             before,
             message: Some(message),

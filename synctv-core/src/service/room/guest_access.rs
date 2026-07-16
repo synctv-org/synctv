@@ -1,7 +1,7 @@
 use chrono::Duration;
 
 use crate::{
-    models::{RoomId, RoomPermissionSet, RoomRole},
+    models::{RoomId, RoomPermissionSet, RoomRole, RoomSettings},
     service::{RoomService, RuntimeSettingsStore},
     Error, Result,
 };
@@ -12,7 +12,7 @@ impl RoomService {
         &self,
         room_id: &RoomId,
         runtime_settings_store: Option<&RuntimeSettingsStore>,
-    ) -> Result<()> {
+    ) -> Result<RoomSettings> {
         if let Some(registry) = runtime_settings_store {
             let enable_guest = registry.user.enable_guest.get()?;
             if !enable_guest {
@@ -28,7 +28,10 @@ impl RoomService {
             ));
         }
 
-        let room_settings = self.room_settings_repo.get(room_id).await?;
+        let (room_settings, password_state) = tokio::try_join!(
+            self.room_settings_repo.get(room_id),
+            self.room_password_repo.get_state(room_id),
+        )?;
         if !room_settings.allow_guest_join.0 {
             tracing::debug!(room_id = %room_id, "Guest access denied: room guest mode disabled");
             return Err(Error::Authorization(
@@ -36,11 +39,7 @@ impl RoomService {
             ));
         }
 
-        let password_enabled = self
-            .room_password_repo
-            .get_state(room_id)
-            .await?
-            .is_some_and(|state| state.enabled);
+        let password_enabled = password_state.is_some_and(|state| state.enabled);
         if password_enabled {
             tracing::debug!(room_id = %room_id, "Guest access denied: room has password");
             return Err(Error::Authorization(
@@ -49,16 +48,20 @@ impl RoomService {
         }
 
         tracing::debug!(room_id = %room_id, "Guest access allowed");
-        Ok(())
+        Ok(room_settings)
+    }
+
+    #[must_use]
+    pub fn guest_permissions_for_settings(&self, settings: &RoomSettings) -> RoomPermissionSet {
+        self.permission_service
+            .effective_permission_calculator()
+            .role_default(&RoomRole::Guest, settings)
     }
 
     /// Return the effective room permissions for guests.
     pub async fn get_guest_permissions(&self, room_id: &RoomId) -> Result<RoomPermissionSet> {
         let settings = self.get_room_settings(room_id).await?;
-        Ok(self
-            .permission_service
-            .effective_permission_calculator()
-            .role_default(&RoomRole::Guest, &settings))
+        Ok(self.guest_permissions_for_settings(&settings))
     }
 
     async fn remove_guest_role_members(&self, room_id: &RoomId) -> Result<()> {

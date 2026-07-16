@@ -14,6 +14,7 @@ use tracing::{debug, error, info, warn};
 const REDIS_TIMEOUT_SECS: u64 = 5;
 /// Maximum time to wait for the subscriber to finish its initial subscriptions.
 const SUBSCRIBER_READY_TIMEOUT_SECS: u64 = 5;
+const CURSOR_REFRESH_BATCH_SIZE: usize = 64;
 
 /// Returns `true` if the Redis error looks like a Sentinel failover.
 pub fn is_sentinel_failover_error(e: &anyhow::Error) -> bool {
@@ -125,6 +126,7 @@ enum SelectResult {
     Message(redis::Msg),
     LifecycleEvent(RoomLifecycleEvent),
     CursorRefresh,
+    Cancelled,
     StreamEnded,
 }
 
@@ -892,6 +894,7 @@ impl RedisPubSub {
                             "Redis subscriber failed to connect, retrying after backoff"
                         );
                     }
+                    SubscriberExit::Cancelled => return,
                 }
 
                 // Wait with cancellation support
@@ -1383,6 +1386,7 @@ impl RedisPubSub {
                 _ = cursor_refresh_interval.tick() => {
                     SelectResult::CursorRefresh
                 }
+                () = self.cancel_token.cancelled() => SelectResult::Cancelled,
             };
 
             // Drop the stream before handling the result (releases &mut pubsub borrow)
@@ -1538,33 +1542,38 @@ impl RedisPubSub {
                     // This prevents catch-up from replaying the entire session's worth
                     // of events after a reconnect (the deduplicator window may have
                     // expired for events delivered hours ago via live Pub/Sub).
-                    let keys_to_refresh: Vec<String> = stream_cursors.keys().cloned().collect();
-                    let mut updated = 0usize;
-                    for sk in keys_to_refresh {
-                        match self.get_latest_stream_id_for(&sk).await {
-                            Ok(Some(id)) => {
-                                stream_cursors.insert(sk, id);
-                                updated += 1;
+                    let mut keys_to_refresh: Vec<String> = stream_cursors.keys().cloned().collect();
+                    keys_to_refresh.sort_unstable();
+                    match self.get_latest_stream_ids_for(&keys_to_refresh).await {
+                        Ok(results) => {
+                            let mut updates = Vec::with_capacity(results.len());
+                            for (stream_key, result) in keys_to_refresh.into_iter().zip(results) {
+                                match result {
+                                    Ok(Some(id)) => updates.push((stream_key, id)),
+                                    Ok(None) => {}
+                                    Err(error) => debug!(
+                                        error = %error,
+                                        %stream_key,
+                                        "Failed to refresh stream cursor, keeping existing"
+                                    ),
+                                }
                             }
-                            Ok(None) => {
-                                // Stream is empty or was trimmed, keep existing cursor
-                            }
-                            Err(e) => {
+                            let updated = updates.len();
+                            stream_cursors.extend(updates);
+                            if updated > 0 {
                                 debug!(
-                                    error = %e,
-                                    stream_key = %sk,
-                                    "Failed to refresh stream cursor, keeping existing"
+                                    updated_cursors = updated,
+                                    "Periodic stream cursor refresh completed"
                                 );
                             }
                         }
-                    }
-                    if updated > 0 {
-                        debug!(
-                            updated_cursors = updated,
-                            "Periodic stream cursor refresh completed"
-                        );
+                        Err(error) => debug!(
+                            error = %error,
+                            "Periodic stream cursor refresh failed, keeping existing cursors"
+                        ),
                     }
                 }
+                SelectResult::Cancelled => return SubscriberExit::Cancelled,
                 SelectResult::StreamEnded => {
                     return SubscriberExit::Disconnected;
                 }
@@ -2046,6 +2055,52 @@ impl RedisPubSub {
         Ok(reply.ids.into_iter().next().map(|entry| entry.id))
     }
 
+    async fn get_latest_stream_ids_for(
+        &self,
+        stream_keys: &[String],
+    ) -> Result<Vec<redis::RedisResult<Option<String>>>> {
+        use redis::streams::StreamRangeReply;
+
+        let mut conn = self.get_shared_conn().await?;
+        let mut results = Vec::with_capacity(stream_keys.len());
+        for stream_keys in stream_keys.chunks(CURSOR_REFRESH_BATCH_SIZE) {
+            let mut pipe = redis::pipe();
+            pipe.ignore_errors();
+            for stream_key in stream_keys {
+                pipe.cmd("XREVRANGE")
+                    .arg(stream_key)
+                    .arg("+")
+                    .arg("-")
+                    .arg("COUNT")
+                    .arg(1);
+            }
+            let replies: Vec<redis::RedisResult<StreamRangeReply>> = tokio::select! {
+                () = self.cancel_token.cancelled() => {
+                    return Err(anyhow::anyhow!("Redis stream cursor refresh cancelled"));
+                }
+                result = timeout(
+                    Duration::from_secs(REDIS_TIMEOUT_SECS),
+                    pipe.query_async(&mut conn),
+                ) => {
+                    result
+                        .context("Timed out refreshing Redis stream cursors")?
+                        .context("Failed to refresh Redis stream cursors")?
+                }
+            };
+            if replies.len() != stream_keys.len() {
+                return Err(anyhow::anyhow!(
+                    "Redis stream cursor refresh returned {} results for {} streams",
+                    replies.len(),
+                    stream_keys.len()
+                ));
+            }
+            results.extend(replies.into_iter().map(|reply| {
+                reply.map(|reply| reply.ids.into_iter().next().map(|entry| entry.id))
+            }));
+        }
+        Ok(results)
+    }
+
     /// Maximum number of catch-up iterations to prevent infinite loops.
     /// Each iteration reads up to CATCHUP_BATCH_SIZE events, so the effective
     /// limit is MAX_CATCHUP_ITERATIONS * CATCHUP_BATCH_SIZE (50 * 1000 = 50K).
@@ -2168,6 +2223,7 @@ enum SubscriberExit {
     /// Failed to connect or subscribe to Redis. Backoff should continue
     /// increasing to avoid hammering an unavailable server.
     ConnectFailed(anyhow::Error),
+    Cancelled,
 }
 
 /// Request to publish an event.

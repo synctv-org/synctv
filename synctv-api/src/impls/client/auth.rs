@@ -262,19 +262,23 @@ impl ClientApiImpl {
             ));
         }
 
-        self.room_service
-            .check_guest_allowed(
-                &room_id,
-                self.runtime_settings_store.as_ref().map(AsRef::as_ref),
-            )
-            .await
-            .map_err(ClientApiImpl::map_room_access_error)?;
-
-        let guest_version = self
-            .room_service
-            .get_room_guest_version(&room_id)
-            .await
-            .map_err(ApiError::from)?;
+        let (_, guest_version) = tokio::try_join!(
+            async {
+                self.room_service
+                    .check_guest_allowed(
+                        &room_id,
+                        self.runtime_settings_store.as_ref().map(AsRef::as_ref),
+                    )
+                    .await
+                    .map_err(ClientApiImpl::map_room_access_error)
+            },
+            async {
+                self.room_service
+                    .get_room_guest_version(&room_id)
+                    .await
+                    .map_err(ApiError::from)
+            },
+        )?;
         let token = self
             .jwt_service
             .sign_guest_token_with_version(&room_id, guest_version)
@@ -531,7 +535,7 @@ impl ClientApiImpl {
                 control,
             )
             .await?;
-        let options = super::passkey::passkey_creation_options_to_proto(&challenge.options)?;
+        let options = super::passkey::passkey_creation_options_to_proto(challenge.options)?;
         Ok(synctv_proto::client::StartPasskeyRegistrationResponse {
             session_id: challenge.session_id,
             options: Some(options),
@@ -541,7 +545,7 @@ impl ClientApiImpl {
     pub(crate) async fn finish_passkey_registration_with_credential_control(
         &self,
         session_id: &str,
-        credential: &synctv_proto::client::PasskeyRegistrationCredential,
+        credential: synctv_proto::client::PasskeyRegistrationCredential,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<synctv_proto::client::RegisterResponse, ApiError> {
@@ -563,7 +567,6 @@ impl ClientApiImpl {
         crate::impls::validate_proto_request(&req)?;
         let credential = req
             .credential
-            .as_ref()
             .ok_or_else(|| ApiError::InvalidInput("credential is required".to_string()))?;
         self.finish_passkey_registration_with_credential_control(
             &req.session_id,
@@ -612,7 +615,7 @@ impl ClientApiImpl {
         let challenge = self
             .start_passkey_login_challenge_with_control(username, email, client_ip, control)
             .await?;
-        let options = super::passkey::passkey_request_options_to_proto(&challenge.options)?;
+        let options = super::passkey::passkey_request_options_to_proto(challenge.options)?;
         Ok(synctv_proto::client::StartPasskeyLoginResponse {
             session_id: challenge.session_id,
             options: Some(options),
@@ -622,7 +625,7 @@ impl ClientApiImpl {
     pub(crate) async fn finish_passkey_login_with_credential_control(
         &self,
         session_id: &str,
-        credential: &synctv_proto::client::PasskeyAuthenticationCredential,
+        credential: synctv_proto::client::PasskeyAuthenticationCredential,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<synctv_proto::client::LoginResponse, ApiError> {
@@ -644,7 +647,6 @@ impl ClientApiImpl {
         crate::impls::validate_proto_request(&req)?;
         let credential = req
             .credential
-            .as_ref()
             .ok_or_else(|| ApiError::InvalidInput("credential is required".to_string()))?;
         self.finish_passkey_login_with_credential_control(
             &req.session_id,
@@ -683,7 +685,7 @@ impl ClientApiImpl {
         let challenge = self
             .start_mfa_passkey_challenge_with_control(&req.mfa_session_id)
             .await?;
-        let options = super::passkey::passkey_request_options_to_proto(&challenge.options)?;
+        let options = super::passkey::passkey_request_options_to_proto(challenge.options)?;
         Ok(synctv_proto::client::StartMfaPasskeyResponse {
             passkey_session_id: challenge.session_id,
             options: Some(options),
@@ -694,7 +696,7 @@ impl ClientApiImpl {
         &self,
         mfa_session_id: &str,
         passkey_session_id: &str,
-        credential: &synctv_proto::client::PasskeyAuthenticationCredential,
+        credential: synctv_proto::client::PasskeyAuthenticationCredential,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<synctv_proto::client::LoginResponse, ApiError> {
@@ -730,7 +732,6 @@ impl ClientApiImpl {
         crate::impls::validate_proto_request(&req)?;
         let credential = req
             .credential
-            .as_ref()
             .ok_or_else(|| ApiError::InvalidInput("credential is required".to_string()))?;
         self.finish_mfa_passkey_with_credential_control(
             &req.mfa_session_id,
@@ -1043,7 +1044,7 @@ mod tests {
         let mut request = synctv_proto::client::StartOpaqueRegistrationRequest {
             username: "uiuser611010".to_string(),
             email: Some(String::new()),
-            registration_request: vec![1, 2, 3],
+            registration_request: vec![1, 2, 3].into(),
         };
 
         let email = api_ok(validate_opaque_registration_request(&mut request))?;

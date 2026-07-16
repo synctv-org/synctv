@@ -54,7 +54,7 @@ impl<'c> AsyncHttpClient<'c> for OAuth2HttpClient {
             let status = response.status();
             let version = response.version();
             let headers = response.headers().clone();
-            let body = response.bytes().await.map_err(Box::new)?.to_vec();
+            let body = response.bytes().await.map_err(Box::new)?.into();
             let mut response = HttpResponse::new(body);
             *response.status_mut() = status;
             *response.version_mut() = version;

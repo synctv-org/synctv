@@ -334,6 +334,7 @@ impl S3CompatibleFileStorageService {
         metadata: FileMetadata,
     ) -> Result<FileBlob> {
         self.validate_storage_backend(storage_backend)?;
+        let data = bytes::Bytes::from(data);
         if data.is_empty() {
             return Err(Error::InvalidInput(
                 "file object payload must be non-empty".to_string(),

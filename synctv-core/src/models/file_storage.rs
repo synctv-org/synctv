@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
@@ -105,7 +106,7 @@ pub struct FileBlob {
     pub content_manifest_sha256: String,
     pub compression: FileBlobCompression,
     pub range: Option<FileByteRange>,
-    pub data: Vec<u8>,
+    pub data: Bytes,
     pub metadata: FileMetadata,
     pub created_at: DateTime<Utc>,
 }
@@ -136,7 +137,7 @@ impl FileObjectMetadata {
             content_manifest_sha256: self.content_manifest_sha256.clone(),
             compression: self.compression,
             range: self.range,
-            data: Vec::new(),
+            data: Bytes::new(),
             metadata: self.metadata.clone(),
             created_at: self.created_at,
         }
@@ -695,7 +696,7 @@ pub struct StoreFileUpload {
     pub upload_token: String,
     pub content_type: Option<String>,
     pub range: Option<FileUploadRange>,
-    pub data: Vec<u8>,
+    pub data: bytes::Bytes,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

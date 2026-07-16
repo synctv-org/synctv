@@ -12,6 +12,16 @@ pub enum PublisherRefreshOutcome {
     OwnershipChanged,
 }
 
+pub(crate) const PUBLISHER_REFRESH_BATCH_SIZE: usize = 128;
+
+#[derive(Debug, Clone)]
+pub struct PublisherRefreshRequest {
+    pub room_id: String,
+    pub media_id: String,
+    pub user_id: String,
+    pub expected_epoch: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct ActivePublisherEntry {
     pub room_id: String,
@@ -47,6 +57,36 @@ pub trait StreamRegistryTrait: Send + Sync {
         node_id: &str,
         expected_epoch: u64,
     ) -> Result<PublisherRefreshOutcome>;
+
+    /// Refresh a bounded batch of publisher leases, preserving input order.
+    /// Redis-backed registries override this with a single pipelined request.
+    async fn refresh_publishers_ttl(
+        &self,
+        node_id: &str,
+        requests: &[PublisherRefreshRequest],
+    ) -> Result<Vec<PublisherRefreshOutcome>> {
+        anyhow::ensure!(
+            requests.len() <= PUBLISHER_REFRESH_BATCH_SIZE,
+            "publisher refresh batch contains {} entries; maximum is {}",
+            requests.len(),
+            PUBLISHER_REFRESH_BATCH_SIZE
+        );
+
+        let mut outcomes = Vec::with_capacity(requests.len());
+        for request in requests {
+            outcomes.push(
+                self.refresh_publisher_ttl(
+                    &request.room_id,
+                    &request.media_id,
+                    &request.user_id,
+                    node_id,
+                    request.expected_epoch,
+                )
+                .await?,
+            );
+        }
+        Ok(outcomes)
+    }
 
     /// Unregister a publisher unconditionally.
     async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()>;
@@ -131,6 +171,14 @@ impl StreamRegistryTrait for StreamRegistry {
             Some(expected_epoch),
         )
         .await
+    }
+
+    async fn refresh_publishers_ttl(
+        &self,
+        node_id: &str,
+        requests: &[PublisherRefreshRequest],
+    ) -> Result<Vec<PublisherRefreshOutcome>> {
+        StreamRegistry::refresh_publishers_ttl(self, node_id, requests).await
     }
 
     async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {

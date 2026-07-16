@@ -220,7 +220,7 @@ fn avatar_object_to_proto(blob: FileBlob) -> synctv_proto::client::UserAvatarObj
     synctv_proto::client::UserAvatarObjectResponse {
         mime_type: blob.mime_type,
         content_manifest_sha256: blob.content_manifest_sha256,
-        data: blob.data.into(),
+        data: blob.data,
         content_range: blob.range.map(file_byte_range_to_proto),
         total_size_bytes: blob.total_size_bytes,
     }
@@ -724,7 +724,7 @@ impl ClientApiImpl {
             .start_user_verification(user_id)
             .await
             .map_err(ApiError::from)?;
-        let options = super::passkey::passkey_request_options_to_proto(&challenge.options)?;
+        let options = super::passkey::passkey_request_options_to_proto(challenge.options)?;
         Ok(
             synctv_proto::client::StartSensitiveOperationPasskeyResponse {
                 passkey_session_id: challenge.session_id,
@@ -837,7 +837,7 @@ impl ClientApiImpl {
                     .map_err(ApiError::from)?
             }
             AuthFactorMethod::WebAuthn => {
-                let passkey_credential = req.passkey_credential.as_ref().ok_or_else(|| {
+                let passkey_credential = req.passkey_credential.ok_or_else(|| {
                     ApiError::InvalidInput("passkey_credential is required".to_string())
                 })?;
                 let credential = super::passkey::passkey_authentication_credential_from_proto(
@@ -922,11 +922,11 @@ impl ClientApiImpl {
                     .map_err(ApiError::from)?;
                 return Ok(synctv_proto::client::StartOpaquePasswordUpdateResponse {
                     session_id: challenge.session_id,
-                    credential_response: Vec::new(),
+                    credential_response: bytes::Bytes::new(),
                     registration_response: challenge.registration_response,
                     passkey_session_id: passkey_challenge.session_id,
                     passkey_options: Some(super::passkey::passkey_request_options_to_proto(
-                        &passkey_challenge.options,
+                        passkey_challenge.options,
                     )?),
                 });
             }
@@ -953,7 +953,7 @@ impl ClientApiImpl {
     ) -> Result<synctv_proto::client::User, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let user = if !req.passkey_session_id.is_empty() || req.passkey_credential.is_some() {
-            let passkey_credential = req.passkey_credential.as_ref().ok_or_else(|| {
+            let passkey_credential = req.passkey_credential.ok_or_else(|| {
                 ApiError::InvalidInput("passkey_credential is required".to_string())
             })?;
             let credential =

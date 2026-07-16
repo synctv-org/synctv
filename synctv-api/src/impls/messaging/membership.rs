@@ -81,7 +81,7 @@ impl<'a> RealtimeMembershipProbe<'a> {
                         ))
                     }
                 },
-                |()| Ok(None),
+                |_| Ok(None),
             )?;
         if let Some(reason) = policy_denial {
             return Ok(Some(reason));

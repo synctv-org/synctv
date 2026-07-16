@@ -18,8 +18,8 @@ impl UserService {
     pub async fn start_opaque_password_update(
         &self,
         user_id: &UserId,
-        credential_request: Vec<u8>,
-        registration_request: Vec<u8>,
+        credential_request: bytes::Bytes,
+        registration_request: bytes::Bytes,
     ) -> Result<OpaqueRegistrationStartChallenge> {
         self.repository
             .get_by_id(user_id)
@@ -61,7 +61,7 @@ impl UserService {
     pub async fn start_opaque_password_update_after_external_verification(
         &self,
         user_id: &UserId,
-        registration_request: Vec<u8>,
+        registration_request: bytes::Bytes,
     ) -> Result<OpaqueRegistrationStartChallenge> {
         self.start_opaque_password_update_after_verification(
             user_id,
@@ -74,7 +74,7 @@ impl UserService {
     pub async fn start_opaque_password_reset_after_external_verification(
         &self,
         user_id: &UserId,
-        registration_request: Vec<u8>,
+        registration_request: bytes::Bytes,
     ) -> Result<OpaqueRegistrationStartChallenge> {
         self.repository
             .get_by_id(user_id)
@@ -93,7 +93,7 @@ impl UserService {
                 user_id: *user_id,
                 expected_password_version: password_version,
             },
-            Vec::new(),
+            bytes::Bytes::new(),
         )
         .await
     }
@@ -101,7 +101,7 @@ impl UserService {
     pub async fn start_opaque_password_update_pending_passkey_verification(
         &self,
         user_id: &UserId,
-        registration_request: Vec<u8>,
+        registration_request: bytes::Bytes,
     ) -> Result<OpaqueRegistrationStartChallenge> {
         self.start_opaque_password_update_after_verification(
             user_id,
@@ -114,7 +114,7 @@ impl UserService {
     async fn start_opaque_password_update_after_verification(
         &self,
         user_id: &UserId,
-        registration_request: Vec<u8>,
+        registration_request: bytes::Bytes,
         verification: OpaquePasswordUpdateVerification,
     ) -> Result<OpaqueRegistrationStartChallenge> {
         self.repository
@@ -135,7 +135,7 @@ impl UserService {
                 expected_password_version: password_version,
                 verification,
             },
-            Vec::new(),
+            bytes::Bytes::new(),
         )
         .await
     }
@@ -143,9 +143,9 @@ impl UserService {
     async fn start_opaque_password_registration_session(
         &self,
         user_id: &UserId,
-        registration_request: Vec<u8>,
+        registration_request: bytes::Bytes,
         purpose: OpaqueRegistrationPurpose,
-        credential_response: Vec<u8>,
+        credential_response: bytes::Bytes,
     ) -> Result<OpaqueRegistrationStartChallenge> {
         let credential_identifier = Self::opaque_credential_identifier_for_user_id(user_id);
         let registration_start = self
@@ -174,8 +174,8 @@ impl UserService {
         &self,
         user_id: &UserId,
         session_id: &str,
-        credential_finalization: Vec<u8>,
-        registration_upload: Vec<u8>,
+        credential_finalization: bytes::Bytes,
+        registration_upload: bytes::Bytes,
     ) -> Result<User> {
         let Some(session) = self
             .opaque_registration_session_store
@@ -214,7 +214,7 @@ impl UserService {
         &self,
         user_id: &UserId,
         session_id: &str,
-        registration_upload: Vec<u8>,
+        registration_upload: bytes::Bytes,
     ) -> Result<User> {
         let (credential_identifier, expected_password_version) = self
             .consume_verified_password_update_session(
@@ -236,7 +236,7 @@ impl UserService {
         &self,
         user_id: &UserId,
         session_id: &str,
-        registration_upload: Vec<u8>,
+        registration_upload: bytes::Bytes,
     ) -> Result<User> {
         let (credential_identifier, expected_password_version) = self
             .consume_verified_password_update_session(
@@ -296,7 +296,7 @@ impl UserService {
     pub async fn finish_opaque_password_reset_after_external_verification(
         &self,
         session_id: &str,
-        registration_upload: Vec<u8>,
+        registration_upload: bytes::Bytes,
     ) -> Result<User> {
         let Some(session) = self
             .opaque_registration_session_store
@@ -328,7 +328,7 @@ impl UserService {
         user_id: &UserId,
         credential_identifier: Vec<u8>,
         expected_password_version: i32,
-        registration_upload: Vec<u8>,
+        registration_upload: bytes::Bytes,
     ) -> Result<User> {
         let opaque_record = self
             .opaque_password_service

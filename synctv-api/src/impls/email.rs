@@ -123,7 +123,7 @@ pub struct RequestPasswordResetResult {
 
 pub struct StartOpaquePasswordResetResult {
     pub session_id: String,
-    pub registration_response: Vec<u8>,
+    pub registration_response: bytes::Bytes,
 }
 
 /// Finish password reset result
@@ -457,7 +457,7 @@ impl EmailApiImpl {
         &self,
         email: &str,
         token: &str,
-        registration_request: Vec<u8>,
+        registration_request: bytes::Bytes,
     ) -> Result<StartOpaquePasswordResetResult, ApiError> {
         self.start_opaque_password_reset_with_control(email, token, registration_request, None)
             .await
@@ -467,7 +467,7 @@ impl EmailApiImpl {
         &self,
         email: &str,
         token: &str,
-        registration_request: Vec<u8>,
+        registration_request: bytes::Bytes,
         control: Option<&ExecutionControl>,
     ) -> Result<StartOpaquePasswordResetResult, ApiError> {
         let user = self
@@ -540,7 +540,7 @@ impl EmailApiImpl {
     pub async fn finish_opaque_password_reset(
         &self,
         session_id: &str,
-        registration_upload: Vec<u8>,
+        registration_upload: bytes::Bytes,
     ) -> Result<ConfirmPasswordResetResult, ApiError> {
         self.finish_opaque_password_reset_with_control(session_id, registration_upload, None)
             .await
@@ -549,7 +549,7 @@ impl EmailApiImpl {
     pub async fn finish_opaque_password_reset_with_control(
         &self,
         session_id: &str,
-        registration_upload: Vec<u8>,
+        registration_upload: bytes::Bytes,
         _control: Option<&ExecutionControl>,
     ) -> Result<ConfirmPasswordResetResult, ApiError> {
         let user = self

@@ -492,7 +492,7 @@ pub(super) fn chat_attachment_object_to_proto(
         room_id: room_id.to_string(),
         mime_type: blob.mime_type,
         content_manifest_sha256: blob.content_manifest_sha256,
-        data: blob.data.into(),
+        data: blob.data,
         content_range: blob
             .range
             .map(super::super::media::file_byte_range_to_proto),

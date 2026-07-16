@@ -1297,7 +1297,7 @@ async fn opaque_grpc_register(
         .start_opaque_registration(StartOpaqueRegistrationRequest {
             username: username.to_string(),
             email: Some(email.to_string()),
-            registration_request: client_start.message.serialize().to_vec(),
+            registration_request: client_start.message.serialize().to_vec().into(),
         })
         .await
         .expect("grpc OPAQUE registration start should succeed")
@@ -1319,7 +1319,7 @@ async fn opaque_grpc_register(
     auth_client
         .finish_opaque_registration(FinishOpaqueRegistrationRequest {
             session_id: challenge.session_id,
-            registration_upload: client_finish.message.serialize().to_vec(),
+            registration_upload: client_finish.message.serialize().to_vec().into(),
         })
         .await
         .expect("grpc OPAQUE registration finish should succeed")
@@ -1345,7 +1345,7 @@ async fn opaque_grpc_login(
                     username.to_string(),
                 ),
             ),
-            credential_request: client_start.message.serialize().to_vec(),
+            credential_request: client_start.message.serialize().to_vec().into(),
         })
         .await
         .expect("grpc OPAQUE login start should succeed")
@@ -1366,7 +1366,7 @@ async fn opaque_grpc_login(
     auth_client
         .finish_opaque_login(FinishOpaqueLoginRequest {
             session_id: challenge.session_id,
-            credential_finalization: client_finish.message.serialize().to_vec(),
+            credential_finalization: client_finish.message.serialize().to_vec().into(),
         })
         .await
         .expect("grpc OPAQUE login finish should succeed")
@@ -1390,7 +1390,7 @@ async fn opaque_grpc_set_room_password(
         ClientRegistration::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
             .expect("client room OPAQUE registration start should succeed");
     let mut start_request = tonic::Request::new(StartRoomPasswordRegistrationRequest {
-        registration_request: client_start.message.serialize().to_vec(),
+        registration_request: client_start.message.serialize().to_vec().into(),
     });
     start_request
         .metadata_mut()
@@ -1418,7 +1418,7 @@ async fn opaque_grpc_set_room_password(
         .expect("client room OPAQUE registration finish should succeed");
     let mut finish_request = tonic::Request::new(FinishRoomPasswordRegistrationRequest {
         session_id: challenge.session_id,
-        registration_upload: client_finish.message.serialize().to_vec(),
+        registration_upload: client_finish.message.serialize().to_vec().into(),
     });
     finish_request
         .metadata_mut()
@@ -1449,7 +1449,7 @@ async fn opaque_grpc_join_room(
         .expect("client room OPAQUE login start should succeed");
     let mut start_request = tonic::Request::new(StartRoomPasswordLoginRequest {
         room_id: room_id.to_string(),
-        credential_request: client_start.message.serialize().to_vec(),
+        credential_request: client_start.message.serialize().to_vec().into(),
     });
     start_request
         .metadata_mut()
@@ -1473,7 +1473,7 @@ async fn opaque_grpc_join_room(
         .expect("client room OPAQUE login finish should succeed");
     let mut finish_request = tonic::Request::new(FinishRoomPasswordLoginRequest {
         session_id: challenge.session_id,
-        credential_finalization: client_finish.message.serialize().to_vec(),
+        credential_finalization: client_finish.message.serialize().to_vec().into(),
     });
     finish_request
         .metadata_mut()
@@ -1542,7 +1542,7 @@ async fn opaque_http_register(
         StartOpaqueRegistrationRequest {
             username: username.to_string(),
             email: Some(email.to_string()),
-            registration_request: client_start.message.serialize().to_vec(),
+            registration_request: client_start.message.serialize().to_vec().into(),
         },
         None,
     )
@@ -1584,7 +1584,7 @@ async fn opaque_http_register(
         ),
         FinishOpaqueRegistrationRequest {
             session_id,
-            registration_upload: client_finish.message.serialize().to_vec(),
+            registration_upload: client_finish.message.serialize().to_vec().into(),
         },
         None,
     )
@@ -1609,7 +1609,7 @@ async fn opaque_http_login_token(
         &format!("{}/api/auth/opaque/login/start", server.api_base_url),
         StartOpaqueLoginRequest {
             identifier: Some(Identifier::Username(username.to_string())),
-            credential_request: client_start.message.serialize().to_vec(),
+            credential_request: client_start.message.serialize().to_vec().into(),
         },
         None,
     )
@@ -1652,7 +1652,7 @@ async fn opaque_http_login_token(
         &format!("{}/api/auth/opaque/login/finish", server.api_base_url),
         FinishOpaqueLoginRequest {
             session_id,
-            credential_finalization: client_finish.message.serialize().to_vec(),
+            credential_finalization: client_finish.message.serialize().to_vec().into(),
         },
         None,
     )

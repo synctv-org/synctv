@@ -229,7 +229,7 @@ clap_complete = "=4.6.7"
 # Utilities
 anyhow = "=1.0.103"
 thiserror = "=2.0.18"
-bytes = "=1.12.1"
+bytes = { version = "=1.12.1", features = ["serde"] }
 parking_lot = "=0.12.5"
 async-trait = "=0.1.89"
 futures = "=0.3.32"

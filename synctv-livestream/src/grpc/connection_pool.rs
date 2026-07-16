@@ -1,192 +1,121 @@
-// gRPC connection pool for reusing established channels across requests.
-// Keyed by node address (e.g., "host:port"), each entry holds a tonic Channel
-// that multiplexes HTTP/2 streams. Idle connections are evicted after a
-// configurable TTL to avoid holding stale connections to nodes that may have
-// been replaced.
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
-use dashmap::DashMap;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use moka::future::Cache;
 use tonic::transport::Channel;
 use tracing::debug;
 
-/// A pooled gRPC channel with creation and last-use timestamps.
-struct PooledChannel {
-    channel: Channel,
-    created_at: Instant,
-    last_used: Instant,
-}
+type ConnectFuture = Pin<Box<dyn Future<Output = anyhow::Result<Channel>> + Send>>;
+type ChannelConnector = dyn Fn(String) -> ConnectFuture + Send + Sync;
 
-/// Default maximum number of connections in the pool.
 const DEFAULT_MAX_POOL_SIZE: usize = 100;
 
-/// Thread-safe gRPC connection pool keyed by node address.
-///
-/// Channels are reused across callers (tonic `Channel` is clone-cheap and
-/// multiplexes over a single HTTP/2 connection). Stale entries are lazily
-/// evicted on access when they exceed `max_idle`.
-///
-/// The pool enforces a maximum size (`max_size`). When a new connection would
-/// exceed this limit, the oldest (by creation time) entry is evicted to make
-/// room. This prevents unbounded growth during K8s pod churn where stale
-/// addresses accumulate.
 #[derive(Clone)]
 pub(crate) struct GrpcConnectionPool {
-    connections: Arc<DashMap<String, PooledChannel>>,
-    /// Maximum time a pooled connection is considered healthy before re-creation.
-    max_idle: Duration,
-    /// Maximum number of connections allowed in the pool.
+    connections: Cache<String, Channel>,
+    connector: Arc<ChannelConnector>,
+    #[cfg(test)]
     max_size: usize,
 }
 
 impl GrpcConnectionPool {
-    /// Create a new connection pool.
-    ///
-    /// `max_idle` controls how long a cached channel is reused before being
-    /// discarded and re-created on the next request.
-    /// `max_size` limits the maximum number of connections in the pool.
     #[must_use]
     pub(crate) fn new(max_idle: Duration, max_size: usize) -> Self {
+        Self::with_connector(max_idle, max_size, |address| {
+            Box::pin(Self::connect_channel(address))
+        })
+    }
+
+    fn with_connector<F>(max_idle: Duration, max_size: usize, connector: F) -> Self
+    where
+        F: Fn(String) -> ConnectFuture + Send + Sync + 'static,
+    {
+        let max_size = max_size.max(1);
         Self {
-            connections: Arc::new(DashMap::new()),
-            max_idle,
-            max_size: max_size.max(1), // at least 1
+            connections: Cache::builder()
+                .max_capacity(max_size as u64)
+                .time_to_idle(max_idle)
+                .build(),
+            connector: Arc::new(connector),
+            #[cfg(test)]
+            max_size,
         }
     }
 
-    /// Create a pool with a default max idle time of 5 minutes and default max
-    /// pool size of 100.
     #[must_use]
     pub(crate) fn with_defaults() -> Self {
         Self::new(Duration::from_mins(5), DEFAULT_MAX_POOL_SIZE)
     }
 
-    /// Returns the maximum number of connections allowed in the pool.
+    async fn connect_channel(address: String) -> anyhow::Result<Channel> {
+        let url = if address.starts_with("http://") || address.starts_with("https://") {
+            address.clone()
+        } else {
+            format!("http://{address}")
+        };
+        let channel = Channel::from_shared(url.clone())
+            .map_err(|error| anyhow::anyhow!("Invalid gRPC endpoint URL '{url}': {error}"))?
+            .connect_timeout(Duration::from_secs(5))
+            .connect()
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("Failed to connect to gRPC endpoint '{address}': {error}")
+            })?;
+        debug!(address, "Created new pooled gRPC connection");
+        Ok(channel)
+    }
+
     #[cfg(test)]
     #[must_use]
     pub(crate) const fn max_size(&self) -> usize {
         self.max_size
     }
 
-    /// Get or create a gRPC channel for the given address.
-    ///
-    /// Returns a cached channel if one exists and is not stale, otherwise
-    /// creates a new connection. The address should be in `host:port` format
-    /// (scheme is added automatically if missing).
-    ///
-    /// Connection attempts timeout after 5 seconds to prevent hanging indefinitely
-    /// when the target node is unreachable.
     pub(crate) async fn get_channel(&self, address: &str) -> anyhow::Result<Channel> {
-        // Fast path: check for an existing connection that is still active.
-        if let Some(mut entry) = self.connections.get_mut(address) {
-            if entry.last_used.elapsed() < self.max_idle {
-                entry.last_used = Instant::now();
-                return Ok(entry.channel.clone());
-            }
-            drop(entry);
-            self.connections.remove(address);
-            debug!(address = address, "Evicted stale gRPC connection from pool");
-        }
-
-        // Slow path: create new connection
-        let url = if address.starts_with("http://") || address.starts_with("https://") {
-            address.to_string()
-        } else {
-            format!("http://{address}")
-        };
-
-        let channel = match Channel::from_shared(url.clone())
-            .map_err(|e| anyhow::anyhow!("Invalid gRPC endpoint URL '{url}': {e}"))?
-            .connect_timeout(Duration::from_secs(5))
-            .connect()
+        let connector = Arc::clone(&self.connector);
+        let address = address.to_string();
+        self.connections
+            .try_get_with(address.clone(), async move { connector(address).await })
             .await
-        {
-            Ok(ch) => ch,
-            Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "Failed to connect to gRPC endpoint '{address}': {e}"
-                ));
-            }
-        };
-
-        // Evict oldest entry if pool is at capacity (and this is a new address)
-        if !self.connections.contains_key(address) && self.connections.len() >= self.max_size {
-            self.evict_oldest();
-        }
-
-        self.connections.insert(
-            address.to_string(),
-            PooledChannel {
-                channel: channel.clone(),
-                created_at: Instant::now(),
-                last_used: Instant::now(),
-            },
-        );
-
-        debug!(address = address, "Created new pooled gRPC connection");
-        Ok(channel)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
     }
 
-    /// Remove a specific connection from the pool (e.g., after a connection error).
-    pub(crate) fn invalidate(&self, address: &str) {
-        if self.connections.remove(address).is_some() {
-            debug!(address = address, "Invalidated gRPC connection from pool");
-        }
+    pub(crate) async fn invalidate(&self, address: &str) {
+        self.connections.invalidate(address).await;
+        debug!(address, "Invalidated gRPC connection from pool");
     }
 
-    /// Evict the oldest connection from the pool to make room for a new one.
-    ///
-    /// Iterates over all entries and removes the one with the earliest
-    /// `created_at` timestamp. This is O(n) but the pool is small (bounded by
-    /// `max_size`), so the cost is negligible.
-    fn evict_oldest(&self) {
-        let oldest = self
-            .connections
-            .iter()
-            .min_by_key(|entry| entry.created_at)
-            .map(|entry| entry.key().clone());
-
-        if let Some(key) = oldest {
-            self.connections.remove(&key);
-            debug!(address = key, "Evicted oldest gRPC connection to make room");
-        }
-    }
-
-    /// Number of connections currently in the pool.
     #[cfg(test)]
     #[must_use]
     pub(crate) fn len(&self) -> usize {
-        self.connections.len()
+        usize::try_from(self.connections.entry_count()).unwrap_or(usize::MAX)
     }
 
-    /// Whether the pool is empty.
     #[cfg(test)]
     #[must_use]
     pub(crate) fn is_empty(&self) -> bool {
-        self.connections.is_empty()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn insert_test_channel_with_age(&self, address: &str, age: Duration) {
-        let timestamp = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
-        self.connections.insert(
-            address.to_string(),
-            PooledChannel {
-                channel: Self::test_channel(),
-                created_at: timestamp,
-                last_used: timestamp,
-            },
-        );
+        self.connections.entry_count() == 0
     }
 
     #[cfg(test)]
     fn test_channel() -> Channel {
         Channel::from_static("http://livestream-test-channel.invalid").connect_lazy()
     }
+
+    #[cfg(test)]
+    pub(crate) async fn insert_test_channel(&self, address: &str) {
+        self.connections
+            .insert(address.to_string(), Self::test_channel())
+            .await;
+        self.connections.run_pending_tasks().await;
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use futures::future::join_all;
+
     use super::*;
 
     #[test]
@@ -196,34 +125,28 @@ mod tests {
         assert_eq!(pool.len(), 0);
     }
 
-    #[test]
-    fn test_pool_invalidate_nonexistent() {
+    #[tokio::test]
+    async fn test_pool_invalidate_nonexistent() {
         let pool = GrpcConnectionPool::with_defaults();
-        // Should not panic
-        pool.invalidate("nonexistent:50051");
+        pool.invalidate("nonexistent:50051").await;
         assert!(pool.is_empty());
     }
 
     #[tokio::test]
-    async fn test_connection_timeout_configuration() {
-        // This test verifies that the timeout is properly configured in the
-        // Channel builder. We can't easily test the actual timeout behavior
-        // without a real unresponsive server, but we can verify the code compiles
-        // and the timeout parameter is used.
-        let pool = GrpcConnectionPool::with_defaults();
+    async fn test_connection_failure_is_retryable() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_connector = Arc::clone(&attempts);
+        let pool = GrpcConnectionPool::with_connector(Duration::from_mins(5), 3, move |_address| {
+            let attempts = Arc::clone(&attempts_for_connector);
+            Box::pin(async move {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                Err(anyhow::anyhow!("connect failed"))
+            })
+        });
 
-        // Try to connect to localhost with a non-existent port
-        // This should fail quickly (connection refused) but with timeout configured
-        let result = pool.get_channel("127.0.0.1:65535").await;
-
-        // Should fail because nothing is listening on this port
-        assert!(
-            result.is_err(),
-            "Expected connection to 127.0.0.1:65535 to fail"
-        );
-
-        // The important part is that connect_timeout() is called in the code,
-        // which is verified at compile time by the type system
+        assert!(pool.get_channel("node:50051").await.is_err());
+        assert!(pool.get_channel("node:50051").await.is_err());
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
     }
 
     #[test]
@@ -238,69 +161,40 @@ mod tests {
         assert_eq!(pool.max_size(), 1);
     }
 
-    type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    #[tokio::test]
+    async fn test_concurrent_miss_connects_once() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_connector = Arc::clone(&attempts);
+        let pool = GrpcConnectionPool::with_connector(Duration::from_mins(5), 3, move |_address| {
+            let attempts = Arc::clone(&attempts_for_connector);
+            Box::pin(async move {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                tokio::task::yield_now().await;
+                Ok(GrpcConnectionPool::test_channel())
+            })
+        });
 
-    fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
-        anyhow::anyhow!(message.into()).into()
+        let results = join_all((0..32).map(|_| pool.get_channel("node:50051"))).await;
+        assert!(results.iter().all(Result::is_ok));
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
-    async fn test_pool_enforces_max_size_on_insert() -> TestResult {
-        let pool = GrpcConnectionPool::new(Duration::from_mins(5), 3);
+    async fn test_invalidate_forces_reconnect() -> anyhow::Result<()> {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_connector = Arc::clone(&attempts);
+        let pool = GrpcConnectionPool::with_connector(Duration::from_mins(5), 3, move |_address| {
+            let attempts = Arc::clone(&attempts_for_connector);
+            Box::pin(async move {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                Ok(GrpcConnectionPool::test_channel())
+            })
+        });
 
-        let channel = GrpcConnectionPool::test_channel();
-        let now = Instant::now();
-        for i in 0..3u32 {
-            let created_at = now
-                .checked_sub(Duration::from_secs(300 - u64::from(i) * 100))
-                .ok_or_else(|| test_error("created_at should stay in range"))?;
-            pool.connections.insert(
-                format!("node-{i}:50051"),
-                PooledChannel {
-                    channel: channel.clone(),
-                    created_at,
-                    last_used: created_at,
-                },
-            );
-        }
-        assert_eq!(pool.len(), 3);
-
-        pool.evict_oldest();
-        assert_eq!(pool.len(), 2);
-
-        assert!(pool.connections.get("node-0:50051").is_none());
-        assert!(pool.connections.get("node-1:50051").is_some());
-        assert!(pool.connections.get("node-2:50051").is_some());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_pool_refreshes_idle_clock_on_hit() -> TestResult {
-        let pool = GrpcConnectionPool::new(Duration::from_mins(5), 3);
-        let stale_creation = Instant::now()
-            .checked_sub(Duration::from_mins(10))
-            .unwrap_or_else(Instant::now);
-        let previous_last_used = Instant::now()
-            .checked_sub(Duration::from_secs(10))
-            .unwrap_or_else(Instant::now);
-        pool.connections.insert(
-            "node-refresh:50051".to_string(),
-            PooledChannel {
-                channel: GrpcConnectionPool::test_channel(),
-                created_at: stale_creation,
-                last_used: previous_last_used,
-            },
-        );
-
-        let _channel = pool.get_channel("node-refresh:50051").await?;
-        let entry = pool
-            .connections
-            .get("node-refresh:50051")
-            .expect("test entry should exist");
-        assert!(
-            entry.last_used > previous_last_used,
-            "cache hit should refresh idle timestamp"
-        );
+        pool.get_channel("node:50051").await?;
+        pool.invalidate("node:50051").await;
+        pool.get_channel("node:50051").await?;
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
         Ok(())
     }
 }

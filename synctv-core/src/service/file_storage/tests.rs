@@ -323,7 +323,7 @@ async fn upsert_uncompressed_blob(
                 size_bytes: payload_size(payload),
                 checksum_sha256: &part_checksum_sha256,
                 compression: FileBlobCompression::None,
-                data: payload.to_vec(),
+                data: payload,
             })
             .await,
         "blob should be inserted",
@@ -806,7 +806,7 @@ async fn routed_database_storage_reads_objects_from_token_backend() {
     assert_eq!(loaded.storage_backend, "database");
     assert_eq!(loaded.mime_type, "application/pdf");
     assert_eq!(loaded.content_manifest_sha256, content_manifest_sha256);
-    assert_eq!(loaded.data, payload);
+    assert_eq!(loaded.data.as_ref(), payload);
 }
 
 #[tokio::test]
@@ -1143,7 +1143,7 @@ async fn database_storage_generates_useful_image_variants() {
                 upload_token,
                 content_type: Some("image/jpeg".to_string()),
                 range: None,
-                data: payload,
+                data: payload.into(),
             })
             .await,
         "upload should store",
@@ -1238,7 +1238,7 @@ async fn image_processing_rejects_actual_dimensions_over_policy() {
                 upload_token,
                 content_type: Some("image/jpeg".to_string()),
                 range: None,
-                data: payload,
+                data: payload.into(),
             })
             .await,
         "actual dimensions should be enforced during finalization",
@@ -1325,7 +1325,7 @@ async fn large_image_finalization_probes_dimensions_before_variant_size_guard() 
                     end_inclusive,
                     total_size: payload_size(&payload),
                 }),
-                data: chunk.to_vec(),
+                data: chunk.to_vec().into(),
             })
             .await;
         if index + 1 == part_count {
@@ -1387,7 +1387,7 @@ async fn audio_processing_records_actual_duration_and_bitrate() {
                 upload_token,
                 content_type: Some("audio/wav".to_string()),
                 range: None,
-                data: payload,
+                data: payload.into(),
             })
             .await,
         "audio upload should store",
@@ -1456,7 +1456,7 @@ async fn audio_processing_rejects_actual_duration_over_policy() {
                 upload_token,
                 content_type: Some("audio/wav".to_string()),
                 range: None,
-                data: payload,
+                data: payload.into(),
             })
             .await,
         "actual audio duration should be enforced during finalization",
@@ -1535,7 +1535,7 @@ async fn derived_image_variants_follow_original_cleanup_lifecycle() {
                 upload_token,
                 content_type: Some("image/jpeg".to_string()),
                 range: None,
-                data: payload,
+                data: payload.into(),
             })
             .await,
         "upload should store",
@@ -2784,7 +2784,7 @@ async fn database_storage_resumable_upload_completes_after_all_parts() {
                     end_inclusive: session.part_size_bytes - 1,
                     total_size: payload_size(&payload),
                 }),
-                data: first,
+                data: first.into(),
             })
             .await,
         "first upload part should store",
@@ -2830,7 +2830,7 @@ async fn database_storage_resumable_upload_completes_after_all_parts() {
                     end_inclusive: payload_size(&payload) - 1,
                     total_size: payload_size(&payload),
                 }),
-                data: second,
+                data: second.into(),
             })
             .await,
         "second upload part should complete",
@@ -2986,7 +2986,7 @@ async fn database_storage_cleans_expired_partial_upload_session() {
                     end_inclusive: session.part_size_bytes - 1,
                     total_size: payload_size(&payload),
                 }),
-                data: payload[..part_size].to_vec(),
+                data: payload[..part_size].to_vec().into(),
             })
             .await,
         "first upload part should store",
@@ -3099,7 +3099,7 @@ async fn database_storage_streams_completed_blob_parts_without_single_buffer() {
                         end_inclusive: start + payload_size(chunk) - 1,
                         total_size: payload_size(&payload),
                     }),
-                    data: chunk.to_vec(),
+                    data: chunk.to_vec().into(),
                 })
                 .await,
             "upload part should store",
@@ -3275,7 +3275,7 @@ async fn database_storage_multipart_stores_manifest_identity() {
                         end_inclusive,
                         total_size: payload_size(&payload),
                     }),
-                    data: chunk.to_vec(),
+                    data: chunk.to_vec().into(),
                 })
                 .await,
             "upload part should store",
@@ -3374,7 +3374,7 @@ async fn database_storage_range_reads_from_permanent_blob_parts() {
                         end_inclusive,
                         total_size: payload_size(&payload),
                     }),
-                    data: chunk.to_vec(),
+                    data: chunk.to_vec().into(),
                 })
                 .await,
             "upload part should store",
@@ -3567,7 +3567,7 @@ async fn s3_storage_single_object_session_uses_backend_proxy_upload() {
                 upload_token: upload_token.to_string(),
                 content_type: Some("application/pdf".to_string()),
                 range: None,
-                data: payload.clone(),
+                data: payload.clone().into(),
             })
             .await,
         "single-object S3 upload should store",
@@ -3909,7 +3909,7 @@ async fn s3_storage_store_upload_accepts_server_mediated_parts() {
                     end_inclusive: session.part_size_bytes - 1,
                     total_size: payload_size(&payload),
                 }),
-                data: first_part,
+                data: first_part.into(),
             })
             .await,
         "first S3 server-mediated part should upload",
@@ -3936,7 +3936,7 @@ async fn s3_storage_store_upload_accepts_server_mediated_parts() {
                     end_inclusive: payload_size(&payload) - 1,
                     total_size: payload_size(&payload),
                 }),
-                data: second_part,
+                data: second_part.into(),
             })
             .await,
         "second S3 server-mediated part should complete",
@@ -4026,7 +4026,7 @@ async fn s3_storage_rejects_part_outside_declared_manifest() {
                     end_inclusive: payload_size(&payload) + 1024,
                     total_size: payload_size(&payload),
                 }),
-                data: vec![b'x'; 2048],
+                data: vec![b'x'; 2048].into(),
             })
             .await,
         "out-of-manifest S3 part should be rejected",
@@ -4136,7 +4136,7 @@ async fn s3_storage_server_mediated_upload_is_bound_to_session_key() {
                     end_inclusive: first_session.part_size_bytes - 1,
                     total_size: payload_size(&payload),
                 }),
-                data: first_part,
+                data: first_part.into(),
             })
             .await,
         "first session server-mediated part should upload",

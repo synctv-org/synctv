@@ -202,7 +202,7 @@ async fn fetch_text(
             "manifest is too large to probe".to_string(),
         ));
     }
-    String::from_utf8(bytes.to_vec())
+    String::from_utf8(bytes.into())
         .map_err(|error| Error::InvalidInput(format!("manifest is not utf-8: {error}")))
 }
 

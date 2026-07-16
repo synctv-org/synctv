@@ -436,7 +436,7 @@ pub async fn upload_chat_attachment_object(
     let upload_token = upload_token.to_string();
     let content_type = content_type.map(str::to_string);
     let range = super::super::optional_content_range(&headers)?;
-    let data = body.to_vec();
+    let data = body;
     let req = UploadChatAttachmentObjectRequest {
         room_id: String::new(),
         encoded_object_key,
@@ -533,7 +533,7 @@ pub async fn upload_media_cover_object(
         token: upload_token.to_string(),
         content_type: content_type.map(str::to_string),
         content_range: range.map(file_upload_range_to_proto),
-        data: body.to_vec(),
+        data: body,
     };
     let response = execute_public_endpoint(
         &state,
@@ -618,7 +618,7 @@ pub async fn upload_media_thumbnail_object(
         token: upload_token.to_string(),
         content_type: content_type.map(str::to_string),
         content_range: range.map(file_upload_range_to_proto),
-        data: body.to_vec(),
+        data: body,
     };
     let response = execute_public_endpoint(
         &state,
@@ -707,7 +707,7 @@ pub async fn upload_room_cover_object(
         token: upload_token.to_string(),
         content_type: content_type.map(str::to_string),
         content_range: range.map(file_upload_range_to_proto),
-        data: body.to_vec(),
+        data: body,
     };
     let response = execute_public_endpoint(
         &state,
@@ -792,7 +792,7 @@ pub async fn upload_playlist_cover_object(
         token: upload_token.to_string(),
         content_type: content_type.map(str::to_string),
         content_range: range.map(file_upload_range_to_proto),
-        data: body.to_vec(),
+        data: body,
     };
     let response = execute_public_endpoint(
         &state,

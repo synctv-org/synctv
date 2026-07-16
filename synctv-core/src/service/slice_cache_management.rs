@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use super::server_state::ServerStateClusterTarget;
 
+const SLICE_CACHE_FAN_OUT_CONCURRENCY: usize = 16;
+
 #[derive(Debug, thiserror::Error)]
 pub enum SliceCacheManagementError {
     #[error("nodeId and allNodes are mutually exclusive")]
@@ -369,20 +371,21 @@ impl SliceCacheManagementService {
 
         if let Some(cluster_runtime) = &self.cluster_runtime {
             let remote_nodes = cluster_runtime.remote_routable_nodes().await?;
-            let mut futures = futures::stream::FuturesUnordered::new();
-            for node in remote_nodes {
-                let service = self.clone();
-                let call = remote_call.clone();
-                futures.push(async move {
-                    let node_id = node.node_id.clone();
-                    call(service, node)
-                        .await
-                        .map_err(|error| SliceCacheNodeFailure {
-                            node_id,
-                            error: error.to_string(),
-                        })
-                });
-            }
+            let mut futures = futures::stream::iter(remote_nodes)
+                .map(|node| {
+                    let service = self.clone();
+                    let call = remote_call.clone();
+                    async move {
+                        let node_id = node.node_id.clone();
+                        call(service, node)
+                            .await
+                            .map_err(|error| SliceCacheNodeFailure {
+                                node_id,
+                                error: error.to_string(),
+                            })
+                    }
+                })
+                .buffer_unordered(SLICE_CACHE_FAN_OUT_CONCURRENCY);
             while let Some(result) = futures.next().await {
                 match result {
                     Ok(response) => results.push(response),

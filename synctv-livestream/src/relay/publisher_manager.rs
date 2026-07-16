@@ -9,7 +9,10 @@
 // Based on design doc 17-data-flow-design.md §11.1
 
 use super::registry::HEARTBEAT_INTERVAL_SECS;
-use super::registry_trait::{PublisherRefreshOutcome, StreamRegistryTrait};
+use super::registry_trait::{
+    PublisherRefreshOutcome, PublisherRefreshRequest, StreamRegistryTrait,
+    PUBLISHER_REFRESH_BATCH_SIZE,
+};
 use crate::util::{unix_now_secs, validate_stream_ids};
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -18,7 +21,9 @@ use synctv_xiu::streamhub::{
     define::{BroadcastEventReceiver, StreamHubEvent, StreamHubEventSender},
     stream::StreamIdentifier,
 };
+use tokio::sync::{mpsc, oneshot, Notify};
 use tokio::time::{interval, Duration};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 /// Number of consecutive heartbeat cycles that can fail before the local
@@ -33,6 +38,11 @@ const SILENT_PUBLISHER_TIMEOUT_SECS: u64 = 60;
 
 /// Interval for periodic registry-local consistency sync.
 const PERIODIC_SYNC_INTERVAL_SECS: u64 = 300;
+const MAINTENANCE_COMMAND_CAPACITY: usize = 16;
+
+enum PublisherMaintenanceCommand {
+    Reregister { done: oneshot::Sender<()> },
+}
 
 #[derive(Clone, Debug)]
 struct PublisherCleanupContext {
@@ -111,6 +121,17 @@ fn parse_publisher_key(key: &str) -> Option<(&str, &str)> {
     Some((room_id, media_id))
 }
 
+async fn run_until_cancelled<F>(cancel: &CancellationToken, future: F) -> bool
+where
+    F: std::future::Future<Output = ()>,
+{
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => false,
+        () = future => true,
+    }
+}
+
 /// Publisher manager that listens to `StreamHub` events
 pub(crate) struct PublisherManager {
     registry: Arc<dyn StreamRegistryTrait>,
@@ -130,6 +151,9 @@ pub(crate) struct PublisherManager {
     /// Flag to suppress silent-publisher cleanup during `StreamHub` restart.
     /// Set before restart, cleared after re-registration completes.
     is_restarting: Arc<AtomicBool>,
+    maintenance_tx: mpsc::Sender<PublisherMaintenanceCommand>,
+    maintenance_rx: tokio::sync::Mutex<Option<mpsc::Receiver<PublisherMaintenanceCommand>>>,
+    sync_notify: Notify,
 }
 
 impl PublisherManager {
@@ -144,6 +168,7 @@ impl PublisherManager {
         hub_event_sender: StreamHubEventSender,
         is_restarting: Arc<AtomicBool>,
     ) -> Self {
+        let (maintenance_tx, maintenance_rx) = mpsc::channel(MAINTENANCE_COMMAND_CAPACITY);
         Self {
             registry,
             local_node_id,
@@ -153,6 +178,9 @@ impl PublisherManager {
             lag_event_count: AtomicU64::new(0),
             silent_timeout_secs: SILENT_PUBLISHER_TIMEOUT_SECS,
             is_restarting,
+            maintenance_tx,
+            maintenance_rx: tokio::sync::Mutex::new(Some(maintenance_rx)),
+            sync_notify: Notify::new(),
         }
     }
 
@@ -248,53 +276,102 @@ impl PublisherManager {
 
         info!("Publisher manager started");
 
+        let maintenance_rx = {
+            let mut receiver = self.maintenance_rx.lock().await;
+            receiver.take()
+        };
+        let Some(maintenance_rx) = maintenance_rx else {
+            error!("Publisher manager maintenance worker was already started");
+            return;
+        };
+        let maintenance_cancel = CancellationToken::new();
+        let maintenance_handle = tokio::spawn(
+            Arc::clone(&self).run_maintenance_worker(maintenance_rx, maintenance_cancel.clone()),
+        );
+
+        loop {
+            match event_receiver.recv().await {
+                Ok(event) => {
+                    if let Err(e) = self.handle_broadcast_event(event).await {
+                        error!("Failed to handle broadcast event: {}", e);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    self.lag_event_count.fetch_add(1, Ordering::Relaxed);
+                    warn!(
+                        "Publisher manager lagged behind by {n} broadcast events; \
+                         some publish/unpublish events may have been missed. \
+                         Scheduling active publisher reconciliation."
+                    );
+                    self.schedule_registry_sync();
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    error!("Broadcast channel closed");
+                    break;
+                }
+            }
+        }
+
+        maintenance_cancel.cancel();
+        if let Err(error) = maintenance_handle.await {
+            error!(error = %error, "Publisher maintenance worker failed during shutdown");
+        }
+        warn!("Publisher manager stopped");
+    }
+
+    async fn run_maintenance_worker(
+        self: Arc<Self>,
+        mut receiver: mpsc::Receiver<PublisherMaintenanceCommand>,
+        cancel: CancellationToken,
+    ) {
         let mut heartbeat_interval = interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
+        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut sync_interval = interval(Duration::from_secs(PERIODIC_SYNC_INTERVAL_SECS));
-        let mut sync_started = false;
+        sync_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        sync_interval.tick().await;
 
         loop {
             tokio::select! {
+                biased;
+                () = cancel.cancelled() => break,
+                command = receiver.recv() => {
+                    match command {
+                        Some(PublisherMaintenanceCommand::Reregister { done }) => {
+                            if !run_until_cancelled(&cancel, self.reregister_all_publishers_once()).await {
+                                break;
+                            }
+                            let _ = done.send(());
+                        }
+                        None => break,
+                    }
+                }
+                () = self.sync_notify.notified() => {
+                    if !run_until_cancelled(&cancel, self.run_periodic_sync_once()).await {
+                        break;
+                    }
+                }
                 _ = heartbeat_interval.tick() => {
-                    self.run_heartbeat_cycle().await;
+                    if !run_until_cancelled(&cancel, self.run_heartbeat_cycle()).await {
+                        break;
+                    }
                 }
                 _ = sync_interval.tick() => {
-                    if !sync_started {
-                        sync_started = true;
-                        continue;
-                    }
-
                     debug!(
                         "Running periodic registry-local sync (interval={}s)",
                         PERIODIC_SYNC_INTERVAL_SECS
                     );
-                    self.run_periodic_sync_once().await;
-                }
-                recv = event_receiver.recv() => {
-                    match recv {
-                        Ok(event) => {
-                            if let Err(e) = self.handle_broadcast_event(event).await {
-                                error!("Failed to handle broadcast event: {}", e);
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            self.lag_event_count.fetch_add(1, Ordering::Relaxed);
-                            warn!(
-                                "Publisher manager lagged behind by {n} broadcast events; \
-                                 some publish/unpublish events may have been missed. \
-                                 Reconciling active publishers with registry."
-                            );
-                            self.run_periodic_sync_once().await;
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            error!("Broadcast channel closed");
-                            break;
-                        }
+                    if !run_until_cancelled(&cancel, self.run_periodic_sync_once()).await {
+                        break;
                     }
                 }
             }
         }
 
-        warn!("Publisher manager stopped");
+        debug!("Publisher maintenance worker stopped");
+    }
+
+    fn schedule_registry_sync(&self) {
+        self.sync_notify.notify_one();
     }
 
     /// Handle `StreamHub` broadcast events
@@ -718,6 +795,22 @@ impl PublisherManager {
     /// Sets `is_restarting` before re-registration and clears it after,
     /// suppressing silent-publisher cleanup during the restart window.
     pub(crate) async fn reregister_all_publishers(&self) {
+        let (done, completed) = oneshot::channel();
+        if self
+            .maintenance_tx
+            .send(PublisherMaintenanceCommand::Reregister { done })
+            .await
+            .is_err()
+        {
+            error!("Publisher maintenance worker stopped before re-registration");
+            return;
+        }
+        if completed.await.is_err() {
+            error!("Publisher maintenance worker stopped during re-registration");
+        }
+    }
+
+    async fn reregister_all_publishers_once(&self) {
         self.set_restarting();
 
         // First reconcile with registry to remove zombie entries, meaning local
@@ -975,6 +1068,41 @@ impl PublisherManager {
         }
     }
 
+    async fn record_heartbeat_failure(
+        &self,
+        request: &PublisherRefreshRequest,
+        entry: &Arc<PublisherEntry>,
+        failure_reason: &str,
+    ) {
+        synctv_core::metrics::livestream::PUBLISHER_HEARTBEAT_FAILURES.inc();
+        let failures = entry
+            .consecutive_heartbeat_failures
+            .fetch_add(1, Ordering::AcqRel)
+            + 1;
+        if failures >= MAX_CONSECUTIVE_HEARTBEAT_FAILURES {
+            error!(
+                "Publisher room={} media={} failed heartbeat for {} consecutive cycles, cleaning up: {}",
+                request.room_id, request.media_id, failures, failure_reason
+            );
+            self.cleanup_publisher(
+                &request.room_id,
+                &request.media_id,
+                entry.epoch,
+                &format!("heartbeat failed for {failures} consecutive cycles"),
+            )
+            .await;
+        } else {
+            warn!(
+                "Heartbeat failed for room={} media={} ({}/{} consecutive): {}",
+                request.room_id,
+                request.media_id,
+                failures,
+                MAX_CONSECUTIVE_HEARTBEAT_FAILURES,
+                failure_reason
+            );
+        }
+    }
+
     /// Maintain heartbeat for all active publishers and detect silent publishers.
     ///
     /// Two checks run on each heartbeat interval:
@@ -990,14 +1118,17 @@ impl PublisherManager {
             .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect();
 
-        for (publisher_key, entry) in &snapshot {
+        let mut refresh_requests = Vec::with_capacity(snapshot.len());
+        let mut refresh_entries = Vec::with_capacity(snapshot.len());
+
+        for (publisher_key, entry) in snapshot {
             // Parse room_id and media_id from the composite key
-            let Some((room_id, media_id)) = parse_publisher_key(publisher_key) else {
+            let Some((room_id, media_id)) = parse_publisher_key(&publisher_key) else {
                 warn!(
                     publisher_key = publisher_key,
                     "Removing invalid publisher tracking key during heartbeat"
                 );
-                self.active_publishers.remove(publisher_key);
+                self.active_publishers.remove(&publisher_key);
                 continue;
             };
 
@@ -1019,67 +1150,81 @@ impl PublisherManager {
                 continue;
             }
 
-            // Pass stored user_id to refresh both publisher TTL and user reverse-index TTL.
-            let user_id = &entry.user_id;
+            refresh_requests.push(PublisherRefreshRequest {
+                room_id: room_id.to_string(),
+                media_id: media_id.to_string(),
+                user_id: entry.user_id.clone(),
+                expected_epoch: entry.epoch,
+            });
+            refresh_entries.push(entry);
+        }
 
-            let failure_reason = match self
+        for (request_batch, entry_batch) in refresh_requests
+            .chunks(PUBLISHER_REFRESH_BATCH_SIZE)
+            .zip(refresh_entries.chunks(PUBLISHER_REFRESH_BATCH_SIZE))
+        {
+            let outcomes = match self
                 .registry
-                .refresh_publisher_ttl(room_id, media_id, user_id, &self.local_node_id, entry.epoch)
+                .refresh_publishers_ttl(&self.local_node_id, request_batch)
                 .await
             {
-                Ok(PublisherRefreshOutcome::Refreshed) => {
-                    entry
-                        .consecutive_heartbeat_failures
-                        .store(0, Ordering::Release);
-                    trace!(
-                        "Heartbeat cycle succeeded for room {} / media {}",
-                        room_id,
-                        media_id
+                Ok(outcomes) if outcomes.len() == request_batch.len() => outcomes,
+                Ok(outcomes) => {
+                    let failure_reason = format!(
+                        "registry heartbeat returned {} outcomes for {} requests",
+                        outcomes.len(),
+                        request_batch.len()
                     );
+                    for (request, entry) in request_batch.iter().zip(entry_batch) {
+                        self.record_heartbeat_failure(request, entry, &failure_reason)
+                            .await;
+                    }
                     continue;
                 }
-                Ok(PublisherRefreshOutcome::Missing) => {
-                    "publisher missing from registry".to_string()
-                }
-                Ok(PublisherRefreshOutcome::OwnershipChanged) => {
-                    warn!(
-                        "Publisher room={} media={} no longer matches local owner/epoch; cleaning up immediately",
-                        room_id, media_id
-                    );
-                    self.cleanup_publisher(
-                        room_id,
-                        media_id,
-                        entry.epoch,
-                        "publisher ownership changed in registry",
-                    )
-                    .await;
+                Err(error) => {
+                    let failure_reason = format!("registry heartbeat error: {error}");
+                    for (request, entry) in request_batch.iter().zip(entry_batch) {
+                        self.record_heartbeat_failure(request, entry, &failure_reason)
+                            .await;
+                    }
                     continue;
                 }
-                Err(e) => format!("registry heartbeat error: {e}"),
             };
 
-            synctv_core::metrics::livestream::PUBLISHER_HEARTBEAT_FAILURES.inc();
-            let failures = entry
-                .consecutive_heartbeat_failures
-                .fetch_add(1, Ordering::AcqRel)
-                + 1;
-            if failures >= MAX_CONSECUTIVE_HEARTBEAT_FAILURES {
-                error!(
-                    "Publisher room={} media={} failed heartbeat for {} consecutive cycles, cleaning up: {}",
-                    room_id, media_id, failures, failure_reason
-                );
-                self.cleanup_publisher(
-                    room_id,
-                    media_id,
-                    entry.epoch,
-                    &format!("heartbeat failed for {failures} consecutive cycles"),
-                )
-                .await;
-            } else {
-                warn!(
-                    "Heartbeat failed for room={} media={} ({}/{} consecutive): {}",
-                    room_id, media_id, failures, MAX_CONSECUTIVE_HEARTBEAT_FAILURES, failure_reason
-                );
+            for ((request, entry), outcome) in request_batch.iter().zip(entry_batch).zip(outcomes) {
+                match outcome {
+                    PublisherRefreshOutcome::Refreshed => {
+                        entry
+                            .consecutive_heartbeat_failures
+                            .store(0, Ordering::Release);
+                        trace!(
+                            "Heartbeat cycle succeeded for room {} / media {}",
+                            request.room_id,
+                            request.media_id
+                        );
+                    }
+                    PublisherRefreshOutcome::Missing => {
+                        self.record_heartbeat_failure(
+                            request,
+                            entry,
+                            "publisher missing from registry",
+                        )
+                        .await;
+                    }
+                    PublisherRefreshOutcome::OwnershipChanged => {
+                        warn!(
+                            "Publisher room={} media={} no longer matches local owner/epoch; cleaning up immediately",
+                            request.room_id, request.media_id
+                        );
+                        self.cleanup_publisher(
+                            &request.room_id,
+                            &request.media_id,
+                            entry.epoch,
+                            "publisher ownership changed in registry",
+                        )
+                        .await;
+                    }
+                }
             }
         }
 

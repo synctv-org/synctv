@@ -1055,7 +1055,7 @@ mod tests {
             options: Some(synctv_proto::client::PasskeyRequestChallenge {
                 public_key: Some(
                     synctv_proto::client::PasskeyPublicKeyCredentialRequestOptions {
-                        challenge: b"abc".to_vec(),
+                        challenge: b"abc".to_vec().into(),
                         timeout: None,
                         rp_id: "app.example.com".to_string(),
                         allow_credentials: Vec::new(),
@@ -1091,7 +1091,7 @@ mod tests {
             credential.r#type,
             synctv_proto::client::PasskeyPublicKeyCredentialType::PublicKey as i32
         );
-        assert_eq!(credential.raw_id, b"raw");
+        assert_eq!(credential.raw_id.as_ref(), b"raw");
         Ok(())
     }
 }

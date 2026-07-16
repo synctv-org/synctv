@@ -93,7 +93,7 @@ impl DatabaseFileStorageService {
         &self,
         object_key: &str,
         range: Option<FileRangeRequest>,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<bytes::Bytes> {
         let encoded_object_key = encode_file_object_key(object_key);
         let read_token = super::file_object_read_token(
             &self.storage_backend,
@@ -256,7 +256,7 @@ impl DatabaseFileStorageService {
         let data = if return_inline_data {
             self.load_range_data(&session.object_key, None).await?
         } else {
-            Vec::new()
+            bytes::Bytes::new()
         };
         let mut blob = FileBlob {
             storage_backend: self.storage_backend.clone(),
@@ -305,7 +305,7 @@ impl DatabaseFileStorageService {
     async fn complete_single_upload_session(
         &self,
         session: &crate::models::FileUploadSessionRecord,
-        data: Vec<u8>,
+        data: bytes::Bytes,
     ) -> Result<FileBlob> {
         let metadata = upload_session_object_metadata(&session.metadata);
         let upload_policy = upload_session_policy(&session.metadata);
@@ -430,8 +430,8 @@ fn validate_database_upload_session_size(request: &CreateFileUploadSession) -> R
 
 async fn compress_payload(
     config: DatabaseFileStorageCompressionConfig,
-    data: Vec<u8>,
-) -> Result<(FileBlobCompression, Vec<u8>)> {
+    data: bytes::Bytes,
+) -> Result<(FileBlobCompression, bytes::Bytes)> {
     if config.algorithm == FileBlobCompression::None
         || payload_len_i64(data.len())? < config.min_size_bytes.max(0)
     {
@@ -463,7 +463,7 @@ async fn compress_payload(
     if saved < min_saved {
         return Ok((FileBlobCompression::None, data));
     }
-    Ok((algorithm, compressed))
+    Ok((algorithm, compressed.into()))
 }
 
 async fn decompress_blob_part(part: FileBlobPart) -> Result<DecompressedBlobPart> {
@@ -1159,7 +1159,7 @@ impl FileStorageService for DatabaseFileStorageService {
                     size_bytes: expected_size,
                     checksum_sha256: &actual_part_checksum,
                     compression,
-                    data: stored_data,
+                    data: &stored_data,
                 })
                 .await?;
             let blob = self
@@ -1172,13 +1172,11 @@ impl FileStorageService for DatabaseFileStorageService {
                 "file upload session kind is invalid".to_string(),
             ));
         }
-        if let Some(existing) = self
+        let parts = self
             .repository
             .list_upload_session_parts(&self.storage_backend, &upload_session_key)
-            .await?
-            .into_iter()
-            .find(|part| part.part_index == part_index)
-        {
+            .await?;
+        if let Some(existing) = parts.iter().find(|part| part.part_index == part_index) {
             if existing.offset_bytes != range.start
                 || existing.size_bytes != part_size
                 || existing.checksum_sha256.as_deref() != Some(actual_part_checksum.as_str())
@@ -1187,10 +1185,6 @@ impl FileStorageService for DatabaseFileStorageService {
                     "file upload part conflicts with an existing part".to_string(),
                 ));
             }
-            let parts = self
-                .repository
-                .list_upload_session_parts(&self.storage_backend, &upload_session_key)
-                .await?;
             let (uploaded_size_bytes, uploaded_parts) = upload_session_parts_progress(&parts)?;
             return Ok(StoreFileUploadResult::PartAccepted {
                 uploaded_size_bytes,
@@ -1207,7 +1201,7 @@ impl FileStorageService for DatabaseFileStorageService {
                 size_bytes: part_size,
                 checksum_sha256: &actual_part_checksum,
                 compression,
-                data: stored_data,
+                data: &stored_data,
             })
             .await?;
         self.repository
@@ -1370,7 +1364,7 @@ impl FileStorageService for DatabaseFileStorageService {
                         ranges,
                         &content_manifest_sha256,
                         size_bytes,
-                        chunks.iter().map(Vec::as_slice),
+                        chunks.iter().map(bytes::Bytes::as_ref),
                     );
                     if !constant_time_eq(proof.as_bytes(), expected.as_bytes()) {
                         return Err(Error::InvalidInput(
@@ -1397,7 +1391,7 @@ impl FileStorageService for DatabaseFileStorageService {
                             content_manifest_sha256,
                             compression: FileBlobCompression::None,
                             range: None,
-                            data: Vec::new(),
+                            data: bytes::Bytes::new(),
                             metadata: Default::default(),
                             created_at: crate::SystemClock.now(),
                         }),
@@ -1416,7 +1410,7 @@ impl FileStorageService for DatabaseFileStorageService {
             return Ok(CompleteFileUploadSessionResult {
                 object: Some(super::session_record_blob(
                     &session,
-                    Vec::new(),
+                    bytes::Bytes::new(),
                     upload_session_object_metadata(&session.metadata),
                 )),
                 uploaded_size_bytes: session.size_bytes,
@@ -1589,7 +1583,7 @@ impl FileStorageService for DatabaseFileStorageService {
                 size_bytes,
                 checksum_sha256: &checksum,
                 compression: FileBlobCompression::None,
-                data: data.clone(),
+                data: &data,
             })
             .await?;
         Ok(FileBlob {
@@ -1601,7 +1595,7 @@ impl FileStorageService for DatabaseFileStorageService {
             content_manifest_sha256: checksum,
             compression: FileBlobCompression::None,
             range: None,
-            data,
+            data: data.into(),
             metadata,
             created_at: crate::SystemClock.now(),
         })

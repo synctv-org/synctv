@@ -1193,7 +1193,7 @@ async fn assert_register_validation_errors_trigger_brute_force_lockout(service: 
             .start_opaque_registration_with_control(
                 "ab".to_string(),
                 Some("test@example.com".to_string()),
-                vec![1, 2, 3],
+                vec![1, 2, 3].into(),
                 Some(client_ip),
                 None,
             )

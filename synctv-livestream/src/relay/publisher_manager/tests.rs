@@ -501,7 +501,7 @@ async fn test_reregister_refreshes_local_epoch_after_registry_recreate() -> Test
         Arc::new(PublisherEntry::with_registration("user1".to_string(), 1)),
     );
 
-    manager.reregister_all_publishers().await;
+    manager.reregister_all_publishers_once().await;
 
     let active_entry = manager
         .active_publishers
@@ -546,7 +546,7 @@ async fn test_reregister_refreshes_local_epoch_after_ttl_only_recovery() -> Test
         Arc::new(PublisherEntry::with_registration("user1".to_string(), 1)),
     );
 
-    manager.reregister_all_publishers().await;
+    manager.reregister_all_publishers_once().await;
 
     let active_entry = manager
         .active_publishers
@@ -593,7 +593,7 @@ async fn test_reregister_recreates_entry_when_ttl_refresh_reports_missing() -> T
         Arc::new(PublisherEntry::with_registration("user1".to_string(), 1)),
     );
 
-    manager.reregister_all_publishers().await;
+    manager.reregister_all_publishers_once().await;
 
     let recreated = require_publisher(
         registry
@@ -950,6 +950,120 @@ async fn test_persistent_registry_failures_trigger_cleanup() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_heartbeat_refreshes_publishers_in_bounded_batches() {
+    let registry = Arc::new(TestStreamRegistry::new());
+    let (manager, _rx) = test_manager(registry.clone(), "test-node");
+    let publisher_count = PUBLISHER_REFRESH_BATCH_SIZE + 1;
+
+    for index in 0..publisher_count {
+        insert_entry(&manager, &format!("room{index}:media{index}"));
+    }
+
+    manager.run_heartbeat_cycle().await;
+
+    assert_eq!(
+        registry.refresh_batch_sizes(),
+        vec![PUBLISHER_REFRESH_BATCH_SIZE, 1]
+    );
+    assert_eq!(registry.refresh_call_count(), publisher_count);
+    assert_eq!(manager.active_publishers.len(), publisher_count);
+}
+
+#[tokio::test]
+async fn test_registry_sync_requests_are_coalesced() -> TestResult {
+    let registry = Arc::new(TestStreamRegistry::new());
+    let (manager, _rx) = test_manager(registry.clone(), "test-node");
+    for _ in 0..100 {
+        manager.schedule_registry_sync();
+    }
+
+    let (broadcast_tx, broadcast_rx) = tokio::sync::broadcast::channel(16);
+    let start_handle = tokio::spawn(Arc::clone(&manager).start(broadcast_rx));
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while registry.list_active_publishers_call_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+
+    drop(broadcast_tx);
+    tokio::time::timeout(Duration::from_secs(1), start_handle).await??;
+    assert_eq!(registry.list_active_publishers_call_count(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_broadcast_loop_remains_responsive_during_blocked_maintenance() -> TestResult {
+    let registry = Arc::new(TestStreamRegistry::new());
+    registry.set_block_batch_refresh(true);
+    let (manager, _rx) = test_manager(registry.clone(), "test-node");
+    insert_entry(&manager, "heartbeat-room:heartbeat-media");
+
+    let (broadcast_tx, broadcast_rx) = tokio::sync::broadcast::channel(16);
+    let start_handle = tokio::spawn(Arc::clone(&manager).start(broadcast_rx));
+    tokio::time::timeout(Duration::from_secs(1), registry.wait_for_batch_refresh()).await?;
+
+    registry
+        .try_register_publisher(
+            "event-room",
+            "event-media",
+            "test-node",
+            "event-user",
+            "localhost:50051",
+        )
+        .await?;
+    broadcast_tx.send(synctv_xiu::streamhub::define::BroadcastEvent::Publish {
+        identifier: StreamIdentifier::Rtmp {
+            app_name: "event-room".to_string(),
+            stream_name: "event-media".to_string(),
+        },
+        pub_type: synctv_xiu::streamhub::define::PublishType::RtmpPush,
+    })?;
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !manager
+            .active_publishers
+            .contains_key("event-room:event-media")
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+
+    drop(broadcast_tx);
+    tokio::time::timeout(Duration::from_secs(1), start_handle).await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_reregister_is_serialized_behind_heartbeat() -> TestResult {
+    let registry = Arc::new(TestStreamRegistry::new());
+    registry.set_block_batch_refresh(true);
+    let (manager, _rx) = test_manager(registry.clone(), "test-node");
+    insert_entry(&manager, "heartbeat-room:heartbeat-media");
+
+    let (broadcast_tx, broadcast_rx) = tokio::sync::broadcast::channel(16);
+    let start_handle = tokio::spawn(Arc::clone(&manager).start(broadcast_rx));
+    tokio::time::timeout(Duration::from_secs(1), registry.wait_for_batch_refresh()).await?;
+
+    let reregister_handle = tokio::spawn({
+        let manager = Arc::clone(&manager);
+        async move { manager.reregister_all_publishers().await }
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        !reregister_handle.is_finished(),
+        "re-registration should wait for the in-flight heartbeat"
+    );
+
+    registry.release_batch_refresh();
+    tokio::time::timeout(Duration::from_secs(1), reregister_handle).await??;
+    drop(broadcast_tx);
+    tokio::time::timeout(Duration::from_secs(1), start_handle).await??;
+    Ok(())
+}
+
 #[tokio::test(start_paused = true)]
 async fn test_start_stops_heartbeat_and_sync_when_broadcast_channel_closes() -> TestResult {
     let registry = Arc::new(TestStreamRegistry::with_publishers(
@@ -1030,7 +1144,7 @@ async fn test_reregister_removes_stale_entry_when_registry_entry_gone() -> TestR
 
     registry.unregister_publisher("room1", "media1").await?;
 
-    manager.reregister_all_publishers().await;
+    manager.reregister_all_publishers_once().await;
 
     assert!(
         manager.active_publishers.is_empty(),
@@ -1057,7 +1171,7 @@ async fn test_reregister_removes_entry_taken_over_by_other_node() -> TestResult 
         .try_register_publisher("room1", "media1", "other-node", "user1", "other:50051")
         .await?;
 
-    manager.reregister_all_publishers().await;
+    manager.reregister_all_publishers_once().await;
 
     assert!(
         manager.active_publishers.is_empty(),
@@ -1079,7 +1193,7 @@ async fn test_reregister_keeps_entries_owned_by_this_node() -> TestResult {
 
     assert_eq!(manager.active_publishers.len(), 1);
 
-    manager.reregister_all_publishers().await;
+    manager.reregister_all_publishers_once().await;
 
     assert_eq!(
         manager.active_publishers.len(),
@@ -1117,7 +1231,7 @@ async fn test_reregister_partial_cleanup() -> TestResult {
         .try_register_publisher("room3", "media3", "other-node", "user1", "other:50051")
         .await?;
 
-    manager.reregister_all_publishers().await;
+    manager.reregister_all_publishers_once().await;
 
     assert_eq!(
         manager.active_publishers.len(),
@@ -1153,7 +1267,7 @@ async fn test_memory_leak_regression_zombie_cleanup() -> TestResult {
         registry.unregister_publisher(&room, &media).await?;
     }
 
-    manager.reregister_all_publishers().await;
+    manager.reregister_all_publishers_once().await;
 
     assert!(
         manager.active_publishers.is_empty(),

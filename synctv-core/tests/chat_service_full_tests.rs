@@ -255,7 +255,7 @@ async fn upload_chat_attachment_file(
             upload_token,
             Some(content_type),
             None,
-            payload,
+            payload.into(),
         )
         .await
         .checked("database attachment object should store");

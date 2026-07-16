@@ -153,6 +153,7 @@ async fn load_cache_file(
                         inserted_at_millis: header.inserted_at_millis,
                         ttl_secs: header.ttl_secs,
                         last_accessed: AtomicU64::new(header.last_accessed_millis),
+                        persisted_last_accessed: AtomicU64::new(header.last_accessed_millis),
                     },
                 );
                 result.loaded += 1;

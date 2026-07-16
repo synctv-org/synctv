@@ -499,13 +499,17 @@ impl ChunkUnpacketizer {
 
         if self.current_chunk_info.payload.len() == whole_msg_length {
             self.chunk_read_state = ChunkReadState::Finish;
-            let chunk_info = self.current_chunk_info.clone();
-            self.current_chunk_info.payload.clear();
-
             let csid = self.current_chunk_info.basic_header.chunk_stream_id;
+            let basic_header = self.current_chunk_info.basic_header.clone();
+            let message_header = self.current_chunk_info.message_header.clone();
 
-            self.chunk_message_headers
-                .put(csid, self.current_chunk_info.message_header.clone());
+            self.chunk_message_headers.put(csid, message_header.clone());
+
+            let chunk_info = ChunkInfo {
+                basic_header,
+                message_header,
+                payload: std::mem::take(&mut self.current_chunk_info.payload),
+            };
 
             return Ok(UnpackResult::ChunkInfo(chunk_info));
         }
@@ -544,6 +548,11 @@ mod tests {
 
         let expected = ChunkInfo::new(2, 0, 0, 4, 1, 0, body);
 
+        assert_eq!(
+            unpacker.current_chunk_info.payload.capacity(),
+            0,
+            "completed payload allocation should move into the returned chunk"
+        );
         assert_eq!(
             rv.unwrap(),
             UnpackResult::ChunkInfo(expected),

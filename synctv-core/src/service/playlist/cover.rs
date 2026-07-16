@@ -96,7 +96,7 @@ impl PlaylistService {
         upload_token: &str,
         content_type: Option<&str>,
         range: Option<crate::models::FileUploadRange>,
-        data: Vec<u8>,
+        data: bytes::Bytes,
     ) -> Result<crate::models::StoreFileUploadResult> {
         self.file_storage_service
             .as_ref()

@@ -7,7 +7,10 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tracing::{debug, info};
 
-use super::registry_trait::{ActivePublisherEntry, PublisherRefreshOutcome};
+use super::registry_trait::{
+    ActivePublisherEntry, PublisherRefreshOutcome, PublisherRefreshRequest,
+    PUBLISHER_REFRESH_BATCH_SIZE,
+};
 use crate::util::{
     validate_publisher_api_address, validate_stream_id_component, validate_stream_ids,
 };
@@ -684,6 +687,85 @@ impl StreamRegistry {
         .await
     }
 
+    /// Refresh a bounded batch of publisher leases in one Redis round trip.
+    pub async fn refresh_publishers_ttl(
+        &self,
+        node_id: &str,
+        requests: &[PublisherRefreshRequest],
+    ) -> Result<Vec<PublisherRefreshOutcome>> {
+        anyhow::ensure!(
+            requests.len() <= PUBLISHER_REFRESH_BATCH_SIZE,
+            "publisher refresh batch contains {} entries; maximum is {}",
+            requests.len(),
+            PUBLISHER_REFRESH_BATCH_SIZE
+        );
+        if requests.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        for request in requests {
+            validate_stream_ids(&request.room_id, &request.media_id)?;
+        }
+
+        with_redis_timeout(|| async {
+            let mut conn = self.conn().await?;
+            let mut pipeline = redis::pipe();
+            pipeline.load_script(&REFRESH_PUBLISHER_TTL_SCRIPT).ignore();
+            let node_key = if node_id.is_empty() {
+                String::new()
+            } else {
+                self.node_publishers_key(node_id)
+            };
+            let active_key = self.active_publishers_key();
+
+            for request in requests {
+                let key = self.publisher_key(&request.room_id, &request.media_id);
+                let user_key = if request.user_id.is_empty() {
+                    String::new()
+                } else {
+                    self.user_publishers_key(&request.user_id)
+                };
+                let room_key = self.room_publishers_key(&request.room_id);
+                let member = Self::publisher_member(&request.room_id, &request.media_id);
+                let epoch_arg = i64::try_from(request.expected_epoch).unwrap_or(i64::MAX);
+                let mut invocation = REFRESH_PUBLISHER_TTL_SCRIPT.prepare_invoke();
+                invocation
+                    .key(key)
+                    .key(user_key)
+                    .key(&node_key)
+                    .key(room_key)
+                    .key(&active_key)
+                    .arg(PUBLISHER_TTL_SECS)
+                    .arg(&request.user_id)
+                    .arg(node_id)
+                    .arg(epoch_arg)
+                    .arg(member);
+                pipeline.invoke_script(&invocation);
+            }
+
+            let statuses: Vec<i64> = pipeline
+                .query_async(&mut conn)
+                .await
+                .map_err(anyhow::Error::from)?;
+            anyhow::ensure!(
+                statuses.len() == requests.len(),
+                "publisher refresh pipeline returned {} statuses for {} requests",
+                statuses.len(),
+                requests.len()
+            );
+
+            Ok(statuses
+                .into_iter()
+                .map(|status| match status {
+                    1 => PublisherRefreshOutcome::Refreshed,
+                    -1 => PublisherRefreshOutcome::OwnershipChanged,
+                    _ => PublisherRefreshOutcome::Missing,
+                })
+                .collect())
+        })
+        .await
+    }
+
     /// Unregister a publisher.
     pub async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {
         self.unregister_publisher_with_epoch(room_id, media_id, None)
@@ -1280,6 +1362,65 @@ mod tests {
         assert!(
             active_indexed,
             "refresh must restore missing global active index"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_batch_refresh_preserves_outcome_order() -> TestResult {
+        let (_container, _client, redis, prefix) = setup_redis().await;
+        let registry = test_registry(redis, prefix);
+
+        registry
+            .try_register_publisher_with_user(
+                "room1",
+                "media1",
+                "node1",
+                "user1",
+                "localhost:50051",
+            )
+            .await?;
+        registry
+            .try_register_publisher_with_user(
+                "room2",
+                "media2",
+                "node1",
+                "user2",
+                "localhost:50051",
+            )
+            .await?;
+
+        let first = require_publisher(registry.get_publisher("room1", "media1").await?)?;
+        let second = require_publisher(registry.get_publisher("room2", "media2").await?)?;
+        let requests = vec![
+            PublisherRefreshRequest {
+                room_id: "room1".to_string(),
+                media_id: "media1".to_string(),
+                user_id: "user1".to_string(),
+                expected_epoch: first.epoch,
+            },
+            PublisherRefreshRequest {
+                room_id: "room2".to_string(),
+                media_id: "media2".to_string(),
+                user_id: "user2".to_string(),
+                expected_epoch: second.epoch.saturating_add(1),
+            },
+            PublisherRefreshRequest {
+                room_id: "room3".to_string(),
+                media_id: "media3".to_string(),
+                user_id: "user3".to_string(),
+                expected_epoch: 1,
+            },
+        ];
+
+        assert_eq!(
+            registry.refresh_publishers_ttl("node1", &requests).await?,
+            vec![
+                PublisherRefreshOutcome::Refreshed,
+                PublisherRefreshOutcome::OwnershipChanged,
+                PublisherRefreshOutcome::Missing,
+            ]
         );
         Ok(())
     }

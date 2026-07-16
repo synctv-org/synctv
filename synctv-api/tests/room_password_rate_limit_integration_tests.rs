@@ -86,7 +86,7 @@ async fn opaque_room_login(
             user_id,
             synctv_proto::client::StartRoomPasswordLoginRequest {
                 room_id: room_id.to_string(),
-                credential_request: client_start.message.serialize().to_vec(),
+                credential_request: client_start.message.serialize().to_vec().into(),
             },
             Some(client_ip),
             None,
@@ -110,7 +110,7 @@ async fn opaque_room_login(
         None,
         synctv_proto::client::FinishRoomPasswordLoginRequest {
             session_id: challenge.session_id,
-            credential_finalization: client_finish.message.serialize().to_vec(),
+            credential_finalization: client_finish.message.serialize().to_vec().into(),
         },
         Some(client_ip),
     ))
@@ -132,7 +132,7 @@ async fn start_opaque_room_login(
             user_id,
             synctv_proto::client::StartRoomPasswordLoginRequest {
                 room_id: room_id.to_string(),
-                credential_request: client_start.message.serialize().to_vec(),
+                credential_request: client_start.message.serialize().to_vec().into(),
             },
             Some(client_ip),
             None,
@@ -185,7 +185,7 @@ async fn finish_opaque_room_login(
         None,
         synctv_proto::client::FinishRoomPasswordLoginRequest {
             session_id: login.session_id,
-            credential_finalization: login.credential_finalization,
+            credential_finalization: login.credential_finalization.into(),
         },
         Some(client_ip),
     ))
@@ -239,7 +239,7 @@ async fn opaque_room_password_registration_upload(
             user_id,
             room_id,
             synctv_proto::client::StartRoomPasswordRegistrationRequest {
-                registration_request: client_start.message.serialize().to_vec(),
+                registration_request: client_start.message.serialize().to_vec().into(),
             },
         )
         .await
@@ -262,7 +262,7 @@ async fn opaque_room_password_registration_upload(
         challenge.session_id.clone(),
         synctv_proto::client::FinishRoomPasswordRegistrationRequest {
             session_id: challenge.session_id,
-            registration_upload: client_finish.message.serialize().to_vec(),
+            registration_upload: client_finish.message.serialize().to_vec().into(),
         },
     )
 }
@@ -394,7 +394,7 @@ async fn test_finish_room_password_login_rejects_session_for_different_room_befo
             &joining_user.id,
             synctv_proto::client::StartRoomPasswordLoginRequest {
                 room_id: room_a_public_id,
-                credential_request: client_start.message.serialize().to_vec(),
+                credential_request: client_start.message.serialize().to_vec().into(),
             },
             Some("192.168.1.101"),
             None,
@@ -419,7 +419,7 @@ async fn test_finish_room_password_login_rejects_session_for_different_room_befo
         Some(&room_b_public_id),
         synctv_proto::client::FinishRoomPasswordLoginRequest {
             session_id: challenge.session_id,
-            credential_finalization: client_finish.message.serialize().to_vec(),
+            credential_finalization: client_finish.message.serialize().to_vec().into(),
         },
         Some("192.168.1.101"),
     ))

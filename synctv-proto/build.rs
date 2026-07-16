@@ -202,6 +202,73 @@ fn proto_field_name(line: &str) -> Option<&str> {
     .then_some(name)
 }
 
+fn proto_bytes_field_name(line: &str) -> Option<&str> {
+    let declaration = line.split_once('=')?.0.trim();
+    let mut parts = declaration.split_whitespace();
+    let first = parts.next()?;
+    let field_type = match first {
+        "optional" | "repeated" => parts.next()?,
+        field_type => field_type,
+    };
+    (field_type == "bytes").then(|| parts.next()).flatten()
+}
+
+fn collect_proto_bytes_fields(
+    proto_file: impl AsRef<Path>,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let proto_file = proto_file.as_ref();
+    let source = fs::read_to_string(proto_file)?;
+    let package = source
+        .lines()
+        .map(str::trim)
+        .find_map(|line| {
+            line.strip_prefix("package ")
+                .and_then(|rest| rest.strip_suffix(';'))
+        })
+        .ok_or_else(|| format!("missing package declaration in {}", proto_file.display()))?;
+    let mut depth = 0_i32;
+    let mut messages = Vec::<(String, i32)>::new();
+    let mut fields = Vec::new();
+
+    for raw_line in source.lines() {
+        let line = raw_line.trim();
+        if let Some(message_name) = proto_named_block(line, "message ") {
+            messages.push((message_name, depth));
+        } else if let Some(field_name) = proto_bytes_field_name(line) {
+            if !messages.is_empty() {
+                let message_path = messages
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                fields.push(format!(".{package}.{message_path}.{field_name}"));
+            }
+        }
+
+        depth += match_count_as_i32(raw_line, '{')?;
+        depth -= match_count_as_i32(raw_line, '}')?;
+        while messages
+            .last()
+            .is_some_and(|(_, parent_depth)| depth <= *parent_depth)
+        {
+            messages.pop();
+        }
+    }
+
+    Ok(fields)
+}
+
+fn collect_proto_bytes_fields_for(
+    proto_files: &[&str],
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    proto_files
+        .iter()
+        .copied()
+        .map(collect_proto_bytes_fields)
+        .collect::<Result<Vec<_>, _>>()
+        .map(|fields| fields.into_iter().flatten().collect())
+}
+
 #[derive(Default)]
 struct OpenApiOneofAttributes {
     fields: Vec<String>,
@@ -503,6 +570,19 @@ fn add_field_attrs(
     builder
 }
 
+fn add_bytes_openapi_attrs(
+    mut builder: tonic_prost_build::Builder,
+    fields: &[String],
+) -> tonic_prost_build::Builder {
+    for field in fields {
+        builder = builder.field_attribute(
+            field,
+            "#[cfg_attr(feature = \"openapi\", schema(value_type = Vec<u8>))]",
+        );
+    }
+    builder
+}
+
 fn count_char(line: &str, needle: char) -> i32 {
     i32::try_from(line.matches(needle).count()).unwrap_or(i32::MAX)
 }
@@ -762,6 +842,7 @@ fn build_pbjson(
 }
 
 fn configure_well_known_types(config: &mut tonic_prost_build::Config) {
+    config.bytes([".synctv"]);
     config.compile_well_known_types();
     config.extern_path(".google.protobuf", "::pbjson_types");
     config.extern_path(".google.protobuf.FieldMask", "crate::FieldMask");
@@ -771,14 +852,6 @@ fn build_main_protos(protoc: PathBuf, out_dir: &Path) -> Result<(), Box<dyn std:
     let mut prost_config = tonic_prost_build::Config::new();
     prost_config.protoc_executable(protoc);
     configure_well_known_types(&mut prost_config);
-    prost_config.bytes([
-        ".synctv.client.ChatAttachmentObjectResponse.data",
-        ".synctv.client.UserAvatarObjectResponse.data",
-        ".synctv.client.MediaCoverObjectResponse.data",
-        ".synctv.client.MediaThumbnailObjectResponse.data",
-        ".synctv.client.RoomCoverObjectResponse.data",
-        ".synctv.client.PlaylistCoverObjectResponse.data",
-    ]);
     prost_reflect_build::Builder::new()
         .descriptor_pool("crate::DESCRIPTOR_POOL")
         .file_descriptor_set_path(out_dir.join("descriptor.bin"))
@@ -848,18 +921,8 @@ fn build_main_protos(protoc: PathBuf, out_dir: &Path) -> Result<(), Box<dyn std:
         &[".synctv.admin.UpdateSettingsRequest.update_mask"],
         "#[cfg_attr(feature = \"openapi\", schema(value_type = String))]",
     );
-    builder = add_field_attrs(
-        builder,
-        &[
-            ".synctv.client.ChatAttachmentObjectResponse.data",
-            ".synctv.client.UserAvatarObjectResponse.data",
-            ".synctv.client.MediaCoverObjectResponse.data",
-            ".synctv.client.MediaThumbnailObjectResponse.data",
-            ".synctv.client.RoomCoverObjectResponse.data",
-            ".synctv.client.PlaylistCoverObjectResponse.data",
-        ],
-        "#[cfg_attr(feature = \"openapi\", schema(value_type = Vec<u8>))]",
-    );
+    let bytes_fields = collect_proto_bytes_fields_for(&MAIN_PROTO_FILES)?;
+    builder = add_bytes_openapi_attrs(builder, &bytes_fields);
     builder.out_dir(out_dir).compile_with_config(
         prost_config,
         &MAIN_PROTO_FILES,
@@ -925,6 +988,8 @@ fn build_provider_protos(
     );
     let oneof_fields = collect_openapi_oneof_fields_for(&PROVIDER_PROTO_FILES)?;
     builder = add_openapi_oneof_attrs(builder, &oneof_fields);
+    let bytes_fields = collect_proto_bytes_fields_for(&PROVIDER_PROTO_FILES)?;
+    builder = add_bytes_openapi_attrs(builder, &bytes_fields);
     builder = add_query_params_attrs(builder, &[".synctv.provider.common.ProviderInstanceQuery"]);
     builder.out_dir(out_dir).compile_with_config(
         prost_config,
@@ -947,7 +1012,6 @@ fn build_playback_provider_protos(
     let mut prost_config = tonic_prost_build::Config::new();
     prost_config.protoc_executable(protoc);
     configure_well_known_types(&mut prost_config);
-    prost_config.bytes([".synctv.playback_provider.common.StreamChunk.data"]);
     prost_reflect_build::Builder::new()
         .descriptor_pool("crate::PLAYBACK_PROVIDER_DESCRIPTOR_POOL")
         .file_descriptor_set_path(out_dir.join("descriptor.bin"))
@@ -965,11 +1029,8 @@ fn build_playback_provider_protos(
     builder = add_openapi_attrs(builder, &aliases, &[".synctv.playback_provider"]);
     let oneof_fields = collect_openapi_oneof_fields_for(&PLAYBACK_PROVIDER_PROTO_FILES)?;
     builder = add_openapi_oneof_attrs(builder, &oneof_fields);
-    builder = add_field_attrs(
-        builder,
-        &[".synctv.playback_provider.common.StreamChunk.data"],
-        "#[cfg_attr(feature = \"openapi\", schema(value_type = Vec<u8>))]",
-    );
+    let bytes_fields = collect_proto_bytes_fields_for(&PLAYBACK_PROVIDER_PROTO_FILES)?;
+    builder = add_bytes_openapi_attrs(builder, &bytes_fields);
     builder.out_dir(out_dir).compile_with_config(
         prost_config,
         &PLAYBACK_PROVIDER_PROTO_FILES,

@@ -206,10 +206,7 @@ impl GrpcStreamPuller {
             .connection_pool
             .get_channel(&self.publisher_node_addr)
             .await
-            .map_err(|e| {
-                self.connection_pool.invalidate(&self.publisher_node_addr);
-                anyhow::anyhow!("Failed to connect to publisher: {e}")
-            })?;
+            .map_err(|e| anyhow::anyhow!("Failed to connect to publisher: {e}"))?;
 
         let client = StreamRelayServiceClient::new(channel)
             .max_decoding_message_size(self.grpc_max_message_size_bytes)
@@ -237,7 +234,9 @@ impl GrpcStreamPuller {
         let mut stream = match stream_result {
             Ok(response) => response.into_inner(),
             Err(e) => {
-                self.connection_pool.invalidate(&self.publisher_node_addr);
+                self.connection_pool
+                    .invalidate(&self.publisher_node_addr)
+                    .await;
                 return Err(anyhow::anyhow!("Failed to pull stream: {e}"));
             }
         };
@@ -283,7 +282,9 @@ impl GrpcStreamPuller {
                 }
                 Ok(None) => break, // Stream ended normally
                 Err(e) => {
-                    self.connection_pool.invalidate(&self.publisher_node_addr);
+                    self.connection_pool
+                        .invalidate(&self.publisher_node_addr)
+                        .await;
                     if dropped_frames >= drop_log_interval {
                         warn!(
                             room_id = %self.room_id,

@@ -69,7 +69,7 @@ impl S3CompatibleFileStorageService {
             content_manifest_sha256: content_manifest_sha256.clone(),
             compression: FileBlobCompression::None,
             range: None,
-            data: Vec::new(),
+            data: bytes::Bytes::new(),
             metadata,
             created_at: crate::SystemClock.now(),
         };
@@ -112,7 +112,8 @@ impl S3CompatibleFileStorageService {
         let repository = self.repository()?;
         let upload_policy = upload_session_policy(&session.metadata);
         let metadata = upload_session_object_metadata(&session.metadata);
-        let mut blob = super::super::session_record_blob(session, Vec::new(), metadata.clone());
+        let mut blob =
+            super::super::session_record_blob(session, bytes::Bytes::new(), metadata.clone());
         if let Err(error) =
             super::super::complete_uploaded_file_object(self, repository, &mut blob, &upload_policy)
                 .await

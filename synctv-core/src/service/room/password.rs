@@ -51,7 +51,7 @@ impl RoomService {
         &self,
         room_id: &RoomId,
         user_id: &UserId,
-        credential_request: Vec<u8>,
+        credential_request: bytes::Bytes,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<RoomOpaqueLoginStartChallenge> {
@@ -111,7 +111,7 @@ impl RoomService {
         expected_room_id: Option<&RoomId>,
         session_id: &str,
         user_id: &UserId,
-        credential_finalization: Vec<u8>,
+        credential_finalization: bytes::Bytes,
         client_ip: Option<IpAddr>,
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
     ) -> Result<(Room, RoomMember, Vec<crate::models::RoomMemberWithUser>)> {
@@ -194,7 +194,7 @@ impl RoomService {
         &self,
         room_id: &RoomId,
         user_id: &UserId,
-        registration_request: Vec<u8>,
+        registration_request: bytes::Bytes,
     ) -> Result<RoomOpaqueRegistrationStartChallenge> {
         self.permission_service
             .check_permission_no_cache(
@@ -230,7 +230,7 @@ impl RoomService {
         room_id: &RoomId,
         session_id: &str,
         user_id: &UserId,
-        registration_upload: Vec<u8>,
+        registration_upload: bytes::Bytes,
     ) -> Result<RoomPasswordCredentialState> {
         let Some(session) = self
             .opaque_password_registration_session_store

@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{OnceCell, RwLock};
+use tokio::sync::{Mutex, OnceCell, RwLock};
 
 type OidcTokenResponse = StandardTokenResponse<OidcTokenExtraFields, BasicTokenType>;
 type OidcClientBuilder = Client<
@@ -48,6 +48,7 @@ type OidcClient = Client<
 >;
 
 const OIDC_JWKS_CACHE_TTL: Duration = Duration::from_mins(10);
+const OIDC_JWKS_REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
 
 /// OIDC provider configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +103,7 @@ struct ResolvedOidc {
 pub struct OidcProvider {
     resolved: OnceCell<ResolvedOidc>,
     jwks_cache: RwLock<Option<CachedJwks>>,
+    jwks_refresh_state: Mutex<JwksRefreshState>,
     /// Stored config for lazy initialization (only used in issuer-only mode)
     init_config: OidcInitConfig,
     oauth2_http_client: Arc<super::OAuth2HttpClient>,
@@ -128,8 +130,28 @@ struct StaticEndpoints {
 
 struct CachedJwks {
     jwks_uri: String,
-    jwks: JwkSet,
+    jwks: Arc<JwkSet>,
     fetched_at: Instant,
+    generation: u64,
+}
+
+struct JwksSnapshot {
+    jwks: Arc<JwkSet>,
+    generation: u64,
+    may_refresh: bool,
+}
+
+#[derive(Default)]
+struct JwksRefreshState {
+    generation: u64,
+    last_failure: Option<JwksRefreshFailure>,
+}
+
+struct JwksRefreshFailure {
+    jwks_uri: String,
+    generation: u64,
+    failed_at: Instant,
+    message: Arc<str>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -230,6 +252,7 @@ impl OidcProvider {
         Ok(Self {
             resolved: OnceCell::new(),
             jwks_cache: RwLock::new(None),
+            jwks_refresh_state: Mutex::new(JwksRefreshState::default()),
             init_config: OidcInitConfig {
                 client_id,
                 client_secret,
@@ -304,6 +327,7 @@ impl OidcProvider {
         Ok(Self {
             resolved: OnceCell::new(),
             jwks_cache: RwLock::new(None),
+            jwks_refresh_state: Mutex::new(JwksRefreshState::default()),
             init_config: OidcInitConfig {
                 client_id,
                 client_secret,
@@ -452,33 +476,116 @@ impl OidcProvider {
             .internal_with_err("Failed to parse OIDC JWKS")
     }
 
-    async fn fetch_and_store_jwks(&self, jwks_uri: &str) -> Result<JwkSet, Error> {
-        let jwks = self.fetch_jwks(jwks_uri).await?;
+    async fn fetch_and_store_jwks(
+        &self,
+        jwks_uri: &str,
+        refresh_state: &mut JwksRefreshState,
+    ) -> Result<JwksSnapshot, Error> {
+        let jwks = match self.fetch_jwks(jwks_uri).await {
+            Ok(jwks) => Arc::new(jwks),
+            Err(err) => {
+                refresh_state.last_failure = Some(JwksRefreshFailure {
+                    jwks_uri: jwks_uri.to_string(),
+                    generation: refresh_state.generation,
+                    failed_at: Instant::now(),
+                    message: err.to_string().into(),
+                });
+                return Err(err);
+            }
+        };
+        let fetched_at = Instant::now();
+        refresh_state.generation += 1;
+        refresh_state.last_failure = None;
+        let generation = refresh_state.generation;
         let mut cache = self.jwks_cache.write().await;
         *cache = Some(CachedJwks {
             jwks_uri: jwks_uri.to_string(),
             jwks: jwks.clone(),
-            fetched_at: Instant::now(),
+            fetched_at,
+            generation,
         });
-        Ok(jwks)
+        Ok(JwksSnapshot {
+            jwks,
+            generation,
+            may_refresh: false,
+        })
     }
 
-    async fn cached_jwks(&self, jwks_uri: &str) -> Result<JwkSet, Error> {
+    fn recent_jwks_failure(
+        refresh_state: &JwksRefreshState,
+        jwks_uri: &str,
+        now: Instant,
+    ) -> Option<Error> {
+        let failure = refresh_state.last_failure.as_ref()?;
+        (failure.jwks_uri == jwks_uri
+            && failure.generation == refresh_state.generation
+            && now.saturating_duration_since(failure.failed_at) < OIDC_JWKS_REFRESH_COOLDOWN)
+            .then(|| Error::ServiceUnavailable(failure.message.to_string()))
+    }
+
+    fn jwks_snapshot(cached: &CachedJwks, may_refresh: bool) -> JwksSnapshot {
+        JwksSnapshot {
+            jwks: Arc::clone(&cached.jwks),
+            generation: cached.generation,
+            may_refresh,
+        }
+    }
+
+    async fn cached_jwks(&self, jwks_uri: &str) -> Result<JwksSnapshot, Error> {
         let now = Instant::now();
         {
             let cache = self.jwks_cache.read().await;
             if let Some(cached) = cache.as_ref() {
                 if cached_jwks_is_fresh(cached, jwks_uri, now) {
-                    return Ok(cached.jwks.clone());
+                    return Ok(Self::jwks_snapshot(cached, true));
                 }
             }
         }
 
-        self.fetch_and_store_jwks(jwks_uri).await
+        let mut refresh_state = self.jwks_refresh_state.lock().await;
+        let now = Instant::now();
+        let cache = self.jwks_cache.read().await;
+        if let Some(cached) = cache.as_ref() {
+            if cached_jwks_is_fresh(cached, jwks_uri, now) {
+                return Ok(Self::jwks_snapshot(cached, false));
+            }
+        }
+        drop(cache);
+        if let Some(err) = Self::recent_jwks_failure(&refresh_state, jwks_uri, now) {
+            return Err(err);
+        }
+        self.fetch_and_store_jwks(jwks_uri, &mut refresh_state)
+            .await
     }
 
-    async fn refresh_cached_jwks(&self, jwks_uri: &str) -> Result<JwkSet, Error> {
-        self.fetch_and_store_jwks(jwks_uri).await
+    async fn refresh_cached_jwks(
+        &self,
+        jwks_uri: &str,
+        observed: JwksSnapshot,
+    ) -> Result<JwksSnapshot, Error> {
+        if !observed.may_refresh {
+            return Ok(observed);
+        }
+
+        let mut refresh_state = self.jwks_refresh_state.lock().await;
+        let now = Instant::now();
+        let cache = self.jwks_cache.read().await;
+        if let Some(cached) = cache.as_ref() {
+            if cached.jwks_uri == jwks_uri && cached.generation != observed.generation {
+                return Ok(Self::jwks_snapshot(cached, false));
+            }
+            if cached.jwks_uri == jwks_uri
+                && now.saturating_duration_since(cached.fetched_at) < OIDC_JWKS_REFRESH_COOLDOWN
+            {
+                return Ok(Self::jwks_snapshot(cached, false));
+            }
+        }
+        drop(cache);
+        if let Some(err) = Self::recent_jwks_failure(&refresh_state, jwks_uri, now) {
+            return Err(err);
+        }
+        self.fetch_and_store_jwks(jwks_uri, &mut refresh_state)
+            .await
     }
 
     async fn validate_id_token(
@@ -567,12 +674,12 @@ impl OidcProvider {
         alg: Algorithm,
     ) -> Result<OidcIdTokenClaims, Error> {
         let jwks = self.cached_jwks(jwks_uri).await?;
-        if let Ok(claims) = self.try_decode_id_token_with_jwks(&jwks, id_token, alg) {
+        if let Ok(claims) = self.try_decode_id_token_with_jwks(&jwks.jwks, id_token, alg) {
             return Ok(claims);
         }
 
-        let jwks = self.refresh_cached_jwks(jwks_uri).await?;
-        self.try_decode_id_token_with_jwks(&jwks, id_token, alg)
+        let jwks = self.refresh_cached_jwks(jwks_uri, jwks).await?;
+        self.try_decode_id_token_with_jwks(&jwks.jwks, id_token, alg)
     }
 
     fn try_decode_id_token_with_jwks(
@@ -601,12 +708,12 @@ impl OidcProvider {
 
     async fn jwk_for_kid(&self, jwks_uri: &str, kid: &str) -> Result<Jwk, Error> {
         let jwks = self.cached_jwks(jwks_uri).await?;
-        if let Some(jwk) = jwks.find(kid) {
+        if let Some(jwk) = jwks.jwks.find(kid) {
             return Ok(jwk.clone());
         }
 
-        let jwks = self.refresh_cached_jwks(jwks_uri).await?;
-        jwks.find(kid).cloned().ok_or_else(|| {
+        let jwks = self.refresh_cached_jwks(jwks_uri, jwks).await?;
+        jwks.jwks.find(kid).cloned().ok_or_else(|| {
             Error::Authentication("OIDC ID Token signing key was not found in JWKS".to_string())
         })
     }
@@ -915,6 +1022,7 @@ mod tests {
         AlgorithmParameters, CommonParameters, KeyAlgorithm, RSAKeyParameters, RSAKeyType,
     };
     use jsonwebtoken::{EncodingKey, Header};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn oidc_private_config(
@@ -1051,6 +1159,54 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         });
 
         format!("http://{addr}/jwks")
+    }
+
+    async fn spawn_counting_jwks_server(
+        jwks: JwkSet,
+    ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let body = serde_json::to_string(&jwks).checked("JWKS should serialize");
+        spawn_counting_http_server("200 OK", body).await
+    }
+
+    async fn spawn_counting_http_server(
+        status: &str,
+        body: String,
+    ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .checked("counting JWKS server should bind");
+        let addr = listener
+            .local_addr()
+            .checked("counting JWKS server should expose local addr");
+        let status = status.to_string();
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let server_request_count = Arc::clone(&request_count);
+
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener
+                    .accept()
+                    .await
+                    .checked("counting JWKS server should accept connection");
+                server_request_count.fetch_add(1, Ordering::SeqCst);
+                let mut request = [0; 1024];
+                socket
+                    .read(&mut request)
+                    .await
+                    .checked("counting JWKS server should read request");
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .checked("counting JWKS server should write response");
+            }
+        });
+
+        (format!("http://{addr}/jwks"), request_count, server)
     }
 
     #[test]
@@ -1377,10 +1533,13 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let now = Instant::now();
         let cached = CachedJwks {
             jwks_uri: "https://issuer.example.com/jwks".to_string(),
-            jwks: jwk_set_with_key(jwk_with_algorithm(Some(KeyAlgorithm::RS256))),
+            jwks: Arc::new(jwk_set_with_key(jwk_with_algorithm(Some(
+                KeyAlgorithm::RS256,
+            )))),
             fetched_at: now
                 .checked_sub(Duration::from_mins(1))
                 .checked("operation should succeed"),
+            generation: 1,
         };
 
         assert!(cached_jwks_is_fresh(
@@ -1402,6 +1561,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
                 .checked("operation should succeed")
                 .checked_sub(Duration::from_secs(1))
                 .checked("operation should succeed"),
+            generation: cached.generation,
         };
         assert!(!cached_jwks_is_fresh(
             &expired,
@@ -1430,8 +1590,9 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let cached_key = jwk_with_kid_and_algorithm("cached-kid", Some(KeyAlgorithm::RS256));
         *provider.jwks_cache.write().await = Some(CachedJwks {
             jwks_uri: jwks_uri.to_string(),
-            jwks: jwk_set_with_key(cached_key.clone()),
+            jwks: Arc::new(jwk_set_with_key(cached_key.clone())),
             fetched_at: Instant::now(),
+            generation: 0,
         });
 
         let jwk = provider
@@ -1462,11 +1623,14 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         .checked("operation should succeed");
         *provider.jwks_cache.write().await = Some(CachedJwks {
             jwks_uri: jwks_uri.clone(),
-            jwks: jwk_set_with_key(jwk_with_kid_and_algorithm(
+            jwks: Arc::new(jwk_set_with_key(jwk_with_kid_and_algorithm(
                 "old-kid",
                 Some(KeyAlgorithm::RS256),
-            )),
-            fetched_at: Instant::now(),
+            ))),
+            fetched_at: Instant::now()
+                .checked_sub(OIDC_JWKS_REFRESH_COOLDOWN)
+                .checked("operation should succeed"),
+            generation: 0,
         });
 
         let jwk = provider
@@ -1478,6 +1642,139 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let cache = provider.jwks_cache.read().await;
         let cached = cache.as_ref().checked("JWKS cache should be refreshed");
         assert!(cached.jwks.find("rotated-kid").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_jwks_cache_misses_share_one_fetch() {
+        let key = jwk_with_kid_and_algorithm("cached-kid", Some(KeyAlgorithm::RS256));
+        let (jwks_uri, request_count, server) =
+            spawn_counting_jwks_server(jwk_set_with_key(key)).await;
+        let provider = OidcProvider::create_with_endpoints_and_ssrf_guard(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "http://issuer.example.com",
+            OidcEndpointOverrides {
+                auth_url: Some("http://issuer.example.com/authorize".to_string()),
+                token_url: Some("http://issuer.example.com/token".to_string()),
+                userinfo_url: None,
+                jwks_url: Some(jwks_uri.clone()),
+            },
+            &synctv_common::ssrf::SsrfGuard::disabled(),
+        )
+        .checked("operation should succeed");
+
+        let results =
+            futures::future::join_all((0..32).map(|_| provider.cached_jwks(jwks_uri.as_str())))
+                .await;
+
+        for result in results {
+            let jwks = result.checked("concurrent JWKS lookup should succeed");
+            assert!(jwks.jwks.find("cached-kid").is_some());
+        }
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_cold_cache_unknown_kid_fetches_once() {
+        let key = jwk_with_kid_and_algorithm("known-kid", Some(KeyAlgorithm::RS256));
+        let (jwks_uri, request_count, server) =
+            spawn_counting_jwks_server(jwk_set_with_key(key)).await;
+        let provider = OidcProvider::create_with_endpoints_and_ssrf_guard(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "http://issuer.example.com",
+            OidcEndpointOverrides {
+                auth_url: Some("http://issuer.example.com/authorize".to_string()),
+                token_url: Some("http://issuer.example.com/token".to_string()),
+                userinfo_url: None,
+                jwks_url: Some(jwks_uri.clone()),
+            },
+            &synctv_common::ssrf::SsrfGuard::disabled(),
+        )
+        .checked("operation should succeed");
+
+        let result = provider.jwk_for_kid(&jwks_uri, "unknown-kid").await;
+        let second_result = provider.jwk_for_kid(&jwks_uri, "another-unknown-kid").await;
+
+        assert!(matches!(result, Err(Error::Authentication(_))));
+        assert!(matches!(second_result, Err(Error::Authentication(_))));
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_jwks_failures_share_one_fetch_attempt() {
+        let (jwks_uri, request_count, server) =
+            spawn_counting_http_server("503 Service Unavailable", "unavailable".to_string()).await;
+        let provider = OidcProvider::create_with_endpoints_and_ssrf_guard(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "http://issuer.example.com",
+            OidcEndpointOverrides {
+                auth_url: Some("http://issuer.example.com/authorize".to_string()),
+                token_url: Some("http://issuer.example.com/token".to_string()),
+                userinfo_url: None,
+                jwks_url: Some(jwks_uri.clone()),
+            },
+            &synctv_common::ssrf::SsrfGuard::disabled(),
+        )
+        .checked("operation should succeed");
+
+        let results =
+            futures::future::join_all((0..32).map(|_| provider.cached_jwks(jwks_uri.as_str())))
+                .await;
+
+        assert!(results.into_iter().all(|result| result.is_err()));
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_kid_misses_share_one_refresh() {
+        let rotated_key = jwk_with_kid_and_algorithm("rotated-kid", Some(KeyAlgorithm::RS256));
+        let (jwks_uri, request_count, server) =
+            spawn_counting_jwks_server(jwk_set_with_key(rotated_key)).await;
+        let provider = OidcProvider::create_with_endpoints_and_ssrf_guard(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "http://issuer.example.com",
+            OidcEndpointOverrides {
+                auth_url: Some("http://issuer.example.com/authorize".to_string()),
+                token_url: Some("http://issuer.example.com/token".to_string()),
+                userinfo_url: None,
+                jwks_url: Some(jwks_uri.clone()),
+            },
+            &synctv_common::ssrf::SsrfGuard::disabled(),
+        )
+        .checked("operation should succeed");
+        *provider.jwks_cache.write().await = Some(CachedJwks {
+            jwks_uri: jwks_uri.clone(),
+            jwks: Arc::new(jwk_set_with_key(jwk_with_kid_and_algorithm(
+                "old-kid",
+                Some(KeyAlgorithm::RS256),
+            ))),
+            fetched_at: Instant::now()
+                .checked_sub(OIDC_JWKS_REFRESH_COOLDOWN)
+                .checked("operation should succeed"),
+            generation: 0,
+        });
+
+        let results = futures::future::join_all(
+            (0..32).map(|_| provider.jwk_for_kid(jwks_uri.as_str(), "rotated-kid")),
+        )
+        .await;
+
+        for result in results {
+            let jwk = result.checked("concurrent JWKS refresh should succeed");
+            assert_eq!(jwk.common.key_id.as_deref(), Some("rotated-kid"));
+        }
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+        server.abort();
     }
 
     #[tokio::test]

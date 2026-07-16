@@ -116,7 +116,7 @@ fn test_protojson_deserialization_uses_lower_camel_case_fields() {
         serde_json::from_str(r#"{"username":"alice","credentialRequest":"AQID"}"#)
             .expect("lowerCamelCase ProtoJSON request should deserialize");
 
-    assert_eq!(request.credential_request, b"\x01\x02\x03");
+    assert_eq!(request.credential_request.as_ref(), b"\x01\x02\x03");
 
     let error = serde_json::from_str::<StartOpaqueLoginRequest>(
         r#"{"username":"alice","credential_request":"AQID"}"#,
@@ -132,9 +132,9 @@ fn test_protojson_custom_json_name_rejects_proto_field_name() {
     )
     .expect("custom json_name field should deserialize");
 
-    assert_eq!(response.authenticator_data, b"\x01\x02\x03");
-    assert_eq!(response.client_data_json, b"\x04\x05\x06");
-    assert_eq!(response.signature, b"\x07\x08\x09");
+    assert_eq!(response.authenticator_data.as_ref(), b"\x01\x02\x03");
+    assert_eq!(response.client_data_json.as_ref(), b"\x04\x05\x06");
+    assert_eq!(response.signature.as_ref(), b"\x07\x08\x09");
 
     let error = serde_json::from_str::<PasskeyAuthenticatorAssertionResponse>(
         r#"{"authenticatorData":"AQID","client_data_json":"BAUG","signature":"BwgJ"}"#,

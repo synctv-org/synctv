@@ -34,13 +34,13 @@ pub struct RoomOpaquePasswordLoginSession {
 #[derive(Debug, Clone)]
 pub struct RoomOpaqueRegistrationStartChallenge {
     pub session_id: String,
-    pub registration_response: Vec<u8>,
+    pub registration_response: bytes::Bytes,
 }
 
 #[derive(Debug, Clone)]
 pub struct RoomOpaqueLoginStartChallenge {
     pub session_id: String,
-    pub credential_response: Vec<u8>,
+    pub credential_response: bytes::Bytes,
 }
 
 #[async_trait::async_trait]

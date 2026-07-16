@@ -146,7 +146,7 @@ pub(super) async fn upload_s3_multipart_part(
     upload_id: &str,
     part_number: i32,
     checksum_sha256: &str,
-    data: Vec<u8>,
+    data: bytes::Bytes,
 ) -> Result<String> {
     let url = s3_url(
         config,

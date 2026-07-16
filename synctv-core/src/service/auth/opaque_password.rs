@@ -30,11 +30,11 @@ impl CipherSuite for SyncTvOpaqueCipherSuite {
 }
 
 pub struct OpaqueRegistrationStart {
-    pub registration_response: Vec<u8>,
+    pub registration_response: bytes::Bytes,
 }
 
 pub struct OpaqueLoginStart {
-    pub credential_response: Vec<u8>,
+    pub credential_response: bytes::Bytes,
     pub server_login_state: Vec<u8>,
 }
 
@@ -162,7 +162,7 @@ impl OpaquePasswordService {
         .map_err(|e| Error::InvalidInput(format!("Invalid OPAQUE registration start: {e}")))?;
 
         Ok(OpaqueRegistrationStart {
-            registration_response: server_start.message.serialize().to_vec(),
+            registration_response: server_start.message.serialize().to_vec().into(),
         })
     }
 
@@ -214,7 +214,7 @@ impl OpaquePasswordService {
         .map_err(|e| Error::InvalidInput(format!("Invalid OPAQUE login start: {e}")))?;
 
         Ok(OpaqueLoginStart {
-            credential_response: server_start.message.serialize().to_vec(),
+            credential_response: server_start.message.serialize().to_vec().into(),
             server_login_state: server_start.state.serialize().to_vec(),
         })
     }
@@ -223,7 +223,7 @@ impl OpaquePasswordService {
         &self,
         server_login_state: &[u8],
         credential_finalization: &[u8],
-    ) -> Result<Vec<u8>> {
+    ) -> Result<()> {
         let server_login = ServerLogin::<SyncTvOpaqueCipherSuite>::deserialize(server_login_state)
             .map_err(|e| Error::InvalidInput(format!("Invalid OPAQUE login session: {e}")))?;
         let credential_finalization =
@@ -231,11 +231,10 @@ impl OpaquePasswordService {
                 .map_err(|e| {
                     Error::InvalidInput(format!("Invalid OPAQUE credential finalization: {e}"))
                 })?;
-        let finish = server_login
+        server_login
             .finish(credential_finalization, ServerLoginParameters::default())
             .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
-
-        Ok(finish.session_key.to_vec())
+        Ok(())
     }
 
     pub fn verify_password(&self, record: &OpaquePasswordRecord, password: &str) -> Result<bool> {
@@ -495,14 +494,12 @@ mod tests {
             ),
             "client login should finish",
         );
-        let server_session_key = ok(
+        ok(
             service.finish_login(
                 &server_login.server_login_state,
                 &client_login_finish.message.serialize(),
             ),
             "server login should finish",
         );
-
-        assert_eq!(server_session_key, client_login_finish.session_key.to_vec());
     }
 }

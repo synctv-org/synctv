@@ -331,7 +331,7 @@ pub async fn upload_user_avatar_object(
         token: upload_token.to_string(),
         content_type: content_type.map(str::to_string),
         content_range: range.map(file_upload_range_to_proto),
-        data: body.to_vec(),
+        data: body,
     };
     let request_meta = request_meta
         .0

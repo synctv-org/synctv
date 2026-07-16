@@ -1,8 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::stream::{FuturesUnordered, StreamExt};
+use futures::{stream, StreamExt};
 use moka::sync::Cache;
 use synctv_cluster::discovery::{ClusterNodeDirectory, NodeInfo};
 use synctv_core::models::{RoomId, UserId};
@@ -19,6 +19,7 @@ use crate::error::{Error, Result};
 const DEFAULT_FAN_OUT_AGGREGATE_TIMEOUT: Duration = Duration::from_secs(5);
 const CHANNEL_CACHE_TTL_SECS: u64 = 300;
 const CHANNEL_CACHE_MAX_CAPACITY: u64 = 256;
+const FAN_OUT_CONCURRENCY: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct RealtimePresenceClientConfig {
@@ -186,15 +187,14 @@ impl RealtimePresenceClient {
             .iter()
             .map(|node| (node.node_id.clone(), node.api_address.clone()))
             .collect::<HashMap<_, _>>();
-        let mut futs = remote_nodes
-            .iter()
+        let mut futs = stream::iter(remote_nodes.iter())
             .map(|node| {
                 let node_id = node.node_id.clone();
                 let address = node.api_address.clone();
                 let fut = query_fn(node_id.clone(), address.clone());
                 async move { (node_id, address, fut.await) }
             })
-            .collect::<FuturesUnordered<_>>();
+            .buffer_unordered(FAN_OUT_CONCURRENCY);
 
         let mut all_items = Vec::new();
         let mut nodes_succeeded = 0usize;
@@ -205,31 +205,31 @@ impl RealtimePresenceClient {
         loop {
             tokio::select! {
                 biased;
-                maybe_result = futs.next(), if !futs.is_empty() => {
-                    if let Some((node_id, address, result)) = maybe_result {
-                        pending_nodes.remove(&node_id);
-                        match result {
-                            Ok(response) => {
-                                nodes_succeeded += 1;
-                                all_items.extend(extract_fn(response));
-                            }
-                            Err(error) => {
-                                nodes_failed += 1;
-                                warn!(node_id = %node_id, address = %address, error = %error, rpc = %rpc_name, "Realtime fan-out failed for node");
-                                self.invalidate_channel(&node_id, &address);
-                                failures.push((node_id, error.to_string()));
-                            }
+                maybe_result = futs.next() => {
+                    let Some((node_id, address, result)) = maybe_result else {
+                        break;
+                    };
+                    pending_nodes.remove(&node_id);
+                    match result {
+                        Ok(response) => {
+                            nodes_succeeded += 1;
+                            all_items.extend(extract_fn(response));
+                        }
+                        Err(error) => {
+                            nodes_failed += 1;
+                            warn!(node_id = %node_id, address = %address, error = %error, rpc = %rpc_name, "Realtime fan-out failed for node");
+                            self.invalidate_channel(&node_id, &address);
+                            failures.push((node_id, error.to_string()));
                         }
                     }
                 }
                 () = tokio::time::sleep_until(deadline) => {
-                    nodes_failed += futs.len();
+                    nodes_failed += pending_nodes.len();
                     failures.extend(pending_nodes.into_iter().map(|(node_id, address)| {
                         (node_id, format!("aggregate timeout after {:?} while waiting for {address}", self.config.aggregate_timeout))
                     }));
                     break;
                 }
-                else => break,
             }
         }
 
@@ -332,10 +332,7 @@ impl RealtimePresenceClient {
                 .entry(status.user_id)
                 .and_modify(|existing| {
                     existing.is_online |= status.is_online;
-                    let mut room_ids = existing.room_ids.iter().copied().collect::<HashSet<i64>>();
-                    room_ids.extend(status.room_ids.iter().copied());
-                    existing.room_ids = room_ids.into_iter().collect();
-                    existing.room_ids.sort_unstable();
+                    existing.room_ids.extend(status.room_ids.iter().copied());
                     if !status.node_id.is_empty() {
                         if existing.node_id.is_empty() {
                             existing.node_id.clone_from(&status.node_id);
@@ -349,6 +346,10 @@ impl RealtimePresenceClient {
         }
 
         let mut values = merged.into_values().collect::<Vec<_>>();
+        for status in &mut values {
+            status.room_ids.sort_unstable();
+            status.room_ids.dedup();
+        }
         values.sort_by_key(|status| status.user_id);
         values
     }

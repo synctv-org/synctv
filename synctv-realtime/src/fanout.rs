@@ -363,11 +363,12 @@ impl PreparedPermissionChangedFanout {
                 target_connection_count: prepared.target_connection_count,
                 timestamp: synctv_core::SystemClock.now(),
             };
-            prepared.events.lock().push(event.clone());
-            prepared
+            let outbox_event = prepared
                 .realtime_fanout
                 .outbox_event(&event)
-                .map_err(synctv_core::Error::Internal)
+                .map_err(synctv_core::Error::Internal)?;
+            prepared.events.lock().push(event);
+            Ok(outbox_event)
         })
     }
 
@@ -414,11 +415,12 @@ impl PreparedUserLeftFanout {
                 role: snapshot.role,
                 timestamp: synctv_core::SystemClock.now(),
             };
-            *prepared.event.lock() = Some(event.clone());
-            prepared
+            let outbox_event = prepared
                 .realtime_fanout
                 .outbox_event(&event)
-                .map_err(synctv_core::Error::Internal)
+                .map_err(synctv_core::Error::Internal)?;
+            *prepared.event.lock() = Some(event);
+            Ok(outbox_event)
         })
     }
 
@@ -506,10 +508,11 @@ impl<T: 'static> PreparedOutboxFanout<T> {
         let event_slot = self.event.clone();
         Arc::new(move |value: &T| {
             let event = event_builder(value);
-            *event_slot.lock() = Some(event.clone());
-            realtime_fanout
+            let outbox_event = realtime_fanout
                 .outbox_event(&event)
-                .map_err(synctv_core::Error::Internal)
+                .map_err(synctv_core::Error::Internal)?;
+            *event_slot.lock() = Some(event);
+            Ok(outbox_event)
         })
     }
 

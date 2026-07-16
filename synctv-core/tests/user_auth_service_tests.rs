@@ -495,7 +495,7 @@ async fn opaque_register(
         .start_opaque_registration_with_control(
             username,
             email,
-            client_start.message.serialize().to_vec(),
+            client_start.message.serialize().to_vec().into(),
             None,
             None,
         )
@@ -517,7 +517,7 @@ async fn opaque_register(
     match service
         .finish_opaque_registration_with_control(
             &challenge.session_id,
-            client_finish.message.serialize().to_vec(),
+            client_finish.message.serialize().to_vec().into(),
             None,
             None,
         )
@@ -556,8 +556,8 @@ async fn opaque_update_password(
     let challenge = service
         .start_opaque_password_update(
             user_id,
-            login_start.message.serialize().to_vec(),
-            registration_start.message.serialize().to_vec(),
+            login_start.message.serialize().to_vec().into(),
+            registration_start.message.serialize().to_vec().into(),
         )
         .await?;
     let credential_response =
@@ -590,8 +590,8 @@ async fn opaque_update_password(
         .finish_opaque_password_update(
             user_id,
             &challenge.session_id,
-            login_finish.message.serialize().to_vec(),
-            registration_finish.message.serialize().to_vec(),
+            login_finish.message.serialize().to_vec().into(),
+            registration_finish.message.serialize().to_vec().into(),
         )
         .await
 }
@@ -610,7 +610,7 @@ async fn opaque_reset_password_after_external_verification(
     let challenge = service
         .start_opaque_password_reset_after_external_verification(
             user_id,
-            registration_start.message.serialize().to_vec(),
+            registration_start.message.serialize().to_vec().into(),
         )
         .await?;
     let registration_response = RegistrationResponse::<TestOpaqueCipherSuite>::deserialize(
@@ -630,7 +630,7 @@ async fn opaque_reset_password_after_external_verification(
     service
         .finish_opaque_password_reset_after_external_verification(
             &challenge.session_id,
-            registration_finish.message.serialize().to_vec(),
+            registration_finish.message.serialize().to_vec().into(),
         )
         .await
 }
@@ -649,7 +649,7 @@ async fn pending_passkey_opaque_update_upload(
     let challenge = service
         .start_opaque_password_update_pending_passkey_verification(
             user_id,
-            registration_start.message.serialize().to_vec(),
+            registration_start.message.serialize().to_vec().into(),
         )
         .await?;
     let registration_response = RegistrationResponse::<TestOpaqueCipherSuite>::deserialize(
@@ -705,7 +705,7 @@ async fn opaque_login_outcome(
     let challenge = service
         .start_opaque_login_with_control(
             identifier,
-            client_start.message.serialize().to_vec(),
+            client_start.message.serialize().to_vec().into(),
             None,
             None,
         )
@@ -726,7 +726,7 @@ async fn opaque_login_outcome(
     let login = service
         .finish_opaque_login_with_control(
             &challenge.session_id,
-            client_finish.message.serialize().to_vec(),
+            client_finish.message.serialize().to_vec().into(),
             None,
             None,
         )
@@ -1675,8 +1675,8 @@ async fn test_opaque_password_update_requires_current_credential_proof() {
     let challenge = service
         .start_opaque_password_update(
             &user.id,
-            login_start.message.serialize().to_vec(),
-            registration_start.message.serialize().to_vec(),
+            login_start.message.serialize().to_vec().into(),
+            registration_start.message.serialize().to_vec().into(),
         )
         .await
         .checked("starting an OPAQUE password update should not prove the password yet");
@@ -1698,8 +1698,8 @@ async fn test_opaque_password_update_requires_current_credential_proof() {
         .finish_opaque_password_update(
             &user.id,
             &challenge.session_id,
-            b"invalid-current-credential-proof".to_vec(),
-            registration_finish.message.serialize().to_vec(),
+            b"invalid-current-credential-proof".to_vec().into(),
+            registration_finish.message.serialize().to_vec().into(),
         )
         .await;
     assert!(
@@ -1738,7 +1738,7 @@ async fn test_opaque_password_update_requires_passkey_finish_for_pending_passkey
         .finish_opaque_password_update_after_external_verification(
             &user.id,
             &session_id,
-            registration_upload,
+            registration_upload.into(),
         )
         .await;
     assert!(
@@ -1760,7 +1760,7 @@ async fn test_opaque_password_update_requires_passkey_finish_for_pending_passkey
         .finish_opaque_password_update_after_passkey_verification(
             &user.id,
             &session_id,
-            registration_upload,
+            registration_upload.into(),
         )
         .await
         .checked("passkey-verified finish should accept pending passkey sessions");

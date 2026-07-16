@@ -158,7 +158,7 @@ async fn send_database_chat_attachment(
                 upload_token,
                 Some("image/png"),
                 None,
-                payload.to_vec(),
+                payload.to_vec().into(),
             )
             .await,
         "attachment object should upload",
@@ -1119,7 +1119,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
         "database attachment object should store",
     );
     assert_eq!(stored.object_key, session.file.object_key);
-    assert_eq!(stored.data.as_slice(), payload.as_slice());
+    assert_eq!(stored.data.as_ref(), payload.as_slice());
     assert_eq!(stored.content_manifest_sha256, expected_manifest_digest);
     let final_access = some(
         ok(
@@ -1144,7 +1144,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
             .await,
         "database attachment object should load",
     );
-    assert_eq!(loaded.data.as_slice(), payload.as_slice());
+    assert_eq!(loaded.data.as_ref(), payload.as_slice());
     let prepared = ok(
         service
             .prepare_files(
@@ -1826,7 +1826,7 @@ async fn metadata_only_attachment_token_is_stripped_before_persistence() {
                 upload_token,
                 Some("image/png"),
                 None,
-                payload,
+                payload.into(),
             )
             .await,
         "database attachment object should store",

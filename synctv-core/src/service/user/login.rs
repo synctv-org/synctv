@@ -128,7 +128,7 @@ impl UserService {
     pub async fn start_opaque_login_with_control(
         &self,
         identifier: String,
-        credential_request: Vec<u8>,
+        credential_request: bytes::Bytes,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<OpaqueLoginStartChallenge> {
@@ -210,7 +210,7 @@ impl UserService {
     pub async fn finish_opaque_login_with_control(
         &self,
         session_id: &str,
-        credential_finalization: Vec<u8>,
+        credential_finalization: bytes::Bytes,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<AuthenticatedLogin> {

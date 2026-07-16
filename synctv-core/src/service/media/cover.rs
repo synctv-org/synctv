@@ -162,7 +162,7 @@ impl MediaService {
         upload_token: &str,
         content_type: Option<&str>,
         range: Option<FileUploadRange>,
-        data: Vec<u8>,
+        data: bytes::Bytes,
     ) -> Result<StoreFileUploadResult> {
         self.file_storage_service
             .as_ref()
@@ -185,7 +185,7 @@ impl MediaService {
         upload_token: &str,
         content_type: Option<&str>,
         range: Option<FileUploadRange>,
-        data: Vec<u8>,
+        data: bytes::Bytes,
     ) -> Result<StoreFileUploadResult> {
         self.file_storage_service
             .as_ref()

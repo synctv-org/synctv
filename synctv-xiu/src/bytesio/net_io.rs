@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use bytes::BufMut;
 use bytes::Bytes;
 use bytes::BytesMut;
 use futures::SinkExt;
@@ -160,10 +159,8 @@ impl TNetIO for UdpIO {
     async fn read(&mut self) -> Result<BytesMut, BytesIOError> {
         let mut buf = vec![0; 4096];
         let len = self.socket.recv(&mut buf).await?;
-        let mut rv = BytesMut::new();
-        rv.put(&buf[..len]);
-
-        Ok(rv)
+        buf.truncate(len);
+        Ok(BytesMut::from(Bytes::from(buf)))
     }
 
     async fn shutdown(&mut self) -> Result<(), BytesIOError> {

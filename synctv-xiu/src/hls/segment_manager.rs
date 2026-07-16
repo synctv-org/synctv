@@ -12,6 +12,7 @@
 // - HLS layer: M3U8 generation and HTTP serving
 
 use crate::storage::HlsStorage;
+use futures::StreamExt as _;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
@@ -82,6 +83,8 @@ impl CleanupAuthority for AlwaysCleanupAuthority {
 }
 
 impl SegmentManager {
+    const CLEANUP_CONCURRENCY: usize = 8;
+
     /// Create new segment manager
     pub fn new(storage: Arc<dyn HlsStorage>, config: CleanupConfig) -> Self {
         Self {
@@ -174,68 +177,78 @@ impl SegmentManager {
             // in the 60-second grace period
             if let Some(ref registry) = registry {
                 let marked_streams = registry.get_streams_marked_for_cleanup();
-                for marked in marked_streams {
-                    match self
-                        .cleanup_marked_stream_segments(
-                            &marked.app_name,
-                            &marked.stream_name,
-                            &marked.segment_names,
-                        )
-                        .await
-                    {
-                        Ok(deleted) => {
-                            if deleted > 0 {
-                                tracing::info!(
-                                    "Priority cleanup: deleted {} segments for marked stream {}/{}",
-                                    deleted,
+                futures::stream::iter(marked_streams)
+                    .for_each_concurrent(Self::CLEANUP_CONCURRENCY, |marked| async move {
+                        match self
+                            .cleanup_marked_stream_segments(
+                                &marked.app_name,
+                                &marked.stream_name,
+                                &marked.segment_names,
+                            )
+                            .await
+                        {
+                            Ok(deleted) => {
+                                if deleted > 0 {
+                                    tracing::info!(
+                                        "Priority cleanup: deleted {} segments for marked stream {}/{}",
+                                        deleted,
+                                        marked.app_name,
+                                        marked.stream_name
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Priority cleanup failed for {}/{}: {}",
                                     marked.app_name,
-                                    marked.stream_name
+                                    marked.stream_name,
+                                    e
                                 );
                             }
                         }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Priority cleanup failed for {}/{}: {}",
-                                marked.app_name,
-                                marked.stream_name,
-                                e
-                            );
-                        }
-                    }
-                }
+                    })
+                    .await;
             }
 
             // Enforce per-stream segment count bound (if configured)
             if self.config.max_segments_per_stream > 0 {
                 match self.storage.list_streams().await {
                     Ok(streams) => {
-                        for (app, stream) in streams {
-                            match self
-                                .storage
-                                .delete_oldest_stream_segments(
-                                    &app,
-                                    &stream,
-                                    self.config.max_segments_per_stream,
-                                )
-                                .await
-                            {
-                                Ok(deleted) if deleted > 0 => {
-                                    tracing::info!(
-                                        "Count-based cleanup: deleted {} excess segments for {}/{} (max {})",
-                                        deleted, app, stream, self.config.max_segments_per_stream
-                                    );
+                        futures::stream::iter(streams)
+                            .for_each_concurrent(
+                                Self::CLEANUP_CONCURRENCY,
+                                |(app, stream)| async move {
+                                    match self
+                                        .storage
+                                        .delete_oldest_stream_segments(
+                                            &app,
+                                            &stream,
+                                            self.config.max_segments_per_stream,
+                                        )
+                                        .await
+                                    {
+                                        Ok(deleted) if deleted > 0 => {
+                                            tracing::info!(
+                                                "Count-based cleanup: deleted {} excess segments for {}/{} (max {})",
+                                                deleted,
+                                                app,
+                                                stream,
+                                                self.config.max_segments_per_stream
+                                            );
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "Count-based cleanup failed for {}/{}: {}",
+                                                app,
+                                                stream,
+                                                e
+                                            );
+                                        }
+                                        _ => {}
+                                    }
                                 }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Count-based cleanup failed for {}/{}: {}",
-                                        app,
-                                        stream,
-                                        e
-                                    );
-                                }
-                                _ => {}
-                            }
-                        }
+                            )
+                            .await;
                     }
                     Err(e) => {
                         tracing::warn!("Failed to list streams for count-based cleanup: {}", e);

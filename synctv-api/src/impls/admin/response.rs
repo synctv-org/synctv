@@ -192,24 +192,31 @@ impl AdminApiImpl {
                 .map_err(ApiError::from)?;
             &loaded_settings
         };
-        let creator = self
-            .user_service
-            .get_user(&room.created_by)
-            .await
-            .map_err(ApiError::from)?;
-        let creator_avatar_url = self.creator_avatar_url(&creator).await?;
-        let member_count = self
-            .room_service
-            .get_member_count(&room.id)
-            .await
-            .map(Some)
-            .map_err(ApiError::from)?;
-        let presence = self
-            .presence_service
-            .room_stats(room.id)
-            .await
-            .map_err(ApiError::from)?;
-        let cover = self.room_cover_for_admin(room).await?;
+        let ((creator, creator_avatar_url), member_count, presence, cover) = tokio::try_join!(
+            async {
+                let creator = self
+                    .user_service
+                    .get_user(&room.created_by)
+                    .await
+                    .map_err(ApiError::from)?;
+                let creator_avatar_url = self.creator_avatar_url(&creator).await?;
+                Ok::<_, ApiError>((creator, creator_avatar_url))
+            },
+            async {
+                self.room_service
+                    .get_member_count(&room.id)
+                    .await
+                    .map(Some)
+                    .map_err(ApiError::from)
+            },
+            async {
+                self.presence_service
+                    .room_stats(room.id)
+                    .await
+                    .map_err(ApiError::from)
+            },
+            self.room_cover_for_admin(room),
+        )?;
 
         try_managed_room_to_proto(
             room,

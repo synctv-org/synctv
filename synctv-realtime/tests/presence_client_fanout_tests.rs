@@ -215,6 +215,18 @@ fn test_merge_user_statuses_dedup_rooms() {
     );
 }
 
+#[test]
+fn test_merge_user_statuses_dedup_rooms_within_single_status() {
+    let merged = RealtimePresenceClient::merge_user_statuses(vec![UserOnlineStatus {
+        user_id: 1,
+        is_online: true,
+        room_ids: vec![103, 101, 103, 101],
+        node_id: "node-a".to_string(),
+    }]);
+
+    assert_eq!(merged[0].room_ids, vec![101, 103]);
+}
+
 /// Verify `merge_user_statuses`: multiple users from multiple nodes.
 #[test]
 fn test_merge_user_statuses_multi_user_multi_node() {

@@ -923,19 +923,23 @@ impl ClientApiImpl {
             ));
         }
 
-        self.room_service
-            .check_guest_allowed(
-                &room_id,
-                self.runtime_settings_store.as_ref().map(AsRef::as_ref),
-            )
-            .await
-            .map_err(Self::map_room_access_error)?;
-
-        let guest_version = self
-            .room_service
-            .get_room_guest_version(&room_id)
-            .await
-            .map_err(ApiError::from)?;
+        let (room_settings, guest_version) = tokio::try_join!(
+            async {
+                self.room_service
+                    .check_guest_allowed(
+                        &room_id,
+                        self.runtime_settings_store.as_ref().map(AsRef::as_ref),
+                    )
+                    .await
+                    .map_err(Self::map_room_access_error)
+            },
+            async {
+                self.room_service
+                    .get_room_guest_version(&room_id)
+                    .await
+                    .map_err(ApiError::from)
+            },
+        )?;
         let validator = GuestTokenValidator::new(
             Arc::new(self.jwt_service.clone()),
             self.user_service.token_blacklist_store(),
@@ -953,9 +957,7 @@ impl ClientApiImpl {
 
         let permissions = self
             .room_service
-            .get_guest_permissions(&room_id)
-            .await
-            .map_err(ApiError::from)?;
+            .guest_permissions_for_settings(&room_settings);
         Ok(GuestRoomAccess {
             room_id,
             guest_id: crate::impls::messaging::guest_public_id(&claims.session_id),

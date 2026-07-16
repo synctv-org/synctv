@@ -361,6 +361,67 @@ async fn test_dispatch_room_deleted_waits_for_reliable_delivery_before_cleanup()
 // Integration tests require Redis running
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
+async fn test_latest_stream_ids_pipeline_preserves_order_and_isolates_errors() -> TestResult {
+    let (_redis_container, redis_client, _redis_url) =
+        synctv_core_testing::start_redis_client_url_with_label("cursor-refresh-pipeline").await;
+    let key_prefix = synctv_core_testing::test_redis_key_prefix("cursor-refresh-pipeline");
+    let message_hub: Arc<dyn RoomMessageRuntime> = Arc::new(RoomMessageHub::new());
+    let (admin_tx, _) = broadcast::channel(8);
+    let pubsub = RedisPubSub::from_config(
+        RedisPubSubConfig::new(
+            synctv_core::coordination_runtime_from_client(redis_client.clone()),
+            message_hub,
+            "cursor-node".to_string(),
+            admin_tx,
+            Arc::new(MessageDeduplicator::default()),
+        )
+        .key_prefix(&key_prefix),
+    )?;
+    let mut conn = redis_client.get_multiplexed_async_connection().await?;
+    let mut keys = Vec::new();
+    let mut expected_ids = Vec::new();
+    for index in 0..65 {
+        let key = format!("{key_prefix}cursor:{index}");
+        let id: String = redis::cmd("XADD")
+            .arg(&key)
+            .arg("*")
+            .arg("payload")
+            .arg(index)
+            .query_async(&mut conn)
+            .await?;
+        keys.push(key);
+        expected_ids.push(id);
+    }
+    let missing_key = format!("{key_prefix}cursor:missing");
+    let wrong_type_key = format!("{key_prefix}cursor:wrong-type");
+    redis::cmd("SET")
+        .arg(&wrong_type_key)
+        .arg("value")
+        .query_async::<()>(&mut conn)
+        .await?;
+    keys.insert(1, missing_key);
+    keys.insert(2, wrong_type_key);
+
+    let results = pubsub.get_latest_stream_ids_for(&keys).await?;
+    assert_eq!(results.len(), keys.len());
+    assert_eq!(
+        results[0].as_ref().ok().and_then(Clone::clone),
+        Some(expected_ids[0].clone())
+    );
+    assert!(matches!(results[1], Ok(None)));
+    assert!(results[2].is_err());
+    for (result, expected_id) in results
+        .into_iter()
+        .skip(3)
+        .zip(expected_ids.into_iter().skip(1))
+    {
+        assert_eq!(result?, Some(expected_id));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
 async fn test_pubsub_integration() -> TestResult {
     let (_redis_container, redis_client, _redis_url) =
         synctv_core_testing::start_redis_client_url_with_label("redis-pubsub-integration").await;

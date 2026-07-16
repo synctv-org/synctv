@@ -35,6 +35,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures::StreamExt as _;
 use tokio::fs;
 
 use super::file_format::{
@@ -66,6 +67,8 @@ pub struct FileBackend {
 }
 
 impl FileBackend {
+    const ACCESS_TIME_PERSIST_CONCURRENCY: usize = 8;
+
     /// Create a new file backend rooted at `cache_dir`.
     ///
     /// `dir_levels` controls the 2-level directory depth: the first
@@ -153,18 +156,40 @@ impl FileBackend {
     /// This method should be called periodically (e.g., by the lifecycle
     /// manager) at a cadence that balances disk I/O against LRU accuracy.
     pub async fn persist_access_times(&self) {
-        for entry in &self.index.entries {
-            let current_accessed = entry.value().last_accessed.load(Ordering::Relaxed);
-            let path = entry.value().path.clone();
-            drop(entry); // Release the DashMap ref before doing I/O.
+        let dirty_entries = self
+            .index
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let current_accessed = entry.last_accessed.load(Ordering::Relaxed);
+                let persisted_accessed = entry.persisted_last_accessed.load(Ordering::Relaxed);
+                (current_accessed != persisted_accessed)
+                    .then(|| (entry.key().clone(), entry.path.clone(), current_accessed))
+            })
+            .collect::<Vec<_>>();
 
-            if let Err(e) = update_file_last_accessed(&path, current_accessed).await {
-                tracing::debug!(
-                    path = %path.display(),
-                    "Failed to persist access time: {e}"
-                );
-            }
-        }
+        futures::stream::iter(dirty_entries)
+            .for_each_concurrent(
+                Self::ACCESS_TIME_PERSIST_CONCURRENCY,
+                |(key, path, current_accessed)| async move {
+                    if let Err(e) = update_file_last_accessed(&path, current_accessed).await {
+                        tracing::debug!(
+                            path = %path.display(),
+                            "Failed to persist access time: {e}"
+                        );
+                        return;
+                    }
+
+                    if let Some(entry) = self.index.entries.get(&key) {
+                        if entry.path == path {
+                            entry
+                                .persisted_last_accessed
+                                .fetch_max(current_accessed, Ordering::Relaxed);
+                        }
+                    }
+                },
+            )
+            .await;
     }
 
     // Internal: remove entry from both index and disk
@@ -262,6 +287,7 @@ impl SliceCacheBackend for FileBackend {
                 inserted_at_millis: written.inserted_at_millis,
                 ttl_secs: written.ttl_secs,
                 last_accessed: AtomicU64::new(written.last_accessed_millis),
+                persisted_last_accessed: AtomicU64::new(written.last_accessed_millis),
             },
         );
 

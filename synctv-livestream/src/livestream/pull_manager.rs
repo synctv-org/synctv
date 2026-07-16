@@ -393,7 +393,9 @@ mod tests {
         let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
         let shared_pool = GrpcConnectionPool::new(Duration::from_millis(5), 8);
 
-        shared_pool.insert_test_channel_with_age("publisher-node:50051", Duration::from_secs(1));
+        shared_pool
+            .insert_test_channel("publisher-node:50051")
+            .await;
 
         let manager = PullStreamManager::with_timeouts(registry, stream_hub_event_sender, 1, 300)
             .with_connection_pool(shared_pool.clone());

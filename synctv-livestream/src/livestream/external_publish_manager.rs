@@ -12,6 +12,7 @@ use crate::{
     livestream::managed_stream::{ManagedStream, StreamLifecycle, StreamPool},
     relay::{registry::HEARTBEAT_INTERVAL_SECS, registry_trait::StreamRegistryTrait},
 };
+use futures::StreamExt as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,6 +25,7 @@ use synctv_xiu::streamhub::{
 use tracing::{debug, error, info, warn};
 
 const DEFAULT_MAX_CONCURRENT_STREAMS: usize = 100;
+const STOP_UNREGISTER_CONCURRENCY: usize = 16;
 const START_CONFIRM_TIMEOUT: Duration = Duration::from_secs(15);
 const STREAMHUB_EVENT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 const EXTERNAL_PUBLISHER_USER_ID: &str = "";
@@ -169,16 +171,18 @@ impl ExternalPublishManager {
         // Unregister each stream from Redis before stopping, so entries don't
         // persist for the full TTL (up to 5 minutes) after graceful shutdown.
         let keys: Vec<String> = self.pool.streams.iter().map(|e| e.key().clone()).collect();
-        for key in &keys {
-            if let Some((room_id, media_id)) = key.split_once(':') {
-                if let Err(e) = self.registry.unregister_publisher(room_id, media_id).await {
-                    warn!(
-                        "Failed to unregister external publisher {}/{} from Redis during stop_all: {}",
-                        room_id, media_id, e
-                    );
+        futures::stream::iter(&keys)
+            .for_each_concurrent(STOP_UNREGISTER_CONCURRENCY, |key| async move {
+                if let Some((room_id, media_id)) = key.split_once(':') {
+                    if let Err(e) = self.registry.unregister_publisher(room_id, media_id).await {
+                        warn!(
+                            "Failed to unregister external publisher {}/{} from Redis during stop_all: {}",
+                            room_id, media_id, e
+                        );
+                    }
                 }
-            }
-        }
+            })
+            .await;
         self.pool.stop_all().await;
     }
 

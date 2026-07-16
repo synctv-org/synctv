@@ -23,6 +23,12 @@ use super::proto::{
     GetHlsSegmentRequest,
 };
 
+#[derive(Debug)]
+enum SegmentFetchError {
+    Missing,
+    Failed(String),
+}
+
 /// HLS proxy client that fetches playlists and segments from publisher nodes via gRPC.
 ///
 /// TS segments are cached locally with a short TTL because they are immutable
@@ -164,7 +170,7 @@ impl HlsProxyClient {
             Ok(response) => response.into_inner(),
             Err(error) => {
                 if should_invalidate_connection(&error) {
-                    self.connection_pool.invalidate(api_address);
+                    self.connection_pool.invalidate(api_address).await;
                 }
                 return Err(anyhow::anyhow!("gRPC GetHlsPlaylist failed: {error}"));
             }
@@ -205,35 +211,49 @@ impl HlsProxyClient {
             return Ok(Some(cached));
         }
 
-        let mut request = Request::new(GetHlsSegmentRequest {
-            room_id: room_id.to_string(),
-            media_id: media_id.to_string(),
-            segment_name: segment_name.to_string(),
-            expected_epoch: epoch,
-        });
-        request.set_timeout(Self::GRPC_REQUEST_TIMEOUT);
-        self.attach_auth(&mut request)?;
+        let loaded = self
+            .segment_cache
+            .try_get_with(cache_key, async {
+                let mut request = Request::new(GetHlsSegmentRequest {
+                    room_id: room_id.to_string(),
+                    media_id: media_id.to_string(),
+                    segment_name: segment_name.to_string(),
+                    expected_epoch: epoch,
+                });
+                request.set_timeout(Self::GRPC_REQUEST_TIMEOUT);
+                self.attach_auth(&mut request)
+                    .map_err(|error| SegmentFetchError::Failed(error.to_string()))?;
 
-        // Cache miss — fetch from publisher node
-        let mut client = self.connect(api_address).await?;
+                let mut client = self
+                    .connect(api_address)
+                    .await
+                    .map_err(|error| SegmentFetchError::Failed(error.to_string()))?;
+                let response = match client.get_hls_segment(request).await {
+                    Ok(response) => response.into_inner(),
+                    Err(error) => {
+                        if should_invalidate_connection(&error) {
+                            self.connection_pool.invalidate(api_address).await;
+                        }
+                        return Err(SegmentFetchError::Failed(format!(
+                            "gRPC GetHlsSegment failed: {error}"
+                        )));
+                    }
+                };
 
-        let response = match client.get_hls_segment(request).await {
-            Ok(response) => response.into_inner(),
-            Err(error) => {
-                if should_invalidate_connection(&error) {
-                    self.connection_pool.invalidate(api_address);
+                if response.found {
+                    Ok(response.data)
+                } else {
+                    Err(SegmentFetchError::Missing)
                 }
-                return Err(anyhow::anyhow!("gRPC GetHlsSegment failed: {error}"));
-            }
-        };
+            })
+            .await;
 
-        if response.found {
-            let data = response.data;
-            // Cache the segment locally
-            self.segment_cache.insert(cache_key, data.clone()).await;
-            Ok(Some(data))
-        } else {
-            Ok(None)
+        match loaded {
+            Ok(data) => Ok(Some(data)),
+            Err(error) => match error.as_ref() {
+                SegmentFetchError::Missing => Ok(None),
+                SegmentFetchError::Failed(message) => Err(anyhow::anyhow!(message.clone())),
+            },
         }
     }
 
@@ -250,7 +270,6 @@ impl HlsProxyClient {
             .get_channel(api_address)
             .await
             .map_err(|e| {
-                self.connection_pool.invalidate(api_address);
                 anyhow::anyhow!("Failed to connect to publisher API at {api_address}: {e}")
             })?;
         let client = StreamRelayServiceClient::new(channel)

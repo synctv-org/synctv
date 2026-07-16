@@ -14,7 +14,7 @@ mod inner {
     };
     use async_trait::async_trait;
     use bytes::Bytes;
-    use futures::TryStreamExt;
+    use futures::{StreamExt as _, TryStreamExt};
     use opendal::{services::S3, EntryMode, Operator};
     use std::io::{Error, ErrorKind, Result};
     use std::sync::Arc;
@@ -50,6 +50,8 @@ mod inner {
     }
 
     impl OssStorage {
+        const BUCKET_LIST_CONCURRENCY: usize = 8;
+
         /// Create new OSS storage with configuration
         pub fn new(config: OssConfig) -> std::result::Result<Self, Box<dyn std::error::Error>> {
             tracing::info!(
@@ -117,6 +119,18 @@ mod inner {
 
         /// Delete all objects matching a prefix using `OpenDAL` lister.
         async fn delete_by_prefix_internal(&self, prefix: &str) -> Result<usize> {
+            let paths = self.list_object_paths(prefix).await?;
+            let deleted = paths.len();
+            if deleted > 0 {
+                self.operator
+                    .delete_iter(paths)
+                    .await
+                    .map_err(|e| Error::other(format!("OSS batch delete failed: {e}")))?;
+            }
+            Ok(deleted)
+        }
+
+        async fn list_object_paths(&self, prefix: &str) -> Result<Vec<String>> {
             let lister = self
                 .operator
                 .lister_with(prefix)
@@ -136,15 +150,7 @@ mod inner {
                 }
                 paths.push(entry.path().to_string());
             }
-
-            let deleted = paths.len();
-            if deleted > 0 {
-                self.operator
-                    .delete_iter(paths)
-                    .await
-                    .map_err(|e| Error::other(format!("OSS batch delete failed: {e}")))?;
-            }
-            Ok(deleted)
+            Ok(paths)
         }
 
         async fn list_dirs(&self, prefix: &str) -> Result<Vec<String>> {
@@ -334,31 +340,21 @@ mod inner {
         async fn count_stream_segments(&self, app: &str, stream: &str) -> Result<usize> {
             validate_component(app, "app")?;
             validate_component(stream, "stream")?;
-            let mut total = 0;
-            for bucket_prefix in self.list_dirs(&self.segments_root_prefix()).await? {
-                let Some(bucket_name) = path_leaf(&bucket_prefix) else {
-                    continue;
-                };
-                let prefix = self.get_bucket_stream_prefix(bucket_name, app, stream);
-                let lister = self
-                    .operator
-                    .lister_with(&prefix)
-                    .recursive(true)
-                    .await
-                    .map_err(|e| Error::other(format!("OSS list failed: {e}")))?;
-
-                let mut entries = lister;
-                while let Some(entry) = entries
-                    .try_next()
-                    .await
-                    .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))?
-                {
-                    if entry.metadata().mode() != EntryMode::DIR {
-                        total += 1;
-                    }
-                }
-            }
-            Ok(total)
+            let prefixes = self
+                .list_dirs(&self.segments_root_prefix())
+                .await?
+                .into_iter()
+                .filter_map(|bucket_prefix| {
+                    path_leaf(&bucket_prefix)
+                        .map(|bucket_name| self.get_bucket_stream_prefix(bucket_name, app, stream))
+                });
+            futures::stream::iter(prefixes)
+                .map(|prefix| async move { self.list_object_paths(&prefix).await })
+                .buffer_unordered(Self::BUCKET_LIST_CONCURRENCY)
+                .try_fold(0usize, |total, paths| async move {
+                    Ok(total.saturating_add(paths.len()))
+                })
+                .await
         }
 
         async fn delete_oldest_stream_segments(
@@ -370,30 +366,22 @@ mod inner {
             validate_component(app, "app")?;
             validate_component(stream, "stream")?;
 
-            let mut paths = Vec::new();
-            for bucket_prefix in self.list_dirs(&self.segments_root_prefix()).await? {
-                let Some(bucket_name) = path_leaf(&bucket_prefix) else {
-                    continue;
-                };
-                let prefix = self.get_bucket_stream_prefix(bucket_name, app, stream);
-                let lister = self
-                    .operator
-                    .lister_with(&prefix)
-                    .recursive(true)
-                    .await
-                    .map_err(|e| Error::other(format!("OSS list failed: {e}")))?;
-
-                let mut entries = lister;
-                while let Some(entry) = entries
-                    .try_next()
-                    .await
-                    .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))?
-                {
-                    if entry.metadata().mode() != EntryMode::DIR {
-                        paths.push(entry.path().to_string());
-                    }
-                }
-            }
+            let prefixes = self
+                .list_dirs(&self.segments_root_prefix())
+                .await?
+                .into_iter()
+                .filter_map(|bucket_prefix| {
+                    path_leaf(&bucket_prefix)
+                        .map(|bucket_name| self.get_bucket_stream_prefix(bucket_name, app, stream))
+                });
+            let mut paths = futures::stream::iter(prefixes)
+                .map(|prefix| async move { self.list_object_paths(&prefix).await })
+                .buffer_unordered(Self::BUCKET_LIST_CONCURRENCY)
+                .try_collect::<Vec<Vec<String>>>()
+                .await?
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
 
             if paths.len() <= max_count {
                 return Ok(0);

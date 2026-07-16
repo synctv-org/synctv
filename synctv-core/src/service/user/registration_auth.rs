@@ -334,7 +334,7 @@ impl UserService {
         &self,
         username: String,
         email: Option<String>,
-        registration_request: Vec<u8>,
+        registration_request: bytes::Bytes,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<OpaqueRegistrationStartChallenge> {
@@ -367,7 +367,7 @@ impl UserService {
 
         Ok(OpaqueRegistrationStartChallenge {
             session_id,
-            credential_response: Vec::new(),
+            credential_response: bytes::Bytes::new(),
             registration_response: registration_start.registration_response,
         })
     }
@@ -375,7 +375,7 @@ impl UserService {
     pub async fn finish_opaque_registration_with_control(
         &self,
         session_id: &str,
-        registration_upload: Vec<u8>,
+        registration_upload: bytes::Bytes,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<AccountRegistrationOutcome> {

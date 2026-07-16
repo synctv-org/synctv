@@ -57,6 +57,7 @@ fn test_file_index_total_size_saturates() {
             inserted_at_millis: 0,
             ttl_secs: 1,
             last_accessed: AtomicU64::new(0),
+            persisted_last_accessed: AtomicU64::new(0),
         },
     );
     index.insert(
@@ -67,6 +68,7 @@ fn test_file_index_total_size_saturates() {
             inserted_at_millis: 0,
             ttl_secs: 1,
             last_accessed: AtomicU64::new(0),
+            persisted_last_accessed: AtomicU64::new(0),
         },
     );
 
@@ -96,6 +98,7 @@ async fn test_file_index_total_size_matches_entries_after_concurrent_mutations()
                         inserted_at_millis: 0,
                         ttl_secs: 1,
                         last_accessed: AtomicU64::new(0),
+                        persisted_last_accessed: AtomicU64::new(0),
                     },
                 );
 
@@ -646,13 +649,36 @@ async fn test_file_backend_persist_access_times() -> TestResult {
         put_entry(&backend, key_a, b"data_a").await?;
         put_entry(&backend, key_b, b"data_b").await?;
 
+        let entry_b = backend.index.entries.get(key_b).ok_or("key_b in index")?;
+        assert_eq!(
+            entry_b.last_accessed.load(Ordering::Relaxed),
+            entry_b.persisted_last_accessed.load(Ordering::Relaxed),
+            "new entries should start with a clean access timestamp"
+        );
+        drop(entry_b);
+
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(
             backend.get(key_b).await.is_some(),
             "key_b should exist before refreshing access time"
         );
 
+        let entry_b = backend.index.entries.get(key_b).ok_or("key_b in index")?;
+        assert_ne!(
+            entry_b.last_accessed.load(Ordering::Relaxed),
+            entry_b.persisted_last_accessed.load(Ordering::Relaxed),
+            "reading an entry should mark its access timestamp dirty"
+        );
+        drop(entry_b);
+
         backend.persist_access_times().await;
+
+        let entry_b = backend.index.entries.get(key_b).ok_or("key_b in index")?;
+        assert_eq!(
+            entry_b.last_accessed.load(Ordering::Relaxed),
+            entry_b.persisted_last_accessed.load(Ordering::Relaxed),
+            "successful persistence should advance the access timestamp watermark"
+        );
     }
 
     {

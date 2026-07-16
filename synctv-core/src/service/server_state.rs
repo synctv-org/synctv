@@ -14,6 +14,7 @@ use crate::{RedisConnectionRuntime, RedisDeploymentMode};
 
 const SERVER_STATE_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 const SERVER_STATE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const SERVER_STATE_FAN_OUT_CONCURRENCY: usize = 16;
 const MEMORY_UNHEALTHY_THRESHOLD_PERCENT: f64 = 90.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -646,13 +647,15 @@ impl ServerStateService {
     }
 
     async fn collect_local_server_state_now(&self) -> ServerStateNode {
-        let database = self.database_state().await;
-        let redis = self.redis_state().await;
         let cluster_enabled = self.runtime_params.cluster_enabled;
-        let cluster = self.cluster_state(cluster_enabled).await;
+        let (database, redis, cluster, livestream) = tokio::join!(
+            self.database_state(),
+            self.redis_state(),
+            self.cluster_state(cluster_enabled),
+            self.livestream_state(),
+        );
         let ws_ticket = self.ws_ticket_state(cluster_enabled);
         let email = self.email_state();
-        let livestream = self.livestream_state().await;
         let memory = memory_state();
         let webrtc = webrtc_state(&self.webrtc_status);
         let cpu = cpu_status();
@@ -705,20 +708,21 @@ impl ServerStateService {
                     failures,
                 ));
             };
-            let mut futures = futures::stream::FuturesUnordered::new();
-            for node in remote_nodes {
-                let remote_client = remote_client.clone();
-                futures.push(async move {
-                    let node_id = node.node_id.clone();
-                    remote_client
-                        .remote_node_server_state(&node)
-                        .await
-                        .map_err(|error| ServerStateFailure {
-                            node_id,
-                            error: error.to_string(),
-                        })
-                });
-            }
+            let mut futures = futures::stream::iter(remote_nodes)
+                .map(|node| {
+                    let remote_client = remote_client.clone();
+                    async move {
+                        let node_id = node.node_id.clone();
+                        remote_client
+                            .remote_node_server_state(&node)
+                            .await
+                            .map_err(|error| ServerStateFailure {
+                                node_id,
+                                error: error.to_string(),
+                            })
+                    }
+                })
+                .buffer_unordered(SERVER_STATE_FAN_OUT_CONCURRENCY);
             while let Some(result) = futures.next().await {
                 match result {
                     Ok(status) => nodes.push(status),

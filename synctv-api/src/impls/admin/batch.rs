@@ -49,20 +49,11 @@ impl AdminApiImpl {
         let mut accumulator = BatchResultsAccumulator::new(req.user_ids.len());
 
         for (user_id_str, uid) in req.user_ids.iter().zip(parsed_user_ids.iter()) {
-            match self.user_service.get_user(uid).await {
-                Ok(target_user) => {
-                    if let Err(e) = check_role_hierarchy(caller_role, target_user.role, "ban") {
-                        accumulator.record_err(user_id_str.clone(), e);
-                        continue;
-                    }
-                    match self
-                        .ban_user_with_cleanup(uid, admin_user_id, caller_role, reason.clone())
-                        .await
-                    {
-                        Ok(_) => accumulator.record_ok(user_id_str.clone()),
-                        Err(e) => accumulator.record_err(user_id_str.clone(), e),
-                    }
-                }
+            match self
+                .ban_user_with_cleanup(uid, admin_user_id, caller_role, reason.clone())
+                .await
+            {
+                Ok(_) => accumulator.record_ok(user_id_str.clone()),
                 Err(e) => accumulator.record_err(user_id_str.clone(), e),
             }
         }

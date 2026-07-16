@@ -105,7 +105,7 @@ async fn opaque_login(
     let challenge = service
         .start_opaque_login_with_control(
             identifier,
-            client_start.message.serialize().to_vec(),
+            client_start.message.serialize().to_vec().into(),
             None,
             None,
         )
@@ -127,7 +127,7 @@ async fn opaque_login(
     let login = service
         .finish_opaque_login_with_control(
             &challenge.session_id,
-            client_finish.message.serialize().to_vec(),
+            client_finish.message.serialize().to_vec().into(),
             None,
             None,
         )
@@ -160,7 +160,7 @@ async fn opaque_register(
         .start_opaque_registration_with_control(
             username,
             email,
-            client_start.message.serialize().to_vec(),
+            client_start.message.serialize().to_vec().into(),
             None,
             None,
         )
@@ -184,7 +184,7 @@ async fn opaque_register(
     match service
         .finish_opaque_registration_with_control(
             &challenge.session_id,
-            client_finish.message.serialize().to_vec(),
+            client_finish.message.serialize().to_vec().into(),
             None,
             None,
         )
@@ -221,8 +221,8 @@ async fn opaque_update_password(
     let challenge = service
         .start_opaque_password_update(
             user_id,
-            login_start.message.serialize().to_vec(),
-            registration_start.message.serialize().to_vec(),
+            login_start.message.serialize().to_vec().into(),
+            registration_start.message.serialize().to_vec().into(),
         )
         .await?;
     let credential_response = ok(
@@ -258,8 +258,8 @@ async fn opaque_update_password(
         .finish_opaque_password_update(
             user_id,
             &challenge.session_id,
-            login_finish.message.serialize().to_vec(),
-            registration_finish.message.serialize().to_vec(),
+            login_finish.message.serialize().to_vec().into(),
+            registration_finish.message.serialize().to_vec().into(),
         )
         .await
 }

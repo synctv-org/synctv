@@ -135,7 +135,7 @@ pub async fn opaque_register_user_with_client_ip(
         .start_opaque_registration_with_control(
             username,
             email,
-            client_start.message.serialize().to_vec(),
+            client_start.message.serialize().to_vec().into(),
             client_ip,
             None,
         )
@@ -157,7 +157,7 @@ pub async fn opaque_register_user_with_client_ip(
     match service
         .finish_opaque_registration_with_control(
             &start.session_id,
-            client_finish.message.serialize().to_vec(),
+            client_finish.message.serialize().to_vec().into(),
             None,
             None,
         )
@@ -205,7 +205,7 @@ pub async fn opaque_login_user_with_challenge(
     let start = service
         .start_opaque_login_with_control(
             identifier.into(),
-            client_start.message.serialize().to_vec(),
+            client_start.message.serialize().to_vec().into(),
             None,
             None,
         )
@@ -225,7 +225,7 @@ pub async fn opaque_login_user_with_challenge(
     let login = service
         .finish_opaque_login_with_control(
             &start.session_id,
-            client_finish.message.serialize().to_vec(),
+            client_finish.message.serialize().to_vec().into(),
             None,
             None,
         )

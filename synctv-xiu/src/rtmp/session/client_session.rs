@@ -236,11 +236,9 @@ impl ClientSession {
                 match self.unpacketizer.read_chunks() {
                     Ok(rv) => {
                         if let UnpackResult::Chunks(chunks) = rv {
-                            for chunk_info in &chunks {
-                                if let Some(mut msg) =
-                                    MessageParser::new(chunk_info.clone()).parse()?
-                                {
-                                    let timestamp = chunk_info.message_header.timestamp;
+                            for chunk_info in chunks {
+                                let timestamp = chunk_info.message_header.timestamp;
+                                if let Some(mut msg) = MessageParser::new(chunk_info).parse()? {
                                     self.process_messages(&mut msg, &timestamp).await?;
                                 }
                             }

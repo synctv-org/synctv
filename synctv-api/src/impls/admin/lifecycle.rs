@@ -48,25 +48,6 @@ impl AdminApiImpl {
         caller_role: UserRole,
         reason: Option<String>,
     ) -> Result<synctv_core::models::User, ApiError> {
-        let affected_room_ids = self
-            .list_active_user_room_ids(target_user_id)
-            .await
-            .map_err(ApiError::from)?;
-        let owned_room_ids = self
-            .list_owned_room_ids(target_user_id)
-            .await
-            .map_err(ApiError::from)?;
-        let mut owner_inactive_fanout = Vec::with_capacity(owned_room_ids.len());
-        for room_id in owned_room_ids {
-            owner_inactive_fanout.push(
-                self.room_lifecycle_fanout
-                    .prepare_room_owner_inactive_outbox_fanout(
-                        &room_id,
-                        target_user_id,
-                        admin_user_id,
-                    )?,
-            );
-        }
         let user = self
             .user_service
             .get_user(target_user_id)
@@ -77,6 +58,30 @@ impl AdminApiImpl {
 
         if user.is_banned {
             return Err(ApiError::InvalidInput("User is already banned".to_string()));
+        }
+
+        let (affected_room_ids, owned_room_ids) = tokio::try_join!(
+            async {
+                self.list_active_user_room_ids(target_user_id)
+                    .await
+                    .map_err(ApiError::from)
+            },
+            async {
+                self.list_owned_room_ids(target_user_id)
+                    .await
+                    .map_err(ApiError::from)
+            },
+        )?;
+        let mut owner_inactive_fanout = Vec::with_capacity(owned_room_ids.len());
+        for room_id in owned_room_ids {
+            owner_inactive_fanout.push(
+                self.room_lifecycle_fanout
+                    .prepare_room_owner_inactive_outbox_fanout(
+                        &room_id,
+                        target_user_id,
+                        admin_user_id,
+                    )?,
+            );
         }
 
         let updated = self

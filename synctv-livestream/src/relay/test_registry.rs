@@ -1,5 +1,7 @@
 use super::registry::PublisherInfo;
-use super::registry_trait::{ActivePublisherEntry, PublisherRefreshOutcome, StreamRegistryTrait};
+use super::registry_trait::{
+    ActivePublisherEntry, PublisherRefreshOutcome, PublisherRefreshRequest, StreamRegistryTrait,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -14,6 +16,10 @@ pub struct TestStreamRegistry {
         std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<(String, String), u64>>>,
     register_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     refresh_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    refresh_batch_sizes: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
+    block_batch_refresh: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    batch_refresh_started: std::sync::Arc<tokio::sync::Semaphore>,
+    batch_refresh_release: std::sync::Arc<tokio::sync::Semaphore>,
     unregister_if_epoch_matches_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     list_active_publishers_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     fail_get_publisher: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -32,6 +38,10 @@ impl TestStreamRegistry {
             )),
             register_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             refresh_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            refresh_batch_sizes: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            block_batch_refresh: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            batch_refresh_started: std::sync::Arc::new(tokio::sync::Semaphore::new(0)),
+            batch_refresh_release: std::sync::Arc::new(tokio::sync::Semaphore::new(0)),
             unregister_if_epoch_matches_call_count: std::sync::Arc::new(
                 std::sync::atomic::AtomicUsize::new(0),
             ),
@@ -56,6 +66,10 @@ impl TestStreamRegistry {
             )),
             register_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             refresh_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            refresh_batch_sizes: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            block_batch_refresh: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            batch_refresh_started: std::sync::Arc::new(tokio::sync::Semaphore::new(0)),
+            batch_refresh_release: std::sync::Arc::new(tokio::sync::Semaphore::new(0)),
             unregister_if_epoch_matches_call_count: std::sync::Arc::new(
                 std::sync::atomic::AtomicUsize::new(0),
             ),
@@ -81,6 +95,31 @@ impl TestStreamRegistry {
     pub fn refresh_call_count(&self) -> usize {
         self.refresh_call_count
             .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[must_use]
+    pub fn refresh_batch_sizes(&self) -> Vec<usize> {
+        self.refresh_batch_sizes
+            .lock()
+            .expect("refresh batch size mutex should remain available")
+            .clone()
+    }
+
+    pub fn set_block_batch_refresh(&self, block: bool) {
+        self.block_batch_refresh
+            .store(block, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub async fn wait_for_batch_refresh(&self) {
+        self.batch_refresh_started
+            .acquire()
+            .await
+            .expect("batch refresh start semaphore should remain open")
+            .forget();
+    }
+
+    pub fn release_batch_refresh(&self) {
+        self.batch_refresh_release.add_permits(1);
     }
 
     /// Get the count of `unregister_publisher_if_epoch_matches` calls.
@@ -188,6 +227,43 @@ impl StreamRegistryTrait for TestStreamRegistry {
                 None => PublisherRefreshOutcome::Missing,
             },
         )
+    }
+
+    async fn refresh_publishers_ttl(
+        &self,
+        node_id: &str,
+        requests: &[PublisherRefreshRequest],
+    ) -> Result<Vec<PublisherRefreshOutcome>> {
+        if self
+            .block_batch_refresh
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            self.batch_refresh_started.add_permits(1);
+            self.batch_refresh_release
+                .acquire()
+                .await
+                .map_err(anyhow::Error::from)?
+                .forget();
+        }
+        self.refresh_batch_sizes
+            .lock()
+            .expect("refresh batch size mutex should remain available")
+            .push(requests.len());
+
+        let mut outcomes = Vec::with_capacity(requests.len());
+        for request in requests {
+            outcomes.push(
+                self.refresh_publisher_ttl(
+                    &request.room_id,
+                    &request.media_id,
+                    &request.user_id,
+                    node_id,
+                    request.expected_epoch,
+                )
+                .await?,
+            );
+        }
+        Ok(outcomes)
     }
 
     async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {

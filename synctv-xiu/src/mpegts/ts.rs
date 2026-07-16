@@ -127,7 +127,7 @@ impl TsMuxer {
 
         if 0 == self.pat_period || (self.pat_period + define::PAT_PERIOD) <= dts {
             self.pat_period = dts;
-            let pat_data = pat::PatMuxer::new().write(&self.pat.clone())?;
+            let pat_data = pat::PatMuxer::new().write(&self.pat)?;
 
             self.write_ts_header_for_pat_pmt(
                 epat_pid::PAT_TID_PAS,
@@ -137,10 +137,15 @@ impl TsMuxer {
             self.pat_continuity_counter = (self.pat_continuity_counter + 1) % 16;
             self.packet_number += 1;
 
-            for pmt_data in &mut self.pat.pmt.clone() {
-                let payload_data = pmt::PmtMuxer::new().write(pmt_data)?;
+            let pmt_payloads = self
+                .pat
+                .pmt
+                .iter()
+                .map(|pmt_data| Ok((pmt_data.pid, pmt::PmtMuxer::new().write(pmt_data)?)))
+                .collect::<Result<Vec<_>, MpegTsError>>()?;
+            for (pmt_pid, payload_data) in pmt_payloads {
                 self.write_ts_header_for_pat_pmt(
-                    pmt_data.pid,
+                    pmt_pid,
                     &payload_data,
                     self.pmt_continuity_counter,
                 )?;
@@ -172,17 +177,18 @@ impl TsMuxer {
             .checked_sub(payload.len())
             .and_then(|size| size.checked_sub(5))
             .ok_or_else(|| std::io::Error::other("PAT/PMT payload exceeds TS packet capacity"))?;
-        for _ in 0..left_size {
-            self.bytes_writer.write_u8(0xFF)?;
-        }
+        self.bytes_writer.write_repeat(0xFF, left_size)?;
         Ok(())
     }
     pub fn write_pes(&mut self, payload: BytesMut) -> Result<(), MpegTsError> {
         let mut is_start: bool = true;
         let mut payload_reader = BytesReader::new(payload);
+        let mut pes_muxer = PesMuxer::new();
+        let mut ts_header = BytesWriter::new();
 
         while !payload_reader.is_empty() {
-            let mut pes_muxer = PesMuxer::new();
+            pes_muxer.bytes_writer.clear();
+            ts_header.clear();
             if is_start {
                 let cur_pmt = self
                     .pat
@@ -208,7 +214,6 @@ impl TsMuxer {
             let pes_header_length: usize = pes_muxer.len();
             let mut payload_length = payload_reader.len();
 
-            let mut ts_header = BytesWriter::new();
             payload_length = self.write_ts_header_for_pes(
                 &mut ts_header,
                 pes_header_length,
@@ -278,9 +283,7 @@ impl TsMuxer {
                     } else {
                         stream_data.dts
                     };
-                    let mut pcr_result: BytesWriter = BytesWriter::new();
-                    utils::pcr_write(&mut pcr_result, pcr * 300)?;
-                    ts_header.write(pcr_result.as_slice())?;
+                    utils::pcr_write(ts_header, pcr * 300)?;
                     ts_header.add_u8_at(4, 6)?;
                 }
 
@@ -321,9 +324,7 @@ impl TsMuxer {
                     ts_header.write_u8(0x00)?;
                 }
             }
-            for _ in 0..stuffing_length {
-                ts_header.write_u8(0xFF)?;
-            }
+            ts_header.write_repeat(0xFF, stuffing_length)?;
         } else {
             return Ok(define::TS_PACKET_SIZE
                 .saturating_sub(ts_header_length)

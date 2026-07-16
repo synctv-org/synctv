@@ -70,7 +70,7 @@ impl S3CompatibleFileStorageService {
                     return Ok(CompleteFileUploadSessionResult {
                         object: Some(super::super::session_record_blob(
                             session,
-                            Vec::new(),
+                            bytes::Bytes::new(),
                             upload_session_object_metadata(&session.metadata),
                         )),
                         uploaded_size_bytes: session.size_bytes,
@@ -202,7 +202,7 @@ impl S3CompatibleFileStorageService {
                     content_manifest_sha256,
                     compression: FileBlobCompression::None,
                     range: None,
-                    data: Vec::new(),
+                    data: bytes::Bytes::new(),
                     metadata: Default::default(),
                     created_at: crate::SystemClock.now(),
                 }),

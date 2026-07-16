@@ -191,7 +191,7 @@ pub struct UpsertFileBlobPart<'a> {
     pub size_bytes: i64,
     pub checksum_sha256: &'a str,
     pub compression: FileBlobCompression,
-    pub data: Vec<u8>,
+    pub data: &'a [u8],
 }
 
 pub struct UpsertFileObject<'a> {
@@ -408,7 +408,7 @@ impl FileStorageRepository {
             size_bytes: blob.size_bytes,
             checksum_sha256: blob.checksum_sha256,
             compression: blob.compression,
-            data: blob.data.clone(),
+            data: &blob.data,
         })
         .await?;
         Ok(FileBlob {
@@ -420,7 +420,7 @@ impl FileStorageRepository {
             content_manifest_sha256: blob.checksum_sha256.to_string(),
             compression: blob.compression,
             range: None,
-            data: blob.data,
+            data: blob.data.into(),
             metadata: blob.metadata.clone(),
             created_at: crate::SystemClock.now(),
         })
@@ -1436,7 +1436,7 @@ impl FileStorageRepository {
             content_manifest_sha256: object.content_manifest_sha256,
             compression,
             range: None,
-            data,
+            data: data.into(),
             metadata: object.metadata,
             created_at: object.created_at,
         }))

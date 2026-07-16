@@ -1935,7 +1935,7 @@ mod tests {
         let request = crate::client::StartOpaqueRegistrationRequest {
             username: "ab".into(),
             email: Some("not-an-email".into()),
-            registration_request: Vec::new(),
+            registration_request: Default::default(),
         };
 
         let error = validation_error_text(&crate::validate(&request).unwrap_err());
@@ -1950,7 +1950,7 @@ mod tests {
         let request = crate::client::StartOpaqueRegistrationRequest {
             username: "valid_user".into(),
             email: Some("valid@example.com".into()),
-            registration_request: vec![1],
+            registration_request: vec![1].into(),
         };
 
         crate::validate(&request).unwrap();
@@ -2873,7 +2873,7 @@ mod tests {
             .passkey_credential
             .expect("passkey credential should be present");
         assert_eq!(credential.id, "credential");
-        assert_eq!(credential.raw_id, b"raw");
+        assert_eq!(credential.raw_id.as_ref(), b"raw");
 
         let decoded: crate::client::SendChatMessageRequest = serde_json::from_str(
             r#"{
@@ -3032,7 +3032,7 @@ mod tests {
 
         let response = crate::client::StartOpaqueLoginResponse {
             session_id: "opaque-session".to_string(),
-            credential_response: vec![1, 2, 3],
+            credential_response: vec![1, 2, 3].into(),
         };
         let json = serde_json::to_value(response).expect("serialize OPAQUE response");
         assert_eq!(json["credentialResponse"], STANDARD.encode([1, 2, 3]));

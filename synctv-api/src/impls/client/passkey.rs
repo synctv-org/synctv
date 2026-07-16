@@ -33,133 +33,105 @@ fn passkey_unavailable_error() -> ApiError {
 }
 
 pub(crate) fn passkey_creation_options_to_proto(
-    options: &CreationChallengeResponse,
+    options: CreationChallengeResponse,
 ) -> Result<PasskeyCreationChallenge, ApiError> {
+    let options = options.public_key;
     Ok(PasskeyCreationChallenge {
         public_key: Some(PasskeyPublicKeyCredentialCreationOptions {
             rp: Some(PasskeyRelyingParty {
-                name: options.public_key.rp.name.clone(),
-                id: options.public_key.rp.id.clone(),
+                name: options.rp.name,
+                id: options.rp.id,
             }),
             user: Some(PasskeyUserEntity {
-                id: options.public_key.user.id.clone(),
-                name: options.public_key.user.name.clone(),
-                display_name: options.public_key.user.display_name.clone(),
+                id: options.user.id.into(),
+                name: options.user.name,
+                display_name: options.user.display_name,
             }),
-            challenge: options.public_key.challenge.clone(),
+            challenge: options.challenge.into(),
             pub_key_cred_params: options
-                .public_key
                 .pub_key_cred_params
-                .iter()
-                .map(passkey_pub_key_cred_param_to_proto)
+                .into_iter()
+                .map(|value| passkey_pub_key_cred_param_to_proto(&value))
                 .collect(),
-            timeout: options.public_key.timeout,
+            timeout: options.timeout,
             exclude_credentials: options
-                .public_key
                 .exclude_credentials
-                .as_deref()
                 .unwrap_or_default()
-                .iter()
+                .into_iter()
                 .map(passkey_credential_descriptor_to_proto)
                 .collect(),
             authenticator_selection: options
-                .public_key
                 .authenticator_selection
-                .as_ref()
-                .map(passkey_authenticator_selection_to_proto),
+                .map(|value| passkey_authenticator_selection_to_proto(&value)),
             hints: options
-                .public_key
                 .hints
-                .as_deref()
                 .unwrap_or_default()
-                .iter()
-                .map(passkey_hint_to_proto)
+                .into_iter()
+                .map(|value| passkey_hint_to_proto(&value))
                 .collect(),
-            attestation: options.public_key.attestation.as_ref().map_or(
+            attestation: options.attestation.map_or(
                 PasskeyAttestationConveyancePreference::Unspecified as i32,
-                passkey_attestation_to_proto,
+                |value| passkey_attestation_to_proto(&value),
             ),
             attestation_formats: options
-                .public_key
                 .attestation_formats
-                .as_deref()
                 .unwrap_or_default()
-                .iter()
-                .map(passkey_attestation_format_to_proto)
+                .into_iter()
+                .map(|value| passkey_attestation_format_to_proto(&value))
                 .collect(),
             extensions: options
-                .public_key
                 .extensions
-                .as_ref()
-                .map(passkey_registration_extensions_input_to_proto),
+                .map(|value| passkey_registration_extensions_input_to_proto(&value)),
         }),
     })
 }
 
 pub(crate) fn passkey_request_options_to_proto(
-    options: &RequestChallengeResponse,
+    options: RequestChallengeResponse,
 ) -> Result<PasskeyRequestChallenge, ApiError> {
+    let mediation = options.mediation;
+    let options = options.public_key;
     Ok(PasskeyRequestChallenge {
         public_key: Some(PasskeyPublicKeyCredentialRequestOptions {
-            challenge: options.public_key.challenge.clone(),
-            timeout: options.public_key.timeout,
-            rp_id: options.public_key.rp_id.clone(),
+            challenge: options.challenge.into(),
+            timeout: options.timeout,
+            rp_id: options.rp_id,
             allow_credentials: options
-                .public_key
                 .allow_credentials
-                .iter()
+                .into_iter()
                 .map(passkey_allow_credential_to_proto)
                 .collect(),
-            user_verification: passkey_user_verification_to_proto(
-                options.public_key.user_verification,
-            ),
+            user_verification: passkey_user_verification_to_proto(options.user_verification),
             hints: options
-                .public_key
                 .hints
-                .as_deref()
                 .unwrap_or_default()
-                .iter()
-                .map(passkey_hint_to_proto)
+                .into_iter()
+                .map(|value| passkey_hint_to_proto(&value))
                 .collect(),
             extensions: options
-                .public_key
                 .extensions
-                .as_ref()
                 .map(passkey_authentication_extensions_input_to_proto),
         }),
-        mediation: options
-            .mediation
-            .as_ref()
-            .map_or(PasskeyMediationRequirement::Unspecified as i32, |value| {
-                passkey_mediation_to_proto(value)
-            }),
+        mediation: mediation.map_or(PasskeyMediationRequirement::Unspecified as i32, |value| {
+            passkey_mediation_to_proto(&value)
+        }),
     })
 }
 
 pub(crate) fn passkey_registration_credential_from_proto(
-    credential: &PasskeyRegistrationCredential,
+    credential: PasskeyRegistrationCredential,
 ) -> Result<RegisterPublicKeyCredential, ApiError> {
+    let response = credential
+        .response
+        .ok_or_else(|| ApiError::Authentication("Authentication failed".to_string()))?;
     Ok(RegisterPublicKeyCredential {
-        id: credential.id.clone(),
-        raw_id: credential.raw_id.clone(),
+        id: credential.id,
+        raw_id: credential.raw_id.into(),
         response: webauthn_proto::AuthenticatorAttestationResponseRaw {
-            attestation_object: credential
-                .response
-                .as_ref()
-                .ok_or_else(|| ApiError::Authentication("Authentication failed".to_string()))?
-                .attestation_object
-                .clone(),
-            client_data_json: credential
-                .response
-                .as_ref()
-                .ok_or_else(|| ApiError::Authentication("Authentication failed".to_string()))?
-                .client_data_json
-                .clone(),
+            attestation_object: response.attestation_object.into(),
+            client_data_json: response.client_data_json.into(),
             transports: Some(
-                credential
-                    .response
-                    .as_ref()
-                    .ok_or_else(|| ApiError::Authentication("Authentication failed".to_string()))?
+                response
                     .transports
                     .iter()
                     .copied()
@@ -169,29 +141,28 @@ pub(crate) fn passkey_registration_credential_from_proto(
         },
         type_: passkey_type_string(credential.r#type)?.to_string(),
         extensions: passkey_registration_extensions_client_outputs_from_proto(
-            credential.extensions.as_ref(),
+            credential.extensions,
         ),
     })
 }
 
 pub(crate) fn passkey_authentication_credential_from_proto(
-    credential: &PasskeyAuthenticationCredential,
+    credential: PasskeyAuthenticationCredential,
 ) -> Result<PublicKeyCredential, ApiError> {
     let response = credential
         .response
-        .as_ref()
         .ok_or_else(|| ApiError::Authentication("Authentication failed".to_string()))?;
     Ok(PublicKeyCredential {
-        id: credential.id.clone(),
-        raw_id: credential.raw_id.clone(),
+        id: credential.id,
+        raw_id: credential.raw_id.into(),
         response: webauthn_proto::AuthenticatorAssertionResponseRaw {
-            authenticator_data: response.authenticator_data.clone(),
-            client_data_json: response.client_data_json.clone(),
-            signature: response.signature.clone(),
-            user_handle: (!response.user_handle.is_empty()).then(|| response.user_handle.clone()),
+            authenticator_data: response.authenticator_data.into(),
+            client_data_json: response.client_data_json.into(),
+            signature: response.signature.into(),
+            user_handle: (!response.user_handle.is_empty()).then(|| response.user_handle.into()),
         },
         extensions: passkey_authentication_extensions_client_outputs_from_proto(
-            credential.extensions.as_ref(),
+            credential.extensions,
         ),
         type_: passkey_type_string(credential.r#type)?.to_string(),
     })
@@ -217,11 +188,11 @@ fn passkey_pub_key_cred_param_to_proto(
 }
 
 fn passkey_credential_descriptor_to_proto(
-    value: &webauthn_proto::PublicKeyCredentialDescriptor,
+    value: webauthn_proto::PublicKeyCredentialDescriptor,
 ) -> PasskeyCredentialDescriptor {
     PasskeyCredentialDescriptor {
         r#type: PasskeyPublicKeyCredentialType::PublicKey as i32,
-        id: value.id.clone(),
+        id: value.id.into(),
         transports: value
             .transports
             .as_deref()
@@ -233,11 +204,11 @@ fn passkey_credential_descriptor_to_proto(
 }
 
 fn passkey_allow_credential_to_proto(
-    value: &webauthn_proto::AllowCredentials,
+    value: webauthn_proto::AllowCredentials,
 ) -> PasskeyCredentialDescriptor {
     PasskeyCredentialDescriptor {
         r#type: PasskeyPublicKeyCredentialType::PublicKey as i32,
-        id: value.id.clone(),
+        id: value.id.into(),
         transports: value
             .transports
             .as_deref()
@@ -283,11 +254,11 @@ fn passkey_authenticator_selection_to_proto(
     value: &webauthn_proto::AuthenticatorSelectionCriteria,
 ) -> PasskeyAuthenticatorSelectionCriteria {
     PasskeyAuthenticatorSelectionCriteria {
-        authenticator_attachment: value.authenticator_attachment.map_or(
+        authenticator_attachment: value.authenticator_attachment.as_ref().map_or(
             PasskeyAuthenticatorAttachment::Unspecified as i32,
             passkey_authenticator_attachment_to_proto,
         ),
-        resident_key: value.resident_key.map_or(
+        resident_key: value.resident_key.as_ref().map_or(
             PasskeyResidentKeyRequirement::Unspecified as i32,
             passkey_resident_key_to_proto,
         ),
@@ -297,7 +268,7 @@ fn passkey_authenticator_selection_to_proto(
 }
 
 fn passkey_authenticator_attachment_to_proto(
-    value: webauthn_proto::AuthenticatorAttachment,
+    value: &webauthn_proto::AuthenticatorAttachment,
 ) -> i32 {
     (match value {
         webauthn_proto::AuthenticatorAttachment::Platform => {
@@ -309,7 +280,7 @@ fn passkey_authenticator_attachment_to_proto(
     }) as i32
 }
 
-fn passkey_resident_key_to_proto(value: webauthn_proto::ResidentKeyRequirement) -> i32 {
+fn passkey_resident_key_to_proto(value: &webauthn_proto::ResidentKeyRequirement) -> i32 {
     (match value {
         webauthn_proto::ResidentKeyRequirement::Discouraged => {
             PasskeyResidentKeyRequirement::Discouraged
@@ -397,17 +368,16 @@ fn passkey_registration_extensions_input_to_proto(
 }
 
 fn passkey_authentication_extensions_input_to_proto(
-    value: &webauthn_proto::RequestAuthenticationExtensions,
+    value: webauthn_proto::RequestAuthenticationExtensions,
 ) -> PasskeyAuthenticationExtensionsInput {
     PasskeyAuthenticationExtensionsInput {
-        appid: value.appid.clone().unwrap_or_default(),
+        appid: value.appid.unwrap_or_default(),
         uvm: value.uvm,
         hmac_get_secret: value
             .hmac_get_secret
-            .as_ref()
             .map(|input| PasskeyHmacGetSecretInput {
-                output1: input.output1.clone(),
-                output2: input.output2.clone().unwrap_or_default(),
+                output1: input.output1.into(),
+                output2: input.output2.unwrap_or_default().into(),
             }),
     }
 }
@@ -454,7 +424,7 @@ fn passkey_mediation_to_proto(value: &webauthn_proto::Mediation) -> i32 {
 }
 
 fn passkey_registration_extensions_client_outputs_from_proto(
-    value: Option<&PasskeyRegistrationExtensionsClientOutputs>,
+    value: Option<PasskeyRegistrationExtensionsClientOutputs>,
 ) -> webauthn_proto::RegistrationExtensionsClientOutputs {
     let Some(value) = value else {
         return webauthn_proto::RegistrationExtensionsClientOutputs::default();
@@ -472,19 +442,19 @@ fn passkey_registration_extensions_client_outputs_from_proto(
 }
 
 fn passkey_authentication_extensions_client_outputs_from_proto(
-    value: Option<&PasskeyAuthenticationExtensionsClientOutputs>,
+    value: Option<PasskeyAuthenticationExtensionsClientOutputs>,
 ) -> webauthn_proto::AuthenticationExtensionsClientOutputs {
     let Some(value) = value else {
         return webauthn_proto::AuthenticationExtensionsClientOutputs::default();
     };
     webauthn_proto::AuthenticationExtensionsClientOutputs {
         appid: value.appid,
-        hmac_get_secret: value.hmac_get_secret.as_ref().map(|input| {
-            webauthn_proto::HmacGetSecretOutput {
-                output1: input.output1.clone(),
-                output2: (!input.output2.is_empty()).then(|| input.output2.clone()),
-            }
-        }),
+        hmac_get_secret: value
+            .hmac_get_secret
+            .map(|input| webauthn_proto::HmacGetSecretOutput {
+                output1: input.output1.into(),
+                output2: (!input.output2.is_empty()).then(|| input.output2.into()),
+            }),
     }
 }
 
@@ -544,7 +514,7 @@ impl ClientApiImpl {
     ) -> Result<StartPasskeyBindResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let challenge = self.start_passkey_bind_challenge(user_id, req.name).await?;
-        let options = passkey_creation_options_to_proto(&challenge.options)?;
+        let options = passkey_creation_options_to_proto(challenge.options)?;
         Ok(StartPasskeyBindResponse {
             session_id: challenge.session_id,
             options: Some(options),
@@ -559,7 +529,6 @@ impl ClientApiImpl {
         crate::impls::validate_proto_request(&req)?;
         let credential = req
             .credential
-            .as_ref()
             .ok_or_else(|| ApiError::InvalidInput("credential is required".to_string()))
             .and_then(passkey_registration_credential_from_proto)?;
         let prepared = self

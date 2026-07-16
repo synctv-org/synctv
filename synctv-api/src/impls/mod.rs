@@ -1074,7 +1074,7 @@ mod tests {
         let request = synctv_proto::client::StartOpaqueRegistrationRequest {
             username: "ab".to_string(),
             email: Some("not-an-email".to_string()),
-            registration_request: Vec::new(),
+            registration_request: Default::default(),
         };
 
         let message = require_invalid_proto(&request)?;

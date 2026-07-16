@@ -31,7 +31,7 @@ pub struct OpaqueLoginSession {
 #[derive(Debug, Clone)]
 pub struct OpaqueLoginStartChallenge {
     pub session_id: String,
-    pub credential_response: Vec<u8>,
+    pub credential_response: bytes::Bytes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +137,6 @@ pub struct OpaqueRegistrationSession {
 #[derive(Debug, Clone)]
 pub struct OpaqueRegistrationStartChallenge {
     pub session_id: String,
-    pub credential_response: Vec<u8>,
-    pub registration_response: Vec<u8>,
+    pub credential_response: bytes::Bytes,
+    pub registration_response: bytes::Bytes,
 }

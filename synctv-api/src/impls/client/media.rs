@@ -678,7 +678,7 @@ pub(crate) fn media_cover_object_to_proto(
     synctv_proto::client::MediaCoverObjectResponse {
         mime_type: blob.mime_type,
         content_manifest_sha256: blob.content_manifest_sha256,
-        data: blob.data.into(),
+        data: blob.data,
         content_range: blob.range.map(file_byte_range_to_proto),
         total_size_bytes: blob.total_size_bytes,
     }
@@ -690,7 +690,7 @@ pub(crate) fn media_thumbnail_object_to_proto(
     synctv_proto::client::MediaThumbnailObjectResponse {
         mime_type: blob.mime_type,
         content_manifest_sha256: blob.content_manifest_sha256,
-        data: blob.data.into(),
+        data: blob.data,
         content_range: blob.range.map(file_byte_range_to_proto),
         total_size_bytes: blob.total_size_bytes,
     }
@@ -702,7 +702,7 @@ pub(crate) fn room_cover_object_to_proto(
     synctv_proto::client::RoomCoverObjectResponse {
         mime_type: blob.mime_type,
         content_manifest_sha256: blob.content_manifest_sha256,
-        data: blob.data.into(),
+        data: blob.data,
         content_range: blob.range.map(file_byte_range_to_proto),
         total_size_bytes: blob.total_size_bytes,
     }
@@ -714,7 +714,7 @@ pub(crate) fn playlist_cover_object_to_proto(
     synctv_proto::client::PlaylistCoverObjectResponse {
         mime_type: blob.mime_type,
         content_manifest_sha256: blob.content_manifest_sha256,
-        data: blob.data.into(),
+        data: blob.data,
         content_range: blob.range.map(file_byte_range_to_proto),
         total_size_bytes: blob.total_size_bytes,
     }

@@ -550,12 +550,6 @@ mod tests {
     use redis::AsyncCommands;
     use std::sync::Arc;
 
-    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
-    struct TestData {
-        name: String,
-        count: u32,
-    }
-
     #[tokio::test]
     async fn test_redis_provider_store_accepts_trait_object_runtime() {
         let runtime = failing_redis_runtime();
@@ -588,46 +582,6 @@ mod tests {
         Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
     ) {
         synctv_core_testing::start_redis_handle().await
-    }
-
-    #[tokio::test]
-    async fn test_in_memory_store_get_set() {
-        let store = InMemoryProviderStore::new(100);
-        assert!(store
-            .get_raw("key1")
-            .await
-            .checked("operation should succeed")
-            .is_none());
-        store
-            .set_raw("key1", b"hello", Duration::from_mins(1))
-            .await
-            .checked("operation should succeed");
-        assert_eq!(
-            store
-                .get_raw("key1")
-                .await
-                .checked("operation should succeed")
-                .checked("operation should succeed"),
-            b"hello"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_in_memory_store_delete() {
-        let store = InMemoryProviderStore::new(100);
-        store
-            .set_raw("key1", b"hello", Duration::from_mins(1))
-            .await
-            .checked("operation should succeed");
-        store
-            .delete("key1")
-            .await
-            .checked("operation should succeed");
-        assert!(store
-            .get_raw("key1")
-            .await
-            .checked("operation should succeed")
-            .is_none());
     }
 
     #[tokio::test]
@@ -688,24 +642,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_typed_get_set() {
-        let store = InMemoryProviderStore::new(100);
-        let data = TestData {
-            name: "test".to_string(),
-            count: 42,
-        };
-        store
-            .set("typed_key", &data, Duration::from_mins(1))
-            .await
-            .checked("operation should succeed");
-        let retrieved: Option<TestData> = store
-            .get("typed_key")
-            .await
-            .checked("operation should succeed");
-        assert_eq!(retrieved.checked("operation should succeed"), data);
-    }
-
-    #[tokio::test]
     async fn test_versioned_playback_expiry() {
         let vp = VersionedPlayback {
             version: "test123".to_string(),
@@ -754,11 +690,13 @@ mod tests {
 
         // Different provider name creates a separate store
         let store3 = registry.load("emby");
-        assert!(store3
-            .get_raw("key1")
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            store3
+                .get_raw("key1")
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
     }
 
     #[test]

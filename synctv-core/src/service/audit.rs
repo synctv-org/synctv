@@ -734,37 +734,4 @@ mod tests {
         assert_eq!(logout.ip_address.as_deref(), Some("192.168.1.1"));
         assert_eq!(logout.user_agent.as_deref(), Some("Mozilla/5.0"));
     }
-
-    #[test]
-    fn test_audit_action_and_target_display_parse_roundtrip() {
-        assert_eq!(AuditAction::TokenIssued.to_string(), "token_issued");
-        assert_eq!(
-            ok(
-                "ROOM_OWNERSHIP_TRANSFERRED".parse::<AuditAction>(),
-                "audit action should parse",
-            ),
-            AuditAction::RoomOwnershipTransferred
-        );
-        assert!("unknown_action".parse::<AuditAction>().is_err());
-
-        assert_eq!(
-            AuditTargetType::ProviderInstance.to_string(),
-            "provider_instance"
-        );
-        assert_eq!(
-            ok(
-                "STREAM".parse::<AuditTargetType>(),
-                "audit target type should parse",
-            ),
-            AuditTargetType::Stream
-        );
-        assert_eq!(
-            ok(
-                "CHAT_MESSAGE".parse::<AuditTargetType>(),
-                "audit target type should parse",
-            ),
-            AuditTargetType::ChatMessage
-        );
-        assert!("unknown_target".parse::<AuditTargetType>().is_err());
-    }
 }

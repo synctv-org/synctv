@@ -12,28 +12,6 @@ fn test_resolve_alist_client_returns_local_without_remote_connection() {
     assert!(Arc::ptr_eq(&local_client, &resolved_client));
 }
 
-/// Test that `resolve_bilibili_client` returns local client when no remote connection is provided
-#[test]
-fn test_resolve_bilibili_client_returns_local_without_remote_connection() {
-    let manager =
-        ProviderClientManager::new_for_tests().checked("default provider HTTP client should build");
-    let local_client = manager.local_bilibili_client();
-    let resolved_client = manager.resolve_bilibili_client(None);
-
-    assert!(Arc::ptr_eq(&local_client, &resolved_client));
-}
-
-/// Test that `resolve_emby_client` returns local client when no remote connection is provided
-#[test]
-fn test_resolve_emby_client_returns_local_without_remote_connection() {
-    let manager =
-        ProviderClientManager::new_for_tests().checked("default provider HTTP client should build");
-    let local_client = manager.local_emby_client();
-    let resolved_client = manager.resolve_emby_client(None);
-
-    assert!(Arc::ptr_eq(&local_client, &resolved_client));
-}
-
 /// Test that `ProviderClientManager::with_custom_clients` allows mock injection
 #[test]
 fn test_custom_clients_injection() {

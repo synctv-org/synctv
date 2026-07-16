@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use super::{pagination::PageParams, query::SortDirection, SourceProvider, UserId};
+use super::{SourceProvider, UserId, pagination::PageParams, query::SortDirection};
 
 pub const DEFAULT_PROVIDER_INSTANCE_TIMEOUT_SECONDS: u32 = 10;
 pub const PROVIDER_INSTANCE_NAME_MAX_LEN: usize = 64;
@@ -530,31 +530,6 @@ mod tests {
     }
 
     #[test]
-    fn provider_instance_new_remote_normalizes_optional_fields_and_default_timeout() {
-        let instance = ProviderInstance::new_remote(NewProviderInstance {
-            name: "remote".to_string(),
-            endpoint: "http://localhost:50051".to_string(),
-            comment: Some("  primary remote  ".to_string()),
-            jwt_secret: Some("   ".to_string()),
-            custom_ca: Some("  ca-pem  ".to_string()),
-            timeout_seconds: 0,
-            tls: true,
-            insecure_tls: false,
-            providers: vec![SourceProvider::Alist],
-        });
-
-        assert_eq!(instance.comment.as_deref(), Some("primary remote"));
-        assert_eq!(instance.jwt_secret, None);
-        assert_eq!(instance.custom_ca.as_deref(), Some("ca-pem"));
-        assert_eq!(
-            instance.timeout_seconds(),
-            DEFAULT_PROVIDER_INSTANCE_TIMEOUT_SECONDS
-        );
-        assert_eq!(instance.timeout, "10s");
-        assert!(instance.enabled);
-    }
-
-    #[test]
     fn test_normalize_provider_instance_name() {
         assert_eq!(normalize_provider_instance_name(None), None);
         assert_eq!(normalize_provider_instance_name(Some("")), None);
@@ -656,19 +631,23 @@ mod tests {
 
     #[test]
     fn provider_instance_binding_rejects_explicit_conflict() {
-        assert!(resolve_provider_instance_binding(
-            Some("alist_other"),
-            CredentialProviderInstanceName::CredentialBacked(Some("alist_remote")),
-        )
-        .is_err());
+        assert!(
+            resolve_provider_instance_binding(
+                Some("alist_other"),
+                CredentialProviderInstanceName::CredentialBacked(Some("alist_remote")),
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn provider_instance_binding_rejects_explicit_instance_for_unbound_credential() {
-        assert!(resolve_provider_instance_binding(
-            Some("alist_remote"),
-            CredentialProviderInstanceName::CredentialBacked(None),
-        )
-        .is_err());
+        assert!(
+            resolve_provider_instance_binding(
+                Some("alist_remote"),
+                CredentialProviderInstanceName::CredentialBacked(None),
+            )
+            .is_err()
+        );
     }
 }

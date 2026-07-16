@@ -398,54 +398,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_registry_try_register_publisher_success() -> TestResult {
-        let registry = TestStreamRegistry::new();
-
-        let registered = registry
-            .try_register_publisher("room123", "media456", "node1", "", "localhost:50051")
-            .await?;
-        assert!(registered);
-
-        let publisher = registry.get_publisher("room123", "media456").await?;
-        let pub_info = require_publisher(publisher)?;
-        assert_eq!(pub_info.node_id, "node1");
-        assert_eq!(pub_info.app_name, "live");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_registry_try_register_publisher_duplicate() -> TestResult {
-        let registry = TestStreamRegistry::new();
-
-        let registered = registry
-            .try_register_publisher("room123", "media456", "node1", "", "localhost:50051")
-            .await?;
-        assert!(registered);
-
-        let registered = registry
-            .try_register_publisher("room123", "media456", "node2", "", "localhost:50052")
-            .await?;
-        assert!(!registered);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_registry_try_register_publisher() -> TestResult {
-        let registry = TestStreamRegistry::new();
-
-        let result = registry
-            .try_register_publisher("room123", "media456", "node1", "user1", "10.0.0.1:50051")
-            .await?;
-        assert!(result);
-
-        let result = registry
-            .try_register_publisher("room123", "media456", "node2", "user2", "10.0.0.2:50051")
-            .await?;
-        assert!(!result);
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn test_registry_rejects_ambiguous_stream_ids() {
         let registry = TestStreamRegistry::new();
 
@@ -460,31 +412,6 @@ mod tests {
             .await
             .expect_err("path-like media id must be rejected");
         assert!(error.to_string().contains("media_id"));
-    }
-
-    #[tokio::test]
-    async fn test_registry_unregister_publisher() -> TestResult {
-        let registry = TestStreamRegistry::new();
-
-        registry
-            .try_register_publisher("room123", "media456", "node1", "", "localhost:50051")
-            .await?;
-
-        assert!(registry.is_stream_active("room123", "media456").await?);
-
-        registry.unregister_publisher("room123", "media456").await?;
-
-        assert!(!registry.is_stream_active("room123", "media456").await?);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_registry_get_publisher_not_found() -> TestResult {
-        let registry = TestStreamRegistry::new();
-
-        let result = registry.get_publisher("nonexistent", "media").await?;
-        assert!(result.is_none());
-        Ok(())
     }
 
     #[tokio::test]

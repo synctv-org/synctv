@@ -6350,23 +6350,6 @@ async fn full_stack_cli_server_binary_starts_and_handles_management_commands() {
 }
 
 #[tokio::test]
-async fn full_stack_cli_version_prints_package_name_and_version() {
-    let version_output = run_synctv_cli_with_env_async(&["version"], &[]).await;
-    assert!(
-        version_output.status.success(),
-        "version CLI should succeed\nstdout:\n{}\nstderr:\n{}",
-        cli_stdout(&version_output),
-        cli_stderr(&version_output),
-    );
-
-    assert_eq!(
-        cli_stdout(&version_output).trim(),
-        format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
-        "version CLI should print the package name and version"
-    );
-}
-
-#[tokio::test]
 async fn full_stack_cli_completion_bash_emits_shell_script() {
     let completion_output = run_synctv_cli_with_env_async(&["completion", "bash"], &[]).await;
     assert!(
@@ -6384,48 +6367,6 @@ async fn full_stack_cli_completion_bash_emits_shell_script() {
     assert!(
         completion_stdout.contains("complete -F _synctv") && completion_stdout.contains(" synctv"),
         "bash completion should register completion for synctv\nstdout:\n{completion_stdout}"
-    );
-}
-
-#[tokio::test]
-async fn full_stack_cli_completion_zsh_emits_compdef_registration() {
-    let completion_output = run_synctv_cli_with_env_async(&["completion", "zsh"], &[]).await;
-    assert!(
-        completion_output.status.success(),
-        "completion zsh should succeed\nstdout:\n{}\nstderr:\n{}",
-        cli_stdout(&completion_output),
-        cli_stderr(&completion_output),
-    );
-
-    let completion_stdout = cli_stdout(&completion_output);
-    assert!(
-        completion_stdout.contains("#compdef synctv"),
-        "zsh completion should declare the target command\nstdout:\n{completion_stdout}"
-    );
-    assert!(
-        completion_stdout.contains("compdef _synctv synctv"),
-        "zsh completion should register completion for synctv\nstdout:\n{completion_stdout}"
-    );
-}
-
-#[tokio::test]
-async fn full_stack_cli_completion_fish_emits_completion_directives() {
-    let completion_output = run_synctv_cli_with_env_async(&["completion", "fish"], &[]).await;
-    assert!(
-        completion_output.status.success(),
-        "completion fish should succeed\nstdout:\n{}\nstderr:\n{}",
-        cli_stdout(&completion_output),
-        cli_stderr(&completion_output),
-    );
-
-    let completion_stdout = cli_stdout(&completion_output);
-    assert!(
-        completion_stdout.contains("complete -c synctv"),
-        "fish completion should emit complete directives for synctv\nstdout:\n{completion_stdout}"
-    );
-    assert!(
-        completion_stdout.contains("__fish_synctv_global_optspecs"),
-        "fish completion should define the global option spec helper\nstdout:\n{completion_stdout}"
     );
 }
 

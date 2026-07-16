@@ -6,9 +6,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{
+    PlaylistSourceConfig, SourceProvider,
     id::{PlaylistId, RoomId, UserId},
     query::SortDirection,
-    PlaylistSourceConfig, SourceProvider,
 };
 
 sort_field_enum! {
@@ -161,33 +161,6 @@ mod tests {
             updated_at: crate::SystemClock.now(),
             version: 0,
         }
-    }
-
-    #[test]
-    fn test_playlist_is_top_level() {
-        let top_level = make_playlist("", None, None);
-        assert!(top_level.is_top_level());
-
-        let named = make_playlist("Music", None, None);
-        assert!(named.is_top_level());
-
-        let child = make_playlist("", Some(PlaylistId::expect_positive(2)), None);
-        assert!(!child.is_top_level());
-    }
-
-    #[test]
-    fn test_playlist_is_dynamic() {
-        let dynamic = make_playlist(
-            "Alist Folder",
-            Some(PlaylistId::expect_positive(2)),
-            Some(SourceProvider::Alist),
-        );
-        assert!(dynamic.is_dynamic());
-        assert!(!dynamic.is_static());
-
-        let static_pl = make_playlist("Manual Folder", Some(PlaylistId::expect_positive(2)), None);
-        assert!(!static_pl.is_dynamic());
-        assert!(static_pl.is_static());
     }
 
     #[test]

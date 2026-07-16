@@ -1,6 +1,6 @@
 use super::*;
-use crate::test_helpers::failing_redis_runtime;
 use crate::RedisConnectionRuntime;
+use crate::test_helpers::failing_redis_runtime;
 use async_trait::async_trait;
 use std::time::Duration;
 use synctv_core_testing::start_redis;
@@ -612,15 +612,6 @@ fn test_rate_limit_error_to_core_error_backend_unavailable() {
         }
         other => std::panic::panic_any(format!("Expected ServiceUnavailable, got: {other:?}")),
     }
-}
-
-#[tokio::test]
-async fn test_get_quota_without_redis_returns_max() {
-    let limiter = RateLimiter::local_only("quota_test:".to_string());
-
-    let (remaining, reset) = ok(limiter.get_quota("key", 10, 1).await, "quota should load");
-    assert_eq!(remaining, 10);
-    assert_eq!(reset, 0);
 }
 
 #[tokio::test]

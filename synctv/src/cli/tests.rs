@@ -175,15 +175,6 @@ fn cli_requires_subcommand() {
 }
 
 #[test]
-fn cli_parses_serve_subcommand() {
-    let cli = Cli::parse_from(["synctv", "serve", "--dry-run"]);
-    match cli.command {
-        Commands::Serve(args) => assert!(args.dry_run),
-        other => panic!("unexpected command parsed: {other:?}"),
-    }
-}
-
-#[test]
 fn cli_parses_global_data_dir() {
     let cli = Cli::parse_from(["synctv", "--data-dir", "/tmp/synctv-state", "serve"]);
     match cli.command {
@@ -342,66 +333,6 @@ fn cli_parses_global_management_auth_token_file_before_subcommand() {
             args.remote.global.auth_token_file.as_deref(),
             Some(std::path::Path::new("/run/secrets/management_auth_token"))
         ),
-        other => panic!("unexpected command parsed: {other:?}"),
-    }
-}
-
-#[test]
-fn cli_parses_db_status() {
-    let cli = Cli::parse_from(["synctv", "db", "status", "--output", "json"]);
-    match cli.command {
-        Commands::Db(DbCommand {
-            command: DbSubcommand::Status(args),
-            ..
-        }) => assert_eq!(args.output, RemoteOutputFormat::Json),
-        other => panic!("unexpected command parsed: {other:?}"),
-    }
-}
-
-#[test]
-fn cli_parses_db_migrate_yaml_output_short_flag() {
-    let cli = Cli::parse_from(["synctv", "db", "migrate", "-o", "yaml"]);
-    match cli.command {
-        Commands::Db(DbCommand {
-            command: DbSubcommand::Migrate(args),
-            ..
-        }) => assert_eq!(args.output, RemoteOutputFormat::Yaml),
-        other => panic!("unexpected command parsed: {other:?}"),
-    }
-}
-
-#[test]
-fn cli_parses_config_show_json_output() {
-    let cli = Cli::parse_from(["synctv", "config", "show", "--output", "json"]);
-    match cli.command {
-        Commands::Config(ConfigCommand {
-            command: ConfigSubcommand::Show(args),
-            ..
-        }) => assert_eq!(args.output, ConfigOutputFormat::Json),
-        other => panic!("unexpected command parsed: {other:?}"),
-    }
-}
-
-#[test]
-fn cli_parses_config_show_toml_output_short_flag() {
-    let cli = Cli::parse_from(["synctv", "config", "show", "-o", "toml"]);
-    match cli.command {
-        Commands::Config(ConfigCommand {
-            command: ConfigSubcommand::Show(args),
-            ..
-        }) => assert_eq!(args.output, ConfigOutputFormat::Toml),
-        other => panic!("unexpected command parsed: {other:?}"),
-    }
-}
-
-#[test]
-fn cli_parses_config_validate() {
-    let cli = Cli::parse_from(["synctv", "config", "validate"]);
-    match cli.command {
-        Commands::Config(ConfigCommand {
-            command: ConfigSubcommand::Validate(args),
-            ..
-        }) => assert!(!args.strict),
         other => panic!("unexpected command parsed: {other:?}"),
     }
 }

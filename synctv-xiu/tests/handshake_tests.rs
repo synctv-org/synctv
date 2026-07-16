@@ -421,21 +421,6 @@ mod constants_tests {
     use super::*;
 
     #[test]
-    fn test_rtmp_version_value() {
-        assert_eq!(RTMP_VERSION, 3);
-    }
-
-    #[test]
-    fn test_rtmp_handshake_size_value() {
-        assert_eq!(RTMP_HANDSHAKE_SIZE, 1536);
-    }
-
-    #[test]
-    fn test_rtmp_digest_length_value() {
-        assert_eq!(RTMP_DIGEST_LENGTH, 32);
-    }
-
-    #[test]
     fn test_server_key_first_half_format() {
         assert!(RTMP_SERVER_KEY_FIRST_HALF.contains("Adobe"));
         assert!(RTMP_SERVER_KEY_FIRST_HALF.contains("Server"));

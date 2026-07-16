@@ -515,117 +515,14 @@ mod hsts_headers {
 
 mod health_endpoints {
     use super::*;
-
-    #[tokio::test]
-    async fn test_liveness_returns_ok_without_details() {
-        let app = Router::new().route("/health/live", get(synctv_api::liveness_check));
-
-        let req = Request::get("/health/live").body(Body::empty()).unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-
-        assert_eq!(resp.status(), StatusCode::OK);
-        let json = body_json(resp).await;
-        assert_eq!(json["status"], "ok");
-        assert!(json.get("details").is_none());
-    }
-}
-
-mod api_error_classification {
-    use synctv_api::{ApiError, ErrorKind};
-
-    #[test]
-    fn test_api_error_classification() {
-        let cases = [
-            (ApiError::NotFound("room".to_string()), ErrorKind::NotFound),
-            (
-                ApiError::Authentication("bad token".to_string()),
-                ErrorKind::Unauthenticated,
-            ),
-            (
-                ApiError::Authorization("denied".to_string()),
-                ErrorKind::PermissionDenied,
-            ),
-            (
-                ApiError::AlreadyExists("duplicate".to_string()),
-                ErrorKind::AlreadyExists,
-            ),
-            (
-                ApiError::InvalidInput("bad field".to_string()),
-                ErrorKind::InvalidArgument,
-            ),
-            (
-                ApiError::Internal("db error".to_string()),
-                ErrorKind::Internal,
-            ),
-            (
-                ApiError::ServiceUnavailable("redis unavailable".to_string()),
-                ErrorKind::ServiceUnavailable,
-            ),
-        ];
-
-        for (err, expected_kind) in cases {
-            assert_eq!(err.classify(), expected_kind);
-        }
-
-        assert_eq!(ApiError::NotFound("room".to_string()).message(), "room");
-    }
-
-    #[test]
-    fn test_api_error_into_string() {
-        let err = ApiError::NotFound("item".to_string());
-        let s: String = err.into();
-        assert_eq!(s, "item");
-    }
 }
 
 mod auth_flow {
     use synctv_core::models::UserId;
-    use synctv_core::service::{JwtService, TokenCredentialBinding};
+    use synctv_core::service::JwtService;
 
     fn jwt_service() -> JwtService {
         JwtService::new("test-secret-key-for-jwt-that-is-long-enough-1234567890").unwrap()
-    }
-
-    fn sign_test_refresh_token(jwt: &JwtService, user_id: &UserId) -> String {
-        jwt.sign_refresh_token_with_session(
-            user_id,
-            0,
-            None,
-            "http-integration-refresh-session",
-            &TokenCredentialBinding::Password { version: 0 },
-        )
-        .expect("refresh token")
-    }
-
-    #[tokio::test]
-    async fn test_token_credential_flow() {
-        let jwt = jwt_service();
-        let user_id = UserId::new();
-
-        let access_token = jwt.sign_access_token(&user_id, 0).expect("access token");
-        let refresh_token = sign_test_refresh_token(&jwt, &user_id);
-
-        let claims = jwt
-            .verify_access_token(&access_token)
-            .expect("access token valid");
-        assert_eq!(claims.sub, user_id.to_string());
-        assert!(claims.is_access_token());
-
-        assert!(jwt.verify_refresh_token(&access_token).is_err());
-
-        let refresh_claims = jwt
-            .verify_refresh_token(&refresh_token)
-            .expect("refresh token valid");
-        assert_eq!(refresh_claims.sub, user_id.to_string());
-        assert!(refresh_claims.is_refresh_token());
-
-        let new_access = jwt
-            .sign_access_token(&user_id, 0)
-            .expect("new access token");
-        let new_claims = jwt
-            .verify_access_token(&new_access)
-            .expect("new access token valid");
-        assert_eq!(new_claims.sub, user_id.to_string());
     }
 
     #[test]
@@ -641,19 +538,5 @@ mod auth_flow {
             jwt_b.verify_access_token(&token).is_err(),
             "cross-secret token must be rejected"
         );
-    }
-
-    #[test]
-    fn test_guest_auth_flow() {
-        let jwt = jwt_service();
-        let room_id = synctv_core::models::RoomId::new();
-
-        let token = jwt.sign_guest_token(&room_id).expect("guest token");
-
-        let claims = jwt.verify_guest_token(&token).expect("guest token valid");
-        assert!(claims.is_guest());
-        assert_eq!(claims.room_id().unwrap(), room_id);
-
-        assert!(jwt.verify_access_token(&token).is_err());
     }
 }

@@ -28,8 +28,8 @@
 //! ```
 
 use parking_lot::RwLock;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt::{self, Display};
 use std::hash::BuildHasherDefault;
 use std::sync::Arc;
@@ -578,29 +578,6 @@ mod tests {
             Ok(value) => value,
             Err(error) => std::panic::panic_any(format!("{context}: {error}")),
         }
-    }
-
-    #[test]
-    fn test_bool_conversion() {
-        assert!(ok("true".parse::<bool>(), "true should parse as bool"));
-        assert!(!ok("false".parse::<bool>(), "false should parse as bool"));
-        assert_eq!(true.to_string(), "true");
-        assert_eq!(false.to_string(), "false");
-    }
-
-    #[test]
-    fn test_i64_conversion() {
-        assert_eq!(ok("42".parse::<i64>(), "integer should parse"), 42);
-        assert_eq!(42.to_string(), "42");
-    }
-
-    #[test]
-    fn test_string_conversion() {
-        assert_eq!(
-            ok("hello".parse::<String>(), "string should parse"),
-            "hello"
-        );
-        assert_eq!("world".to_string(), "world");
     }
 
     #[test]

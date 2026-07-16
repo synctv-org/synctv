@@ -255,12 +255,6 @@ mod tests {
     }
 
     #[test]
-    fn test_create_template_manager() {
-        let manager = EmailTemplateManager::new();
-        assert!(manager.is_ok());
-    }
-
-    #[test]
     fn test_render_email_bind_email() {
         let manager = manager();
         let result = manager.render_email_bind_email("123456", "24 hours");

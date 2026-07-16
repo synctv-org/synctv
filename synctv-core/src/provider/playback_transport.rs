@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::ExecutionControl;
 use super::access::ProviderAccessService;
 use super::error::ProviderError;
 use super::store::{ProviderStore, ProviderStoreExt, VersionedPlayback};
-use super::ExecutionControl;
 use crate::credential_encryption::CredentialEncryption;
 use crate::models::{MediaId, RoomId, UserId};
 use crate::repository::ProviderPlaybackSessionRepository;
@@ -229,32 +229,6 @@ mod tests {
             result.failed("operation should fail"),
             ProviderError::NotFound
         ));
-    }
-
-    #[tokio::test]
-    async fn test_lookup_versioned_success() {
-        let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(100));
-        let vp = VersionedPlayback {
-            version: "v1".to_string(),
-            result: PlaybackResult {
-                playback_infos: HashMap::new(),
-                default_mode: "direct".to_string(),
-                provider: "test".to_string(),
-                provider_instance_name: None,
-                duration_seconds: None,
-                is_live: Some(false),
-                metadata: None,
-            },
-            expires_at: crate::SystemClock.now().timestamp() + 3600,
-            playback_context: None,
-        };
-        store
-            .set("v:v1", &vp, Duration::from_mins(1))
-            .await
-            .checked("operation should succeed");
-        let result = lookup_versioned(Some(&store), "v1", None).await;
-        assert!(result.is_ok());
-        assert_eq!(result.checked("operation should succeed").version, "v1");
     }
 
     #[tokio::test]

@@ -122,6 +122,24 @@ fn test_rewrite_m3u8_absolute_segment_unchanged() {
 }
 
 #[test]
+fn test_rewrite_m3u8_removes_huya_extinf_query_pollution() {
+    let m3u8 = concat!(
+        "#EXTM3U\n",
+        "#EXTINF:1.068,\n",
+        "https://cdn.example.com/live.ts?wsSecret=abc&ratio=4000&EXTINF=1.068\n",
+    );
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://origin.example.com/live.m3u8",
+        "/proxy/segments",
+    )
+    .unwrap();
+
+    assert!(rewritten.contains("wsSecret%3Dabc%26ratio%3D4000"));
+    assert!(!rewritten.contains("EXTINF%3D1%2E068"));
+}
+
+#[test]
 fn test_rewrite_m3u8_ext_x_key_uri_rewritten() {
     let m3u8 = concat!(
         "#EXTM3U\n",

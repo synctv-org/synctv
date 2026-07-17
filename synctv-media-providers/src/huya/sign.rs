@@ -55,11 +55,22 @@ pub(crate) fn sign_anti_code(
         .as_millis();
     let seq_id = timestamp_ms.saturating_add(u128::from(uid));
     let secret_hash = md5_hex(format!("{seq_id}|{ctype}|100"));
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(fm)
-        .map_err(|error| ProviderClientError::InvalidConfig(error.to_string()))?;
-    let template = String::from_utf8(decoded)
-        .map_err(|error| ProviderClientError::InvalidConfig(error.to_string()))?;
+    let preserve_original = |error: String| {
+        if params.contains_key("wsSecret") && params.contains_key("wsTime") {
+            tracing::warn!(%error, "Using Huya's original signed anti-code");
+            Ok(anti_code.to_string())
+        } else {
+            Err(ProviderClientError::InvalidConfig(error))
+        }
+    };
+    let decoded = match base64::engine::general_purpose::STANDARD.decode(fm) {
+        Ok(decoded) => decoded,
+        Err(error) => return preserve_original(error.to_string()),
+    };
+    let template = match String::from_utf8(decoded) {
+        Ok(template) => template,
+        Err(error) => return preserve_original(error.to_string()),
+    };
     let prefix = template.split('_').next().unwrap_or_default();
     let ws_secret = md5_hex(format!(
         "{prefix}_{user}_{stream_name}_{secret_hash}_{ws_time}"
@@ -103,5 +114,16 @@ mod tests {
         assert_eq!(values.get("wsTime").map(String::as_str), Some("65aa0000"));
         assert_eq!(values.get("ctype").map(String::as_str), Some("huya_live"));
         assert_eq!(values.get("wsSecret").map(String::len), Some(32));
+    }
+
+    #[test]
+    fn preserves_server_anti_code_when_fm_template_is_binary() {
+        let anti_code = "wsSecret=server-signature&wsTime=65aa0000&fm=%2Fw%3D%3D";
+
+        assert_eq!(
+            sign_anti_code("stream-name", anti_code, Some(12_345_678), 0)
+                .expect("server anti-code should remain usable"),
+            anti_code
+        );
     }
 }

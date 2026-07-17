@@ -289,11 +289,35 @@ impl HuyaProvider {
             ));
         }
         let default_mode = infos
-            .keys()
-            .find(|name| name.contains("original") && name.contains("hls"))
-            .cloned()
-            .or_else(|| infos.keys().find(|name| name.contains("hls")).cloned())
-            .or_else(|| infos.keys().next().cloned())
+            .iter()
+            .filter(|(_, info)| {
+                info.medias
+                    .first()
+                    .is_some_and(|media| media.format == "m3u8")
+            })
+            .min_by_key(|(name, info)| {
+                let media = info.medias.first();
+                let quality_rank = media.map_or(3, |media| {
+                    if media.name.contains("流畅") {
+                        0
+                    } else if media.name.contains("超清") {
+                        1
+                    } else if media.name.contains("原画")
+                        || media.name.eq_ignore_ascii_case("original")
+                    {
+                        2
+                    } else {
+                        3
+                    }
+                });
+                let bitrate = media
+                    .and_then(|media| media.metadata.as_ref())
+                    .and_then(|metadata| metadata.bitrate)
+                    .unwrap_or(i64::MAX);
+                (quality_rank, bitrate, name.as_str())
+            })
+            .map(|(name, _)| name.clone())
+            .or_else(|| infos.keys().min().cloned())
             .ok_or_else(|| ProviderError::ApiError("Huya playback is empty".to_string()))?;
         Ok(PlaybackResult {
             playback_infos: infos,
@@ -501,19 +525,39 @@ mod tests {
                     kind: HuyaResourceKind::Live,
                     id: "660000".to_string(),
                 },
-                qualities: vec![HuyaQuality {
-                    name: "Original".to_string(),
-                    cdn: "AL".to_string(),
-                    format: HuyaStreamFormat::Hls,
-                    url: "https://hls.test/live.m3u8".to_string(),
-                    bitrate: None,
-                    width: Some(1920),
-                    height: Some(1080),
-                }],
+                qualities: vec![
+                    HuyaQuality {
+                        name: "HDR".to_string(),
+                        cdn: "TX".to_string(),
+                        format: HuyaStreamFormat::Hls,
+                        url: "https://hls.test/hdr.m3u8".to_string(),
+                        bitrate: Some(4_200),
+                        width: Some(1920),
+                        height: Some(1080),
+                    },
+                    HuyaQuality {
+                        name: "Original".to_string(),
+                        cdn: "AL".to_string(),
+                        format: HuyaStreamFormat::Hls,
+                        url: "https://hls.test/live.m3u8".to_string(),
+                        bitrate: None,
+                        width: Some(1920),
+                        height: Some(1080),
+                    },
+                    HuyaQuality {
+                        name: "流畅".to_string(),
+                        cdn: "AL".to_string(),
+                        format: HuyaStreamFormat::Hls,
+                        url: "https://hls.test/smooth.m3u8".to_string(),
+                        bitrate: None,
+                        width: Some(800),
+                        height: Some(480),
+                    },
+                ],
             },
         })
         .expect("playback should map");
-        assert_eq!(result.default_mode, "original_al_hls");
+        assert_eq!(result.default_mode, "al_hls");
         assert!(matches!(
             result.playback_infos["original_al_hls"].medias[0].provider,
             PlaybackMediaProvider::Huya(PlaybackHuyaMedia::Refresh {

@@ -61,8 +61,17 @@ pub async fn get_huya_resource(
             deps.request_control,
         )
         .await
-        .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base("huya", &req.version, "segments");
+        .map_err(|error| {
+            tracing::error!(
+                error = %error,
+                version = %req.version,
+                mode_name = %req.mode_name,
+                media_index = req.media_index,
+                "Failed to resolve Huya playback resource"
+            );
+            ApiError::from(error)
+        })?;
+    let segment_base = playback_provider_route_base("huya", &req.version, "segments.ts");
     let stream = playback_transport_action_to_chunk_stream(
         deps.chunk_deps_with_hls(&segment_base, &claims),
         action,
@@ -97,7 +106,7 @@ pub async fn get_huya_segment(
         .playback_provider_service
         .segment_action(req.target_url, req.range.as_deref())
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base("huya", &req.version, "segments");
+    let segment_base = playback_provider_route_base("huya", &req.version, "segments.ts");
     let stream = playback_transport_action_to_chunk_stream(
         deps.chunk_deps_with_hls(&segment_base, &claims),
         action,

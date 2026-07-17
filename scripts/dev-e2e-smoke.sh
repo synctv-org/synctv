@@ -295,8 +295,8 @@ test_bilibili() {
   cli_json provider bilibili parse --username "$SMOKE_USER" 'https://www.bilibili.com/video/BV1xx411c7mD/' >"$RESULTS_DIR/bilibili-parse.json"
   cli_json provider bilibili login-qr --username "$SMOKE_USER" >"$RESULTS_DIR/bilibili-login-qr.json" || true
   local bvid cid media media_id
-  bvid="$(jq -r '.bvid // .video.bvid // .videos[0].bvid // empty' "$RESULTS_DIR/bilibili-parse.json")"
-  cid="$(jq -r '.cid // .video.cid // .pages[0].cid // .videos[0].cid // empty' "$RESULTS_DIR/bilibili-parse.json")"
+  bvid="$(jq -r '.candidates[0].media.bilibili.video.bvid // .bvid // .video.bvid // .videos[0].bvid // empty' "$RESULTS_DIR/bilibili-parse.json")"
+  cid="$(jq -r '.candidates[0].media.bilibili.video.cid // .cid // .video.cid // .pages[0].cid // .videos[0].cid // empty' "$RESULTS_DIR/bilibili-parse.json")"
   [ -n "$bvid" ] && [ -n "$cid" ] || die "Bilibili parse did not return bvid and cid"
   media="$(cli_json media provider bilibili video --room-id "$ROOM_ID" --username "$SMOKE_USER" --bvid "$bvid" --cid "$cid" --name bilibili-smoke)"
   printf '%s\n' "$media" >"$RESULTS_DIR/bilibili-media.json"

@@ -98,7 +98,7 @@ where
                     }
                     break;
                 }
-                let absolute = make_absolute(trimmed, base.as_ref());
+                let absolute = strip_hls_tag_query_params(&make_absolute(trimmed, base.as_ref()));
                 let proxied = proxy_url_for_target(proxy_base, &absolute);
                 output.push_str(&proxied);
             }
@@ -141,6 +141,37 @@ pub(crate) fn make_absolute(raw: &str, base: Option<&url::Url>) -> String {
     raw.to_string()
 }
 
+fn strip_hls_tag_query_params(raw: &str) -> String {
+    let Some((before_fragment, fragment)) = raw.split_once('#') else {
+        return strip_hls_tag_query_params_before_fragment(raw);
+    };
+    format!(
+        "{}#{fragment}",
+        strip_hls_tag_query_params_before_fragment(before_fragment)
+    )
+}
+
+fn strip_hls_tag_query_params_before_fragment(raw: &str) -> String {
+    let Some((base, query)) = raw.split_once('?') else {
+        return raw.to_string();
+    };
+    let filtered = query
+        .split('&')
+        .filter(|part| {
+            !part
+                .split_once('=')
+                .map_or(*part, |(key, _)| key)
+                .eq_ignore_ascii_case("EXTINF")
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    if filtered.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}?{filtered}")
+    }
+}
+
 /// Rewrite any `URI="..."` values found in an M3U8 tag line.
 /// Returns the rewritten line and the count of URLs rewritten.
 #[must_use]
@@ -173,7 +204,7 @@ where
 
         if let Some(end) = remaining.find('"') {
             let uri = &remaining[..end];
-            let absolute = make_absolute(uri, base);
+            let absolute = strip_hls_tag_query_params(&make_absolute(uri, base));
             let proxied = proxy_url_for_target(proxy_base, &absolute);
             result.push_str(&proxied);
             result.push('"');

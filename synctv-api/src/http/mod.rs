@@ -1356,6 +1356,12 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
+            "/api/playback-providers/huya/{version}/segments.ts",
+            get(providers::playback_provider::huya::get_huya_segment)
+                .head(providers::playback_provider::huya::head_huya_segment)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
             "/api/playback-providers/huya/{version}/danmakus/{modeName}/{mediaIndex}",
             get(providers::playback_provider::huya::watch_huya_danmaku)
                 .options(providers::playback_provider_options_preflight),

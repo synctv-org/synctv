@@ -511,6 +511,7 @@ fn build_playback_provider_services(
     provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     credential_encryption: Option<synctv_core::credential_encryption::CredentialEncryption>,
 ) -> SharedPlaybackProviderServices {
+    let providers = providers.with_credential_repo(credential_repo.clone());
     let playback_transport_services = Arc::new(synctv_core::provider::PlaybackTransportServices {
         room_service: room_service.clone(),
         permission_service: room_service.permission_service().clone(),

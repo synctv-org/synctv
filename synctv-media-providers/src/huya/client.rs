@@ -1,4 +1,7 @@
-use reqwest::header::{COOKIE, ORIGIN, REFERER};
+use std::io::Read;
+
+use flate2::read::GzDecoder;
+use reqwest::header::{ACCEPT_ENCODING, COOKIE, ORIGIN, REFERER};
 use url::Url;
 
 use super::sign::sign_anti_code;
@@ -8,7 +11,7 @@ use super::types::{
     RawLiveInfo, RawMoment, RawStream, WebStreamResponse,
 };
 use crate::{
-    check_response, fetch_json, text_with_limit, ProviderClientError, PROVIDER_USER_AGENT,
+    check_response, fetch_json, ProviderClientError, MAX_RESPONSE_SIZE, PROVIDER_USER_AGENT,
 };
 
 const HUYA_ORIGIN: &str = "https://www.huya.com";
@@ -136,17 +139,23 @@ impl HuyaClient {
             self.endpoints.mobile_base.trim_end_matches('/'),
             room_id
         );
-        let mut request = self.http.get(url);
+        let mut request = self.http.get(url).header(ACCEPT_ENCODING, "identity");
         if let Some(cookie) = session.and_then(|session| session.cookie.as_deref()) {
             request = request.header(COOKIE, cookie);
         }
-        let page = text_with_limit(check_response(request.send().await?).await?).await?;
+        let page = huya_text_with_limit(check_response(request.send().await?).await?).await?;
         Ok(HuyaChatIdentity {
-            presenter_uid: capture_i64(&page, "ayyuid:").ok_or_else(|| {
-                ProviderClientError::Parse("Huya presenter UID was not found".to_string())
-            })?,
-            top_sid: capture_i64(&page, "var TOPSID =").unwrap_or_default(),
-            sub_sid: capture_i64(&page, "var SUBSID =").unwrap_or_default(),
+            presenter_uid: capture_i64(&page, "ayyuid:")
+                .or_else(|| capture_i64(&page, "\"lPresenterUid\":"))
+                .ok_or_else(|| {
+                    ProviderClientError::Parse("Huya presenter UID was not found".to_string())
+                })?,
+            top_sid: capture_i64(&page, "var TOPSID =")
+                .or_else(|| capture_i64(&page, "\"lChannelId\":"))
+                .unwrap_or_default(),
+            sub_sid: capture_i64(&page, "var SUBSID =")
+                .or_else(|| capture_i64(&page, "\"lSubChannelId\":"))
+                .unwrap_or_default(),
         })
     }
 
@@ -163,12 +172,13 @@ impl HuyaClient {
         let mut request = self
             .http
             .get(url)
+            .header(ACCEPT_ENCODING, "identity")
             .header(ORIGIN, HUYA_ORIGIN)
             .header(REFERER, format!("{HUYA_ORIGIN}/"));
         if let Some(cookie) = session.and_then(|session| session.cookie.as_deref()) {
             request = request.header(COOKIE, cookie);
         }
-        let page = text_with_limit(check_response(request.send().await?).await?).await?;
+        let page = huya_text_with_limit(check_response(request.send().await?).await?).await?;
         let stream_json = extract_json_object(&page, "stream:").ok_or_else(|| {
             ProviderClientError::Parse("Huya stream data was not found".to_string())
         })?;
@@ -210,6 +220,7 @@ impl HuyaClient {
             .http
             .get(&self.endpoints.moment)
             .query(&[("videoId", resource.id.as_str())])
+            .header(ACCEPT_ENCODING, "identity")
             .header(ORIGIN, HUYA_ORIGIN)
             .header(REFERER, format!("{HUYA_ORIGIN}/"));
         if let Some(cookie) = session.and_then(|session| session.cookie.as_deref()) {
@@ -261,6 +272,41 @@ fn parse_huya_id(id: &str, kind: HuyaResourceKind) -> Result<HuyaResource, Provi
         kind,
         id: id.to_string(),
     })
+}
+
+async fn huya_text_with_limit(
+    mut response: reqwest::Response,
+) -> Result<String, ProviderClientError> {
+    if let Some(size) = response.content_length() {
+        if usize::try_from(size).map_or(true, |size| size > MAX_RESPONSE_SIZE) {
+            return Err(ProviderClientError::ResponseTooLarge { size });
+        }
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        let size = bytes
+            .len()
+            .checked_add(chunk.len())
+            .ok_or(ProviderClientError::ResponseTooLarge { size: u64::MAX })?;
+        if size > MAX_RESPONSE_SIZE {
+            return Err(ProviderClientError::ResponseTooLarge { size: size as u64 });
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        let mut decoded = Vec::new();
+        GzDecoder::new(bytes.as_slice())
+            .take(MAX_RESPONSE_SIZE as u64 + 1)
+            .read_to_end(&mut decoded)
+            .map_err(|error| ProviderClientError::Parse(error.to_string()))?;
+        if decoded.len() > MAX_RESPONSE_SIZE {
+            return Err(ProviderClientError::ResponseTooLarge {
+                size: decoded.len() as u64,
+            });
+        }
+        bytes = decoded;
+    }
+    String::from_utf8(bytes).map_err(|error| ProviderClientError::Parse(error.to_string()))
 }
 
 fn live_metadata(resource: &HuyaResource, info: &RawLiveInfo, is_live: bool) -> HuyaMetadata {
@@ -327,6 +373,7 @@ fn live_qualities(
             .collect()
     };
     let mut output = Vec::new();
+    let mut first_signing_error = None;
     for stream in streams {
         let presenter_uid = if stream.l_presenter_uid != 0 {
             stream.l_presenter_uid
@@ -335,12 +382,24 @@ fn live_qualities(
         };
         for bitrate in &bitrates {
             if !stream.s_flv_url.is_empty() && !stream.s_flv_url_suffix.is_empty() {
-                let query = sign_anti_code(
+                let query = match sign_anti_code(
                     &stream.s_stream_name,
                     &stream.s_flv_anti_code,
                     u64::try_from(presenter_uid).ok(),
                     bitrate.i_bit_rate,
-                )?;
+                ) {
+                    Ok(query) => query,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            cdn = %stream.s_cdn_type,
+                            format = "flv",
+                            "Skipping Huya stream with malformed anti-code"
+                        );
+                        first_signing_error.get_or_insert(error);
+                        continue;
+                    }
+                };
                 output.push(quality(
                     &stream,
                     bitrate,
@@ -352,12 +411,24 @@ fn live_qualities(
                 ));
             }
             if !stream.s_hls_url.is_empty() && !stream.s_hls_url_suffix.is_empty() {
-                let query = sign_anti_code(
+                let query = match sign_anti_code(
                     &stream.s_stream_name,
                     &stream.s_hls_anti_code,
                     u64::try_from(presenter_uid).ok(),
                     bitrate.i_bit_rate,
-                )?;
+                ) {
+                    Ok(query) => query,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            cdn = %stream.s_cdn_type,
+                            format = "hls",
+                            "Skipping Huya stream with malformed anti-code"
+                        );
+                        first_signing_error.get_or_insert(error);
+                        continue;
+                    }
+                };
                 output.push(quality(
                     &stream,
                     bitrate,
@@ -369,6 +440,14 @@ fn live_qualities(
                 ));
             }
         }
+    }
+    if output.is_empty() {
+        return Err(
+            first_signing_error.unwrap_or_else(|| ProviderClientError::Api {
+                code: 404,
+                message: "Huya live has no playable streams".to_string(),
+            }),
+        );
     }
     Ok(output)
 }
@@ -524,6 +603,9 @@ fn category(value: &serde_json::Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
+    use flate2::{write::GzEncoder, Compression};
     use serde_json::json;
     use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
 
@@ -564,6 +646,12 @@ mod tests {
                     "sHlsUrl": "https://hls.test/live", "sHlsUrlSuffix": "m3u8",
                     "sHlsAntiCode": "wsTime=65aa0000&fm=YWJjX3Q%3D&ctype=huya_live",
                     "sCdnType": "AL", "lPresenterUid": "12345678"
+                }, {
+                    "sStreamName": "broken-stream", "sFlvUrl": "https://broken.test/live",
+                    "sFlvUrlSuffix": "flv", "sFlvAntiCode": "fm=%2Fw%3D%3D",
+                    "sHlsUrl": "https://broken.test/live", "sHlsUrlSuffix": "m3u8",
+                    "sHlsAntiCode": "fm=%2Fw%3D%3D", "sCdnType": "BROKEN",
+                    "lPresenterUid": "12345678"
                 }]
             }],
             "vMultiStreamInfo": [
@@ -571,11 +659,16 @@ mod tests {
                 {"sDisplayName": "超清", "iBitRate": 4000}
             ]
         });
+        let page = format!("<script>var hyPlayerConfig = {{ stream: {stream} }};</script>");
+        let mut compressed_page = GzEncoder::new(Vec::new(), Compression::default());
+        compressed_page
+            .write_all(page.as_bytes())
+            .expect("mock page should compress");
+        let compressed_page = compressed_page.finish().expect("gzip should finish");
         Mock::given(matchers::method("GET"))
             .and(matchers::path("/660000"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
-                "<script>var hyPlayerConfig = {{ stream: {stream} }};</script>"
-            )))
+            .and(matchers::header("accept-encoding", "identity"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(compressed_page))
             .mount(&server)
             .await;
         let client =
@@ -610,6 +703,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(matchers::method("GET"))
             .and(matchers::path("/moment"))
+            .and(matchers::header("accept-encoding", "identity"))
             .and(matchers::query_param("videoId", "1002412640"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "status": 200,
@@ -657,9 +751,12 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(matchers::method("GET"))
             .and(matchers::path("/660000"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                "var TOPSID = '123'; var SUBSID = '456'; window.room = { ayyuid: '789' };",
-            ))
+            .and(matchers::header("accept-encoding", "identity"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(
+                    r#"{"lChannelId":123,"lSubChannelId":456,"lPresenterUid":789}"#,
+                ),
+            )
             .mount(&server)
             .await;
         let client =

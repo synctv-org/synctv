@@ -300,7 +300,7 @@ fn playlist_source_config_to_proto(
         }
         synctv_core::models::PlaylistSourceConfig::Youtube(config) => {
             use source_config_proto::youtube_playlist_source_config::{
-                Channel, LikedVideos, Playlist, Search, Source, Subscriptions, Trending, WatchLater,
+                Channel, LikedVideos, Playlist, Search, Source, Subscriptions, WatchLater,
             };
             let (shared, source) = match config {
                 synctv_core::models::YoutubePlaylistSourceConfig::Playlist {
@@ -330,9 +330,6 @@ fn playlist_source_config_to_proto(
                 ),
                 synctv_core::models::YoutubePlaylistSourceConfig::Search { query, shared } => {
                     (shared, Source::Search(Search { query }))
-                }
-                synctv_core::models::YoutubePlaylistSourceConfig::Trending { shared } => {
-                    (shared, Source::Trending(Trending {}))
                 }
                 synctv_core::models::YoutubePlaylistSourceConfig::Subscriptions { shared } => {
                     (shared, Source::Subscriptions(Subscriptions {}))

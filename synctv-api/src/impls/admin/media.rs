@@ -26,6 +26,24 @@ use super::{
     usize_to_i64_api, usize_to_u32_api, usize_to_u64_api, AdminApiImpl, ApiError,
 };
 
+fn dynamic_pagination_from_proto(
+    pagination: Option<&synctv_proto::client::list_playlist_items_request::Pagination>,
+) -> Result<DynamicPagination, ApiError> {
+    Ok(match pagination {
+        Some(synctv_proto::client::list_playlist_items_request::Pagination::Page(pagination)) => {
+            DynamicPagination::Page {
+                page: page_u32_to_usize(pagination.page)?,
+            }
+        }
+        Some(synctv_proto::client::list_playlist_items_request::Pagination::Cursor(pagination)) => {
+            DynamicPagination::Cursor {
+                cursor: Some(pagination.cursor.clone()).filter(|value| !value.is_empty()),
+            }
+        }
+        None => DynamicPagination::Page { page: 1 },
+    })
+}
+
 impl AdminApiImpl {
     async fn media_to_proto_for_admin_with_loaded_cover(
         &self,
@@ -663,36 +681,9 @@ impl AdminApiImpl {
                 return Ok(response);
             }
 
-            let page = match req.pagination.as_ref() {
-                Some(synctv_proto::client::list_playlist_items_request::Pagination::Page(page)) => {
-                    page_u32_to_usize(page.page)?
-                }
-                _ => 1,
-            };
             let page_size = crate::impls::proto_page_size_u32_usize(req.page_size, 50, 100)?;
             let search = crate::impls::client::media::normalize_non_empty_filter(&req.search);
-            let pagination = if playlist.source_provider
-                == Some(synctv_core::models::SourceProvider::Cloudreve)
-                && search.is_none()
-            {
-                match req.pagination.as_ref() {
-                    Some(synctv_proto::client::list_playlist_items_request::Pagination::Page(
-                        pagination,
-                    )) => DynamicPagination::Page {
-                        page: page_u32_to_usize(pagination.page)?,
-                    },
-                    Some(
-                        synctv_proto::client::list_playlist_items_request::Pagination::Cursor(
-                            pagination,
-                        ),
-                    ) => DynamicPagination::Cursor {
-                        cursor: Some(pagination.cursor.clone()).filter(|value| !value.is_empty()),
-                    },
-                    None => DynamicPagination::Cursor { cursor: None },
-                }
-            } else {
-                DynamicPagination::Page { page }
-            };
+            let pagination = dynamic_pagination_from_proto(req.pagination.as_ref())?;
             let result = self
                 .room_service
                 .media_service()
@@ -1316,5 +1307,38 @@ impl AdminApiImpl {
             moved_count: usize_to_i32_api(media.len(), "moved media count")?,
             media: proto_media,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use synctv_proto::client::{
+        list_playlist_items_request::Pagination, CursorPagination, PagePagination,
+    };
+
+    #[test]
+    fn dynamic_pagination_preserves_page_requests() {
+        let pagination =
+            dynamic_pagination_from_proto(Some(&Pagination::Page(PagePagination { page: 3 })))
+                .expect("page pagination should convert");
+
+        assert_eq!(pagination, DynamicPagination::Page { page: 3 });
+    }
+
+    #[test]
+    fn dynamic_pagination_preserves_cursor_requests() {
+        let pagination =
+            dynamic_pagination_from_proto(Some(&Pagination::Cursor(CursorPagination {
+                cursor: "next-token".to_string(),
+            })))
+            .expect("cursor pagination should convert");
+
+        assert_eq!(
+            pagination,
+            DynamicPagination::Cursor {
+                cursor: Some("next-token".to_string())
+            }
+        );
     }
 }

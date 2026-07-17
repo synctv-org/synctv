@@ -309,7 +309,6 @@ message YoutubePlaylistSourceConfig {
   message Search {
     string query = 1 [(buf.validate.field).string.min_len = 1];
   }
-  message Trending {}
   message Subscriptions {}
   message LikedVideos {}
   message WatchLater {}
@@ -319,10 +318,9 @@ message YoutubePlaylistSourceConfig {
     Playlist playlist = 2;
     Channel channel = 3;
     Search search = 4;
-    Trending trending = 5;
-    Subscriptions subscriptions = 6;
-    LikedVideos liked_videos = 7;
-    WatchLater watch_later = 8;
+    Subscriptions subscriptions = 5;
+    LikedVideos liked_videos = 6;
+    WatchLater watch_later = 7;
   }
 }
 

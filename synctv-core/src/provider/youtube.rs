@@ -452,7 +452,6 @@ impl YoutubeProvider {
             YoutubePlaylistSourceConfig::Playlist { shared, .. }
             | YoutubePlaylistSourceConfig::Channel { shared, .. }
             | YoutubePlaylistSourceConfig::Search { shared, .. }
-            | YoutubePlaylistSourceConfig::Trending { shared }
             | YoutubePlaylistSourceConfig::Subscriptions { shared }
             | YoutubePlaylistSourceConfig::LikedVideos { shared }
             | YoutubePlaylistSourceConfig::WatchLater { shared } => *shared,
@@ -502,11 +501,6 @@ impl YoutubeProvider {
             YoutubePlaylistSourceConfig::Search { query, .. } => {
                 self.client
                     .search(query, cursor, visitor_data, cookie)
-                    .await?
-            }
-            YoutubePlaylistSourceConfig::Trending { .. } => {
-                self.client
-                    .feed("FEtrending", cursor, visitor_data, cookie)
                     .await?
             }
             YoutubePlaylistSourceConfig::Subscriptions { .. } => {

@@ -11,7 +11,7 @@ Use this guide when adding a Provider or extending an existing one. Each Provide
 
 1. **One model boundary per Provider.** Keep DTOs, URL parsing, signing, pagination, login, playback formats, and error mapping in that Provider module.
 2. **Model actual upstream capabilities.** Video sites, live platforms, media servers, and NAS systems keep their own source, target, pagination, and playback metadata.
-3. **Reuse stable core contracts.** `MediaProvider`, `DynamicFolder`, `PlaybackResult`, `SourceConfig`, `ProviderTarget`, credential repositories, and transport actions are shared boundaries.
+3. **Reuse stable core contracts.** `MediaProvider`, `DynamicPlaylistProvider`, `PlaybackResult`, `SourceConfig`, `ProviderTarget`, credential repositories, and transport actions are shared boundaries.
 4. **Carry typed configs through discovery and creation.** Parse, resolve, list, search, and preview results return media or playlist source configs that clients can submit directly.
 5. **Resolve every generated URL.** Stream, manifest, segment, subtitle, danmaku, thumbnail, and cover URLs need matching resolvers and tests.
 6. **Keep local and remote behavior aligned.** Embedded clients, remote-provider gRPC, and public SyncTV HTTP/gRPC expose the same business semantics.
@@ -41,7 +41,7 @@ Use this guide when adding a Provider or extending an existing one. Each Provide
 1. Define the Provider's actual capabilities and product workflow.
 2. Implement the private upstream client, DTOs, and WireMock contract tests.
 3. Define persistent source configs, targets, and credential models.
-4. Implement Core `MediaProvider`, plus `DynamicFolder` when browsing is supported.
+4. Implement Core `MediaProvider`, plus `DynamicPlaylistProvider` when dynamic playlists are supported.
 5. Add internal remote-provider protobuf, server, and client transport.
 6. Add public source-config, Provider API, and playback-provider protobuf.
 7. Wire adapter, management, HTTP, gRPC, OpenAPI, and CLI layers.

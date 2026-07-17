@@ -11,7 +11,7 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 
 1. **一个 Provider 一个模型边界。** DTO、URL 解析、签名、分页、登录、播放格式和错误映射放在该 Provider 模块内。
 2. **按 Provider 实际能力建模。** 视频网站、直播平台、媒体服务器和 NAS 使用各自的 source、target、pagination 和 playback metadata。
-3. **复用稳定核心契约。** `MediaProvider`、`DynamicFolder`、`PlaybackResult`、`SourceConfig`、`ProviderTarget`、凭据仓库和 transport action 是跨 Provider 共享边界。
+3. **复用稳定核心契约。** `MediaProvider`、`DynamicPlaylistProvider`、`PlaybackResult`、`SourceConfig`、`ProviderTarget`、凭据仓库和 transport action 是跨 Provider 共享边界。
 4. **typed config 贯穿发现与创建。** Parse、resolve、list、search 和 preview 返回可直接提交的 media 或 playlist source config。
 5. **生成 URL 必须可解析。** Provider 生成的 stream、manifest、segment、subtitle、danmaku、thumbnail 和 cover URL 都需要对应 resolver 与测试。
 6. **本地与远程行为一致。** 内嵌 client、remote provider gRPC 和公开 SyncTV HTTP/gRPC 暴露相同业务语义。
@@ -41,7 +41,7 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 1. 定义 Provider 的实际能力和产品流程。
 2. 实现独立上游 client、DTO 与 WireMock 契约测试。
 3. 定义持久化 source config、target 和凭据模型。
-4. 实现 Core `MediaProvider`，需要浏览时实现 `DynamicFolder`。
+4. 实现 Core `MediaProvider`，需要动态播放列表能力时实现 `DynamicPlaylistProvider`。
 5. 添加内部 remote-provider protobuf、server 和 client transport。
 6. 添加公开 source config、Provider API 和 playback-provider protobuf。
 7. 接入 adapter、management、HTTP、gRPC、OpenAPI 和 CLI。

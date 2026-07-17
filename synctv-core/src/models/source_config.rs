@@ -741,10 +741,6 @@ pub enum YoutubePlaylistSourceConfig {
         #[serde(default)]
         shared: bool,
     },
-    Trending {
-        #[serde(default)]
-        shared: bool,
-    },
     Subscriptions {
         #[serde(default)]
         shared: bool,

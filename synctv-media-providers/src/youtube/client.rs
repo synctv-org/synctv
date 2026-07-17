@@ -276,7 +276,7 @@ impl YoutubeClient {
         }
         let query = cursor.filter(|value| !value.trim().is_empty()).map_or_else(
             || json!({"browseId": format!("VL{playlist_id}")}),
-            |cursor| json!({"continuation": cursor}),
+            continuation_query,
         );
         self.list_api("browse", query, visitor_data, cookie).await
     }
@@ -292,7 +292,7 @@ impl YoutubeClient {
         let browse_id = normalize_channel_id(browse_id)?;
         let query = cursor.filter(|value| !value.trim().is_empty()).map_or_else(
             || json!({"browseId": browse_id, "params": tab.params()}),
-            |cursor| json!({"continuation": cursor}),
+            continuation_query,
         );
         self.list_api("browse", query, visitor_data, cookie).await
     }
@@ -304,10 +304,9 @@ impl YoutubeClient {
         visitor_data: Option<&str>,
         cookie: Option<&str>,
     ) -> Result<YoutubeListPage, ProviderClientError> {
-        let query = cursor.filter(|value| !value.trim().is_empty()).map_or_else(
-            || json!({"browseId": browse_id}),
-            |cursor| json!({"continuation": cursor}),
-        );
+        let query = cursor
+            .filter(|value| !value.trim().is_empty())
+            .map_or_else(|| json!({"browseId": browse_id}), continuation_query);
         self.list_api("browse", query, visitor_data, cookie).await
     }
 
@@ -326,7 +325,7 @@ impl YoutubeClient {
         }
         let body = cursor.filter(|value| !value.trim().is_empty()).map_or_else(
             || json!({"query": query, "params": "EgIQAQ%3D%3D"}),
-            |cursor| json!({"continuation": cursor}),
+            continuation_query,
         );
         self.list_api("search", body, visitor_data, cookie).await
     }
@@ -365,6 +364,13 @@ impl YoutubeClient {
             fetch_json(with_youtube_cookie_auth(request, cookie)).await?;
         Ok(parse_list_page(&value))
     }
+}
+
+fn continuation_query(cursor: &str) -> serde_json::Value {
+    json!({
+        "continuation": percent_encoding::percent_decode_str(cursor.trim())
+            .decode_utf8_lossy()
+    })
 }
 
 fn with_youtube_cookie_auth(
@@ -602,6 +608,16 @@ fn visit_renderers(value: &serde_json::Value, page: &mut YoutubeListPage) {
                             }
                         }
                     }
+                    "lockupViewModel" => {
+                        if let Some(item) = parse_lockup_view_model(value) {
+                            push_unique_list_item(page, item);
+                        }
+                    }
+                    "shortsLockupViewModel" => {
+                        if let Some(item) = parse_shorts_lockup_view_model(value) {
+                            push_unique_list_item(page, item);
+                        }
+                    }
                     "continuationCommand" => {
                         if page.next_cursor.is_none() {
                             page.next_cursor = value
@@ -616,6 +632,157 @@ fn visit_renderers(value: &serde_json::Value, page: &mut YoutubeListPage) {
         }
         _ => {}
     }
+}
+
+fn push_unique_list_item(page: &mut YoutubeListPage, item: YoutubeListItem) {
+    if !page
+        .items
+        .iter()
+        .any(|existing| existing.video_id == item.video_id)
+    {
+        page.items.push(item);
+    }
+}
+
+fn parse_lockup_view_model(value: &serde_json::Value) -> Option<YoutubeListItem> {
+    if value.get("contentType").and_then(serde_json::Value::as_str)
+        != Some("LOCKUP_CONTENT_TYPE_VIDEO")
+    {
+        return None;
+    }
+    let video_id = value.get("contentId")?.as_str()?.to_string();
+    let metadata = value.pointer("/metadata/lockupMetadataViewModel")?;
+    let title = metadata.pointer("/title/content")?.as_str()?.to_string();
+    let metadata_rows = metadata
+        .pointer("/metadata/contentMetadataViewModel/metadataRows")
+        .and_then(serde_json::Value::as_array);
+    let metadata_parts = metadata_rows
+        .into_iter()
+        .flatten()
+        .flat_map(|row| {
+            row.get("metadataParts")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    let metadata_text = metadata_parts
+        .iter()
+        .filter_map(|part| {
+            part.pointer("/text/content")
+                .and_then(serde_json::Value::as_str)
+        })
+        .collect::<Vec<_>>();
+    let channel_part = metadata_parts.iter().find(|part| {
+        part.pointer("/text/commandRuns/0/onTap/innertubeCommand/browseEndpoint/browseId")
+            .is_some()
+    });
+    let channel_name = channel_part
+        .and_then(|part| part.pointer("/text/content"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let channel_id = channel_part
+        .and_then(|part| {
+            part.pointer("/text/commandRuns/0/onTap/innertubeCommand/browseEndpoint/browseId")
+        })
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let badge_text = value
+        .pointer("/contentImage/thumbnailViewModel/overlays")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|overlay| {
+            overlay
+                .pointer("/thumbnailBottomOverlayViewModel/badges")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|badge| {
+            badge
+                .pointer("/thumbnailBadgeViewModel/text")
+                .and_then(serde_json::Value::as_str)
+        })
+        .collect::<Vec<_>>();
+
+    Some(YoutubeListItem {
+        video_id,
+        title,
+        channel_name,
+        channel_id,
+        duration_seconds: badge_text.iter().find_map(|text| parse_duration(text)),
+        view_count_text: metadata_text
+            .iter()
+            .find(|text| text.to_ascii_lowercase().contains("view"))
+            .copied()
+            .unwrap_or_default()
+            .to_string(),
+        published_time_text: metadata_text
+            .iter()
+            .find(|text| {
+                let text = text.to_ascii_lowercase();
+                text.contains("ago") || text.contains("streamed") || text.contains("premieres")
+            })
+            .copied()
+            .unwrap_or_default()
+            .to_string(),
+        thumbnail: image_sources_thumbnail(
+            value.pointer("/contentImage/thumbnailViewModel/image/sources"),
+        ),
+        is_live: badge_text
+            .iter()
+            .any(|text| text.to_ascii_uppercase().contains("LIVE")),
+        is_short: false,
+    })
+}
+
+fn parse_shorts_lockup_view_model(value: &serde_json::Value) -> Option<YoutubeListItem> {
+    Some(YoutubeListItem {
+        video_id: value
+            .pointer("/onTap/innertubeCommand/reelWatchEndpoint/videoId")?
+            .as_str()?
+            .to_string(),
+        title: value
+            .pointer("/overlayMetadata/primaryText/content")?
+            .as_str()?
+            .to_string(),
+        channel_name: String::new(),
+        channel_id: String::new(),
+        duration_seconds: None,
+        view_count_text: value
+            .pointer("/overlayMetadata/secondaryText/content")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        published_time_text: String::new(),
+        thumbnail: image_sources_thumbnail(
+            value.pointer("/thumbnailViewModel/thumbnailViewModel/image/sources"),
+        ),
+        is_live: false,
+        is_short: true,
+    })
+}
+
+fn image_sources_thumbnail(value: Option<&serde_json::Value>) -> Option<YoutubeThumbnail> {
+    value
+        .and_then(serde_json::Value::as_array)
+        .and_then(|sources| sources.last())
+        .and_then(|thumbnail| {
+            Some(YoutubeThumbnail {
+                url: thumbnail.get("url")?.as_str()?.to_string(),
+                width: thumbnail
+                    .get("width")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok()),
+                height: thumbnail
+                    .get("height")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok()),
+            })
+        })
 }
 
 fn parse_video_renderer(value: &serde_json::Value, is_short: bool) -> Option<YoutubeListItem> {
@@ -1010,6 +1177,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn playlist_decodes_continuation_cursor_before_sending_json() {
+        crate::install_process_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/youtubei/v1/browse"))
+            .and(body_string_contains(r#""continuation":"next-token==""#))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"contents": []})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = YoutubeClient::with_endpoint(&server.uri(), reqwest::Client::new())
+            .expect("client should build");
+
+        client
+            .playlist("PL123", Some("next-token%3D%3D"), None, None)
+            .await
+            .expect("playlist continuation should succeed");
+    }
+
+    #[test]
+    fn list_page_extracts_current_lockup_view_models() {
+        let page = parse_list_page(&json!({
+            "contents": [
+                {"lockupViewModel": {
+                    "contentId": "dQw4w9WgXcQ",
+                    "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+                    "contentImage": {"thumbnailViewModel": {
+                        "image": {"sources": [{
+                            "url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+                            "width": 336,
+                            "height": 188
+                        }]},
+                        "overlays": [{"thumbnailBottomOverlayViewModel": {"badges": [{
+                            "thumbnailBadgeViewModel": {"text": "3:32"}
+                        }]}}]
+                    }},
+                    "metadata": {"lockupMetadataViewModel": {
+                        "title": {"content": "Video title"},
+                        "metadata": {"contentMetadataViewModel": {"metadataRows": [
+                            {"metadataParts": [{"text": {
+                                "content": "Channel",
+                                "commandRuns": [{"onTap": {"innertubeCommand": {
+                                    "browseEndpoint": {"browseId": "UC123"}
+                                }}}]
+                            }}]},
+                            {"metadataParts": [
+                                {"text": {"content": "1K views"}},
+                                {"text": {"content": "2 days ago"}}
+                            ]}
+                        ]}}
+                    }}
+                }},
+                {"shortsLockupViewModel": {
+                    "onTap": {"innertubeCommand": {"reelWatchEndpoint": {
+                        "videoId": "S069PVmKXZ4"
+                    }}},
+                    "overlayMetadata": {
+                        "primaryText": {"content": "Short title"},
+                        "secondaryText": {"content": "20K views"}
+                    },
+                    "thumbnailViewModel": {"thumbnailViewModel": {"image": {
+                        "sources": [{
+                            "url": "https://i.ytimg.com/vi/S069PVmKXZ4/oar2.jpg",
+                            "width": 405,
+                            "height": 720
+                        }]
+                    }}}
+                }}
+            ]
+        }));
+
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.items[0].video_id, "dQw4w9WgXcQ");
+        assert_eq!(page.items[0].channel_id, "UC123");
+        assert_eq!(page.items[0].duration_seconds, Some(212));
+        assert_eq!(page.items[0].view_count_text, "1K views");
+        assert_eq!(page.items[0].published_time_text, "2 days ago");
+        assert!(page.items[1].is_short);
+        assert_eq!(page.items[1].view_count_text, "20K views");
+    }
+
+    #[tokio::test]
     async fn channel_tabs_and_native_feeds_use_distinct_browse_contracts() {
         crate::install_process_crypto_provider();
         let server = MockServer::start().await;
@@ -1017,7 +1266,6 @@ mod tests {
             "EgZ2aWRlb3PyBgQKAjoA",
             "EgZzaG9ydHPyBgUKA5oBAA==",
             "EgdzdHJlYW1z8gYECgJ6AA==",
-            "FEtrending",
             "FEsubscriptions",
         ] {
             Mock::given(method("POST"))
@@ -1043,10 +1291,6 @@ mod tests {
                 .await
                 .expect("channel tab should succeed");
         }
-        client
-            .feed("FEtrending", None, None, None)
-            .await
-            .expect("trending should succeed");
         client
             .feed("FEsubscriptions", None, None, Some("SID=session"))
             .await

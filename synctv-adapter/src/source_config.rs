@@ -282,9 +282,6 @@ pub fn playlist_source_config_from_proto(
                         shared,
                     }
                 }
-                Source::Trending(_) => {
-                    synctv_core::models::YoutubePlaylistSourceConfig::Trending { shared }
-                }
                 Source::Subscriptions(_) => {
                     synctv_core::models::YoutubePlaylistSourceConfig::Subscriptions { shared }
                 }

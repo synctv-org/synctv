@@ -220,7 +220,7 @@ impl AcFunClient {
             category: None,
             thumbnail_url: nonempty(&info.cover_url),
             avatar_url: nonempty(&info.user.avatar_image),
-            description: nonempty(&info.description),
+            description: info.description.as_deref().and_then(nonempty),
             tags: info
                 .tag_list
                 .into_iter()
@@ -738,6 +738,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_video_page_and_hls_representations() {
+        crate::install_process_crypto_provider();
         let server = MockServer::start().await;
         let play = serde_json::json!({
             "adaptationSet": [{"representation": [{
@@ -755,8 +756,8 @@ mod tests {
         let page = format!(
             r#"<script>window.videoInfo = {{
                 "title":"Main", "coverUrl":"https://img.example/cover.jpg",
-                "description":"Description", "viewCount":12, "likeCountShow":3,
-                "commentCountShow":4,
+                "description":null, "viewCount":"12", "likeCountShow":"483",
+                "commentCountShow":"4",
                 "user":{{"name":"Author","href":"/u/42","avatarImage":"https://img.example/avatar.jpg"}},
                 "tagList":[{{"name":"Rust"}}],
                 "currentVideoInfo":{{"id":1002,"title":"Part 2","ksPlayJson":{},"durationMillis":90000,"uploadTime":1700000000000}},
@@ -778,6 +779,10 @@ mod tests {
             .expect("test operation should succeed");
         assert_eq!(media.metadata.title, "Main P02 Part 2");
         assert_eq!(media.metadata.author_id.as_deref(), Some("42"));
+        assert_eq!(media.metadata.description, None);
+        assert_eq!(media.metadata.view_count, Some(12));
+        assert_eq!(media.metadata.like_count, Some(483));
+        assert_eq!(media.metadata.comment_count, Some(4));
         assert_eq!(media.metadata.danmaku_resource_id.as_deref(), Some("1002"));
         assert_eq!(media.playback.qualities[0].height, Some(1080));
         assert_eq!(media.playback.qualities[0].fps, Some(60));

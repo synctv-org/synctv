@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 #[cfg(unix)]
 use hyper_util::rt::TokioIo;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use synctv_management::proto::management_service_client::ManagementServiceClient;
 use tonic::transport::Channel;
@@ -96,7 +97,8 @@ fn normalize_endpoint(raw: &str) -> Result<String> {
         return normalize_unix_endpoint(path);
     }
 
-    if trimmed.starts_with('/') {
+    if Path::new(trimmed).is_absolute() || (!trimmed.contains("://") && trimmed.ends_with(".sock"))
+    {
         return normalize_unix_endpoint(trimmed);
     }
 
@@ -120,10 +122,17 @@ fn normalize_unix_endpoint(path: &str) -> Result<String> {
     if path.is_empty() {
         bail!("unix endpoint path is empty");
     }
-    if !path.starts_with('/') {
-        bail!("unix endpoint path must be absolute");
-    }
-    Ok(format!("unix://{path}"))
+
+    let path = Path::new(path);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("failed to resolve current directory for unix endpoint")?
+            .join(path)
+    };
+    let normalized: PathBuf = absolute.components().collect();
+    Ok(format!("unix://{}", normalized.display()))
 }
 
 fn parse_admin_endpoint(raw: &str) -> Result<AdminEndpoint> {
@@ -1479,6 +1488,62 @@ mod tests {
         let raw = format!("unix://{}", default_management_unix_socket_path().display());
         let normalized = normalize_endpoint(&raw).expect("unix socket endpoint should normalize");
         assert_eq!(normalized, raw);
+    }
+
+    #[test]
+    fn normalize_endpoint_resolves_relative_unix_socket_path() {
+        let _env_lock = process_env_test_lock().blocking_lock();
+        let dir = tempdir().expect("temp dir should be created");
+        let _cwd = CurrentDirGuard::change_to(dir.path());
+
+        let normalized = normalize_endpoint("./run/synctv.sock")
+            .expect("relative unix socket endpoint should normalize");
+        let current_dir = std::env::current_dir().expect("current dir should be readable");
+
+        assert_eq!(
+            normalized,
+            format!("unix://{}", current_dir.join("run/synctv.sock").display())
+        );
+    }
+
+    #[test]
+    fn normalize_endpoint_recognizes_unix_socket_filename() {
+        let _env_lock = process_env_test_lock().blocking_lock();
+        let dir = tempdir().expect("temp dir should be created");
+        let _cwd = CurrentDirGuard::change_to(dir.path());
+
+        let normalized =
+            normalize_endpoint("synctv.sock").expect("unix socket filename should normalize");
+        let current_dir = std::env::current_dir().expect("current dir should be readable");
+
+        assert_eq!(
+            normalized,
+            format!("unix://{}", current_dir.join("synctv.sock").display())
+        );
+    }
+
+    #[test]
+    fn normalize_endpoint_preserves_explicit_http_url_ending_in_sock() {
+        let normalized = normalize_endpoint("http://example.com/synctv.sock")
+            .expect("explicit HTTP endpoint should normalize");
+
+        assert_eq!(normalized, "http://example.com/synctv.sock");
+    }
+
+    #[test]
+    fn normalize_endpoint_resolves_relative_unix_socket_scheme() {
+        let _env_lock = process_env_test_lock().blocking_lock();
+        let dir = tempdir().expect("temp dir should be created");
+        let _cwd = CurrentDirGuard::change_to(dir.path());
+
+        let normalized = normalize_endpoint("unix://./run/synctv.sock")
+            .expect("relative unix socket endpoint with scheme should normalize");
+        let current_dir = std::env::current_dir().expect("current dir should be readable");
+
+        assert_eq!(
+            normalized,
+            format!("unix://{}", current_dir.join("run/synctv.sock").display())
+        );
     }
 
     #[test]

@@ -147,7 +147,7 @@ pub struct GlobalConfigArgs {
     #[arg(short = 'v', long, global = true, action = ArgAction::Count)]
     pub verbose: u8,
 
-    /// SyncTV management endpoint (`unix:///path` or `http://host:port`)
+    /// SyncTV management endpoint (`path.sock`, `unix:///path`, or `http://host:port`)
     #[arg(long, global = true)]
     pub endpoint: Option<String>,
 

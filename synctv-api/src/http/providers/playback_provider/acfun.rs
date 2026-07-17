@@ -141,7 +141,7 @@ async fn acfun_resource(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/acfun/{version}/segments",
+        path = "/api/playback-providers/acfun/{version}/segments.ts",
         tag = "AcFun Playback Provider",
         params(
             ("version" = String, Path), ("targetUrl" = String, Query),

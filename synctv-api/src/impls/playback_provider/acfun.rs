@@ -15,6 +15,7 @@ use super::common::{
 use crate::impls::ApiError;
 
 const PROVIDER: &str = synctv_core::provider::AcFunProvider::NAME;
+const SEGMENT_ROUTE: &str = "segments.ts";
 
 pub struct AcFunPlaybackProviderDeps<'a> {
     pub playback_provider_service: &'a AcFunPlaybackProviderService,
@@ -66,7 +67,7 @@ pub async fn get_acfun_resource(
         )
         .await
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base(PROVIDER, &req.version, "segments");
+    let segment_base = playback_provider_route_base(PROVIDER, &req.version, SEGMENT_ROUTE);
     let stream = playback_transport_action_to_chunk_stream(
         deps.chunk_deps_with_hls(&segment_base, &claims),
         action,
@@ -101,7 +102,7 @@ pub async fn get_acfun_segment(
         .playback_provider_service
         .segment_action(req.target_url, req.range.as_deref())
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base(PROVIDER, &req.version, "segments");
+    let segment_base = playback_provider_route_base(PROVIDER, &req.version, SEGMENT_ROUTE);
     let stream = playback_transport_action_to_chunk_stream(
         deps.chunk_deps_with_hls(&segment_base, &claims),
         action,

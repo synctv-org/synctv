@@ -1425,7 +1425,7 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/acfun/{version}/segments",
+            "/api/playback-providers/acfun/{version}/segments.ts",
             get(providers::playback_provider::acfun::get_acfun_segment)
                 .head(providers::playback_provider::acfun::head_acfun_segment)
                 .options(providers::playback_provider_options_preflight),

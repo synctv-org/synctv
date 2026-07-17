@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{de::Error as _, Deserialize, Deserializer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcFunResourceKind {
@@ -116,18 +116,39 @@ pub(crate) struct VideoPage {
     pub title: String,
     #[serde(default)]
     pub cover_url: String,
-    #[serde(default)]
-    pub description: String,
+    pub description: Option<String>,
     #[serde(default)]
     pub user: PageUser,
     #[serde(default)]
     pub tag_list: Vec<PageTag>,
+    #[serde(default, deserialize_with = "deserialize_optional_u64")]
     pub view_count: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_optional_u64")]
     pub like_count_show: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_optional_u64")]
     pub comment_count_show: Option<u64>,
     pub current_video_info: VideoInfo,
     #[serde(default)]
     pub video_list: Vec<VideoPart>,
+}
+
+fn deserialize_optional_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<serde_json::Value>::deserialize(deserializer)? {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Number(value)) => value
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| D::Error::custom("expected a non-negative integer")),
+        Some(serde_json::Value::String(value)) => {
+            value.parse::<u64>().map(Some).map_err(D::Error::custom)
+        }
+        Some(value) => Err(D::Error::custom(format!(
+            "expected an integer, numeric string, or null, got {value}"
+        ))),
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]

@@ -1737,7 +1737,7 @@ mod tests {
         let doc = openapi_json()?;
         for path in [
             "/api/playback-providers/acfun/{version}/resources/{modeName}/{mediaIndex}",
-            "/api/playback-providers/acfun/{version}/segments",
+            "/api/playback-providers/acfun/{version}/segments.ts",
             "/api/playback-providers/acfun/{version}/danmaku-files/{modeName}/{mediaIndex}",
             "/api/playback-providers/acfun/{version}/danmakus/{modeName}/{mediaIndex}",
         ] {

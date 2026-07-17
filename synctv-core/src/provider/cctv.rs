@@ -139,8 +139,14 @@ impl CctvProvider {
     fn playback_result(resource: &str, media: CctvMedia) -> Result<PlaybackResult, ProviderError> {
         let CctvMedia { metadata, playback } = media;
         let mut playback_infos = HashMap::new();
+        let mut first_mode = None;
+        let mut video_hls_mode = None;
         for (index, stream) in playback.streams.into_iter().enumerate() {
             let mode = unique_mode_name(&playback_infos, &stream.name, stream.kind, index);
+            first_mode.get_or_insert_with(|| mode.clone());
+            if stream.kind == CctvStreamKind::VideoHls {
+                video_hls_mode.get_or_insert_with(|| mode.clone());
+            }
             let format = match stream.kind {
                 CctvStreamKind::VideoHls | CctvStreamKind::AudioHls => "m3u8",
                 CctvStreamKind::Http => detect_direct_url_format(&stream.url),
@@ -168,15 +174,8 @@ impl CctvProvider {
                 },
             );
         }
-        let default_mode = playback_infos
-            .iter()
-            .find(|(_, info)| {
-                info.medias
-                    .first()
-                    .is_some_and(|media| media.format == "m3u8")
-            })
-            .or_else(|| playback_infos.iter().next())
-            .map(|(name, _)| name.clone())
+        let default_mode = video_hls_mode
+            .or(first_mode)
             .ok_or_else(|| ProviderError::ApiError("CCTV playback is empty".to_string()))?;
         let duration_seconds = metadata.duration_seconds;
         Ok(PlaybackResult {
@@ -370,16 +369,24 @@ mod tests {
                 },
                 playback: CctvPlayback {
                     video_id: "5c846c0518444308ba32c4159df3b3e0".to_string(),
-                    streams: vec![CctvStream {
-                        name: "HLS".to_string(),
-                        url: "https://media.test/master.m3u8".to_string(),
-                        kind: CctvStreamKind::VideoHls,
-                    }],
+                    streams: vec![
+                        CctvStream {
+                            name: "Audio".to_string(),
+                            url: "https://media.test/audio.m3u8".to_string(),
+                            kind: CctvStreamKind::AudioHls,
+                        },
+                        CctvStream {
+                            name: "HLS".to_string(),
+                            url: "https://media.test/master.m3u8".to_string(),
+                            kind: CctvStreamKind::VideoHls,
+                        },
+                    ],
                 },
             },
         )
         .expect("CCTV playback should map");
         assert_eq!(result.duration_seconds, Some(123.0));
+        assert_eq!(result.default_mode, "hls_hls");
         assert!(matches!(
             result.playback_infos[&result.default_mode].medias[0].provider,
             PlaybackMediaProvider::Cctv(PlaybackCctvMedia::Refresh {

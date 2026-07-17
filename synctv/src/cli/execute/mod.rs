@@ -751,11 +751,11 @@ pub(in crate::cli) fn build_get_playback_cli_output(
                 }
 
                 match playback_media.format.as_str() {
-                    "m3u8" if hls_pull_url.is_none() => {
+                    "m3u8" if is_default || hls_pull_url.is_none() => {
                         hls_pull_url = Some(output.url.clone());
                         hls_absolute_pull_url.clone_from(&output.absolute_url);
                     }
-                    "flv" if flv_pull_url.is_none() => {
+                    "flv" if is_default || flv_pull_url.is_none() => {
                         flv_pull_url = Some(output.url.clone());
                         flv_absolute_pull_url.clone_from(&output.absolute_url);
                     }

@@ -85,7 +85,7 @@ impl Playlist {
         self.parent_id.is_none()
     }
 
-    /// Check if this is a dynamic folder
+    /// Check if this is a dynamic playlist
     #[must_use]
     pub const fn is_dynamic(&self) -> bool {
         self.source_provider.is_some()

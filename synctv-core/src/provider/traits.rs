@@ -500,15 +500,15 @@ pub trait MediaProvider: Send + Sync {
         source_config: &crate::models::MediaSourceConfig,
     ) -> Result<PlaybackResult, ProviderError>;
 
-    /// Cast to `DynamicFolder` trait if supported
+    /// Cast to `DynamicPlaylistProvider` trait if supported
     ///
-    /// Providers that implement `DynamicFolder` trait should override this
-    /// to return `Some(self)` for dynamic folder listing capability.
+    /// Providers that implement `DynamicPlaylistProvider` trait should override this
+    /// to return `Some(self)` for dynamic playlist listing capability.
     ///
     /// # Returns
-    /// - `Some(&dyn DynamicFolder)` if provider supports dynamic folders
+    /// - `Some(&dyn DynamicPlaylistProvider)` if provider supports dynamic playlists
     /// - `None` if provider doesn't support this capability
-    fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
+    fn as_dynamic_playlist_provider(&self) -> Option<&dyn DynamicPlaylistProvider> {
         None
     }
 
@@ -606,28 +606,25 @@ pub trait BilibiliLiveDanmakuProvider: Send + Sync {
     ) -> Result<BilibiliLiveDanmakuStream, ProviderError>;
 }
 
-/// Optional trait for providers that support dynamic folders
-///
-/// Implemented by: Alist, Emby
-/// Not implemented by: Bilibili, `DirectUrl`, RTMP
+/// Optional trait for providers that support dynamic playlists
 ///
 /// This trait enables providers to:
-/// 1. List contents of dynamic folders (playlists)
+/// 1. List contents of provider-backed dynamic playlists
 /// 2. Provide next item for auto-play
 #[async_trait]
-pub trait DynamicFolder: MediaProvider {
+pub trait DynamicPlaylistProvider: MediaProvider {
     /// List playlist contents
     ///
-    /// Used to browse dynamic folders and load their contents.
+    /// Used to browse a dynamic playlist and load its contents.
     ///
     /// # Arguments
     /// - `ctx`: Provider context (includes `user_id`, `room_id`, etc.)
-    /// - `playlist`: The dynamic folder (playlist object)
-    /// - `target`: Provider-facing target payload within the dynamic folder
+    /// - `playlist`: The dynamic playlist (playlist object)
+    /// - `target`: Provider-facing target payload within the dynamic playlist
     /// - `query`: Provider-side list/search options. Page numbers are 1-indexed at this
     ///   boundary; callers must pass `1` for the first page.
     /// # Returns
-    /// List of items (videos, folders) in the dynamic folder
+    /// List of items (videos, folders) in the dynamic playlist
     async fn list_playlist(
         &self,
         ctx: &ProviderContext<'_>,
@@ -653,9 +650,9 @@ pub trait DynamicFolder: MediaProvider {
     ///
     /// # Arguments
     /// - `ctx`: Provider context (includes `user_id`, `room_id`, etc.)
-    /// - `playlist`: The dynamic folder (playlist object)
+    /// - `playlist`: The dynamic playlist (playlist object)
     /// - `playing_media`: Currently playing media object
-    /// - `target`: Current provider-facing target payload in the dynamic folder
+    /// - `target`: Current provider-facing target payload in the dynamic playlist
     /// - `play_mode`: Play mode (sequential, repeat one, repeat all, shuffle)
     ///
     /// # Returns
@@ -676,7 +673,7 @@ pub trait DynamicFolder: MediaProvider {
     ///
     /// // Alist folder scenario
     /// // target = provider-defined folder cursor
-    /// // Returns next playable item in that dynamic folder
+    /// // Returns next playable item in that dynamic playlist
     /// ```
     async fn next(
         &self,

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     models::{Playlist, PlaylistId, PlaylistSourceConfig, RoomId, SourceProvider, UserId},
     provider::{
-        DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, DynamicListResult,
+        DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPlaylistProvider,
         MediaProvider, NextPlayItem, ProviderContext,
     },
     Error, Result,
@@ -28,10 +28,10 @@ pub struct DynamicPlaylistPreviewRequest {
 }
 
 impl PreparedDynamicPlaylist {
-    pub(super) fn dynamic_folder(&self) -> Result<&dyn DynamicFolder> {
-        self.provider.as_dynamic_folder().ok_or_else(|| {
+    pub(super) fn dynamic_playlist_provider(&self) -> Result<&dyn DynamicPlaylistProvider> {
+        self.provider.as_dynamic_playlist_provider().ok_or_else(|| {
             Error::InvalidInput(format!(
-                "Provider {} does not support dynamic folders",
+                "Provider {} does not support dynamic playlists",
                 self.provider_name
             ))
         })
@@ -103,7 +103,7 @@ impl MediaService {
             .await
             .map_err(Error::from)?;
         prepared
-            .dynamic_folder()?
+            .dynamic_playlist_provider()?
             .list_playlist(&ctx, &prepared.playlist, target.as_ref(), query)
             .await
             .map_err(Error::from)
@@ -191,7 +191,7 @@ impl MediaService {
             self.dynamic_playlist_context(&prepared, Some(&admin_user_id), Some(&admin_user_id));
 
         prepared
-            .dynamic_folder()?
+            .dynamic_playlist_provider()?
             .list_playlist(&ctx, &prepared.playlist, target, query)
             .await
             .map_err(Error::from)
@@ -209,7 +209,7 @@ impl MediaService {
             self.dynamic_playlist_context(&prepared, Some(&admin_user_id), Some(&admin_user_id));
 
         prepared
-            .dynamic_folder()?
+            .dynamic_playlist_provider()?
             .browse_path(&ctx, &prepared.playlist, target)
             .await
             .map_err(Error::from)
@@ -235,7 +235,7 @@ impl MediaService {
         let ctx = self.dynamic_playlist_context(&prepared, Some(&user_id), Some(&user_id));
 
         prepared
-            .dynamic_folder()?
+            .dynamic_playlist_provider()?
             .list_playlist(&ctx, &prepared.playlist, target, query)
             .await
             .map_err(Error::from)
@@ -252,7 +252,7 @@ impl MediaService {
         let ctx = self.dynamic_playlist_context(&prepared, Some(&user_id), Some(&user_id));
 
         prepared
-            .dynamic_folder()?
+            .dynamic_playlist_provider()?
             .browse_path(&ctx, &prepared.playlist, target)
             .await
             .map_err(Error::from)
@@ -269,7 +269,7 @@ impl MediaService {
         let ctx = self.dynamic_playlist_context(&prepared, Some(&user_id), Some(&user_id));
 
         prepared
-            .dynamic_folder()?
+            .dynamic_playlist_provider()?
             .resolve_item(&ctx, &prepared.playlist, target)
             .await
             .map_err(Error::from)
@@ -286,7 +286,7 @@ impl MediaService {
         let ctx = self.dynamic_playlist_context(&prepared, None, None);
 
         prepared
-            .dynamic_folder()?
+            .dynamic_playlist_provider()?
             .next(&ctx, &prepared.playlist, target, play_mode)
             .await
             .map_err(Error::from)

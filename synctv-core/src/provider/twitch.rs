@@ -10,8 +10,8 @@ use futures::StreamExt;
 use sha2::{Digest, Sha256};
 
 use super::{
-    DirectoryItem, DirectoryItemThumbnail, DynamicFolder, DynamicListQuery, DynamicListResult,
-    DynamicPagination, ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult,
+    DirectoryItem, DirectoryItemThumbnail, DynamicListQuery, DynamicListResult, DynamicPagination,
+    DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult,
     ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::{
@@ -931,6 +931,10 @@ impl MediaProvider for TwitchProvider {
         Self::NAME
     }
 
+    fn as_dynamic_playlist_provider(&self) -> Option<&dyn DynamicPlaylistProvider> {
+        Some(self)
+    }
+
     async fn generate_playback(
         &self,
         ctx: &ProviderContext<'_>,
@@ -1149,7 +1153,7 @@ impl MediaProvider for TwitchProvider {
 }
 
 #[async_trait]
-impl DynamicFolder for TwitchProvider {
+impl DynamicPlaylistProvider for TwitchProvider {
     async fn list_playlist(
         &self,
         ctx: &ProviderContext<'_>,
@@ -1388,6 +1392,14 @@ impl DynamicFolder for TwitchProvider {
 mod tests {
     use super::*;
     use synctv_media_providers::twitch::{TwitchQuality, TwitchResource};
+
+    #[test]
+    fn provider_exposes_dynamic_playlist_capability() {
+        crate::install_process_crypto_provider();
+        let provider = TwitchProvider::new();
+
+        assert!(provider.as_dynamic_playlist_provider().is_some());
+    }
 
     fn item(kind: TwitchTargetKind, id: &str) -> DirectoryItem {
         DirectoryItem {

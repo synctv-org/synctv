@@ -30,7 +30,7 @@ pub(super) fn normalize_dynamic_playlist_fields(
 
     if let Some(provider) = normalized_provider {
         let source_config = source_config.ok_or_else(|| {
-            Error::InvalidInput("source_config is required for dynamic folders".to_string())
+            Error::InvalidInput("source_config is required for dynamic playlists".to_string())
         })?;
 
         Ok((Some(provider), Some(source_config), normalized_instance))
@@ -73,9 +73,9 @@ pub(super) async fn validate_dynamic_playlist_source_with_dependencies(
         .await?;
     let provider_name = config_provider.as_str();
 
-    if provider.as_dynamic_folder().is_none() {
+    if provider.as_dynamic_playlist_provider().is_none() {
         return Err(Error::InvalidInput(format!(
-            "Provider {provider_name} does not support dynamic folders"
+            "Provider {provider_name} does not support dynamic playlists"
         )));
     }
     ensure_provider_credential_repo_available(provider_name, deps.credential_repo)?;
@@ -115,9 +115,9 @@ pub(super) async fn validate_dynamic_playlist_source_with_dependencies(
             .providers_manager
             .resolve_provider(config_provider, bound_instance.as_deref())
             .await?;
-        if provider.as_dynamic_folder().is_none() {
+        if provider.as_dynamic_playlist_provider().is_none() {
             return Err(Error::InvalidInput(format!(
-                "Provider {provider_name} does not support dynamic folders"
+                "Provider {provider_name} does not support dynamic playlists"
             )));
         }
         provider

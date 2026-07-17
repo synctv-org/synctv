@@ -5,9 +5,9 @@
 use super::{
     access::BilibiliAccess,
     provider_client::{create_remote_bilibili_client, BilibiliClientArc, ProviderClientManager},
-    DirectoryItem, DirectoryItemSourceConfig, DirectoryItemThumbnail, DynamicFolder,
-    DynamicListQuery, DynamicListResult, DynamicPagination, ItemType, MediaProvider, NextPlayItem,
-    PlaybackInfo, PlaybackResult, PreparedSourceConfig, ProviderContext,
+    DirectoryItem, DirectoryItemSourceConfig, DirectoryItemThumbnail, DynamicListQuery,
+    DynamicListResult, DynamicPagination, DynamicPlaylistProvider, ItemType, MediaProvider,
+    NextPlayItem, PlaybackInfo, PlaybackResult, PreparedSourceConfig, ProviderContext,
     ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
 };
 use aes_gcm::{
@@ -3158,7 +3158,7 @@ impl MediaProvider for BilibiliProvider {
         Ok(source_config.into())
     }
 
-    fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
+    fn as_dynamic_playlist_provider(&self) -> Option<&dyn DynamicPlaylistProvider> {
         Some(self)
     }
 
@@ -3168,7 +3168,7 @@ impl MediaProvider for BilibiliProvider {
 }
 
 #[async_trait]
-impl DynamicFolder for BilibiliProvider {
+impl DynamicPlaylistProvider for BilibiliProvider {
     async fn list_playlist(
         &self,
         ctx: &ProviderContext<'_>,

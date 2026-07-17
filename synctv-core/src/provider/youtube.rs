@@ -9,10 +9,10 @@ use chrono::Utc;
 use sha2::{Digest, Sha256};
 
 use super::{
-    DirectoryItem, DirectoryItemSourceConfig, DirectoryItemThumbnail, DynamicFolder,
-    DynamicListQuery, DynamicListResult, DynamicPagination, ItemType, MediaProvider, NextPlayItem,
-    PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency, ProviderError,
-    SourceConfig, SourceCover,
+    DirectoryItem, DirectoryItemSourceConfig, DirectoryItemThumbnail, DynamicListQuery,
+    DynamicListResult, DynamicPagination, DynamicPlaylistProvider, ItemType, MediaProvider,
+    NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency,
+    ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::{
     MediaSourceConfig, PlayMode, PlaybackMedia, PlaybackMediaMetadata, PlaybackMediaProvider,
@@ -843,7 +843,15 @@ fn youtube_caption_url(
     let mut url = reqwest::Url::parse(base_url).map_err(|error| {
         ProviderError::InvalidUrl(format!("Invalid YouTube subtitle URL: {error}"))
     })?;
-    url.query_pairs_mut().append_pair("fmt", "vtt");
+    let source_query = url
+        .query_pairs()
+        .filter(|(key, _)| key != "fmt" && key != "tlang")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    url.set_query(None);
+    url.query_pairs_mut()
+        .extend_pairs(source_query)
+        .append_pair("fmt", "vtt");
     if let Some(language_code) = target_language_code {
         url.query_pairs_mut().append_pair("tlang", language_code);
     }
@@ -967,6 +975,10 @@ fn mark_youtube_playback_resources(result: &mut PlaybackResult, version: &str, e
 impl MediaProvider for YoutubeProvider {
     fn name(&self) -> &'static str {
         Self::NAME
+    }
+
+    fn as_dynamic_playlist_provider(&self) -> Option<&dyn DynamicPlaylistProvider> {
+        Some(self)
     }
 
     async fn generate_playback(
@@ -1106,7 +1118,7 @@ impl MediaProvider for YoutubeProvider {
 }
 
 #[async_trait]
-impl DynamicFolder for YoutubeProvider {
+impl DynamicPlaylistProvider for YoutubeProvider {
     async fn list_playlist(
         &self,
         ctx: &ProviderContext<'_>,
@@ -1484,29 +1496,33 @@ mod tests {
     }
 
     #[test]
-    fn translated_caption_url_keeps_source_query_and_adds_target_language() {
+    fn provider_exposes_dynamic_playlist_capability() {
+        crate::install_process_crypto_provider();
+        let provider = YoutubeProvider::new();
+
+        assert!(provider.as_dynamic_playlist_provider().is_some());
+    }
+
+    #[test]
+    fn translated_caption_url_replaces_format_and_target_language() {
         let url = youtube_caption_url(
-            "https://caption.example/api?v=dQw4w9WgXcQ&lang=en",
+            "https://caption.example/api?v=dQw4w9WgXcQ&lang=en&fmt=srv3&tlang=fr",
             Some("zh-Hans"),
         )
         .expect("caption URL should build");
-        let query = url.query_pairs().collect::<HashMap<_, _>>();
+        let query = url.query_pairs().collect::<Vec<_>>();
 
-        assert_eq!(
-            query.get("v").map(std::convert::AsRef::as_ref),
-            Some("dQw4w9WgXcQ")
-        );
-        assert_eq!(
-            query.get("lang").map(std::convert::AsRef::as_ref),
-            Some("en")
-        );
-        assert_eq!(
-            query.get("fmt").map(std::convert::AsRef::as_ref),
-            Some("vtt")
-        );
-        assert_eq!(
-            query.get("tlang").map(std::convert::AsRef::as_ref),
-            Some("zh-Hans")
-        );
+        let value = |key: &str| {
+            query
+                .iter()
+                .filter(|(candidate, _)| candidate == key)
+                .map(|(_, value)| value.as_ref())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(value("v"), vec!["dQw4w9WgXcQ"]);
+        assert_eq!(value("lang"), vec!["en"]);
+        assert_eq!(value("fmt"), vec!["vtt"]);
+        assert_eq!(value("tlang"), vec!["zh-Hans"]);
     }
 }

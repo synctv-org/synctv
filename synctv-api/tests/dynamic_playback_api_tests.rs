@@ -18,9 +18,9 @@ use synctv_core::{
         UserStatus,
     },
     provider::{
-        DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery,
-        DynamicListResult, ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult,
-        ProviderContext, ProviderError,
+        DirectoryItem, DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult,
+        DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem, PlaybackInfo,
+        PlaybackResult, ProviderContext, ProviderError,
     },
     repository::{MediaRepository, ProviderInstanceRepository, UserRepository},
     service::{
@@ -266,7 +266,7 @@ impl MediaProvider for StubDynamicProvider {
         })
     }
 
-    fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
+    fn as_dynamic_playlist_provider(&self) -> Option<&dyn DynamicPlaylistProvider> {
         Some(self)
     }
 }
@@ -295,7 +295,7 @@ fn provider_playback_info(url: &str) -> PlaybackInfo {
 }
 
 #[async_trait]
-impl DynamicFolder for StubDynamicProvider {
+impl DynamicPlaylistProvider for StubDynamicProvider {
     async fn list_playlist(
         &self,
         _ctx: &ProviderContext<'_>,

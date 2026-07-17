@@ -5696,6 +5696,71 @@ fn build_get_playback_cli_output_omits_absolute_urls_for_explicit_endpoint_mode(
 }
 
 #[test]
+fn build_get_playback_cli_output_prefers_default_hls_media() {
+    let media = |url: &str| synctv_proto::client::PlaybackMedia {
+        name: String::new(),
+        url: url.into(),
+        headers: std::collections::HashMap::new(),
+        format: "m3u8".into(),
+        expire_at: None,
+        metadata: None,
+    };
+    let output = build_get_playback_cli_output(
+        synctv_proto::client::GetPlaybackResponse {
+            playback_state: None,
+            playback: Some(synctv_proto::client::Playback {
+                media_id: "media-1".into(),
+                playlist_id: String::new(),
+                room_id: "room-1".into(),
+                name: "CCTV example".into(),
+                playlist_position: 1.0,
+                provider: synctv_proto::source_config::SourceProvider::Cctv as i32,
+                provider_instance_name: String::new(),
+                playback_infos: std::collections::HashMap::from([
+                    (
+                        "audio_audio".to_string(),
+                        synctv_proto::client::PlaybackInfo {
+                            thumbnail: None,
+                            medias: vec![media("/resources/audio_audio/0")],
+                            default_media_index: Some(0),
+                            subtitles: Vec::new(),
+                            default_subtitle_index: None,
+                            danmakus: Vec::new(),
+                            default_danmaku_index: None,
+                        },
+                    ),
+                    (
+                        "hls_hls".to_string(),
+                        synctv_proto::client::PlaybackInfo {
+                            thumbnail: None,
+                            medias: vec![media("/resources/hls_hls/0")],
+                            default_media_index: Some(0),
+                            subtitles: Vec::new(),
+                            default_subtitle_index: None,
+                            danmakus: Vec::new(),
+                            default_danmaku_index: None,
+                        },
+                    ),
+                ]),
+                default_mode: "hls_hls".into(),
+                metadata: None,
+                expires_at: None,
+                duration_seconds: None,
+                is_live: false,
+                target: None,
+            }),
+        },
+        &GlobalConfigArgs {
+            endpoint: Some("http://127.0.0.1:50339".into()),
+            ..GlobalConfigArgs::default()
+        },
+    );
+
+    assert_eq!(output.hls_pull_url.as_deref(), Some("/resources/hls_hls/0"));
+    assert_eq!(output.hls_pull_url, output.default_pull_url);
+}
+
+#[test]
 fn resolve_remote_endpoint_returns_none_when_cli_endpoint_is_absent() {
     let _env_lock = acquire_env_test_lock();
     let _env_guard = EnvVarGuard::remove("SYNCTV_MANAGEMENT_ENDPOINT");

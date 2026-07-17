@@ -51,7 +51,7 @@ fn ensure_playlist_creator_can_edit(playlist: &Playlist, user_id: &UserId) -> Re
 ///
 /// Responsible for playlist/folder operations:
 /// - Create static folders (manually added media)
-/// - Create dynamic folders (Alist/Emby directories)
+/// - Create provider-backed dynamic playlists
 /// - Tree structure navigation
 #[derive(Clone)]
 pub struct PlaylistService {

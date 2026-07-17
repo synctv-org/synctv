@@ -1062,7 +1062,7 @@ impl MediaService {
                     ));
                 };
                 let Some(item) = prepared
-                    .dynamic_folder()?
+                    .dynamic_playlist_provider()?
                     .resolve_item(&ctx, &prepared.playlist, target)
                     .await?
                 else {

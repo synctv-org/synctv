@@ -110,7 +110,7 @@ symphonia.workspace = true
 
 
 [features]
-default = []
+default = ["tls-aws-lc"]
 k8s = []
 test-support = []
 tls-aws-lc = [

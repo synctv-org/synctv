@@ -75,8 +75,8 @@ pub use synctv_common::{ExecutionControl, ExecutionControlError};
 pub use traits::{
     BilibiliLiveDanmakuEvent, BilibiliLiveDanmakuEventKind, BilibiliLiveDanmakuProvider,
     BilibiliLiveDanmakuStream, DirectoryItem, DirectoryItemSourceConfig, DirectoryItemThumbnail,
-    DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, DynamicListResult,
-    DynamicPagination, ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult,
+    DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
+    DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult,
     PreparedSourceConfig, ProviderCredentialDependency, ProviderPlaybackSessionLifecycle,
     SourceConfig, SourceConfigKind, SourceCover,
 };

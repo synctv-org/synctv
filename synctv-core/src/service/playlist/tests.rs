@@ -1,8 +1,8 @@
 use super::*;
 use crate::models::{PlaylistId, RoomId, SourceProvider, UserId};
 use crate::provider::{
-    DynamicFolder, DynamicListQuery, MediaProvider, NextPlayItem, PlaybackResult, ProviderContext,
-    ProviderCredentialDependency, ProviderError, SourceConfig,
+    DynamicListQuery, DynamicPlaylistProvider, MediaProvider, NextPlayItem, PlaybackResult,
+    ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig,
 };
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -73,7 +73,7 @@ impl MediaProvider for CredentialOwnerCheckProvider {
         ))
     }
 
-    fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
+    fn as_dynamic_playlist_provider(&self) -> Option<&dyn DynamicPlaylistProvider> {
         Some(self)
     }
 
@@ -105,7 +105,7 @@ impl MediaProvider for CredentialOwnerCheckProvider {
 }
 
 #[async_trait]
-impl DynamicFolder for CredentialOwnerCheckProvider {
+impl DynamicPlaylistProvider for CredentialOwnerCheckProvider {
     async fn list_playlist(
         &self,
         _ctx: &ProviderContext<'_>,
@@ -154,7 +154,7 @@ impl MediaProvider for AlistCredentialDependencyCheckProvider {
         ))
     }
 
-    fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
+    fn as_dynamic_playlist_provider(&self) -> Option<&dyn DynamicPlaylistProvider> {
         Some(self)
     }
 
@@ -186,7 +186,7 @@ impl MediaProvider for AlistCredentialDependencyCheckProvider {
 }
 
 #[async_trait]
-impl DynamicFolder for AlistCredentialDependencyCheckProvider {
+impl DynamicPlaylistProvider for AlistCredentialDependencyCheckProvider {
     async fn list_playlist(
         &self,
         _ctx: &ProviderContext<'_>,
@@ -309,14 +309,14 @@ fn playlist_edit_requires_matching_creator() {
 }
 
 #[test]
-fn dynamic_folder_allows_default_provider_instance() {
+fn dynamic_playlist_allows_default_provider_instance() {
     let (source_provider, source_config, provider_instance_name) = ok(
         normalize_dynamic_playlist_fields(
             Some(SourceProvider::Alist),
             Some(alist_playlist_source_config("srv", "/movies")),
             None,
         ),
-        "dynamic folder should allow default provider instance",
+        "dynamic playlist should allow default provider instance",
     );
 
     assert_eq!(source_provider, Some(SourceProvider::Alist));
@@ -345,14 +345,14 @@ fn static_folder_rejects_dynamic_fields_without_provider() {
 }
 
 #[test]
-fn dynamic_folder_fields_normalize_provider_instance_name() {
+fn dynamic_playlist_fields_normalize_provider_instance_name() {
     let (source_provider, source_config, provider_instance_name) = ok(
         normalize_dynamic_playlist_fields(
             Some(SourceProvider::Emby),
             Some(emby_playlist_source_config("emby", "abc123")),
             Some("  emby-main  ".to_string()),
         ),
-        "dynamic folder fields should normalize",
+        "dynamic playlist fields should normalize",
     );
 
     assert_eq!(source_provider, Some(SourceProvider::Emby));
@@ -498,7 +498,7 @@ async fn validate_dynamic_playlist_source_rejects_oversized_config_before_provid
         Error::InvalidInput(message) => {
             assert!(message.contains("source_config too large"));
             assert!(
-                !message.contains("does not support dynamic folders"),
+                !message.contains("does not support dynamic playlists"),
                 "size guard should run before provider-specific validation"
             );
         }

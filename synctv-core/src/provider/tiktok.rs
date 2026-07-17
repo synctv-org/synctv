@@ -9,8 +9,8 @@ use chrono::Utc;
 use sha2::{Digest, Sha256};
 
 use super::{
-    DirectoryItem, DirectoryItemThumbnail, DynamicFolder, DynamicListQuery, DynamicListResult,
-    DynamicPagination, ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult,
+    DirectoryItem, DirectoryItemThumbnail, DynamicListQuery, DynamicListResult, DynamicPagination,
+    DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult,
     ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::{
@@ -784,7 +784,7 @@ impl MediaProvider for TikTokProvider {
         .await
     }
 
-    fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
+    fn as_dynamic_playlist_provider(&self) -> Option<&dyn DynamicPlaylistProvider> {
         Some(self)
     }
 
@@ -861,7 +861,7 @@ impl MediaProvider for TikTokProvider {
 }
 
 #[async_trait]
-impl DynamicFolder for TikTokProvider {
+impl DynamicPlaylistProvider for TikTokProvider {
     async fn list_playlist(
         &self,
         ctx: &ProviderContext<'_>,

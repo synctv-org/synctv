@@ -9,10 +9,10 @@ use futures::{stream, StreamExt};
 use sha2::{Digest, Sha256};
 
 use super::{
-    DirectoryItem, DirectoryItemThumbnail, DynamicBrowsePathSegment, DynamicFolder,
-    DynamicListQuery, DynamicListResult, DynamicPagination, ItemType, MediaProvider, NextPlayItem,
-    PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency, ProviderError,
-    SourceConfig, SourceCover,
+    DirectoryItem, DirectoryItemThumbnail, DynamicBrowsePathSegment, DynamicListQuery,
+    DynamicListResult, DynamicPagination, DynamicPlaylistProvider, ItemType, MediaProvider,
+    NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency,
+    ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::media::{
     PlaybackExternalMedia, PlaybackExternalSubtitle, PlaybackMedia, PlaybackMediaProvider,
@@ -811,7 +811,7 @@ impl MediaProvider for CloudreveProvider {
             .map(|thumbnail| SourceCover::Url { url: thumbnail.url }))
     }
 
-    fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
+    fn as_dynamic_playlist_provider(&self) -> Option<&dyn DynamicPlaylistProvider> {
         Some(self)
     }
 
@@ -833,7 +833,7 @@ impl MediaProvider for CloudreveProvider {
 }
 
 #[async_trait]
-impl DynamicFolder for CloudreveProvider {
+impl DynamicPlaylistProvider for CloudreveProvider {
     async fn list_playlist(
         &self,
         ctx: &ProviderContext<'_>,
@@ -1189,7 +1189,7 @@ mod tests {
     }
 
     #[test]
-    fn classifies_dynamic_folder_items() {
+    fn classifies_dynamic_playlist_items() {
         assert_eq!(
             CloudreveProvider::item_type(&file("Season 1", "cloudreve://my/Shows/Season 1", 1)),
             Some(ItemType::Playlist)

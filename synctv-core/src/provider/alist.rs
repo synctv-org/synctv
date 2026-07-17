@@ -7,10 +7,11 @@ use super::upstream_transport::alist as alist_upstream;
 use super::{
     access::{AlistAccess, AlistBinding},
     provider_client::{create_remote_alist_client, AlistClientArc, ProviderClientManager},
-    DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, DynamicListResult,
-    DynamicPagination, ItemType, MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo,
-    PlaybackResult, PlaybackStreamPreference, PlaybackSubtitlePreference, PreparedSourceConfig,
-    ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
+    DirectoryItem, DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult,
+    DynamicPagination, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
+    PlaybackClientProfile, PlaybackInfo, PlaybackResult, PlaybackStreamPreference,
+    PlaybackSubtitlePreference, PreparedSourceConfig, ProviderContext,
+    ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::media::{
     AlistPlaybackMetadata, AlistTranscodingTaskMetadata, AlistVideoPreviewMetadata,
@@ -2054,7 +2055,7 @@ impl MediaProvider for AlistProvider {
         .await
     }
 
-    fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
+    fn as_dynamic_playlist_provider(&self) -> Option<&dyn DynamicPlaylistProvider> {
         Some(self)
     }
 }
@@ -2210,11 +2211,11 @@ impl AlistProvider {
     }
 }
 
-/// Implement `DynamicFolder` trait for Alist
+/// Implement `DynamicPlaylistProvider` trait for Alist
 ///
 /// Allows browsing Alist directories and getting next item for auto-play
 #[async_trait]
-impl DynamicFolder for AlistProvider {
+impl DynamicPlaylistProvider for AlistProvider {
     async fn list_playlist(
         &self,
         ctx: &ProviderContext<'_>,

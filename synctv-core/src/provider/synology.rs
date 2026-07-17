@@ -10,10 +10,10 @@ use rand::seq::IndexedRandom;
 use sha2::{Digest, Sha256};
 
 use super::{
-    DirectoryItem, DirectoryItemThumbnail, DynamicBrowsePathSegment, DynamicFolder,
-    DynamicListQuery, DynamicListResult, DynamicPagination, ItemType, MediaProvider, NextPlayItem,
-    PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency, ProviderError,
-    ProviderPlaybackSessionLifecycle, SourceConfig, SourceCover,
+    DirectoryItem, DirectoryItemThumbnail, DynamicBrowsePathSegment, DynamicListQuery,
+    DynamicListResult, DynamicPagination, DynamicPlaylistProvider, ItemType, MediaProvider,
+    NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency,
+    ProviderError, ProviderPlaybackSessionLifecycle, SourceConfig, SourceCover,
 };
 use crate::models::{
     detect_direct_url_format, normalize_provider_instance_name,
@@ -917,7 +917,7 @@ impl MediaProvider for SynologyProvider {
         Self::NAME
     }
 
-    fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
+    fn as_dynamic_playlist_provider(&self) -> Option<&dyn DynamicPlaylistProvider> {
         Some(self)
     }
 
@@ -1139,7 +1139,7 @@ impl ProviderPlaybackSessionLifecycle for SynologyProvider {
 }
 
 #[async_trait]
-impl DynamicFolder for SynologyProvider {
+impl DynamicPlaylistProvider for SynologyProvider {
     async fn list_playlist(
         &self,
         ctx: &ProviderContext<'_>,

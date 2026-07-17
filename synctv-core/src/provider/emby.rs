@@ -6,10 +6,10 @@ use super::{
     access::EmbyAccess,
     provider_client::{create_remote_emby_client, EmbyClientArc, ProviderClientManager},
     DirectoryItem, DirectoryItemSourceConfig, DirectoryItemThumbnail, DynamicBrowsePathSegment,
-    DynamicFolder, DynamicListQuery, DynamicListResult, DynamicPagination, ItemType, MediaProvider,
-    NextPlayItem, PlaybackClientProfile, PlaybackInfo, PlaybackResult, PreparedSourceConfig,
-    ProviderContext, ProviderCredentialDependency, ProviderError, ProviderPlaybackSessionLifecycle,
-    SourceConfig, SourceCover,
+    DynamicListQuery, DynamicListResult, DynamicPagination, DynamicPlaylistProvider, ItemType,
+    MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo, PlaybackResult,
+    PreparedSourceConfig, ProviderContext, ProviderCredentialDependency, ProviderError,
+    ProviderPlaybackSessionLifecycle, SourceConfig, SourceCover,
 };
 use crate::models::media::{
     EmbyPlaybackMetadata, PlaybackEmbyMedia, PlaybackEmbySubtitle, PlaybackMedia,
@@ -1780,7 +1780,7 @@ impl MediaProvider for EmbyProvider {
         Ok(result)
     }
 
-    fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
+    fn as_dynamic_playlist_provider(&self) -> Option<&dyn DynamicPlaylistProvider> {
         Some(self)
     }
 
@@ -2172,7 +2172,7 @@ impl EmbyProvider {
 }
 
 #[async_trait]
-impl DynamicFolder for EmbyProvider {
+impl DynamicPlaylistProvider for EmbyProvider {
     async fn list_playlist(
         &self,
         ctx: &ProviderContext<'_>,

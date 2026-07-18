@@ -83,20 +83,20 @@ fn test_transaction_permission_helper_uses_runtime_member_default() {
     );
     let runtime_member_default = RoomPermissionSet(
         RoomPermissionSet::default_member().0
-            & !crate::models::RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
+            & !crate::models::RoomAdminPermissionBits::MANAGE_OWN_MEDIA,
     );
 
     assert!(
         RoomPermissionSet::default_member()
-            .has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE),
-        "static defaults include CREATE_MEDIA_RESOURCE, so this test guards against falling back to them"
+            .has(crate::models::RoomPermission::MANAGE_OWN_MEDIA),
+        "static defaults include MANAGE_OWN_MEDIA, so this test guards against falling back to them"
     );
     assert!(
         !super::has_room_permission_from_base(
             &settings,
             &member,
             runtime_member_default,
-            crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+            crate::models::RoomPermission::MANAGE_OWN_MEDIA,
         ),
         "transactional permission checks must honor runtime role defaults"
     );
@@ -195,7 +195,7 @@ fn test_settings_validate_permissions_member_escalation_is_rejected() {
 fn test_validate_override_bits_for_guest_rejects_member_bitspace() {
     let result = validate_override_bits_for_role(
         RoomRole::Guest,
-        RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE,
+        RoomMemberPermissionBits::MANAGE_OWN_MEDIA,
         0,
     );
     assert!(result.is_err());
@@ -235,23 +235,23 @@ fn test_settings_validate_permissions_within_limits_is_ok() {
 fn test_admin_permissions_with_added_and_removed() {
     let settings = RoomSettings {
         admin_added_permissions: crate::models::room_settings::AdminAddedPermissions(
-            crate::models::RoomAdminPermissionBits::PLAY_CONTROL,
+            crate::models::RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE,
         ),
         admin_removed_permissions: crate::models::room_settings::AdminRemovedPermissions(
-            crate::models::RoomAdminPermissionBits::CHAT,
+            crate::models::RoomAdminPermissionBits::SEND_CHAT_MESSAGES,
         ),
         ..RoomSettings::default()
     };
     let base = RoomPermissionSet(
-        crate::models::RoomAdminPermissionBits::CHAT
-            | crate::models::RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
+        crate::models::RoomAdminPermissionBits::SEND_CHAT_MESSAGES
+            | crate::models::RoomAdminPermissionBits::MANAGE_OWN_MEDIA,
     );
 
     let result = settings.admin_permissions(base);
-    // Should have CREATE_MEDIA_RESOURCE and PLAY_CONTROL, but not CHAT
-    assert!(result.has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE));
-    assert!(result.has(crate::models::RoomPermission::PLAY_CONTROL));
-    assert!(!result.has(crate::models::RoomPermission::CHAT));
+    // Should have MANAGE_OWN_MEDIA and CONTROL_PLAYBACK_STATE, but not CHAT
+    assert!(result.has(crate::models::RoomPermission::MANAGE_OWN_MEDIA));
+    assert!(result.has(crate::models::RoomPermission::CONTROL_PLAYBACK_STATE));
+    assert!(!result.has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
 }
 
 #[test]
@@ -333,15 +333,15 @@ fn test_room_member_add_and_remove_permissions() {
         crate::models::RoomMemberPermissionBits::USE_WEBRTC
     );
 
-    member.remove_permissions(crate::models::RoomMemberPermissionBits::CHAT);
+    member.remove_permissions(crate::models::RoomMemberPermissionBits::SEND_CHAT_MESSAGES);
     assert_eq!(
         member.removed_permissions,
-        crate::models::RoomMemberPermissionBits::CHAT
+        crate::models::RoomMemberPermissionBits::SEND_CHAT_MESSAGES
     );
 
     let effective = member.effective_permissions(RoomPermissionSet::default_member());
     assert!(effective.has(crate::models::RoomPermission::USE_WEBRTC));
-    assert!(!effective.has(crate::models::RoomPermission::CHAT));
+    assert!(!effective.has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
 }
 
 /// Replicates the `room_creation.enabled` guard logic

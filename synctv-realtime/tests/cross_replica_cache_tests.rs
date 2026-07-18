@@ -180,11 +180,11 @@ async fn test_cross_replica_permission_changed() {
             role_changed: true,
             new_permissions: synctv_core::models::RoomPermissionSet(
                 synctv_core::models::RoomPermissionSet::default_member().0
-                    | synctv_core::models::RoomAdminPermissionBits::KICK_MEMBER,
+                    | synctv_core::models::RoomAdminPermissionBits::REMOVE_MEMBERS,
             ),
             role: 3,
             added_permissions: synctv_core::models::RoomPermissionSet(
-                synctv_core::models::RoomAdminPermissionBits::KICK_MEMBER,
+                synctv_core::models::RoomAdminPermissionBits::REMOVE_MEMBERS,
             ),
             removed_permissions: synctv_core::models::RoomPermissionSet::empty(),
             admin_added_permissions: synctv_core::models::RoomPermissionSet::empty(),
@@ -210,8 +210,8 @@ async fn test_cross_replica_permission_changed() {
     {
         assert_eq!(*target_user_id, UserId::expect_positive(10_000_038));
         assert!(
-            new_permissions.has(synctv_core::models::RoomPermission::KICK_MEMBER),
-            "New permissions should include KICK_MEMBER"
+            new_permissions.has(synctv_core::models::RoomPermission::REMOVE_MEMBERS),
+            "New permissions should include REMOVE_MEMBERS"
         );
         assert_eq!(changed_by_username, "admin_user");
     } else {

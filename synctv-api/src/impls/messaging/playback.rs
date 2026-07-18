@@ -40,7 +40,7 @@ impl StreamMessageHandler {
         &self,
         update: &synctv_proto::client::UpdatePlaybackRequest,
     ) -> Result<(), String> {
-        self.check_realtime_permission(RoomPermission::PLAY_CONTROL)
+        self.check_realtime_permission(RoomPermission::CONTROL_PLAYBACK_STATE)
             .await
             .map_err(|e| e.to_string())?;
         if self.principal.is_guest() {
@@ -106,7 +106,7 @@ impl StreamMessageHandler {
         &self,
         update: &synctv_proto::client::UpdatePlaybackStateRequest,
     ) -> Result<(), String> {
-        self.check_realtime_permission(RoomPermission::PLAY_CONTROL)
+        self.check_realtime_permission(RoomPermission::CONTROL_PLAYBACK_STATE)
             .await
             .map_err(|e| e.to_string())?;
         if self.principal.is_guest() {

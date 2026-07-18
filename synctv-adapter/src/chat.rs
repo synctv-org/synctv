@@ -67,6 +67,9 @@ pub fn chat_message_type_to_proto(message_type: ChatMessageType) -> client_proto
     match message_type {
         ChatMessageType::User => client_proto::ChatMessageType::User,
         ChatMessageType::SystemMemberJoined => client_proto::ChatMessageType::SystemMemberJoined,
+        ChatMessageType::SystemPlaybackChanged => {
+            client_proto::ChatMessageType::SystemPlaybackChanged
+        }
     }
 }
 
@@ -509,6 +512,56 @@ pub fn chat_metadata_to_proto(
                 },
             )),
         })),
+        ChatMetadata::PlaybackChanged(payload) => {
+            let playback_to_proto = |playback: &synctv_core::models::ChatPlaybackMetadata| {
+                Ok::<_, AdapterError>(client_proto::ChatPlaybackMetadata {
+                    media_id: playback
+                        .media_id
+                        .map(|id| encode_media_id_for_proto(id, public_id_codec))
+                        .transpose()?
+                        .unwrap_or_default(),
+                    playlist_id: playback
+                        .playlist_id
+                        .map(|id| encode_playlist_id_for_proto(id, public_id_codec))
+                        .transpose()?
+                        .unwrap_or_default(),
+                    target: playback.target.as_ref().map(provider_target_to_proto),
+                    position_seconds: playback.position_seconds,
+                })
+            };
+            let reason = match payload.reason {
+                synctv_core::models::PlaybackChangeReason::Selected => {
+                    client_proto::PlaybackChangeReason::Selected
+                }
+                synctv_core::models::PlaybackChangeReason::Next => {
+                    client_proto::PlaybackChangeReason::Next
+                }
+                synctv_core::models::PlaybackChangeReason::Previous => {
+                    client_proto::PlaybackChangeReason::Previous
+                }
+                synctv_core::models::PlaybackChangeReason::HistoryEntry => {
+                    client_proto::PlaybackChangeReason::HistoryEntry
+                }
+                synctv_core::models::PlaybackChangeReason::AutoAdvance => {
+                    client_proto::PlaybackChangeReason::AutoAdvance
+                }
+            };
+            Ok(Some(client_proto::ChatMetadata {
+                metadata: Some(client_proto::chat_metadata::Metadata::PlaybackChanged(
+                    client_proto::ChatPlaybackChangedMetadata {
+                        from: payload.from.as_ref().map(playback_to_proto).transpose()?,
+                        to: Some(playback_to_proto(&payload.to)?),
+                        reason: reason as i32,
+                        actor_user_id: payload
+                            .actor_user_id
+                            .map(|id| encode_user_id_for_proto(id, public_id_codec))
+                            .transpose()?
+                            .unwrap_or_default(),
+                        actor_username: payload.actor_username.clone().unwrap_or_default(),
+                    },
+                )),
+            }))
+        }
     }
 }
 

@@ -188,7 +188,7 @@ impl MemberService {
             .check_permission_no_cache(
                 &room_id,
                 &granter_id,
-                crate::models::RoomPermission::SET_MEMBER_PERMISSIONS,
+                crate::models::RoomPermission::MANAGE_MEMBER_PERMISSIONS,
             )
             .await?;
         let granter_username = self.lookup_username(&granter_id).await?;
@@ -561,7 +561,7 @@ impl MemberService {
             .check_permission_no_cache(
                 &room_id,
                 &granter_id,
-                crate::models::RoomPermission::SET_MEMBER_PERMISSIONS,
+                crate::models::RoomPermission::MANAGE_MEMBER_PERMISSIONS,
             )
             .await?;
         let granter_username = self.lookup_username(&granter_id).await?;
@@ -665,7 +665,7 @@ impl MemberService {
             .check_permission_no_cache(
                 &room_id,
                 &granter_id,
-                crate::models::RoomPermission::SET_MEMBER_PERMISSIONS,
+                crate::models::RoomPermission::MANAGE_MEMBER_PERMISSIONS,
             )
             .await?;
         let granter_username = self.lookup_username(&granter_id).await?;
@@ -758,7 +758,7 @@ impl MemberService {
         Ok(updated_member)
     }
 
-    pub async fn reset_member_permissions(
+    pub async fn remanage_member_permissions(
         &self,
         room_id: RoomId,
         granter_id: UserId,
@@ -768,7 +768,7 @@ impl MemberService {
             .check_permission_no_cache(
                 &room_id,
                 &granter_id,
-                crate::models::RoomPermission::SET_MEMBER_PERMISSIONS,
+                crate::models::RoomPermission::MANAGE_MEMBER_PERMISSIONS,
             )
             .await?;
 

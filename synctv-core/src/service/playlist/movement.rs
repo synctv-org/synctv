@@ -68,7 +68,7 @@ impl PlaylistService {
                 .check_permission(
                     &room_id,
                     &user_id,
-                    crate::models::RoomPermission::REORDER_MEDIA_RESOURCES,
+                    crate::models::RoomPermission::REORDER_MEDIA,
                 )
                 .await?;
         }

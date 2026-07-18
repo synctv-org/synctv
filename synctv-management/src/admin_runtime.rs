@@ -850,14 +850,14 @@ pub trait AdminRuntime: Send + Sync {
         command: StartPlaybackCommand,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<client_proto::StartPlaybackResponse, RuntimeError>;
+    ) -> Result<client_proto::PlaybackState, RuntimeError>;
 
     async fn stop_playback(
         &self,
         room_id: &str,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<client_proto::StopPlaybackResponse, RuntimeError>;
+    ) -> Result<client_proto::PlaybackState, RuntimeError>;
 
     async fn get_playback(
         &self,

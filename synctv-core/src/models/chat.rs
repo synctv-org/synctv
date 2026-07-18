@@ -24,6 +24,7 @@ pub const CHAT_PIN_NOTE_MAX_CHARS: usize = 500;
 pub enum ChatMessageType {
     User = 1,
     SystemMemberJoined = 1001,
+    SystemPlaybackChanged = 1002,
 }
 
 impl ChatMessageType {
@@ -32,12 +33,13 @@ impl ChatMessageType {
         match self {
             Self::User => "user",
             Self::SystemMemberJoined => "system_member_joined",
+            Self::SystemPlaybackChanged => "system_playback_changed",
         }
     }
 
     #[must_use]
     pub const fn is_system(self) -> bool {
-        matches!(self, Self::SystemMemberJoined)
+        matches!(self, Self::SystemMemberJoined | Self::SystemPlaybackChanged)
     }
 
     #[must_use]
@@ -59,6 +61,7 @@ impl FromStr for ChatMessageType {
         match raw.trim().to_ascii_lowercase().as_str() {
             "user" => Ok(Self::User),
             "system_member_joined" => Ok(Self::SystemMemberJoined),
+            "system_playback_changed" => Ok(Self::SystemPlaybackChanged),
             other => Err(format!("Unknown chat message type: {other}")),
         }
     }
@@ -67,6 +70,7 @@ impl FromStr for ChatMessageType {
 i16_enum!(ChatMessageType, "Invalid chat message type", {
     User = 1,
     SystemMemberJoined = 1001,
+    SystemPlaybackChanged = 1002,
 });
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -100,6 +104,26 @@ pub struct ChatMemberJoinedMetadata {
     pub actor_user_id: Option<UserId>,
     pub actor_username: Option<String>,
     pub role: RoomRole,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackChangeReason {
+    Selected,
+    Next,
+    Previous,
+    HistoryEntry,
+    AutoAdvance,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChatPlaybackChangedMetadata {
+    pub from: Option<ChatPlaybackMetadata>,
+    pub to: ChatPlaybackMetadata,
+    pub reason: PlaybackChangeReason,
+    pub actor_user_id: Option<UserId>,
+    pub actor_username: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,6 +225,7 @@ i16_enum!(ChatMessageStatus, "Invalid chat message status", {
 pub enum ChatMetadata {
     User(ChatUserMetadata),
     MemberJoined(ChatMemberJoinedMetadata),
+    PlaybackChanged(ChatPlaybackChangedMetadata),
 }
 
 impl ChatMetadata {
@@ -222,6 +247,7 @@ impl ChatMetadata {
         match self {
             Self::User(metadata) => Ok(Self::User(metadata.normalized_for_storage()?)),
             Self::MemberJoined(metadata) => Ok(Self::MemberJoined(metadata.clone())),
+            Self::PlaybackChanged(metadata) => Ok(Self::PlaybackChanged(metadata.clone())),
         }
     }
 
@@ -230,6 +256,7 @@ impl ChatMetadata {
         match self {
             Self::User(_) => ChatMessageType::User,
             Self::MemberJoined(_) => ChatMessageType::SystemMemberJoined,
+            Self::PlaybackChanged(_) => ChatMessageType::SystemPlaybackChanged,
         }
     }
 
@@ -238,6 +265,7 @@ impl ChatMetadata {
         match self {
             Self::User(metadata) => Some(metadata),
             Self::MemberJoined(_) => None,
+            Self::PlaybackChanged(_) => None,
         }
     }
 
@@ -246,6 +274,7 @@ impl ChatMetadata {
         match self {
             Self::User(metadata) => Some(metadata),
             Self::MemberJoined(_) => None,
+            Self::PlaybackChanged(_) => None,
         }
     }
 }

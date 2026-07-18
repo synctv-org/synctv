@@ -209,7 +209,12 @@ async fn test_chat_write_endpoints_require_signed_in_user_and_chat_permission() 
         .unwrap();
     room_service
         .member_service()
-        .revoke_permission(room.id, owner.id, member.id, RoomMemberPermissionBits::CHAT)
+        .revoke_permission(
+            room.id,
+            owner.id,
+            member.id,
+            RoomMemberPermissionBits::SEND_CHAT_MESSAGES,
+        )
         .await
         .unwrap();
 
@@ -412,7 +417,7 @@ async fn test_chat_read_endpoints_require_view_chat_history_permission() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_chat_delete_endpoint_allows_sender_and_delete_chat_permission() {
+async fn test_chat_delete_endpoint_allows_sender_and_delete_chat_messages_permission() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let username_cache = UsernameCache::local_only("test:chat-delete-perm:".to_string(), 100, 60);
@@ -465,7 +470,7 @@ async fn test_chat_delete_endpoint_allows_sender_and_delete_chat_permission() {
             room.id,
             owner.id,
             admin.id,
-            RoomAdminPermissionBits::DELETE_CHAT,
+            RoomAdminPermissionBits::DELETE_CHAT_MESSAGES,
         )
         .await
         .unwrap();
@@ -599,7 +604,7 @@ async fn test_chat_admin_delete_endpoint_writes_audit_log() {
             room.id,
             owner.id,
             admin.id,
-            RoomAdminPermissionBits::DELETE_CHAT,
+            RoomAdminPermissionBits::DELETE_CHAT_MESSAGES,
         )
         .await
         .unwrap();

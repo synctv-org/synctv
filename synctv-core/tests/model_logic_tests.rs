@@ -161,57 +161,57 @@ fn test_room_status_predicates() {
 #[test]
 fn test_permission_bits_has_all() {
     let perms = RoomPermissionSet::new(
-        RoomAdminPermissionBits::CHAT
-            | RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
-            | RoomAdminPermissionBits::PLAY_CONTROL,
+        RoomAdminPermissionBits::SEND_CHAT_MESSAGES
+            | RoomAdminPermissionBits::MANAGE_OWN_MEDIA
+            | RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE,
     );
     assert!(perms.has_all(RoomPermissionSet::new(
-        RoomAdminPermissionBits::CHAT | RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
+        RoomAdminPermissionBits::SEND_CHAT_MESSAGES | RoomAdminPermissionBits::MANAGE_OWN_MEDIA
     )));
     assert!(!perms.has_all(RoomPermissionSet::new(
-        RoomAdminPermissionBits::CHAT | RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY
+        RoomAdminPermissionBits::SEND_CHAT_MESSAGES | RoomAdminPermissionBits::DELETE_MEDIA
     )));
 }
 
 #[test]
 fn test_permission_bits_has_any() {
-    let perms = RoomPermissionSet::new(RoomAdminPermissionBits::CHAT);
+    let perms = RoomPermissionSet::new(RoomAdminPermissionBits::SEND_CHAT_MESSAGES);
     assert!(perms.has_any(RoomPermissionSet::new(
-        RoomAdminPermissionBits::CHAT | RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
+        RoomAdminPermissionBits::SEND_CHAT_MESSAGES | RoomAdminPermissionBits::MANAGE_OWN_MEDIA
     )));
     assert!(!perms.has_any(RoomPermissionSet::new(
-        RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE | RoomAdminPermissionBits::PLAY_CONTROL
+        RoomAdminPermissionBits::MANAGE_OWN_MEDIA | RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE
     )));
 }
 
 #[test]
 fn test_permission_bits_grant_and_revoke() {
     let mut perms = RoomPermissionSet::empty();
-    assert!(!perms.has(RoomPermission::CHAT));
+    assert!(!perms.has(RoomPermission::SEND_CHAT_MESSAGES));
 
-    perms.grant(RoomPermission::CHAT);
-    assert!(perms.has(RoomPermission::CHAT));
+    perms.grant(RoomPermission::SEND_CHAT_MESSAGES);
+    assert!(perms.has(RoomPermission::SEND_CHAT_MESSAGES));
 
-    perms.revoke(RoomPermission::CHAT);
-    assert!(!perms.has(RoomPermission::CHAT));
+    perms.revoke(RoomPermission::SEND_CHAT_MESSAGES);
+    assert!(!perms.has(RoomPermission::SEND_CHAT_MESSAGES));
 }
 
 #[test]
 fn test_permission_bits_toggle() {
     let mut perms = RoomPermissionSet::empty();
-    perms.toggle(RoomPermission::CHAT);
-    assert!(perms.has(RoomPermission::CHAT));
-    perms.toggle(RoomPermission::CHAT);
-    assert!(!perms.has(RoomPermission::CHAT));
+    perms.toggle(RoomPermission::SEND_CHAT_MESSAGES);
+    assert!(perms.has(RoomPermission::SEND_CHAT_MESSAGES));
+    perms.toggle(RoomPermission::SEND_CHAT_MESSAGES);
+    assert!(!perms.has(RoomPermission::SEND_CHAT_MESSAGES));
 }
 
 #[test]
 fn test_permission_bits_set() {
     let mut perms = RoomPermissionSet::empty();
-    perms.set(RoomPermission::CHAT, true);
-    assert!(perms.has(RoomPermission::CHAT));
-    perms.set(RoomPermission::CHAT, false);
-    assert!(!perms.has(RoomPermission::CHAT));
+    perms.set(RoomPermission::SEND_CHAT_MESSAGES, true);
+    assert!(perms.has(RoomPermission::SEND_CHAT_MESSAGES));
+    perms.set(RoomPermission::SEND_CHAT_MESSAGES, false);
+    assert!(!perms.has(RoomPermission::SEND_CHAT_MESSAGES));
 }
 
 #[test]
@@ -259,67 +259,69 @@ fn test_effective_permissions_no_overrides() {
 #[test]
 fn test_effective_permissions_add_only() {
     let global = RoomPermissionSet::default_member();
-    let added = RoomAdminPermissionBits::PLAY_CONTROL;
+    let added = RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE;
     let settings = RoomSettings {
         admin_added_permissions: AdminAddedPermissions(added),
         ..RoomSettings::default()
     };
     let effective = settings.admin_permissions(global);
-    assert!(effective.has(RoomPermission::PLAY_CONTROL));
-    assert!(effective.has(RoomPermission::CHAT)); // Original preserved
+    assert!(effective.has(RoomPermission::CONTROL_PLAYBACK_STATE));
+    assert!(effective.has(RoomPermission::SEND_CHAT_MESSAGES)); // Original preserved
 }
 
 #[test]
 fn test_effective_permissions_remove_only() {
     let global = RoomPermissionSet::default_member();
-    let removed = RoomAdminPermissionBits::CHAT;
+    let removed = RoomAdminPermissionBits::SEND_CHAT_MESSAGES;
     let settings = RoomSettings {
         admin_removed_permissions: AdminRemovedPermissions(removed),
         ..RoomSettings::default()
     };
     let effective = settings.admin_permissions(global);
-    assert!(!effective.has(RoomPermission::CHAT));
-    assert!(effective.has(RoomPermission::CREATE_MEDIA_RESOURCE));
+    assert!(!effective.has(RoomPermission::SEND_CHAT_MESSAGES));
+    assert!(effective.has(RoomPermission::MANAGE_OWN_MEDIA));
 }
 
 #[test]
 fn test_effective_permissions_add_and_remove() {
     let global = RoomPermissionSet::default_member();
-    let added = RoomAdminPermissionBits::PLAY_CONTROL;
-    let removed = RoomAdminPermissionBits::CHAT;
+    let added = RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE;
+    let removed = RoomAdminPermissionBits::SEND_CHAT_MESSAGES;
     let settings = RoomSettings {
         admin_added_permissions: AdminAddedPermissions(added),
         admin_removed_permissions: AdminRemovedPermissions(removed),
         ..RoomSettings::default()
     };
     let effective = settings.admin_permissions(global);
-    assert!(effective.has(RoomPermission::PLAY_CONTROL));
-    assert!(!effective.has(RoomPermission::CHAT));
-    assert!(effective.has(RoomPermission::CREATE_MEDIA_RESOURCE));
+    assert!(effective.has(RoomPermission::CONTROL_PLAYBACK_STATE));
+    assert!(!effective.has(RoomPermission::SEND_CHAT_MESSAGES));
+    assert!(effective.has(RoomPermission::MANAGE_OWN_MEDIA));
 }
 
 #[test]
 fn test_effective_permissions_remove_overrides_add() {
     let global = RoomPermissionSet::empty();
-    let bit = RoomAdminPermissionBits::CHAT;
+    let bit = RoomAdminPermissionBits::SEND_CHAT_MESSAGES;
     let settings = RoomSettings {
         admin_added_permissions: AdminAddedPermissions(bit),
         admin_removed_permissions: AdminRemovedPermissions(bit),
         ..RoomSettings::default()
     };
     let effective = settings.admin_permissions(global);
-    assert!(!effective.has(RoomPermission::CHAT));
+    assert!(!effective.has(RoomPermission::SEND_CHAT_MESSAGES));
 }
 
 #[test]
 fn test_member_permissions_maps_member_bitspace() {
     let settings = RoomSettings {
         member_added_permissions: MemberAddedPermissions(RoomMemberPermissionBits::USE_WEBRTC),
-        member_removed_permissions: MemberRemovedPermissions(RoomMemberPermissionBits::CHAT),
+        member_removed_permissions: MemberRemovedPermissions(
+            RoomMemberPermissionBits::SEND_CHAT_MESSAGES,
+        ),
         ..RoomSettings::default()
     };
 
     let effective = settings.member_permissions(RoomPermissionSet::default_member());
     assert!(effective.has(RoomPermission::USE_WEBRTC));
-    assert!(!effective.has(RoomPermission::CHAT));
+    assert!(!effective.has(RoomPermission::SEND_CHAT_MESSAGES));
 }

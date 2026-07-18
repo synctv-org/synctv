@@ -291,6 +291,7 @@ async fn test_playback_state_l2_miss_reads_from_db() {
                 state.playing_playlist_id AS "playing_playlist_id?: PlaylistId",
                 state.target AS "target?: synctv_core::models::ProviderTarget",
                 state.current_progress_id AS "current_progress_id?",
+                state.history_cursor_id AS "history_cursor_id?",
                 COALESCE(progress."position", 0.0) AS "position!",
                 state.speed AS "speed!",
                 state.is_playing AS "is_playing!",

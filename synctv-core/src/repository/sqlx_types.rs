@@ -332,6 +332,7 @@ sqlx_from_row!(RoomPlaybackState, {
     playing_playlist_id,
     target,
     current_progress_id,
+    history_cursor_id,
     position,
     speed,
     is_playing,

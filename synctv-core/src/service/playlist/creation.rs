@@ -68,7 +68,7 @@ impl PlaylistService {
                 .check_permission(
                     &room_id,
                     &user_id,
-                    crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+                    crate::models::RoomPermission::MANAGE_OWN_MEDIA,
                 )
                 .await?;
         }

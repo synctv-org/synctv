@@ -11,7 +11,7 @@ use synctv_core::{
         UserRole, UserStatus,
     },
     repository::{ChatRepository, RoomRepository, UserRepository},
-    service::{AlwaysLeader, AuditPartitionManager, ChatPartitionManager},
+    service::{AlwaysLeader, AuditPartitionManager, TimePartitionManager},
 };
 use synctv_core_testing::{create_test_pool, ok};
 /// Default `PostgreSQL` version for test containers
@@ -42,7 +42,7 @@ async fn test_chat_message_future_partition_created_by_manager_is_writable() {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let chat_repo = ChatRepository::new(pool.clone());
-    let manager = ChatPartitionManager::new(pool.clone(), Arc::new(AlwaysLeader));
+    let manager = TimePartitionManager::new(pool.clone(), Arc::new(AlwaysLeader));
 
     let owner = ok(
         user_repo.create(&make_user("partition_owner_1")).await,
@@ -192,15 +192,15 @@ async fn test_chat_message_without_matching_partition_fails_fast() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_chat_partition_manager_creates_future_partitions() {
+async fn test_time_partition_manager_creates_future_partitions() {
     let (_container, pool) = create_test_pool().await;
-    let manager = ChatPartitionManager::new(pool.clone(), Arc::new(AlwaysLeader));
+    let manager = TimePartitionManager::new(pool.clone(), Arc::new(AlwaysLeader));
 
-    let created_count = ok(
+    let ensured_day_count = ok(
         manager.ensure_future_partitions(5).await,
-        "chat partitions should be created",
+        "time partitions should be created",
     );
-    assert_eq!(created_count, 6);
+    assert_eq!(ensured_day_count, 6);
 
     // Verify partitions exist
     let partition_count: i64 = ok(
@@ -277,17 +277,17 @@ async fn test_audit_logs_future_partition_created_by_manager_is_writable() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_check_chat_message_partitions_health() {
+async fn test_check_time_partitions_health() {
     let (_container, pool) = create_test_pool().await;
-    let manager = ChatPartitionManager::new(pool, Arc::new(AlwaysLeader));
+    let manager = TimePartitionManager::new(pool, Arc::new(AlwaysLeader));
 
     ok(
         manager.ensure_future_partitions(7).await,
-        "chat partitions should be created before health check",
+        "time partitions should be created before health check",
     );
     let health = ok(
         manager.check_health(7).await,
-        "chat partition health check should succeed",
+        "time partition health check should succeed",
     );
     assert_eq!(health.health_status, "healthy");
 }

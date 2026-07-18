@@ -1048,7 +1048,7 @@ impl AdminRuntime for ManagementAdminRuntime {
         command: StartPlaybackCommand,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<client_proto::StartPlaybackResponse, RuntimeError> {
+    ) -> Result<client_proto::PlaybackState, RuntimeError> {
         let req = client_proto::StartPlaybackRequest {
             media_id: command.media_id,
             playlist_id: command.playlist_id,
@@ -1070,7 +1070,7 @@ impl AdminRuntime for ManagementAdminRuntime {
         room_id: &str,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<client_proto::StopPlaybackResponse, RuntimeError> {
+    ) -> Result<client_proto::PlaybackState, RuntimeError> {
         self.inner
             .stop_playback(room_id, admin_user_id, &api_request_context(ctx))
             .await

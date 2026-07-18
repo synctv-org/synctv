@@ -416,13 +416,13 @@ async fn test_revoke_permission() {
             room.id,
             creator.id,
             target.id,
-            RoomMemberPermissionBits::CHAT,
+            RoomMemberPermissionBits::SEND_CHAT_MESSAGES,
         )
         .await
         .checked("test operation should succeed");
 
     assert!(
-        updated.removed_permissions & RoomMemberPermissionBits::CHAT != 0,
+        updated.removed_permissions & RoomMemberPermissionBits::SEND_CHAT_MESSAGES != 0,
         "CHAT should be in removed_permissions"
     );
 
@@ -433,7 +433,7 @@ async fn test_revoke_permission() {
         .await
         .checked("test operation should succeed");
     assert!(
-        !effective.has(RoomPermission::CHAT),
+        !effective.has(RoomPermission::SEND_CHAT_MESSAGES),
         "CHAT should be denied after revocation"
     );
 }

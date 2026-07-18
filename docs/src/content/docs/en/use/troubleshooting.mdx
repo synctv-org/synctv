@@ -12,10 +12,10 @@ Start with the symptom, then decide whether to contact a room administrator or p
 | Sign-in fails | Username, password, email verification, 2FA, account ban | Platform administrator |
 | OAuth2 did not sign in | Registration review, third-party account binding | Platform administrator |
 | Cannot join room | Password, review state, room ban, member limit | Room administrator |
-| Cannot control playback | `play_control`, `change_current_media`, `change_playback_rate` | Room administrator |
+| Cannot control playback | `control_playback_state`, `navigate_playback` | Room administrator |
 | Cannot play media | Provider credentials, direct headers, proxy path, upstream Range | Room or platform administrator |
 | WebSocket keeps disconnecting | Network, browser proxy, reverse proxy timeout, connection limits | Platform administrator |
-| Cannot chat | `send_chat`, room chat switch, mute state | Room administrator |
+| Cannot chat | `send_chat_messages`, room chat switch, mute state | Room administrator |
 | No notifications | Preferences, verified email, SMTP availability | Platform administrator |
 
 ## Include in Reports

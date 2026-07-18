@@ -12,10 +12,10 @@ use synctv_proto::{admin as admin_proto, client as client_proto};
 
 use crate::impls::admin::settings::{
     ChatSettingsPatch, CorsSettingsPatch, EmailSettingsPatch, OAuth2SettingsPatch,
-    OptionalConfigPatch, PermissionSettingsPatch, ProxySettingsPatch, RoomAutoPlaySettingsPatch,
-    RoomCreationSettingsPatch, RoomDefaultsSettingsPatch, RoomSettingsUpdatePatch,
-    RtmpSettingsPatch, RuntimeSettingsPatch, ServerSettingsPatch, SmtpCredentialsInput,
-    SmtpProxyInput, UserSettingsPatch, WebRtcSettingsPatch,
+    OptionalConfigPatch, PermissionSettingsPatch, PlaybackHistorySettingsPatch, ProxySettingsPatch,
+    RoomAutoPlaySettingsPatch, RoomCreationSettingsPatch, RoomDefaultsSettingsPatch,
+    RoomSettingsUpdatePatch, RtmpSettingsPatch, RuntimeSettingsPatch, ServerSettingsPatch,
+    SmtpCredentialsInput, SmtpProxyInput, UserSettingsPatch, WebRtcSettingsPatch,
 };
 use crate::ApiError;
 
@@ -85,6 +85,12 @@ pub fn runtime_settings_patch_from_admin_proto(
             max_pinned_messages_per_room: patch.max_pinned_messages_per_room,
             message_retention_days: patch.message_retention_days,
         }),
+        playback_history: settings
+            .playback_history
+            .map(|patch| PlaybackHistorySettingsPatch {
+                retention_days: patch.retention_days,
+                max_entries_per_room: patch.max_entries_per_room,
+            }),
         cors: settings.cors.map(|patch| CorsSettingsPatch {
             allowed_origins: Some(patch.allowed_origins),
         }),
@@ -219,6 +225,12 @@ fn select_runtime_settings_patch(
             }
             "chat.message_retention_days" => {
                 select_required!(chat, message_retention_days, path);
+            }
+            "playback_history.retention_days" => {
+                select_required!(playback_history, retention_days, path);
+            }
+            "playback_history.max_entries_per_room" => {
+                select_required!(playback_history, max_entries_per_room, path);
             }
             "cors.allowed_origins" => select_required!(cors, allowed_origins, path),
             _ => {

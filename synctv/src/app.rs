@@ -1064,11 +1064,11 @@ impl Application {
         });
 
         if should_run_startup_partition_initialization(&infra.config) {
-            // Initialize chat message partitions
-            info!("Initializing chat message partitions during startup...");
-            synctv_core::service::ensure_chat_partitions_on_startup(&infra.pool)
+            // Initialize daily time partitions used by chat and playback history.
+            info!("Initializing time partitions during startup...");
+            synctv_core::service::ensure_time_partitions_on_startup(&infra.pool)
                 .await
-                .map_err(|e| partition_startup_error("chat partitions", e))?;
+                .map_err(|e| partition_startup_error("time partitions", e))?;
 
             // Initialize notification partitions (monthly granularity)
             info!("Initializing notification partitions during startup...");
@@ -1174,13 +1174,13 @@ impl Application {
         );
         info!("Audit log partition management started (leader-gated with fencing)");
 
-        let chat_partition_manager = synctv_core::service::ChatPartitionManager::new(
+        let time_partition_manager = synctv_core::service::TimePartitionManager::new(
             infra.pool.clone(),
             leader.leader_runtime.clone(),
         );
         shutdown.register_task(
             "chat_partition",
-            chat_partition_manager.start_auto_management(24, singleton_cancel.clone()),
+            time_partition_manager.start_auto_management(24, singleton_cancel.clone()),
         );
         info!("Chat message partition management started (leader-gated with fencing, check interval: 24 hours)");
 
@@ -1270,6 +1270,7 @@ impl Application {
                         chat_messages_deleted = cleanup_result.chat_messages_deleted,
                         chat_message_events_deleted = cleanup_result.chat_message_events_deleted,
                         room_resource_events_deleted = cleanup_result.room_resource_events_deleted,
+                        playback_history_deleted = cleanup_result.playback_history_deleted,
                         realtime_outbox_deleted = cleanup_result.realtime_outbox_deleted,
                         token_blacklist_deleted = cleanup_result.token_blacklist_deleted,
                         unreferenced_files_deleted = cleanup_result.unreferenced_files_deleted,

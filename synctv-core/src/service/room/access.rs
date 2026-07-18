@@ -195,7 +195,7 @@ impl RoomService {
             .map_err(|error| Error::InvalidInput(error.to_string()))?;
 
         self.permission_service
-            .check_permission(room_id, user_id, RoomPermission::SET_ROOM_SETTINGS)
+            .check_permission(room_id, user_id, RoomPermission::MANAGE_ROOM_SETTINGS)
             .await?;
 
         let room = self

@@ -8,7 +8,7 @@
 //!
 //! Note: partition creation/retention is owned by dedicated managers:
 //! - `AuditPartitionManager` for `audit_logs`
-//! - `ChatPartitionManager` for chat partitions
+//! - `TimePartitionManager` for daily chat and playback-history partitions
 //!
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -348,6 +348,23 @@ impl DatabaseMaintenanceService {
         Ok(())
     }
 
+    pub async fn run_cleanup_playback_history(&self) -> crate::Result<()> {
+        let (retention_days, max_entries_per_room) = match &self.runtime_settings_store {
+            Some(settings) => (
+                settings.playback_history.retention_days.get()?,
+                settings.playback_history.max_entries_per_room.get()?,
+            ),
+            None => (90, 1_000),
+        };
+        let deleted = crate::repository::PlaybackHistoryRepository::new(self.pool.clone())
+            .cleanup(retention_days, max_entries_per_room)
+            .await?;
+        if deleted > 0 {
+            info!(deleted, "Playback history cleanup completed");
+        }
+        Ok(())
+    }
+
     /// Retry due file object cleanup jobs that were persisted after a previous
     /// delete attempt failed.
     pub async fn run_retry_file_cleanup_jobs(&self) -> crate::Result<()> {
@@ -402,7 +419,7 @@ impl DatabaseMaintenanceService {
     /// Run all maintenance tasks. Logs errors but does not fail.
     ///
     /// Partition maintenance is intentionally excluded here:
-    /// `AuditPartitionManager`, `ChatPartitionManager`, and
+    /// `AuditPartitionManager`, `TimePartitionManager`, and
     /// `NotificationPartitionManager` are the single owners.
     pub async fn run_all_maintenance(&self) {
         if let Err(e) = self.run_cleanup_email_tokens().await {
@@ -428,6 +445,9 @@ impl DatabaseMaintenanceService {
         }
         if let Err(e) = self.run_cleanup_playback_progress().await {
             error!(error = %e, "Playback progress cleanup failed");
+        }
+        if let Err(e) = self.run_cleanup_playback_history().await {
+            error!(error = %e, "Playback history cleanup failed");
         }
         if let Err(e) = self.run_cleanup_expired_file_references().await {
             error!(error = %e, "Expired file reference cleanup failed");

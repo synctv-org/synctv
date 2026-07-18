@@ -975,9 +975,9 @@ fn permission_changed_event_for_target(
         changed_by: user_id(),
         changed_by_username: "owner".to_string(),
         role_changed,
-        new_permissions: RoomPermissionSet(RoomMemberPermissionBits::CHAT),
+        new_permissions: RoomPermissionSet(RoomMemberPermissionBits::SEND_CHAT_MESSAGES),
         role: synctv_proto::common::RoomMemberRole::Admin as i32,
-        added_permissions: RoomPermissionSet(RoomMemberPermissionBits::CHAT),
+        added_permissions: RoomPermissionSet(RoomMemberPermissionBits::SEND_CHAT_MESSAGES),
         removed_permissions: RoomPermissionSet(0),
         admin_added_permissions: RoomPermissionSet(0),
         admin_removed_permissions: RoomPermissionSet(0),
@@ -3676,6 +3676,7 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
             playing_playlist_id: None,
             target: None,
             current_progress_id: None,
+            history_cursor_id: None,
             position: 12.0,
             speed: 1.0,
             is_playing: true,
@@ -3790,6 +3791,7 @@ async fn test_observed_playback_ignores_play_pause_state_updates() {
             playing_playlist_id: None,
             target: None,
             current_progress_id: None,
+            history_cursor_id: None,
             position: 12.0,
             speed: 1.0,
             is_playing: false,
@@ -3874,7 +3876,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
             |state| {
                 state.playing_media_id = Some(media.id);
             },
-            RoomPermission::PLAY_CONTROL,
+            RoomPermission::CONTROL_PLAYBACK_STATE,
         )
         .await
         .checked("playback state should be set");
@@ -4012,7 +4014,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
             |state| {
                 state.playing_media_id = Some(media.id);
             },
-            RoomPermission::PLAY_CONTROL,
+            RoomPermission::CONTROL_PLAYBACK_STATE,
         )
         .await
         .checked("playback state should be set");
@@ -4109,6 +4111,7 @@ async fn test_playback_auto_advance_subscriber_runs_for_playing_observed_state()
                 playing_playlist_id: None,
                 target: None,
                 current_progress_id: None,
+                history_cursor_id: None,
                 position: 11.0,
                 speed: 1.0,
                 is_playing: true,
@@ -4154,6 +4157,7 @@ async fn test_playback_auto_advance_subscriber_skips_paused_state() {
                 playing_playlist_id: None,
                 target: None,
                 current_progress_id: None,
+                history_cursor_id: None,
                 position: 11.0,
                 speed: 1.0,
                 is_playing: false,
@@ -4296,7 +4300,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
                 state.speed = 1.0;
                 state.is_playing = true;
             },
-            RoomPermission::PLAY_CONTROL,
+            RoomPermission::CONTROL_PLAYBACK_STATE,
         )
         .await
         .checked("playback should point at created media");
@@ -4665,7 +4669,7 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
                 state.speed = 1.0;
                 state.is_playing = true;
             },
-            RoomPermission::PLAY_CONTROL,
+            RoomPermission::CONTROL_PLAYBACK_STATE,
         )
         .await
         .checked("playback target should update before broadcasting state change");
@@ -4765,6 +4769,7 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
             playing_playlist_id: None,
             target: None,
             current_progress_id: None,
+            history_cursor_id: None,
             position: 5.0,
             speed: 1.0,
             is_playing: true,
@@ -6909,6 +6914,7 @@ fn test_playback_state_changed_event_conversion() {
             playing_playlist_id: None,
             target: None,
             current_progress_id: None,
+            history_cursor_id: None,
             position: 123.456,
             speed: 1.5,
             is_playing: true,
@@ -6941,6 +6947,7 @@ fn test_playback_state_changed_event_does_not_validate_direct_message_payload() 
             playing_playlist_id: None,
             target: None,
             current_progress_id: None,
+            history_cursor_id: None,
             position: f64::NAN,
             speed: 0.0,
             is_playing: false,
@@ -6968,10 +6975,10 @@ fn test_user_joined_event_conversion() {
         display_tag: String::new(),
         permissions: RoomPermissionSet::default_member(),
         role: 3,
-        added_permissions: RoomPermissionSet(RoomAdminPermissionBits::PLAY_CONTROL),
-        removed_permissions: RoomPermissionSet(RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE),
-        admin_added_permissions: RoomPermissionSet(RoomAdminPermissionBits::KICK_MEMBER),
-        admin_removed_permissions: RoomPermissionSet(RoomAdminPermissionBits::KICK_MEMBER),
+        added_permissions: RoomPermissionSet(RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE),
+        removed_permissions: RoomPermissionSet(RoomAdminPermissionBits::MANAGE_OWN_MEDIA),
+        admin_added_permissions: RoomPermissionSet(RoomAdminPermissionBits::REMOVE_MEMBERS),
+        admin_removed_permissions: RoomPermissionSet(RoomAdminPermissionBits::REMOVE_MEMBERS),
         joined_at: now(),
         timestamp: now(),
     };
@@ -7070,7 +7077,7 @@ fn test_resource_backed_events_do_not_emit_direct_server_messages() {
             new_permissions: RoomPermissionSet(RoomAdminPermissionBits::USE_WEBRTC),
             role: synctv_proto::common::RoomMemberRole::Member as i32,
             added_permissions: RoomPermissionSet(RoomMemberPermissionBits::USE_WEBRTC),
-            removed_permissions: RoomPermissionSet(RoomMemberPermissionBits::CHAT),
+            removed_permissions: RoomPermissionSet(RoomMemberPermissionBits::SEND_CHAT_MESSAGES),
             admin_added_permissions: RoomPermissionSet(0),
             admin_removed_permissions: RoomPermissionSet(0),
             target_is_online: false,
@@ -7188,7 +7195,7 @@ fn test_permission_changed_room_member_event_preserves_presence_snapshot() {
         new_permissions: RoomPermissionSet(RoomAdminPermissionBits::USE_WEBRTC),
         role: synctv_proto::common::RoomMemberRole::Member as i32,
         added_permissions: RoomPermissionSet(RoomMemberPermissionBits::USE_WEBRTC),
-        removed_permissions: RoomPermissionSet(RoomMemberPermissionBits::CHAT),
+        removed_permissions: RoomPermissionSet(RoomMemberPermissionBits::SEND_CHAT_MESSAGES),
         admin_added_permissions: RoomPermissionSet(0),
         admin_removed_permissions: RoomPermissionSet(0),
         target_is_online: false,
@@ -7695,7 +7702,7 @@ async fn test_guest_chat_is_rejected_even_if_permission_bits_include_chat() {
         FailingMessageSender::fail_after(usize::MAX),
         Arc::clone(&event_service),
         connection_service.clone(),
-        RoomPermissionSet(RoomAdminPermissionBits::CHAT),
+        RoomPermissionSet(RoomAdminPermissionBits::SEND_CHAT_MESSAGES),
     );
 
     let err = handler
@@ -7728,7 +7735,7 @@ async fn test_guest_chat_with_client_id_is_rejected() {
         FailingMessageSender::fail_after(usize::MAX),
         Arc::clone(&event_service),
         connection_service.clone(),
-        RoomPermissionSet(RoomAdminPermissionBits::CHAT),
+        RoomPermissionSet(RoomAdminPermissionBits::SEND_CHAT_MESSAGES),
     );
 
     let err = handler
@@ -7754,15 +7761,14 @@ async fn test_guest_chat_with_client_id_is_rejected() {
 }
 
 #[tokio::test]
-async fn test_guest_playlist_observation_is_rejected_even_if_permission_bits_include_view_media_resources(
-) {
+async fn test_guest_playlist_observation_is_rejected_even_if_permission_bits_include_view_media() {
     let event_service = test_realtime_manager("guest_playlist_observe_rejected").await;
     let connection_service = test_connection_manager();
     let handler = test_guest_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
         Arc::clone(&event_service),
         connection_service.clone(),
-        RoomPermissionSet(RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES),
+        RoomPermissionSet(RoomAdminPermissionBits::VIEW_MEDIA),
     );
 
     let err = handler

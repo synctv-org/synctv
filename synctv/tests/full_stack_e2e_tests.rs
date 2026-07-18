@@ -3940,11 +3940,11 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
             "--role",
             "admin",
             "--admin-added-permissions",
-            &(synctv_core::models::RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
-                | synctv_core::models::RoomAdminPermissionBits::LIVE_CONTROL)
+            &(synctv_core::models::RoomAdminPermissionBits::MANAGE_OWN_MEDIA
+                | synctv_core::models::RoomAdminPermissionBits::MANAGE_LIVE_STREAMS)
                 .to_string(),
             "--admin-removed-permissions",
-            &synctv_core::models::RoomAdminPermissionBits::CHAT.to_string(),
+            &synctv_core::models::RoomAdminPermissionBits::SEND_CHAT_MESSAGES.to_string(),
         ],
         "set member permissions",
     )
@@ -8067,8 +8067,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         "room settings change should carry version"
     );
 
-    let permission_bits = synctv_core::models::RoomAdminPermissionBits::LIVE_CONTROL
-        | synctv_core::models::RoomAdminPermissionBits::PLAY_CONTROL;
+    let permission_bits = synctv_core::models::RoomAdminPermissionBits::MANAGE_LIVE_STREAMS
+        | synctv_core::models::RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE;
     let _ = run_synctv_remote_cli_json(
         &server,
         &[

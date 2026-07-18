@@ -52,11 +52,11 @@ SyncTV 有两层角色，不能混为一谈。
 | 能力 | 默认 | 可通过 guest 权限开放 | 说明 |
 | --- | --- | --- | --- |
 | 基础房间实时状态 | 是 | 不需要配置 | 连接后用于显示房间存在、设置和播放状态 |
-| 成员列表 | 否 | `view_member_list` | 只读 |
+| 成员列表 | 否 | `view_members` | 只读 |
 | 聊天历史 | 否 | `view_chat_history` | 只读 |
 | WebRTC 信令 | 否 | `use_webrtc` | 只允许信令参与，不授予房间管理能力 |
 | 媒体资源 | 否 | 否 | 游客不能读取、浏览或管理媒体资源 |
-| 聊天发送 | 否 | 否 | `send_chat` 只适用于登录成员 |
+| 聊天发送 | 否 | 否 | `send_chat_messages` 只适用于登录成员 |
 | 播放控制、成员管理、房间设置 | 否 | 否 | 必须是登录成员并具有对应权限 |
 
 ## 权限计算顺序
@@ -84,30 +84,29 @@ SyncTV 有两层角色，不能混为一谈。
 
 | 权限名称 | 含义 |
 | --- | --- |
-| `send_chat` | 发送聊天消息 |
-| `create_media_resource` | 创建媒体资源，并修改自己创建的媒体资源 |
-| `delete_media_resource_any` | 删除其他用户创建或没有记录创建者的媒体资源 |
-| `reorder_media_resources` | 调整媒体资源顺序 |
-| `clear_media_resources` | 清空媒体资源队列 |
-| `live_control` | 管理直播，并创建推流 key |
-| `play_control` | 播放、暂停、seek |
-| `change_current_media` | 切换当前播放媒体 |
-| `change_playback_rate` | 修改播放速度 |
-| `approve_member` | 审批加入房间请求 |
-| `kick_member` | 踢出成员，并设置临时重新加入冷却时间 |
-| `set_member_permissions` | 修改成员权限 |
-| `add_member` | 主动添加成员 |
-| `set_room_settings` | 修改房间设置 |
-| `delete_chat` | 删除聊天消息 |
+| `send_chat_messages` | 发送聊天消息 |
+| `manage_own_media` | 创建媒体或播放列表，并修改自己创建的内容 |
+| `delete_media` | 删除其他用户创建或没有记录创建者的媒体与播放列表 |
+| `reorder_media` | 调整媒体与播放列表顺序 |
+| `clear_media` | 清空房间媒体队列 |
+| `manage_live_streams` | 管理直播，并创建推流 key |
+| `control_playback_state` | 播放、暂停、调整进度和播放速度 |
+| `navigate_playback` | 选择播放内容、播放上一条或下一条，以及播放历史记录 |
+| `review_join_requests` | 审批加入房间请求 |
+| `remove_members` | 移除成员，并设置临时重新加入冷却时间 |
+| `manage_member_permissions` | 修改成员权限 |
+| `add_members` | 主动添加成员 |
+| `manage_room_settings` | 修改房间设置 |
+| `delete_chat_messages` | 删除其他房间成员发送的聊天消息 |
 | `delete_room` | 删除房间，不可作为普通房间内委派权限 |
-| `view_media_resources` | 查看媒体资源 |
-| `view_member_list` | 查看成员列表 |
+| `view_media` | 查看媒体资源 |
+| `view_members` | 查看成员列表 |
 | `view_chat_history` | 查看聊天历史 |
 | `use_webrtc` | 使用 WebRTC 语音/视频能力 |
 
 ## 房间设置
 
-删除自己创建的媒体资源是所有权业务规则，不对应单独的权限位。成员即使没有 `create_media_resource`，仍然可以删除自己创建的媒体资源；但创建媒体资源、修改自己创建的媒体资源都需要 `create_media_resource`。
+删除自己创建的媒体资源是所有权业务规则，不对应单独的权限位。成员即使没有 `manage_own_media`，仍然可以删除自己创建的媒体资源；但创建媒体资源、修改自己创建的媒体资源都需要 `manage_own_media`。
 
 房间设置控制加入策略、显示能力和默认权限。
 

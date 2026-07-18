@@ -161,7 +161,7 @@ impl ClientApiImpl {
                 .check_permission(
                     &rid,
                     &uid,
-                    synctv_core::models::RoomPermission::LIVE_CONTROL,
+                    synctv_core::models::RoomPermission::MANAGE_LIVE_STREAMS,
                 )
                 .await
                 .map_err(Self::map_room_access_error)?;

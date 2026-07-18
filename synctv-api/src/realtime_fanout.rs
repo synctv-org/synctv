@@ -425,6 +425,7 @@ mod tests {
             playing_playlist_id: None,
             target: None,
             current_progress_id: None,
+            history_cursor_id: None,
             is_playing: true,
             position: 12.5,
             speed: 1.0,

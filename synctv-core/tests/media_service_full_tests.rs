@@ -219,14 +219,14 @@ async fn test_add_media_without_permission_denied() {
         .checked("test operation should succeed");
     register_direct_url_provider(&room_service).await;
 
-    // Revoke CREATE_MEDIA_RESOURCE from member
+    // Revoke MANAGE_OWN_MEDIA from member
     room_service
         .member_service()
         .revoke_permission(
             room.id,
             creator.id,
             member.id,
-            RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE,
+            RoomMemberPermissionBits::MANAGE_OWN_MEDIA,
         )
         .await
         .checked("test operation should succeed");
@@ -249,7 +249,7 @@ async fn test_add_media_without_permission_denied() {
 
     assert!(
         result.is_err(),
-        "Should fail without CREATE_MEDIA_RESOURCE permission"
+        "Should fail without MANAGE_OWN_MEDIA permission"
     );
     match result.failed("operation should fail") {
         Error::Authorization(_) => {}

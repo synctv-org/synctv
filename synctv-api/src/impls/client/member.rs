@@ -159,7 +159,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        if permissions.has(synctv_core::models::RoomPermission::APPROVE_MEMBER) {
+        if permissions.has(synctv_core::models::RoomPermission::REVIEW_JOIN_REQUESTS) {
             Ok(())
         } else {
             Err(ApiError::Authorization(
@@ -261,7 +261,7 @@ impl ClientApiImpl {
         req: synctv_proto::client::GetRoomMembersRequest,
     ) -> Result<synctv_proto::client::GetRoomMembersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        self.require_room_permission(actor, synctv_core::models::RoomPermission::VIEW_MEMBER_LIST)
+        self.require_room_permission(actor, synctv_core::models::RoomPermission::VIEW_MEMBERS)
             .await?;
         let rid = actor.room_id();
 

@@ -286,7 +286,7 @@ async fn test_validate_publish_key_valid_token() {
     assert_eq!(claims.room_id, room_id.to_string());
     assert_eq!(claims.media_id, media_id.to_string());
     assert_eq!(claims.user_id, user_id.to_string());
-    assert!(claims.perm_live_control);
+    assert!(claims.perm_manage_live_streams);
 }
 
 #[tokio::test]
@@ -309,7 +309,7 @@ async fn test_validate_publish_key_rejects_expired_token() {
         room_id: RoomId::new().to_string(),
         media_id: MediaId::new().to_string(),
         user_id: UserId::new().to_string(),
-        perm_live_control: true,
+        perm_manage_live_streams: true,
         iat: now - 7200,
         exp: now - 3600,
         jti: "expired_publish_key_test".to_string(),
@@ -500,7 +500,7 @@ async fn test_verify_publish_key_media_mismatch_does_not_consume_token() {
 }
 
 #[test]
-fn test_publish_claims_require_live_control_claim_name() {
+fn test_publish_claims_require_manage_live_streams_claim_name() {
     let old_claim = serde_json::json!({
         "room_id": "room123",
         "media_id": "media456",
@@ -516,7 +516,7 @@ fn test_publish_claims_require_live_control_claim_name() {
         "perm_start_live is not a supported publish claim",
     );
     assert!(
-        error.to_string().contains("perm_live_control"),
+        error.to_string().contains("perm_manage_live_streams"),
         "unexpected error: {error}"
     );
 }

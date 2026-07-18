@@ -824,6 +824,15 @@ fn register_write_routes() -> Router<AppState> {
             "/api/rooms/{roomId}/playback/stop",
             post(room::stop_playback),
         )
+        .route("/api/rooms/{roomId}/playback/next", post(room::play_next))
+        .route(
+            "/api/rooms/{roomId}/playback/previous",
+            post(room::play_previous),
+        )
+        .route(
+            "/api/rooms/{roomId}/playback/history/{entryId}/play",
+            post(room::play_history_entry),
+        )
         .route(
             "/api/rooms/{roomId}/playback",
             axum::routing::patch(room::update_playback_state),
@@ -952,6 +961,10 @@ fn register_read_routes() -> Router<AppState> {
         )
         .route("/api/rooms/{roomId}/media/{mediaId}", get(room::get_media))
         .route("/api/rooms/{roomId}/playback", get(room::get_playback))
+        .route(
+            "/api/rooms/{roomId}/playback/history",
+            get(room::list_playback_history),
+        )
         .route(
             "/api/rooms/{roomId}/watch/playback-state",
             get(room::watch_playback_state),

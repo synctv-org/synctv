@@ -200,7 +200,7 @@ impl RoomService {
             .check_permission_no_cache(
                 room_id,
                 user_id,
-                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+                crate::models::RoomPermission::MANAGE_ROOM_SETTINGS,
             )
             .await?;
         let credential_identifier = room_opaque_credential_identifier(room_id);
@@ -251,7 +251,7 @@ impl RoomService {
             .check_permission_no_cache(
                 &session.room_id,
                 user_id,
-                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+                crate::models::RoomPermission::MANAGE_ROOM_SETTINGS,
             )
             .await?;
         let opaque_record = self

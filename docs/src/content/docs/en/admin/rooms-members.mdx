@@ -28,8 +28,8 @@ Room management affects online users. Query current state first, then validate j
 
 | Goal | Action | Note |
 | --- | --- | --- |
-| Temporarily mute | Remove `send_chat` from the member | Smaller blast radius than disabling chat |
-| Allow playback control | Add `play_control` | Media switching also needs `change_current_media` |
+| Temporarily mute | Remove `send_chat_messages` from the member | Smaller blast radius than disabling chat |
+| Allow playback control | Add `control_playback_state` | Media switching also needs `navigate_playback` |
 | Remove disruptive member | Kick member | After a kick, the member enters a temporary rejoin cooldown |
 | Change long-term responsibility | Change room role or defaults | Avoid long-lived piles of member overrides |
 

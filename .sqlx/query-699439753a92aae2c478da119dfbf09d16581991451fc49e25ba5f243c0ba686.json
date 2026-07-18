@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "WITH current_state AS (\n                SELECT room_id, current_progress_id\n                FROM room_playback_state\n                WHERE room_id = $1\n                FOR UPDATE\n            ),\n            reset_progress AS (\n                UPDATE room_playback_progress progress\n                SET \"position\" = 0,\n                    version = version + 1\n                FROM current_state\n                WHERE progress.id = current_state.current_progress_id\n                RETURNING progress.id\n            ),\n            updated AS (\n                UPDATE room_playback_state state\n                SET playing_media_id = NULL,\n                    playing_playlist_id = NULL,\n                    target = NULL,\n                    current_progress_id = NULL,\n                    speed = 1.0,\n                    is_playing = false,\n                    playback_generation = playback_generation + 1,\n                    version = version + 1,\n                    updated_at = NOW()\n                FROM current_state\n                WHERE state.room_id = current_state.room_id\n                RETURNING state.room_id,\n                          state.playing_media_id,\n                          state.playing_playlist_id,\n                          state.target,\n                          state.current_progress_id,\n                          state.speed,\n                          state.is_playing,\n                          state.playback_generation,\n                          state.updated_at,\n                          state.version\n            )\n            SELECT room_id AS \"room_id!: RoomId\",\n                   playing_media_id AS \"playing_media_id?: MediaId\",\n                   playing_playlist_id AS \"playing_playlist_id?: PlaylistId\",\n                   target AS \"target?: crate::models::ProviderTarget\",\n                   current_progress_id,\n                   0.0::DOUBLE PRECISION AS \"position!\",\n                   speed AS \"speed!\",\n                   is_playing AS \"is_playing!\",\n                   playback_generation AS \"playback_generation!\",\n                   updated_at AS \"updated_at!\",\n                   version AS \"version!\"\n            FROM updated",
+  "query": "WITH updated AS (\n                UPDATE room_playback_state\n                SET playing_media_id = $2,\n                    playing_playlist_id = $3,\n                    target = $4,\n                    current_progress_id = $5,\n                    speed = $6,\n                    is_playing = $7,\n                    playback_generation = CASE\n                        WHEN playing_media_id IS DISTINCT FROM $2\n                          OR playing_playlist_id IS DISTINCT FROM $3\n                          OR target IS DISTINCT FROM $4\n                        THEN playback_generation + 1\n                        ELSE playback_generation\n                    END,\n                    updated_at = NOW(),\n                    version = $9\n                WHERE room_id = $1 AND version = $8\n                RETURNING room_id,\n                          playing_media_id,\n                          playing_playlist_id,\n                          target,\n                          current_progress_id,\n                          history_cursor_id,\n                          speed,\n                          is_playing,\n                          playback_generation,\n                          updated_at,\n                          version\n            )\n            SELECT updated.room_id AS \"room_id!: RoomId\",\n                   updated.playing_media_id AS \"playing_media_id?: MediaId\",\n                   updated.playing_playlist_id AS \"playing_playlist_id?: PlaylistId\",\n                   updated.target AS \"target?: crate::models::ProviderTarget\",\n                   updated.current_progress_id,\n                   updated.history_cursor_id,\n                   COALESCE(progress.\"position\", 0.0) AS \"position!\",\n                   updated.speed AS \"speed!\",\n                   updated.is_playing AS \"is_playing!\",\n                   updated.playback_generation AS \"playback_generation!\",\n                   updated.updated_at AS \"updated_at!\",\n                   updated.version AS \"version!\"\n            FROM updated\n            LEFT JOIN room_playback_progress progress ON progress.id = updated.current_progress_id",
   "describe": {
     "columns": [
       {
@@ -60,12 +60,23 @@
       },
       {
         "ordinal": 5,
+        "name": "history_cursor_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "history_cursor_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "position!",
         "type_info": "Float8",
         "origin": "Expression"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "speed!",
         "type_info": "Float8",
         "origin": {
@@ -76,7 +87,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "is_playing!",
         "type_info": "Bool",
         "origin": {
@@ -87,7 +98,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "playback_generation!",
         "type_info": "Int8",
         "origin": {
@@ -98,7 +109,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "updated_at!",
         "type_info": "Timestamptz",
         "origin": {
@@ -109,7 +120,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "version!",
         "type_info": "Int8",
         "origin": {
@@ -122,11 +133,20 @@
     ],
     "parameters": {
       "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Jsonb",
+        "Int8",
+        "Float8",
+        "Bool",
+        "Int8",
         "Int8"
       ]
     },
     "nullable": [
       false,
+      true,
       true,
       true,
       true,
@@ -139,5 +159,5 @@
       false
     ]
   },
-  "hash": "f369fc66bf574ab0f7533b3b1fc124e7be1fbac9809fe68ea94cd7134d343fbd"
+  "hash": "699439753a92aae2c478da119dfbf09d16581991451fc49e25ba5f243c0ba686"
 }

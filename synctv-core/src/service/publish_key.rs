@@ -46,7 +46,7 @@ pub struct PublishClaims {
     /// User ID
     pub user_id: String,
     /// Permission to control live streams
-    pub perm_live_control: bool,
+    pub perm_manage_live_streams: bool,
     /// Issued at timestamp
     pub iat: i64,
     /// Expiration timestamp
@@ -147,9 +147,9 @@ impl PublishKeyService {
             return Err(Error::Authentication("Token has expired".to_string()));
         }
 
-        if !claims.perm_live_control {
+        if !claims.perm_manage_live_streams {
             return Err(Error::Authorization(
-                "Token does not have LIVE_CONTROL permission".to_string(),
+                "Token does not have MANAGE_LIVE_STREAMS permission".to_string(),
             ));
         }
 
@@ -299,7 +299,7 @@ impl PublishKeyService {
             room_id: room_id.to_string(),
             media_id: media_id.to_string(),
             user_id: user_id.to_string(),
-            perm_live_control: true,
+            perm_manage_live_streams: true,
             iat: now,
             exp,
             jti: synctv_common::snanoid!(32),

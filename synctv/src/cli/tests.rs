@@ -4208,9 +4208,9 @@ fn cli_parses_room_member_permission_names() {
         "room-1",
         "alice",
         "--added-permissions",
-        "chat,use-webrtc",
+        "send-chat-messages,use-webrtc",
         "--removed-permissions",
-        r#"["chat"]"#,
+        r#"["send_chat_messages"]"#,
     ]);
     match cli.command {
         Commands::Room(RoomCommand {
@@ -4221,11 +4221,14 @@ fn cli_parses_room_member_permission_names() {
         }) => {
             assert_eq!(
                 args.added_permissions.map(u64::from),
-                Some(RoomMemberPermissionBits::CHAT | RoomMemberPermissionBits::USE_WEBRTC)
+                Some(
+                    RoomMemberPermissionBits::SEND_CHAT_MESSAGES
+                        | RoomMemberPermissionBits::USE_WEBRTC
+                )
             );
             assert_eq!(
                 args.removed_permissions.map(u64::from),
-                Some(RoomMemberPermissionBits::CHAT)
+                Some(RoomMemberPermissionBits::SEND_CHAT_MESSAGES)
             );
         }
         other => panic!("unexpected command parsed: {other:?}"),
@@ -4233,7 +4236,7 @@ fn cli_parses_room_member_permission_names() {
 }
 
 #[test]
-fn cli_accepts_chat_permission_name() {
+fn cli_accepts_send_chat_messages_permission_name() {
     let cli = Cli::parse_from([
         "synctv",
         "room",
@@ -4243,7 +4246,7 @@ fn cli_accepts_chat_permission_name() {
         "room-1",
         "alice",
         "--removed-permissions",
-        r#"["chat"]"#,
+        r#"["send_chat_messages"]"#,
     ]);
     match cli.command {
         Commands::Room(RoomCommand {
@@ -4254,7 +4257,7 @@ fn cli_accepts_chat_permission_name() {
         }) => {
             assert_eq!(
                 args.removed_permissions.map(u64::from),
-                Some(RoomMemberPermissionBits::CHAT)
+                Some(RoomMemberPermissionBits::SEND_CHAT_MESSAGES)
             );
         }
         other => panic!("unexpected command parsed: {other:?}"),
@@ -5237,12 +5240,12 @@ fn render_human_output_uses_room_and_member_enums_by_context() {
             remark_name: String::new(),
             display_tag: String::new(),
             role: synctv_proto::common::RoomMemberRole::Creator as i32,
-            permissions: RoomAdminPermissionBits::CHAT
-                | RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES,
-            added_permissions: RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE,
-            removed_permissions: RoomMemberPermissionBits::CHAT,
-            admin_added_permissions: RoomAdminPermissionBits::KICK_MEMBER,
-            admin_removed_permissions: RoomAdminPermissionBits::KICK_MEMBER,
+            permissions: RoomAdminPermissionBits::SEND_CHAT_MESSAGES
+                | RoomAdminPermissionBits::VIEW_MEDIA,
+            added_permissions: RoomMemberPermissionBits::MANAGE_OWN_MEDIA,
+            removed_permissions: RoomMemberPermissionBits::SEND_CHAT_MESSAGES,
+            admin_added_permissions: RoomAdminPermissionBits::REMOVE_MEMBERS,
+            admin_removed_permissions: RoomAdminPermissionBits::REMOVE_MEMBERS,
             joined_at: 1_775_291_657_i64,
             is_online: true,
             connection_count: 1,
@@ -5275,23 +5278,23 @@ fn render_human_output_uses_room_and_member_enums_by_context() {
     assert_eq!(rendered["members"][0]["role"], "creator");
     assert_eq!(
         rendered["members"][0]["permissionNames"],
-        string_values(&["chat", "view_media_resources"])
+        string_values(&["send_chat_messages", "view_media"])
     );
     assert_eq!(
         rendered["members"][0]["addedPermissionNames"],
-        string_values(&["create_media_resource"])
+        string_values(&["manage_own_media"])
     );
     assert_eq!(
         rendered["members"][0]["removedPermissionNames"],
-        string_values(&["chat"])
+        string_values(&["send_chat_messages"])
     );
     assert_eq!(
         rendered["members"][0]["adminAddedPermissionNames"],
-        string_values(&["kick_member"])
+        string_values(&["remove_members"])
     );
     assert_eq!(
         rendered["members"][0]["adminRemovedPermissionNames"],
-        string_values(&["kick_member"])
+        string_values(&["remove_members"])
     );
     assert_eq!(
         rendered["members"][0]["joinedAt"],

@@ -200,7 +200,7 @@ impl RoomService {
             &mut tx,
             &room_id,
             &kicker_id,
-            crate::models::RoomPermission::KICK_MEMBER,
+            crate::models::RoomPermission::REMOVE_MEMBERS,
         )
         .await?;
         let Some(observed_version) = self

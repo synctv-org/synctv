@@ -1372,7 +1372,7 @@ impl ClientApiImpl {
             .check_permission(
                 &rid,
                 &uid,
-                synctv_core::models::RoomPermission::SET_ROOM_SETTINGS,
+                synctv_core::models::RoomPermission::MANAGE_ROOM_SETTINGS,
             )
             .await
             .map_err(ApiError::from)?;

@@ -176,6 +176,7 @@ message RuntimeSettings {
   ChatSettings chat = 10 [(buf.validate.field).required = true];
   CorsSettings cors = 11 [(buf.validate.field).required = true];
   ServerSettings server = 12 [(buf.validate.field).required = true];
+  PlaybackHistorySettings playback_history = 13 [(buf.validate.field).required = true];
 }
 
 message ServerSettings {
@@ -327,6 +328,11 @@ message ChatSettings {
   int64 message_retention_days = 3;
 }
 
+message PlaybackHistorySettings {
+  uint32 retention_days = 1;
+  int64 max_entries_per_room = 2;
+}
+
 message CorsSettings {
   repeated string allowed_origins = 1;
 }
@@ -349,6 +355,7 @@ message RuntimeSettingsPatch {
   ChatSettingsPatch chat = 10;
   CorsSettingsPatch cors = 11;
   ServerSettingsPatch server = 12;
+  PlaybackHistorySettingsPatch playback_history = 13;
 }
 
 message ServerSettingsPatch {
@@ -421,6 +428,11 @@ message ChatSettingsPatch {
   optional uint64 max_messages_per_room = 1;
   optional uint64 max_pinned_messages_per_room = 2;
   optional int64 message_retention_days = 3;
+}
+
+message PlaybackHistorySettingsPatch {
+  optional uint32 retention_days = 1;
+  optional int64 max_entries_per_room = 2;
 }
 
 message CorsSettingsPatch {

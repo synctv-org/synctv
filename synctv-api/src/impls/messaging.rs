@@ -637,12 +637,20 @@ impl StreamMessageHandler {
                     Ok(())
                 }
             }
+            synctv_proto::client::observe_resource::Resource::PlaybackHistory(_) => {
+                if self.principal.is_guest() {
+                    return Err("Guests cannot observe playback history".to_string());
+                }
+                self.check_realtime_permission(RoomPermission::VIEW_PLAYBACK_HISTORY)
+                    .await
+                    .map_err(|error| error.to_string())
+            }
             synctv_proto::client::observe_resource::Resource::RoomMemberEvents(_)
             | synctv_proto::client::observe_resource::Resource::OnlineEvent(_) => {
                 if self.principal.is_guest() {
                     self.ensure_guest_admission_for_action().await?;
                 }
-                self.check_realtime_permission(RoomPermission::VIEW_MEMBER_LIST)
+                self.check_realtime_permission(RoomPermission::VIEW_MEMBERS)
                     .await
                     .map_err(|e| e.to_string())
             }

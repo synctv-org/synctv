@@ -1,0 +1,157 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH current_state AS (\n                            SELECT room_id, current_progress_id\n                            FROM room_playback_state\n                            WHERE room_id = $1 AND version = $3\n                            FOR UPDATE\n                        ),\n                        reset_progress AS (\n                            UPDATE room_playback_progress progress\n                            SET \"position\" = 0,\n                                version = version + 1\n                            FROM current_state\n                            WHERE progress.id = current_state.current_progress_id\n                            RETURNING progress.id\n                        ),\n                        updated AS (\n                            UPDATE room_playback_state state\n                            SET playing_media_id = NULL,\n                                playing_playlist_id = NULL,\n                                target = NULL,\n                                current_progress_id = NULL,\n                                speed = 1.0,\n                                is_playing = false,\n                                playback_generation = playback_generation + 1,\n                                version = $2,\n                                updated_at = NOW()\n                            FROM current_state\n                            WHERE state.room_id = current_state.room_id\n                            RETURNING state.room_id,\n                                      state.playing_media_id,\n                                      state.playing_playlist_id,\n                                      state.target,\n                                      state.current_progress_id,\n                                      state.history_cursor_id,\n                                      state.speed,\n                                      state.is_playing,\n                                      state.playback_generation,\n                                      state.updated_at,\n                                      state.version\n                        )\n                        SELECT room_id AS \"room_id!: RoomId\",\n                               playing_media_id AS \"playing_media_id?: MediaId\",\n                               playing_playlist_id AS \"playing_playlist_id?: PlaylistId\",\n                               target AS \"target?: crate::models::ProviderTarget\",\n                               current_progress_id,\n                               history_cursor_id,\n                               0.0::DOUBLE PRECISION AS \"position!\",\n                               speed AS \"speed!\",\n                               is_playing AS \"is_playing!\",\n                               playback_generation AS \"playback_generation!\",\n                               updated_at AS \"updated_at!\",\n                               version AS \"version!\"\n                        FROM updated",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "playing_media_id?: MediaId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "playing_media_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "playing_playlist_id?: PlaylistId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "playing_playlist_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "target?: crate::models::ProviderTarget",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "target"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "current_progress_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "current_progress_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "history_cursor_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "history_cursor_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "position!",
+        "type_info": "Float8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "speed!",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "speed"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "is_playing!",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "is_playing"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "playback_generation!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "playback_generation"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "updated_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "version!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      null,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "f39b3c0abbbb3bfd01eff590eeef41465b742b2df1e53b656c1dda6cbd6119d3"
+}

@@ -573,7 +573,7 @@ pub async fn edit_chat_message(
             (status = 200, description = "Chat message deleted event", body = ChatMessageEventResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
-            (status = 403, description = "Sender or DELETE_CHAT permission required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Sender or DELETE_CHAT_MESSAGES permission required", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 404, description = "Message not found", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 409, description = "Optimistic lock conflict", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -665,7 +665,7 @@ pub async fn list_pinned_chat_messages(
             (status = 200, description = "Chat message pinned event", body = ChatPinEventResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
-            (status = 403, description = "DELETE_CHAT permission required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "DELETE_CHAT_MESSAGES permission required", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 404, description = "Message not found", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 409, description = "Message state conflict", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -712,7 +712,7 @@ pub async fn pin_chat_message(
             (status = 200, description = "Chat message unpinned event", body = ChatPinEventResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
-            (status = 403, description = "DELETE_CHAT permission required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "DELETE_CHAT_MESSAGES permission required", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 404, description = "Message or pin not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(

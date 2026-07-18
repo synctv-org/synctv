@@ -530,7 +530,7 @@ impl MediaService {
             .check_permission(
                 &room_id,
                 &user_id,
-                crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+                crate::models::RoomPermission::MANAGE_OWN_MEDIA,
             )
             .await?;
 
@@ -657,7 +657,7 @@ impl MediaService {
             .check_permission(
                 &room_id,
                 &user_id,
-                crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+                crate::models::RoomPermission::MANAGE_OWN_MEDIA,
             )
             .await?;
 
@@ -825,7 +825,7 @@ impl MediaService {
                     .check_permission_no_cache(
                         &room_id,
                         &user_id,
-                        crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+                        crate::models::RoomPermission::MANAGE_OWN_MEDIA,
                     )
                     .await?;
 
@@ -1231,7 +1231,7 @@ impl MediaService {
                 .check_permission_no_cache(
                     &room_id,
                     &user_id,
-                    crate::models::RoomPermission::REORDER_MEDIA_RESOURCES,
+                    crate::models::RoomPermission::REORDER_MEDIA,
                 )
                 .await?;
         }

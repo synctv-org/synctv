@@ -474,8 +474,8 @@ async fn test_concurrent_permission_grant() {
         let permission = match i {
             0 | 1 => RoomAdminPermissionBits::USE_WEBRTC,
             2 => RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
-            3 => RoomAdminPermissionBits::CHAT,
-            _ => RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
+            3 => RoomAdminPermissionBits::SEND_CHAT_MESSAGES,
+            _ => RoomAdminPermissionBits::MANAGE_OWN_MEDIA,
         };
 
         let handle = tokio::spawn(async move {
@@ -553,17 +553,16 @@ async fn test_optimistic_lock_conflict_retry_on_permission_update() {
     // 10 concurrent updates to the same member
     let mut handles = Vec::with_capacity(10);
     let permission_updates = [
-        RoomAdminPermissionBits::CHAT,
-        RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
-        RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES,
-        RoomAdminPermissionBits::VIEW_MEMBER_LIST,
+        RoomAdminPermissionBits::SEND_CHAT_MESSAGES,
+        RoomAdminPermissionBits::MANAGE_OWN_MEDIA,
+        RoomAdminPermissionBits::VIEW_MEDIA,
+        RoomAdminPermissionBits::VIEW_MEMBERS,
         RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
         RoomAdminPermissionBits::USE_WEBRTC,
-        RoomAdminPermissionBits::CHAT | RoomAdminPermissionBits::USE_WEBRTC,
-        RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
-            | RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES,
-        RoomAdminPermissionBits::VIEW_MEMBER_LIST | RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
-        RoomAdminPermissionBits::CHAT | RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
+        RoomAdminPermissionBits::SEND_CHAT_MESSAGES | RoomAdminPermissionBits::USE_WEBRTC,
+        RoomAdminPermissionBits::MANAGE_OWN_MEDIA | RoomAdminPermissionBits::VIEW_MEDIA,
+        RoomAdminPermissionBits::VIEW_MEMBERS | RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
+        RoomAdminPermissionBits::SEND_CHAT_MESSAGES | RoomAdminPermissionBits::MANAGE_OWN_MEDIA,
     ];
     for permission in permission_updates {
         let barrier_clone = barrier.clone();

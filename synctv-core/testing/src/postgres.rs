@@ -635,6 +635,23 @@ pub async fn ensure_chat_partition_for(pool: &PgPool, timestamp: chrono::DateTim
     ensure_range_partition(pool, "chat_messages", &partition_name, start_date, end_date).await;
 }
 
+pub async fn ensure_playback_history_partition_for(
+    pool: &PgPool,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) {
+    let start_date = timestamp.date_naive();
+    let end_date = start_date + chrono::Duration::days(1);
+    let partition_name = format!("room_playback_history_{}", start_date.format("%Y_%m_%d"));
+    ensure_range_partition(
+        pool,
+        "room_playback_history",
+        &partition_name,
+        start_date,
+        end_date,
+    )
+    .await;
+}
+
 pub async fn ensure_notification_partition_for(
     pool: &PgPool,
     timestamp: chrono::DateTime<chrono::Utc>,
@@ -837,9 +854,9 @@ async fn recreate_template_database(
         .run(&template_pool)
         .await
         .expect("template database migrations should succeed");
-    synctv_core::service::ensure_chat_partitions_on_startup(&template_pool)
+    synctv_core::service::ensure_time_partitions_on_startup(&template_pool)
         .await
-        .expect("template database chat partitions should be initialized");
+        .expect("template database time partitions should be initialized");
     synctv_core::service::ensure_notification_partitions_on_startup(&template_pool)
         .await
         .expect("template database notification partitions should be initialized");

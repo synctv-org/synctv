@@ -1631,6 +1631,29 @@ async fn test_playback_patch_route_is_reachable_via_project_router() -> TestResu
 }
 
 #[tokio::test]
+async fn test_playback_navigation_routes_are_reachable_via_project_router() -> TestResult {
+    synctv_core::install_process_crypto_provider();
+    for (method, uri, body) in [
+        ("POST", "/api/rooms/room_123/playback/next", "{}"),
+        ("POST", "/api/rooms/room_123/playback/previous", "{}"),
+        ("GET", "/api/rooms/room_123/playback/history", ""),
+        ("POST", "/api/rooms/room_123/playback/history/ph_1/play", ""),
+    ] {
+        let app = register_all_routes().with_state(test_app_state());
+        let request = test_request(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body)),
+        )?;
+        let response = test_response(app.oneshot(request).await)?;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "route: {uri}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_chat_message_patch_route_is_reachable_via_project_router() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);

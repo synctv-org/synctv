@@ -390,38 +390,38 @@ mod tests {
         let default = RoomPermissionSet::default_member();
         let result = member.effective_permissions(default);
         assert!(result.has(crate::models::RoomPermission::USE_WEBRTC));
-        assert!(result.has(crate::models::RoomPermission::CHAT));
+        assert!(result.has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
     }
 
     #[test]
     fn test_member_with_removed_permissions() {
         let mut member = test_member(RoomRole::Member);
-        member.removed_permissions = RoomMemberPermissionBits::CHAT;
+        member.removed_permissions = RoomMemberPermissionBits::SEND_CHAT_MESSAGES;
         let default = RoomPermissionSet::default_member();
         let result = member.effective_permissions(default);
-        assert!(!result.has(crate::models::RoomPermission::CHAT));
-        assert!(result.has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE));
+        assert!(!result.has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
+        assert!(result.has(crate::models::RoomPermission::MANAGE_OWN_MEDIA));
     }
 
     #[test]
     fn test_admin_uses_admin_overrides() {
         let mut member = test_member(RoomRole::Admin);
-        member.admin_added_permissions = RoomAdminPermissionBits::PLAY_CONTROL;
-        member.admin_removed_permissions = RoomAdminPermissionBits::KICK_MEMBER;
+        member.admin_added_permissions = RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE;
+        member.admin_removed_permissions = RoomAdminPermissionBits::REMOVE_MEMBERS;
         let default = RoomPermissionSet::default_member();
         let result = member.effective_permissions(default);
-        assert!(result.has(crate::models::RoomPermission::PLAY_CONTROL));
-        assert!(!result.has(crate::models::RoomPermission::KICK_MEMBER));
+        assert!(result.has(crate::models::RoomPermission::CONTROL_PLAYBACK_STATE));
+        assert!(!result.has(crate::models::RoomPermission::REMOVE_MEMBERS));
     }
 
     #[test]
     fn test_guest_rejects_added_chat() {
         let mut member = test_member(RoomRole::Guest);
-        member.added_permissions = RoomMemberPermissionBits::CHAT;
+        member.added_permissions = RoomMemberPermissionBits::SEND_CHAT_MESSAGES;
         let default = RoomPermissionSet::default_guest();
         let result = member.effective_permissions(default);
-        assert!(!result.has(crate::models::RoomPermission::CHAT));
-        assert!(!result.has(crate::models::RoomPermission::VIEW_MEDIA_RESOURCES));
+        assert!(!result.has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
+        assert!(!result.has(crate::models::RoomPermission::VIEW_MEDIA));
     }
 
     #[test]

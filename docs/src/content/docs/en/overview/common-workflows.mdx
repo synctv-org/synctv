@@ -54,8 +54,8 @@ After the first production deployment, use the launch validation workflow. For s
 
 | Goal | Action | Note |
 | --- | --- | --- |
-| Temporary mute | Remove `send_chat` from the member | Lower impact than disabling chat room-wide |
-| Grant playback control | Add `play_control` | Add `change_current_media` for media switching |
+| Temporary mute | Remove `send_chat_messages` from the member | Lower impact than disabling chat room-wide |
+| Grant playback control | Add `control_playback_state` | Add `navigate_playback` for media switching |
 | Remove disruptive member | Kick the member or platform-ban the user | Room ban is not a platform ban |
 | Long-term responsibility | Adjust role or defaults | Avoid large stacks of personal overrides |
 

@@ -456,7 +456,7 @@ pub(crate) fn chat_metadata_for_send(
 ) -> Result<Option<ChatMetadata>, String> {
     let mut metadata = match metadata {
         Some(ChatMetadata::User(metadata)) => metadata,
-        Some(ChatMetadata::MemberJoined(_)) => {
+        Some(ChatMetadata::MemberJoined(_) | ChatMetadata::PlaybackChanged(_)) => {
             return Err("Client chat metadata must use user metadata".to_string());
         }
         None => synctv_core::models::ChatUserMetadata::default(),

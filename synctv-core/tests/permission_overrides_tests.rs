@@ -80,7 +80,7 @@ async fn test_allow_override_role_default() {
         "allow override permissions should load after grant",
     );
     assert!(perms_after.has(RoomPermission::USE_WEBRTC));
-    assert!(perms_after.has(RoomPermission::CHAT));
+    assert!(perms_after.has(RoomPermission::SEND_CHAT_MESSAGES));
 }
 
 #[tokio::test]
@@ -124,7 +124,7 @@ async fn test_deny_override_role_default() {
             .await,
         "deny override permissions should load before revoke",
     );
-    assert!(perms_before.has(RoomPermission::CHAT));
+    assert!(perms_before.has(RoomPermission::SEND_CHAT_MESSAGES));
 
     ok(
         room_service
@@ -133,7 +133,7 @@ async fn test_deny_override_role_default() {
                 room.id,
                 creator.id,
                 member.id,
-                RoomMemberPermissionBits::CHAT,
+                RoomMemberPermissionBits::SEND_CHAT_MESSAGES,
             )
             .await,
         "deny override permission should be revoked",
@@ -145,6 +145,6 @@ async fn test_deny_override_role_default() {
             .await,
         "deny override permissions should load after revoke",
     );
-    assert!(!perms_after.has(RoomPermission::CHAT));
-    assert!(perms_after.has(RoomPermission::CREATE_MEDIA_RESOURCE));
+    assert!(!perms_after.has(RoomPermission::SEND_CHAT_MESSAGES));
+    assert!(perms_after.has(RoomPermission::MANAGE_OWN_MEDIA));
 }

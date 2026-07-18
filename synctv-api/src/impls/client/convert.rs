@@ -324,6 +324,9 @@ pub(crate) fn chat_message_selection_from_proto_values(
                 client_proto::ChatMessageType::SystemMemberJoined => {
                     Ok(synctv_core::models::ChatMessageType::SystemMemberJoined)
                 }
+                client_proto::ChatMessageType::SystemPlaybackChanged => {
+                    Ok(synctv_core::models::ChatMessageType::SystemPlaybackChanged)
+                }
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -2719,6 +2722,63 @@ pub(crate) fn try_playback_state_to_proto(
         target: optional_provider_target_to_proto(state.target.as_ref()),
         target_hash: state.target_hash()?,
         generated_at_millis,
+        history_cursor_id: state
+            .history_cursor_id
+            .map(|id| public_id_codec.encode_playback_history_entry_id(id))
+            .transpose()
+            .map_err(crate::impls::ApiError::InvalidInput)?
+            .unwrap_or_default(),
+    })
+}
+
+pub(crate) fn playback_history_page_to_proto(
+    page: synctv_core::models::PlaybackHistoryPage,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
+) -> Result<synctv_proto::client::ListPlaybackHistoryResponse, crate::impls::ApiError> {
+    let entries = page
+        .entries
+        .into_iter()
+        .map(|entry| {
+            Ok(synctv_proto::client::PlaybackHistoryEntry {
+                id: public_id_codec
+                    .encode_playback_history_entry_id(entry.id)
+                    .map_err(|error| proto_encode_error("playback history entry", &error))?,
+                media_id: entry
+                    .media_id
+                    .map(|id| encode_media_id_for_proto(id, public_id_codec))
+                    .transpose()?
+                    .unwrap_or_default(),
+                playlist_id: entry
+                    .playlist_id
+                    .map(|id| encode_playlist_id_for_proto(id, public_id_codec))
+                    .transpose()?
+                    .unwrap_or_default(),
+                target: entry.target.as_ref().map(provider_target_to_proto),
+                position_seconds: entry.position_seconds,
+                selected_by_user_id: entry
+                    .selected_by_user_id
+                    .map(|id| encode_user_id_for_proto(id, public_id_codec))
+                    .transpose()?
+                    .unwrap_or_default(),
+                created_at: entry.created_at.timestamp(),
+                updated_at: entry.updated_at.timestamp(),
+            })
+        })
+        .collect::<Result<Vec<_>, crate::impls::ApiError>>()?;
+    Ok(synctv_proto::client::ListPlaybackHistoryResponse {
+        entries,
+        history_cursor_id: page
+            .history_cursor_id
+            .map(|id| public_id_codec.encode_playback_history_entry_id(id))
+            .transpose()
+            .map_err(|error| proto_encode_error("playback history entry", &error))?
+            .unwrap_or_default(),
+        next_before_entry_id: page
+            .next_before_entry_id
+            .map(|id| public_id_codec.encode_playback_history_entry_id(id))
+            .transpose()
+            .map_err(|error| proto_encode_error("playback history entry", &error))?
+            .unwrap_or_default(),
     })
 }
 

@@ -67,8 +67,8 @@ service ManagementService {
     rpc DeleteRoom(DeleteRoomRequest) returns (synctv.admin.DeleteRoomResponse);
     rpc BatchBanRooms(BatchBanRoomsRequest) returns (synctv.admin.BatchBanRoomsResponse);
     rpc BatchDeleteRooms(BatchDeleteRoomsRequest) returns (synctv.admin.BatchDeleteRoomsResponse);
-    rpc StartPlayback(StartPlaybackRequest) returns (synctv.client.StartPlaybackResponse);
-    rpc StopPlayback(StopPlaybackRequest) returns (synctv.client.StopPlaybackResponse);
+    rpc StartPlayback(StartPlaybackRequest) returns (synctv.client.PlaybackState);
+    rpc StopPlayback(StopPlaybackRequest) returns (synctv.client.PlaybackState);
     rpc GetPlayback(GetPlaybackRequest) returns (synctv.client.GetPlaybackResponse);
     rpc UpdatePlaybackState(UpdatePlaybackStateRequest) returns (synctv.client.PlaybackState);
     rpc CreatePublishKey(CreatePublishKeyRequest) returns (synctv.provider.rtmp.CreatePublishKeyResponse);

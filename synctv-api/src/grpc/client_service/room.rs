@@ -659,15 +659,43 @@ impl RoomService for ClientServiceImpl {
     async fn start_playback(
         &self,
         request: Request<StartPlaybackRequest>,
-    ) -> Result<Response<StartPlaybackResponse>, Status> {
+    ) -> Result<Response<PlaybackState>, Status> {
         playback::start_playback(self, request).await
     }
 
     async fn stop_playback(
         &self,
         request: Request<StopPlaybackRequest>,
-    ) -> Result<Response<StopPlaybackResponse>, Status> {
+    ) -> Result<Response<PlaybackState>, Status> {
         playback::stop_playback(self, request).await
+    }
+
+    async fn play_next(
+        &self,
+        request: Request<PlayNextRequest>,
+    ) -> Result<Response<PlaybackState>, Status> {
+        playback::play_next(self, request).await
+    }
+
+    async fn play_previous(
+        &self,
+        request: Request<PlayPreviousRequest>,
+    ) -> Result<Response<PlaybackState>, Status> {
+        playback::play_previous(self, request).await
+    }
+
+    async fn list_playback_history(
+        &self,
+        request: Request<ListPlaybackHistoryRequest>,
+    ) -> Result<Response<ListPlaybackHistoryResponse>, Status> {
+        playback::list_playback_history(self, request).await
+    }
+
+    async fn play_history_entry(
+        &self,
+        request: Request<PlayHistoryEntryRequest>,
+    ) -> Result<Response<PlaybackState>, Status> {
+        playback::play_history_entry(self, request).await
     }
 
     async fn get_playback(

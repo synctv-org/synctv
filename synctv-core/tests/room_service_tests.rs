@@ -2740,7 +2740,7 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_set_room_settings_emits_settings_updated_notification() {
+async fn test_manage_room_settings_emits_settings_updated_notification() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -2915,7 +2915,7 @@ async fn test_room_settings_mutations_return_committed_snapshots() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_set_room_settings_disabling_guest_join_kicks_guests() {
+async fn test_manage_room_settings_disabling_guest_join_kicks_guests() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -3130,7 +3130,7 @@ async fn test_remove_media_respects_admin_override_columns() {
          WHERE room_id = $1 AND user_id = $2",
         room.id.as_i64(),
         admin.id.as_i64(),
-        u64_to_i64(RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY)
+        u64_to_i64(RoomAdminPermissionBits::DELETE_MEDIA)
     )
     .execute(&pool)
     .await
@@ -3144,7 +3144,7 @@ async fn test_remove_media_respects_admin_override_columns() {
     let result = room_service.remove_media(room.id, admin.id, media.id).await;
     assert!(
         matches!(result, Err(Error::Authorization(_))),
-        "admin DELETE_MEDIA_RESOURCE_ANY revoke must be enforced by transactional SQL, got: {result:?}"
+        "admin DELETE_MEDIA revoke must be enforced by transactional SQL, got: {result:?}"
     );
 }
 
@@ -3369,7 +3369,7 @@ async fn test_delete_entries_allows_foreign_playlist_delete_with_delete_any_perm
 
     let mut admin_member =
         synctv_core::models::RoomMember::new(room.id, member.id, RoomRole::Admin);
-    admin_member.admin_added_permissions = RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY;
+    admin_member.admin_added_permissions = RoomAdminPermissionBits::DELETE_MEDIA;
     member_repo
         .add(&admin_member)
         .await
@@ -3440,7 +3440,7 @@ async fn test_delete_entries_denies_foreign_playlist_delete_when_delete_any_revo
             room.id,
             owner.id,
             admin.id,
-            RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY,
+            RoomAdminPermissionBits::DELETE_MEDIA,
         )
         .await
         .checked("test operation should succeed");
@@ -3464,7 +3464,7 @@ async fn test_delete_entries_denies_foreign_playlist_delete_when_delete_any_revo
 
     assert!(
         matches!(result, Err(Error::Authorization(_))),
-        "revoked DELETE_MEDIA_RESOURCE_ANY must prevent foreign playlist deletion, got: {result:?}"
+        "revoked DELETE_MEDIA must prevent foreign playlist deletion, got: {result:?}"
     );
 }
 

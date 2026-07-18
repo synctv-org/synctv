@@ -8,6 +8,7 @@
 //! - Old chat messages (per-room cap)
 //! - Expired room resource events
 //! - Stale playback progress rows
+//! - Expired and excess playback history rows
 //! - Delivered realtime outbox rows
 //!
 //! Runs as a background task with configurable intervals and retention periods.
@@ -107,6 +108,8 @@ pub struct CleanupResult {
     pub chat_message_events_deleted: u64,
     /// Number of stale playback progress rows deleted
     pub playback_progress_deleted: u64,
+    /// Number of expired or excess playback history rows deleted
+    pub playback_history_deleted: u64,
     /// Number of expired token blacklist entries deleted
     pub token_blacklist_deleted: u64,
     /// Number of unreferenced file objects cleaned
@@ -252,6 +255,16 @@ impl CleanupService {
             self.config.chat_message_event_retention_seconds,
             message_retention_days,
         )
+    }
+
+    fn playback_history_retention(&self) -> Result<(u32, i64)> {
+        match self.runtime_settings_store.as_ref() {
+            Some(settings) => Ok((
+                settings.playback_history.retention_days.get()?,
+                settings.playback_history.max_entries_per_room.get()?,
+            )),
+            None => Ok((90, 1_000)),
+        }
     }
 
     /// Run all cleanup tasks once
@@ -429,6 +442,16 @@ impl CleanupService {
                 }
                 Err(e) => warn!(error = %e, "Failed to cleanup playback progress"),
             }
+        }
+
+        match self.cleanup_playback_history().await {
+            Ok(count) => {
+                result.playback_history_deleted = count;
+                if count > 0 {
+                    info!(count, "Deleted expired or excess playback history rows");
+                }
+            }
+            Err(e) => warn!(error = %e, "Failed to cleanup playback history"),
         }
 
         // 9. Cleanup expired token blacklist entries (prevents unbounded table growth)
@@ -703,6 +726,13 @@ impl CleanupService {
         .await
     }
 
+    async fn cleanup_playback_history(&self) -> Result<u64> {
+        let (retention_days, max_entries_per_room) = self.playback_history_retention()?;
+        crate::repository::PlaybackHistoryRepository::new(self.pool.clone())
+            .cleanup(retention_days, max_entries_per_room)
+            .await
+    }
+
     async fn cleanup_expired_file_references(&self) -> Result<u64> {
         self.resource_tasks.cleanup_expired_file_references().await
     }
@@ -800,6 +830,8 @@ impl CleanupService {
                     + result.chat_messages_deleted
                     + result.chat_message_events_deleted
                     + result.room_resource_events_deleted
+                    + result.playback_progress_deleted
+                    + result.playback_history_deleted
                     + result.realtime_outbox_deleted
                     + result.token_blacklist_deleted;
 
@@ -813,6 +845,8 @@ impl CleanupService {
                         chat_messages = result.chat_messages_deleted,
                         chat_message_events = result.chat_message_events_deleted,
                         room_resource_events = result.room_resource_events_deleted,
+                        playback_progress = result.playback_progress_deleted,
+                        playback_history = result.playback_history_deleted,
                         realtime_outbox = result.realtime_outbox_deleted,
                         total,
                         "Data cleanup completed"

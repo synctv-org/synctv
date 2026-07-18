@@ -143,6 +143,10 @@ enum ObservationEvaluationKey {
         delivery_mode: i32,
         request: Vec<u8>,
     },
+    PlaybackHistory {
+        delivery_mode: i32,
+        request: Vec<u8>,
+    },
     RoomMemberEvents {
         delivery_mode: i32,
     },
@@ -378,6 +382,9 @@ enum ObservedResource {
     PlaylistItems {
         request: synctv_proto::client::ListPlaylistItemsRequest,
     },
+    PlaybackHistory {
+        request: synctv_proto::client::ListPlaybackHistoryRequest,
+    },
     RoomMemberEvents,
     SelfRoomMember,
     ChatEvents {
@@ -410,6 +417,11 @@ impl ResourceObservation {
             }
             ObservedResource::PlaylistItems { .. } => Some(&[
                 RoomResourceKind::PlaylistItems,
+                RoomResourceKind::Playlist,
+                RoomResourceKind::Media,
+            ]),
+            ObservedResource::PlaybackHistory { .. } => Some(&[
+                RoomResourceKind::PlaybackState,
                 RoomResourceKind::Playlist,
                 RoomResourceKind::Media,
             ]),
@@ -451,6 +463,12 @@ impl ResourceObservation {
             }
             ObservedResource::PlaylistItems { request } => {
                 ObservationEvaluationKey::PlaylistItems {
+                    delivery_mode,
+                    request: request.encode_to_vec(),
+                }
+            }
+            ObservedResource::PlaybackHistory { request } => {
+                ObservationEvaluationKey::PlaybackHistory {
                     delivery_mode,
                     request: request.encode_to_vec(),
                 }
@@ -781,6 +799,9 @@ impl ResourceObserver {
                     observe.after_event_sequence
                 }
                 synctv_proto::client::observe_resource::Resource::ChatPinEvents(observe) => {
+                    observe.after_event_sequence
+                }
+                synctv_proto::client::observe_resource::Resource::PlaybackHistory(observe) => {
                     observe.after_event_sequence
                 }
             })
@@ -2199,6 +2220,9 @@ impl ResourceObserver {
                     .clone()
                     .ok_or_else(|| "playlist_items request is required".to_string())?,
             },
+            Resource::PlaybackHistory(observe) => ObservedResource::PlaybackHistory {
+                request: observe.request.clone().unwrap_or_default(),
+            },
             Resource::RoomMemberEvents(_) => ObservedResource::RoomMemberEvents,
             Resource::SelfRoomMember(_) => ObservedResource::SelfRoomMember,
             Resource::ChatEvents(observe) => ObservedResource::ChatEvents {
@@ -2849,6 +2873,10 @@ impl ResourceObserver {
                 ResourceInvalidation::PlaylistItems
                     | ResourceInvalidation::ProviderCredential { .. }
             ),
+            ObservedResource::PlaybackHistory { .. } => matches!(
+                invalidation,
+                ResourceInvalidation::PlaybackState | ResourceInvalidation::PlaylistItems
+            ),
             ObservedResource::RoomMemberEvents => {
                 matches!(invalidation, ResourceInvalidation::RoomMemberEvents)
             }
@@ -2995,6 +3023,7 @@ impl ResourceObserver {
             ObservedResource::PlaybackState | ObservedResource::RoomSettings => None,
             ObservedResource::Playback { .. }
             | ObservedResource::PlaylistItems { .. }
+            | ObservedResource::PlaybackHistory { .. }
             | ObservedResource::RoomMemberEvents
             | ObservedResource::SelfRoomMember
             | ObservedResource::ChatEvents { .. }
@@ -3039,6 +3068,10 @@ impl ResourceObserver {
                 weak: SharedResourceServiceWeak::PlaylistItems(Arc::downgrade(
                     &self.playlist_items_snapshot_service,
                 )),
+            },
+            ObservedResource::PlaybackHistory { .. } => SharedResourceServiceIdentity {
+                id: Arc::as_ptr(&self.room_service) as usize,
+                weak: SharedResourceServiceWeak::RoomService(Arc::downgrade(&self.room_service)),
             },
         }
     }
@@ -3136,6 +3169,43 @@ impl ResourceObserver {
                     }
                 };
                 (snapshot.version.clone(), None, payload)
+            }
+            ObservedResource::PlaybackHistory { request } => {
+                let before_entry_id = request
+                    .before_entry_id
+                    .as_deref()
+                    .map(|id| self.public_id_codec.decode_playback_history_entry_id(id))
+                    .transpose()
+                    .map_err(|_| "Invalid playback history before_entry_id".to_string())?;
+                let page = self
+                    .room_service
+                    .playback_service()
+                    .list_playback_history(
+                        &self.room_id,
+                        before_entry_id,
+                        if request.limit == 0 {
+                            50
+                        } else {
+                            request.limit
+                        },
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let snapshot = crate::impls::client::convert::playback_history_page_to_proto(
+                    page,
+                    &self.public_id_codec,
+                )
+                .map_err(|error| error.to_string())?;
+                let fingerprint = hex::encode(snapshot.encode_to_vec());
+                let payload = match delivery_mode {
+                    ResourceDeliveryMode::NotifyOnly => {
+                        Payload::ChangedOnly(synctv_proto::client::ResourceEventOnly {})
+                    }
+                    ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
+                        Payload::PlaybackHistory(snapshot)
+                    }
+                };
+                (fingerprint, None, payload)
             }
             ObservedResource::RoomMemberEvents | ObservedResource::OnlineEvent { .. } => {
                 let version = self.clock.now_millis().to_string();

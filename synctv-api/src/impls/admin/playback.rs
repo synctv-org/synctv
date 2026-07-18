@@ -423,7 +423,7 @@ impl AdminApiImpl {
         req: synctv_proto::client::StartPlaybackRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<synctv_proto::client::StartPlaybackResponse, ApiError> {
+    ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
         let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         let target =
             crate::impls::client::build_start_playback_request(req, &self.public_id_codec)?;
@@ -464,7 +464,7 @@ impl AdminApiImpl {
             "Admin started playback"
         );
 
-        Ok(synctv_proto::client::StartPlaybackResponse {})
+        try_playback_state_to_proto(&state, &self.public_id_codec)
     }
 
     pub async fn stop_playback(
@@ -472,7 +472,7 @@ impl AdminApiImpl {
         room_id: &str,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<synctv_proto::client::StopPlaybackResponse, ApiError> {
+    ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
         let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
         let previous_state = self.state_before_playback_state_update(&rid).await?;
@@ -504,7 +504,7 @@ impl AdminApiImpl {
             "Admin stopped playback"
         );
 
-        Ok(synctv_proto::client::StopPlaybackResponse {})
+        try_playback_state_to_proto(&state, &self.public_id_codec)
     }
 
     pub async fn get_playback(

@@ -21,6 +21,7 @@ pub struct RuntimeSettingsPatch {
     pub email: Option<EmailSettingsPatch>,
     pub webrtc: Option<WebRtcSettingsPatch>,
     pub chat: Option<ChatSettingsPatch>,
+    pub playback_history: Option<PlaybackHistorySettingsPatch>,
     pub cors: Option<CorsSettingsPatch>,
 }
 
@@ -174,6 +175,12 @@ pub struct ChatSettingsPatch {
     pub max_messages_per_room: Option<u64>,
     pub max_pinned_messages_per_room: Option<u64>,
     pub message_retention_days: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PlaybackHistorySettingsPatch {
+    pub retention_days: Option<u32>,
+    pub max_entries_per_room: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -468,6 +475,10 @@ impl AdminApiImpl {
                 max_pinned_messages_per_room: settings.chat.max_pinned_messages_per_room,
                 message_retention_days: settings.chat.message_retention_days,
             }),
+            playback_history: Some(synctv_proto::admin::PlaybackHistorySettings {
+                retention_days: settings.playback_history.retention_days,
+                max_entries_per_room: settings.playback_history.max_entries_per_room,
+            }),
             cors: Some(synctv_proto::admin::CorsSettings {
                 allowed_origins: settings.cors.allowed_origins.0,
             }),
@@ -672,6 +683,17 @@ impl AdminApiImpl {
             if let Some(value) = chat.message_retention_days {
                 current.chat.message_retention_days = value;
                 update_mask.chat.message_retention_days = true;
+            }
+        }
+
+        if let Some(playback_history) = patch.playback_history {
+            if let Some(value) = playback_history.retention_days {
+                current.playback_history.retention_days = value;
+                update_mask.playback_history.retention_days = true;
+            }
+            if let Some(value) = playback_history.max_entries_per_room {
+                current.playback_history.max_entries_per_room = value;
+                update_mask.playback_history.max_entries_per_room = true;
             }
         }
 
@@ -918,7 +940,7 @@ impl AdminApiImpl {
         )?;
         let snapshot = self
             .room_service
-            .set_room_settings_with_outbox(
+            .manage_room_settings_with_outbox(
                 &rid,
                 &settings,
                 Some(prepared_settings_fanout.settings_outbox_factory()),
@@ -959,7 +981,7 @@ impl AdminApiImpl {
         )?;
         let snapshot = self
             .room_service
-            .set_room_settings_with_outbox(
+            .manage_room_settings_with_outbox(
                 &rid,
                 &default_settings,
                 Some(prepared_settings_fanout.settings_outbox_factory()),

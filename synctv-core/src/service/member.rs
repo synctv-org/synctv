@@ -556,7 +556,7 @@ impl MemberService {
             .check_permission_no_cache(
                 &room_id.clone(),
                 &admin_id,
-                crate::models::RoomPermission::KICK_MEMBER,
+                crate::models::RoomPermission::REMOVE_MEMBERS,
             )
             .await?;
 

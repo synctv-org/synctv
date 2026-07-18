@@ -394,7 +394,7 @@ async fn test_send_message_without_chat_permission_denied() {
             room.id,
             creator.id,
             member.id,
-            RoomMemberPermissionBits::CHAT,
+            RoomMemberPermissionBits::SEND_CHAT_MESSAGES,
         )
         .await
         .checked("test operation should succeed");
@@ -600,7 +600,7 @@ async fn test_delete_message_owner_can_delete_own() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_delete_message_non_owner_requires_delete_chat_permission() {
+async fn test_delete_message_non_owner_requires_delete_chat_messages_permission() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -645,14 +645,14 @@ async fn test_delete_message_non_owner_requires_delete_chat_permission() {
         .await
         .checked("test operation should succeed");
 
-    // Member (non-owner without DELETE_CHAT) tries to delete -- should fail
+    // Member (non-owner without DELETE_CHAT_MESSAGES) tries to delete -- should fail
     let result = chat_service
         .delete_message(&room.id, msg.id, &member.id)
         .await;
 
     assert!(
         result.is_err(),
-        "Non-owner without DELETE_CHAT should be denied"
+        "Non-owner without DELETE_CHAT_MESSAGES should be denied"
     );
     match result.failed("operation should fail") {
         Error::Authorization(_) => {}
@@ -662,7 +662,7 @@ async fn test_delete_message_non_owner_requires_delete_chat_permission() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_delete_message_non_owner_with_delete_chat_succeeds() {
+async fn test_delete_message_non_owner_with_delete_chat_messages_succeeds() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -711,14 +711,14 @@ async fn test_delete_message_non_owner_with_delete_chat_succeeds() {
         .await
         .checked("test operation should succeed");
 
-    // Grant DELETE_CHAT permission to admin
+    // Grant DELETE_CHAT_MESSAGES permission to admin
     room_service
         .member_service()
         .grant_permission(
             room.id,
             creator.id,
             admin.id,
-            RoomAdminPermissionBits::DELETE_CHAT,
+            RoomAdminPermissionBits::DELETE_CHAT_MESSAGES,
         )
         .await
         .checked("test operation should succeed");
@@ -729,14 +729,14 @@ async fn test_delete_message_non_owner_with_delete_chat_succeeds() {
         .await
         .checked("test operation should succeed");
 
-    // Admin (with DELETE_CHAT) can delete another user's message
+    // Admin (with DELETE_CHAT_MESSAGES) can delete another user's message
     let result = chat_service
         .delete_message(&room.id, msg.id, &admin.id)
         .await;
 
     assert!(
         result.is_ok(),
-        "Non-owner with DELETE_CHAT should be able to delete"
+        "Non-owner with DELETE_CHAT_MESSAGES should be able to delete"
     );
 }
 
@@ -800,7 +800,7 @@ async fn test_admin_delete_records_actor_reason_and_original_author() {
             room.id,
             creator.id,
             admin.id,
-            RoomAdminPermissionBits::DELETE_CHAT,
+            RoomAdminPermissionBits::DELETE_CHAT_MESSAGES,
         )
         .await
         .checked("test operation should succeed");
@@ -3068,15 +3068,15 @@ async fn test_delete_message_with_deleted_user_requires_permission() {
     .await
     .checked("test operation should succeed");
 
-    // Member (without DELETE_CHAT permission) tries to delete orphaned message
-    // Since user_id is NULL, they are not the sender, so they need DELETE_CHAT permission
+    // Member (without DELETE_CHAT_MESSAGES permission) tries to delete orphaned message
+    // Since user_id is NULL, they are not the sender, so they need DELETE_CHAT_MESSAGES permission
     let result = chat_service
         .delete_message(&room.id, msg.id, &member.id)
         .await;
 
     assert!(
         result.is_err(),
-        "Non-owner should be denied deletion of orphaned message without DELETE_CHAT permission"
+        "Non-owner should be denied deletion of orphaned message without DELETE_CHAT_MESSAGES permission"
     );
     match result.failed("operation should fail") {
         Error::Authorization(_) => {}
@@ -3089,6 +3089,6 @@ async fn test_delete_message_with_deleted_user_requires_permission() {
         .await;
     assert!(
         result.is_ok(),
-        "Room creator (with DELETE_CHAT) should be able to delete orphaned message"
+        "Room creator (with DELETE_CHAT_MESSAGES) should be able to delete orphaned message"
     );
 }

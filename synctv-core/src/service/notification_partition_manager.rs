@@ -95,7 +95,7 @@ impl NotificationPartitionManager {
     }
 
     /// Drop partitions older than the configured retention period
-    pub async fn drop_old_partitions(&self, retain_months: i32) -> Result<i64> {
+    pub async fn drop_empty_partitions_older_than(&self, retain_months: i32) -> Result<i64> {
         info!(
             "Dropping notification partitions older than {} months",
             retain_months
@@ -264,7 +264,10 @@ async fn run_notification_partition_maintenance(manager: &NotificationPartitionM
         error!("Failed to create notification partitions: {}", e);
     }
 
-    if let Err(e) = manager.drop_old_partitions(DEFAULT_RETENTION_MONTHS).await {
+    if let Err(e) = manager
+        .drop_empty_partitions_older_than(DEFAULT_RETENTION_MONTHS)
+        .await
+    {
         error!("Failed to drop old notification partitions: {}", e);
     }
 }
@@ -284,7 +287,7 @@ async fn initialize_notification_partitions_on_startup(
     // stays leader-gated in the background task to avoid duplicate startup DDL.
     if run_retention_cleanup {
         manager
-            .drop_old_partitions(DEFAULT_RETENTION_MONTHS)
+            .drop_empty_partitions_older_than(DEFAULT_RETENTION_MONTHS)
             .await?;
     }
 

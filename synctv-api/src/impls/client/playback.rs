@@ -11,8 +11,8 @@ use synctv_core::service::{
 
 use super::convert::{
     dynamic_playlist_source_fields, playback_client_profile_from_proto,
-    provider_playback_info_to_model, provider_target_from_proto, try_playback_state_to_proto,
-    try_playback_to_proto, PlaybackHttpSigningContext,
+    playback_history_page_to_proto, provider_playback_info_to_model, provider_target_from_proto,
+    try_playback_state_to_proto, try_playback_to_proto, PlaybackHttpSigningContext,
 };
 use super::playback_lifecycle::ProviderPlaybackLifecycleApi;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
@@ -754,7 +754,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
         req: synctv_proto::client::StartPlaybackRequest,
-    ) -> Result<synctv_proto::client::StartPlaybackResponse, ApiError> {
+    ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let target = build_start_playback_request(req, &self.public_id_codec)?;
@@ -781,7 +781,7 @@ impl ClientApiImpl {
         // Touch room activity to prevent TTL expiry on active rooms
         self.room_service.touch_room_activity(rid).await;
 
-        Ok(synctv_proto::client::StartPlaybackResponse {})
+        try_playback_state_to_proto(&state, &self.public_id_codec)
     }
 
     /// Stop current playback
@@ -791,7 +791,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
         _req: synctv_proto::client::StopPlaybackRequest,
-    ) -> Result<synctv_proto::client::StopPlaybackResponse, ApiError> {
+    ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let previous_state = self.state_before_playback_state_update(&rid).await?;
@@ -812,7 +812,152 @@ impl ClientApiImpl {
         self.handle_provider_lifecycle_transition_after_commit(Some(&previous_state), &state)
             .await;
 
-        Ok(synctv_proto::client::StopPlaybackResponse {})
+        try_playback_state_to_proto(&state, &self.public_id_codec)
+    }
+
+    pub async fn play_next(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+    ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
+        let rid = self.parse_room_id(room_id)?;
+        let settings = self
+            .room_service
+            .get_room_settings(&rid)
+            .await
+            .map_err(ApiError::from)?;
+        let previous_state = self.state_before_playback_state_update(&rid).await?;
+        let prepared_fanout = self.prepare_playback_state_changed(*user_id).await?;
+        let state = self
+            .room_service
+            .playback_service()
+            .play_next_for_user(
+                &rid,
+                *user_id,
+                &settings,
+                Some(prepared_fanout.outbox_factory_with_source_changed(true)),
+            )
+            .await
+            .map_err(ApiError::from)?;
+        if let Some(state) = &state {
+            prepared_fanout.publish_after_outbox_commit();
+            self.handle_provider_lifecycle_transition_after_commit(Some(&previous_state), state)
+                .await;
+            self.room_service.touch_room_activity(rid).await;
+        }
+        let state = match state {
+            Some(state) => state,
+            None => self
+                .room_service
+                .playback_service()
+                .get_state(&rid)
+                .await
+                .map_err(ApiError::from)?,
+        };
+        try_playback_state_to_proto(&state, &self.public_id_codec)
+    }
+
+    pub async fn play_previous(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+    ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
+        let rid = self.parse_room_id(room_id)?;
+        let previous_state = self.state_before_playback_state_update(&rid).await?;
+        let prepared_fanout = self.prepare_playback_state_changed(*user_id).await?;
+        let state = self
+            .room_service
+            .playback_service()
+            .play_previous_for_user(
+                &rid,
+                *user_id,
+                Some(prepared_fanout.outbox_factory_with_source_changed(true)),
+            )
+            .await
+            .map_err(ApiError::from)?;
+        if let Some(state) = &state {
+            prepared_fanout.publish_after_outbox_commit();
+            self.handle_provider_lifecycle_transition_after_commit(Some(&previous_state), state)
+                .await;
+            self.room_service.touch_room_activity(rid).await;
+        }
+        let state = match state {
+            Some(state) => state,
+            None => self
+                .room_service
+                .playback_service()
+                .get_state(&rid)
+                .await
+                .map_err(ApiError::from)?,
+        };
+        try_playback_state_to_proto(&state, &self.public_id_codec)
+    }
+
+    pub async fn list_playback_history(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: synctv_proto::client::ListPlaybackHistoryRequest,
+    ) -> Result<synctv_proto::client::ListPlaybackHistoryResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let actor = self.room_actor_for_user(user_id, room_id).await?;
+        self.require_room_permission(
+            &actor,
+            synctv_core::models::RoomPermission::VIEW_PLAYBACK_HISTORY,
+        )
+        .await?;
+        let rid = actor.room_id();
+        let before_entry_id = req
+            .before_entry_id
+            .as_deref()
+            .map(|id| self.public_id_codec.decode_playback_history_entry_id(id))
+            .transpose()
+            .map_err(|_| {
+                ApiError::InvalidInput("Invalid playback history before_entry_id".into())
+            })?;
+        let page = self
+            .room_service
+            .playback_service()
+            .list_playback_history(
+                &rid,
+                before_entry_id,
+                if req.limit == 0 { 50 } else { req.limit },
+            )
+            .await
+            .map_err(ApiError::from)?;
+        playback_history_page_to_proto(page, &self.public_id_codec)
+    }
+
+    pub async fn play_history_entry(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: synctv_proto::client::PlayHistoryEntryRequest,
+    ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let rid = self.parse_room_id(room_id)?;
+        let entry_id = self
+            .public_id_codec
+            .decode_playback_history_entry_id(&req.entry_id)
+            .map_err(|_| ApiError::InvalidInput("Invalid playback history entry_id".into()))?;
+        let previous_state = self.state_before_playback_state_update(&rid).await?;
+        let prepared_fanout = self.prepare_playback_state_changed(*user_id).await?;
+        let state = self
+            .room_service
+            .playback_service()
+            .play_history_entry_for_user(
+                &rid,
+                *user_id,
+                entry_id,
+                Some(prepared_fanout.outbox_factory_with_source_changed(true)),
+            )
+            .await
+            .map_err(ApiError::from)?;
+        prepared_fanout.publish_after_outbox_commit();
+        self.handle_provider_lifecycle_transition_after_commit(Some(&previous_state), &state)
+            .await;
+        self.room_service.touch_room_activity(rid).await;
+        try_playback_state_to_proto(&state, &self.public_id_codec)
     }
 
     /// Get current playback state and complete playback information

@@ -17,8 +17,8 @@ use synctv_core::{
     models::{
         room::AutoPlaySettings, room_settings::AutoPlay, Media, MediaId, PlayMode,
         PlaybackExternalMedia, PlaybackMedia, PlaybackMediaProvider, Playlist, PlaylistId,
-        ProviderInstance, ProviderTarget, RoomId, RoomSettings, SourceProvider, User, UserId,
-        UserRole, UserStatus,
+        ProviderInstance, ProviderTarget, RoomAdminPermissionBits, RoomId, RoomRole, RoomSettings,
+        SourceProvider, User, UserId, UserRole, UserStatus,
     },
     provider::{
         DirectoryItem, DynamicListQuery, DynamicListResult, DynamicPagination,
@@ -26,8 +26,8 @@ use synctv_core::{
         PlaybackResult, ProviderContext, ProviderError,
     },
     repository::{
-        MediaRepository, ProviderInstanceRepository, UserProviderCredentialRepository,
-        UserRepository,
+        MediaRepository, PlaybackHistoryRepository, ProviderInstanceRepository,
+        UserProviderCredentialRepository, UserRepository,
     },
     service::{
         BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService,
@@ -35,7 +35,9 @@ use synctv_core::{
     },
     service::{ProvidersManager, RemoteProviderManager},
 };
-use synctv_core_testing::{create_test_pool, TestOptionExt, TestResultExt};
+use synctv_core_testing::{
+    create_test_pool, ensure_playback_history_partition_for, TestOptionExt, TestResultExt,
+};
 fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).checked("Failed to create JwtService");
@@ -595,6 +597,516 @@ async fn test_sequential_advance_to_next() {
         Some(media2.id),
         "Should be playing media2"
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_auto_advance_after_previous_uses_recorded_forward_history() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(&pool);
+    let owner = user_repo
+        .create(&make_user("history_forward_owner"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "History Forward".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
+    let media_a = insert_media(&pool, &playlist.id, &room.id, "history_a", 0).await;
+    let media_b = insert_media(&pool, &playlist.id, &room.id, "history_b", 2).await;
+    let playback = room_service.playback_service();
+    playback
+        .switch(room.id, owner.id, Some(media_a.id), None, None)
+        .await
+        .checked("test operation should succeed");
+    let settings = make_settings_with_mode(PlayMode::Sequential);
+    playback
+        .play_next(&room.id, &settings)
+        .await
+        .checked("test operation should succeed")
+        .checked("A should advance to B");
+    playback
+        .play_previous_for_user(&room.id, owner.id, None)
+        .await
+        .checked("test operation should succeed")
+        .checked("B should return to A");
+    let history = playback
+        .list_playback_history(&room.id, None, 10)
+        .await
+        .checked("history should be listed");
+    assert_eq!(history.entries.len(), 2);
+    let history_cursor_id = history
+        .history_cursor_id
+        .checked("history cursor should exist");
+    assert_eq!(
+        history
+            .entries
+            .iter()
+            .find(|entry| entry.id == history_cursor_id)
+            .and_then(|entry| entry.media_id),
+        Some(media_a.id)
+    );
+
+    let media_c = insert_media(&pool, &playlist.id, &room.id, "history_c", 1).await;
+    let state = playback
+        .play_next(&room.id, &settings)
+        .await
+        .checked("test operation should succeed")
+        .checked("history should contain a forward entry");
+
+    assert_eq!(state.playing_media_id, Some(media_b.id));
+    assert_ne!(state.playing_media_id, Some(media_c.id));
+    let system_message_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM chat_messages WHERE room_id = $1 AND message_type = $2",
+    )
+    .bind(room.id.as_i64())
+    .bind(i16::from(
+        synctv_core::models::ChatMessageType::SystemPlaybackChanged,
+    ))
+    .fetch_one(&pool)
+    .await
+    .checked("playback system messages should be queryable");
+    assert_eq!(system_message_count, 4);
+    let latest_reason = sqlx::query_scalar::<_, String>(
+        "SELECT metadata ->> 'reason' FROM chat_messages WHERE room_id = $1 AND message_type = $2 ORDER BY created_at DESC, id DESC LIMIT 1",
+    )
+    .bind(room.id.as_i64())
+    .bind(i16::from(
+        synctv_core::models::ChatMessageType::SystemPlaybackChanged,
+    ))
+    .fetch_one(&pool)
+    .await
+    .checked("playback system message reason should be queryable");
+    assert_eq!(latest_reason, "auto_advance");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_navigation_from_empty_playback_uses_first_item_and_recent_history() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(&pool);
+    let owner = user_repo
+        .create(&make_user("empty_navigation_owner"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "Empty Navigation".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    let media = insert_root_media(&pool, &room.id, "empty_first", 0).await;
+    let playback = room_service.playback_service();
+    let settings = RoomSettings {
+        auto_play: AutoPlay::new(AutoPlaySettings {
+            enabled: false,
+            mode: PlayMode::Sequential,
+            delay: 0,
+        }),
+        ..Default::default()
+    };
+
+    let first = playback
+        .play_next_for_user(&room.id, owner.id, &settings, None)
+        .await
+        .checked("manual next should work with auto play disabled")
+        .checked("manual next should select the first item");
+    assert_eq!(first.playing_media_id, Some(media.id));
+
+    playback
+        .reset(room.id, owner.id)
+        .await
+        .checked("playback should stop");
+    let restored = playback
+        .play_previous_for_user(&room.id, owner.id, None)
+        .await
+        .checked("previous should use recent history")
+        .checked("recent history should be available");
+    assert_eq!(restored.playing_media_id, Some(media.id));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_playback_history_cleanup_preserves_cursor_and_adjacent_navigation() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(&pool);
+    let owner = user_repo
+        .create(&make_user("history_cleanup_owner"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "History Cleanup".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    let media = [
+        insert_root_media(&pool, &room.id, "cleanup_a", 0).await,
+        insert_root_media(&pool, &room.id, "cleanup_b", 1).await,
+        insert_root_media(&pool, &room.id, "cleanup_c", 2).await,
+        insert_root_media(&pool, &room.id, "cleanup_d", 3).await,
+    ];
+    let playback = room_service.playback_service();
+    for item in &media {
+        playback
+            .switch(room.id, owner.id, Some(item.id), None, None)
+            .await
+            .checked("history item should be recorded");
+    }
+    let old_timestamp = Utc::now() - chrono::Duration::days(2);
+    ensure_playback_history_partition_for(&pool, old_timestamp).await;
+    sqlx::query(
+        r#"UPDATE room_playback_history AS history
+           SET created_at = $2
+           WHERE history.room_id = $1
+             AND history.id <> (
+                 SELECT state.history_cursor_id
+                 FROM room_playback_state AS state
+                 WHERE state.room_id = $1
+             )"#,
+    )
+    .bind(room.id.as_i64())
+    .bind(old_timestamp)
+    .execute(&pool)
+    .await
+    .checked("history timestamps should be updated");
+
+    let deleted = PlaybackHistoryRepository::new(pool.clone())
+        .cleanup(1, 0)
+        .await
+        .checked("history cleanup should succeed");
+    assert_eq!(deleted, 2);
+    let history = playback
+        .list_playback_history(&room.id, None, 10)
+        .await
+        .checked("retained history should be listed");
+    assert_eq!(history.entries.len(), 2);
+    assert_eq!(
+        history
+            .entries
+            .iter()
+            .find(|entry| Some(entry.id) == history.history_cursor_id)
+            .and_then(|entry| entry.media_id),
+        Some(media[3].id)
+    );
+
+    let previous = playback
+        .play_previous_for_user(&room.id, owner.id, None)
+        .await
+        .checked("previous navigation should succeed")
+        .checked("the adjacent retained entry should exist");
+    assert_eq!(previous.playing_media_id, Some(media[2].id));
+
+    playback
+        .switch(room.id, owner.id, Some(media[1].id), None, None)
+        .await
+        .checked("a new branch entry should be recorded");
+    playback
+        .switch(room.id, owner.id, Some(media[0].id), None, None)
+        .await
+        .checked("a second branch entry should be recorded");
+    let deleted = PlaybackHistoryRepository::new(pool.clone())
+        .cleanup(0, 2)
+        .await
+        .checked("count-based history cleanup should succeed");
+    assert_eq!(deleted, 1);
+    let retained = playback
+        .list_playback_history(&room.id, None, 10)
+        .await
+        .checked("count-limited history should be listed");
+    assert_eq!(retained.entries.len(), 2);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_deleted_media_and_playlist_cascade_playback_history() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(&pool);
+    let owner = user_repo
+        .create(&make_user("history_cascade_owner"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "History Cascade".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    let first_playlist = create_top_level_playlist(&pool, &room.id).await;
+    let deleted_media = insert_media(&pool, &first_playlist.id, &room.id, "deleted_media", 0).await;
+    let retained_media = insert_root_media(&pool, &room.id, "retained_media", 1).await;
+    let playback = room_service.playback_service();
+
+    playback
+        .switch(room.id, owner.id, Some(deleted_media.id), None, None)
+        .await
+        .checked("deleted media history should be recorded");
+    playback
+        .switch(room.id, owner.id, Some(retained_media.id), None, None)
+        .await
+        .checked("retained media history should be recorded");
+    sqlx::query("DELETE FROM media WHERE id = $1 AND room_id = $2")
+        .bind(deleted_media.id.as_i64())
+        .bind(room.id.as_i64())
+        .execute(&pool)
+        .await
+        .checked("media deletion should succeed");
+
+    let second_playlist = create_top_level_playlist(&pool, &room.id).await;
+    let playlist_media = insert_media(
+        &pool,
+        &second_playlist.id,
+        &room.id,
+        "deleted_playlist_media",
+        0,
+    )
+    .await;
+    playback
+        .switch(room.id, owner.id, Some(playlist_media.id), None, None)
+        .await
+        .checked("playlist media history should be recorded");
+    playback
+        .switch(room.id, owner.id, Some(retained_media.id), None, None)
+        .await
+        .checked("retained media should be current");
+    sqlx::query("DELETE FROM media WHERE playlist_id = $1 AND room_id = $2")
+        .bind(second_playlist.id.as_i64())
+        .bind(room.id.as_i64())
+        .execute(&pool)
+        .await
+        .checked("playlist media deletion should succeed");
+    sqlx::query("DELETE FROM playlists WHERE id = $1 AND room_id = $2")
+        .bind(second_playlist.id.as_i64())
+        .bind(room.id.as_i64())
+        .execute(&pool)
+        .await
+        .checked("playlist deletion should succeed");
+
+    let history = playback
+        .list_playback_history(&room.id, None, 20)
+        .await
+        .checked("history should be listed");
+    assert!(history
+        .entries
+        .iter()
+        .all(|entry| entry.media_id != Some(deleted_media.id)
+            && entry.media_id != Some(playlist_media.id)));
+    assert!(history
+        .entries
+        .iter()
+        .any(|entry| Some(entry.id) == history.history_cursor_id));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_history_view_permission_cannot_change_playback() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(&pool);
+    let owner = user_repo
+        .create(&make_user("history_permission_owner"))
+        .await
+        .checked("test operation should succeed");
+    let viewer = user_repo
+        .create(&make_user("history_permission_viewer"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "History Permission".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    room_service
+        .join_room(room.id, viewer.id, None)
+        .await
+        .checked("viewer should join");
+    room_service
+        .member_service()
+        .set_member_role(room.id, owner.id, viewer.id, RoomRole::Admin)
+        .await
+        .checked("viewer should become an admin");
+    room_service
+        .member_service()
+        .set_member_permissions(
+            room.id,
+            owner.id,
+            viewer.id,
+            RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY,
+            RoomAdminPermissionBits::NAVIGATE_PLAYBACK,
+        )
+        .await
+        .checked("viewer permissions should be updated");
+
+    let media_a = insert_root_media(&pool, &room.id, "permission_a", 0).await;
+    let media_b = insert_root_media(&pool, &room.id, "permission_b", 1).await;
+    let playback = room_service.playback_service();
+    playback
+        .switch(room.id, owner.id, Some(media_a.id), None, None)
+        .await
+        .checked("first history entry should be recorded");
+    playback
+        .switch(room.id, owner.id, Some(media_b.id), None, None)
+        .await
+        .checked("second history entry should be recorded");
+    let history = playback
+        .list_playback_history(&room.id, None, 10)
+        .await
+        .checked("history should be listed");
+    let entry_id = history
+        .entries
+        .last()
+        .checked("history should contain an entry")
+        .id;
+    let settings = make_settings_with_mode(PlayMode::Sequential);
+
+    assert!(playback
+        .play_next_for_user(&room.id, viewer.id, &settings, None)
+        .await
+        .is_err());
+    assert!(playback
+        .play_history_entry_for_user(&room.id, viewer.id, entry_id, None)
+        .await
+        .is_err());
+    let state = playback
+        .get_state(&room.id)
+        .await
+        .checked("playback state should remain available");
+    assert_eq!(state.playing_media_id, Some(media_b.id));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_previous_recomputes_history_after_optimistic_retry() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(&pool);
+    let owner = user_repo
+        .create(&make_user("previous_retry_owner"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "Previous Retry".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    let media_a = insert_root_media(&pool, &room.id, "retry_a", 0).await;
+    let media_b = insert_root_media(&pool, &room.id, "retry_b", 1).await;
+    let media_c = insert_root_media(&pool, &room.id, "retry_c", 2).await;
+    let media_d = insert_root_media(&pool, &room.id, "retry_d", 3).await;
+    let playback = room_service.playback_service();
+    for media in [&media_a, &media_b, &media_c] {
+        playback
+            .switch(room.id, owner.id, Some(media.id), None, None)
+            .await
+            .checked("history entry should be recorded");
+    }
+
+    let mut blocker = pool
+        .begin()
+        .await
+        .checked("blocker transaction should begin");
+    sqlx::query(
+        "SELECT id FROM room_playback_history WHERE room_id = $1 AND media_id = $2 FOR UPDATE",
+    )
+    .bind(room.id.as_i64())
+    .bind(media_c.id.as_i64())
+    .fetch_one(&mut *blocker)
+    .await
+    .checked("current C history row should be locked");
+
+    let playback_for_previous = playback.clone();
+    let previous_room_id = room.id;
+    let previous_owner_id = owner.id;
+    let previous = tokio::spawn(async move {
+        playback_for_previous
+            .play_previous_for_user(&previous_room_id, previous_owner_id, None)
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let mut tx = pool.begin().await.checked("D transaction should begin");
+    let inserted = sqlx::query_as::<_, (i64, chrono::DateTime<Utc>)>(
+        r#"INSERT INTO room_playback_history (
+               room_id, sequence, media_id, target_hash, position_seconds, selected_by_user_id
+           )
+           SELECT $1, 4, $2, target_hash, 0.0, $3
+           FROM room_playback_history
+           WHERE room_id = $1 AND media_id = $4
+           ORDER BY sequence DESC
+           LIMIT 1
+           RETURNING id, created_at"#,
+    )
+    .bind(room.id.as_i64())
+    .bind(media_d.id.as_i64())
+    .bind(owner.id.as_i64())
+    .bind(media_c.id.as_i64())
+    .fetch_one(&mut *tx)
+    .await
+    .checked("D history entry should be inserted");
+    sqlx::query(
+        r#"UPDATE room_playback_state
+           SET playing_media_id = $2,
+               playing_playlist_id = NULL,
+               target = NULL,
+               current_progress_id = NULL,
+               history_cursor_id = $3,
+               history_cursor_created_at = $4,
+               playback_generation = playback_generation + 1,
+               version = version + 1
+           WHERE room_id = $1"#,
+    )
+    .bind(room.id.as_i64())
+    .bind(media_d.id.as_i64())
+    .bind(inserted.0)
+    .bind(inserted.1)
+    .execute(&mut *tx)
+    .await
+    .checked("D state should be prepared");
+    tx.commit().await.checked("D transition should commit");
+    blocker
+        .commit()
+        .await
+        .checked("current history lock should be released");
+
+    let state = previous
+        .await
+        .checked("previous task should join")
+        .checked("previous should succeed")
+        .checked("previous history entry should exist");
+    assert_eq!(state.playing_media_id, Some(media_c.id));
 }
 
 #[tokio::test]

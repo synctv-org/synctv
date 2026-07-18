@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT state.room_id AS \"room_id!: RoomId\",\n                      state.playing_media_id AS \"playing_media_id?: MediaId\",\n                      state.playing_playlist_id AS \"playing_playlist_id?: PlaylistId\",\n                      state.target AS \"target?: crate::models::ProviderTarget\",\n                      state.current_progress_id,\n                      COALESCE(progress.\"position\", 0.0) AS \"position!\",\n                      state.speed AS \"speed!\",\n                      state.is_playing AS \"is_playing!\",\n                      state.playback_generation AS \"playback_generation!\",\n                      state.updated_at AS \"updated_at!\",\n                      state.version AS \"version!\"\n             FROM room_playback_state state\n             LEFT JOIN room_playback_progress progress ON progress.id = state.current_progress_id\n             WHERE state.room_id = $1",
+  "query": "WITH current_state AS (\n                SELECT room_id, current_progress_id\n                FROM room_playback_state\n                WHERE room_id = $1\n                FOR UPDATE\n            ),\n            reset_progress AS (\n                UPDATE room_playback_progress progress\n                SET \"position\" = 0,\n                    version = version + 1\n                FROM current_state\n                WHERE progress.id = current_state.current_progress_id\n                RETURNING progress.id\n            ),\n            updated AS (\n                UPDATE room_playback_state state\n                SET playing_media_id = NULL,\n                    playing_playlist_id = NULL,\n                    target = NULL,\n                    current_progress_id = NULL,\n                    speed = 1.0,\n                    is_playing = false,\n                    playback_generation = playback_generation + 1,\n                    version = version + 1,\n                    updated_at = NOW()\n                FROM current_state\n                WHERE state.room_id = current_state.room_id\n                RETURNING state.room_id,\n                          state.playing_media_id,\n                          state.playing_playlist_id,\n                          state.target,\n                          state.current_progress_id,\n                          state.history_cursor_id,\n                          state.speed,\n                          state.is_playing,\n                          state.playback_generation,\n                          state.updated_at,\n                          state.version\n            )\n            SELECT room_id AS \"room_id!: RoomId\",\n                   playing_media_id AS \"playing_media_id?: MediaId\",\n                   playing_playlist_id AS \"playing_playlist_id?: PlaylistId\",\n                   target AS \"target?: crate::models::ProviderTarget\",\n                   current_progress_id,\n                   history_cursor_id,\n                   0.0::DOUBLE PRECISION AS \"position!\",\n                   speed AS \"speed!\",\n                   is_playing AS \"is_playing!\",\n                   playback_generation AS \"playback_generation!\",\n                   updated_at AS \"updated_at!\",\n                   version AS \"version!\"\n            FROM updated",
   "describe": {
     "columns": [
       {
@@ -60,12 +60,23 @@
       },
       {
         "ordinal": 5,
+        "name": "history_cursor_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "history_cursor_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "position!",
         "type_info": "Float8",
         "origin": "Expression"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "speed!",
         "type_info": "Float8",
         "origin": {
@@ -76,7 +87,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "is_playing!",
         "type_info": "Bool",
         "origin": {
@@ -87,7 +98,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "playback_generation!",
         "type_info": "Int8",
         "origin": {
@@ -98,7 +109,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "updated_at!",
         "type_info": "Timestamptz",
         "origin": {
@@ -109,7 +120,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "version!",
         "type_info": "Int8",
         "origin": {
@@ -131,6 +142,7 @@
       true,
       true,
       true,
+      true,
       null,
       false,
       false,
@@ -139,5 +151,5 @@
       false
     ]
   },
-  "hash": "161f14bb9ab6d57377257f878e3ecb380c62c9089c2fa5ce33bfeb7c5d866ea6"
+  "hash": "a2eb38bff3d44e2b7d3da202d9e58861ad8e1030f588a34edb9048cf21963ee0"
 }

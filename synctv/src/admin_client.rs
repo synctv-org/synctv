@@ -891,13 +891,13 @@ mod tests {
         async fn start_playback(
             &self,
             _: Request<StartPlaybackRequest>,
-        ) -> std::result::Result<Response<client_proto::StartPlaybackResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::PlaybackState>, Status> {
             unavailable_test_management_response()
         }
         async fn stop_playback(
             &self,
             _: Request<StopPlaybackRequest>,
-        ) -> std::result::Result<Response<client_proto::StopPlaybackResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::PlaybackState>, Status> {
             unavailable_test_management_response()
         }
         async fn get_playback(

@@ -52,6 +52,8 @@ impl RoomService {
             .admin_switch_with_outbox(
                 room_id,
                 *actor.user_id(),
+                actor.persistent_user_id(),
+                Some(actor.username().to_string()),
                 media_id,
                 playlist_id,
                 target,

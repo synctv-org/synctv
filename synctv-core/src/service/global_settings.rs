@@ -38,8 +38,9 @@ pub use types::{
     EmailRuntimeSettings, IceServerList, OAuth2GithubProviderConfig, OAuth2GoogleProviderConfig,
     OAuth2LogtoProviderConfig, OAuth2OidcProviderConfig, OAuth2ProviderConfig,
     OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig, OAuth2RuntimeSettings, OAuth2SignupPolicy,
-    OptionalRuntimeConfig, PermissionRuntimeSettings, PermissionSet, ProxyRuntimeSettings,
-    PublicSettings, RoomCreationRuntimeSettings, RoomDefaultsRuntimeSettings, RoomPasswordPolicy,
+    OptionalRuntimeConfig, PermissionRuntimeSettings, PermissionSet,
+    PlaybackHistoryRuntimeSettings, ProxyRuntimeSettings, PublicSettings,
+    RoomCreationRuntimeSettings, RoomDefaultsRuntimeSettings, RoomPasswordPolicy,
     RtmpRuntimeSettings, RuntimeSettings, RuntimeSettingsUpdateMask, ServerRuntimeSettings,
     UserRuntimeSettings, WebRtcRuntimeSettings,
 };
@@ -364,6 +365,36 @@ setting!(
     }
 );
 setting!(
+    PlaybackHistoryRetentionDaysSetting,
+    u32,
+    "playback_history.retention_days",
+    90,
+    |value: &u32| -> crate::Result<()> {
+        if *value <= 3_650 {
+            Ok(())
+        } else {
+            Err(crate::Error::InvalidInput(
+                "playback_history.retention_days must be between 0 and 3650".into(),
+            ))
+        }
+    }
+);
+setting!(
+    PlaybackHistoryMaxEntriesPerRoomSetting,
+    i64,
+    "playback_history.max_entries_per_room",
+    1_000,
+    |value: &i64| -> crate::Result<()> {
+        if (0..=100_000).contains(value) {
+            Ok(())
+        } else {
+            Err(crate::Error::InvalidInput(
+                "playback_history.max_entries_per_room must be between 0 and 100000".into(),
+            ))
+        }
+    }
+);
+setting!(
     CorsAllowedOriginsSetting,
     CorsAllowedOrigins,
     "cors.allowed_origins",
@@ -467,6 +498,7 @@ pub struct RuntimeSettingsStore {
     pub email: EmailSettingsStore,
     pub webrtc: WebRtcSettingsStore,
     pub chat: ChatSettingsStore,
+    pub playback_history: PlaybackHistorySettingsStore,
     pub cors: CorsSettingsStore,
 }
 
@@ -556,6 +588,12 @@ pub struct ChatSettingsStore {
     pub max_messages_per_room: MaxMessagesPerRoomSetting,
     pub max_pinned_messages_per_room: MaxPinnedMessagesPerRoomSetting,
     pub message_retention_days: MessageRetentionDaysSetting,
+}
+
+#[derive(Clone)]
+pub struct PlaybackHistorySettingsStore {
+    pub retention_days: PlaybackHistoryRetentionDaysSetting,
+    pub max_entries_per_room: PlaybackHistoryMaxEntriesPerRoomSetting,
 }
 
 #[derive(Clone)]
@@ -816,6 +854,10 @@ impl RuntimeSettingsStore {
             max_pinned_messages_per_room: MaxPinnedMessagesPerRoomSetting::new(storage.clone()),
             message_retention_days: MessageRetentionDaysSetting::new(storage.clone()),
         };
+        let playback_history = PlaybackHistorySettingsStore {
+            retention_days: PlaybackHistoryRetentionDaysSetting::new(storage.clone()),
+            max_entries_per_room: PlaybackHistoryMaxEntriesPerRoomSetting::new(storage.clone()),
+        };
 
         let cors = CorsSettingsStore {
             allowed_origins: CorsAllowedOriginsSetting::new(storage.clone()),
@@ -835,6 +877,7 @@ impl RuntimeSettingsStore {
             email,
             webrtc,
             chat,
+            playback_history,
             cors,
         }
     }
@@ -930,6 +973,10 @@ impl RuntimeSettingsStore {
                 max_messages_per_room: self.chat.max_messages_per_room.get()?,
                 max_pinned_messages_per_room: self.chat.max_pinned_messages_per_room.get()?,
                 message_retention_days: self.chat.message_retention_days.get()?,
+            },
+            playback_history: PlaybackHistoryRuntimeSettings {
+                retention_days: self.playback_history.retention_days.get()?,
+                max_entries_per_room: self.playback_history.max_entries_per_room.get()?,
             },
             cors: CorsRuntimeSettings {
                 allowed_origins: self.cors.allowed_origins.get()?,
@@ -1190,6 +1237,18 @@ impl RuntimeSettingsStore {
         )?;
         Self::push_update_entry(
             &mut entries,
+            update_mask.playback_history.retention_days,
+            &self.playback_history.retention_days,
+            &settings.playback_history.retention_days,
+        )?;
+        Self::push_update_entry(
+            &mut entries,
+            update_mask.playback_history.max_entries_per_room,
+            &self.playback_history.max_entries_per_room,
+            &settings.playback_history.max_entries_per_room,
+        )?;
+        Self::push_update_entry(
+            &mut entries,
             update_mask.cors.allowed_origins,
             &self.cors.allowed_origins,
             &settings.cors.allowed_origins,
@@ -1359,7 +1418,7 @@ mod tests {
     #[test]
     fn test_guest_default_permissions_accept_only_guest_safe_permissions() {
         let allowed: PermissionSet = ok(
-            r#"["view_member_list","view_chat_history","use_webrtc"]"#.parse(),
+            r#"["view_members","view_chat_history","use_webrtc"]"#.parse(),
             "guest-safe permission set should parse",
         );
         assert!(allowed.validate_guest_default().is_ok());
@@ -1368,7 +1427,7 @@ mod tests {
         assert!(empty.validate_guest_default().is_ok());
 
         let rejected: PermissionSet = ok(
-            r#"["view_media_resources","chat","create_media_resource"]"#.parse(),
+            r#"["view_media","send_chat_messages","manage_own_media"]"#.parse(),
             "unsafe permission set should parse",
         );
         let error = err(
@@ -1376,39 +1435,44 @@ mod tests {
             "media-resource and chat permissions must not be guest defaults",
         );
         assert!(error.to_string().contains("permissions.guest_default"));
-        assert!(error.to_string().contains("view_media_resources"));
-        assert!(error.to_string().contains("chat"));
-        assert!(error.to_string().contains("create_media_resource"));
+        assert!(error.to_string().contains("view_media"));
+        assert!(error.to_string().contains("send_chat_messages"));
+        assert!(error.to_string().contains("manage_own_media"));
     }
 
     #[test]
-    fn test_permission_set_uses_live_control_name_only() {
+    fn test_permission_set_uses_manage_live_streams_name_only() {
         let parsed: PermissionSet = ok(
-            r#"["live_control"]"#.parse(),
-            "live_control permission set should parse",
+            r#"["manage_live_streams"]"#.parse(),
+            "manage_live_streams permission set should parse",
         );
         assert!(parsed
             .bits()
-            .has(crate::models::RoomPermission::LIVE_CONTROL));
-        assert_eq!(parsed.to_string(), r#"["live_control"]"#);
+            .has(crate::models::RoomPermission::MANAGE_LIVE_STREAMS));
+        assert_eq!(parsed.to_string(), r#"["manage_live_streams"]"#);
 
         let error = err(
-            r#"["start_live"]"#.parse::<PermissionSet>(),
-            "start_live is not a supported permission setting name",
+            r#"["live_control"]"#.parse::<PermissionSet>(),
+            "legacy live_control permission name must be rejected",
         );
         assert!(
             error
                 .to_string()
-                .contains("unknown permission name 'start_live'"),
+                .contains("unknown permission name 'live_control'"),
             "unexpected error: {error}"
         );
     }
 
     #[test]
-    fn test_permission_set_accepts_chat_name() {
-        let parsed: PermissionSet = ok(r#"["chat"]"#.parse(), "chat permission set should parse");
-        assert!(parsed.bits().has(crate::models::RoomPermission::CHAT));
-        assert_eq!(parsed.to_string(), r#"["chat"]"#);
+    fn test_permission_set_accepts_send_chat_messages_name() {
+        let parsed: PermissionSet = ok(
+            r#"["send_chat_messages"]"#.parse(),
+            "send_chat_messages permission set should parse",
+        );
+        assert!(parsed
+            .bits()
+            .has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
+        assert_eq!(parsed.to_string(), r#"["send_chat_messages"]"#);
     }
 
     #[test]
@@ -1416,8 +1480,9 @@ mod tests {
         let mut settings = RuntimeSettingsStore::new_for_tests()
             .runtime_settings()
             .expect("runtime settings should load");
-        settings.permissions.guest_default_permissions =
-            r#"["view_media_resources","chat"]"#.parse().expect("valid names");
+        settings.permissions.guest_default_permissions = r#"["view_media","send_chat_messages"]"#
+            .parse()
+            .expect("valid names");
 
         let error = validate_settings(&settings).expect_err("unsafe guest default");
         assert!(
@@ -1426,7 +1491,7 @@ mod tests {
         );
 
         settings.permissions.guest_default_permissions =
-            r#"["view_member_list","use_webrtc"]"#.parse().expect("valid names");
+            r#"["view_members","use_webrtc"]"#.parse().expect("valid names");
         assert!(validate_settings(&settings).is_ok());
     }
 
@@ -1467,6 +1532,14 @@ mod tests {
         assert!(validate_settings(&settings).is_err());
 
         settings.room_defaults.default_max_chat_messages = 500;
+        assert!(validate_settings(&settings).is_ok());
+
+        settings.playback_history.retention_days = 3_651;
+        assert!(validate_settings(&settings).is_err());
+        settings.playback_history.retention_days = 90;
+        settings.playback_history.max_entries_per_room = 100_001;
+        assert!(validate_settings(&settings).is_err());
+        settings.playback_history.max_entries_per_room = 1_000;
         assert!(validate_settings(&settings).is_ok());
     }
 

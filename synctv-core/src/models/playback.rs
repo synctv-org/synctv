@@ -13,6 +13,7 @@ pub struct RoomPlaybackState {
     pub playing_playlist_id: Option<PlaylistId>,
     pub target: Option<ProviderTarget>,
     pub current_progress_id: Option<i64>,
+    pub history_cursor_id: Option<i64>,
     pub position: f64, // playback position in seconds
     pub speed: f64,    // 0.5, 1.0, 1.5, 2.0, etc.
     pub is_playing: bool,
@@ -33,6 +34,27 @@ pub struct RoomPlaybackProgress {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub version: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PlaybackHistoryEntry {
+    pub id: i64,
+    pub room_id: RoomId,
+    pub sequence: i64,
+    pub media_id: Option<MediaId>,
+    pub playlist_id: Option<PlaylistId>,
+    pub target: Option<ProviderTarget>,
+    pub position_seconds: f64,
+    pub selected_by_user_id: Option<super::id::UserId>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PlaybackHistoryPage {
+    pub entries: Vec<PlaybackHistoryEntry>,
+    pub history_cursor_id: Option<i64>,
+    pub next_before_entry_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -152,6 +174,7 @@ impl RoomPlaybackState {
             playing_playlist_id: None,
             target: None,
             current_progress_id: None,
+            history_cursor_id: None,
             position: 0.0,
             speed: 1.0,
             is_playing: false,

@@ -2412,7 +2412,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn start_playback(
         &self,
         request: Request<StartPlaybackRequest>,
-    ) -> Result<Response<client_proto::StartPlaybackResponse>, Status> {
+    ) -> Result<Response<client_proto::PlaybackState>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
@@ -2436,7 +2436,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn stop_playback(
         &self,
         request: Request<StopPlaybackRequest>,
-    ) -> Result<Response<client_proto::StopPlaybackResponse>, Status> {
+    ) -> Result<Response<client_proto::PlaybackState>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();

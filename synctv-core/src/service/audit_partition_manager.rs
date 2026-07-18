@@ -184,7 +184,7 @@ impl AuditPartitionManager {
     /// Drop old partitions
     ///
     /// Removes partitions older than the specified number of months
-    pub async fn drop_old_partitions(&self, keep_months: i32) -> Result<Vec<String>> {
+    pub async fn drop_empty_partitions_older_than(&self, keep_months: i32) -> Result<Vec<String>> {
         info!(
             "Dropping audit log partitions older than {} months",
             keep_months
@@ -470,7 +470,10 @@ async fn run_audit_partition_maintenance(manager: &AuditPartitionManager) {
         }
     }
 
-    if let Err(e) = manager.drop_old_partitions(DEFAULT_RETENTION_MONTHS).await {
+    if let Err(e) = manager
+        .drop_empty_partitions_older_than(DEFAULT_RETENTION_MONTHS)
+        .await
+    {
         tracing::error!(error = %e, "Failed to drop old audit log partitions");
     }
 }
@@ -494,7 +497,7 @@ async fn initialize_audit_partitions_on_startup(
     // stays leader-gated in the background task to avoid duplicate startup DDL.
     if run_retention_cleanup {
         manager
-            .drop_old_partitions(DEFAULT_RETENTION_MONTHS)
+            .drop_empty_partitions_older_than(DEFAULT_RETENTION_MONTHS)
             .await?;
     }
 

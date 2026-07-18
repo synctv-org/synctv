@@ -50,7 +50,7 @@ impl RoomService {
             .check_permission_no_cache(
                 &room_id,
                 &user_id,
-                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+                crate::models::RoomPermission::MANAGE_ROOM_SETTINGS,
             )
             .await?;
 
@@ -171,7 +171,7 @@ impl RoomService {
             .check_permission_no_cache(
                 &room_id,
                 &user_id,
-                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+                crate::models::RoomPermission::MANAGE_ROOM_SETTINGS,
             )
             .await?;
 
@@ -251,7 +251,7 @@ impl RoomService {
             .check_permission_no_cache(
                 &room_id,
                 &user_id,
-                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+                crate::models::RoomPermission::MANAGE_ROOM_SETTINGS,
             )
             .await?;
         let old_reference = if let Some(reference_id) = room.cover_file_reference_id {

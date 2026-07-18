@@ -51,9 +51,9 @@ async fn test_creator_has_all_permissions() {
         RoomPermissionSet::all().0,
         "Creator should have ALL permissions"
     );
-    assert!(perms.has(RoomPermission::KICK_MEMBER));
-    assert!(perms.has(RoomPermission::KICK_MEMBER));
-    assert!(perms.has(RoomPermission::CHAT));
-    assert!(perms.has(RoomPermission::CREATE_MEDIA_RESOURCE));
+    assert!(perms.has(RoomPermission::REMOVE_MEMBERS));
+    assert!(perms.has(RoomPermission::REMOVE_MEMBERS));
+    assert!(perms.has(RoomPermission::SEND_CHAT_MESSAGES));
+    assert!(perms.has(RoomPermission::MANAGE_OWN_MEDIA));
     assert!(perms.has(RoomPermission::USE_WEBRTC));
 }

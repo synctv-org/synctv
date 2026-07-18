@@ -21,6 +21,7 @@ const BAN_RECORD_ID_TAG: u64 = 6;
 const CONTENT_REPORT_ID_TAG: u64 = 7;
 const ROOM_CATEGORY_ID_TAG: u64 = 8;
 const ROOM_LABEL_ID_TAG: u64 = 9;
+const PLAYBACK_HISTORY_ENTRY_ID_TAG: u64 = 10;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum PublicIdKind {
@@ -33,6 +34,7 @@ pub enum PublicIdKind {
     ContentReport,
     RoomCategory,
     RoomLabel,
+    PlaybackHistoryEntry,
 }
 
 impl PublicIdKind {
@@ -48,6 +50,7 @@ impl PublicIdKind {
             Self::ContentReport => "ContentReportId",
             Self::RoomCategory => "RoomCategoryId",
             Self::RoomLabel => "RoomLabelId",
+            Self::PlaybackHistoryEntry => "PlaybackHistoryEntryId",
         }
     }
 
@@ -63,6 +66,7 @@ impl PublicIdKind {
             Self::ContentReport => CONTENT_REPORT_ID_TAG,
             Self::RoomCategory => ROOM_CATEGORY_ID_TAG,
             Self::RoomLabel => ROOM_LABEL_ID_TAG,
+            Self::PlaybackHistoryEntry => PLAYBACK_HISTORY_ENTRY_ID_TAG,
         }
     }
 
@@ -78,6 +82,7 @@ impl PublicIdKind {
             Self::ContentReport => "report_",
             Self::RoomCategory => "roomcat_",
             Self::RoomLabel => "roomlbl_",
+            Self::PlaybackHistoryEntry => "ph_",
         }
     }
 }
@@ -280,6 +285,10 @@ impl PublicIdCodec {
         self.encode(id)
     }
 
+    pub fn encode_playback_history_entry_id(&self, id: i64) -> Result<String, String> {
+        self.encode_i64(id, PublicIdKind::PlaybackHistoryEntry)
+    }
+
     pub fn decode_user_id(&self, value: &str) -> Result<UserId, String> {
         self.decode(value)
     }
@@ -310,6 +319,10 @@ impl PublicIdCodec {
 
     pub fn decode_content_report_id(&self, value: &str) -> Result<ContentReportId, String> {
         self.decode(value)
+    }
+
+    pub fn decode_playback_history_entry_id(&self, value: &str) -> Result<i64, String> {
+        self.decode_i64(value, PublicIdKind::PlaybackHistoryEntry)
     }
 
     fn encode_i64(&self, id: i64, kind: PublicIdKind) -> Result<String, String> {
@@ -467,6 +480,20 @@ mod tests {
                 "room label ID should encode",
             ),
             "roomlbl_1"
+        );
+        assert_eq!(
+            ok(
+                codec.encode_playback_history_entry_id(1),
+                "playback history ID should encode",
+            ),
+            "ph_1"
+        );
+        assert_eq!(
+            ok(
+                codec.decode_playback_history_entry_id("ph_1"),
+                "playback history ID should decode",
+            ),
+            1
         );
     }
 

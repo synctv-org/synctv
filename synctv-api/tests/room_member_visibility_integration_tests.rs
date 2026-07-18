@@ -120,7 +120,7 @@ fn make_client_api_with_connections(
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_room_members_requires_view_member_list_permission() {
+async fn test_get_room_members_requires_view_members_permission() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
@@ -162,7 +162,7 @@ async fn test_get_room_members_requires_view_member_list_permission() {
             room.id,
             owner.id,
             observer.id,
-            RoomMemberPermissionBits::VIEW_MEMBER_LIST,
+            RoomMemberPermissionBits::VIEW_MEMBERS,
         )
         .await
         .unwrap();
@@ -187,7 +187,7 @@ async fn test_get_room_members_requires_view_member_list_permission() {
 
     assert!(
         matches!(err, synctv_api::ApiError::Authorization(ref msg) if msg == "Forbidden: Permission denied"),
-        "reading member list without VIEW_MEMBER_LIST must be forbidden, got: {err:?}"
+        "reading member list without VIEW_MEMBERS must be forbidden, got: {err:?}"
     );
 }
 

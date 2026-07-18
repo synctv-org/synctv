@@ -154,6 +154,10 @@ fn test_runtime_settings() -> synctv_core::service::RuntimeSettings {
             max_pinned_messages_per_room: 20,
             message_retention_days: 90,
         },
+        playback_history: synctv_core::service::PlaybackHistoryRuntimeSettings {
+            retention_days: 90,
+            max_entries_per_room: 1_000,
+        },
         cors: synctv_core::service::CorsRuntimeSettings {
             allowed_origins: synctv_core::service::CorsAllowedOrigins(vec![
                 "https://app.example.com".to_string(),
@@ -873,17 +877,17 @@ async fn test_admin_add_member_publishes_permission_changed_membership_event() -
 
     let global_admin = create_db_user(
         &user_repo,
-        "global_admin_add_membership_outbox",
+        "global_admin_add_memberhip_outbox",
         UserRole::Root,
     )
     .await;
     let owner = create_db_user(
         &user_repo,
-        "room_owner_add_membership_outbox",
+        "room_owner_add_memberhip_outbox",
         UserRole::User,
     )
     .await;
-    let target = create_db_user(&user_repo, "target_add_membership_outbox", UserRole::User).await;
+    let target = create_db_user(&user_repo, "target_add_memberhip_outbox", UserRole::User).await;
 
     let room = core_ok(
         admin_api
@@ -1023,7 +1027,7 @@ async fn test_admin_member_response_uses_room_permission_overrides() -> TestResu
     let mut settings = core_ok(admin_api.room_service.get_room_settings(&room.id).await)?;
     settings.member_removed_permissions =
         synctv_core::models::room_settings::MemberRemovedPermissions(
-            synctv_core::models::RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE,
+            synctv_core::models::RoomMemberPermissionBits::MANAGE_OWN_MEDIA,
         );
     core_ok(
         admin_api
@@ -1039,7 +1043,8 @@ async fn test_admin_member_response_uses_room_permission_overrides() -> TestResu
                 user_id: public_user_id(&admin_api, target.id),
                 role: synctv_proto::common::RoomMemberRole::Member as i32,
                 added_permissions: 0,
-                removed_permissions: synctv_core::models::RoomMemberPermissionBits::CHAT,
+                removed_permissions:
+                    synctv_core::models::RoomMemberPermissionBits::SEND_CHAT_MESSAGES,
                 admin_added_permissions: 0,
                 admin_removed_permissions: 0,
             },
@@ -1052,12 +1057,12 @@ async fn test_admin_member_response_uses_room_permission_overrides() -> TestResu
     let member = response;
     assert!(
         synctv_core::models::RoomPermissionSet::default_member()
-            .has(synctv_core::models::RoomPermission::CREATE_MEDIA_RESOURCE),
-        "static member defaults include CREATE_MEDIA_RESOURCE, so the response must prove it used room overrides"
+            .has(synctv_core::models::RoomPermission::MANAGE_OWN_MEDIA),
+        "static member defaults include MANAGE_OWN_MEDIA, so the response must prove it used room overrides"
     );
     assert!(
         !synctv_core::models::RoomPermissionSet(member.permissions)
-            .has(synctv_core::models::RoomPermission::CREATE_MEDIA_RESOURCE),
+            .has(synctv_core::models::RoomPermission::MANAGE_OWN_MEDIA),
         "admin member response must apply room-level permission removals"
     );
     Ok(())
@@ -2333,6 +2338,10 @@ async fn test_runtime_settings_patch_updates_only_present_fields() -> TestResult
                 cors: Some(synctv_proto::admin::CorsSettingsPatch {
                     allowed_origins: Vec::new(),
                 }),
+                playback_history: Some(synctv_proto::admin::PlaybackHistorySettingsPatch {
+                    retention_days: Some(30),
+                    max_entries_per_room: Some(500),
+                }),
                 ..Default::default()
             },
             &[
@@ -2342,6 +2351,8 @@ async fn test_runtime_settings_patch_updates_only_present_fields() -> TestResult
                 "email.smtp_proxy",
                 "email.whitelist_domains",
                 "cors.allowed_origins",
+                "playback_history.retention_days",
+                "playback_history.max_entries_per_room",
             ],
         ),
     )
@@ -2366,6 +2377,8 @@ async fn test_runtime_settings_patch_updates_only_present_fields() -> TestResult
     );
     assert!(patched.email.whitelist_domains.is_empty());
     assert!(patched.cors.allowed_origins.0.is_empty());
+    assert_eq!(patched.playback_history.retention_days, 30);
+    assert_eq!(patched.playback_history.max_entries_per_room, 500);
     assert!(patch_result.update_mask.server.name);
     assert!(patch_result.update_mask.room_creation.max_rooms_per_user);
     assert!(!patch_result.update_mask.room_creation.enabled);
@@ -2374,6 +2387,13 @@ async fn test_runtime_settings_patch_updates_only_present_fields() -> TestResult
     assert!(!patch_result.update_mask.email.smtp_host);
     assert!(patch_result.update_mask.email.whitelist_domains);
     assert!(patch_result.update_mask.cors.allowed_origins);
+    assert!(patch_result.update_mask.playback_history.retention_days);
+    assert!(
+        patch_result
+            .update_mask
+            .playback_history
+            .max_entries_per_room
+    );
     Ok(())
 }
 
@@ -2933,10 +2953,10 @@ async fn test_runtime_settings_patch_uses_role_specific_permission_validation() 
             synctv_proto::admin::RuntimeSettingsPatch {
                 permissions: Some(synctv_proto::admin::PermissionSettingsPatch {
                     admin_default_permissions: Some(
-                        synctv_core::models::RoomAdminPermissionBits::PLAY_CONTROL,
+                        synctv_core::models::RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE,
                     ),
                     member_default_permissions: Some(
-                        synctv_core::models::RoomAdminPermissionBits::CHAT,
+                        synctv_core::models::RoomAdminPermissionBits::SEND_CHAT_MESSAGES,
                     ),
                     ..Default::default()
                 }),
@@ -2957,7 +2977,7 @@ async fn test_runtime_settings_patch_uses_role_specific_permission_validation() 
                     synctv_proto::admin::RuntimeSettingsPatch {
                         permissions: Some(synctv_proto::admin::PermissionSettingsPatch {
                             guest_default_permissions: Some(
-                                synctv_core::models::RoomAdminPermissionBits::PLAY_CONTROL,
+                                synctv_core::models::RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE,
                             ),
                             ..Default::default()
                         }),

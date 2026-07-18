@@ -52,11 +52,11 @@ Guests can enter public rooms that explicitly allow guest access, but they do no
 | Capability | Default | Can be granted through guest permissions | Notes |
 | --- | --- | --- | --- |
 | Basic realtime room state | Yes | No setting required | Lets the client show room existence, settings, and playback state after connecting |
-| Member list | No | `view_member_list` | Read-only |
+| Member list | No | `view_members` | Read-only |
 | Chat history | No | `view_chat_history` | Read-only |
 | WebRTC signaling | No | `use_webrtc` | Allows signaling participation only; does not grant room administration |
 | Media resources | No | No | Guests cannot read, browse, or manage media resources |
-| Chat sending | No | No | `send_chat` is only for signed-in members |
+| Chat sending | No | No | `send_chat_messages` is only for signed-in members |
 | Playback control, member management, room settings | No | No | Requires a signed-in member with the matching permission |
 
 ## Permission Evaluation
@@ -84,30 +84,29 @@ Runtime settings and administration surfaces use stable snake_case permission na
 
 | Permission name | Meaning |
 | --- | --- |
-| `send_chat` | Send chat messages |
-| `create_media_resource` | Create media resources and edit media resources created by the actor |
-| `delete_media_resource_any` | Delete media resources created by other users or without a recorded creator |
-| `reorder_media_resources` | Reorder media resources |
-| `clear_media_resources` | Clear media resource queues |
-| `live_control` | Manage live streams and create publish keys |
-| `play_control` | Play, pause, and seek |
-| `change_current_media` | Switch current media |
-| `change_playback_rate` | Change playback speed |
-| `approve_member` | Approve or reject join requests |
-| `kick_member` | Kick members and start a temporary rejoin cooldown |
-| `set_member_permissions` | Change member permissions |
-| `add_member` | Add members directly |
-| `set_room_settings` | Modify room settings |
-| `delete_chat` | Delete chat messages |
+| `send_chat_messages` | Send chat messages |
+| `manage_own_media` | Create media or playlists and edit content created by the actor |
+| `delete_media` | Delete media and playlists created by other users or without a recorded creator |
+| `reorder_media` | Reorder media and playlists |
+| `clear_media` | Clear the room media queue |
+| `manage_live_streams` | Manage live streams and create publish keys |
+| `control_playback_state` | Play, pause, seek, and change playback speed |
+| `navigate_playback` | Select content, play previous or next, and play a history entry |
+| `review_join_requests` | Approve or reject join requests |
+| `remove_members` | Remove members and start a temporary rejoin cooldown |
+| `manage_member_permissions` | Change member permissions |
+| `add_members` | Add members directly |
+| `manage_room_settings` | Modify room settings |
+| `delete_chat_messages` | Delete chat messages created by other room members |
 | `delete_room` | Delete room; not a normal room-delegable permission |
-| `view_media_resources` | View media resources |
-| `view_member_list` | View member list |
+| `view_media` | View media resources |
+| `view_members` | View member list |
 | `view_chat_history` | View chat history |
 | `use_webrtc` | Use WebRTC voice/video features |
 
 ## Room Settings
 
-Deleting a media resource created by the actor is an ownership business rule, not a separate permission bit. A member can always delete their own media resources, even without `create_media_resource`; creating media resources and editing their own media resources require `create_media_resource`.
+Deleting a media resource created by the actor is an ownership business rule, not a separate permission bit. A member can always delete their own media resources, even without `manage_own_media`; creating media resources and editing their own media resources require `manage_own_media`.
 
 Room settings control join policy, room features, and default permissions.
 

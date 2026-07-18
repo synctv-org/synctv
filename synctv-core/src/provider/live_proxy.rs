@@ -163,7 +163,7 @@ impl LiveProxyProvider {
         };
 
         payload
-            .get("perm_live_control")
+            .get("perm_manage_live_streams")
             .and_then(Value::as_bool)
             .unwrap_or(false)
             && payload.get("room_id").is_some()

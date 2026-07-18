@@ -248,7 +248,7 @@ impl ClientApiImpl {
             .check_permission(
                 &rid,
                 &uid,
-                synctv_core::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+                synctv_core::models::RoomPermission::MANAGE_OWN_MEDIA,
             )
             .await
             .map_err(Self::map_room_access_error)?;
@@ -512,7 +512,7 @@ impl ClientApiImpl {
             .check_permission(
                 &rid,
                 &uid,
-                synctv_core::models::RoomPermission::REORDER_MEDIA_RESOURCES,
+                synctv_core::models::RoomPermission::REORDER_MEDIA,
             )
             .await
             .map_err(Self::map_room_access_error)?;
@@ -592,11 +592,8 @@ impl ClientApiImpl {
         actor: &RoomActor,
         playlist_id: &str,
     ) -> Result<synctv_proto::client::GetPlaylistResponse, ApiError> {
-        self.require_room_permission(
-            actor,
-            synctv_core::models::RoomPermission::VIEW_MEDIA_RESOURCES,
-        )
-        .await?;
+        self.require_room_permission(actor, synctv_core::models::RoomPermission::VIEW_MEDIA)
+            .await?;
         let rid = actor.room_id();
         let pid = crate::impls::parse_playlist_id_param(
             playlist_id,
@@ -672,11 +669,8 @@ impl ClientApiImpl {
         req: synctv_proto::client::ListPlaylistsRequest,
     ) -> Result<synctv_proto::client::ListPlaylistsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        self.require_room_permission(
-            actor,
-            synctv_core::models::RoomPermission::VIEW_MEDIA_RESOURCES,
-        )
-        .await?;
+        self.require_room_permission(actor, synctv_core::models::RoomPermission::VIEW_MEDIA)
+            .await?;
         let rid = actor.room_id();
         let page = page_i32_to_usize(req.page.max(1), "page")?;
         let page_size = if req.page_size <= 0 {

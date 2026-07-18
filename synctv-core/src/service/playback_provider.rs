@@ -1625,7 +1625,7 @@ impl PlaybackProviderRuntime {
             .check_permission(
                 &media.room_id,
                 &request.actor_user_id,
-                crate::models::RoomPermission::VIEW_MEDIA_RESOURCES,
+                crate::models::RoomPermission::VIEW_MEDIA,
             )
             .await
             .map_err(core_error_to_provider_error)?;

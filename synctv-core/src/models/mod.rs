@@ -120,15 +120,16 @@ pub use chat::{
     ChatMessageOperationKind, ChatMessagePin, ChatMessageReadReceiptMember,
     ChatMessageReadReceiptUser, ChatMessageReadReceiptsPage, ChatMessageSelection,
     ChatMessageStatus, ChatMessageType, ChatMessageWithAttachments, ChatMetadata, ChatPinEvent,
-    ChatPinEventKind, ChatPinEventLog, ChatPinnedMessage, ChatPlaybackMessagesQuery,
-    ChatPlaybackMetadata, ChatPresentationMetadata, ChatReaction, ChatReactionSummary,
-    ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadState,
-    ChatReadStateWithUnread, ChatSearchMessagesPage, ChatSearchMessagesQuery, ChatUserMetadata,
-    CreateChatAttachmentUploadSession, DeleteChatMessage, EditChatMessage, EventCursor,
-    MarkChatRead, PinChatMessage, SendChatMessage, SendChatRequest, SetChatReaction,
-    UnpinChatMessage, CHAT_ATTACHMENT_FILENAME_MAX_CHARS, CHAT_ATTACHMENT_ID_MAX_CHARS,
-    CHAT_CLIENT_MESSAGE_ID_MAX_CHARS, CHAT_CLIENT_OPERATION_ID_MAX_CHARS, CHAT_EVENT_ID_MAX_CHARS,
-    CHAT_EVENT_TYPE_MAX_CHARS, CHAT_PIN_NOTE_MAX_CHARS, CHAT_REACTION_KEY_MAX_CHARS,
+    ChatPinEventKind, ChatPinEventLog, ChatPinnedMessage, ChatPlaybackChangedMetadata,
+    ChatPlaybackMessagesQuery, ChatPlaybackMetadata, ChatPresentationMetadata, ChatReaction,
+    ChatReactionSummary, ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage,
+    ChatReadState, ChatReadStateWithUnread, ChatSearchMessagesPage, ChatSearchMessagesQuery,
+    ChatUserMetadata, CreateChatAttachmentUploadSession, DeleteChatMessage, EditChatMessage,
+    EventCursor, MarkChatRead, PinChatMessage, PlaybackChangeReason, SendChatMessage,
+    SendChatRequest, SetChatReaction, UnpinChatMessage, CHAT_ATTACHMENT_FILENAME_MAX_CHARS,
+    CHAT_ATTACHMENT_ID_MAX_CHARS, CHAT_CLIENT_MESSAGE_ID_MAX_CHARS,
+    CHAT_CLIENT_OPERATION_ID_MAX_CHARS, CHAT_EVENT_ID_MAX_CHARS, CHAT_EVENT_TYPE_MAX_CHARS,
+    CHAT_PIN_NOTE_MAX_CHARS, CHAT_REACTION_KEY_MAX_CHARS,
 };
 pub use content_report::{
     ContentReport, ContentReportAdminRow, ContentReportMetadata, ContentReportStatus,
@@ -207,8 +208,8 @@ pub use permission::{
 };
 pub use playback::{
     hash_empty_playback_target, try_hash_playback_target, ClaimedPlaybackDurationProbe,
-    PlaybackDurationSource, PlaybackDurationStatus, PlaybackSourceIdentity, PlaybackSourceMetadata,
-    RoomPlaybackProgress, RoomPlaybackState,
+    PlaybackDurationSource, PlaybackDurationStatus, PlaybackHistoryEntry, PlaybackHistoryPage,
+    PlaybackSourceIdentity, PlaybackSourceMetadata, RoomPlaybackProgress, RoomPlaybackState,
 };
 pub use playback_session::{
     EmbyPlaybackSession, FnosPlaybackSession, ProviderPlaybackSession,

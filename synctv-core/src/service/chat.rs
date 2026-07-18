@@ -227,7 +227,7 @@ impl ChatService {
             .check_permission(
                 &request.room_id,
                 &request.user_id,
-                crate::models::RoomPermission::CHAT,
+                crate::models::RoomPermission::SEND_CHAT_MESSAGES,
             )
             .await?;
 
@@ -425,7 +425,11 @@ impl ChatService {
 
         // Check CHAT permission
         self.permission_service
-            .check_permission(&room_id, &user_id, crate::models::RoomPermission::CHAT)
+            .check_permission(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::SEND_CHAT_MESSAGES,
+            )
             .await?;
         for mention in &request.mentions {
             self.permission_service
@@ -1000,7 +1004,7 @@ impl ChatService {
             .check_permission(
                 &request.room_id,
                 &request.user_id,
-                crate::models::RoomPermission::CHAT,
+                crate::models::RoomPermission::SEND_CHAT_MESSAGES,
             )
             .await?;
 
@@ -1154,7 +1158,7 @@ impl ChatService {
                 .check_permission(
                     &request.room_id,
                     &request.user_id,
-                    crate::models::RoomPermission::DELETE_CHAT,
+                    crate::models::RoomPermission::DELETE_CHAT_MESSAGES,
                 )
                 .await?;
         }
@@ -1283,7 +1287,7 @@ impl ChatService {
     /// # Arguments
     /// * `room_id` - Room that owns the message
     /// * `message_id` - Message ID to delete
-    /// * `user_id` - User ID requesting deletion (must be sender or have `DELETE_CHAT` permission)
+    /// * `user_id` - User ID requesting deletion (must be sender or have `DELETE_CHAT_MESSAGES` permission)
     ///
     /// # Returns
     /// Result indicating success or failure
@@ -1351,7 +1355,7 @@ impl ChatService {
             .check_permission(
                 &request.room_id,
                 &request.user_id,
-                crate::models::RoomPermission::DELETE_CHAT,
+                crate::models::RoomPermission::DELETE_CHAT_MESSAGES,
             )
             .await?;
 
@@ -1421,7 +1425,7 @@ impl ChatService {
             .check_permission(
                 &request.room_id,
                 &request.user_id,
-                crate::models::RoomPermission::DELETE_CHAT,
+                crate::models::RoomPermission::DELETE_CHAT_MESSAGES,
             )
             .await?;
 

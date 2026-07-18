@@ -138,7 +138,7 @@ impl RoomService {
             role,
             permission_update_required: apply_permission_update,
             actor_permission_check: apply_permission_update
-                .then_some(crate::models::RoomPermission::SET_MEMBER_PERMISSIONS),
+                .then_some(crate::models::RoomPermission::MANAGE_MEMBER_PERMISSIONS),
             effective_is_admin,
             added_permissions,
             removed_permissions,

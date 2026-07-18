@@ -166,7 +166,7 @@ impl RoomService {
                     &mut tx,
                     &room_id,
                     &user_id,
-                    RoomPermission::DELETE_MEDIA_RESOURCE_ANY,
+                    RoomPermission::DELETE_MEDIA,
                 )
                 .await?
         {

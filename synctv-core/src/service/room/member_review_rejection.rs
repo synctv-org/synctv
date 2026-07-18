@@ -133,7 +133,7 @@ impl RoomService {
             .check_permission_no_cache(
                 &room_id,
                 &actor_id,
-                crate::models::RoomPermission::APPROVE_MEMBER,
+                crate::models::RoomPermission::REVIEW_JOIN_REQUESTS,
             )
             .await?;
 
@@ -142,7 +142,7 @@ impl RoomService {
                 room_id,
                 actor_id,
                 reviewed_by: Some(actor_id),
-                actor_permission_check: Some(crate::models::RoomPermission::APPROVE_MEMBER),
+                actor_permission_check: Some(crate::models::RoomPermission::REVIEW_JOIN_REQUESTS),
                 request_id,
                 reason,
                 outbox_event_factory,

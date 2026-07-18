@@ -12,13 +12,17 @@ use crate::{
         PlaybackStateCache, SingleFlight, VersionFenceReservation, VersionFenceStore,
     },
     models::{
-        BilibiliMediaSourceConfig, MediaId, PlayMode, PlaybackSourceIdentity,
-        PlaybackSourceMetadata, PlaylistId, ProviderTarget, RoomId, RoomPlaybackState,
-        RoomSettings, SourceProvider, UserId,
+        BilibiliMediaSourceConfig, ChatMessage, ChatMessageType, ChatMetadata,
+        ChatPlaybackChangedMetadata, ChatPlaybackMetadata, MediaId, PlayMode, PlaybackChangeReason,
+        PlaybackHistoryEntry, PlaybackHistoryPage, PlaybackSourceIdentity, PlaybackSourceMetadata,
+        PlaylistId, ProviderTarget, RealtimeEvent, RoomId, RoomPlaybackState, RoomSettings,
+        SourceProvider, UserId,
     },
     repository::{
-        realtime_outbox::RealtimeOutboxRepository, PlaybackSourceMetadataRepository,
-        RoomPlaybackStateRepository,
+        chat::InsertChatMessageEvent,
+        realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
+        ChatRepository, PlaybackHistoryDirection, PlaybackHistoryRepository,
+        PlaybackSourceMetadataRepository, RoomPlaybackStateRepository,
     },
     service::{media::BackendPlaybackRequest, media::MediaService, PermissionService, UserService},
     Clock, Error, Result, SystemClock,
@@ -48,6 +52,8 @@ pub struct PlaybackService {
     clock: Arc<dyn Clock>,
     playback_repo: RoomPlaybackStateRepository,
     source_metadata_repo: PlaybackSourceMetadataRepository,
+    history_repo: PlaybackHistoryRepository,
+    chat_repo: ChatRepository,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     permission_service: PermissionService,
     media_service: MediaService,
@@ -94,9 +100,16 @@ impl PlaybackServiceRuntime {
 struct PlaybackSwitchCommand {
     room_id: RoomId,
     actor_user_id: UserId,
+    recorded_actor_user_id: Option<UserId>,
+    recorded_actor_username: Option<String>,
     target: SwitchPlaybackTarget,
     bypass_room_permissions: bool,
     outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+}
+
+enum PlaybackHistoryTransition {
+    AppendEntry { selected_by_user_id: Option<UserId> },
+    SelectEntry(PlaybackHistoryEntry),
 }
 
 fn live_status_for_media_source(
@@ -223,6 +236,8 @@ impl PlaybackService {
             .unwrap_or_else(|| PlaybackSourceMetadataRepository::new(playback_repo.pool().clone()));
         Self {
             clock: runtime.clock,
+            history_repo: PlaybackHistoryRepository::new(playback_repo.pool().clone()),
+            chat_repo: ChatRepository::new(playback_repo.pool().clone()),
             playback_repo,
             source_metadata_repo,
             realtime_outbox: runtime.realtime_outbox,
@@ -258,6 +273,34 @@ impl PlaybackService {
             ))),
             Err(error) => Err(error),
         }
+    }
+
+    async fn ensure_history_entry_available(&self, entry: &PlaybackHistoryEntry) -> Result<()> {
+        if let Some(media_id) = entry.media_id {
+            let media = self
+                .media_service
+                .get_room_media(&entry.room_id, &media_id)
+                .await?
+                .ok_or_else(|| Error::NotFound("Playback history media not found".to_string()))?;
+            return self
+                .ensure_creator_is_active(media.creator_id.as_ref(), "Media")
+                .await;
+        }
+        if let Some(playlist_id) = entry.playlist_id {
+            let playlist = self
+                .media_service
+                .get_room_playlist(&entry.room_id, &playlist_id)
+                .await?
+                .ok_or_else(|| {
+                    Error::NotFound("Playback history playlist not found".to_string())
+                })?;
+            return self
+                .ensure_creator_is_active(playlist.creator_id.as_ref(), "Playlist")
+                .await;
+        }
+        Err(Error::Internal(
+            "Playback history entry has no source".to_string(),
+        ))
     }
 
     pub const fn has_invalidation_service(&self) -> bool {
@@ -464,6 +507,11 @@ impl PlaybackService {
             .map_or(state.version + 1, |reservation| reservation.version);
         let mut tx = self.playback_repo.pool().begin().await?;
         let result = async {
+            if let Some(position) = previous_progress_position {
+                self.history_repo
+                    .save_cursor_position_on_conn(&state.room_id, position, &mut tx)
+                    .await?;
+            }
             let updated_state = self
                 .playback_repo
                 .update_with_exact_version_executor_and_previous_progress(
@@ -512,6 +560,217 @@ impl PlaybackService {
         Ok(updated_state)
     }
 
+    fn chat_playback_metadata(state: &RoomPlaybackState, position: f64) -> ChatPlaybackMetadata {
+        ChatPlaybackMetadata {
+            media_id: state.playing_media_id,
+            playlist_id: state.playing_playlist_id,
+            target: state.target.clone(),
+            target_hash: None,
+            position_seconds: Some(position.max(0.0)),
+        }
+    }
+
+    async fn insert_playback_changed_chat_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        previous: &RoomPlaybackState,
+        current: &RoomPlaybackState,
+        reason: PlaybackChangeReason,
+        actor_user_id: Option<UserId>,
+        actor_username: Option<&str>,
+    ) -> Result<()> {
+        if previous.playing_media_id == current.playing_media_id
+            && previous.playing_playlist_id == current.playing_playlist_id
+            && previous.target == current.target
+        {
+            return Ok(());
+        }
+        let Some(_) = current
+            .playing_media_id
+            .map(|_| ())
+            .or_else(|| current.playing_playlist_id.map(|_| ()))
+        else {
+            return Ok(());
+        };
+
+        let event_actor = if let Some(actor) = actor_user_id {
+            actor
+        } else {
+            sqlx::query_scalar::<_, UserId>("SELECT created_by FROM rooms WHERE id = $1")
+                .bind(current.room_id.as_i64())
+                .fetch_one(&mut **tx)
+                .await?
+        };
+        let actor_username = if let Some(username) = actor_username {
+            Some(username.to_string())
+        } else if let Some(actor) = actor_user_id {
+            sqlx::query_scalar::<_, String>("SELECT username FROM users WHERE id = $1")
+                .bind(actor.as_i64())
+                .fetch_optional(&mut **tx)
+                .await?
+        } else {
+            None
+        };
+        let from = (previous.playing_media_id.is_some() || previous.playing_playlist_id.is_some())
+            .then(|| Self::chat_playback_metadata(previous, previous.computed_position()));
+        let mut message = ChatMessage::new(current.room_id, event_actor, "Playback changed".into());
+        message.user_id = None;
+        message.message_type = ChatMessageType::SystemPlaybackChanged;
+        message.metadata = Some(ChatMetadata::PlaybackChanged(ChatPlaybackChangedMetadata {
+            from,
+            to: Self::chat_playback_metadata(current, current.position),
+            reason,
+            actor_user_id,
+            actor_username,
+        }));
+        let occurred_at = self.clock.now();
+        message.created_at = occurred_at;
+        let event_id = synctv_common::snanoid!(16);
+        let logged = self
+            .chat_repo
+            .insert_message_event_in_tx(
+                tx,
+                InsertChatMessageEvent {
+                    message: &message,
+                    attachments: &[],
+                    mentions: &[],
+                    actor_user_id: event_actor,
+                    event_id: &event_id,
+                    occurred_at,
+                },
+            )
+            .await?;
+        if let Some(outbox) = &self.realtime_outbox {
+            let event = RealtimeEvent::ChatMessageEvent {
+                event_id: logged.event.event_id.clone(),
+                room_id: current.room_id,
+                actor_user_id: event_actor,
+                event: logged.event,
+                timestamp: occurred_at,
+            };
+            outbox
+                .insert_with_executor(
+                    &NewRealtimeOutboxEvent {
+                        id: event.event_id().to_string(),
+                        enqueue_outbox: true,
+                        aggregate_type: "room".to_string(),
+                        aggregate_id: current.room_id.to_string(),
+                        event_type: event.event_type().to_string(),
+                        event_version: 1,
+                        aggregate_version: None,
+                        payload: event,
+                    },
+                    &mut **tx,
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn persist_source_transition(
+        &self,
+        state: &RoomPlaybackState,
+        previous: &RoomPlaybackState,
+        history_transition: PlaybackHistoryTransition,
+        reason: PlaybackChangeReason,
+        actor_user_id: Option<UserId>,
+        actor_username: Option<&str>,
+        outbox_event_factory: Option<&RealtimeOutboxPlaybackStateEventFactory>,
+    ) -> Result<RoomPlaybackState> {
+        let reservation = self
+            .begin_playback_write_from_db_version(&state.room_id, previous.version)
+            .await?;
+        let new_version = reservation
+            .as_ref()
+            .map_or(previous.version + 1, |reservation| reservation.version);
+        let mut tx = self.playback_repo.pool().begin().await?;
+        let result = async {
+            self.history_repo
+                .save_cursor_position_on_conn(&state.room_id, previous.computed_position(), &mut tx)
+                .await?;
+            let previous_progress_position =
+                previous_progress_position_for_source_transition(previous, state);
+            let mut updated = self
+                .playback_repo
+                .update_with_exact_version_executor_and_previous_progress(
+                    state,
+                    new_version,
+                    previous_progress_position,
+                    &mut tx,
+                )
+                .await?;
+            match history_transition {
+                PlaybackHistoryTransition::AppendEntry {
+                    selected_by_user_id,
+                } => {
+                    let entry = self
+                        .history_repo
+                        .append_entry_on_conn(
+                            &updated.room_id,
+                            updated.playing_media_id,
+                            updated.playing_playlist_id,
+                            updated.target.as_ref(),
+                            updated.position,
+                            selected_by_user_id,
+                            &mut tx,
+                        )
+                        .await?;
+                    updated.history_cursor_id = Some(entry.id);
+                }
+                PlaybackHistoryTransition::SelectEntry(entry) => {
+                    self.history_repo
+                        .set_cursor_on_conn(&updated.room_id, &entry, &mut tx)
+                        .await?;
+                    updated.history_cursor_id = Some(entry.id);
+                }
+            }
+            self.insert_playback_outbox_tx(&mut tx, &updated, outbox_event_factory)
+                .await?;
+            self.insert_playback_changed_chat_tx(
+                &mut tx,
+                previous,
+                &updated,
+                reason,
+                actor_user_id,
+                actor_username,
+            )
+            .await?;
+            Ok(updated)
+        }
+        .await;
+        let updated = match result {
+            Ok(updated) => {
+                tx.commit().await?;
+                updated
+            }
+            Err(error) => {
+                let _ = tx.rollback().await;
+                self.abort_playback_write(&state.room_id, reservation.as_ref())
+                    .await;
+                return Err(error);
+            }
+        };
+        self.finalize_committed_playback_write_best_effort(
+            &updated.room_id,
+            reservation.as_ref(),
+            updated.version,
+            "persist_source_transition",
+        )
+        .await;
+        Ok(updated)
+    }
+
+    pub async fn list_playback_history(
+        &self,
+        room_id: &RoomId,
+        before_entry_id: Option<i64>,
+        limit: i32,
+    ) -> Result<PlaybackHistoryPage> {
+        self.history_repo
+            .list(room_id, before_entry_id, limit)
+            .await
+    }
+
     /// Play/pause playback
     pub async fn set_playing(
         &self,
@@ -523,7 +782,7 @@ impl PlaybackService {
             .check_permission(
                 &room_id,
                 &user_id,
-                crate::models::RoomPermission::PLAY_CONTROL,
+                crate::models::RoomPermission::CONTROL_PLAYBACK_STATE,
             )
             .await?;
 
@@ -605,7 +864,7 @@ impl PlaybackService {
             .check_permission(
                 &room_id,
                 &user_id,
-                crate::models::RoomPermission::CHANGE_PLAYBACK_RATE,
+                crate::models::RoomPermission::CONTROL_PLAYBACK_STATE,
             )
             .await?;
 
@@ -656,6 +915,8 @@ impl PlaybackService {
         self.switch_internal(PlaybackSwitchCommand {
             room_id,
             actor_user_id: user_id,
+            recorded_actor_user_id: Some(user_id),
+            recorded_actor_username: None,
             target: SwitchPlaybackTarget {
                 media_id,
                 playlist_id,
@@ -678,14 +939,25 @@ impl PlaybackService {
         playlist_id: Option<PlaylistId>,
         target: Option<ProviderTarget>,
     ) -> Result<RoomPlaybackState> {
-        self.admin_switch_with_outbox(room_id, actor_user_id, media_id, playlist_id, target, None)
-            .await
+        self.admin_switch_with_outbox(
+            room_id,
+            actor_user_id,
+            Some(actor_user_id),
+            None,
+            media_id,
+            playlist_id,
+            target,
+            None,
+        )
+        .await
     }
 
     pub async fn admin_switch_with_outbox(
         &self,
         room_id: RoomId,
         actor_user_id: UserId,
+        recorded_actor_user_id: Option<UserId>,
+        recorded_actor_username: Option<String>,
         media_id: Option<MediaId>,
         playlist_id: Option<PlaylistId>,
         target: Option<ProviderTarget>,
@@ -694,6 +966,8 @@ impl PlaybackService {
         self.switch_internal(PlaybackSwitchCommand {
             room_id,
             actor_user_id,
+            recorded_actor_user_id,
+            recorded_actor_username,
             target: SwitchPlaybackTarget {
                 media_id,
                 playlist_id,
@@ -718,10 +992,55 @@ impl PlaybackService {
         room_id: &RoomId,
         settings: &RoomSettings,
     ) -> Result<Option<RoomPlaybackState>> {
+        self.play_next_internal(
+            room_id,
+            settings,
+            None,
+            true,
+            PlaybackChangeReason::AutoAdvance,
+            None,
+        )
+        .await
+    }
+
+    pub async fn play_next_for_user(
+        &self,
+        room_id: &RoomId,
+        user_id: UserId,
+        settings: &RoomSettings,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+    ) -> Result<Option<RoomPlaybackState>> {
+        self.permission_service
+            .check_permission(
+                room_id,
+                &user_id,
+                crate::models::RoomPermission::NAVIGATE_PLAYBACK,
+            )
+            .await?;
+        self.play_next_internal(
+            room_id,
+            settings,
+            Some(user_id),
+            false,
+            PlaybackChangeReason::Next,
+            outbox_event_factory,
+        )
+        .await
+    }
+
+    async fn play_next_internal(
+        &self,
+        room_id: &RoomId,
+        settings: &RoomSettings,
+        actor_user_id: Option<UserId>,
+        require_auto_play_enabled: bool,
+        reason: PlaybackChangeReason,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+    ) -> Result<Option<RoomPlaybackState>> {
         let enabled = settings.auto_play.value.enabled;
         let mode = settings.auto_play.value.mode;
 
-        if !enabled {
+        if require_auto_play_enabled && !enabled {
             return Ok(None);
         }
 
@@ -729,14 +1048,72 @@ impl PlaybackService {
             Self::MAX_RETRIES,
             Self::BACKOFF_BASE_MS,
             "play_next failed after maximum retry attempts",
-            || async {
+            || {
+                let outbox_event_factory = outbox_event_factory.clone();
+                async move {
                 // Get current state (fresh on every retry)
                 let state = match self.playback_repo.get(room_id).await? {
                     Some(s) => s,
                     None => self.playback_repo.create_or_get(room_id).await?,
                 };
 
-                let next_target = if let Some(ref playlist_id) = state.playing_playlist_id {
+                let history_cursor_entry = self.history_repo.cursor_entry(room_id).await?;
+                if let Some(cursor_entry) = &history_cursor_entry {
+                    if let Some(next) = self
+                        .history_repo
+                        .adjacent_entry(
+                            room_id,
+                            cursor_entry.id,
+                            PlaybackHistoryDirection::Next,
+                        )
+                        .await?
+                    {
+                        self.ensure_history_entry_available(&next).await?;
+                        let previous = state.clone();
+                        let mut updated = state;
+                        updated.playing_media_id = next.media_id;
+                        updated.playing_playlist_id = next.playlist_id;
+                        updated.target = next.target.clone();
+                        updated.position = next.position_seconds;
+                        updated.is_playing = true;
+                        updated.updated_at = self.clock.now();
+                        let saved = self
+                            .persist_source_transition(
+                                &updated,
+                                &previous,
+                                PlaybackHistoryTransition::SelectEntry(next),
+                                reason,
+                                actor_user_id,
+                                None,
+                                outbox_event_factory.as_ref(),
+                            )
+                            .await?;
+                        self.write_playback_cache(&saved).await;
+                        self.broadcast_invalidation(room_id, &saved, "play_next_history")
+                            .await;
+                        return Ok(Some(saved));
+                    }
+                }
+
+                let selection_state = if state.playing_media_id.is_none()
+                    && state.playing_playlist_id.is_none()
+                {
+                    history_cursor_entry.as_ref().map_or_else(
+                        || state.clone(),
+                        |entry| {
+                            let mut selection = state.clone();
+                            selection.playing_media_id = entry.media_id;
+                            selection.playing_playlist_id = entry.playlist_id;
+                            selection.target.clone_from(&entry.target);
+                            selection.position = entry.position_seconds;
+                            selection
+                        },
+                    )
+                } else {
+                    state.clone()
+                };
+
+                let next_target = if let Some(ref playlist_id) = selection_state.playing_playlist_id {
                     let playlist = self
                         .media_service
                         .get_room_playlist(room_id, playlist_id)
@@ -754,7 +1131,7 @@ impl PlaybackService {
                         }
                         Err(error) => return Err(error),
                     }
-                    let Some(current_target) = state.target.as_ref() else {
+                    let Some(current_target) = selection_state.target.as_ref() else {
                         return Ok(None);
                     };
                     self.media_service
@@ -770,7 +1147,7 @@ impl PlaybackService {
                             .transpose()
                         })?
                 } else {
-                    let playlist = if let Some(ref current_id) = state.playing_media_id {
+                    let playlist = if let Some(ref current_id) = selection_state.playing_media_id {
                         let current_media = self
                             .media_service
                             .get_room_media(room_id, current_id)
@@ -807,7 +1184,7 @@ impl PlaybackService {
 
                     let next_media = match mode {
                         PlayMode::Sequential => {
-                            if let Some(ref current_id) = state.playing_media_id {
+                            if let Some(ref current_id) = selection_state.playing_media_id {
                                 match playlist.iter().position(|m| &m.id == current_id) {
                                     Some(pos) if pos + 1 < playlist.len() => {
                                         Some(&playlist[pos + 1])
@@ -827,7 +1204,7 @@ impl PlaybackService {
                             }
                         }
                         PlayMode::RepeatOne => {
-                            if let Some(ref current_id) = state.playing_media_id {
+                            if let Some(ref current_id) = selection_state.playing_media_id {
                                 playlist.iter().find(|m| &m.id == current_id).or_else(|| {
                                     tracing::warn!(
                                         room_id = %room_id,
@@ -841,7 +1218,7 @@ impl PlaybackService {
                             }
                         }
                         PlayMode::RepeatAll => {
-                            if let Some(ref current_id) = state.playing_media_id {
+                            if let Some(ref current_id) = selection_state.playing_media_id {
                                 if let Some(pos) = playlist.iter().position(|m| &m.id == current_id)
                                 {
                                     Some(&playlist[(pos + 1) % playlist.len()])
@@ -858,7 +1235,7 @@ impl PlaybackService {
                             }
                         }
                         PlayMode::Shuffle => {
-                            if let Some(ref current_id) = state.playing_media_id {
+                            if let Some(ref current_id) = selection_state.playing_media_id {
                                 let other_media = playlist
                                     .iter()
                                     .filter(|m| &m.id != current_id)
@@ -878,6 +1255,9 @@ impl PlaybackService {
                 };
 
                 let Some(next_target) = next_target else {
+                    if state.playing_media_id.is_none() && state.playing_playlist_id.is_none() {
+                        return Ok(None);
+                    }
                     let observed_version = state.version;
                     let mut ended_state = state;
                     let ended_position = ended_state.computed_position();
@@ -889,7 +1269,7 @@ impl PlaybackService {
                         .persist_playback_state_update_with_previous_progress(
                             &ended_state,
                             observed_version,
-                            None,
+                            Some(ended_position),
                             None,
                         )
                         .await?;
@@ -954,19 +1334,20 @@ impl PlaybackService {
                         updated_state.target = Some(target.clone());
                     }
                 }
-                let observed_version = updated_state.version;
                 updated_state.position = 0.0;
                 updated_state.is_playing = true;
                 updated_state.updated_at = self.clock.now();
-                let previous_progress_position =
-                    previous_progress_position_for_source_transition(&previous_state, &updated_state);
-
                 let saved_state = self
-                    .persist_playback_state_update_with_previous_progress(
+                    .persist_source_transition(
                         &updated_state,
-                        observed_version,
-                        previous_progress_position,
+                        &previous_state,
+                        PlaybackHistoryTransition::AppendEntry {
+                            selected_by_user_id: actor_user_id,
+                        },
+                        reason,
+                        actor_user_id,
                         None,
+                        outbox_event_factory.as_ref(),
                     )
                     .await?;
                 self.write_playback_cache(&saved_state).await;
@@ -982,7 +1363,173 @@ impl PlaybackService {
                 );
 
                 Ok(Some(saved_state))
+            }
             },
+        )
+        .await
+    }
+
+    async fn play_history_entry_internal(
+        &self,
+        room_id: &RoomId,
+        user_id: UserId,
+        entry_id: i64,
+        reason: PlaybackChangeReason,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+    ) -> Result<RoomPlaybackState> {
+        self.permission_service
+            .check_permission(
+                room_id,
+                &user_id,
+                crate::models::RoomPermission::NAVIGATE_PLAYBACK,
+            )
+            .await?;
+        crate::service::optimistic_retry::retry_with_optimistic_lock(
+            Self::MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            Self::UPDATE_STATE_RETRY_EXHAUSTED,
+            || {
+                let outbox_event_factory = outbox_event_factory.clone();
+                async move {
+                    let mut conn = self.playback_repo.pool().acquire().await?;
+                    let entry = self
+                        .history_repo
+                        .get_on_conn(room_id, entry_id, &mut conn)
+                        .await?;
+                    drop(conn);
+                    self.ensure_history_entry_available(&entry).await?;
+                    let previous = match self.playback_repo.get(room_id).await? {
+                        Some(state) => state,
+                        None => self.playback_repo.create_or_get(room_id).await?,
+                    };
+                    let mut state = previous.clone();
+                    state.playing_media_id = entry.media_id;
+                    state.playing_playlist_id = entry.playlist_id;
+                    state.target.clone_from(&entry.target);
+                    state.position = entry.position_seconds;
+                    state.is_playing = true;
+                    state.updated_at = self.clock.now();
+                    let saved = self
+                        .persist_source_transition(
+                            &state,
+                            &previous,
+                            PlaybackHistoryTransition::SelectEntry(entry),
+                            reason,
+                            Some(user_id),
+                            None,
+                            outbox_event_factory.as_ref(),
+                        )
+                        .await?;
+                    self.write_playback_cache(&saved).await;
+                    self.broadcast_invalidation(room_id, &saved, "play_history_entry")
+                        .await;
+                    Ok(saved)
+                }
+            },
+        )
+        .await
+    }
+
+    pub async fn play_previous_for_user(
+        &self,
+        room_id: &RoomId,
+        user_id: UserId,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+    ) -> Result<Option<RoomPlaybackState>> {
+        self.permission_service
+            .check_permission(
+                room_id,
+                &user_id,
+                crate::models::RoomPermission::NAVIGATE_PLAYBACK,
+            )
+            .await?;
+        crate::service::optimistic_retry::retry_with_optimistic_lock(
+            Self::MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            Self::UPDATE_STATE_RETRY_EXHAUSTED,
+            || {
+                let outbox_event_factory = outbox_event_factory.clone();
+                async move {
+                    let state = match self.playback_repo.get(room_id).await? {
+                        Some(state) => state,
+                        None => self.playback_repo.create_or_get(room_id).await?,
+                    };
+                    let Some(cursor_entry) = self.history_repo.cursor_entry(room_id).await? else {
+                        return Ok(None);
+                    };
+                    let entry = if state.playing_media_id.is_none()
+                        && state.playing_playlist_id.is_none()
+                    {
+                        cursor_entry
+                    } else {
+                        let Some(previous) = self
+                            .history_repo
+                            .adjacent_entry(
+                                room_id,
+                                cursor_entry.id,
+                                PlaybackHistoryDirection::Previous,
+                            )
+                            .await?
+                        else {
+                            return Ok(None);
+                        };
+                        previous
+                    };
+                    self.ensure_history_entry_available(&entry).await?;
+                    let previous = state.clone();
+                    let mut updated = state;
+                    updated.playing_media_id = entry.media_id;
+                    updated.playing_playlist_id = entry.playlist_id;
+                    updated.target.clone_from(&entry.target);
+                    updated.position = entry.position_seconds;
+                    updated.is_playing = true;
+                    updated.updated_at = self.clock.now();
+                    let saved = self
+                        .persist_source_transition(
+                            &updated,
+                            &previous,
+                            PlaybackHistoryTransition::SelectEntry(entry),
+                            PlaybackChangeReason::Previous,
+                            Some(user_id),
+                            None,
+                            outbox_event_factory.as_ref(),
+                        )
+                        .await?;
+                    self.write_playback_cache(&saved).await;
+                    self.broadcast_invalidation(room_id, &saved, "play_previous")
+                        .await;
+                    Ok(Some(saved))
+                }
+            },
+        )
+        .await
+    }
+
+    pub async fn play_history_entry_for_user(
+        &self,
+        room_id: &RoomId,
+        user_id: UserId,
+        entry_id: i64,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+    ) -> Result<RoomPlaybackState> {
+        if entry_id <= 0 {
+            return Err(Error::InvalidInput(
+                "entry_id must be a positive integer".to_string(),
+            ));
+        }
+        self.permission_service
+            .check_permission(
+                room_id,
+                &user_id,
+                crate::models::RoomPermission::VIEW_PLAYBACK_HISTORY,
+            )
+            .await?;
+        self.play_history_entry_internal(
+            room_id,
+            user_id,
+            entry_id,
+            PlaybackChangeReason::HistoryEntry,
+            outbox_event_factory,
         )
         .await
     }
@@ -1329,6 +1876,8 @@ impl PlaybackService {
         let PlaybackSwitchCommand {
             room_id,
             actor_user_id,
+            recorded_actor_user_id,
+            recorded_actor_username,
             target,
             bypass_room_permissions,
             outbox_event_factory,
@@ -1339,7 +1888,7 @@ impl PlaybackService {
                 .check_permission(
                     &room_id,
                     &actor_user_id,
-                    crate::models::RoomPermission::CHANGE_CURRENT_MEDIA,
+                    crate::models::RoomPermission::NAVIGATE_PLAYBACK,
                 )
                 .await?;
         }
@@ -1412,20 +1961,47 @@ impl PlaybackService {
             }
         }
 
-        let state = self
-            .update_state_with_outbox(
-                room_id,
-                |state| {
-                    state.playing_media_id.clone_from(&target.media_id);
-                    state.playing_playlist_id.clone_from(&target.playlist_id);
-                    state.target.clone_from(&target.target);
+        let state = crate::service::optimistic_retry::retry_with_optimistic_lock(
+            Self::MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            Self::UPDATE_STATE_RETRY_EXHAUSTED,
+            || {
+                let target = target.clone();
+                let outbox_event_factory = outbox_event_factory.clone();
+                let recorded_actor_username = recorded_actor_username.clone();
+                async move {
+                    let previous = match self.playback_repo.get(&room_id).await? {
+                        Some(state) => state,
+                        None => self.playback_repo.create_or_get(&room_id).await?,
+                    };
+                    let mut state = previous.clone();
+                    state.playing_media_id = target.media_id;
+                    state.playing_playlist_id = target.playlist_id;
+                    state.target = target.target;
                     state.position = 0.0;
                     state.is_playing = true;
                     state.updated_at = self.clock.now();
-                },
-                outbox_event_factory,
-            )
-            .await?;
+                    let state = self
+                        .persist_source_transition(
+                            &state,
+                            &previous,
+                            PlaybackHistoryTransition::AppendEntry {
+                                selected_by_user_id: recorded_actor_user_id,
+                            },
+                            PlaybackChangeReason::Selected,
+                            recorded_actor_user_id,
+                            recorded_actor_username.as_deref(),
+                            outbox_event_factory.as_ref(),
+                        )
+                        .await?;
+                    self.write_playback_cache(&state).await;
+                    self.broadcast_invalidation(&room_id, &state, "switch")
+                        .await;
+                    Ok(state)
+                }
+            },
+        )
+        .await?;
 
         Ok(state)
     }
@@ -1442,7 +2018,7 @@ impl PlaybackService {
                 .check_permission(
                     &room_id,
                     &user_id,
-                    crate::models::RoomPermission::PLAY_CONTROL,
+                    crate::models::RoomPermission::CONTROL_PLAYBACK_STATE,
                 )
                 .await?;
         }
@@ -1533,20 +2109,13 @@ impl PlaybackService {
             speed,
         } = patch;
 
-        // Check permissions based on what's being updated
-        let mut required_permissions = Vec::new();
-        if playing.is_some() {
-            required_permissions.push(crate::models::RoomPermission::PLAY_CONTROL);
-        }
-        if position.is_some() {
-            required_permissions.push(crate::models::RoomPermission::PLAY_CONTROL);
-        }
-        if speed.is_some() {
-            required_permissions.push(crate::models::RoomPermission::CHANGE_PLAYBACK_RATE);
-        }
-        if !required_permissions.is_empty() && !bypass_permission {
+        if (playing.is_some() || position.is_some() || speed.is_some()) && !bypass_permission {
             self.permission_service
-                .check_permissions(&room_id, &actor_user_id, &required_permissions)
+                .check_permissions(
+                    &room_id,
+                    &actor_user_id,
+                    &[crate::models::RoomPermission::CONTROL_PLAYBACK_STATE],
+                )
                 .await?;
         }
 

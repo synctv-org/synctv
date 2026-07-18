@@ -11,11 +11,17 @@ use synctv_core::models::{
 
 #[test]
 fn test_media_resource_permissions_are_distinct_from_chat() {
-    assert_ne!(RoomPermission::CREATE_MEDIA_RESOURCE, RoomPermission::CHAT);
-    assert_ne!(RoomPermission::VIEW_MEDIA_RESOURCES, RoomPermission::CHAT);
     assert_ne!(
-        RoomPermission::REORDER_MEDIA_RESOURCES,
-        RoomPermission::CREATE_MEDIA_RESOURCE
+        RoomPermission::MANAGE_OWN_MEDIA,
+        RoomPermission::SEND_CHAT_MESSAGES
+    );
+    assert_ne!(
+        RoomPermission::VIEW_MEDIA,
+        RoomPermission::SEND_CHAT_MESSAGES
+    );
+    assert_ne!(
+        RoomPermission::REORDER_MEDIA,
+        RoomPermission::MANAGE_OWN_MEDIA
     );
 }
 
@@ -23,22 +29,22 @@ fn test_media_resource_permissions_are_distinct_from_chat() {
 fn test_member_default_can_view_create_and_edit_own_resources() {
     let member_default = RoomPermissionSet::default_member();
 
-    assert!(member_default.has(RoomPermission::VIEW_MEDIA_RESOURCES));
-    assert!(member_default.has(RoomPermission::CREATE_MEDIA_RESOURCE));
-    assert!(!member_default.has(RoomPermission::DELETE_MEDIA_RESOURCE_ANY));
-    assert!(!member_default.has(RoomPermission::REORDER_MEDIA_RESOURCES));
-    assert!(!member_default.has(RoomPermission::CLEAR_MEDIA_RESOURCES));
+    assert!(member_default.has(RoomPermission::VIEW_MEDIA));
+    assert!(member_default.has(RoomPermission::MANAGE_OWN_MEDIA));
+    assert!(!member_default.has(RoomPermission::DELETE_MEDIA));
+    assert!(!member_default.has(RoomPermission::REORDER_MEDIA));
+    assert!(!member_default.has(RoomPermission::CLEAR_MEDIA));
 }
 
 #[test]
 fn test_admin_default_can_manage_shared_resources() {
     let admin_default = RoomPermissionSet::default_admin();
 
-    assert!(admin_default.has(RoomPermission::VIEW_MEDIA_RESOURCES));
-    assert!(admin_default.has(RoomPermission::CREATE_MEDIA_RESOURCE));
-    assert!(admin_default.has(RoomPermission::DELETE_MEDIA_RESOURCE_ANY));
-    assert!(admin_default.has(RoomPermission::REORDER_MEDIA_RESOURCES));
-    assert!(admin_default.has(RoomPermission::CLEAR_MEDIA_RESOURCES));
+    assert!(admin_default.has(RoomPermission::VIEW_MEDIA));
+    assert!(admin_default.has(RoomPermission::MANAGE_OWN_MEDIA));
+    assert!(admin_default.has(RoomPermission::DELETE_MEDIA));
+    assert!(admin_default.has(RoomPermission::REORDER_MEDIA));
+    assert!(admin_default.has(RoomPermission::CLEAR_MEDIA));
     assert!(!admin_default.has(RoomPermission::DELETE_ROOM));
 }
 
@@ -46,27 +52,27 @@ fn test_admin_default_can_manage_shared_resources() {
 fn test_guest_cannot_receive_media_resource_permissions() {
     let guest_default = RoomPermissionSet::default_guest();
     let requested = RoomPermissionSet(
-        RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES
-            | RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
-            | RoomAdminPermissionBits::REORDER_MEDIA_RESOURCES,
+        RoomAdminPermissionBits::VIEW_MEDIA
+            | RoomAdminPermissionBits::MANAGE_OWN_MEDIA
+            | RoomAdminPermissionBits::REORDER_MEDIA,
     );
 
     let guest_assignable = RoomGuestPermissionBits::to_permissions(RoomGuestPermissionBits::ALL);
     let effective =
         RoomPermissionSet((guest_default.0 & guest_assignable) | (requested.0 & guest_assignable));
 
-    assert!(!effective.has(RoomPermission::VIEW_MEDIA_RESOURCES));
-    assert!(!effective.has(RoomPermission::CREATE_MEDIA_RESOURCE));
-    assert!(!effective.has(RoomPermission::REORDER_MEDIA_RESOURCES));
+    assert!(!effective.has(RoomPermission::VIEW_MEDIA));
+    assert!(!effective.has(RoomPermission::MANAGE_OWN_MEDIA));
+    assert!(!effective.has(RoomPermission::REORDER_MEDIA));
 }
 
 #[test]
 fn test_document_media_resource_permission_requirements() {
-    let view_media_or_playlist = RoomPermission::VIEW_MEDIA_RESOURCES;
-    let create_and_edit_own_media_or_playlist = RoomPermission::CREATE_MEDIA_RESOURCE;
-    let delete_foreign_media_or_playlist = RoomPermission::DELETE_MEDIA_RESOURCE_ANY;
-    let move_media_or_playlist = RoomPermission::REORDER_MEDIA_RESOURCES;
-    let clear_resource_queue = RoomPermission::CLEAR_MEDIA_RESOURCES;
+    let view_media_or_playlist = RoomPermission::VIEW_MEDIA;
+    let create_and_edit_own_media_or_playlist = RoomPermission::MANAGE_OWN_MEDIA;
+    let delete_foreign_media_or_playlist = RoomPermission::DELETE_MEDIA;
+    let move_media_or_playlist = RoomPermission::REORDER_MEDIA;
+    let clear_resource_queue = RoomPermission::CLEAR_MEDIA;
 
     assert_ne!(
         view_media_or_playlist,
@@ -81,9 +87,9 @@ fn test_document_media_resource_permission_requirements() {
         delete_foreign_media_or_playlist
     );
     let manage_media_resources = RoomPermissionSet::empty()
-        | RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY
-        | RoomAdminPermissionBits::REORDER_MEDIA_RESOURCES
-        | RoomAdminPermissionBits::CLEAR_MEDIA_RESOURCES;
+        | RoomAdminPermissionBits::DELETE_MEDIA
+        | RoomAdminPermissionBits::REORDER_MEDIA
+        | RoomAdminPermissionBits::CLEAR_MEDIA;
     assert!(manage_media_resources.has(delete_foreign_media_or_playlist));
     assert!(manage_media_resources.has(move_media_or_playlist));
     assert!(manage_media_resources.has(clear_resource_queue));

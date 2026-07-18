@@ -164,7 +164,7 @@ impl RoomService {
             .check_permission_no_cache(
                 &room_id,
                 &actor_id,
-                crate::models::RoomPermission::ADD_MEMBER,
+                crate::models::RoomPermission::ADD_MEMBERS,
             )
             .await?;
 
@@ -175,7 +175,7 @@ impl RoomService {
             &mut tx,
             &room_id,
             &actor_id,
-            crate::models::RoomPermission::ADD_MEMBER,
+            crate::models::RoomPermission::ADD_MEMBERS,
         )
         .await?;
         let created = self

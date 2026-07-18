@@ -89,7 +89,7 @@ impl MediaService {
             .check_permission_no_cache(
                 &room_id,
                 &user_id,
-                crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+                crate::models::RoomPermission::MANAGE_OWN_MEDIA,
             )
             .await?;
 
@@ -133,7 +133,7 @@ impl MediaService {
             .check_permission_no_cache(
                 &room_id,
                 &user_id,
-                crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+                crate::models::RoomPermission::MANAGE_OWN_MEDIA,
             )
             .await?;
 
@@ -297,7 +297,7 @@ impl MediaService {
             .check_permission_no_cache(
                 &room_id,
                 &user_id,
-                crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+                crate::models::RoomPermission::MANAGE_OWN_MEDIA,
             )
             .await?;
 
@@ -408,7 +408,7 @@ impl MediaService {
             .check_permission_no_cache(
                 &room_id,
                 &user_id,
-                crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+                crate::models::RoomPermission::MANAGE_OWN_MEDIA,
             )
             .await?;
 
@@ -498,7 +498,7 @@ impl MediaService {
             .check_permission_no_cache(
                 &room_id,
                 &user_id,
-                crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+                crate::models::RoomPermission::MANAGE_OWN_MEDIA,
             )
             .await?;
         let old_reference = if let Some(reference_id) = current_media.cover_file_reference_id {
@@ -544,7 +544,7 @@ impl MediaService {
             .check_permission_no_cache(
                 &room_id,
                 &user_id,
-                crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+                crate::models::RoomPermission::MANAGE_OWN_MEDIA,
             )
             .await?;
         let old_reference = if let Some(reference_id) = current_media.thumbnail_file_reference_id {

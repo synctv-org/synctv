@@ -28,8 +28,8 @@ description: 管理房间生命周期、成员角色、成员权限、房间设�
 
 | 目标 | 动作 | 注意 |
 | --- | --- | --- |
-| 临时禁言 | 移除成员 `send_chat` | 比关闭全房间聊天影响小 |
-| 允许控制播放 | 增加 `play_control` | 切换媒体还需要 `change_current_media` |
+| 临时禁言 | 移除成员 `send_chat_messages` | 比关闭全房间聊天影响小 |
+| 允许控制播放 | 增加 `control_playback_state` | 切换媒体还需要 `navigate_playback` |
 | 清理扰乱成员 | kick 成员 | 房间封禁不等于平台封禁 |
 | 调整长期职责 | 修改房间角色或默认权限 | 不要长期堆叠大量个人覆盖 |
 

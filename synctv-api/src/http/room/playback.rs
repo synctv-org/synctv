@@ -20,8 +20,9 @@ use crate::http::websocket::RealtimeTransportFormat;
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
-    GetPlaybackResponse, PlaybackState, StartPlaybackRequest, StartPlaybackResponse,
-    StopPlaybackRequest, StopPlaybackResponse, UpdatePlaybackStateRequest, WatchPlaybackRequest,
+    GetPlaybackResponse, ListPlaybackHistoryRequest, ListPlaybackHistoryResponse,
+    PlayHistoryEntryRequest, PlayNextRequest, PlayPreviousRequest, PlaybackState,
+    StartPlaybackRequest, StopPlaybackRequest, UpdatePlaybackStateRequest, WatchPlaybackRequest,
     WatchPlaybackStateRequest,
 };
 use synctv_proto::playback_provider::bilibili::WatchBilibiliLiveDanmakuRequest;
@@ -37,7 +38,7 @@ use synctv_proto::playback_provider::bilibili::WatchBilibiliLiveDanmakuRequest;
         ),
         request_body = StartPlaybackRequest,
         responses(
-            (status = 200, description = "Playback started", body = StartPlaybackResponse),
+            (status = 200, description = "Current playback state", body = PlaybackState),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -51,7 +52,7 @@ pub async fn start_playback(
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
     Json(req): Json<StartPlaybackRequest>,
-) -> AppResult<Json<StartPlaybackResponse>> {
+) -> AppResult<Json<PlaybackState>> {
     let room_id = path.room_id;
     let response = execute_user_endpoint(
         &state,
@@ -80,7 +81,7 @@ pub async fn start_playback(
         ),
         request_body = StopPlaybackRequest,
         responses(
-            (status = 200, description = "Playback stopped", body = StopPlaybackResponse),
+            (status = 200, description = "Current playback state", body = PlaybackState),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -94,7 +95,7 @@ pub async fn stop_playback(
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
     Json(req): Json<StopPlaybackRequest>,
-) -> AppResult<Json<StopPlaybackResponse>> {
+) -> AppResult<Json<PlaybackState>> {
     let room_id = path.room_id;
     let response = execute_user_endpoint(
         &state,
@@ -109,6 +110,147 @@ pub async fn stop_playback(
     )
     .await?;
 
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{roomId}/playback/next",
+        tag = "Room",
+        params(("roomId" = String, Path, description = "Room ID")),
+        request_body = PlayNextRequest,
+        responses((status = 200, description = "Current playback state", body = PlaybackState)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub async fn play_next(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<synctv_proto::client::RoomPathRequest>,
+    Json(_req): Json<PlayNextRequest>,
+) -> AppResult<Json<PlaybackState>> {
+    let room_id = path.room_id;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomPlayback,
+        move |client_api, authenticated| async move {
+            client_api.play_next(&authenticated.user_id, &room_id).await
+        },
+    )
+    .await?;
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{roomId}/playback/previous",
+        tag = "Room",
+        params(("roomId" = String, Path, description = "Room ID")),
+        request_body = PlayPreviousRequest,
+        responses((status = 200, description = "Current playback state", body = PlaybackState)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub async fn play_previous(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<synctv_proto::client::RoomPathRequest>,
+    Json(_req): Json<PlayPreviousRequest>,
+) -> AppResult<Json<PlaybackState>> {
+    let room_id = path.room_id;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomPlayback,
+        move |client_api, authenticated| async move {
+            client_api
+                .play_previous(&authenticated.user_id, &room_id)
+                .await
+        },
+    )
+    .await?;
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{roomId}/playback/history",
+        tag = "Room",
+        params(
+            ("roomId" = String, Path, description = "Room ID"),
+            ("beforeEntryId" = Option<String>, Query, description = "History pagination cursor"),
+            ("limit" = Option<i32>, Query, description = "Page size, up to 100")
+        ),
+        responses((status = 200, description = "Playback history", body = ListPlaybackHistoryResponse)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub async fn list_playback_history(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<synctv_proto::client::RoomPathRequest>,
+    ProtoQuery(req): ProtoQuery<ListPlaybackHistoryRequest>,
+) -> AppResult<Json<ListPlaybackHistoryResponse>> {
+    let room_id = path.room_id;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomPlayback,
+        move |client_api, authenticated| async move {
+            client_api
+                .list_playback_history(&authenticated.user_id, &room_id, req)
+                .await
+        },
+    )
+    .await?;
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{roomId}/playback/history/{entryId}/play",
+        tag = "Room",
+        params(
+            ("roomId" = String, Path, description = "Room ID"),
+            ("entryId" = String, Path, description = "Playback history entry ID")
+        ),
+        responses((status = 200, description = "Current playback state", body = PlaybackState)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub async fn play_history_entry(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path((room_id, entry_id)): Path<(String, String)>,
+) -> AppResult<Json<PlaybackState>> {
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomPlayback,
+        move |client_api, authenticated| async move {
+            client_api
+                .play_history_entry(
+                    &authenticated.user_id,
+                    &room_id,
+                    PlayHistoryEntryRequest { entry_id },
+                )
+                .await
+        },
+    )
+    .await?;
     Ok(Json(response))
 }
 

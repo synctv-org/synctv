@@ -3,13 +3,13 @@ title: Chat
 description: How users use room chat and identify mute, disabled chat, or Realtime problems.
 ---
 
-Chat is a room realtime feature. Sending messages depends on room settings and the user's `send_chat` permission.
+Chat is a room realtime feature. Sending messages depends on room settings and the user's `send_chat_messages` permission.
 
 ## Common States
 
 | Symptom | Possible cause | What to do |
 | --- | --- | --- |
-| Can read but not send | Chat disabled, muted, or missing `send_chat` | Contact a room administrator |
+| Can read but not send | Chat disabled, muted, or missing `send_chat_messages` | Contact a room administrator |
 | Others do not see a sent message | Realtime disconnected, rate limited, or room state issue | Re-enter the room and record the time |
 | Only you miss new messages | Browser network, proxy, or WebSocket issue | Refresh or change network |
 | Everyone misses messages | Server Realtime, Ingress, or cluster event issue | Ask an administrator to inspect runtime state |

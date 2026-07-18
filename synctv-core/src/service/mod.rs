@@ -3,7 +3,6 @@ pub(crate) mod audit_partition_manager;
 pub(crate) mod auth;
 pub(crate) mod ban_record;
 pub(crate) mod chat;
-pub(crate) mod chat_partition_manager;
 pub(crate) mod cleanup;
 pub(crate) mod cleanup_ops;
 pub(crate) mod content_filter;
@@ -49,6 +48,7 @@ pub(crate) mod slice_cache_management;
 mod source_config;
 pub(crate) mod stun_server;
 pub(crate) mod system_stats;
+pub(crate) mod time_partition_manager;
 pub(crate) mod user;
 pub(crate) mod user_notification;
 pub(crate) mod ws_ticket;
@@ -75,9 +75,6 @@ pub use ban_record::{
     BanRecordListQuery, BanRecordPage, BanRecordRow, BanRecordService, BanRecordTargetType,
 };
 pub use chat::{ChatDependencies, ChatRuntime, ChatService};
-pub use chat_partition_manager::{
-    ensure_chat_partitions_on_startup, ChatPartitionHealth, ChatPartitionManager,
-};
 pub use cleanup::{CleanupConfig, CleanupResult, CleanupService, CleanupServiceOptions};
 pub use content_filter::{ContentFilter, ContentFilterError};
 pub use content_report::{
@@ -116,12 +113,12 @@ pub use global_settings::{
     OAuth2LogtoProviderConfig, OAuth2OidcProviderConfig, OAuth2ProviderConfig,
     OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig, OAuth2ProvidersSetting,
     OAuth2RuntimeSettings, OAuth2SignupPolicy, PermissionRuntimeSettings, PermissionSet,
-    ProxyRuntimeSettings, PublicSettings, RoomCreationApprovalRequiredSetting,
-    RoomCreationEnabledSetting, RoomCreationPasswordPolicySetting, RoomCreationRuntimeSettings,
-    RoomDefaultsRuntimeSettings, RoomPasswordPolicy, RtmpRuntimeSettings,
-    RuntimeEmailConfigProvider, RuntimeSettings, RuntimeSettingsStore, RuntimeSettingsUpdateMask,
-    ServerIdentityIdSetting, ServerNameSetting, ServerRuntimeSettings, TsDisguisedAsPngSetting,
-    UserRuntimeSettings, WebRtcRuntimeSettings,
+    PlaybackHistoryRuntimeSettings, ProxyRuntimeSettings, PublicSettings,
+    RoomCreationApprovalRequiredSetting, RoomCreationEnabledSetting,
+    RoomCreationPasswordPolicySetting, RoomCreationRuntimeSettings, RoomDefaultsRuntimeSettings,
+    RoomPasswordPolicy, RtmpRuntimeSettings, RuntimeEmailConfigProvider, RuntimeSettings,
+    RuntimeSettingsStore, RuntimeSettingsUpdateMask, ServerIdentityIdSetting, ServerNameSetting,
+    ServerRuntimeSettings, TsDisguisedAsPngSetting, UserRuntimeSettings, WebRtcRuntimeSettings,
 };
 pub use media::{
     AddMediaRequest, BackendPlaybackRequest, CreateMediaCoverUploadSession,
@@ -255,6 +252,9 @@ pub use stun_server::{
     StunServerConfig, WebRtcRuntimeMode, WebRtcRuntimeStatus,
 };
 pub use system_stats::SystemStatsService;
+pub use time_partition_manager::{
+    ensure_time_partitions_on_startup, TimePartitionHealth, TimePartitionManager,
+};
 pub use user::{
     local_mfa_session_store, local_opaque_login_session_store,
     local_opaque_registration_session_store, local_sensitive_verification_session_store,

@@ -8,6 +8,7 @@ use super::RoomService;
 #[derive(Debug, Clone)]
 pub struct AuthorizedAdminActor {
     user_id: UserId,
+    persistent_user_id: Option<UserId>,
     username: String,
 }
 
@@ -19,12 +20,27 @@ impl AuthorizedAdminActor {
             ));
         }
 
-        Ok(Self { user_id, username })
+        Ok(Self {
+            user_id,
+            persistent_user_id: Some(user_id),
+            username,
+        })
+    }
+
+    pub fn new_management(user_id: UserId, username: String, role: UserRole) -> Result<Self> {
+        let mut actor = Self::new(user_id, username, role)?;
+        actor.persistent_user_id = None;
+        Ok(actor)
     }
 
     #[must_use]
     pub fn user_id(&self) -> &UserId {
         &self.user_id
+    }
+
+    #[must_use]
+    pub const fn persistent_user_id(&self) -> Option<UserId> {
+        self.persistent_user_id
     }
 
     #[must_use]

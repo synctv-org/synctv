@@ -94,58 +94,54 @@ impl PermissionSet {
 }
 
 const NAMED_PERMISSIONS: &[(&str, u64)] = &[
-    ("chat", RoomAdminPermissionBits::CHAT),
     (
-        "create_media_resource",
-        RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
+        "send_chat_messages",
+        RoomAdminPermissionBits::SEND_CHAT_MESSAGES,
     ),
     (
-        "view_media_resources",
-        RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES,
+        "manage_own_media",
+        RoomAdminPermissionBits::MANAGE_OWN_MEDIA,
     ),
-    (
-        "view_member_list",
-        RoomAdminPermissionBits::VIEW_MEMBER_LIST,
-    ),
+    ("view_media", RoomAdminPermissionBits::VIEW_MEDIA),
+    ("view_members", RoomAdminPermissionBits::VIEW_MEMBERS),
     (
         "view_chat_history",
         RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
     ),
     ("use_webrtc", RoomAdminPermissionBits::USE_WEBRTC),
+    ("delete_media", RoomAdminPermissionBits::DELETE_MEDIA),
+    ("reorder_media", RoomAdminPermissionBits::REORDER_MEDIA),
+    ("clear_media", RoomAdminPermissionBits::CLEAR_MEDIA),
     (
-        "delete_media_resource_any",
-        RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY,
+        "manage_live_streams",
+        RoomAdminPermissionBits::MANAGE_LIVE_STREAMS,
     ),
     (
-        "reorder_media_resources",
-        RoomAdminPermissionBits::REORDER_MEDIA_RESOURCES,
+        "control_playback_state",
+        RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE,
     ),
     (
-        "clear_media_resources",
-        RoomAdminPermissionBits::CLEAR_MEDIA_RESOURCES,
-    ),
-    ("live_control", RoomAdminPermissionBits::LIVE_CONTROL),
-    ("play_control", RoomAdminPermissionBits::PLAY_CONTROL),
-    (
-        "change_current_media",
-        RoomAdminPermissionBits::CHANGE_CURRENT_MEDIA,
+        "navigate_playback",
+        RoomAdminPermissionBits::NAVIGATE_PLAYBACK,
     ),
     (
-        "change_playback_rate",
-        RoomAdminPermissionBits::CHANGE_PLAYBACK_RATE,
+        "review_join_requests",
+        RoomAdminPermissionBits::REVIEW_JOIN_REQUESTS,
     ),
-    ("approve_member", RoomAdminPermissionBits::APPROVE_MEMBER),
-    ("kick_member", RoomAdminPermissionBits::KICK_MEMBER),
+    ("remove_members", RoomAdminPermissionBits::REMOVE_MEMBERS),
     (
-        "set_member_permissions",
-        RoomAdminPermissionBits::SET_MEMBER_PERMISSIONS,
+        "manage_member_permissions",
+        RoomAdminPermissionBits::MANAGE_MEMBER_PERMISSIONS,
     ),
-    ("add_member", RoomAdminPermissionBits::ADD_MEMBER),
+    ("add_members", RoomAdminPermissionBits::ADD_MEMBERS),
     (
-        "set_room_settings",
-        RoomAdminPermissionBits::SET_ROOM_SETTINGS,
+        "manage_room_settings",
+        RoomAdminPermissionBits::MANAGE_ROOM_SETTINGS,
     ),
-    ("delete_chat", RoomAdminPermissionBits::DELETE_CHAT),
+    (
+        "delete_chat_messages",
+        RoomAdminPermissionBits::DELETE_CHAT_MESSAGES,
+    ),
     ("delete_room", RoomAdminPermissionBits::DELETE_ROOM),
 ];
 
@@ -195,18 +191,18 @@ mod tests {
 
     #[test]
     fn permission_set_accepts_exact_canonical_names() {
-        let permissions = PermissionSet::from_str(r#"["live_control","view_member_list"]"#)
+        let permissions = PermissionSet::from_str(r#"["manage_live_streams","view_members"]"#)
             .expect("canonical permission names should parse");
 
         assert_eq!(
             permissions.bits().0,
-            RoomAdminPermissionBits::LIVE_CONTROL | RoomAdminPermissionBits::VIEW_MEMBER_LIST
+            RoomAdminPermissionBits::MANAGE_LIVE_STREAMS | RoomAdminPermissionBits::VIEW_MEMBERS
         );
     }
 
     #[test]
     fn permission_set_rejects_case_and_separator_aliases() {
-        for raw in [r#"["LIVE_CONTROL"]"#, r#"["live-control"]"#] {
+        for raw in [r#"["MANAGE_LIVE_STREAMS"]"#, r#"["live-control"]"#] {
             assert!(
                 PermissionSet::from_str(raw).is_err(),
                 "{raw} should be rejected"
@@ -568,6 +564,7 @@ pub struct RuntimeSettings {
     pub email: EmailRuntimeSettings,
     pub webrtc: WebRtcRuntimeSettings,
     pub chat: ChatRuntimeSettings,
+    pub playback_history: PlaybackHistoryRuntimeSettings,
     pub cors: CorsRuntimeSettings,
 }
 
@@ -593,6 +590,7 @@ pub struct RuntimeSettingsUpdateMask {
     pub email: EmailRuntimeSettingsUpdateMask,
     pub webrtc: WebRtcRuntimeSettingsUpdateMask,
     pub chat: ChatRuntimeSettingsUpdateMask,
+    pub playback_history: PlaybackHistoryRuntimeSettingsUpdateMask,
     pub cors: CorsRuntimeSettingsUpdateMask,
 }
 
@@ -611,6 +609,7 @@ impl RuntimeSettingsUpdateMask {
             email: EmailRuntimeSettingsUpdateMask::all(),
             webrtc: WebRtcRuntimeSettingsUpdateMask::all(),
             chat: ChatRuntimeSettingsUpdateMask::all(),
+            playback_history: PlaybackHistoryRuntimeSettingsUpdateMask::all(),
             cors: CorsRuntimeSettingsUpdateMask::all(),
         }
     }
@@ -628,6 +627,7 @@ impl RuntimeSettingsUpdateMask {
             && self.email.is_empty()
             && self.webrtc.is_empty()
             && self.chat.is_empty()
+            && self.playback_history.is_empty()
             && self.cors.is_empty()
     }
 }
@@ -891,6 +891,27 @@ pub struct ChatRuntimeSettingsUpdateMask {
     pub message_retention_days: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PlaybackHistoryRuntimeSettingsUpdateMask {
+    pub retention_days: bool,
+    pub max_entries_per_room: bool,
+}
+
+impl PlaybackHistoryRuntimeSettingsUpdateMask {
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            retention_days: true,
+            max_entries_per_room: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        !self.retention_days && !self.max_entries_per_room
+    }
+}
+
 impl ChatRuntimeSettingsUpdateMask {
     #[must_use]
     pub const fn all() -> Self {
@@ -1016,6 +1037,12 @@ pub struct ChatRuntimeSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaybackHistoryRuntimeSettings {
+    pub retention_days: u32,
+    pub max_entries_per_room: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CorsRuntimeSettings {
     pub allowed_origins: CorsAllowedOrigins,
 }
@@ -1035,6 +1062,7 @@ fn validate_all_runtime_settings(
     validate_email_settings(&settings.email)?;
     validate_webrtc_settings(&settings.webrtc)?;
     validate_chat_settings(&settings.chat)?;
+    validate_playback_history_settings(&settings.playback_history)?;
     validate_cors_settings(&settings.cors)
 }
 
@@ -1192,6 +1220,22 @@ fn validate_chat_settings(settings: &ChatRuntimeSettings) -> crate::Result<()> {
     if !(1..=3650).contains(&settings.message_retention_days) {
         return Err(crate::Error::InvalidInput(
             "chat.message_retention_days must be between 1 and 3650".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_playback_history_settings(
+    settings: &PlaybackHistoryRuntimeSettings,
+) -> crate::Result<()> {
+    if settings.retention_days > 3_650 {
+        return Err(crate::Error::InvalidInput(
+            "playback_history.retention_days must be between 0 and 3650".to_string(),
+        ));
+    }
+    if !(0..=100_000).contains(&settings.max_entries_per_room) {
+        return Err(crate::Error::InvalidInput(
+            "playback_history.max_entries_per_room must be between 0 and 100000".to_string(),
         ));
     }
     Ok(())

@@ -477,25 +477,29 @@ mod tests {
     #[test]
     fn test_admin_permissions_with_added() {
         let settings = RoomSettings {
-            admin_added_permissions: AdminAddedPermissions(RoomAdminPermissionBits::PLAY_CONTROL),
+            admin_added_permissions: AdminAddedPermissions(
+                RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE,
+            ),
             ..Default::default()
         };
         let global = RoomPermissionSet::default_member();
         let result = settings.admin_permissions(global);
-        assert!(result.has(crate::models::RoomPermission::PLAY_CONTROL));
-        assert!(result.has(crate::models::RoomPermission::CHAT));
+        assert!(result.has(crate::models::RoomPermission::CONTROL_PLAYBACK_STATE));
+        assert!(result.has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
     }
 
     #[test]
     fn test_member_permissions_with_removed() {
         let settings = RoomSettings {
-            member_removed_permissions: MemberRemovedPermissions(RoomMemberPermissionBits::CHAT),
+            member_removed_permissions: MemberRemovedPermissions(
+                RoomMemberPermissionBits::SEND_CHAT_MESSAGES,
+            ),
             ..Default::default()
         };
         let global = RoomPermissionSet::default_member();
         let result = settings.member_permissions(global);
-        assert!(!result.has(crate::models::RoomPermission::CHAT));
-        assert!(result.has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE));
+        assert!(!result.has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
+        assert!(result.has(crate::models::RoomPermission::MANAGE_OWN_MEDIA));
     }
 
     #[test]
@@ -503,19 +507,19 @@ mod tests {
         let settings = RoomSettings {
             // Give guests additional guest-level abilities.
             guest_added_permissions: GuestAddedPermissions(
-                RoomGuestPermissionBits::USE_WEBRTC | RoomGuestPermissionBits::VIEW_MEMBER_LIST,
+                RoomGuestPermissionBits::USE_WEBRTC | RoomGuestPermissionBits::VIEW_MEMBERS,
             ),
             // But remove one of them.
             guest_removed_permissions: GuestRemovedPermissions(
-                RoomGuestPermissionBits::VIEW_MEMBER_LIST,
+                RoomGuestPermissionBits::VIEW_MEMBERS,
             ),
             ..Default::default()
         };
         let global = RoomPermissionSet::default_guest();
         let result = settings.guest_permissions(global);
         assert!(result.has(crate::models::RoomPermission::USE_WEBRTC));
-        assert!(!result.has(crate::models::RoomPermission::VIEW_MEMBER_LIST));
-        assert!(!result.has(crate::models::RoomPermission::VIEW_MEDIA_RESOURCES));
+        assert!(!result.has(crate::models::RoomPermission::VIEW_MEMBERS));
+        assert!(!result.has(crate::models::RoomPermission::VIEW_MEDIA));
     }
 
     #[test]

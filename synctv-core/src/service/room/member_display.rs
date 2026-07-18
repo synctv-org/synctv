@@ -130,7 +130,7 @@ impl RoomService {
                 &mut tx,
                 &room_id,
                 &actor_id,
-                crate::models::RoomPermission::SET_MEMBER_PERMISSIONS,
+                crate::models::RoomPermission::MANAGE_MEMBER_PERMISSIONS,
             )
             .await?;
         }

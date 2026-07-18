@@ -1955,11 +1955,7 @@ impl ClientApiImpl {
 
         // Check permission
         self.room_service
-            .check_permission(
-                &rid,
-                &uid,
-                synctv_core::models::RoomPermission::CLEAR_MEDIA_RESOURCES,
-            )
+            .check_permission(&rid, &uid, synctv_core::models::RoomPermission::CLEAR_MEDIA)
             .await
             .map_err(ApiError::from)?;
 
@@ -2102,7 +2098,7 @@ impl ClientApiImpl {
             .check_permission(
                 &rid,
                 &uid,
-                synctv_core::models::RoomPermission::REORDER_MEDIA_RESOURCES,
+                synctv_core::models::RoomPermission::REORDER_MEDIA,
             )
             .await
             .map_err(Self::map_room_access_error)?;
@@ -2172,11 +2168,8 @@ impl ClientApiImpl {
         req: synctv_proto::client::ListPlaylistItemsRequest,
     ) -> Result<synctv_proto::client::ListPlaylistItemsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        self.require_room_permission(
-            actor,
-            synctv_core::models::RoomPermission::VIEW_MEDIA_RESOURCES,
-        )
-        .await?;
+        self.require_room_permission(actor, synctv_core::models::RoomPermission::VIEW_MEDIA)
+            .await?;
         let rid = actor.room_id();
         let viewer_id = actor.user_id();
         let target = provider_target_from_proto(req.target.clone())?;
@@ -2982,11 +2975,8 @@ impl ClientApiImpl {
     ) -> Result<synctv_proto::client::Media, ApiError> {
         let rid = actor.room_id();
         let mid = crate::impls::parse_media_id_param(media_id, "media_id", &self.public_id_codec)?;
-        self.require_room_permission(
-            actor,
-            synctv_core::models::RoomPermission::VIEW_MEDIA_RESOURCES,
-        )
-        .await?;
+        self.require_room_permission(actor, synctv_core::models::RoomPermission::VIEW_MEDIA)
+            .await?;
 
         // Direct lookup by ID instead of loading the entire playlist.
         let media = self

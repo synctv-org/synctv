@@ -54,8 +54,8 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 | 目标 | 动作 | 注意 |
 | --- | --- | --- |
-| 临时禁言 | 在成员权限里移除 `send_chat` | 比修改全房间聊天设置影响更小 |
-| 给某人控制播放 | 给成员增加 `play_control` | 如果还要切媒体，加 `change_current_media` |
+| 临时禁言 | 在成员权限里移除 `send_chat_messages` | 比修改全房间聊天设置影响更小 |
+| 给某人控制播放 | 给成员增加 `control_playback_state` | 如果还要切媒体，加 `navigate_playback` |
 | 清理扰乱成员 | kick 成员 | 踢出后会进入临时重新加入冷却 |
 | 调整长期职责 | 修改房间角色或默认权限 | 长期不要依赖大量个人覆盖 |
 

@@ -329,7 +329,7 @@ async fn test_member_cannot_change_settings() {
         .await
         .checked("Failed to add member");
 
-    // Member does not have SET_ROOM_SETTINGS permission by default
+    // Member does not have MANAGE_ROOM_SETTINGS permission by default
     let permission_service = PermissionService::new(
         member_repo.clone(),
         RoomRepository::new(pool.clone()),
@@ -345,8 +345,8 @@ async fn test_member_cannot_change_settings() {
         .checked("Failed to get permissions");
 
     assert!(
-        !member_perms.has(RoomPermission::SET_ROOM_SETTINGS),
-        "Member should not have SET_ROOM_SETTINGS permission"
+        !member_perms.has(RoomPermission::MANAGE_ROOM_SETTINGS),
+        "Member should not have MANAGE_ROOM_SETTINGS permission"
     );
 }
 
@@ -546,11 +546,11 @@ async fn test_creator_role_not_global() {
 
     // Room A permissions should be higher (Creator has all admin/member permissions)
     assert!(
-        perms_a.has(RoomPermission::KICK_MEMBER),
+        perms_a.has(RoomPermission::REMOVE_MEMBERS),
         "Creator should have admin permissions in Room A"
     );
     assert!(
-        !perms_b.has(RoomPermission::KICK_MEMBER),
+        !perms_b.has(RoomPermission::REMOVE_MEMBERS),
         "Member should not have admin permissions in Room B"
     );
 }
@@ -674,7 +674,7 @@ async fn test_grant_permission_requires_permission() {
             room.id,
             grantor.id,
             target.id,
-            RoomMemberPermissionBits::CHAT,
+            RoomMemberPermissionBits::SEND_CHAT_MESSAGES,
         )
         .await;
 
@@ -818,7 +818,7 @@ async fn test_revoked_permission_denied() {
             room.id,
             owner_user_id,
             member_user.id,
-            RoomMemberPermissionBits::CHAT,
+            RoomMemberPermissionBits::SEND_CHAT_MESSAGES,
         )
         .await
         .checked("Failed to revoke permission");
@@ -839,7 +839,7 @@ async fn test_revoked_permission_denied() {
         .checked("Failed to get permissions");
 
     assert!(
-        !effective.has(RoomPermission::CHAT),
+        !effective.has(RoomPermission::SEND_CHAT_MESSAGES),
         "CHAT should be denied after revocation"
     );
 }
@@ -862,7 +862,7 @@ async fn test_member_without_chat_cannot_send() {
         .checked("Failed to create muted user");
     let mut muted_member = RoomMember::new(room.id, muted_user.id, RoomRole::Member);
     // Revoke CHAT
-    muted_member.removed_permissions = RoomMemberPermissionBits::CHAT;
+    muted_member.removed_permissions = RoomMemberPermissionBits::SEND_CHAT_MESSAGES;
     member_repo
         .add(&muted_member)
         .await
@@ -884,7 +884,7 @@ async fn test_member_without_chat_cannot_send() {
         .checked("Failed to get permissions");
 
     assert!(
-        !perms.has(RoomPermission::CHAT),
+        !perms.has(RoomPermission::SEND_CHAT_MESSAGES),
         "Muted user should not have CHAT"
     );
 }

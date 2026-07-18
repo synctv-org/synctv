@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT state.room_id AS \"room_id!: RoomId\",\n                state.playing_media_id AS \"playing_media_id?: MediaId\",\n                state.playing_playlist_id AS \"playing_playlist_id?: PlaylistId\",\n                state.target AS \"target?: synctv_core::models::ProviderTarget\",\n                state.current_progress_id AS \"current_progress_id?\",\n                COALESCE(progress.\"position\", 0.0) AS \"position!\",\n                state.speed AS \"speed!\",\n                state.is_playing AS \"is_playing!\",\n                state.playback_generation AS \"playback_generation!\",\n                state.updated_at AS \"updated_at!\",\n                state.version AS \"version!\"\n         FROM room_playback_state state\n         LEFT JOIN room_playback_progress progress ON progress.id = state.current_progress_id\n         WHERE state.room_id = $1",
+  "query": "SELECT state.room_id AS \"room_id!: RoomId\",\n                state.playing_media_id AS \"playing_media_id?: MediaId\",\n                state.playing_playlist_id AS \"playing_playlist_id?: PlaylistId\",\n                state.target AS \"target?: synctv_core::models::ProviderTarget\",\n                state.current_progress_id AS \"current_progress_id?\",\n                state.history_cursor_id AS \"history_cursor_id?\",\n                COALESCE(progress.\"position\", 0.0) AS \"position!\",\n                state.speed AS \"speed!\",\n                state.is_playing AS \"is_playing!\",\n                state.playback_generation AS \"playback_generation!\",\n                state.updated_at AS \"updated_at!\",\n                state.version AS \"version!\"\n         FROM room_playback_state state\n         LEFT JOIN room_playback_progress progress ON progress.id = state.current_progress_id\n         WHERE state.room_id = $1",
   "describe": {
     "columns": [
       {
@@ -60,12 +60,23 @@
       },
       {
         "ordinal": 5,
+        "name": "history_cursor_id?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "history_cursor_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "position!",
         "type_info": "Float8",
         "origin": "Expression"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "speed!",
         "type_info": "Float8",
         "origin": {
@@ -76,7 +87,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "is_playing!",
         "type_info": "Bool",
         "origin": {
@@ -87,7 +98,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "playback_generation!",
         "type_info": "Int8",
         "origin": {
@@ -98,7 +109,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "updated_at!",
         "type_info": "Timestamptz",
         "origin": {
@@ -109,7 +120,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "version!",
         "type_info": "Int8",
         "origin": {
@@ -131,6 +142,7 @@
       true,
       true,
       true,
+      true,
       null,
       false,
       false,
@@ -139,5 +151,5 @@
       false
     ]
   },
-  "hash": "ede61639d71b73c1a901438440c74ef32412ada70fa07582331606cfb856a4ac"
+  "hash": "2c4c63b5595b50bb879f79e4ddd2a9fd197a1997341d961cc730e4c0bc70807d"
 }

@@ -33,7 +33,7 @@ impl RoomService {
             .check_permission(
                 &room_id,
                 &user_id,
-                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+                crate::models::RoomPermission::MANAGE_ROOM_SETTINGS,
             )
             .await?;
 
@@ -154,11 +154,11 @@ impl RoomService {
         room_id: &RoomId,
         settings: &RoomSettings,
     ) -> Result<crate::cache::RoomSettingsSnapshot> {
-        self.set_room_settings_with_outbox(room_id, settings, None)
+        self.manage_room_settings_with_outbox(room_id, settings, None)
             .await
     }
 
-    pub async fn set_room_settings_with_outbox(
+    pub async fn manage_room_settings_with_outbox(
         &self,
         room_id: &RoomId,
         settings: &RoomSettings,
@@ -232,7 +232,7 @@ impl RoomService {
                         &domain,
                         reservation.as_ref(),
                         new_version,
-                        "set_room_settings_with_outbox",
+                        "manage_room_settings_with_outbox",
                     )
                     .await;
                     Ok((current, settings.clone(), new_version))
@@ -261,7 +261,7 @@ impl RoomService {
             .check_permission(
                 &room_id,
                 &user_id,
-                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+                crate::models::RoomPermission::MANAGE_ROOM_SETTINGS,
             )
             .await?;
 
@@ -291,7 +291,7 @@ impl RoomService {
                             &mut tx,
                             &room_id,
                             &user_id,
-                            crate::models::RoomPermission::SET_ROOM_SETTINGS,
+                            crate::models::RoomPermission::MANAGE_ROOM_SETTINGS,
                         )
                         .await?;
                         let domain = CacheDomain::RoomSettings { room_id };
@@ -402,7 +402,7 @@ impl RoomService {
             .check_permission(
                 room_id,
                 user_id,
-                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+                crate::models::RoomPermission::MANAGE_ROOM_SETTINGS,
             )
             .await?;
 
@@ -422,7 +422,7 @@ impl RoomService {
                         &mut tx,
                         room_id,
                         user_id,
-                        crate::models::RoomPermission::SET_ROOM_SETTINGS,
+                        crate::models::RoomPermission::MANAGE_ROOM_SETTINGS,
                     )
                     .await?;
                     let domain = CacheDomain::RoomSettings { room_id: *room_id };

@@ -75,7 +75,7 @@ fn guest_access(permissions: RoomPermissionSet) -> super::GuestRoomAccess {
 async fn test_shared_room_actor_playlist_items_rejects_guest_without_media_resource_permission() {
     let err = super::ClientApiImpl::require_guest_permission(
         &guest_access(RoomPermissionSet::empty()),
-        RoomPermission::VIEW_MEDIA_RESOURCES,
+        RoomPermission::VIEW_MEDIA,
     )
     .expect_err("guest media-resource reads must be rejected before any repository lookup");
 
@@ -89,17 +89,17 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_without_media_resou
 async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resource_permission_requested(
 ) {
     let requested = RoomPermissionSet(
-        synctv_core::models::RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES
+        synctv_core::models::RoomAdminPermissionBits::VIEW_MEDIA
             | synctv_core::models::RoomAdminPermissionBits::USE_WEBRTC,
     );
     let capped = RoomPermissionSet(
         requested.0 & RoomGuestPermissionBits::to_permissions(RoomGuestPermissionBits::ALL),
     );
-    assert!(!capped.has(synctv_core::models::RoomPermission::VIEW_MEDIA_RESOURCES));
+    assert!(!capped.has(synctv_core::models::RoomPermission::VIEW_MEDIA));
 
     let err = super::ClientApiImpl::require_guest_permission(
         &guest_access(capped),
-        RoomPermission::VIEW_MEDIA_RESOURCES,
+        RoomPermission::VIEW_MEDIA,
     )
     .expect_err("guest media-resource reads must stay rejected after guest permission capping");
 
@@ -721,6 +721,7 @@ fn test_playback_state_to_proto() -> TestResult {
         playing_playlist_id: None,
         target: None,
         current_progress_id: None,
+        history_cursor_id: None,
         position: 120.5,
         speed: 1.5,
         is_playing: false,
@@ -761,6 +762,7 @@ fn test_playback_state_to_proto_computes_elapsed_time_while_playing() -> TestRes
         playing_playlist_id: None,
         target: None,
         current_progress_id: None,
+        history_cursor_id: None,
         position: 120.5,
         speed: 1.5,
         is_playing: true,
@@ -791,6 +793,7 @@ fn test_playback_state_to_proto_dynamic_playlist_target() -> TestResult {
             "provider-item-9".to_string(),
         )),
         current_progress_id: None,
+        history_cursor_id: None,
         position: 120.5,
         speed: 1.5,
         is_playing: true,
@@ -1600,7 +1603,7 @@ fn test_joined_rooms_permission_needs_three_layer_calculation() {
     // include every member bit, so deny a default permission to prove that
     // role.permissions() alone is insufficient.
     member.added_permissions = 0;
-    member.removed_permissions = RoomMemberPermissionBits::CHAT;
+    member.removed_permissions = RoomMemberPermissionBits::SEND_CHAT_MESSAGES;
 
     // role.permissions() ignores member overrides completely
     let role_only = member.role.permissions();
@@ -1663,6 +1666,7 @@ fn test_playback_state_version_no_truncation() -> TestResult {
         playing_playlist_id: None,
         target: None,
         current_progress_id: None,
+        history_cursor_id: None,
         position: 0.0,
         speed: 1.0,
         is_playing: false,
@@ -1688,6 +1692,7 @@ fn test_playback_state_version_i32_range_still_works() -> TestResult {
         playing_playlist_id: None,
         target: None,
         current_progress_id: None,
+        history_cursor_id: None,
         position: 0.0,
         speed: 1.0,
         is_playing: false,

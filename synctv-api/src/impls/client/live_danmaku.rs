@@ -58,11 +58,8 @@ impl ClientApiImpl {
         req: synctv_proto::playback_provider::bilibili::WatchBilibiliLiveDanmakuRequest,
     ) -> Result<BilibiliLiveDanmakuStream, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        self.require_room_permission(
-            actor,
-            synctv_core::models::RoomPermission::VIEW_MEDIA_RESOURCES,
-        )
-        .await?;
+        self.require_room_permission(actor, synctv_core::models::RoomPermission::VIEW_MEDIA)
+            .await?;
         let user_id = actor.require_user_id()?;
         let room_id = actor.room_id();
         let media_id = crate::impls::proto_validated_media_id(req.media_id, &self.public_id_codec)?;

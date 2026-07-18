@@ -41,7 +41,7 @@ impl RoomService {
             .check_permission_no_cache(
                 &room_id,
                 &actor_id,
-                crate::models::RoomPermission::APPROVE_MEMBER,
+                crate::models::RoomPermission::REVIEW_JOIN_REQUESTS,
             )
             .await?;
 
@@ -50,7 +50,7 @@ impl RoomService {
             &mut tx,
             &room_id,
             &actor_id,
-            crate::models::RoomPermission::APPROVE_MEMBER,
+            crate::models::RoomPermission::REVIEW_JOIN_REQUESTS,
         )
         .await?;
         let (target_user_id, updated) = self

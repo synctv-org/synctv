@@ -1,7 +1,7 @@
 //! `MemberService` permission tests (S6)
 //!
 //! Tests `set_member_permissions` `GRANT_PERMISSION` check, optimistic lock retry,
-//! and `reset_member_permissions` with real `PostgreSQL` via testcontainers.
+//! and `remanage_member_permissions` with real `PostgreSQL` via testcontainers.
 //!
 use std::sync::Arc;
 
@@ -84,7 +84,7 @@ fn make_user(username: &str) -> User {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_set_member_permissions_requires_grant_permission() {
+async fn test_manage_member_permissions_requires_grant_permission() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -130,7 +130,7 @@ async fn test_set_member_permissions_requires_grant_permission() {
             room.id,
             member.id,
             target.id,
-            RoomMemberPermissionBits::CHAT,
+            RoomMemberPermissionBits::SEND_CHAT_MESSAGES,
             0,
         )
         .await;
@@ -147,7 +147,7 @@ async fn test_set_member_permissions_requires_grant_permission() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_set_member_permissions_creator_can_set() {
+async fn test_manage_member_permissions_creator_can_set() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -203,7 +203,7 @@ async fn test_set_member_permissions_creator_can_set() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_set_member_permissions_updates_admin_override_fields_for_admin_target() {
+async fn test_manage_member_permissions_updates_admin_override_fields_for_admin_target() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -246,7 +246,7 @@ async fn test_set_member_permissions_updates_admin_override_fields_for_admin_tar
             creator.id,
             target.id,
             RoomAdminPermissionBits::USE_WEBRTC,
-            RoomAdminPermissionBits::KICK_MEMBER,
+            RoomAdminPermissionBits::REMOVE_MEMBERS,
         )
         .await
         .checked("test operation should succeed");
@@ -257,8 +257,8 @@ async fn test_set_member_permissions_updates_admin_override_fields_for_admin_tar
         "admin target must persist allow overrides into admin_added_permissions"
     );
     assert_eq!(
-        updated.admin_removed_permissions & RoomAdminPermissionBits::KICK_MEMBER,
-        RoomAdminPermissionBits::KICK_MEMBER,
+        updated.admin_removed_permissions & RoomAdminPermissionBits::REMOVE_MEMBERS,
+        RoomAdminPermissionBits::REMOVE_MEMBERS,
         "admin target must persist deny overrides into admin_removed_permissions"
     );
     assert_eq!(
@@ -280,7 +280,7 @@ async fn test_set_member_permissions_updates_admin_override_fields_for_admin_tar
         "admin allow override should affect effective permissions"
     );
     assert!(
-        !effective.has(RoomPermission::KICK_MEMBER),
+        !effective.has(RoomPermission::REMOVE_MEMBERS),
         "admin deny override should affect effective permissions"
     );
 }
@@ -329,7 +329,7 @@ async fn test_admin_update_member_role_to_admin_persists_admin_overrides() {
             added_permissions: 0,
             removed_permissions: 0,
             admin_added_permissions: RoomAdminPermissionBits::USE_WEBRTC,
-            admin_removed_permissions: RoomAdminPermissionBits::KICK_MEMBER,
+            admin_removed_permissions: RoomAdminPermissionBits::REMOVE_MEMBERS,
         })
         .await
         .checked("test operation should succeed");
@@ -341,8 +341,8 @@ async fn test_admin_update_member_role_to_admin_persists_admin_overrides() {
         "role-to-admin update must persist allow override in admin_added_permissions"
     );
     assert_eq!(
-        updated.admin_removed_permissions & RoomAdminPermissionBits::KICK_MEMBER,
-        RoomAdminPermissionBits::KICK_MEMBER,
+        updated.admin_removed_permissions & RoomAdminPermissionBits::REMOVE_MEMBERS,
+        RoomAdminPermissionBits::REMOVE_MEMBERS,
         "role-to-admin update must persist deny override in admin_removed_permissions"
     );
     assert_eq!(
@@ -453,7 +453,7 @@ async fn test_transfer_room_ownership_commits_permission_fences_for_both_members
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_set_member_permissions_rejects_lifecycle_only_delete_room_permission() {
+async fn test_manage_member_permissions_rejects_lifecycle_only_delete_room_permission() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -502,7 +502,7 @@ async fn test_set_member_permissions_rejects_lifecycle_only_delete_room_permissi
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_set_member_permissions_optimistic_lock_retry() {
+async fn test_manage_member_permissions_optimistic_lock_retry() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
@@ -760,7 +760,7 @@ async fn test_concurrent_single_bit_revokes_retry_optimistic_conflicts() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_reset_member_permissions_clears_all_overrides() {
+async fn test_remanage_member_permissions_clears_all_overrides() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -799,7 +799,7 @@ async fn test_reset_member_permissions_clears_all_overrides() {
             creator.id,
             target.id,
             RoomMemberPermissionBits::USE_WEBRTC | RoomMemberPermissionBits::VIEW_CHAT_HISTORY,
-            RoomMemberPermissionBits::CHAT,
+            RoomMemberPermissionBits::SEND_CHAT_MESSAGES,
         )
         .await
         .checked("test operation should succeed");
@@ -816,13 +816,13 @@ async fn test_reset_member_permissions_clears_all_overrides() {
         "Should have VIEW_CHAT_HISTORY added before reset"
     );
     assert!(
-        member_before.removed_permissions & RoomMemberPermissionBits::CHAT != 0,
+        member_before.removed_permissions & RoomMemberPermissionBits::SEND_CHAT_MESSAGES != 0,
         "Should have CHAT removed before reset"
     );
 
     // Reset all permissions
     let updated = member_service
-        .reset_member_permissions(room.id, creator.id, target.id)
+        .remanage_member_permissions(room.id, creator.id, target.id)
         .await
         .checked("test operation should succeed");
 
@@ -838,7 +838,7 @@ async fn test_reset_member_permissions_clears_all_overrides() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_reset_member_permissions_requires_grant_permission() {
+async fn test_remanage_member_permissions_requires_grant_permission() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -880,7 +880,7 @@ async fn test_reset_member_permissions_requires_grant_permission() {
 
     // Member without GRANT_PERMISSION cannot reset
     let result = member_service
-        .reset_member_permissions(room.id, member.id, target.id)
+        .remanage_member_permissions(room.id, member.id, target.id)
         .await;
 
     assert!(
@@ -957,14 +957,14 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
             room.id,
             creator.id,
             target.id,
-            RoomAdminPermissionBits::KICK_MEMBER,
+            RoomAdminPermissionBits::REMOVE_MEMBERS,
         )
         .await
         .checked("test operation should succeed");
 
     assert_eq!(
-        updated.admin_removed_permissions & RoomAdminPermissionBits::KICK_MEMBER,
-        RoomAdminPermissionBits::KICK_MEMBER,
+        updated.admin_removed_permissions & RoomAdminPermissionBits::REMOVE_MEMBERS,
+        RoomAdminPermissionBits::REMOVE_MEMBERS,
         "revoke_permission must target admin_removed_permissions for admin members"
     );
     assert_eq!(
@@ -982,7 +982,7 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
         "granted admin override should be visible in effective permissions"
     );
     assert!(
-        !effective.has(RoomPermission::KICK_MEMBER),
+        !effective.has(RoomPermission::REMOVE_MEMBERS),
         "revoked admin override should be visible in effective permissions"
     );
 }

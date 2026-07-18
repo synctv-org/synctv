@@ -14,58 +14,54 @@ use super::human_output::ToHuman;
 use super::output::{print_humanized_structured_output, print_json, RemoteOutputFormat};
 
 pub(in crate::cli) const CLI_NAMED_PERMISSIONS: &[(&str, u64)] = &[
-    ("chat", RoomAdminPermissionBits::CHAT),
     (
-        "create_media_resource",
-        RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
+        "send_chat_messages",
+        RoomAdminPermissionBits::SEND_CHAT_MESSAGES,
     ),
     (
-        "view_media_resources",
-        RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES,
+        "manage_own_media",
+        RoomAdminPermissionBits::MANAGE_OWN_MEDIA,
     ),
-    (
-        "view_member_list",
-        RoomAdminPermissionBits::VIEW_MEMBER_LIST,
-    ),
+    ("view_media", RoomAdminPermissionBits::VIEW_MEDIA),
+    ("view_members", RoomAdminPermissionBits::VIEW_MEMBERS),
     (
         "view_chat_history",
         RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
     ),
     ("use_webrtc", RoomAdminPermissionBits::USE_WEBRTC),
+    ("delete_media", RoomAdminPermissionBits::DELETE_MEDIA),
+    ("reorder_media", RoomAdminPermissionBits::REORDER_MEDIA),
+    ("clear_media", RoomAdminPermissionBits::CLEAR_MEDIA),
     (
-        "delete_media_resource_any",
-        RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY,
+        "manage_live_streams",
+        RoomAdminPermissionBits::MANAGE_LIVE_STREAMS,
     ),
     (
-        "reorder_media_resources",
-        RoomAdminPermissionBits::REORDER_MEDIA_RESOURCES,
+        "control_playback_state",
+        RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE,
     ),
     (
-        "clear_media_resources",
-        RoomAdminPermissionBits::CLEAR_MEDIA_RESOURCES,
-    ),
-    ("live_control", RoomAdminPermissionBits::LIVE_CONTROL),
-    ("play_control", RoomAdminPermissionBits::PLAY_CONTROL),
-    (
-        "change_current_media",
-        RoomAdminPermissionBits::CHANGE_CURRENT_MEDIA,
+        "navigate_playback",
+        RoomAdminPermissionBits::NAVIGATE_PLAYBACK,
     ),
     (
-        "change_playback_rate",
-        RoomAdminPermissionBits::CHANGE_PLAYBACK_RATE,
+        "review_join_requests",
+        RoomAdminPermissionBits::REVIEW_JOIN_REQUESTS,
     ),
-    ("approve_member", RoomAdminPermissionBits::APPROVE_MEMBER),
-    ("kick_member", RoomAdminPermissionBits::KICK_MEMBER),
+    ("remove_members", RoomAdminPermissionBits::REMOVE_MEMBERS),
     (
-        "set_member_permissions",
-        RoomAdminPermissionBits::SET_MEMBER_PERMISSIONS,
+        "manage_member_permissions",
+        RoomAdminPermissionBits::MANAGE_MEMBER_PERMISSIONS,
     ),
-    ("add_member", RoomAdminPermissionBits::ADD_MEMBER),
+    ("add_members", RoomAdminPermissionBits::ADD_MEMBERS),
     (
-        "set_room_settings",
-        RoomAdminPermissionBits::SET_ROOM_SETTINGS,
+        "manage_room_settings",
+        RoomAdminPermissionBits::MANAGE_ROOM_SETTINGS,
     ),
-    ("delete_chat", RoomAdminPermissionBits::DELETE_CHAT),
+    (
+        "delete_chat_messages",
+        RoomAdminPermissionBits::DELETE_CHAT_MESSAGES,
+    ),
     ("delete_room", RoomAdminPermissionBits::DELETE_ROOM),
 ];
 

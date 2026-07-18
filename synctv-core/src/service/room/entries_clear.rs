@@ -20,7 +20,7 @@ pub struct ClearPlaylistResult {
 impl RoomService {
     /// Clear media and child playlists in a playlist scope.
     ///
-    /// The `CLEAR_MEDIA_RESOURCES` permission check is performed inside the
+    /// The `CLEAR_MEDIA` permission check is performed inside the
     /// transaction so revocations cannot race with the clear operation.
     ///
     /// `playlist_id = None` clears the room-root scope. `Some(id)` clears the
@@ -47,7 +47,7 @@ impl RoomService {
             &mut tx,
             &room_id,
             &user_id,
-            RoomPermission::CLEAR_MEDIA_RESOURCES,
+            RoomPermission::CLEAR_MEDIA,
         )
         .await?;
 

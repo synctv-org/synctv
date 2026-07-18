@@ -168,7 +168,7 @@ impl ClientApiImpl {
         user_id: UserId,
     ) -> Result<(), ApiError> {
         self.room_service
-            .check_permission(&room_id, &user_id, RoomPermission::SET_ROOM_SETTINGS)
+            .check_permission(&room_id, &user_id, RoomPermission::MANAGE_ROOM_SETTINGS)
             .await
             .map_err(Self::map_room_access_error)
     }

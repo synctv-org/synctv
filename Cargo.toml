@@ -65,7 +65,7 @@ unnecessary_wraps = "allow"
 
 [workspace.dependencies]
 # Async Runtime
-tokio = { version = "=1.52.3", features = [
+tokio = { version = "=1.53.0", features = [
     "rt-multi-thread",
     "macros",
     "net",
@@ -143,7 +143,7 @@ sqlx = { version = "=0.9.0", default-features = false, features = [
 ] }
 
 # Redis
-redis = { version = "=1.4.0", default-features = false, features = [
+redis = { version = "=1.4.1", default-features = false, features = [
     "tokio-comp",
     "connection-manager",
     "streams",

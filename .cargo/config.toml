@@ -1,0 +1,2 @@
+[build]
+rustflags = ["-Zthreads=8"]

@@ -747,7 +747,7 @@ fn decode_client_message_json(text: &str) -> Result<ClientMessage, String> {
 }
 
 fn encode_server_message_json(message: &ServerMessage) -> Result<String, serde_json::Error> {
-    serde_json::to_string(&message.transcode_to_dynamic())
+    serde_json::to_string(message)
 }
 
 async fn forward_websocket_messages<S>(

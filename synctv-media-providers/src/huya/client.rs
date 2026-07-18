@@ -490,9 +490,18 @@ fn video_qualities(definitions: &[RawDefinition]) -> Vec<HuyaQuality> {
                 cdn: String::new(),
                 format: HuyaStreamFormat::Hls,
                 url: url.to_string(),
-                bitrate: definition.definition,
-                width: definition.width,
-                height: definition.height,
+                bitrate: definition
+                    .definition
+                    .as_deref()
+                    .and_then(|value| value.parse().ok()),
+                width: definition
+                    .width
+                    .as_deref()
+                    .and_then(|value| value.parse().ok()),
+                height: definition
+                    .height
+                    .as_deref()
+                    .and_then(|value| value.parse().ok()),
             })
         })
         .collect()
@@ -716,7 +725,7 @@ mod tests {
                         "uid": "1564376151", "videoPlayNum": 42,
                         "definitions": [{
                             "m3u8": "https://video.test/replay.m3u8", "defName": "1080p",
-                            "width": 1920, "height": 1080, "definition": 10000
+                            "width": "1920", "height": "1080", "definition": "10000"
                         }]
                     }
                 }}

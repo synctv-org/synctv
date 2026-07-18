@@ -214,6 +214,39 @@ fn test_resource_event_is_critical() {
 }
 
 #[test]
+fn test_websocket_json_uses_integer_enum_values() -> TestResult {
+    let message = ServerMessage {
+        message: Some(
+            synctv_proto::client::server_message::Message::ResourceEvent(
+                synctv_proto::client::ResourceEvent {
+                    observe_id: "playlist_items".to_string(),
+                    payload: Some(
+                        synctv_proto::client::resource_event::Payload::PlaylistItems(
+                            synctv_proto::client::ListPlaylistItemsResponse {
+                                playlists: vec![synctv_proto::client::Playlist {
+                                    source_provider:
+                                        synctv_proto::source_config::SourceProvider::Bilibili as i32,
+                                    ..Default::default()
+                                }],
+                                ..Default::default()
+                            },
+                        ),
+                    ),
+                    event_cursor: None,
+                },
+            ),
+        ),
+    };
+
+    let json: serde_json::Value = serde_json::from_str(&encode_server_message_json(&message)?)?;
+    assert_eq!(
+        json["resourceEvent"]["playlistItems"]["playlists"][0]["sourceProvider"],
+        synctv_proto::source_config::SourceProvider::Bilibili as i32
+    );
+    Ok(())
+}
+
+#[test]
 fn test_notification_requires_state_resync() {
     let message = ServerMessage {
         message: Some(synctv_proto::client::server_message::Message::Notification(

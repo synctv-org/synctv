@@ -6,13 +6,13 @@ use serde_json::json;
 use url::Url;
 
 use super::types::{
-    AccessTokenData, ClipData, GraphQlEnvelope, HelixPage, RawAccessToken, RawHelixCategory,
-    RawHelixChannelSearchItem, RawHelixScheduleResponse, RawHelixStream, RawSessionIdentity,
-    TwitchAccessToken, TwitchBrowseItem, TwitchBrowseKind, TwitchBrowsePage, TwitchCategory,
-    TwitchCategoryPage, TwitchChannelSearchItem, TwitchChannelSearchPage, TwitchMetadata,
-    TwitchPlayback, TwitchQuality, TwitchResource, TwitchResourceKind, TwitchSchedulePage,
-    TwitchScheduleSegment, TwitchSession, TwitchSessionIdentity, TwitchStreamItem,
-    TwitchStreamPage,
+    AccessTokenData, ClipData, GraphQlEnvelope, GraphQlError, HelixPage, RawAccessToken,
+    RawHelixCategory, RawHelixChannelSearchItem, RawHelixScheduleResponse, RawHelixStream,
+    RawSessionIdentity, TwitchAccessToken, TwitchBrowseItem, TwitchBrowseKind, TwitchBrowsePage,
+    TwitchCategory, TwitchCategoryPage, TwitchChannelSearchItem, TwitchChannelSearchPage,
+    TwitchMetadata, TwitchPlayback, TwitchQuality, TwitchResource, TwitchResourceKind,
+    TwitchSchedulePage, TwitchScheduleSegment, TwitchSession, TwitchSessionIdentity,
+    TwitchStreamItem, TwitchStreamPage,
 };
 use crate::{fetch_json, text_with_limit, ProviderClientError, PROVIDER_USER_AGENT};
 
@@ -28,6 +28,8 @@ const VIDEO_CHAPTERS_QUERY_HASH: &str =
     "71835d5ef425e154bf282453a926d99b328cdc5e32f36d3a209d0f4778b41203";
 const VIDEO_STORYBOARD_QUERY_HASH: &str =
     "07e99e4d56c5a7c67117a154777b0baf85a5ffefa393b213f4bc712ccaf85dd6";
+const GRAPHQL_MAX_ATTEMPTS: usize = 3;
+const GRAPHQL_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TwitchEndpoints {
@@ -522,34 +524,43 @@ impl TwitchClient {
         variables: serde_json::Value,
         session: Option<&TwitchSession>,
     ) -> Result<serde_json::Value, ProviderClientError> {
-        let request = Self::request(
-            self.http
-                .post(&self.endpoints.gql)
-                .header("Client-ID", TWITCH_WEB_CLIENT_ID)
-                .json(&json!({
-                    "operationName": operation_name,
-                    "extensions": {
-                        "persistedQuery": { "version": 1, "sha256Hash": hash }
-                    },
-                    "variables": variables,
-                })),
-            session,
-        );
-        let envelope: GraphQlEnvelope<serde_json::Value> = fetch_json(request).await?;
-        if !envelope.errors.is_empty() {
-            return Err(ProviderClientError::Api {
-                code: -1,
-                message: envelope
-                    .errors
-                    .into_iter()
-                    .map(|error| error.message)
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            });
-        }
+        let body = json!({
+            "operationName": operation_name,
+            "extensions": {
+                "persistedQuery": { "version": 1, "sha256Hash": hash }
+            },
+            "variables": variables,
+        });
+        let envelope: GraphQlEnvelope<serde_json::Value> = self.graph_ql(&body, session).await?;
         envelope.data.ok_or_else(|| {
             ProviderClientError::Parse(format!("Twitch {operation_name} response is missing data"))
         })
+    }
+
+    async fn graph_ql<T: serde::de::DeserializeOwned>(
+        &self,
+        body: &serde_json::Value,
+        session: Option<&TwitchSession>,
+    ) -> Result<GraphQlEnvelope<T>, ProviderClientError> {
+        for attempt in 0..GRAPHQL_MAX_ATTEMPTS {
+            let request = Self::request(
+                self.http
+                    .post(&self.endpoints.gql)
+                    .header("Client-ID", TWITCH_WEB_CLIENT_ID)
+                    .json(body),
+                session,
+            );
+            let envelope: GraphQlEnvelope<T> = fetch_json(request).await?;
+            if envelope.errors.is_empty() {
+                return Ok(envelope);
+            }
+            let message = graph_ql_error_message(&envelope.errors);
+            if attempt + 1 == GRAPHQL_MAX_ATTEMPTS || !retryable_graph_ql_error(&message) {
+                return Err(ProviderClientError::Api { code: -1, message });
+            }
+            tokio::time::sleep(GRAPHQL_RETRY_DELAY).await;
+        }
+        unreachable!("GraphQL retry loop always returns")
     }
 
     pub async fn access_token(
@@ -619,14 +630,7 @@ impl TwitchClient {
             },
             "variables": { "slug": resource.id, "platform": "web" }
         });
-        let request = Self::request(
-            self.http
-                .post(&self.endpoints.gql)
-                .header("Client-ID", TWITCH_WEB_CLIENT_ID)
-                .json(&body),
-            session,
-        );
-        let envelope: GraphQlEnvelope<ClipData> = fetch_json(request).await?;
+        let envelope: GraphQlEnvelope<ClipData> = self.graph_ql(&body, session).await?;
         let clip =
             envelope
                 .data
@@ -635,25 +639,34 @@ impl TwitchClient {
                     code: 404,
                     message: "Twitch clip was not found".to_string(),
                 })?;
+        let raw_token = clip.playback_access_token.ok_or_else(|| {
+            ProviderClientError::Parse("Twitch clip playback token is missing".to_string())
+        })?;
+        let token = TwitchAccessToken {
+            signature: raw_token.signature,
+            value: raw_token.value,
+        };
         let qualities = clip
             .video_qualities
             .into_iter()
             .filter(|quality| !quality.source_url.is_empty())
-            .map(|quality| TwitchQuality {
-                name: quality.quality.unwrap_or_else(|| "clip".to_string()),
-                url: quality.source_url,
-                bandwidth: None,
-                width: None,
-                height: None,
-                frame_rate: quality.frame_rate.map(|value| value.to_string()),
-                codecs: None,
+            .map(|quality| {
+                Ok(TwitchQuality {
+                    name: quality.quality.unwrap_or_else(|| "clip".to_string()),
+                    url: clip_quality_url(&quality.source_url, &token)?,
+                    bandwidth: None,
+                    width: None,
+                    height: None,
+                    frame_rate: quality.frame_rate.map(|value| value.to_string()),
+                    codecs: None,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, ProviderClientError>>()?;
         Ok(TwitchPlayback {
             resource: resource.clone(),
             master_url: None,
             qualities,
-            token: None,
+            token: Some(token),
         })
     }
 
@@ -674,14 +687,7 @@ impl TwitchClient {
             },
             "variables": { "slug": resource.id, "platform": "web" }
         });
-        let request = Self::request(
-            self.http
-                .post(&self.endpoints.gql)
-                .header("Client-ID", TWITCH_WEB_CLIENT_ID)
-                .json(&body),
-            session,
-        );
-        let envelope: GraphQlEnvelope<ClipData> = fetch_json(request).await?;
+        let envelope: GraphQlEnvelope<ClipData> = self.graph_ql(&body, session).await?;
         let clip =
             envelope
                 .data
@@ -690,9 +696,19 @@ impl TwitchClient {
                     code: 404,
                     message: "Twitch clip was not found".to_string(),
                 })?;
+        let id = if clip.id.is_empty() {
+            resource.id.clone()
+        } else {
+            clip.id
+        };
+        let title = if clip.title.is_empty() {
+            id.clone()
+        } else {
+            clip.title
+        };
         Ok(TwitchMetadata {
-            id: clip.id,
-            title: clip.title,
+            id,
+            title,
             author: clip
                 .broadcaster
                 .map_or_else(String::new, |value| value.display_name),
@@ -765,25 +781,7 @@ impl TwitchClient {
             },
             "variables": variables,
         });
-        let request = Self::request(
-            self.http
-                .post(&self.endpoints.gql)
-                .header("Client-ID", TWITCH_WEB_CLIENT_ID)
-                .json(&body),
-            session,
-        );
-        let envelope: GraphQlEnvelope<serde_json::Value> = fetch_json(request).await?;
-        if !envelope.errors.is_empty() {
-            return Err(ProviderClientError::Api {
-                code: -1,
-                message: envelope
-                    .errors
-                    .into_iter()
-                    .map(|error| error.message)
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            });
-        }
+        let envelope: GraphQlEnvelope<serde_json::Value> = self.graph_ql(&body, session).await?;
         let data = envelope.data.ok_or_else(|| {
             ProviderClientError::Parse("Twitch browse response is missing data".to_string())
         })?;
@@ -810,7 +808,9 @@ impl TwitchClient {
             let Some(node) = edge.get("node") else {
                 continue;
             };
-            let Some(id) = node.get("id").and_then(serde_json::Value::as_str) else {
+            let is_clip = kind == TwitchBrowseKind::Clips;
+            let id_field = if is_clip { "slug" } else { "id" };
+            let Some(id) = node.get(id_field).and_then(serde_json::Value::as_str) else {
                 continue;
             };
             next_cursor = edge
@@ -818,7 +818,6 @@ impl TwitchClient {
                 .and_then(serde_json::Value::as_str)
                 .map(ToString::to_string)
                 .or(next_cursor);
-            let is_clip = kind == TwitchBrowseKind::Clips;
             items.push(TwitchBrowseItem {
                 resource: TwitchResource {
                     kind: if is_clip {
@@ -916,11 +915,39 @@ impl TwitchClient {
     }
 }
 
+fn clip_quality_url(
+    source_url: &str,
+    token: &TwitchAccessToken,
+) -> Result<String, ProviderClientError> {
+    let mut url = Url::parse(source_url)
+        .map_err(|error| ProviderClientError::Parse(format!("invalid Twitch clip URL: {error}")))?;
+    url.query_pairs_mut()
+        .append_pair("sig", &token.signature)
+        .append_pair("token", &token.value);
+    Ok(url.to_string())
+}
+
 fn value_as_u64(value: &serde_json::Value) -> Option<u64> {
     value
         .as_u64()
         .or_else(|| value.as_f64().and_then(nonnegative_seconds))
         .or_else(|| value.as_str()?.parse().ok())
+}
+
+fn graph_ql_error_message(errors: &[GraphQlError]) -> String {
+    errors
+        .iter()
+        .map(|error| error.message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn retryable_graph_ql_error(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("service error")
+        || message.contains("internal server error")
+        || message.contains("temporarily unavailable")
+        || message.contains("timeout")
 }
 
 fn nonnegative_seconds(value: f64) -> Option<u64> {
@@ -1282,6 +1309,102 @@ https://video.example.test/chunked/index.m3u8
     }
 
     #[tokio::test]
+    async fn browsed_channel_clips_use_playable_slug_targets() {
+        crate::install_process_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/gql"))
+            .and(matchers::body_partial_json(json!({
+                "operationName": "ClipsCards__User"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "user": {
+                        "id": "user-1",
+                        "clips": {"edges": [{"node": {
+                            "id": "1323590834",
+                            "slug": "DepressedAbnegateElkUWot",
+                            "title": "Playable clip"
+                        }}]}
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+        let client = TwitchClient::with_http_client(reqwest::Client::new()).with_endpoints(
+            TwitchEndpoints {
+                gql: format!("{}/gql", server.uri()),
+                usher: server.uri(),
+                helix: format!("{}/helix", server.uri()),
+                oauth_validate: format!("{}/oauth2/validate", server.uri()),
+            },
+        );
+
+        let page = client
+            .browse_channel("synctv", TwitchBrowseKind::Clips, None, 1, None)
+            .await
+            .expect("clips should browse");
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].resource.kind, TwitchResourceKind::Clip);
+        assert_eq!(page.items[0].resource.id, "DepressedAbnegateElkUWot");
+    }
+
+    #[tokio::test]
+    async fn retries_transient_graphql_service_errors() {
+        crate::install_process_crypto_provider();
+        let server = MockServer::start().await;
+        let matcher = || {
+            Mock::given(matchers::method("POST"))
+                .and(matchers::path("/gql"))
+                .and(matchers::body_partial_json(json!({
+                    "operationName": "FilterableVideoTower_Videos"
+                })))
+        };
+        matcher()
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "errors": [{"message": "service error"}]
+            })))
+            .with_priority(1)
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        matcher()
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "user": {
+                        "id": "user-1",
+                        "videos": {"edges": [{"node": {
+                            "id": "123456",
+                            "title": "Recovered highlight"
+                        }}]}
+                    }
+                }
+            })))
+            .with_priority(2)
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = TwitchClient::with_http_client(reqwest::Client::new()).with_endpoints(
+            TwitchEndpoints {
+                gql: format!("{}/gql", server.uri()),
+                usher: server.uri(),
+                helix: format!("{}/helix", server.uri()),
+                oauth_validate: format!("{}/oauth2/validate", server.uri()),
+            },
+        );
+
+        let page = client
+            .browse_channel("synctv", TwitchBrowseKind::Highlights, None, 1, None)
+            .await
+            .expect("transient Twitch service errors should be retried");
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].resource.id, "123456");
+    }
+
+    #[tokio::test]
     async fn loads_vod_metadata_chapters_and_storyboard() {
         crate::install_process_crypto_provider();
         let server = MockServer::start().await;
@@ -1370,14 +1493,21 @@ https://video.example.test/chunked/index.m3u8
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "data": { "clip": {
                     "id": "ClipSlug",
-                    "title": "A complete clip",
                     "broadcaster": { "displayName": "SyncTV" },
                     "game": { "name": "Software and Game Development" },
                     "thumbnailURL": "https://image.example.test/clip.jpg",
                     "durationSeconds": 61.75,
                     "viewCount": 42,
                     "createdAt": "2026-01-01T00:00:00Z",
-                    "videoQualities": []
+                    "playbackAccessToken": {
+                        "signature": "clip-signature",
+                        "value": "{\"clip\":\"token\"}"
+                    },
+                    "videoQualities": [{
+                        "frameRate": 30,
+                        "quality": "1080",
+                        "sourceURL": "https://video.example.test/clip.mp4"
+                    }]
                 }}
             })))
             .mount(&server)
@@ -1402,10 +1532,35 @@ https://video.example.test/chunked/index.m3u8
             .await
             .expect("clip metadata should load");
         assert_eq!(metadata.duration_seconds, Some(61));
+        assert_eq!(metadata.title, "ClipSlug");
         assert_eq!(metadata.view_count, Some(42));
+        assert_eq!(
+            metadata.thumbnail_url.as_deref(),
+            Some("https://image.example.test/clip.jpg")
+        );
         assert_eq!(
             metadata.published_at.as_deref(),
             Some("2026-01-01T00:00:00Z")
+        );
+
+        let playback = client
+            .playback(
+                &TwitchResource {
+                    kind: TwitchResourceKind::Clip,
+                    id: "ClipSlug".to_string(),
+                },
+                None,
+            )
+            .await
+            .expect("clip playback should load");
+        assert_eq!(playback.qualities.len(), 1);
+        let playback_url = Url::parse(&playback.qualities[0].url).expect("valid playback URL");
+        assert_eq!(playback_url.path(), "/clip.mp4");
+        let query = playback_url.query_pairs().collect::<HashMap<_, _>>();
+        assert_eq!(query.get("sig").map(AsRef::as_ref), Some("clip-signature"));
+        assert_eq!(
+            query.get("token").map(AsRef::as_ref),
+            Some("{\"clip\":\"token\"}")
         );
     }
 

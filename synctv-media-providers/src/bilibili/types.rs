@@ -82,8 +82,12 @@ pub(crate) struct ArchiveSummaryDto {
     pub duration: u64,
     #[serde(default, alias = "page")]
     pub videos: u32,
-    #[serde(default, alias = "ctime", alias = "created")]
+    #[serde(default)]
     pub pubdate: i64,
+    #[serde(default)]
+    pub ctime: i64,
+    #[serde(default)]
+    pub created: i64,
     #[serde(default)]
     pub owner: Option<ArchiveOwnerDto>,
     #[serde(default)]
@@ -111,7 +115,10 @@ impl ArchiveSummaryDto {
             description: self.desc,
             duration_seconds: self.duration,
             part_count: self.videos,
-            published_at: self.pubdate,
+            published_at: [self.pubdate, self.ctime, self.created]
+                .into_iter()
+                .find(|value| *value > 0)
+                .unwrap_or_default(),
         }
     }
 }

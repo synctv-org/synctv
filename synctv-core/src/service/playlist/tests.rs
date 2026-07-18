@@ -5,7 +5,10 @@ use crate::provider::{
     ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig,
 };
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
     match result {
@@ -57,6 +60,8 @@ fn emby_playlist_source_config(
 
 struct CredentialOwnerCheckProvider;
 
+static CREDENTIAL_OWNER_VALIDATION_CALLS: AtomicUsize = AtomicUsize::new(0);
+
 #[async_trait]
 impl MediaProvider for CredentialOwnerCheckProvider {
     fn name(&self) -> &'static str {
@@ -82,6 +87,7 @@ impl MediaProvider for CredentialOwnerCheckProvider {
         ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> std::result::Result<(), ProviderError> {
+        CREDENTIAL_OWNER_VALIDATION_CALLS.fetch_add(1, Ordering::Relaxed);
         if !source_config.is_dynamic_playlist() {
             return Err(ProviderError::Internal(
                 "test provider validates dynamic playlist sources only".to_string(),
@@ -614,6 +620,7 @@ async fn validate_dynamic_playlist_source_allows_missing_optional_credential_dep
 
 #[tokio::test]
 async fn validate_dynamic_playlist_source_passes_creator_as_credential_owner() {
+    CREDENTIAL_OWNER_VALIDATION_CALLS.store(0, Ordering::Relaxed);
     let providers_manager = test_credential_check_providers_manager().await;
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let credential_encryption = test_credential_encryption();
@@ -638,5 +645,10 @@ async fn validate_dynamic_playlist_source_passes_creator_as_credential_owner() {
         )
         .await,
         "dynamic playlist validation should expose creator credentials",
+    );
+    assert_eq!(
+        CREDENTIAL_OWNER_VALIDATION_CALLS.load(Ordering::Relaxed),
+        1,
+        "the resolved provider instance should be validated once"
     );
 }

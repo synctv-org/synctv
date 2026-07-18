@@ -1030,6 +1030,11 @@ impl ChatService {
             .get_by_room_and_id_from_primary(&request.room_id, request.message_id)
             .await?
             .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
+        if current.is_system() {
+            return Err(Error::Authorization(
+                "System messages cannot be edited".to_string(),
+            ));
+        }
         ensure_message_owner(&current, &request.user_id)?;
         if current.status == ChatMessageStatus::Deleted {
             return Err(Error::Conflict(

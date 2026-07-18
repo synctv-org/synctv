@@ -45,6 +45,9 @@ fn is_disallowed_control_char(ch: char) -> bool {
 }
 
 fn contains_html_markup(input: &str) -> bool {
+    if !input.contains(['<', '>']) {
+        return false;
+    }
     PLAIN_TEXT_CLEANER.clean(input).to_string() != input
 }
 
@@ -246,6 +249,13 @@ mod tests {
             "media name markup should fail validation",
         )?;
         assert!(matches!(error, InputValidationError::SecurityRisk));
+        Ok(())
+    }
+
+    #[test]
+    fn media_name_accepts_plain_text_ampersands() -> TestResult {
+        let title = "ROSÉ & Bruno Mars - APT. (Official Music Video)";
+        assert_eq!(validation_ok(validate_media_name(title))?, title);
         Ok(())
     }
 

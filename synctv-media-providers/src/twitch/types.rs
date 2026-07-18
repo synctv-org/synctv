@@ -324,14 +324,18 @@ pub(crate) struct ClipData {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RawClip {
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub title: String,
     pub broadcaster: Option<RawDisplayName>,
     pub game: Option<RawName>,
+    #[serde(rename = "thumbnailURL")]
     pub thumbnail_url: Option<String>,
     pub duration_seconds: Option<f64>,
     pub view_count: Option<u64>,
     pub created_at: Option<String>,
+    pub playback_access_token: Option<RawAccessToken>,
     #[serde(default)]
     pub video_qualities: Vec<RawClipQuality>,
 }
@@ -341,6 +345,7 @@ pub(crate) struct RawClip {
 pub(crate) struct RawClipQuality {
     pub frame_rate: Option<f64>,
     pub quality: Option<String>,
+    #[serde(rename = "sourceURL")]
     pub source_url: String,
 }
 

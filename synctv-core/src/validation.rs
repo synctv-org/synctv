@@ -120,6 +120,9 @@ fn is_disallowed_control_char(ch: char) -> bool {
 }
 
 fn contains_html_markup(input: &str) -> bool {
+    if !input.contains(['<', '>']) {
+        return false;
+    }
     PLAIN_TEXT_CLEANER.clean(input).to_string() != input
 }
 
@@ -746,6 +749,15 @@ mod tests {
         assert!(matches!(
             result,
             Err(ValidationError::Field { ref field, .. }) if field == "media_name"
+        ));
+    }
+
+    #[test]
+    fn test_media_name_input_accepts_plain_text_ampersands() {
+        let title = "ROSÉ & Bruno Mars - APT. (Official Music Video)";
+        assert!(matches!(
+            validate_media_name_input(title),
+            Ok(ref validated) if validated == title
         ));
     }
 

@@ -1490,19 +1490,7 @@ impl MediaRepository {
             }
             (None, Some(anchor_media)) => anchor_media.playlist_id,
             (Some(target_playlist_id), None) => Some(*target_playlist_id),
-            (None, None) => {
-                let first_scope = moved_media[0].playlist_id;
-                if moved_media
-                    .iter()
-                    .any(|media| media.playlist_id != first_scope)
-                {
-                    return Err(crate::Error::InvalidInput(
-                        "Moving media from multiple scopes requires target_playlist_id or an anchor"
-                            .to_string(),
-                    ));
-                }
-                first_scope
-            }
+            (None, None) => None,
         };
 
         let mut affected_scopes: Vec<(RoomId, Option<PlaylistId>)> = moved_media

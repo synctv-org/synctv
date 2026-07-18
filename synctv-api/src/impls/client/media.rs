@@ -48,6 +48,62 @@ fn optional_trimmed_string(value: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
+fn dynamic_pagination_from_request(
+    pagination: Option<&synctv_proto::client::list_playlist_items_request::Pagination>,
+    source_provider: synctv_core::models::SourceProvider,
+    has_search: bool,
+) -> Result<DynamicPagination, ApiError> {
+    if has_search {
+        let page = match pagination {
+            Some(synctv_proto::client::list_playlist_items_request::Pagination::Page(page)) => {
+                page_u32_to_usize(page.page)?
+            }
+            _ => 1,
+        };
+        return Ok(DynamicPagination::Page { page });
+    }
+
+    match pagination {
+        Some(synctv_proto::client::list_playlist_items_request::Pagination::Cursor(cursor)) => {
+            Ok(DynamicPagination::Cursor {
+                cursor: Some(cursor.cursor.clone()).filter(|value| !value.is_empty()),
+            })
+        }
+        Some(synctv_proto::client::list_playlist_items_request::Pagination::Page(page)) => {
+            Ok(DynamicPagination::Page {
+                page: page_u32_to_usize(page.page)?,
+            })
+        }
+        None if source_provider == synctv_core::models::SourceProvider::Cloudreve => {
+            Ok(DynamicPagination::Cursor { cursor: None })
+        }
+        None => Ok(DynamicPagination::Page { page: 1 }),
+    }
+}
+
+fn dynamic_response_pagination(
+    pagination: DynamicPagination,
+) -> Result<synctv_proto::client::list_playlist_items_response::Pagination, ApiError> {
+    Ok(match pagination {
+        DynamicPagination::Page { page } => {
+            synctv_proto::client::list_playlist_items_response::Pagination::Page(
+                synctv_proto::client::PagePagination {
+                    page: u32::try_from(page).map_err(|_| {
+                        ApiError::Internal("dynamic playlist page exceeds u32::MAX".to_string())
+                    })?,
+                },
+            )
+        }
+        DynamicPagination::Cursor { cursor } => {
+            synctv_proto::client::list_playlist_items_response::Pagination::Cursor(
+                synctv_proto::client::CursorPagination {
+                    cursor: cursor.unwrap_or_default(),
+                },
+            )
+        }
+    })
+}
+
 fn directory_item_source_config_to_proto(
     source_config: Option<DirectoryItemSourceConfig>,
 ) -> Result<Option<synctv_proto::client::playlist_item::SourceConfig>, ApiError> {
@@ -2146,17 +2202,12 @@ impl ClientApiImpl {
                     "source_provider does not match preview_source_config".to_string(),
                 ));
             }
-            let page = match req.pagination.as_ref() {
-                Some(synctv_proto::client::list_playlist_items_request::Pagination::Page(page)) => {
-                    page_u32_to_usize(page.page)?
-                }
-                Some(synctv_proto::client::list_playlist_items_request::Pagination::Cursor(_)) => {
-                    return Err(ApiError::InvalidInput(
-                        "Source preview requires page pagination".to_string(),
-                    ));
-                }
-                None => 1,
-            };
+            let search = normalize_non_empty_filter(&req.search);
+            let pagination = dynamic_pagination_from_request(
+                req.pagination.as_ref(),
+                source_provider,
+                search.is_some(),
+            )?;
             let result = self
                 .room_service
                 .media_service()
@@ -2171,19 +2222,20 @@ impl ClientApiImpl {
                         ),
                         target,
                         query: DynamicListQuery {
-                            pagination: DynamicPagination::Page { page },
+                            pagination,
                             page_size: crate::impls::proto_page_size_u32_usize(
                                 req.page_size,
                                 20,
                                 100,
                             )?,
-                            search: normalize_non_empty_filter(&req.search),
+                            search,
                             refresh: req.refresh,
                         },
                     },
                 )
                 .await
                 .map_err(ApiError::from)?;
+            let response_pagination = result.pagination.clone();
             let dynamic_items = result
                 .items
                 .into_iter()
@@ -2251,15 +2303,7 @@ impl ClientApiImpl {
                     dynamic_items,
                     current_path: Vec::new(),
                     version: String::new(),
-                    pagination: Some(
-                        synctv_proto::client::list_playlist_items_response::Pagination::Page(
-                            synctv_proto::client::PagePagination {
-                                page: u32::try_from(page).map_err(|_| {
-                                    ApiError::Internal("preview page exceeds u32::MAX".to_string())
-                                })?,
-                            },
-                        ),
-                    ),
+                    pagination: Some(dynamic_response_pagination(response_pagination)?),
                 },
             );
         }
@@ -2435,51 +2479,16 @@ impl ClientApiImpl {
                 );
             }
 
-            let page = match req.pagination.as_ref() {
-                Some(synctv_proto::client::list_playlist_items_request::Pagination::Page(page)) => {
-                    page_u32_to_usize(page.page)?
-                }
-                _ => 1,
-            };
             let page_size = crate::impls::proto_page_size_u32_usize(req.page_size, 50, 100)?;
             let search = normalize_non_empty_filter(&req.search);
-            let pagination = if search.is_some() {
-                DynamicPagination::Page { page }
-            } else if playlist.source_provider
-                == Some(synctv_core::models::SourceProvider::Cloudreve)
-            {
-                match req.pagination.as_ref() {
-                    Some(
-                        synctv_proto::client::list_playlist_items_request::Pagination::Cursor(
-                            pagination,
-                        ),
-                    ) => DynamicPagination::Cursor {
-                        cursor: Some(pagination.cursor.clone()).filter(|value| !value.is_empty()),
-                    },
-                    Some(synctv_proto::client::list_playlist_items_request::Pagination::Page(
-                        pagination,
-                    )) => DynamicPagination::Page {
-                        page: page_u32_to_usize(pagination.page)?,
-                    },
-                    None => DynamicPagination::Cursor { cursor: None },
-                }
-            } else {
-                match req.pagination.as_ref() {
-                    Some(
-                        synctv_proto::client::list_playlist_items_request::Pagination::Cursor(_),
-                    ) => {
-                        return Err(ApiError::InvalidInput(
-                            "This dynamic playlist requires page pagination".to_string(),
-                        ));
-                    }
-                    Some(synctv_proto::client::list_playlist_items_request::Pagination::Page(
-                        pagination,
-                    )) => DynamicPagination::Page {
-                        page: page_u32_to_usize(pagination.page)?,
-                    },
-                    None => DynamicPagination::Page { page },
-                }
-            };
+            let source_provider = playlist.source_provider.ok_or_else(|| {
+                ApiError::InvalidInput("Dynamic playlist is missing source_provider".to_string())
+            })?;
+            let pagination = dynamic_pagination_from_request(
+                req.pagination.as_ref(),
+                source_provider,
+                search.is_some(),
+            )?;
             let result = self
                 .room_service
                 .media_service()
@@ -2806,29 +2815,7 @@ impl ClientApiImpl {
                 }
             }));
 
-            let pagination = Some(match response_pagination {
-                DynamicPagination::Page { page } => {
-                    synctv_proto::client::list_playlist_items_response::Pagination::Page(
-                        synctv_proto::client::PagePagination {
-                            page: u32::try_from(page).map_err(|_| {
-                                ApiError::Internal(
-                                    "dynamic playlist page exceeds u32::MAX".to_string(),
-                                )
-                            })?,
-                        },
-                    )
-                }
-                DynamicPagination::Cursor { .. } => {
-                    synctv_proto::client::list_playlist_items_response::Pagination::Cursor(
-                        synctv_proto::client::CursorPagination {
-                            cursor: match result.pagination {
-                                DynamicPagination::Cursor { cursor } => cursor.unwrap_or_default(),
-                                DynamicPagination::Page { .. } => String::new(),
-                            },
-                        },
-                    )
-                }
-            });
+            let pagination = Some(dynamic_response_pagination(response_pagination)?);
 
             return finalize_playlist_items_response_version(
                 synctv_proto::client::ListPlaylistItemsResponse {
@@ -3040,16 +3027,18 @@ mod tests {
     use super::{
         build_add_media_batch_request, build_add_media_request, build_delete_entries_request,
         build_delete_media_request, build_edit_media_request, build_move_media_request,
-        compute_playlist_items_response_version, file_upload_session_to_room_cover_proto,
-        map_availability_filter, map_media_sort, map_playlist_sort_from_media_sort,
-        map_sort_direction, require_dynamic_playlist_creator, stored_file_to_file_cover_proto,
-        upload_session_fields, validate_dynamic_playlist_query_support,
+        compute_playlist_items_response_version, dynamic_pagination_from_request,
+        file_upload_session_to_room_cover_proto, map_availability_filter, map_media_sort,
+        map_playlist_sort_from_media_sort, map_sort_direction, require_dynamic_playlist_creator,
+        stored_file_to_file_cover_proto, upload_session_fields,
+        validate_dynamic_playlist_query_support,
     };
     use synctv_adapter::client::DEFAULT_MEDIA_TITLE;
     use synctv_core::models::{
         FileOwnershipProofRange, FileUploadSession, MediaId, NewStoredFile, Playlist, PlaylistId,
         RoomId, UserId,
     };
+    use synctv_core::provider::DynamicPagination;
 
     type TestResult<T = ()> = anyhow::Result<T>;
 
@@ -3672,6 +3661,57 @@ mod tests {
         ))?;
 
         assert!(supported);
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_pagination_preserves_youtube_cursor() -> TestResult {
+        let pagination = synctv_proto::client::list_playlist_items_request::Pagination::Cursor(
+            synctv_proto::client::CursorPagination {
+                cursor: "next-token%3D%3D".to_string(),
+            },
+        );
+
+        let result = api_ok(dynamic_pagination_from_request(
+            Some(&pagination),
+            synctv_core::models::SourceProvider::Youtube,
+            false,
+        ))?;
+
+        assert_eq!(
+            result,
+            DynamicPagination::Cursor {
+                cursor: Some("next-token%3D%3D".to_string())
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_pagination_defaults_cloudreve_to_cursor() -> TestResult {
+        let result = api_ok(dynamic_pagination_from_request(
+            None,
+            synctv_core::models::SourceProvider::Cloudreve,
+            false,
+        ))?;
+
+        assert_eq!(result, DynamicPagination::Cursor { cursor: None });
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_pagination_preserves_page_for_page_providers() -> TestResult {
+        let pagination = synctv_proto::client::list_playlist_items_request::Pagination::Page(
+            synctv_proto::client::PagePagination { page: 3 },
+        );
+
+        let result = api_ok(dynamic_pagination_from_request(
+            Some(&pagination),
+            synctv_core::models::SourceProvider::Alist,
+            false,
+        ))?;
+
+        assert_eq!(result, DynamicPagination::Page { page: 3 });
         Ok(())
     }
 

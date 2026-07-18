@@ -117,6 +117,7 @@ pub(crate) struct RawItem {
     pub id: String,
     #[serde(default)]
     pub desc: String,
+    #[serde(default, deserialize_with = "optional_i64_from_any")]
     pub create_time: Option<i64>,
     pub author: Option<RawAuthor>,
     pub video: Option<RawVideo>,
@@ -142,8 +143,15 @@ pub(crate) struct RawAuthor {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RawVideo {
-    pub duration: Option<u64>,
+    #[serde(
+        default,
+        rename = "duration",
+        deserialize_with = "optional_u64_from_any"
+    )]
+    pub duration_seconds: Option<u64>,
+    #[serde(default, deserialize_with = "optional_u32_from_any")]
     pub width: Option<u32>,
+    #[serde(default, deserialize_with = "optional_u32_from_any")]
     pub height: Option<u32>,
     pub cover: Option<String>,
     pub origin_cover: Option<String>,
@@ -160,6 +168,7 @@ pub(crate) struct RawVideo {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct RawBitrate {
     pub gear_name: Option<String>,
+    #[serde(default, deserialize_with = "optional_u64_from_any")]
     pub bit_rate: Option<u64>,
     pub play_addr: Option<RawPlayAddress>,
 }
@@ -170,6 +179,7 @@ pub(crate) struct RawPlayAddress {
     #[serde(default)]
     pub url_list: Vec<String>,
     pub url_key: Option<String>,
+    #[serde(default, deserialize_with = "optional_u64_from_any")]
     pub data_size: Option<u64>,
 }
 
@@ -185,10 +195,15 @@ pub(crate) struct RawSubtitle {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RawStats {
+    #[serde(default, deserialize_with = "optional_u64_from_any")]
     pub play_count: Option<u64>,
+    #[serde(default, deserialize_with = "optional_u64_from_any")]
     pub digg_count: Option<u64>,
+    #[serde(default, deserialize_with = "optional_u64_from_any")]
     pub comment_count: Option<u64>,
+    #[serde(default, deserialize_with = "optional_u64_from_any")]
     pub share_count: Option<u64>,
+    #[serde(default, deserialize_with = "optional_u64_from_any")]
     pub collect_count: Option<u64>,
 }
 
@@ -224,6 +239,7 @@ pub(crate) struct RawListEnvelope {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RawLiveEnvelope {
+    #[serde(default, deserialize_with = "optional_i64_from_any")]
     pub status_code: Option<i64>,
     pub message: Option<String>,
     pub data: Option<RawLiveData>,
@@ -238,6 +254,7 @@ pub(crate) struct RawLiveData {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RawLiveRoom {
+    #[serde(default, deserialize_with = "optional_i64_from_any")]
     pub status: Option<i64>,
     pub stream_id: Option<String>,
     #[serde(default)]
@@ -245,6 +262,7 @@ pub(crate) struct RawLiveRoom {
     pub stream_data: Option<RawLiveStreamData>,
     pub owner_info: Option<RawAuthor>,
     pub cover_url: Option<String>,
+    #[serde(default, deserialize_with = "optional_u64_from_any")]
     pub user_count: Option<u64>,
 }
 
@@ -270,4 +288,55 @@ where
         }
         value => Ok(value),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SignedNumberValue {
+    Number(i64),
+    String(String),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum UnsignedNumberValue {
+    Number(u64),
+    String(String),
+}
+
+fn optional_i64_from_any<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<SignedNumberValue>::deserialize(deserializer)?
+        .map(|value| match value {
+            SignedNumberValue::Number(value) => Ok(value),
+            SignedNumberValue::String(value) => {
+                value.trim().parse().map_err(serde::de::Error::custom)
+            }
+        })
+        .transpose()
+}
+
+fn optional_u64_from_any<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<UnsignedNumberValue>::deserialize(deserializer)?
+        .map(|value| match value {
+            UnsignedNumberValue::Number(value) => Ok(value),
+            UnsignedNumberValue::String(value) => {
+                value.trim().parse().map_err(serde::de::Error::custom)
+            }
+        })
+        .transpose()
+}
+
+fn optional_u32_from_any<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    optional_u64_from_any(deserializer)?
+        .map(|value| value.try_into().map_err(serde::de::Error::custom))
+        .transpose()
 }

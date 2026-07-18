@@ -1964,6 +1964,62 @@ async fn test_edit_message_increments_version_and_checks_expected_version() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_edit_message_rejects_system_message_owned_by_actor() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
+    let chat_repo = ChatRepository::new(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("system_edit_creator"))
+        .await
+        .checked("test operation should succeed");
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "System Edit Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    let system_event = insert_member_joined_chat_event(
+        &chat_repo,
+        room.id,
+        &creator,
+        &creator,
+        "system-edit-event",
+    )
+    .await;
+    let system_message = system_event.event.message.message;
+
+    let error = chat_service
+        .edit_message(EditChatMessage {
+            room_id: room.id,
+            message_id: system_message.id,
+            user_id: creator.id,
+            client_operation_id: None,
+            content: "tampered system event".to_string(),
+            metadata: None,
+            expected_version: Some(system_message.version),
+        })
+        .await
+        .failed("system messages must remain immutable");
+
+    assert!(matches!(
+        error,
+        Error::Authorization(message) if message == "System messages cannot be edited"
+    ));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_edit_message_client_operation_id_replays_without_expected_version() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

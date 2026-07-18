@@ -7,6 +7,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use sha2::{Digest, Sha256};
+use url::Url;
 
 use super::{
     DirectoryItem, DirectoryItemThumbnail, DynamicListQuery, DynamicListResult, DynamicPagination,
@@ -467,6 +468,16 @@ impl TikTokProvider {
         provider_instance_name: Option<&str>,
     ) -> Result<PlaybackResult, ProviderError> {
         let mut infos = HashMap::new();
+        let preferred_video_key = (media.metadata.kind == TikTokMediaKind::Video)
+            .then(|| {
+                media
+                    .variants
+                    .iter()
+                    .max_by_key(|variant| video_variant_score(variant))
+                    .map(variant_key_for)
+            })
+            .flatten();
+        let mut preferred_video_mode = None;
         let subtitle_count = media.metadata.subtitles.len();
         let subtitles = media
             .metadata
@@ -487,6 +498,9 @@ impl TikTokProvider {
             .collect::<Vec<_>>();
         for (index, variant) in media.variants.iter().enumerate() {
             let mode = unique_mode_name(&infos, variant, index);
+            if preferred_video_key.as_deref() == Some(variant_key_for(variant).as_str()) {
+                preferred_video_mode = Some(mode.clone());
+            }
             infos.insert(
                 mode,
                 PlaybackInfo {
@@ -533,7 +547,8 @@ impl TikTokProvider {
             .keys()
             .find(|mode| mode.contains("origin") && mode.contains("hls"))
             .cloned()
-            .or_else(|| infos.keys().next().cloned())
+            .or(preferred_video_mode)
+            .or_else(|| infos.keys().min().cloned())
             .ok_or_else(|| ProviderError::ApiError("TikTok playback is empty".to_string()))?;
         Ok(PlaybackResult {
             playback_infos: infos,
@@ -671,14 +686,42 @@ fn stream_format(format: TikTokStreamFormat) -> &'static str {
 }
 
 fn variant_key_for(variant: &TikTokVariant) -> String {
+    let source = Url::parse(&variant.url)
+        .ok()
+        .map(|url| {
+            format!(
+                "{}{}",
+                url.host_str().unwrap_or_default().to_ascii_lowercase(),
+                url.path()
+            )
+        })
+        .unwrap_or_else(|| variant.url.clone());
     format!(
-        "{}\n{}\n{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
         stream_format(variant.format),
         variant.quality,
         variant.codec.as_deref().unwrap_or_default(),
         variant.width.unwrap_or_default(),
         variant.height.unwrap_or_default(),
-        variant.audio_only
+        variant.audio_only,
+        variant.watermarked,
+        source,
+    )
+}
+
+fn video_variant_score(variant: &TikTokVariant) -> (bool, bool, bool, bool) {
+    let is_tiktok_play_endpoint = Url::parse(&variant.url)
+        .ok()
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| host.eq_ignore_ascii_case("www.tiktok.com"))
+        })
+        .unwrap_or(false);
+    (
+        is_tiktok_play_endpoint,
+        !variant.watermarked,
+        variant.codec.as_deref() == Some("avc"),
+        variant.format == TikTokStreamFormat::Mp4,
     )
 }
 

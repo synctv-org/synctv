@@ -1012,6 +1012,8 @@ async fn list_popular_videos_preserves_multi_part_metadata() -> TestResult {
                     "duration": 120,
                     "videos": 3,
                     "pubdate": 1234,
+                    "ctime": 1200,
+                    "created": 1100,
                     "owner": {"name": "UP"}
                 }],
                 "no_more": true
@@ -1033,6 +1035,7 @@ async fn list_popular_videos_preserves_multi_part_metadata() -> TestResult {
     assert_eq!(page.items[0].part_count, 3);
     assert_eq!(page.items[0].cid, 100);
     assert_eq!(page.items[0].author, "UP");
+    assert_eq!(page.items[0].published_at, 1234);
     Ok(())
 }
 

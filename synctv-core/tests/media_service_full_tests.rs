@@ -1337,6 +1337,32 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
         .await
         .checked("test operation should succeed")
         .is_empty());
+
+    let moved_to_root = room_service
+        .media_service()
+        .move_media(
+            room.id,
+            owner.id,
+            synctv_core::service::MoveMediaRequest {
+                media_ids: vec![moving.id],
+                source_playlist_id: None,
+                target_playlist_id: None,
+                all_from_scope: false,
+                before_media_id: None,
+                after_media_id: None,
+            },
+        )
+        .await
+        .checked("test operation should succeed");
+
+    assert_eq!(moved_to_root.len(), 1);
+    assert_eq!(moved_to_root[0].playlist_id, None);
+    let remaining_in_destination = media_repo
+        .get_by_playlist(&dst.id)
+        .await
+        .checked("test operation should succeed");
+    assert_eq!(remaining_in_destination.len(), 1);
+    assert_eq!(remaining_in_destination[0].id, existing.id);
 }
 
 #[tokio::test]

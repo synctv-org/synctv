@@ -295,11 +295,12 @@ impl MediaService {
             explicit_provider_instance.as_deref(),
         )
         .await?;
-        let provider = if bound_provider_instance == explicit_provider_instance {
-            provider
-        } else {
+        let provider_instance_changed = bound_provider_instance != explicit_provider_instance;
+        let provider = if provider_instance_changed {
             self.resolve_media_provider(config_provider, bound_provider_instance.as_deref())
                 .await?
+        } else {
+            provider
         };
         let ctx = self.build_provider_context(
             provider.name(),
@@ -309,10 +310,12 @@ impl MediaService {
             bound_provider_instance.as_deref(),
         );
 
-        provider
-            .validate_source_config(&ctx, SourceConfig::media(&source_config))
-            .await
-            .map_err(|error| media_source_config_error(item_name, error))?;
+        if provider_instance_changed {
+            provider
+                .validate_source_config(&ctx, SourceConfig::media(&source_config))
+                .await
+                .map_err(|error| media_source_config_error(item_name, error))?;
+        }
 
         let prepared_source_config = provider
             .prepare_source_config(&ctx, SourceConfig::media(&source_config))

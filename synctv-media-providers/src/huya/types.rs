@@ -201,9 +201,9 @@ pub(crate) struct RawVideoInfo {
 pub(crate) struct RawDefinition {
     pub m3u8: Option<String>,
     pub def_name: Option<String>,
-    pub height: Option<u32>,
-    pub width: Option<u32>,
-    pub definition: Option<u64>,
+    pub height: Option<String>,
+    pub width: Option<String>,
+    pub definition: Option<String>,
 }
 
 fn deserialize_i64_default<'de, D>(deserializer: D) -> Result<i64, D::Error>

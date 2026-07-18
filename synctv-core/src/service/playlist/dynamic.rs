@@ -108,9 +108,8 @@ pub(super) async fn validate_dynamic_playlist_source_with_dependencies(
         trimmed_instance.as_deref(),
     )
     .await?;
-    let provider = if bound_instance == trimmed_instance {
-        provider
-    } else {
+    let provider_instance_changed = bound_instance != trimmed_instance;
+    let provider = if provider_instance_changed {
         let provider = deps
             .providers_manager
             .resolve_provider(config_provider, bound_instance.as_deref())
@@ -120,6 +119,8 @@ pub(super) async fn validate_dynamic_playlist_source_with_dependencies(
                 "Provider {provider_name} does not support dynamic playlists"
             )));
         }
+        provider
+    } else {
         provider
     };
 
@@ -137,10 +138,12 @@ pub(super) async fn validate_dynamic_playlist_source_with_dependencies(
         ctx = ctx.with_credential_encryption(enc);
     }
 
-    provider
-        .validate_source_config(&ctx, SourceConfig::dynamic_playlist(&source_config))
-        .await
-        .map_err(|e| Error::InvalidInput(format!("Invalid source_config: {e}")))?;
+    if provider_instance_changed {
+        provider
+            .validate_source_config(&ctx, SourceConfig::dynamic_playlist(&source_config))
+            .await
+            .map_err(|e| Error::InvalidInput(format!("Invalid source_config: {e}")))?;
+    }
 
     let prepared_source_config = provider
         .prepare_source_config(&ctx, SourceConfig::dynamic_playlist(&source_config))

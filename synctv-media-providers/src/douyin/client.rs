@@ -213,8 +213,8 @@ impl DouyinClient {
         ))
         .await?;
         check_api(envelope.status_code, &envelope.status_msg)?;
-        let items = envelope
-            .aweme_list
+        let aweme_list = envelope.aweme_list.unwrap_or_default();
+        let items = aweme_list
             .iter()
             .filter(|aweme| {
                 aweme
@@ -926,6 +926,31 @@ mod tests {
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.cursor.as_deref(), Some("200"));
         assert!(page.has_more);
+    }
+
+    #[tokio::test]
+    async fn treats_null_video_posts_as_an_empty_page() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/posts"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "status_code": 0,
+                "has_more": 0,
+                "max_cursor": null,
+                "aweme_list": null
+            })))
+            .mount(&server)
+            .await;
+
+        let page = client(&server)
+            .await
+            .user_posts("sec-user", None, 18, None)
+            .await
+            .expect("null post lists should deserialize as an empty page");
+
+        assert!(page.items.is_empty());
+        assert_eq!(page.cursor, None);
+        assert!(!page.has_more);
     }
 
     #[tokio::test]

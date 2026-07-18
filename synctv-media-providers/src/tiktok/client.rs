@@ -374,13 +374,12 @@ fn media_from_item(item: RawItem) -> Result<TikTokMedia, ProviderClientError> {
                         .or(bitrate.gear_name.as_deref())
                         .unwrap_or("play"),
                     codec.clone(),
-                    bitrate.bit_rate.or(parsed_bitrate).or_else(|| {
-                        address
-                            .data_size
-                            .zip(video.duration)
-                            .and_then(|(size, duration)| {
-                                (duration > 0).then_some(size.saturating_mul(8_000) / duration)
-                            })
+                    parsed_bitrate.or(bitrate.bit_rate).or_else(|| {
+                        address.data_size.zip(video.duration_seconds).and_then(
+                            |(size, duration)| {
+                                (duration > 0).then_some(size.saturating_mul(8) / duration)
+                            },
+                        )
                     }),
                     video.width,
                     video.height,
@@ -488,7 +487,9 @@ fn media_from_item(item: RawItem) -> Result<TikTokMedia, ProviderClientError> {
             }),
             dynamic_cover: video
                 .and_then(|video| image(video.dynamic_cover.as_deref(), video.width, video.height)),
-            duration_ms: video.and_then(|video| video.duration),
+            duration_ms: video
+                .and_then(|video| video.duration_seconds)
+                .map(|duration| duration.saturating_mul(1000)),
             created_at: item.create_time,
             is_live: false,
             view_count: stats.and_then(|stats| stats.play_count),
@@ -623,7 +624,9 @@ fn list_item_from_raw(item: &RawItem) -> Option<TikTokListItem> {
             video.width,
             video.height,
         ),
-        duration_ms: video.duration,
+        duration_ms: video
+            .duration_seconds
+            .map(|duration| duration.saturating_mul(1000)),
         created_at: item.create_time,
     })
 }
@@ -684,7 +687,7 @@ fn parse_url_key(value: &str) -> (Option<String>, Option<String>, Option<u64>) {
     let bitrate = captures
         .get(3)
         .and_then(|value| value.as_str().parse().ok())
-        .map(|value: u64| value.saturating_mul(1000));
+        .and_then(|value: u64| (value > 0).then_some(value));
     (codec, quality, bitrate)
 }
 
@@ -886,21 +889,21 @@ mod tests {
                     "itemInfo": {"itemStruct": {
                         "id": "7123456789012345678",
                         "desc": "TikTok title",
-                        "createTime": 1_700_000_000,
+                        "createTime": "1700000000",
                         "author": {"id": "1", "secUid": "sec", "uniqueId": "creator", "nickname": "Creator"},
-                        "stats": {"playCount": 42, "diggCount": 7, "collectCount": 3},
+                        "stats": {"playCount": "42", "diggCount": "7", "collectCount": "3"},
                         "music": {"title": "Song", "authorName": "Artist"},
                         "video": {
-                            "duration": 15000,
-                            "width": 1080,
-                            "height": 1920,
+                            "duration": "15",
+                            "width": "1080",
+                            "height": "1920",
                             "cover": "http://img/cover.jpg",
                             "dynamicCover": "https://img/dynamic.webp",
                             "bitrateInfo": [{
-                                "BitRate": 2_000_000,
+                                "BitRate": "2000000000",
                                 "PlayAddr": {
                                     "UrlList": ["http://media/hevc.mp4"],
-                                    "UrlKey": "v09044g40000_bytevc1_1080p_2000"
+                                    "UrlKey": "v09044g40000_bytevc1_1080p_2000000"
                                 }
                             }, {
                                 "PlayAddr": {
@@ -921,6 +924,8 @@ mod tests {
             .await
             .expect("test operation should succeed");
         assert_eq!(media.metadata.title, "TikTok title");
+        assert_eq!(media.metadata.created_at, Some(1_700_000_000));
+        assert_eq!(media.metadata.duration_ms, Some(15_000));
         assert_eq!(media.metadata.view_count, Some(42));
         assert_eq!(media.metadata.subtitles.len(), 1);
         assert_eq!(
@@ -936,6 +941,9 @@ mod tests {
             .variants
             .iter()
             .any(|variant| variant.codec.as_deref() == Some("hevc")));
+        assert!(media.variants.iter().any(|variant| {
+            variant.codec.as_deref() == Some("hevc") && variant.bitrate == Some(2_000_000)
+        }));
         assert!(media.variants.iter().any(|variant| variant.watermarked));
         assert!(!media
             .variants

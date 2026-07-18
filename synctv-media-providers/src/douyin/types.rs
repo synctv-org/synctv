@@ -135,8 +135,7 @@ pub(crate) struct AwemeListEnvelope {
     pub status_code: i64,
     #[serde(default)]
     pub status_msg: String,
-    #[serde(default)]
-    pub aweme_list: Vec<Aweme>,
+    pub aweme_list: Option<Vec<Aweme>>,
     pub max_cursor: Option<serde_json::Value>,
     #[serde(default, deserialize_with = "boolish")]
     pub has_more: bool,

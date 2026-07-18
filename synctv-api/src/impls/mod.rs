@@ -950,9 +950,12 @@ pub fn classify_error(err: &str) -> ErrorKind {
     if lower.contains("not found") {
         ErrorKind::NotFound
     } else if lower.contains("unauthenticated")
+        || lower.contains("authentication failed")
         || lower.contains("invalid token")
         || lower.contains("token expired")
         || lower.contains("not authenticated")
+        || lower.contains("credential expired")
+        || lower.contains("sign in to confirm")
     {
         ErrorKind::Unauthenticated
     } else if lower.contains("permission")
@@ -1165,6 +1168,18 @@ mod tests {
         ));
         assert!(matches!(
             classify_error("Not authenticated"),
+            ErrorKind::Unauthenticated
+        ));
+        assert!(matches!(
+            classify_error("Provider authentication failed"),
+            ErrorKind::Unauthenticated
+        ));
+        assert!(matches!(
+            classify_error("Provider credential expired"),
+            ErrorKind::Unauthenticated
+        ));
+        assert!(matches!(
+            classify_error("Sign in to confirm you’re not a bot"),
             ErrorKind::Unauthenticated
         ));
     }

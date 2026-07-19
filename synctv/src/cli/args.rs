@@ -741,7 +741,7 @@ pub struct UserRefArgs {
     #[arg(value_name = "USER", group = "user_ref")]
     pub username: Option<String>,
 
-    /// Explicit internal user ID
+    /// Explicit public user ID
     #[arg(long, value_name = "USER_ID", group = "user_ref")]
     pub user_id: Option<String>,
 }
@@ -772,7 +772,7 @@ impl UserRefArgs {
 #[derive(Debug, Clone, Args)]
 #[command(group(
     ArgGroup::new("actor_user_ref")
-        .args(["username", "user_id"])
+        .args(["username", "user_id", "email"])
         .required(true)
         .multiple(false)
 ))]
@@ -781,18 +781,63 @@ pub struct ActorUserArgs {
     #[arg(long, value_name = "USERNAME", group = "actor_user_ref")]
     pub username: Option<String>,
 
-    /// Explicit internal user ID of the real actor user
+    /// Explicit public user ID of the real actor user
     #[arg(long, value_name = "USER_ID", group = "actor_user_ref")]
     pub user_id: Option<String>,
+
+    /// Email of the real actor user
+    #[arg(long, value_name = "EMAIL", group = "actor_user_ref")]
+    pub email: Option<String>,
 }
 
 impl ActorUserArgs {
     pub(super) fn to_management_proto(&self) -> Result<management_proto::UserRef> {
-        UserRefArgs {
+        let value = if let Some(user_id) = self.user_id.as_deref() {
+            management_proto::user_ref::Value::UserId(user_id.to_string())
+        } else if let Some(username) = self.username.as_deref() {
+            management_proto::user_ref::Value::Username(username.to_string())
+        } else if let Some(email) = self.email.as_deref() {
+            management_proto::user_ref::Value::Email(email.to_string())
+        } else {
+            bail!("actor reference requires --username, --user-id, or --email")
+        };
+        Ok(management_proto::UserRef { value: Some(value) })
+    }
+}
+
+#[derive(Debug, Clone, Args)]
+#[command(group(
+    ArgGroup::new("optional_actor_user_ref")
+        .args(["username", "user_id", "email"])
+        .required(false)
+        .multiple(false)
+))]
+pub struct OptionalActorUserArgs {
+    /// Username of the real user associated with the operation
+    #[arg(long, value_name = "USERNAME", group = "optional_actor_user_ref")]
+    pub username: Option<String>,
+
+    /// Public ID of the real user associated with the operation
+    #[arg(long, value_name = "USER_ID", group = "optional_actor_user_ref")]
+    pub user_id: Option<String>,
+
+    /// Email of the real user associated with the operation
+    #[arg(long, value_name = "EMAIL", group = "optional_actor_user_ref")]
+    pub email: Option<String>,
+}
+
+impl OptionalActorUserArgs {
+    pub(super) fn to_management_proto(&self) -> Result<Option<management_proto::UserRef>> {
+        if self.username.is_none() && self.user_id.is_none() && self.email.is_none() {
+            return Ok(None);
+        }
+        ActorUserArgs {
             username: self.username.clone(),
             user_id: self.user_id.clone(),
+            email: self.email.clone(),
         }
         .to_management_proto()
+        .map(Some)
     }
 }
 

@@ -275,6 +275,7 @@ message UserRef {
     oneof value {
         string user_id = 1;
         string username = 2;
+        string email = 3;
     }
 }
 
@@ -584,10 +585,11 @@ message BatchDeleteRoomsRequest {
 }
 
 message StartPlaybackRequest {
-    string room_id = 1;
-    string media_id = 2;
-    string playlist_id = 3;
-    synctv.client.ProviderTarget target = 4;
+    UserRef actor = 1;
+    string room_id = 2;
+    string media_id = 3;
+    string playlist_id = 4;
+    synctv.client.ProviderTarget target = 5;
 }
 
 message StopPlaybackRequest {

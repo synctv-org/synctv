@@ -509,7 +509,6 @@ message ChatPlaybackChangedMetadata {
   ChatPlaybackMetadata to = 2;
   PlaybackChangeReason reason = 3;
   string actor_user_id = 4;
-  string actor_username = 5;
 }
 
 message ChatMetadata {

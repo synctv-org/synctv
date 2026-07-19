@@ -85,8 +85,8 @@ openapi-generator-cli generate \
 - 反向代理允许访问 `/api-docs/openapi.json`。
 - 只允许内网开发者访问时，在 Ingress、Nginx、网关或防火墙层限制来源。
 
-不暴露 API 结构时，使用不带 `openapi` feature 的生产构建。Docker 构建可传入显式
-feature 组合：
+Cargo 默认构建不启用 OpenAPI，Dockerfile 默认启用。Docker 生产构建可传入不含
+`openapi` 的显式 feature 组合：
 
 ```bash
 docker build \

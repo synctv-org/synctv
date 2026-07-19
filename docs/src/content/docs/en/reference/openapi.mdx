@@ -85,8 +85,8 @@ Before exposing Swagger UI in production:
 - Allow `/api-docs/openapi.json` through the reverse proxy.
 - Restrict access at Ingress, Nginx, gateway, or firewall level if only internal developers should access it.
 
-To avoid exposing API structure in production, build without the `openapi` feature.
-For Docker builds, pass an explicit feature set:
+Cargo builds leave OpenAPI disabled by default, while the Dockerfile enables it by default.
+For a production Docker build without OpenAPI, pass an explicit feature set:
 
 ```bash
 docker build \

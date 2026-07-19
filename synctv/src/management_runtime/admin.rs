@@ -1058,6 +1058,7 @@ impl AdminRuntime for ManagementAdminRuntime {
             .start_playback(
                 &command.room_id,
                 req,
+                command.actor_user_id,
                 admin_user_id,
                 &api_request_context(ctx),
             )

@@ -101,7 +101,6 @@ struct PlaybackSwitchCommand {
     room_id: RoomId,
     actor_user_id: UserId,
     recorded_actor_user_id: Option<UserId>,
-    recorded_actor_username: Option<String>,
     target: SwitchPlaybackTarget,
     bypass_room_permissions: bool,
     outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
@@ -577,7 +576,6 @@ impl PlaybackService {
         current: &RoomPlaybackState,
         reason: PlaybackChangeReason,
         actor_user_id: Option<UserId>,
-        actor_username: Option<&str>,
     ) -> Result<()> {
         if previous.playing_media_id == current.playing_media_id
             && previous.playing_playlist_id == current.playing_playlist_id
@@ -601,16 +599,6 @@ impl PlaybackService {
                 .fetch_one(&mut **tx)
                 .await?
         };
-        let actor_username = if let Some(username) = actor_username {
-            Some(username.to_string())
-        } else if let Some(actor) = actor_user_id {
-            sqlx::query_scalar::<_, String>("SELECT username FROM users WHERE id = $1")
-                .bind(actor.as_i64())
-                .fetch_optional(&mut **tx)
-                .await?
-        } else {
-            None
-        };
         let from = (previous.playing_media_id.is_some() || previous.playing_playlist_id.is_some())
             .then(|| Self::chat_playback_metadata(previous, previous.computed_position()));
         let mut message = ChatMessage::new(current.room_id, event_actor, "Playback changed".into());
@@ -621,7 +609,6 @@ impl PlaybackService {
             to: Self::chat_playback_metadata(current, current.position),
             reason,
             actor_user_id,
-            actor_username,
         }));
         let occurred_at = self.clock.now();
         message.created_at = occurred_at;
@@ -674,7 +661,6 @@ impl PlaybackService {
         history_transition: PlaybackHistoryTransition,
         reason: PlaybackChangeReason,
         actor_user_id: Option<UserId>,
-        actor_username: Option<&str>,
         outbox_event_factory: Option<&RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<RoomPlaybackState> {
         let reservation = self
@@ -732,7 +718,6 @@ impl PlaybackService {
                 &updated,
                 reason,
                 actor_user_id,
-                actor_username,
             )
             .await?;
             Ok(updated)
@@ -916,7 +901,6 @@ impl PlaybackService {
             room_id,
             actor_user_id: user_id,
             recorded_actor_user_id: Some(user_id),
-            recorded_actor_username: None,
             target: SwitchPlaybackTarget {
                 media_id,
                 playlist_id,
@@ -943,7 +927,6 @@ impl PlaybackService {
             room_id,
             actor_user_id,
             Some(actor_user_id),
-            None,
             media_id,
             playlist_id,
             target,
@@ -957,7 +940,6 @@ impl PlaybackService {
         room_id: RoomId,
         actor_user_id: UserId,
         recorded_actor_user_id: Option<UserId>,
-        recorded_actor_username: Option<String>,
         media_id: Option<MediaId>,
         playlist_id: Option<PlaylistId>,
         target: Option<ProviderTarget>,
@@ -967,7 +949,6 @@ impl PlaybackService {
             room_id,
             actor_user_id,
             recorded_actor_user_id,
-            recorded_actor_username,
             target: SwitchPlaybackTarget {
                 media_id,
                 playlist_id,
@@ -1084,7 +1065,6 @@ impl PlaybackService {
                                 PlaybackHistoryTransition::SelectEntry(next),
                                 reason,
                                 actor_user_id,
-                                None,
                                 outbox_event_factory.as_ref(),
                             )
                             .await?;
@@ -1346,7 +1326,6 @@ impl PlaybackService {
                         },
                         reason,
                         actor_user_id,
-                        None,
                         outbox_event_factory.as_ref(),
                     )
                     .await?;
@@ -1416,7 +1395,6 @@ impl PlaybackService {
                             PlaybackHistoryTransition::SelectEntry(entry),
                             reason,
                             Some(user_id),
-                            None,
                             outbox_event_factory.as_ref(),
                         )
                         .await?;
@@ -1491,7 +1469,6 @@ impl PlaybackService {
                             PlaybackHistoryTransition::SelectEntry(entry),
                             PlaybackChangeReason::Previous,
                             Some(user_id),
-                            None,
                             outbox_event_factory.as_ref(),
                         )
                         .await?;
@@ -1877,7 +1854,6 @@ impl PlaybackService {
             room_id,
             actor_user_id,
             recorded_actor_user_id,
-            recorded_actor_username,
             target,
             bypass_room_permissions,
             outbox_event_factory,
@@ -1968,7 +1944,6 @@ impl PlaybackService {
             || {
                 let target = target.clone();
                 let outbox_event_factory = outbox_event_factory.clone();
-                let recorded_actor_username = recorded_actor_username.clone();
                 async move {
                     let previous = match self.playback_repo.get(&room_id).await? {
                         Some(state) => state,
@@ -1990,7 +1965,6 @@ impl PlaybackService {
                             },
                             PlaybackChangeReason::Selected,
                             recorded_actor_user_id,
-                            recorded_actor_username.as_deref(),
                             outbox_event_factory.as_ref(),
                         )
                         .await?;

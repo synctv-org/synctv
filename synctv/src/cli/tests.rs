@@ -639,6 +639,18 @@ fn cli_user_refs_are_encoded_without_client_side_resolution() {
         Some(management_proto::user_ref::Value::UserId(ref user_id)) if user_id == "m6K3dSXiWUjU"
     ));
 
+    let email_ref = ActorUserArgs {
+        username: None,
+        user_id: None,
+        email: Some("alice@example.com".to_string()),
+    }
+    .to_management_proto()
+    .expect("email actor ref should encode");
+    assert!(matches!(
+        email_ref.value,
+        Some(management_proto::user_ref::Value::Email(ref email)) if email == "alice@example.com"
+    ));
+
     let batch_refs =
         batch_user_refs_to_proto(vec!["alice".to_string()], vec!["m6K3dSXiWUjU".to_string()]);
     assert!(matches!(
@@ -4400,6 +4412,37 @@ fn cli_parses_room_playback_start_with_media_id() {
             assert_eq!(args.room.room_id, "room-1");
             assert_eq!(args.media_id.as_deref(), Some("media-1"));
             assert_eq!(args.playlist_id, None);
+            assert_eq!(args.actor.username, None);
+            assert_eq!(args.actor.user_id, None);
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_optional_room_playback_actor() {
+    let cli = Cli::parse_from([
+        "synctv",
+        "room",
+        "playback",
+        "start",
+        "--room-id",
+        "room-1",
+        "--media-id",
+        "media-1",
+        "--email",
+        "operator@example.com",
+    ]);
+    match cli.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Playback(RoomPlaybackCommand {
+                    command: RoomPlaybackSubcommand::Start(args),
+                }),
+        }) => {
+            assert_eq!(args.actor.username, None);
+            assert_eq!(args.actor.user_id, None);
+            assert_eq!(args.actor.email.as_deref(), Some("operator@example.com"));
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }

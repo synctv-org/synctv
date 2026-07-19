@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [features]
-default = []
+default = ["tls-aws-lc", "tls-webpki-roots"]
 tls-aws-lc = [
     "synctv-core/tls-aws-lc",
     "synctv-cluster/tls-aws-lc",

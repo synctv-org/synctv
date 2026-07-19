@@ -10,6 +10,7 @@ name = "synctv"
 path = "src/main.rs"
 
 [features]
+# OpenAPI is opt-in through the `openapi` feature below.
 default = ["tls-aws-lc", "tls-webpki-roots"]
 # Enable Kubernetes support (K8s DNS discovery, K8s Lease leader election).
 # Disable to reduce binary size for non-K8s deployments:
@@ -28,10 +29,10 @@ openapi = ["synctv-api/openapi"]
 # - `tls-aws-lc` / `tls-ring` select the rustls crypto provider where upstream
 #   crates expose provider selection.
 # - `tls-webpki-roots` / `tls-native-roots` select trust root sources where
-#   upstream crates expose root selection. SQLx 0.8 only supports native roots
-#   through its ring backend; reqwest 0.13 uses platform verification; baseline
-#   email TLS keeps webpki roots because lettre requires a verifier/root feature
-#   whenever rustls is compiled.
+#   upstream crates expose root selection. SQLx 0.9 bundles provider and root
+#   selection, so both SQLx provider features use webpki roots; reqwest 0.13 uses
+#   platform verification; baseline email TLS keeps webpki roots because lettre
+#   requires a verifier/root feature whenever rustls is compiled.
 # Root features propagate this contract to workspace crates that perform TLS.
 tls-aws-lc = [
     "synctv-core/tls-aws-lc",
@@ -63,6 +64,7 @@ tls-ring = [
     "synctv-media-providers/tls-ring",
     "synctv-common/tls-ring",
     "synctv-xiu/tls-ring",
+    "sqlx/tls-rustls-ring-webpki",
     "tonic/tls-ring",
     "reqwest/rustls-no-provider",
     "rustls/ring",
@@ -81,7 +83,6 @@ tls-webpki-roots = [
     "synctv-common/tls-webpki-roots",
     "synctv-xiu/tls-webpki-roots",
     "tonic/tls-webpki-roots",
-    "sqlx/tls-rustls-ring-webpki",
     "redis/tokio-rustls-comp",
     "redis/tls-rustls-webpki-roots",
     "tokio-tungstenite/rustls-tls-webpki-roots",
@@ -99,7 +100,6 @@ tls-native-roots = [
     "synctv-common/tls-native-roots",
     "synctv-xiu/tls-native-roots",
     "tonic/tls-native-roots",
-    "sqlx/tls-rustls-ring-native-roots",
     "redis/tokio-rustls-comp",
     "tokio-tungstenite/rustls-tls-native-roots",
 ]

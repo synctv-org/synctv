@@ -110,7 +110,7 @@ symphonia.workspace = true
 
 
 [features]
-default = ["tls-aws-lc"]
+default = ["tls-aws-lc", "tls-webpki-roots"]
 k8s = []
 test-support = []
 tls-aws-lc = [
@@ -125,6 +125,7 @@ tls-aws-lc = [
 tls-ring = [
     "synctv-media-providers/tls-ring",
     "synctv-common/tls-ring",
+    "sqlx/tls-rustls-ring-webpki",
     "lettre/ring",
     "reqwest/rustls-no-provider",
     "rustls/ring",
@@ -133,19 +134,15 @@ tls-ring = [
 tls-webpki-roots = [
     "synctv-media-providers/tls-webpki-roots",
     "synctv-common/tls-webpki-roots",
-    "sqlx/tls-rustls-ring-webpki",
     "lettre/webpki-roots",
     "redis/tokio-rustls-comp",
     "redis/tls-rustls-webpki-roots",
-    "jsonwebtoken/rust_crypto",
 ]
 tls-native-roots = [
     "synctv-media-providers/tls-native-roots",
     "synctv-common/tls-native-roots",
-    "sqlx/tls-rustls-ring-native-roots",
     "lettre/rustls-native-certs",
     "redis/tokio-rustls-comp",
-    "jsonwebtoken/rust_crypto",
 ]
 
 [lints]

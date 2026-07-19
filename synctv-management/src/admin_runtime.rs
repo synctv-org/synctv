@@ -266,6 +266,7 @@ pub struct BatchDeleteRoomsCommand {
 
 #[derive(Debug, Clone)]
 pub struct StartPlaybackCommand {
+    pub actor_user_id: Option<UserId>,
     pub room_id: String,
     pub media_id: String,
     pub playlist_id: String,

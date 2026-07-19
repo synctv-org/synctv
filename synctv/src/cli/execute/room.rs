@@ -432,11 +432,13 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                 let media_id = args.media_id;
                 let playlist_id = args.playlist_id;
                 let target = parse_optional_provider_target_json(args.target_json.as_deref())?;
+                let actor = args.actor.to_management_proto()?;
                 management_unary_call!(
                     session,
                     "start room playback",
                     start_playback,
                     management_proto::StartPlaybackRequest {
+                        actor,
                         room_id: room_id.clone(),
                         media_id: media_id.clone().unwrap_or_default(),
                         playlist_id: playlist_id.clone().unwrap_or_default(),

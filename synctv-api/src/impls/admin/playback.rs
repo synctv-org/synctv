@@ -421,6 +421,7 @@ impl AdminApiImpl {
         &self,
         room_id: &str,
         req: synctv_proto::client::StartPlaybackRequest,
+        recorded_actor_user_id: Option<UserId>,
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
@@ -441,6 +442,7 @@ impl AdminApiImpl {
             .admin_start_playback_as_with_outbox(
                 rid,
                 &actor,
+                recorded_actor_user_id,
                 target.media_id,
                 target.playlist_id,
                 target.target,

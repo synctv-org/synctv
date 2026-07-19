@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [features]
-default = []
+default = ["tls-aws-lc", "tls-webpki-roots"]
 # Enables integration-test hooks that mutate internal discovery state.
 test-support = []
 k8s = ["kube", "k8s-openapi"]

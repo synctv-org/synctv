@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [features]
-default = ["openapi"]
+default = ["tls-aws-lc", "tls-webpki-roots"]
 openapi = ["synctv-proto/openapi", "dep:utoipa", "dep:utoipa-swagger-ui"]
 k8s = ["dep:kube", "dep:k8s-openapi", "synctv-cluster/k8s"]
 tls-aws-lc = [
@@ -32,6 +32,7 @@ tls-ring = [
     "synctv-livestream/tls-ring",
     "synctv-proto/tls-ring",
     "synctv-common/tls-ring",
+    "sqlx/tls-rustls-ring-webpki",
     "tonic/tls-ring",
     "reqwest/rustls-no-provider",
     "kube?/ring",
@@ -46,7 +47,6 @@ tls-webpki-roots = [
     "synctv-proto/tls-webpki-roots",
     "synctv-common/tls-webpki-roots",
     "tonic/tls-webpki-roots",
-    "sqlx/tls-rustls-ring-webpki",
     "redis/tokio-rustls-comp",
     "redis/tls-rustls-webpki-roots",
     "tokio-tungstenite/rustls-tls-webpki-roots",
@@ -63,7 +63,6 @@ tls-native-roots = [
     "synctv-proto/tls-native-roots",
     "synctv-common/tls-native-roots",
     "tonic/tls-native-roots",
-    "sqlx/tls-rustls-ring-native-roots",
     "redis/tokio-rustls-comp",
     "tokio-tungstenite/rustls-tls-native-roots",
     "kube?/rustls-tls",

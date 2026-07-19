@@ -557,7 +557,6 @@ pub fn chat_metadata_to_proto(
                             .map(|id| encode_user_id_for_proto(id, public_id_codec))
                             .transpose()?
                             .unwrap_or_default(),
-                        actor_username: payload.actor_username.clone().unwrap_or_default(),
                     },
                 )),
             }))

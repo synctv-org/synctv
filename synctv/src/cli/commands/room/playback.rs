@@ -44,6 +44,9 @@ pub struct RoomPlaybackStartArgs {
     #[command(flatten)]
     pub room: RoomScopedRemoteArgs,
 
+    #[command(flatten)]
+    pub actor: OptionalActorUserArgs,
+
     #[arg(long, group = "playback_target")]
     pub media_id: Option<String>,
 

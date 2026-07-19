@@ -31,6 +31,7 @@ impl RoomService {
         self.admin_start_playback_as_with_outbox(
             room_id,
             actor,
+            Some(*actor.user_id()),
             media_id,
             playlist_id,
             target,
@@ -43,6 +44,7 @@ impl RoomService {
         &self,
         room_id: RoomId,
         actor: &AuthorizedAdminActor,
+        recorded_actor_user_id: Option<UserId>,
         media_id: Option<MediaId>,
         playlist_id: Option<PlaylistId>,
         target: Option<ProviderTarget>,
@@ -52,8 +54,7 @@ impl RoomService {
             .admin_switch_with_outbox(
                 room_id,
                 *actor.user_id(),
-                actor.persistent_user_id(),
-                Some(actor.username().to_string()),
+                recorded_actor_user_id,
                 media_id,
                 playlist_id,
                 target,

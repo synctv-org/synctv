@@ -3766,6 +3766,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
     let suffix = unique_test_suffix();
 
     let owner_username = format!("cli_room_owner_{suffix}");
+    let owner_email = format!("cli-room-owner-{suffix}@example.com");
     let member_username = format!("cli_room_member_{suffix}");
     let subject_username = format!("cli_room_subject_{suffix}");
     let owner_password = "CliOwnerPass12345!";
@@ -3777,7 +3778,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
     create_cli_user(
         &server,
         &owner_username,
-        &format!("cli-room-owner-{suffix}@example.com"),
+        &owner_email,
         owner_password,
         Some("active"),
         "create room owner",
@@ -4271,6 +4272,29 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
     assert_eq!(playlist_media_array[0]["id"], media_two_id);
     assert_eq!(playlist_media_array[1]["id"], media_one_id);
 
+    let unknown_actor_error = run_synctv_remote_cli_failure(
+        &server,
+        &[
+            "room",
+            "playback",
+            "start",
+            "--room-id",
+            &room_id,
+            "--media-id",
+            &media_one_id,
+            "--email",
+            "missing-playback-actor@example.com",
+        ],
+        "reject unknown playback actor email",
+    )
+    .await;
+    assert!(
+        unknown_actor_error
+            .to_ascii_lowercase()
+            .contains("not found"),
+        "unknown playback actor should produce a not-found error: {unknown_actor_error}"
+    );
+
     let started_playback = run_synctv_remote_cli_json(
         &server,
         &[
@@ -4281,6 +4305,8 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
             &room_id,
             "--media-id",
             &media_one_id,
+            "--email",
+            &owner_email,
         ],
         "start room playback",
     )

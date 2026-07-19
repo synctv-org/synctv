@@ -84,7 +84,7 @@ base64.workspace = true
 hex.workspace = true
 
 [features]
-default = ["tls-aws-lc"]
+default = ["tls-aws-lc", "tls-webpki-roots"]
 tls-aws-lc = [
     "synctv-common/tls-aws-lc",
     "reqwest/rustls",

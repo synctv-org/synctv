@@ -406,10 +406,33 @@ impl ManagementServiceImpl {
                         Status::internal(format!("failed to encode resolved user id: {error}"))
                     })
             }
+            Some(crate::proto::user_ref::Value::Email(email)) => {
+                let email = email.trim();
+                if email.is_empty() {
+                    if required {
+                        return Err(Status::invalid_argument(format!(
+                            "{field_name}.email must not be empty"
+                        )));
+                    }
+                    return Ok(String::new());
+                }
+
+                let user = self
+                    .user_service
+                    .get_by_email(email)
+                    .await
+                    .map_err(map_management_user_lookup_error)?
+                    .ok_or_else(|| Status::not_found("User not found"))?;
+                self.public_id_codec
+                    .encode_user_id(user.id)
+                    .map_err(|error| {
+                        Status::internal(format!("failed to encode resolved user id: {error}"))
+                    })
+            }
             None => {
                 if required {
                     Err(Status::invalid_argument(format!(
-                        "{field_name} must contain either user_id or username"
+                        "{field_name} must contain user_id, username, or email"
                     )))
                 } else {
                     Ok(String::new())
@@ -419,9 +442,8 @@ impl ManagementServiceImpl {
     }
 
     async fn resolve_client_actor_user_id(&self, actor: Option<UserRef>) -> Result<UserId, Status> {
-        // Management creation commands execute as this real client actor, not as
-        // the authenticated admin/management process. The downstream client API
-        // enforces room membership and permissions for room-scoped resources.
+        // Resolve resource ownership and attribution to a persistent user before
+        // the management principal reaches client or administrative workflows.
         let actor_user_id = self.resolve_required_user_ref(actor, "actor").await?;
         let actor_user_id = self
             .public_id_codec
@@ -434,6 +456,19 @@ impl ManagementServiceImpl {
             .map_err(map_management_user_lookup_error)?;
         validate_client_actor_user(&user)?;
         Ok(user.id)
+    }
+
+    async fn resolve_optional_client_actor_user_id(
+        &self,
+        actor: Option<UserRef>,
+    ) -> Result<Option<UserId>, Status> {
+        match actor {
+            Some(actor) => self
+                .resolve_client_actor_user_id(Some(actor))
+                .await
+                .map(Some),
+            None => Ok(None),
+        }
     }
 
     async fn resolve_client_actor_and_request<T>(
@@ -911,10 +946,41 @@ impl ManagementServiceImpl {
                         resolved.push(trimmed.to_string());
                     }
                 }
+                Some(crate::proto::user_ref::Value::Email(email)) => {
+                    let email = email.trim();
+                    if email.is_empty() {
+                        failures.push(Self::batch_user_ref_failure(
+                            "",
+                            "email values must not be empty",
+                        ));
+                        continue;
+                    }
+                    match self.user_service.get_by_email(email).await {
+                        Ok(Some(user)) => match self.public_id_codec.encode_user_id(user.id) {
+                            Ok(user_id) => {
+                                if seen.insert(user_id.clone()) {
+                                    resolved.push(user_id);
+                                }
+                            }
+                            Err(error) => failures.push(Self::batch_user_ref_failure(
+                                email,
+                                format!("Failed to encode resolved user id: {error}"),
+                            )),
+                        },
+                        Ok(None) => failures.push(Self::batch_user_ref_failure(
+                            email,
+                            format!("User with email '{email}' was not found"),
+                        )),
+                        Err(error) => failures.push(Self::batch_user_ref_failure(
+                            email,
+                            format!("Failed to resolve user email '{email}': {error}"),
+                        )),
+                    }
+                }
                 None => {
                     failures.push(Self::batch_user_ref_failure(
                         "",
-                        "user ref must contain either user_id or username",
+                        "user ref must contain user_id, username, or email",
                     ));
                 }
             }
@@ -2416,10 +2482,14 @@ impl ManagementService for ManagementServiceImpl {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
+        let actor_user_id = self
+            .resolve_optional_client_actor_user_id(req.actor)
+            .await?;
         let response = self
             .admin_api
             .start_playback(
                 StartPlaybackCommand {
+                    actor_user_id,
                     room_id: req.room_id,
                     media_id: req.media_id,
                     playlist_id: req.playlist_id,

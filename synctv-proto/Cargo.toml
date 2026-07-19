@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [features]
-default = ["full"]
+default = ["full", "tls-aws-lc", "tls-webpki-roots"]
 full = ["main", "providers", "playback-provider"]
 main = []
 providers = ["main"]

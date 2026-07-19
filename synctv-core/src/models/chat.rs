@@ -123,7 +123,6 @@ pub struct ChatPlaybackChangedMetadata {
     pub to: ChatPlaybackMetadata,
     pub reason: PlaybackChangeReason,
     pub actor_user_id: Option<UserId>,
-    pub actor_username: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

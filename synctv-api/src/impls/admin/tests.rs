@@ -4309,6 +4309,7 @@ async fn test_start_playback_bypasses_room_membership_requirement_for_global_adm
                     playlist_id: String::new(),
                     target: None,
                 },
+                Some(global_admin.id),
                 &global_admin.id,
                 &RequestContext::default(),
             )
@@ -4318,6 +4319,39 @@ async fn test_start_playback_bypasses_room_membership_requirement_for_global_adm
     let state = core_ok(admin_api.room_service.get_playback_state(&room.id).await)?;
     assert_eq!(state.playing_media_id.as_ref(), Some(&media.id));
     assert!(state.is_playing);
+    let selected_by_user_id = core_ok(
+        sqlx::query_scalar!(
+            r#"
+            SELECT selected_by_user_id AS "selected_by_user_id: UserId"
+            FROM room_playback_history
+            WHERE room_id = $1
+            ORDER BY sequence DESC
+            LIMIT 1
+            "#,
+            room.id.as_i64(),
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(synctv_core::Error::from),
+    )?;
+    assert_eq!(selected_by_user_id, Some(global_admin.id));
+    let playback_metadata_has_actor_username = core_ok(
+        sqlx::query_scalar!(
+            r#"
+            SELECT metadata ? 'actorUsername' AS "has_actor_username!"
+            FROM chat_messages
+            WHERE room_id = $1 AND message_type = $2
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            "#,
+            room.id.as_i64(),
+            i16::from(synctv_core::models::ChatMessageType::SystemPlaybackChanged),
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(synctv_core::Error::from),
+    )?;
+    assert!(!playback_metadata_has_actor_username);
     Ok(())
 }
 

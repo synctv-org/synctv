@@ -505,6 +505,7 @@ pub fn api_runtime_settings(config: &AppConfig) -> ApiRuntimeSettings {
     ApiRuntimeSettings {
         server: ApiServerSettings {
             bind_address: config.api_address(),
+            project_url: config.server.project_url.clone(),
             trusted_proxies: config.server.trusted_proxies.clone(),
             cors_allowed_origins: config.server.cors_allowed_origins.clone(),
             grpc_max_message_size_bytes: config.server.grpc_max_message_size_bytes,

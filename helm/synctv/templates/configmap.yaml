@@ -48,6 +48,7 @@ data:
     server:
       host: {{ .Values.config.server.host | quote }}
       port: {{ .Values.config.server.port }}
+      project_url: {{ .Values.config.server.projectUrl | default "https://github.com/synctv-org/synctv" | quote }}
       enable_reflection: {{ .Values.config.server.enableReflection | default false }}
       shutdown_drain_timeout_seconds: {{ .Values.config.server.shutdownDrainTimeoutSeconds | default 30 }}
       grpc_max_message_size_bytes: {{ printf "%d" (int64 (.Values.config.server.grpcMaxMessageSizeBytes | default 16777216)) }}

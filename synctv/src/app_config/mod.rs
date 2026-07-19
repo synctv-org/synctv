@@ -85,6 +85,7 @@ fn build_url_from_split_parts(
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+    pub project_url: String,
     pub enable_reflection: bool,
     pub trusted_proxies: Vec<String>,
     pub cors_allowed_origins: Vec<String>,
@@ -99,6 +100,7 @@ impl Default for ServerConfig {
         Self {
             host: "0.0.0.0".to_string(),
             port: 8080,
+            project_url: synctv_api::DEFAULT_PROJECT_URL.to_string(),
             enable_reflection: false,
             trusted_proxies: Vec::new(),
             cors_allowed_origins: Vec::new(),

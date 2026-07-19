@@ -1,6 +1,18 @@
 use super::*;
 use synctv_api::validate_cors_origin;
 
+fn validate_project_url(project_url: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(project_url)
+        .map_err(|error| format!("server.project_url is not a valid URL: {error}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("server.project_url must use http:// or https://".to_string());
+    }
+    if parsed.host_str().is_none() {
+        return Err("server.project_url must include a host".to_string());
+    }
+    Ok(())
+}
+
 impl AppConfig {
     fn database_split_config_present(&self) -> bool {
         !self.database.host.trim().is_empty()
@@ -271,6 +283,9 @@ impl AppConfig {
 
         if self.server.shutdown_drain_timeout_seconds == 0 {
             errors.push("server.shutdown_drain_timeout_seconds must be greater than 0".to_string());
+        }
+        if let Err(error) = validate_project_url(&self.server.project_url) {
+            errors.push(error);
         }
 
         if self.metrics.enabled {
@@ -1145,6 +1160,24 @@ impl AppConfig {
             Ok(())
         } else {
             Err(errors)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_project_url;
+
+    #[test]
+    fn project_url_accepts_http_urls_with_project_paths() {
+        assert!(validate_project_url("https://github.com/synctv-org/synctv").is_ok());
+        assert!(validate_project_url("http://example.com/project?source=api#readme").is_ok());
+    }
+
+    #[test]
+    fn project_url_requires_an_http_url_with_a_host() {
+        for value in ["", "synctv-org/synctv", "file:///tmp/synctv", "https://"] {
+            assert!(validate_project_url(value).is_err(), "value: {value}");
         }
     }
 }

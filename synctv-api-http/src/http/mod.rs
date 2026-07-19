@@ -30,9 +30,10 @@ pub(crate) mod websocket;
 use crate::providers;
 use axum::{
     body::Body,
+    extract::State,
     http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     middleware as axum_middleware,
-    response::IntoResponse,
+    response::{IntoResponse, Redirect},
     routing::{get, post},
     Router,
 };
@@ -853,6 +854,7 @@ fn register_websocket_routes() -> Router<AppState> {
 
 fn register_all_routes() -> Router<AppState> {
     let mut router = Router::new()
+        .route("/", get(redirect_to_project))
         .merge(health::create_health_router())
         .merge(openapi_router())
         .merge(public::create_public_router())
@@ -1352,6 +1354,10 @@ fn register_all_routes() -> Router<AppState> {
         router.merge(Router::new().nest("/api/providers/rtmp", providers::rtmp::rtmp_routes()));
 
     router
+}
+
+async fn redirect_to_project(State(state): State<AppState>) -> Redirect {
+    Redirect::temporary(&state.runtime_settings.server.project_url)
 }
 
 #[cfg(feature = "openapi")]

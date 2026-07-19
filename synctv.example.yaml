@@ -19,6 +19,8 @@
 server:
   host: "0.0.0.0"
   port: 8080
+  # Destination for requests to the API root path (/).
+  project_url: "https://github.com/synctv-org/synctv"
   enable_reflection: false
   # Maximum gRPC message size in bytes (both incoming and outgoing).
   # Prevents OOM attacks from oversized messages. Default: 16MB (16777216 bytes).

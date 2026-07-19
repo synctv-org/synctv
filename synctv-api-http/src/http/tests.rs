@@ -1655,6 +1655,27 @@ async fn test_playback_patch_route_is_reachable_via_project_router() -> TestResu
 }
 
 #[tokio::test]
+async fn test_api_root_redirects_to_configured_project_url() -> TestResult {
+    let mut state = test_app_state();
+    Arc::make_mut(&mut Arc::make_mut(&mut state.router_options).runtime_settings)
+        .server
+        .project_url = "https://example.com/synctv/project?source=api".to_string();
+    let app = super::create_router_from_shared_state(&state)?;
+    let request = Request::builder().uri("/").body(Body::empty())?;
+
+    let response = test_response(app.oneshot(request).await)?;
+
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(
+        response.headers().get(header::LOCATION),
+        Some(&HeaderValue::from_static(
+            "https://example.com/synctv/project?source=api"
+        ))
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_playback_navigation_routes_are_reachable_via_project_router() -> TestResult {
     synctv_core::install_process_crypto_provider();
     for (method, uri, body) in [

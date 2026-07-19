@@ -340,6 +340,7 @@ config:
   server:
     host: "0.0.0.0"
     port: 8080
+    projectUrl: "https://github.com/synctv-org/synctv"
     enableReflection: false
     shutdownDrainTimeoutSeconds: 30
     grpcMaxMessageSizeBytes: 16777216

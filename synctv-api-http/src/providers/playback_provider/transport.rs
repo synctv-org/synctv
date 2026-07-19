@@ -38,6 +38,7 @@ pub fn bilibili_danmaku_sse_event(
                 message: error.to_string(),
                 code: error.code(),
                 detail: String::new(),
+                client_operation_id: String::new(),
             })
             .unwrap_or_else(|_| r#"{"message":"Failed to serialize provider error"}"#.to_string()),
         ),
@@ -63,6 +64,7 @@ pub fn twitch_chat_sse_event(
                 message: error.to_string(),
                 code: error.code(),
                 detail: String::new(),
+                client_operation_id: String::new(),
             })
             .unwrap_or_else(|_| r#"{"message":"Failed to serialize provider error"}"#.to_string()),
         ),
@@ -88,6 +90,7 @@ pub fn huya_danmaku_sse_event(
                 message: error.to_string(),
                 code: error.code(),
                 detail: String::new(),
+                client_operation_id: String::new(),
             })
             .unwrap_or_else(|_| r#"{"message":"Failed to serialize provider error"}"#.to_string()),
         ),
@@ -113,6 +116,7 @@ pub fn douyu_danmaku_sse_event(
                 message: error.to_string(),
                 code: error.code(),
                 detail: String::new(),
+                client_operation_id: String::new(),
             })
             .unwrap_or_else(|_| r#"{"message":"Failed to serialize provider error"}"#.to_string()),
         ),
@@ -138,6 +142,7 @@ pub fn douyin_danmaku_sse_event(
                 message: error.to_string(),
                 code: error.code(),
                 detail: String::new(),
+                client_operation_id: String::new(),
             })
             .unwrap_or_else(|_| r#"{"message":"Failed to serialize provider error"}"#.to_string()),
         ),
@@ -163,6 +168,7 @@ pub fn acfun_danmaku_sse_event(
                 message: error.to_string(),
                 code: error.code(),
                 detail: String::new(),
+                client_operation_id: String::new(),
             })
             .unwrap_or_else(|_| r#"{"message":"Failed to serialize provider error"}"#.to_string()),
         ),

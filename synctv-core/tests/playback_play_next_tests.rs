@@ -605,6 +605,9 @@ async fn test_auto_advance_after_previous_uses_recorded_forward_history() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(&pool);
+    let mut committed_events = room_service
+        .notification_service()
+        .subscribe_committed_realtime_events();
     let owner = user_repo
         .create(&make_user("history_forward_owner"))
         .await
@@ -686,6 +689,22 @@ async fn test_auto_advance_after_previous_uses_recorded_forward_history() {
     .await
     .checked("playback system message reason should be queryable");
     assert_eq!(latest_reason, "auto_advance");
+
+    let mut received_playback_changes = 0;
+    while received_playback_changes < 4 {
+        let event =
+            tokio::time::timeout(std::time::Duration::from_secs(1), committed_events.recv())
+                .await
+                .checked("committed playback chat event should arrive")
+                .checked("committed playback chat channel should remain open");
+        if let synctv_core::models::RealtimeEvent::ChatMessageEvent { event, .. } = event {
+            assert_eq!(
+                event.message.message.message_type,
+                synctv_core::models::ChatMessageType::SystemPlaybackChanged,
+            );
+            received_playback_changes += 1;
+        }
+    }
 }
 
 #[tokio::test]

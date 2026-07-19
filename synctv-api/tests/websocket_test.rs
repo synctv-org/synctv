@@ -2962,6 +2962,7 @@ mod websocket_e2e {
                 username: "playback_matrix_owner".to_string(),
                 state: started_state,
                 source_changed: false,
+                client_operation_id: None,
                 timestamp: chrono::Utc::now(),
             },
         )
@@ -3004,6 +3005,7 @@ mod websocket_e2e {
                 username: "playback_matrix_owner".to_string(),
                 state: paused_state,
                 source_changed: false,
+                client_operation_id: None,
                 timestamp: chrono::Utc::now(),
             },
         )
@@ -3047,6 +3049,7 @@ mod websocket_e2e {
                 username: "playback_matrix_owner".to_string(),
                 state: resumed_state,
                 source_changed: false,
+                client_operation_id: None,
                 timestamp: chrono::Utc::now(),
             },
         )
@@ -3086,6 +3089,7 @@ mod websocket_e2e {
                 username: "playback_matrix_owner".to_string(),
                 state: stopped_state,
                 source_changed: false,
+                client_operation_id: None,
                 timestamp: chrono::Utc::now(),
             },
         )

@@ -24,7 +24,10 @@ use crate::{
         AppendPlaybackHistoryEntry, ChatRepository, PlaybackHistoryDirection,
         PlaybackHistoryRepository, PlaybackSourceMetadataRepository, RoomPlaybackStateRepository,
     },
-    service::{media::BackendPlaybackRequest, media::MediaService, PermissionService, UserService},
+    service::{
+        media::BackendPlaybackRequest, media::MediaService, NotificationService, PermissionService,
+        UserService,
+    },
     Clock, Error, Result, SystemClock,
 };
 use rand::prelude::IteratorRandom;
@@ -55,6 +58,7 @@ pub struct PlaybackService {
     history_repo: PlaybackHistoryRepository,
     chat_repo: ChatRepository,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
+    notification_service: Option<NotificationService>,
     permission_service: PermissionService,
     media_service: MediaService,
     user_service: UserService,
@@ -81,6 +85,7 @@ pub struct PlaybackServiceRuntime {
     pub version_fence: Arc<dyn VersionFenceStore>,
     pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     pub source_metadata_repo: Option<PlaybackSourceMetadataRepository>,
+    pub notification_service: Option<NotificationService>,
 }
 
 impl PlaybackServiceRuntime {
@@ -93,6 +98,7 @@ impl PlaybackServiceRuntime {
             version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
             realtime_outbox: None,
             source_metadata_repo: None,
+            notification_service: None,
         }
     }
 }
@@ -185,6 +191,36 @@ impl PlaybackService {
     pub const DEFAULT_CACHE_TTL_SECS: u64 = 5;
     /// Maximum time to wait for the invalidation listener to stop.
     const INVALIDATION_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+    const MAX_CLIENT_PLAYBACK_CLOCK_SKEW_MILLIS: i64 = 30_000;
+
+    fn client_elapsed_seconds(
+        received_at: chrono::DateTime<chrono::Utc>,
+        client_time_millis: Option<i64>,
+    ) -> Result<f64> {
+        let Some(client_millis) = client_time_millis else {
+            return Ok(0.0);
+        };
+        let skew_millis = received_at.timestamp_millis().saturating_sub(client_millis);
+        if skew_millis.unsigned_abs() > Self::MAX_CLIENT_PLAYBACK_CLOCK_SKEW_MILLIS.unsigned_abs() {
+            return Err(Error::InvalidInput(format!(
+                "client playback timestamp differs from server time by {skew_millis}ms"
+            )));
+        }
+        Ok(Duration::from_millis(skew_millis.max(0).unsigned_abs()).as_secs_f64())
+    }
+
+    fn compensate_client_position(
+        position: f64,
+        playing: bool,
+        speed: f64,
+        elapsed_seconds: f64,
+    ) -> f64 {
+        if playing {
+            position + elapsed_seconds * speed
+        } else {
+            position
+        }
+    }
 
     async fn insert_playback_outbox_tx(
         &self,
@@ -240,6 +276,7 @@ impl PlaybackService {
             playback_repo,
             source_metadata_repo,
             realtime_outbox: runtime.realtime_outbox,
+            notification_service: runtime.notification_service,
             permission_service,
             media_service,
             user_service,
@@ -576,19 +613,19 @@ impl PlaybackService {
         current: &RoomPlaybackState,
         reason: PlaybackChangeReason,
         actor_user_id: Option<UserId>,
-    ) -> Result<()> {
+    ) -> Result<Option<RealtimeEvent>> {
         if previous.playing_media_id == current.playing_media_id
             && previous.playing_playlist_id == current.playing_playlist_id
             && previous.target == current.target
         {
-            return Ok(());
+            return Ok(None);
         }
         let Some(()) = current
             .playing_media_id
             .map(|_| ())
             .or_else(|| current.playing_playlist_id.map(|_| ()))
         else {
-            return Ok(());
+            return Ok(None);
         };
 
         let event_actor = if let Some(actor) = actor_user_id {
@@ -627,14 +664,14 @@ impl PlaybackService {
                 },
             )
             .await?;
+        let event = RealtimeEvent::ChatMessageEvent {
+            event_id: logged.event.event_id.clone(),
+            room_id: current.room_id,
+            actor_user_id: event_actor,
+            event: logged.event,
+            timestamp: occurred_at,
+        };
         if let Some(outbox) = &self.realtime_outbox {
-            let event = RealtimeEvent::ChatMessageEvent {
-                event_id: logged.event.event_id.clone(),
-                room_id: current.room_id,
-                actor_user_id: event_actor,
-                event: logged.event,
-                timestamp: occurred_at,
-            };
             outbox
                 .insert_with_executor(
                     &NewRealtimeOutboxEvent {
@@ -645,13 +682,13 @@ impl PlaybackService {
                         event_type: event.event_type().to_string(),
                         event_version: 1,
                         aggregate_version: None,
-                        payload: event,
+                        payload: event.clone(),
                     },
                     &mut **tx,
                 )
                 .await?;
         }
-        Ok(())
+        Ok(Some(event))
     }
 
     async fn persist_source_transition(
@@ -714,21 +751,16 @@ impl PlaybackService {
             }
             self.insert_playback_outbox_tx(&mut tx, &updated, outbox_event_factory)
                 .await?;
-            self.insert_playback_changed_chat_tx(
-                &mut tx,
-                previous,
-                &updated,
-                reason,
-                actor_user_id,
-            )
-            .await?;
-            Ok(updated)
+            let chat_event = self
+                .insert_playback_changed_chat_tx(&mut tx, previous, &updated, reason, actor_user_id)
+                .await?;
+            Ok((updated, chat_event))
         }
         .await;
-        let updated = match result {
-            Ok(updated) => {
+        let (updated, chat_event) = match result {
+            Ok(result) => {
                 tx.commit().await?;
-                updated
+                result
             }
             Err(error) => {
                 let _ = tx.rollback().await;
@@ -744,6 +776,11 @@ impl PlaybackService {
             "persist_source_transition",
         )
         .await;
+        if let (Some(notification_service), Some(chat_event)) =
+            (&self.notification_service, chat_event)
+        {
+            let _ = notification_service.notify_committed_realtime_event(chat_event);
+        }
         Ok(updated)
     }
 
@@ -2073,6 +2110,7 @@ impl PlaybackService {
             patch,
             expected_version,
             expected_source,
+            client_time_millis,
             outbox_event_factory,
         } = request;
         let PlaybackStatePatch {
@@ -2099,6 +2137,9 @@ impl PlaybackService {
             validate_playback_speed_value(s)?;
         }
 
+        let received_at = self.clock.now();
+        let client_elapsed_seconds = Self::client_elapsed_seconds(received_at, client_time_millis)?;
+
         let apply_update = |state: &mut RoomPlaybackState| {
             // Snapshot the computed playback position before changing is_playing
             // or speed, just like set_playing() and change_speed() do individually.
@@ -2114,12 +2155,19 @@ impl PlaybackService {
                 state.is_playing = p;
             }
             if let Some(ct) = position {
-                state.position = ct;
+                let target_playing = playing.unwrap_or(state.is_playing);
+                let target_speed = speed.unwrap_or(state.speed);
+                state.position = Self::compensate_client_position(
+                    ct,
+                    target_playing,
+                    target_speed,
+                    client_elapsed_seconds,
+                );
             }
             if let Some(s) = speed {
                 state.speed = s;
             }
-            state.updated_at = self.clock.now();
+            state.updated_at = received_at;
             // version is incremented by the SQL UPDATE, not here
         };
 

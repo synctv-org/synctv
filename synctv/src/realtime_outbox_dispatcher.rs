@@ -216,10 +216,11 @@ async fn dispatch_event(
     }
 
     match realtime_manager
-        .publish_only_confirmed(realtime_event, PUBLISH_CONFIRMATION_TIMEOUT)
+        .publish_only_confirmed(realtime_event.clone(), PUBLISH_CONFIRMATION_TIMEOUT)
         .await
     {
         Ok(()) => {
+            realtime_manager.broadcast_local(realtime_event);
             if let Err(error) = outbox.mark_sent(&outbox_id).await {
                 error!(
                     outbox_id = %outbox_id,

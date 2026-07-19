@@ -48,6 +48,7 @@ fn test_build_start_playback_request_rejects_proto_contract_violation() -> TestR
             media_id: codec_ok(codec.encode_media_id(MediaId::expect_positive(1)))?,
             playlist_id: codec_ok(codec.encode_playlist_id(PlaylistId::expect_positive(2)))?,
             target: None,
+            client_operation_id: None,
         },
         &codec,
     ))?;
@@ -67,6 +68,7 @@ fn test_build_start_playback_request_parses_alist_target() -> TestResult {
             media_id: String::new(),
             playlist_id: playlist_public_id,
             target: proto_alist_target("/tv/ep1.mp4"),
+            client_operation_id: None,
         },
         &codec,
     ))?;
@@ -106,6 +108,8 @@ fn test_build_playback_state_update_rejects_unknown_type() -> TestResult {
             expected_media_id: None,
             expected_playlist_id: None,
             expected_target_hash: None,
+            client_operation_id: None,
+            client_time_millis: None,
         },
         &codec,
     ))?;
@@ -127,6 +131,8 @@ fn test_build_playback_state_update_rejects_playing_false_for_play() -> TestResu
             expected_media_id: None,
             expected_playlist_id: None,
             expected_target_hash: None,
+            client_operation_id: None,
+            client_time_millis: None,
         },
         &codec,
     ))?;
@@ -148,6 +154,8 @@ fn test_build_playback_state_update_play_defaults_to_playing() -> TestResult {
             expected_media_id: None,
             expected_playlist_id: None,
             expected_target_hash: None,
+            client_operation_id: None,
+            client_time_millis: None,
         },
         &codec,
     ))?;
@@ -173,6 +181,8 @@ fn test_build_playback_state_update_pause_defaults_to_paused() -> TestResult {
             expected_media_id: None,
             expected_playlist_id: None,
             expected_target_hash: None,
+            client_operation_id: None,
+            client_time_millis: None,
         },
         &codec,
     ))?;
@@ -198,6 +208,8 @@ fn test_build_playback_state_update_seek_requires_position() -> TestResult {
             expected_media_id: None,
             expected_playlist_id: None,
             expected_target_hash: None,
+            client_operation_id: None,
+            client_time_millis: None,
         },
         &codec,
     ))?;
@@ -219,11 +231,38 @@ fn test_build_playback_state_update_speed_requires_speed() -> TestResult {
             expected_media_id: None,
             expected_playlist_id: None,
             expected_target_hash: None,
+            client_operation_id: None,
+            client_time_millis: None,
         },
         &codec,
     ))?;
 
     assert!(err.to_string().contains("requires speed"));
+    Ok(())
+}
+
+#[test]
+fn test_build_playback_state_update_accepts_sparse_speed_patch() -> TestResult {
+    let codec = synctv_adapter::PublicIdCodec::plain();
+    let parsed = api_ok(build_playback_state_update(
+        synctv_proto::client::UpdatePlaybackStateRequest {
+            r#type: synctv_proto::client::PlaybackUpdateType::Speed as i32,
+            playing: None,
+            position: None,
+            speed: Some(1.5),
+            version: None,
+            expected_media_id: None,
+            expected_playlist_id: None,
+            expected_target_hash: None,
+            client_operation_id: None,
+            client_time_millis: None,
+        },
+        &codec,
+    ))?;
+
+    assert_eq!(parsed.playing, None);
+    assert_eq!(parsed.position, None);
+    assert_eq!(parsed.speed, Some(1.5));
     Ok(())
 }
 
@@ -242,6 +281,8 @@ fn test_build_playback_state_update_seek_parses_full_state() -> TestResult {
             expected_media_id: Some(media_public_id),
             expected_playlist_id: Some(String::new()),
             expected_target_hash: Some(EMPTY_TARGET_HASH.to_string()),
+            client_operation_id: None,
+            client_time_millis: None,
         },
         &codec,
     ))?;
@@ -368,6 +409,7 @@ fn test_build_start_playback_request_converts_proto_validated_ids_without_repars
             media_id: codec_ok(codec.encode_media_id(media_id))?,
             playlist_id: String::new(),
             target: None,
+            client_operation_id: None,
         },
         &codec,
     ))?;

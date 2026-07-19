@@ -543,6 +543,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
                 media_id: String::new(),
                 playlist_id: playlist_public_id.clone(),
                 target: proto_alist_target("/episode-1.mp4"),
+                client_operation_id: None,
             },
         )
         .await
@@ -594,6 +595,8 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
                 expected_media_id: Some(state.playing_media_id.clone()),
                 expected_playlist_id: Some(state.playing_playlist_id.clone()),
                 expected_target_hash: Some(state.target_hash.clone()),
+                client_operation_id: None,
+                client_time_millis: None,
             },
         )
         .await
@@ -788,6 +791,7 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
                 media_id: String::new(),
                 playlist_id: playlist_public_id,
                 target: proto_alist_target("/bound-episode-1.mp4"),
+                client_operation_id: None,
             },
         )
         .await
@@ -913,6 +917,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
                 media_id: media_public_id.clone(),
                 playlist_id: String::new(),
                 target: None,
+                client_operation_id: None,
             },
         )
         .await
@@ -1116,6 +1121,7 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails() {
                 media_id: media_public_id.clone(),
                 playlist_id: String::new(),
                 target: None,
+                client_operation_id: None,
             },
         )
         .await
@@ -1222,6 +1228,7 @@ async fn test_get_playback_returns_error_for_invalid_live_proxy_source_config() 
                 media_id: media_public_id,
                 playlist_id: String::new(),
                 target: None,
+                client_operation_id: None,
             },
         )
         .await

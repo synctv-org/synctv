@@ -55,6 +55,7 @@ pub(super) async fn play_next(
     request: Request<PlayNextRequest>,
 ) -> Result<Response<PlaybackState>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
     let client_api = service.client_api.clone();
     let response = service
         .client_api
@@ -63,7 +64,9 @@ pub(super) async fn play_next(
             &metadata,
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
-                client_api.play_next(&authenticated.user_id, &room_id).await
+                client_api
+                    .play_next(&authenticated.user_id, &room_id, req)
+                    .await
             },
         )
         .await
@@ -76,6 +79,7 @@ pub(super) async fn play_previous(
     request: Request<PlayPreviousRequest>,
 ) -> Result<Response<PlaybackState>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
     let client_api = service.client_api.clone();
     let response = service
         .client_api
@@ -85,7 +89,7 @@ pub(super) async fn play_previous(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .play_previous(&authenticated.user_id, &room_id)
+                    .play_previous(&authenticated.user_id, &room_id, req)
                     .await
             },
         )

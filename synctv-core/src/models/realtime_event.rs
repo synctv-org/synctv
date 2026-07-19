@@ -97,6 +97,8 @@ pub enum RealtimeEvent {
         state: RoomPlaybackState,
         #[serde(default)]
         source_changed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_operation_id: Option<String>,
         timestamp: DateTime<Utc>,
     },
 

@@ -22,12 +22,23 @@ pub trait PlaybackFanoutService: Send + Sync {
 pub struct PlaybackFanoutActor<'a> {
     user_id: UserId,
     username: &'a str,
+    client_operation_id: Option<&'a str>,
 }
 
 impl<'a> PlaybackFanoutActor<'a> {
     #[must_use]
     pub const fn new(user_id: UserId, username: &'a str) -> Self {
-        Self { user_id, username }
+        Self {
+            user_id,
+            username,
+            client_operation_id: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_client_operation_id(mut self, client_operation_id: Option<&'a str>) -> Self {
+        self.client_operation_id = client_operation_id;
+        self
     }
 
     #[must_use]
@@ -35,6 +46,7 @@ impl<'a> PlaybackFanoutActor<'a> {
         Self {
             user_id: system_user_id(),
             username: synctv_common::reserved::SYSTEM_USERNAME,
+            client_operation_id: None,
         }
     }
 }
@@ -69,6 +81,7 @@ impl PlaybackFanoutService for DefaultPlaybackFanoutService {
         let actor = OwnedPlaybackFanoutActor {
             user_id: actor.user_id,
             username: actor.username.to_string(),
+            client_operation_id: actor.client_operation_id.map(str::to_string),
         };
         PreparedPlaybackStateFanout {
             realtime_fanout: self.realtime_fanout.clone(),
@@ -83,6 +96,7 @@ impl PlaybackFanoutService for DefaultPlaybackFanoutService {
             OwnedPlaybackFanoutActor {
                 user_id: system_user_id(),
                 username: synctv_common::reserved::SYSTEM_USERNAME.to_string(),
+                client_operation_id: None,
             },
         )
     }
@@ -92,11 +106,13 @@ impl PlaybackFanoutService for DefaultPlaybackFanoutService {
 struct OwnedPlaybackFanoutActor {
     user_id: UserId,
     username: String,
+    client_operation_id: Option<String>,
 }
 
 impl OwnedPlaybackFanoutActor {
     fn as_borrowed(&self) -> PlaybackFanoutActor<'_> {
         PlaybackFanoutActor::new(self.user_id, &self.username)
+            .with_client_operation_id(self.client_operation_id.as_deref())
     }
 }
 
@@ -198,6 +214,7 @@ fn playback_state_changed_event(
         username: actor.username.to_string(),
         state: state.clone(),
         source_changed,
+        client_operation_id: actor.client_operation_id.map(str::to_string),
         timestamp: synctv_core::SystemClock.now(),
     }
 }
@@ -303,7 +320,8 @@ mod tests {
     {
         let realtime = Arc::new(RecordingRealtimeFanout::default());
         let service = default_playback_fanout_service(realtime.clone());
-        let actor = PlaybackFanoutActor::new(UserId::expect_positive(160_003), "alice");
+        let actor = PlaybackFanoutActor::new(UserId::expect_positive(160_003), "alice")
+            .with_client_operation_id(Some("3d918f61-3959-49ef-a962-5d94b8ac8470"));
         let prepared = service.prepare_state_changed_outbox_fanout(actor);
         let factory = prepared.outbox_factory();
 
@@ -333,11 +351,16 @@ mod tests {
                 user_id,
                 username,
                 state,
+                client_operation_id,
                 ..
             } => {
                 assert_eq!(user_id, UserId::expect_positive(160_003));
                 assert_eq!(username, "alice");
                 assert_eq!(state.version, 7);
+                assert_eq!(
+                    client_operation_id.as_deref(),
+                    Some("3d918f61-3959-49ef-a962-5d94b8ac8470")
+                );
             }
             other => {
                 return Err(test_error(format!(

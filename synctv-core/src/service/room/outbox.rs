@@ -412,7 +412,7 @@ impl RoomService {
         &self,
         tx: &mut Transaction<'_, Postgres>,
         request: MemberJoinedSystemChatInsert,
-    ) -> Result<()> {
+    ) -> Result<crate::models::RealtimeEvent> {
         let MemberJoinedSystemChatInsert {
             room_id,
             target_user_id,
@@ -468,10 +468,11 @@ impl RoomService {
                 event_type: event.event_type().to_string(),
                 event_version: 1,
                 aggregate_version: None,
-                payload: event,
+                payload: event.clone(),
             }),
         )
-        .await
+        .await?;
+        Ok(event)
     }
 
     pub(super) async fn apply_member_joined_effects_and_commit(
@@ -499,19 +500,24 @@ impl RoomService {
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory)
             .await?;
-        self.insert_member_joined_system_chat_tx(
-            &mut tx,
-            MemberJoinedSystemChatInsert {
-                room_id,
-                target_user_id,
-                target_username: snapshot.target_username.clone(),
-                actor_user_id: actor_id,
-                actor_username: snapshot.changed_by_username.clone(),
-                role: member.role,
-            },
-        )
-        .await?;
+        let chat_event = self
+            .insert_member_joined_system_chat_tx(
+                &mut tx,
+                MemberJoinedSystemChatInsert {
+                    room_id,
+                    target_user_id,
+                    target_username: snapshot.target_username.clone(),
+                    actor_user_id: actor_id,
+                    actor_username: snapshot.changed_by_username.clone(),
+                    role: member.role,
+                },
+            )
+            .await?;
         tx.commit().await?;
+
+        let _ = self
+            .notification_service
+            .notify_committed_realtime_event(chat_event);
 
         self.permission_service
             .seed_added_member_cache(&room_id, &target_user_id, member.version)

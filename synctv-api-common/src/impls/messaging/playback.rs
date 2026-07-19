@@ -40,6 +40,7 @@ impl StreamMessageHandler {
         &self,
         update: &synctv_proto::client::UpdatePlaybackRequest,
     ) -> Result<(), String> {
+        crate::impls::validate_proto_request(update).map_err(|error| error.to_string())?;
         self.check_realtime_permission(RoomPermission::CONTROL_PLAYBACK_STATE)
             .await
             .map_err(|e| e.to_string())?;
@@ -51,6 +52,7 @@ impl StreamMessageHandler {
                 media_id: update.media_id.clone(),
                 playlist_id: update.playlist_id.clone(),
                 target: update.target.clone(),
+                client_operation_id: update.client_operation_id.clone(),
             },
             &self.public_id_codec,
         )
@@ -65,12 +67,10 @@ impl StreamMessageHandler {
                     "Failed to load previous playback state for provider lifecycle transition: {error}"
                 )
             })?;
-        let prepared_fanout =
-            self.playback_fanout
-                .prepare_state_changed_outbox_fanout(PlaybackFanoutActor::new(
-                    self.user_id,
-                    &self.username,
-                ));
+        let prepared_fanout = self.playback_fanout.prepare_state_changed_outbox_fanout(
+            PlaybackFanoutActor::new(self.user_id, &self.username)
+                .with_client_operation_id(update.client_operation_id.as_deref()),
+        );
         let state = if target.media_id.is_none() && target.playlist_id.is_none() {
             self.room_service
                 .playback_service()
@@ -133,6 +133,8 @@ impl StreamMessageHandler {
         let speed = update_parts.speed;
         let version = update_parts.version;
         let expected_source = update_parts.expected_source;
+        let client_operation_id = update_parts.client_operation_id;
+        let client_time_millis = update_parts.client_time_millis;
         let playback_service = self.room_service.playback_service();
         let is_progress_update = matches!(
             synctv_proto::client::PlaybackUpdateType::try_from(update.r#type),
@@ -184,18 +186,17 @@ impl StreamMessageHandler {
                 }
             }
         }
-        let prepared_fanout =
-            self.playback_fanout
-                .prepare_state_changed_outbox_fanout(PlaybackFanoutActor::new(
-                    self.user_id,
-                    &self.username,
-                ));
+        let prepared_fanout = self.playback_fanout.prepare_state_changed_outbox_fanout(
+            PlaybackFanoutActor::new(self.user_id, &self.username)
+                .with_client_operation_id(client_operation_id.as_deref()),
+        );
         let mut request = PlaybackStateUpdateRequest::new(
             self.room_id,
             self.user_id,
             PlaybackStatePatch::new(playing, position, speed),
         )
         .with_expected_version(version)
+        .with_client_time_millis(client_time_millis)
         .with_outbox(Some(prepared_fanout.outbox_factory()));
         if let Some(expected_source) = expected_source {
             request = request.with_expected_source(expected_source);

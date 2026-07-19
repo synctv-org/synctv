@@ -1053,6 +1053,7 @@ impl AdminRuntime for ManagementAdminRuntime {
             media_id: command.media_id,
             playlist_id: command.playlist_id,
             target: command.target,
+            client_operation_id: None,
         };
         self.inner
             .start_playback(
@@ -1105,6 +1106,8 @@ impl AdminRuntime for ManagementAdminRuntime {
             expected_media_id: command.expected_media_id,
             expected_playlist_id: command.expected_playlist_id,
             expected_target_hash: command.expected_target_hash,
+            client_operation_id: None,
+            client_time_millis: None,
         };
         self.inner
             .update_playback_state(

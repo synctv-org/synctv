@@ -439,6 +439,7 @@ mod tests {
                 username: "tester".to_string(),
                 state,
                 source_changed: false,
+                client_operation_id: None,
                 timestamp: synctv_core::SystemClock.now(),
             },
         )

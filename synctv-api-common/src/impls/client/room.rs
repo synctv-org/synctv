@@ -1797,12 +1797,10 @@ impl ClientApiImpl {
                                     "Failed to encode chat message user id: {error}"
                                 ))
                             })?;
-                        let name = username_map.get(uid).cloned().ok_or_else(|| {
-                            ApiError::NotFound("Chat message author not found".to_string())
-                        })?;
+                        let name = username_map.get(uid).cloned();
                         (uid_str, name)
                     }
-                    None => (String::new(), "[deleted]".to_string()),
+                    None => (String::new(), None),
                 };
 
                 let mut proto = chat_message_to_proto(self, &message, username)?;
@@ -3219,7 +3217,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_pin_event_response_populates_message_username() -> TestResult {
+    async fn chat_pin_event_response_preserves_optional_message_username() -> TestResult {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let user_service =
             std::sync::Arc::new(synctv_core_testing::create_test_user_service(pool.clone()));
@@ -3266,7 +3264,59 @@ mod tests {
         let message = proto
             .message
             .ok_or_else(|| test_error("pin event response should contain message"))?;
-        assert_eq!(message.username, "pin_response_author");
+        assert_eq!(message.username.as_deref(), Some("pin_response_author"));
+
+        let mut missing_author = ChatMessage::new(room_id, user.id, "system body".to_string());
+        missing_author.id = 43;
+        missing_author.user_id = None;
+        missing_author.created_at = occurred_at;
+        let event = ChatPinEvent {
+            event_id: "pin-response-without-author".to_string(),
+            sequence: 6,
+            room_id,
+            actor_user_id: user.id,
+            kind: ChatPinEventKind::MessageDeleted,
+            message: ChatMessageWithAttachments {
+                message: missing_author,
+                attachments: Vec::new(),
+                reactions: Vec::new(),
+                mentions: Vec::new(),
+                pin: None,
+            },
+            pin: None,
+            occurred_at,
+        };
+        let proto = api_ok(chat_pin_event_to_proto(&api, event).await)?;
+        let message = proto
+            .message
+            .ok_or_else(|| test_error("pin event response should contain message"))?;
+        assert_eq!(message.username, None);
+
+        let mut system_message = ChatMessage::new(room_id, user.id, "playback changed".to_string());
+        system_message.id = 44;
+        system_message.message_type = synctv_core::models::ChatMessageType::SystemPlaybackChanged;
+        system_message.created_at = occurred_at;
+        let event = ChatPinEvent {
+            event_id: "pin-response-system-message".to_string(),
+            sequence: 7,
+            room_id,
+            actor_user_id: user.id,
+            kind: ChatPinEventKind::Pinned,
+            message: ChatMessageWithAttachments {
+                message: system_message,
+                attachments: Vec::new(),
+                reactions: Vec::new(),
+                mentions: Vec::new(),
+                pin: None,
+            },
+            pin: None,
+            occurred_at,
+        };
+        let proto = api_ok(chat_pin_event_to_proto(&api, event).await)?;
+        let message = proto
+            .message
+            .ok_or_else(|| test_error("pin event response should contain message"))?;
+        assert_eq!(message.username, None);
         Ok(())
     }
 

@@ -204,6 +204,7 @@ fn test_playback_state_changed_is_not_critical() {
         username: "test_user".to_string(),
         state: synctv_core::models::playback::RoomPlaybackState::new(room_id),
         source_changed: false,
+        client_operation_id: None,
         timestamp: chrono::Utc::now(),
     };
     assert!(

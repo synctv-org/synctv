@@ -245,15 +245,17 @@ pub(super) fn i64_to_i32_api(value: i64, field: &'static str) -> Result<i32, Api
 pub(super) async fn username_for_chat_message(
     api: &ClientApiImpl,
     message: &synctv_core::models::ChatMessage,
-) -> Result<String, ApiError> {
+) -> Result<Option<String>, ApiError> {
+    if message.message_type.is_system() {
+        return Ok(None);
+    }
     let Some(user_id) = message.user_id else {
-        return Ok("[deleted]".to_string());
+        return Ok(None);
     };
     api.user_service
         .get_username(&user_id)
         .await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::NotFound("Chat message author not found".to_string()))
+        .map_err(ApiError::from)
 }
 
 #[cfg(test)]
@@ -315,7 +317,7 @@ pub(super) fn upload_session_chat_attachment_to_proto(
 pub(super) fn chat_message_to_proto(
     api: &ClientApiImpl,
     message: &ChatMessageWithAttachments,
-    username: String,
+    username: Option<String>,
 ) -> Result<synctv_proto::client::ChatMessageReceive, ApiError> {
     crate::impls::messaging::chat_message_receive_to_proto(message, &api.public_id_codec, username)
         .map_err(ApiError::Internal)

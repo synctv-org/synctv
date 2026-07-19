@@ -245,6 +245,7 @@ fn test_error_message_code_is_application_int32() {
         message: "internal failure".to_string(),
         code: 9000,
         detail: String::new(),
+        client_operation_id: String::new(),
     };
 
     assert_eq!(message.code, 9000);
@@ -476,6 +477,7 @@ fn test_start_playback_request_serializes_dynamic_playlist_target() {
         media_id: String::new(),
         playlist_id: "playlist-1".to_string(),
         target: emby_target("provider-item-1"),
+        client_operation_id: None,
     };
 
     let json = serde_json::to_value(&request).expect("serialize start playback request");
@@ -925,6 +927,8 @@ fn test_update_playback_state_rejects_missing_type() {
         expected_target_hash: Some(
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
         ),
+        client_operation_id: None,
+        client_time_millis: None,
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -948,6 +952,8 @@ fn test_update_playback_state_allows_full_seek_state() {
         expected_target_hash: Some(
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
         ),
+        client_operation_id: None,
+        client_time_millis: None,
     };
 
     synctv_proto::validate(&request).expect("request should be valid");

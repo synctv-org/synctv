@@ -1537,7 +1537,7 @@ impl MediaResourceHub {
                         ) {
                             continue;
                         }
-                        let payload = match try_playback_state_to_proto(
+                        let mut payload = match try_playback_state_to_proto(
                             state,
                             &observer.public_id_codec,
                         ) {
@@ -1555,6 +1555,13 @@ impl MediaResourceHub {
                                 continue;
                             }
                         };
+                        if let RealtimeEvent::PlaybackStateChanged {
+                            client_operation_id: Some(client_operation_id),
+                            ..
+                        } = event
+                        {
+                            payload.client_operation_id.clone_from(client_operation_id);
+                        }
                         updated_observation.last_fingerprint = hex::encode(payload.encode_to_vec());
                         let changed = synctv_proto::client::ResourceEvent {
                             observe_id: updated_observation.observe_id.clone(),

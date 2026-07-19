@@ -269,6 +269,7 @@ impl RoomService {
                 version_fence: options.version_fence.clone(),
                 realtime_outbox: options.realtime_outbox.clone(),
                 source_metadata_repo: Some(playback_source_metadata_repo),
+                notification_service: Some(notification_service.clone()),
             },
         );
         let room_settings_service = RoomSettingsService::new_with_version_fence(

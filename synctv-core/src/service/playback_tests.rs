@@ -45,6 +45,47 @@ fn joined<T>(result: std::result::Result<T, tokio::task::JoinError>, context: &s
     }
 }
 
+#[test]
+fn client_time_converts_positive_transport_delay_to_elapsed_seconds() {
+    let received_at = crate::clock::utc_from_millis(10_000).expect("valid timestamp");
+    let elapsed = ok(
+        PlaybackService::client_elapsed_seconds(received_at, Some(9_500)),
+        "client time should be accepted",
+    );
+
+    assert!((elapsed - 0.5).abs() < f64::EPSILON);
+    assert!(
+        (PlaybackService::compensate_client_position(42.0, true, 2.0, elapsed) - 43.0).abs()
+            < f64::EPSILON
+    );
+    assert_eq!(
+        PlaybackService::compensate_client_position(42.0, false, 2.0, elapsed),
+        42.0
+    );
+}
+
+#[test]
+fn client_time_rejects_excessive_clock_difference() {
+    let received_at = crate::clock::utc_from_millis(100_000).expect("valid timestamp");
+    let error = err(
+        PlaybackService::client_elapsed_seconds(received_at, Some(69_999)),
+        "client time beyond the allowed skew should fail",
+    );
+
+    assert!(matches!(error, Error::InvalidInput(_)));
+}
+
+#[test]
+fn missing_client_time_has_zero_transport_compensation() {
+    let received_at = crate::clock::utc_from_millis(10_000).expect("valid timestamp");
+    let elapsed = ok(
+        PlaybackService::client_elapsed_seconds(received_at, None),
+        "missing optional client time should be accepted",
+    );
+
+    assert_eq!(elapsed, 0.0);
+}
+
 #[derive(Default)]
 struct CountingL2Backend {
     delete_calls: AtomicUsize,
@@ -664,6 +705,7 @@ async fn test_db_reload_seeds_missing_local_playback_fence() {
             l2_cache: None,
             realtime_outbox: None,
             source_metadata_repo: None,
+            notification_service: None,
         },
     );
     let domain = CacheDomain::Playback { room_id: room.id };

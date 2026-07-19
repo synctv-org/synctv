@@ -346,11 +346,27 @@ impl StreamMessageHandler {
     }
 
     fn error_server_message(error: impl Into<crate::impls::ApiError>) -> ServerMessage {
+        Self::operation_error_server_message(error, None)
+    }
+
+    fn operation_error_server_message(
+        error: impl Into<crate::impls::ApiError>,
+        client_operation_id: Option<&str>,
+    ) -> ServerMessage {
         let api_error: crate::impls::ApiError = error.into();
+        let mut error = api_error.to_proto_error();
+        error.client_operation_id = client_operation_id.unwrap_or_default().to_string();
         ServerMessage {
-            message: Some(synctv_proto::client::server_message::Message::Error(
-                api_error.to_proto_error(),
-            )),
+            message: Some(synctv_proto::client::server_message::Message::Error(error)),
+        }
+    }
+
+    fn client_operation_id(message: &ClientMessage) -> Option<&str> {
+        use synctv_proto::client::client_message::Message;
+        match message.message.as_ref() {
+            Some(Message::PlaybackStateUpdate(update)) => update.client_operation_id.as_deref(),
+            Some(Message::PlaybackUpdate(update)) => update.client_operation_id.as_deref(),
+            _ => None,
         }
     }
 
@@ -1068,7 +1084,10 @@ impl StreamMessageHandler {
                             {
                                 tracing::error!("Failed to handle client message: {}", e);
                                 if let Err(send_err) =
-                                    stream.send(Self::error_server_message(e.clone()))
+                                    stream.send(Self::operation_error_server_message(
+                                        e.clone(),
+                                        Self::client_operation_id(&msg),
+                                    ))
                                 {
                                     tracing::error!(
                                         "Failed to send message error to client: {}",
@@ -2172,7 +2191,10 @@ impl StreamMessageHandler {
                                 {
                                     tracing::error!("Failed to handle client message: {}", e);
                                     if let Err(send_err) = handler.sender.send(
-                                        Self::error_server_message(e.clone()),
+                                        Self::operation_error_server_message(
+                                            e.clone(),
+                                            Self::client_operation_id(&msg),
+                                        ),
                                     ) {
                                         tracing::error!(
                                             "Failed to send message error to client in start(): {}",

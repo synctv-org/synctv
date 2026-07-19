@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::{
-    models::{MediaId, PlaylistId, RoomId, RoomSettings, UserId},
+    models::{MediaId, PlaylistId, RealtimeEvent, RoomId, RoomSettings, UserId},
     Result,
 };
 
@@ -206,6 +206,8 @@ impl Default for NotificationConfig {
 pub struct NotificationService {
     /// Broadcast channel for local event subscribers
     event_tx: broadcast::Sender<(RoomId, RoomEvent)>,
+    /// Events created inside a database transaction and ready for local delivery.
+    committed_realtime_event_tx: broadcast::Sender<RealtimeEvent>,
     /// Configuration
     config: NotificationConfig,
 }
@@ -223,8 +225,13 @@ impl NotificationService {
     /// Create a new notification service with custom configuration
     pub fn new_with_config(config: NotificationConfig) -> Self {
         let (event_tx, _) = broadcast::channel(config.channel_capacity);
+        let (committed_realtime_event_tx, _) = broadcast::channel(config.channel_capacity);
 
-        Self { event_tx, config }
+        Self {
+            event_tx,
+            committed_realtime_event_tx,
+            config,
+        }
     }
 
     /// Subscribe to room events locally
@@ -234,6 +241,28 @@ impl NotificationService {
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<(RoomId, RoomEvent)> {
         self.event_tx.subscribe()
+    }
+
+    /// Subscribe to durable realtime events after their database transaction commits.
+    #[must_use]
+    pub fn subscribe_committed_realtime_events(&self) -> broadcast::Receiver<RealtimeEvent> {
+        self.committed_realtime_event_tx.subscribe()
+    }
+
+    /// Deliver a durable realtime event to the local runtime after commit.
+    #[must_use]
+    pub fn notify_committed_realtime_event(&self, event: RealtimeEvent) -> usize {
+        match self.committed_realtime_event_tx.send(event) {
+            Ok(count) => count,
+            Err(error) => {
+                tracing::trace!(
+                    event_type = %error.0.event_type(),
+                    event_id = %error.0.event_id(),
+                    "Committed realtime event has no local subscribers"
+                );
+                0
+            }
+        }
     }
 
     /// Publish a room-scoped domain event to local subscribers.

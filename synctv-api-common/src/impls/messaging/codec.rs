@@ -502,7 +502,7 @@ pub fn chat_message_event_to_proto(
         message: Some(chat_message_receive_to_proto(
             &event.message,
             public_id_codec,
-            String::new(),
+            None,
         )?),
         occurred_at: event.occurred_at.timestamp(),
         sequence: event.sequence,
@@ -523,7 +523,7 @@ pub fn chat_pin_event_to_proto(
         message: Some(chat_message_receive_to_proto(
             &event.message,
             public_id_codec,
-            String::new(),
+            None,
         )?),
         pin: event
             .pin
@@ -546,7 +546,7 @@ pub fn chat_message_pin_to_proto(
 pub fn chat_message_receive_to_proto(
     value: &ChatMessageWithAttachments,
     public_id_codec: &synctv_adapter::PublicIdCodec,
-    username: String,
+    username: Option<String>,
 ) -> Result<synctv_proto::client::ChatMessageReceive, String> {
     synctv_adapter::chat::chat_message_receive_to_proto(value, public_id_codec, username)
         .map_err(|error| error.to_string())

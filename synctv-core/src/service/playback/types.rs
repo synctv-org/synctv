@@ -56,6 +56,7 @@ pub struct PlaybackStateUpdateRequest {
     pub patch: PlaybackStatePatch,
     pub expected_version: Option<i64>,
     pub expected_source: Option<PlaybackSourceExpectation>,
+    pub client_time_millis: Option<i64>,
     pub outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
 }
 
@@ -68,6 +69,7 @@ impl PlaybackStateUpdateRequest {
             patch,
             expected_version: None,
             expected_source: None,
+            client_time_millis: None,
             outbox_event_factory: None,
         }
     }
@@ -81,6 +83,12 @@ impl PlaybackStateUpdateRequest {
     #[must_use]
     pub fn with_expected_source(mut self, expected_source: PlaybackSourceExpectation) -> Self {
         self.expected_source = Some(expected_source);
+        self
+    }
+
+    #[must_use]
+    pub const fn with_client_time_millis(mut self, client_time_millis: Option<i64>) -> Self {
+        self.client_time_millis = client_time_millis;
         self
     }
 

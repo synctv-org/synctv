@@ -2218,7 +2218,11 @@ fn observe_chat_events_message(observe_id: &str) -> synctv_proto::client::Client
             delivery_mode: ResourceDeliveryMode::NotifyOnly as i32,
             resource: Some(observe_resource::Resource::ChatEvents(ObserveChatEvents {
                 after_event_sequence: None,
-                include_message_types: Vec::new(),
+                include_message_types: vec![
+                    synctv_proto::client::ChatMessageType::User as i32,
+                    synctv_proto::client::ChatMessageType::SystemMemberJoined as i32,
+                    synctv_proto::client::ChatMessageType::SystemPlaybackChanged as i32,
+                ],
             })),
         })),
     }
@@ -7810,6 +7814,21 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         StatusCode::OK,
         "observer should join room"
     );
+    let _ = recv_matching_server_message(
+        &mut member_ws,
+        Duration::from_secs(10),
+        |message| {
+            resource_chat_event(message).is_some_and(|event| {
+                event.message.as_ref().is_some_and(|chat| {
+                    chat.message_type
+                        == synctv_proto::client::ChatMessageType::SystemMemberJoined as i32
+                        && chat.content.contains(&observer_username)
+                })
+            })
+        },
+        "member joined system chat event",
+    )
+    .await;
     let mut observer_ws = ws_connect(&api_addr, &room_id, &observer_token).await;
     let _ = recv_matching_server_message(
         &mut member_ws,
@@ -8143,16 +8162,25 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         "start playback for websocket test",
     )
     .await;
-    let _ = recv_matching_server_message(
-        &mut member_ws,
-        Duration::from_secs(10),
-        |message| {
-            resource_playback_state(message)
-                .is_some_and(|state| state.is_playing && state.playing_media_id == media_one_id)
-        },
-        "playback start broadcast",
-    )
-    .await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut received_playback_state = false;
+    let mut received_playback_system_chat = false;
+    while !received_playback_state || !received_playback_system_chat {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let message = tokio::time::timeout(remaining, recv_server_message(&mut member_ws))
+            .await
+            .expect("timed out waiting for playback start realtime effects")
+            .expect("websocket closed while waiting for playback start realtime effects");
+        received_playback_state |= resource_playback_state(&message)
+            .is_some_and(|state| state.is_playing && state.playing_media_id == media_one_id);
+        received_playback_system_chat |= resource_chat_event(&message).is_some_and(|event| {
+            event.message.as_ref().is_some_and(|chat| {
+                chat.message_type
+                    == synctv_proto::client::ChatMessageType::SystemPlaybackChanged as i32
+                    && chat.content == "Playback changed"
+            })
+        });
+    }
 
     send_client_message(
         &mut owner_ws,
@@ -8167,6 +8195,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                     expected_media_id: None,
                     expected_playlist_id: None,
                     expected_target_hash: None,
+                    client_operation_id: Some("3d918f61-3959-49ef-a962-5d94b8ac8470".to_string()),
+                    client_time_millis: None,
                 },
             )),
         },
@@ -8176,8 +8206,11 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            resource_playback_state(message)
-                .is_some_and(|state| !state.is_playing && state.playing_media_id == media_one_id)
+            resource_playback_state(message).is_some_and(|state| {
+                !state.is_playing
+                    && state.playing_media_id == media_one_id
+                    && state.client_operation_id == "3d918f61-3959-49ef-a962-5d94b8ac8470"
+            })
         },
         "pause playback broadcast",
     )
@@ -8199,6 +8232,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                             .to_string(),
                     ),
+                    client_operation_id: None,
+                    client_time_millis: None,
                 },
             )),
         },
@@ -8231,6 +8266,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                     expected_media_id: None,
                     expected_playlist_id: None,
                     expected_target_hash: None,
+                    client_operation_id: None,
+                    client_time_millis: None,
                 },
             )),
         },
@@ -8263,6 +8300,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                     expected_media_id: None,
                     expected_playlist_id: None,
                     expected_target_hash: None,
+                    client_operation_id: None,
+                    client_time_millis: None,
                 },
             )),
         },

@@ -437,6 +437,7 @@ mod tests {
                 message: "Actual error".to_string(),
                 code: 1000,
                 detail: "Invalid token".to_string(),
+                client_operation_id: String::new(),
             })),
         };
 
@@ -1807,6 +1808,7 @@ mod tests {
                 media_id: "media-1".into(),
                 playlist_id: "playlist-1".into(),
                 target: None,
+                client_operation_id: None,
             })
             .unwrap_err(),
         );
@@ -1824,6 +1826,7 @@ mod tests {
                 media_id: "media-1".into(),
                 playlist_id: String::new(),
                 target: Some(alist_target("/tv")),
+                client_operation_id: None,
             })
             .unwrap_err(),
         );
@@ -1838,6 +1841,7 @@ mod tests {
                 media_id: String::new(),
                 playlist_id: "playlist-1".into(),
                 target: None,
+                client_operation_id: None,
             })
             .unwrap_err(),
         );

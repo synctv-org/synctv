@@ -2726,6 +2726,7 @@ pub fn try_playback_state_to_proto(
             .transpose()
             .map_err(crate::impls::ApiError::InvalidInput)?
             .unwrap_or_default(),
+        client_operation_id: String::new(),
     })
 }
 

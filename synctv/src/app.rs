@@ -80,7 +80,7 @@ struct RuntimeModePlan {
     cache_shared_state_profile: synctv_core::SharedStateProfile,
     realtime_shared_state_profile: synctv_core::SharedStateProfile,
     local_realtime_profile: synctv_core::SharedStateProfile,
-    realtime_outbox: Arc<RealtimeOutboxRepository>,
+    realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
 }
 
 impl RuntimeModePlan {
@@ -97,7 +97,8 @@ impl RuntimeModePlan {
             cache_shared_state_profile,
             realtime_shared_state_profile,
             local_realtime_profile,
-            realtime_outbox: Arc::new(RealtimeOutboxRepository::new(infra.pool.clone())),
+            realtime_outbox: cluster_runtime
+                .then(|| Arc::new(RealtimeOutboxRepository::new(infra.pool.clone()))),
         }
     }
 
@@ -106,6 +107,12 @@ impl RuntimeModePlan {
     }
 
     fn realtime_outbox(&self) -> Arc<RealtimeOutboxRepository> {
+        self.realtime_outbox
+            .clone()
+            .expect("cluster runtime requires a realtime outbox")
+    }
+
+    fn core_realtime_outbox(&self) -> Option<Arc<RealtimeOutboxRepository>> {
         self.realtime_outbox.clone()
     }
 }
@@ -550,6 +557,8 @@ fn start_room_notification_bridge(
         "room_notification_bridge",
         synctv_core::spawn::spawn_monitored("room_notification_bridge", async move {
             let mut rx = notification_service.subscribe();
+            let mut committed_realtime_rx =
+                notification_service.subscribe_committed_realtime_events();
             loop {
                 tokio::select! {
                     () = cancel.cancelled() => return,
@@ -562,6 +571,17 @@ fn start_room_notification_bridge(
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                                 warn!(skipped, "room creation notification bridge lagged behind realtime events");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                        }
+                    }
+                    event = committed_realtime_rx.recv() => {
+                        match event {
+                            Ok(event) => {
+                                realtime_manager.broadcast_local(event);
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                warn!(skipped, "committed realtime bridge lagged behind events");
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                         }
@@ -960,7 +980,7 @@ impl Application {
                 provider_address_overrides: options.provider_address_overrides.clone(),
                 ssrf_guard: infra.config.security.ssrf_guard(),
                 credential_encryption_key,
-                realtime_outbox: Some(runtime_plan.realtime_outbox()),
+                realtime_outbox: runtime_plan.core_realtime_outbox(),
                 read_pool: Some(infra.database_pools.read_pool()),
             },
         )
@@ -1468,6 +1488,11 @@ impl Application {
             Duration::from_secs(15),
             realtime_manager.clone(),
         ));
+        start_room_notification_bridge(
+            core.services.room_notification_service.clone(),
+            realtime_manager.clone(),
+            shutdown,
+        );
 
         // Cluster discovery (NodeRegistry, HealthMonitor) requires Redis.
         // When cluster is explicitly enabled, discovery failures are fatal.

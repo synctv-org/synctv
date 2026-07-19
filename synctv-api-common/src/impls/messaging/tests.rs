@@ -3685,6 +3685,7 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
             version: 2,
         },
         source_changed: true,
+        client_operation_id: None,
         timestamp: now(),
     });
 
@@ -3800,13 +3801,17 @@ async fn test_observed_playback_ignores_play_pause_state_updates() {
             version: 2,
         },
         source_changed: false,
+        client_operation_id: Some("3d918f61-3959-49ef-a962-5d94b8ac8470".to_string()),
         timestamp: now(),
     });
 
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
             if message_sender.sent_messages().iter().any(|message| {
-                resource_playback_state(message).is_some_and(|state| state.version == 2)
+                resource_playback_state(message).is_some_and(|state| {
+                    state.version == 2
+                        && state.client_operation_id == "3d918f61-3959-49ef-a962-5d94b8ac8470"
+                })
             }) {
                 break;
             }
@@ -4681,6 +4686,7 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
         username: handler.username.clone(),
         state: updated_state,
         source_changed: true,
+        client_operation_id: None,
         timestamp: now(),
     });
 
@@ -4778,6 +4784,7 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
             version: 2,
         },
         source_changed: true,
+        client_operation_id: None,
         timestamp: now(),
     };
 
@@ -6923,6 +6930,7 @@ fn test_playback_state_changed_event_conversion() {
             version: 7,
         },
         source_changed: false,
+        client_operation_id: None,
         timestamp: now(),
     };
 
@@ -6956,6 +6964,7 @@ fn test_playback_state_changed_event_does_not_validate_direct_message_payload() 
             version: -1,
         },
         source_changed: false,
+        client_operation_id: None,
         timestamp: now(),
     };
 

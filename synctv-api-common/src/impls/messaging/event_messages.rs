@@ -25,6 +25,7 @@ pub(super) fn realtime_event_to_server_messages(
                     message: "Room has been deleted".to_string(),
                     code: crate::impls::error_codes::NOT_FOUND,
                     detail: String::new(),
+                    client_operation_id: String::new(),
                 })),
             }]
         }
@@ -34,6 +35,7 @@ pub(super) fn realtime_event_to_server_messages(
                     message: "Room has been banned".to_string(),
                     code: crate::impls::error_codes::FORBIDDEN,
                     detail: String::new(),
+                    client_operation_id: String::new(),
                 })),
             }]
         }
@@ -43,6 +45,7 @@ pub(super) fn realtime_event_to_server_messages(
                     message: "Room is unavailable because its creator is not active".to_string(),
                     code: crate::impls::error_codes::FORBIDDEN,
                     detail: String::new(),
+                    client_operation_id: String::new(),
                 })),
             }]
         }

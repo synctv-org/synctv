@@ -129,7 +129,7 @@ pub async fn play_next(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
-    Json(_req): Json<PlayNextRequest>,
+    Json(req): Json<PlayNextRequest>,
 ) -> AppResult<Json<PlaybackState>> {
     let room_id = path.room_id;
     let response = execute_user_endpoint(
@@ -138,7 +138,9 @@ pub async fn play_next(
         EndpointRateLimitCategory::Media,
         EndpointRateLimitScope::RoomPlayback,
         move |client_api, authenticated| async move {
-            client_api.play_next(&authenticated.user_id, &room_id).await
+            client_api
+                .play_next(&authenticated.user_id, &room_id, req)
+                .await
         },
     )
     .await?;
@@ -161,7 +163,7 @@ pub async fn play_previous(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
-    Json(_req): Json<PlayPreviousRequest>,
+    Json(req): Json<PlayPreviousRequest>,
 ) -> AppResult<Json<PlaybackState>> {
     let room_id = path.room_id;
     let response = execute_user_endpoint(
@@ -171,7 +173,7 @@ pub async fn play_previous(
         EndpointRateLimitScope::RoomPlayback,
         move |client_api, authenticated| async move {
             client_api
-                .play_previous(&authenticated.user_id, &room_id)
+                .play_previous(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -245,7 +247,10 @@ pub async fn play_history_entry(
                 .play_history_entry(
                     &authenticated.user_id,
                     &room_id,
-                    PlayHistoryEntryRequest { entry_id },
+                    PlayHistoryEntryRequest {
+                        entry_id,
+                        client_operation_id: None,
+                    },
                 )
                 .await
         },

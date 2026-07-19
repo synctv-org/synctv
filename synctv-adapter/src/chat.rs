@@ -252,7 +252,7 @@ pub fn chat_message_pin_to_proto(
 pub fn chat_message_receive_to_proto(
     value: &ChatMessageWithAttachments,
     public_id_codec: &PublicIdCodec,
-    username: String,
+    username: Option<String>,
 ) -> AdapterResult<client_proto::ChatMessageReceive> {
     let message = &value.message;
     let room_id = encode_room_id_for_proto(message.room_id, public_id_codec)?;

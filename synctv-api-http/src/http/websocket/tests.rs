@@ -1334,6 +1334,7 @@ fn test_critical_messages_bypass_full_normal_queue() -> TestResult {
             message: "critical".to_string(),
             code: synctv_proto::common::ErrorCode::Forbidden as i32,
             detail: String::new(),
+            client_operation_id: String::new(),
         })),
     });
 

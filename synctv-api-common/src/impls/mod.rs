@@ -176,7 +176,7 @@ pub fn search_chat_messages_query_from_client_proto(
 pub fn chat_message_receive_to_client_proto(
     message: &synctv_core::models::ChatMessageWithAttachments,
     public_id_codec: &synctv_adapter::PublicIdCodec,
-    username: String,
+    username: Option<String>,
 ) -> Result<synctv_proto::client::ChatMessageReceive, ApiError> {
     synctv_adapter::chat::chat_message_receive_to_proto(message, public_id_codec, username)
         .map_err(|error| ApiError::Internal(error.to_string()))
@@ -920,6 +920,7 @@ impl ApiError {
             message,
             code: self.code(),
             detail: String::new(),
+            client_operation_id: String::new(),
         }
     }
 }

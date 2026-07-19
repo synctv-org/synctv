@@ -264,6 +264,7 @@ mod tests {
             username: "actor".to_string(),
             state: RoomPlaybackState::new(room_id()),
             source_changed: false,
+            client_operation_id: None,
             timestamp: synctv_core::SystemClock.now(),
         };
 
@@ -282,6 +283,7 @@ mod tests {
             username: "actor".to_string(),
             state: RoomPlaybackState::new(room_id()),
             source_changed: true,
+            client_operation_id: None,
             timestamp: synctv_core::SystemClock.now(),
         };
 

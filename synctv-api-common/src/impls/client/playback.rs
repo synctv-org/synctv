@@ -62,6 +62,8 @@ pub struct PlaybackStateUpdateParts {
     pub speed: Option<f64>,
     pub version: Option<i64>,
     pub expected_source: Option<PlaybackSourceExpectation>,
+    pub client_operation_id: Option<String>,
+    pub client_time_millis: Option<i64>,
 }
 
 struct DynamicPlaylistPlaybackRequest<'a> {
@@ -149,6 +151,7 @@ pub fn build_start_playback_request(
         media_id,
         playlist_id,
         target,
+        client_operation_id: _,
     } = req;
     let target = provider_target_from_proto(target)?;
 
@@ -167,6 +170,7 @@ pub fn build_playback_state_update(
     public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<PlaybackStateUpdateParts, ApiError> {
     crate::impls::validate_proto_request(&update)?;
+    let client_operation_id = update.client_operation_id.clone();
     let synctv_proto::client::UpdatePlaybackStateRequest {
         r#type,
         playing,
@@ -176,6 +180,8 @@ pub fn build_playback_state_update(
         expected_media_id,
         expected_playlist_id,
         expected_target_hash,
+        client_operation_id: _,
+        client_time_millis,
     } = update;
 
     let update_type = synctv_proto::client::PlaybackUpdateType::try_from(r#type).map_err(|_| {
@@ -243,6 +249,8 @@ pub fn build_playback_state_update(
         speed,
         version,
         expected_source,
+        client_operation_id,
+        client_time_millis,
     })
 }
 
@@ -755,11 +763,15 @@ impl ClientApiImpl {
         room_id: &str,
         req: synctv_proto::client::StartPlaybackRequest,
     ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let client_operation_id = req.client_operation_id.clone();
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let target = build_start_playback_request(req, &self.public_id_codec)?;
         let previous_state = self.state_before_playback_state_update(&rid).await?;
-        let prepared_fanout = self.prepare_playback_state_changed(uid).await?;
+        let prepared_fanout = self
+            .prepare_playback_state_changed(uid, client_operation_id.as_deref())
+            .await?;
 
         let state = self
             .room_service
@@ -781,7 +793,7 @@ impl ClientApiImpl {
         // Touch room activity to prevent TTL expiry on active rooms
         self.room_service.touch_room_activity(rid).await;
 
-        try_playback_state_to_proto(&state, &self.public_id_codec)
+        self.playback_state_with_operation(&state, client_operation_id.as_deref())
     }
 
     /// Stop current playback
@@ -790,12 +802,16 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        _req: synctv_proto::client::StopPlaybackRequest,
+        req: synctv_proto::client::StopPlaybackRequest,
     ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let client_operation_id = req.client_operation_id;
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let previous_state = self.state_before_playback_state_update(&rid).await?;
-        let prepared_fanout = self.prepare_playback_state_changed(uid).await?;
+        let prepared_fanout = self
+            .prepare_playback_state_changed(uid, client_operation_id.as_deref())
+            .await?;
 
         // Permission check (PLAY_PAUSE) is handled by PlaybackService::reset()
         let state = self
@@ -812,14 +828,17 @@ impl ClientApiImpl {
         self.handle_provider_lifecycle_transition_after_commit(Some(&previous_state), &state)
             .await;
 
-        try_playback_state_to_proto(&state, &self.public_id_codec)
+        self.playback_state_with_operation(&state, client_operation_id.as_deref())
     }
 
     pub async fn play_next(
         &self,
         user_id: &UserId,
         room_id: &str,
+        req: synctv_proto::client::PlayNextRequest,
     ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let client_operation_id = req.client_operation_id;
         let rid = self.parse_room_id(room_id)?;
         let settings = self
             .room_service
@@ -827,7 +846,9 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         let previous_state = self.state_before_playback_state_update(&rid).await?;
-        let prepared_fanout = self.prepare_playback_state_changed(*user_id).await?;
+        let prepared_fanout = self
+            .prepare_playback_state_changed(*user_id, client_operation_id.as_deref())
+            .await?;
         let state = self
             .room_service
             .playback_service()
@@ -854,17 +875,22 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?,
         };
-        try_playback_state_to_proto(&state, &self.public_id_codec)
+        self.playback_state_with_operation(&state, client_operation_id.as_deref())
     }
 
     pub async fn play_previous(
         &self,
         user_id: &UserId,
         room_id: &str,
+        req: synctv_proto::client::PlayPreviousRequest,
     ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let client_operation_id = req.client_operation_id;
         let rid = self.parse_room_id(room_id)?;
         let previous_state = self.state_before_playback_state_update(&rid).await?;
-        let prepared_fanout = self.prepare_playback_state_changed(*user_id).await?;
+        let prepared_fanout = self
+            .prepare_playback_state_changed(*user_id, client_operation_id.as_deref())
+            .await?;
         let state = self
             .room_service
             .playback_service()
@@ -890,7 +916,7 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?,
         };
-        try_playback_state_to_proto(&state, &self.public_id_codec)
+        self.playback_state_with_operation(&state, client_operation_id.as_deref())
     }
 
     pub async fn list_playback_history(
@@ -935,13 +961,16 @@ impl ClientApiImpl {
         req: synctv_proto::client::PlayHistoryEntryRequest,
     ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        let client_operation_id = req.client_operation_id.clone();
         let rid = self.parse_room_id(room_id)?;
         let entry_id = self
             .public_id_codec
             .decode_playback_history_entry_id(&req.entry_id)
             .map_err(|_| ApiError::InvalidInput("Invalid playback history entry_id".into()))?;
         let previous_state = self.state_before_playback_state_update(&rid).await?;
-        let prepared_fanout = self.prepare_playback_state_changed(*user_id).await?;
+        let prepared_fanout = self
+            .prepare_playback_state_changed(*user_id, client_operation_id.as_deref())
+            .await?;
         let state = self
             .room_service
             .playback_service()
@@ -957,7 +986,7 @@ impl ClientApiImpl {
         self.handle_provider_lifecycle_transition_after_commit(Some(&previous_state), &state)
             .await;
         self.room_service.touch_room_activity(rid).await;
-        try_playback_state_to_proto(&state, &self.public_id_codec)
+        self.playback_state_with_operation(&state, client_operation_id.as_deref())
     }
 
     /// Get current playback state and complete playback information
@@ -1109,8 +1138,11 @@ impl ClientApiImpl {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let update = build_playback_state_update(req, &self.public_id_codec)?;
+        let client_operation_id = update.client_operation_id.clone();
         let previous_state = self.state_before_playback_state_update(&rid).await?;
-        let prepared_fanout = self.prepare_playback_state_changed(uid).await?;
+        let prepared_fanout = self
+            .prepare_playback_state_changed(uid, client_operation_id.as_deref())
+            .await?;
 
         let mut request = PlaybackStateUpdateRequest::new(
             rid,
@@ -1118,6 +1150,7 @@ impl ClientApiImpl {
             PlaybackStatePatch::new(update.playing, update.position, update.speed),
         )
         .with_expected_version(update.version)
+        .with_client_time_millis(update.client_time_millis)
         .with_outbox(Some(prepared_fanout.outbox_factory()));
         if let Some(expected_source) = update.expected_source {
             request = request.with_expected_source(expected_source);
@@ -1132,12 +1165,13 @@ impl ClientApiImpl {
         self.handle_provider_lifecycle_transition_after_commit(Some(&previous_state), &state)
             .await;
 
-        try_playback_state_to_proto(&state, &self.public_id_codec)
+        self.playback_state_with_operation(&state, client_operation_id.as_deref())
     }
 
     async fn prepare_playback_state_changed(
         &self,
         user_id: UserId,
+        client_operation_id: Option<&str>,
     ) -> Result<PreparedPlaybackStateFanout, ApiError> {
         let username = self
             .user_service
@@ -1145,9 +1179,20 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::Internal("Playback actor username not found".to_string()))?;
-        Ok(self
-            .playback_fanout
-            .prepare_state_changed_outbox_fanout(PlaybackFanoutActor::new(user_id, &username)))
+        Ok(self.playback_fanout.prepare_state_changed_outbox_fanout(
+            PlaybackFanoutActor::new(user_id, &username)
+                .with_client_operation_id(client_operation_id),
+        ))
+    }
+
+    fn playback_state_with_operation(
+        &self,
+        state: &RoomPlaybackState,
+        client_operation_id: Option<&str>,
+    ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
+        let mut state = try_playback_state_to_proto(state, &self.public_id_codec)?;
+        state.client_operation_id = client_operation_id.unwrap_or_default().to_string();
+        Ok(state)
     }
 
     async fn handle_provider_lifecycle_transition_after_commit(

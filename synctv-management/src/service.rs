@@ -818,13 +818,10 @@ impl ManagementServiceImpl {
                                     "failed to encode chat message user id: {error}"
                                 ))
                             })?;
-                        let username = username_map
-                            .get(uid)
-                            .cloned()
-                            .ok_or_else(|| Status::not_found("Chat message author not found"))?;
+                        let username = username_map.get(uid).cloned();
                         (user_id, username)
                     }
-                    None => (String::new(), "[deleted]".to_string()),
+                    None => (String::new(), None),
                 };
 
                 let mut proto = synctv_adapter::chat::chat_message_receive_to_proto(

@@ -4308,6 +4308,7 @@ async fn test_start_playback_bypasses_room_membership_requirement_for_global_adm
                     media_id: public_media_id(&admin_api, media.id),
                     playlist_id: String::new(),
                     target: None,
+                    client_operation_id: None,
                 },
                 Some(global_admin.id),
                 &global_admin.id,

@@ -307,8 +307,16 @@ rayon = "=1.12.0"
 
 # HTTP Body
 http-body-util = "=0.1.3"
-utoipa = { version = "=5.5.0", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "=9.0.2", features = ["axum"] }
+utoipa = { version = "=5.5.0", default-features = false, features = [
+    "macros",
+    "axum_extras",
+    "preserve_order",
+    "preserve_path_order",
+] }
+utoipa-swagger-ui = { version = "=9.0.2", default-features = false, features = [
+    "axum",
+    "vendored",
+] }
 
 # Testing
 mockall = "=0.15.0"

@@ -1027,6 +1027,52 @@ mod tests {
     }
 
     #[test]
+    fn openapi_preserves_authored_path_order() {
+        let doc = super::ApiDoc::openapi();
+        let paths = doc
+            .paths
+            .paths
+            .keys()
+            .take(5)
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            paths,
+            [
+                "/health/live",
+                "/health/ready",
+                "/api/public/settings",
+                "/api/public/server-info",
+                "/api/public/time",
+            ]
+        );
+    }
+
+    #[test]
+    fn openapi_preserves_component_field_order() -> TestResult {
+        let doc = super::ApiDoc::openapi();
+        let schema = doc
+            .components
+            .as_ref()
+            .and_then(|components| components.schemas.get("GoogleRpcStatusSchema"))
+            .ok_or_else(|| test_error("GoogleRpcStatusSchema should be registered"))?;
+        let schema_json = serde_json::to_string(schema)?;
+        let code = schema_json
+            .find("\"code\"")
+            .ok_or_else(|| test_error("code property should be documented"))?;
+        let message = schema_json
+            .find("\"message\"")
+            .ok_or_else(|| test_error("message property should be documented"))?;
+        let details = schema_json
+            .find("\"details\"")
+            .ok_or_else(|| test_error("details property should be documented"))?;
+
+        assert!(code < message && message < details);
+        Ok(())
+    }
+
+    #[test]
     fn openapi_keeps_bearer_auth_off_public_routes() -> TestResult {
         let doc = openapi_json()?;
 

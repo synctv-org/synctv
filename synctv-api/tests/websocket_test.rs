@@ -1027,78 +1027,80 @@ mod websocket_e2e {
             let (audit_svc, _audit_handle) = synctv_core::service::AuditService::new(pool.clone());
             Arc::new(audit_svc)
         };
-        let provider_common_api = Arc::new(synctv_api::ProviderCommonApiImpl::new_with_runtime(
-            provider_instance_manager.clone(),
-            user_service.clone(),
-            audit_service.clone(),
-            synctv_api::ProviderCommonApiRuntime {
-                providers_manager: providers_manager.clone(),
-                request_executor: request_executor.clone(),
-            },
-        ));
-        let provider_api_runtime = synctv_api::ProviderApiRuntime {
+        let provider_common_api = Arc::new(
+            synctv_api::providers::ProviderCommonApiImpl::new_with_runtime(
+                provider_instance_manager.clone(),
+                user_service.clone(),
+                audit_service.clone(),
+                synctv_api::providers::ProviderCommonApiRuntime {
+                    providers_manager: providers_manager.clone(),
+                    request_executor: request_executor.clone(),
+                },
+            ),
+        );
+        let provider_api_runtime = synctv_api::providers::ProviderApiRuntime {
             access_service: provider_access_service.clone(),
             event_service: realtime_manager.clone(),
         };
         let credential_backed_providers =
             providers.with_credential_repo(user_provider_credential_repo.clone());
         let bilibili_api = Arc::new(
-            synctv_api::BilibiliApiImpl::new_with_runtime(
+            synctv_api::providers::BilibiliApiImpl::new_with_runtime(
                 credential_backed_providers.bilibili.clone(),
                 b"test-secret-key-for-websocket-tests-minimum-32-chars",
                 provider_api_runtime.clone(),
             )
             .expect("test Bilibili API should build"),
         );
-        let alist_api = Arc::new(synctv_api::AlistApiImpl::new_with_runtime(
+        let alist_api = Arc::new(synctv_api::providers::AlistApiImpl::new_with_runtime(
             credential_backed_providers.alist.clone(),
             provider_api_runtime.clone(),
         ));
-        let emby_api = Arc::new(synctv_api::EmbyApiImpl::new_with_runtime(
+        let emby_api = Arc::new(synctv_api::providers::EmbyApiImpl::new_with_runtime(
             credential_backed_providers.emby.clone(),
             provider_api_runtime.clone(),
         ));
-        let cloudreve_api = Arc::new(synctv_api::CloudreveApiImpl::new(
+        let cloudreve_api = Arc::new(synctv_api::providers::CloudreveApiImpl::new(
             credential_backed_providers.cloudreve.clone(),
             realtime_manager.clone(),
         ));
-        let twitch_api = Arc::new(synctv_api::TwitchApiImpl::new(
+        let twitch_api = Arc::new(synctv_api::providers::TwitchApiImpl::new(
             credential_backed_providers.twitch.clone(),
             realtime_manager.clone(),
         ));
-        let youtube_api = Arc::new(synctv_api::YoutubeApiImpl::new(
+        let youtube_api = Arc::new(synctv_api::providers::YoutubeApiImpl::new(
             credential_backed_providers.youtube.clone(),
             realtime_manager.clone(),
         ));
-        let douyin_api = Arc::new(synctv_api::DouyinApiImpl::new(
+        let douyin_api = Arc::new(synctv_api::providers::DouyinApiImpl::new(
             credential_backed_providers.douyin.clone(),
             realtime_manager.clone(),
         ));
-        let tiktok_api = Arc::new(synctv_api::TikTokApiImpl::new(
+        let tiktok_api = Arc::new(synctv_api::providers::TikTokApiImpl::new(
             credential_backed_providers.tiktok.clone(),
             realtime_manager.clone(),
         ));
-        let fnos_api = Arc::new(synctv_api::FnosApiImpl::new(
+        let fnos_api = Arc::new(synctv_api::providers::FnosApiImpl::new(
             credential_backed_providers.fnos.clone(),
             realtime_manager.clone(),
         ));
-        let qnap_api = Arc::new(synctv_api::QnapApiImpl::new(
+        let qnap_api = Arc::new(synctv_api::providers::QnapApiImpl::new(
             credential_backed_providers.qnap.clone(),
             realtime_manager.clone(),
         ));
-        let synology_api = Arc::new(synctv_api::SynologyApiImpl::new(
+        let synology_api = Arc::new(synctv_api::providers::SynologyApiImpl::new(
             credential_backed_providers.synology.clone(),
             realtime_manager.clone(),
         ));
-        let nextcloud_api = Arc::new(synctv_api::NextcloudApiImpl::new(
+        let nextcloud_api = Arc::new(synctv_api::providers::NextcloudApiImpl::new(
             credential_backed_providers.nextcloud.clone(),
             realtime_manager.clone(),
         ));
-        let seafile_api = Arc::new(synctv_api::SeafileApiImpl::new(
+        let seafile_api = Arc::new(synctv_api::providers::SeafileApiImpl::new(
             credential_backed_providers.seafile.clone(),
             realtime_manager.clone(),
         ));
-        let truenas_api = Arc::new(synctv_api::TrueNasApiImpl::new(
+        let truenas_api = Arc::new(synctv_api::providers::TrueNasApiImpl::new(
             credential_backed_providers.truenas.clone(),
             realtime_manager.clone(),
         ));

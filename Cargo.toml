@@ -2,11 +2,18 @@
 members = [
     # SyncTV crates
     "synctv-proto",
+    "synctv-proto-build",
+    "synctv-proto-main",
+    "synctv-proto-providers",
+    "synctv-proto-playback-provider",
     "synctv-core",
     "synctv-core/testing",
     "synctv-adapter",
     "synctv-proxy",
     "synctv-api",
+    "synctv-api-common",
+    "synctv-api-http",
+    "synctv-api-grpc",
     "synctv-livestream",
     "synctv-cluster",
     "synctv-realtime",
@@ -339,10 +346,17 @@ mimalloc = { version = "=0.1.52", features = ["v2"] }
 
 # Internal workspace crates
 synctv-proto = { path = "synctv-proto", default-features = false }
+synctv-proto-build = { path = "synctv-proto-build" }
+synctv-proto-main = { path = "synctv-proto-main", default-features = false }
+synctv-proto-providers = { path = "synctv-proto-providers", default-features = false }
+synctv-proto-playback-provider = { path = "synctv-proto-playback-provider", default-features = false }
 synctv-core = { path = "synctv-core", default-features = false }
 synctv-core-testing = { path = "synctv-core/testing", default-features = false }
 synctv-adapter = { path = "synctv-adapter", default-features = false }
 synctv-api = { path = "synctv-api", default-features = false }
+synctv-api-common = { path = "synctv-api-common", default-features = false }
+synctv-api-http = { path = "synctv-api-http", default-features = false }
+synctv-api-grpc = { path = "synctv-api-grpc", default-features = false }
 synctv-cluster = { path = "synctv-cluster", default-features = false }
 synctv-realtime = { path = "synctv-realtime", default-features = false }
 synctv-media-providers = { path = "synctv-media-providers", default-features = false }
@@ -356,7 +370,7 @@ debug = 0
 strip = "symbols"
 
 [profile.release]
-opt-level = 3
+opt-level = 2
 codegen-units = 1
 debug = 0
 lto = "thin"

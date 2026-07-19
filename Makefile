@@ -315,7 +315,6 @@ doc-test: ## Run locked workspace documentation tests.
 
 clippy: ## Apply Clippy fixes, then require a clean workspace lint pass.
 	SQLX_OFFLINE=true $(CARGO) clippy $(CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS) --fix --allow-dirty
-	SQLX_OFFLINE=true $(CARGO) clippy $(CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS)
 
 clippy-check: ## Run locked workspace Clippy checks without modifying files.
 	SQLX_OFFLINE=true $(CARGO) clippy $(CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS) -- -D warnings

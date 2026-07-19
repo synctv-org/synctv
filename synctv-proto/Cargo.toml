@@ -8,42 +8,45 @@ license.workspace = true
 [features]
 default = ["full", "tls-aws-lc", "tls-webpki-roots"]
 full = ["main", "providers", "playback-provider"]
-main = []
-providers = ["main"]
-playback-provider = []
-openapi = ["dep:utoipa"]
-tls-aws-lc = ["tonic/tls-aws-lc"]
-tls-ring = ["tonic/tls-ring"]
-tls-webpki-roots = ["tonic/tls-webpki-roots"]
-tls-native-roots = ["tonic/tls-native-roots"]
+main = ["dep:synctv-proto-main"]
+providers = ["main", "dep:synctv-proto-providers"]
+playback-provider = ["dep:synctv-proto-playback-provider"]
+openapi = [
+    "synctv-proto-main?/openapi",
+    "synctv-proto-providers?/openapi",
+    "synctv-proto-playback-provider?/openapi",
+]
+tls-aws-lc = [
+    "synctv-proto-main?/tls-aws-lc",
+    "synctv-proto-providers?/tls-aws-lc",
+    "synctv-proto-playback-provider?/tls-aws-lc",
+]
+tls-ring = [
+    "synctv-proto-main?/tls-ring",
+    "synctv-proto-providers?/tls-ring",
+    "synctv-proto-playback-provider?/tls-ring",
+]
+tls-webpki-roots = [
+    "synctv-proto-main?/tls-webpki-roots",
+    "synctv-proto-providers?/tls-webpki-roots",
+    "synctv-proto-playback-provider?/tls-webpki-roots",
+]
+tls-native-roots = [
+    "synctv-proto-main?/tls-native-roots",
+    "synctv-proto-providers?/tls-native-roots",
+    "synctv-proto-playback-provider?/tls-native-roots",
+]
 
 [lints]
 workspace = true
 
 [dependencies]
-# gRPC
-tonic.workspace = true
-tonic-prost.workspace = true
-prost.workspace = true
-prost-types.workspace = true
+synctv-proto-main = { workspace = true, default-features = false, optional = true }
+synctv-proto-providers = { workspace = true, default-features = false, optional = true }
+synctv-proto-playback-provider = { workspace = true, default-features = false, optional = true }
 prost-reflect.workspace = true
 prost-protovalidate.workspace = true
-pbjson.workspace = true
-pbjson-types.workspace = true
-
-# Serialization
-base64.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-utoipa = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_urlencoded.workspace = true
-
-[build-dependencies]
-tonic-prost-build.workspace = true
-protoc-bin-vendored.workspace = true
-prost-reflect-build.workspace = true
-pbjson-build.workspace = true
-prost.workspace = true
-prost-types.workspace = true
+serde_json.workspace = true

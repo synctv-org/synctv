@@ -20,6 +20,15 @@ pub enum PlaybackHistoryDirection {
     Next,
 }
 
+pub struct AppendPlaybackHistoryEntry<'a> {
+    pub room_id: &'a RoomId,
+    pub media_id: Option<MediaId>,
+    pub playlist_id: Option<PlaylistId>,
+    pub target: Option<&'a ProviderTarget>,
+    pub position_seconds: f64,
+    pub selected_by_user_id: Option<UserId>,
+}
+
 #[derive(sqlx::FromRow)]
 struct PlaybackHistoryRow {
     id: i64,
@@ -65,22 +74,27 @@ impl PlaybackHistoryRepository {
     ) -> Result<PlaybackHistoryPage> {
         let limit = limit.clamp(1, 100);
         let rows = sqlx::query_as::<_, PlaybackHistoryRow>(
-            r#"SELECT id, room_id, sequence, media_id, playlist_id, target,
+            r"SELECT id, room_id, sequence, media_id, playlist_id, target,
                       position_seconds, selected_by_user_id, created_at, updated_at
                FROM room_playback_history
                WHERE room_id = $1 AND ($2::bigint IS NULL OR id < $2)
                ORDER BY sequence DESC
-               LIMIT $3"#,
+               LIMIT $3",
         )
         .bind(room_id.as_i64())
         .bind(before_entry_id)
         .bind(i64::from(limit) + 1)
         .fetch_all(&self.pool)
         .await?;
-        let has_more = rows.len() > limit as usize;
+        let limit = usize::try_from(limit).map_err(|error| {
+            Error::Internal(format!(
+                "validated playback history limit is invalid: {error}"
+            ))
+        })?;
+        let has_more = rows.len() > limit;
         let entries = rows
             .into_iter()
-            .take(limit as usize)
+            .take(limit)
             .map(PlaybackHistoryEntry::from)
             .collect::<Vec<_>>();
         let history_cursor_id = sqlx::query_scalar::<_, Option<i64>>(
@@ -120,7 +134,7 @@ impl PlaybackHistoryRepository {
         conn: &mut PgConnection,
     ) -> Result<Option<PlaybackHistoryEntry>> {
         let row = sqlx::query_as::<_, PlaybackHistoryRow>(
-            r#"SELECT h.id, h.room_id, h.sequence, h.media_id, h.playlist_id,
+            r"SELECT h.id, h.room_id, h.sequence, h.media_id, h.playlist_id,
                       h.target, h.position_seconds, h.selected_by_user_id, h.created_at, h.updated_at
                FROM room_playback_state c
                JOIN room_playback_history h
@@ -128,7 +142,7 @@ impl PlaybackHistoryRepository {
                 AND h.id = c.history_cursor_id
                 AND h.created_at = c.history_cursor_created_at
                WHERE c.room_id = $1
-               FOR UPDATE OF c"#,
+               FOR UPDATE OF c",
         )
         .bind(room_id.as_i64())
         .fetch_optional(&mut *conn)
@@ -145,7 +159,7 @@ impl PlaybackHistoryRepository {
     ) -> Result<Option<PlaybackHistoryEntry>> {
         let sql = match direction {
             PlaybackHistoryDirection::Next => {
-                r#"SELECT candidate.id, candidate.room_id, candidate.sequence,
+                r"SELECT candidate.id, candidate.room_id, candidate.sequence,
                       candidate.media_id, candidate.playlist_id, candidate.target,
                       candidate.position_seconds, candidate.selected_by_user_id, candidate.created_at,
                       candidate.updated_at
@@ -155,10 +169,10 @@ impl PlaybackHistoryRepository {
                    WHERE h.room_id = current.room_id AND h.sequence > current.sequence
                    ORDER BY h.sequence ASC LIMIT 1
                ) candidate ON TRUE
-               WHERE current.room_id = $1 AND current.id = $2"#
+               WHERE current.room_id = $1 AND current.id = $2"
             }
             PlaybackHistoryDirection::Previous => {
-                r#"SELECT candidate.id, candidate.room_id, candidate.sequence,
+                r"SELECT candidate.id, candidate.room_id, candidate.sequence,
                       candidate.media_id, candidate.playlist_id, candidate.target,
                       candidate.position_seconds, candidate.selected_by_user_id, candidate.created_at,
                       candidate.updated_at
@@ -168,7 +182,7 @@ impl PlaybackHistoryRepository {
                    WHERE h.room_id = current.room_id AND h.sequence < current.sequence
                    ORDER BY h.sequence DESC LIMIT 1
                ) candidate ON TRUE
-               WHERE current.room_id = $1 AND current.id = $2"#
+               WHERE current.room_id = $1 AND current.id = $2"
             }
         };
         let row = sqlx::query_as::<_, PlaybackHistoryRow>(sql)
@@ -186,9 +200,9 @@ impl PlaybackHistoryRepository {
         conn: &mut PgConnection,
     ) -> Result<PlaybackHistoryEntry> {
         sqlx::query_as::<_, PlaybackHistoryRow>(
-            r#"SELECT id, room_id, sequence, media_id, playlist_id, target,
+            r"SELECT id, room_id, sequence, media_id, playlist_id, target,
                       position_seconds, selected_by_user_id, created_at, updated_at
-               FROM room_playback_history WHERE room_id = $1 AND id = $2"#,
+               FROM room_playback_history WHERE room_id = $1 AND id = $2",
         )
         .bind(room_id.as_i64())
         .bind(entry_id)
@@ -205,12 +219,12 @@ impl PlaybackHistoryRepository {
         conn: &mut PgConnection,
     ) -> Result<()> {
         sqlx::query(
-            r#"UPDATE room_playback_history h SET position_seconds = $2
+            r"UPDATE room_playback_history h SET position_seconds = $2
                FROM room_playback_state c
                WHERE c.room_id = $1
                  AND h.room_id = c.room_id
                  AND h.id = c.history_cursor_id
-                 AND h.created_at = c.history_cursor_created_at"#,
+                 AND h.created_at = c.history_cursor_created_at",
         )
         .bind(room_id.as_i64())
         .bind(position_seconds.max(0.0))
@@ -221,14 +235,17 @@ impl PlaybackHistoryRepository {
 
     pub async fn append_entry_on_conn(
         &self,
-        room_id: &RoomId,
-        media_id: Option<MediaId>,
-        playlist_id: Option<PlaylistId>,
-        target: Option<&ProviderTarget>,
-        position_seconds: f64,
-        selected_by_user_id: Option<UserId>,
+        request: AppendPlaybackHistoryEntry<'_>,
         conn: &mut PgConnection,
     ) -> Result<PlaybackHistoryEntry> {
+        let AppendPlaybackHistoryEntry {
+            room_id,
+            media_id,
+            playlist_id,
+            target,
+            position_seconds,
+            selected_by_user_id,
+        } = request;
         let cursor_entry = self.cursor_entry_on_conn(room_id, conn).await?;
         if let Some(cursor_entry) = &cursor_entry {
             sqlx::query("DELETE FROM room_playback_history WHERE room_id = $1 AND sequence > $2")
@@ -250,12 +267,12 @@ impl PlaybackHistoryRepository {
         };
         let target_hash = try_hash_playback_target(target)?;
         let row = sqlx::query_as::<_, PlaybackHistoryRow>(
-            r#"INSERT INTO room_playback_history (
+            r"INSERT INTO room_playback_history (
                    room_id, sequence, media_id, playlist_id, target, target_hash,
                    position_seconds, selected_by_user_id
                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                RETURNING id, room_id, sequence, media_id, playlist_id, target,
-                         position_seconds, selected_by_user_id, created_at, updated_at"#,
+                         position_seconds, selected_by_user_id, created_at, updated_at",
         )
         .bind(room_id.as_i64())
         .bind(next_sequence)
@@ -279,9 +296,9 @@ impl PlaybackHistoryRepository {
         conn: &mut PgConnection,
     ) -> Result<()> {
         sqlx::query(
-            r#"UPDATE room_playback_state
+            r"UPDATE room_playback_state
                SET history_cursor_id = $2, history_cursor_created_at = $3
-               WHERE room_id = $1"#,
+               WHERE room_id = $1",
         )
         .bind(room_id.as_i64())
         .bind(entry.id)
@@ -302,7 +319,7 @@ impl PlaybackHistoryRepository {
         let mut deleted_total = 0_u64;
         loop {
             let result = sqlx::query(
-                r#"WITH ranked AS (
+                r"WITH ranked AS (
                    SELECT h.room_id, h.id, h.sequence, h.created_at,
                           ROW_NUMBER() OVER (PARTITION BY h.room_id ORDER BY h.sequence DESC) AS rank
                    FROM room_playback_history h
@@ -352,7 +369,7 @@ impl PlaybackHistoryRepository {
                )
                DELETE FROM room_playback_history h
                USING candidates c
-               WHERE h.room_id = c.room_id AND h.id = c.id AND h.created_at = c.created_at"#,
+               WHERE h.room_id = c.room_id AND h.id = c.id AND h.created_at = c.created_at",
         )
             .bind(retention_days)
             .bind(max_entries_per_room)

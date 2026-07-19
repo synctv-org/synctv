@@ -1,5 +1,6 @@
 use crate::{
     models::{MediaId, PlaylistId, ProviderTarget, RoomId, RoomPlaybackState, UserId},
+    service::SwitchPlaybackTarget,
     Error, Result,
 };
 
@@ -32,9 +33,11 @@ impl RoomService {
             room_id,
             actor,
             Some(*actor.user_id()),
-            media_id,
-            playlist_id,
-            target,
+            SwitchPlaybackTarget {
+                media_id,
+                playlist_id,
+                target,
+            },
             None,
         )
         .await
@@ -45,9 +48,7 @@ impl RoomService {
         room_id: RoomId,
         actor: &AuthorizedAdminActor,
         recorded_actor_user_id: Option<UserId>,
-        media_id: Option<MediaId>,
-        playlist_id: Option<PlaylistId>,
-        target: Option<ProviderTarget>,
+        target: SwitchPlaybackTarget,
         outbox_event_factory: Option<crate::service::RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<RoomPlaybackState> {
         self.playback_service
@@ -55,8 +56,6 @@ impl RoomService {
                 room_id,
                 *actor.user_id(),
                 recorded_actor_user_id,
-                media_id,
-                playlist_id,
                 target,
                 outbox_event_factory,
             )

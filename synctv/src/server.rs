@@ -187,21 +187,21 @@ struct SharedPlaybackProviderServices {
 
 #[derive(Clone)]
 struct SharedProviderApiImpls {
-    provider_common: Arc<synctv_api::ProviderCommonApiImpl>,
-    bilibili: Arc<synctv_api::BilibiliApiImpl>,
-    alist: Arc<synctv_api::AlistApiImpl>,
-    emby: Arc<synctv_api::EmbyApiImpl>,
-    cloudreve: Arc<synctv_api::CloudreveApiImpl>,
-    twitch: Arc<synctv_api::TwitchApiImpl>,
-    youtube: Arc<synctv_api::YoutubeApiImpl>,
-    douyin: Arc<synctv_api::DouyinApiImpl>,
-    tiktok: Arc<synctv_api::TikTokApiImpl>,
-    fnos: Arc<synctv_api::FnosApiImpl>,
-    qnap: Arc<synctv_api::QnapApiImpl>,
-    synology: Arc<synctv_api::SynologyApiImpl>,
-    nextcloud: Arc<synctv_api::NextcloudApiImpl>,
-    seafile: Arc<synctv_api::SeafileApiImpl>,
-    truenas: Arc<synctv_api::TrueNasApiImpl>,
+    provider_common: Arc<synctv_api::providers::ProviderCommonApiImpl>,
+    bilibili: Arc<synctv_api::providers::BilibiliApiImpl>,
+    alist: Arc<synctv_api::providers::AlistApiImpl>,
+    emby: Arc<synctv_api::providers::EmbyApiImpl>,
+    cloudreve: Arc<synctv_api::providers::CloudreveApiImpl>,
+    twitch: Arc<synctv_api::providers::TwitchApiImpl>,
+    youtube: Arc<synctv_api::providers::YoutubeApiImpl>,
+    douyin: Arc<synctv_api::providers::DouyinApiImpl>,
+    tiktok: Arc<synctv_api::providers::TikTokApiImpl>,
+    fnos: Arc<synctv_api::providers::FnosApiImpl>,
+    qnap: Arc<synctv_api::providers::QnapApiImpl>,
+    synology: Arc<synctv_api::providers::SynologyApiImpl>,
+    nextcloud: Arc<synctv_api::providers::NextcloudApiImpl>,
+    seafile: Arc<synctv_api::providers::SeafileApiImpl>,
+    truenas: Arc<synctv_api::providers::TrueNasApiImpl>,
 }
 
 #[derive(Clone)]
@@ -408,77 +408,79 @@ fn build_provider_api_impls(
     event_service: Arc<dyn RealtimeEventService>,
     jwt_secret: &[u8],
 ) -> anyhow::Result<SharedProviderApiImpls> {
-    let provider_common = Arc::new(synctv_api::ProviderCommonApiImpl::new_with_runtime(
-        provider_instance_manager,
-        user_service,
-        audit_service,
-        synctv_api::ProviderCommonApiRuntime {
-            providers_manager,
-            request_executor,
-        },
-    ));
-    let provider_api_runtime = synctv_api::ProviderApiRuntime {
+    let provider_common = Arc::new(
+        synctv_api::providers::ProviderCommonApiImpl::new_with_runtime(
+            provider_instance_manager,
+            user_service,
+            audit_service,
+            synctv_api::providers::ProviderCommonApiRuntime {
+                providers_manager,
+                request_executor,
+            },
+        ),
+    );
+    let provider_api_runtime = synctv_api::providers::ProviderApiRuntime {
         access_service: provider_access_service,
         event_service,
     };
     let credential_backed_providers = providers.with_credential_repo(credential_repo);
     let bilibili = Arc::new(
-        synctv_api::BilibiliApiImpl::new_with_runtime(
+        synctv_api::providers::BilibiliApiImpl::new_with_runtime(
             credential_backed_providers.bilibili.clone(),
             jwt_secret,
             provider_api_runtime.clone(),
         )
         .map_err(|error| anyhow::anyhow!("Failed to initialize Bilibili API: {error}"))?,
     );
-    let alist = Arc::new(synctv_api::AlistApiImpl::new_with_runtime(
+    let alist = Arc::new(synctv_api::providers::AlistApiImpl::new_with_runtime(
         credential_backed_providers.alist.clone(),
         provider_api_runtime.clone(),
     ));
-    let emby = Arc::new(synctv_api::EmbyApiImpl::new_with_runtime(
+    let emby = Arc::new(synctv_api::providers::EmbyApiImpl::new_with_runtime(
         credential_backed_providers.emby.clone(),
         provider_api_runtime.clone(),
     ));
-    let cloudreve = Arc::new(synctv_api::CloudreveApiImpl::new(
+    let cloudreve = Arc::new(synctv_api::providers::CloudreveApiImpl::new(
         credential_backed_providers.cloudreve.clone(),
         provider_api_runtime.event_service.clone(),
     ));
-    let twitch = Arc::new(synctv_api::TwitchApiImpl::new(
+    let twitch = Arc::new(synctv_api::providers::TwitchApiImpl::new(
         credential_backed_providers.twitch.clone(),
         provider_api_runtime.event_service.clone(),
     ));
-    let youtube = Arc::new(synctv_api::YoutubeApiImpl::new(
+    let youtube = Arc::new(synctv_api::providers::YoutubeApiImpl::new(
         credential_backed_providers.youtube.clone(),
         provider_api_runtime.event_service.clone(),
     ));
-    let douyin = Arc::new(synctv_api::DouyinApiImpl::new(
+    let douyin = Arc::new(synctv_api::providers::DouyinApiImpl::new(
         credential_backed_providers.douyin.clone(),
         provider_api_runtime.event_service.clone(),
     ));
-    let tiktok = Arc::new(synctv_api::TikTokApiImpl::new(
+    let tiktok = Arc::new(synctv_api::providers::TikTokApiImpl::new(
         credential_backed_providers.tiktok.clone(),
         provider_api_runtime.event_service.clone(),
     ));
-    let fnos = Arc::new(synctv_api::FnosApiImpl::new(
+    let fnos = Arc::new(synctv_api::providers::FnosApiImpl::new(
         credential_backed_providers.fnos.clone(),
         provider_api_runtime.event_service.clone(),
     ));
-    let qnap = Arc::new(synctv_api::QnapApiImpl::new(
+    let qnap = Arc::new(synctv_api::providers::QnapApiImpl::new(
         credential_backed_providers.qnap.clone(),
         provider_api_runtime.event_service.clone(),
     ));
-    let synology = Arc::new(synctv_api::SynologyApiImpl::new(
+    let synology = Arc::new(synctv_api::providers::SynologyApiImpl::new(
         credential_backed_providers.synology.clone(),
         provider_api_runtime.event_service.clone(),
     ));
-    let nextcloud = Arc::new(synctv_api::NextcloudApiImpl::new(
+    let nextcloud = Arc::new(synctv_api::providers::NextcloudApiImpl::new(
         credential_backed_providers.nextcloud.clone(),
         provider_api_runtime.event_service.clone(),
     ));
-    let seafile = Arc::new(synctv_api::SeafileApiImpl::new(
+    let seafile = Arc::new(synctv_api::providers::SeafileApiImpl::new(
         credential_backed_providers.seafile.clone(),
         provider_api_runtime.event_service.clone(),
     ));
-    let truenas = Arc::new(synctv_api::TrueNasApiImpl::new(
+    let truenas = Arc::new(synctv_api::providers::TrueNasApiImpl::new(
         credential_backed_providers.truenas.clone(),
         provider_api_runtime.event_service.clone(),
     ));

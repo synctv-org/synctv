@@ -151,6 +151,7 @@ pub use permission::{
 pub use playback::{
     PlaybackService, PlaybackServiceRuntime, PlaybackSourceExpectation, PlaybackStatePatch,
     PlaybackStateUpdateRequest, RealtimeOutboxPlaybackStateEventFactory, SeekResponse,
+    SwitchPlaybackTarget,
 };
 pub use playback_auto_advance::{ActivePlaybackRoomSource, PlaybackAutoAdvanceService};
 pub use playback_duration_probe::PlaybackDurationProbeService;

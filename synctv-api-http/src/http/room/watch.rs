@@ -1,0 +1,466 @@
+use axum::{
+    extract::{Path, Query, State},
+    http::HeaderMap,
+    response::sse::{Event, KeepAlive, Sse},
+};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use std::convert::Infallible;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::{Stream, StreamExt};
+
+use super::super::websocket::RealtimeTransportFormat;
+use super::query::{
+    parse_watch_delivery_mode, watch_after_event_sequence, WatchPlaylistItemsQuery, WatchQuery,
+};
+use super::request_metadata;
+use super::{AppResult, AppState, RequestMetadata};
+use synctv_api_common::impls::messaging::{
+    MessageSender, RealtimeJoinError, ResourceWatchSession, ResourceWatchSessionConfig,
+};
+use synctv_api_common::impls::EndpointRateLimitCategory;
+use synctv_proto::client::{
+    ListPlaylistItemsRequest, WatchChatEventsRequest, WatchChatPinEventsRequest,
+    WatchPlaylistItemsRequest, WatchRoomMemberEventsRequest, WatchRoomSettingsRequest,
+};
+use synctv_proto::source_config::SourceProvider;
+
+struct HttpWatchMessageSender {
+    sender: tokio::sync::mpsc::Sender<synctv_proto::client::ServerMessage>,
+}
+
+fn parse_include_message_types(value: Option<&str>) -> AppResult<Vec<i32>> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let raw = part.parse::<i32>().map_err(|_| {
+                super::super::AppError::bad_request("Invalid includeMessageTypes entry")
+            })?;
+            match synctv_proto::client::ChatMessageType::try_from(raw) {
+                Ok(synctv_proto::client::ChatMessageType::Unspecified) | Err(_) => Err(
+                    super::super::AppError::bad_request("Invalid includeMessageTypes entry"),
+                ),
+                Ok(_) => Ok(raw),
+            }
+        })
+        .collect()
+}
+
+impl MessageSender for HttpWatchMessageSender {
+    fn send(&self, message: synctv_proto::client::ServerMessage) -> Result<(), String> {
+        self.sender.try_send(message).map_err(|error| match error {
+            tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                "SSE watch client is too slow to consume messages".to_string()
+            }
+            tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                "SSE watch client disconnected".to_string()
+            }
+        })
+    }
+
+    fn is_alive(&self) -> bool {
+        !self.sender.is_closed()
+    }
+}
+
+fn map_resource_watch_prepare_error(error: RealtimeJoinError) -> super::super::AppError {
+    error.log_if_internal("http_resource_watch_prepare");
+    super::super::AppError::from(synctv_api_common::impls::ApiError::from(error))
+}
+
+pub(in crate::http::room) struct CancelOnDropStream<S> {
+    inner: S,
+    cancel_token: tokio_util::sync::CancellationToken,
+}
+
+impl<S> CancelOnDropStream<S> {
+    pub(in crate::http::room) fn new(
+        inner: S,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Self {
+        Self {
+            inner,
+            cancel_token,
+        }
+    }
+}
+
+impl<S> Stream for CancelOnDropStream<S>
+where
+    S: Stream + Unpin,
+{
+    type Item = S::Item;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
+impl<S> Drop for CancelOnDropStream<S> {
+    fn drop(&mut self) {
+        self.cancel_token.cancel();
+    }
+}
+
+fn encode_resource_watch_sse_data<M>(
+    format: RealtimeTransportFormat,
+    message: &M,
+) -> Result<String, serde_json::Error>
+where
+    M: prost::Message + serde::Serialize,
+{
+    match format {
+        RealtimeTransportFormat::Json => serde_json::to_string(message),
+        RealtimeTransportFormat::Protobuf => Ok(BASE64_STANDARD.encode(message.encode_to_vec())),
+    }
+}
+
+pub(in crate::http::room) fn sse_event_from_server_message(
+    format: RealtimeTransportFormat,
+    message: synctv_proto::client::ServerMessage,
+) -> Option<Result<Event, Infallible>> {
+    use synctv_proto::client::server_message::Message;
+
+    let (event_name, event_id, data) = match message.message? {
+        Message::ResourceObserved(observed) => (
+            "observed",
+            None,
+            encode_resource_watch_sse_data(format, &observed),
+        ),
+        Message::ResourceEvent(changed) => {
+            let event_id = sse_event_id_from_resource_event(&changed);
+            (
+                "changed",
+                event_id,
+                encode_resource_watch_sse_data(format, &changed),
+            )
+        }
+        Message::ResourceObserveError(error) => (
+            "error",
+            None,
+            encode_resource_watch_sse_data(format, &error),
+        ),
+        _ => return None,
+    };
+    let data = match data {
+        Ok(data) => data,
+        Err(error) => {
+            tracing::warn!(error = %error, "Failed to serialize resource watch SSE event");
+            return Some(Ok(Event::default()
+                .event("error")
+                .data(r#"{"message":"Failed to serialize resource watch event"}"#)));
+        }
+    };
+    let mut event = Event::default().event(event_name).data(data);
+    if let Some(event_id) = event_id {
+        event = event.id(event_id);
+    }
+    Some(Ok(event))
+}
+
+pub(in crate::http::room) fn sse_event_id_from_resource_event(
+    changed: &synctv_proto::client::ResourceEvent,
+) -> Option<String> {
+    changed
+        .event_cursor
+        .as_ref()
+        .map(|cursor| cursor.sequence.to_string())
+        .or_else(|| {
+            let Some(synctv_proto::client::resource_event::Payload::ChatEvent(event)) =
+                changed.payload.as_ref()
+            else {
+                return None;
+            };
+            Some(event.sequence.to_string())
+        })
+}
+
+pub(in crate::http::room) async fn open_resource_watch_sse(
+    state: AppState,
+    request_meta: RequestMetadata,
+    public_room_id: String,
+    observe: synctv_proto::client::ObserveResource,
+    format: RealtimeTransportFormat,
+) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+    let event_service = state.event_service.clone();
+    let room_id = state
+        .shared_api_runtime
+        .public_id_codec
+        .decode_room_id(&public_room_id)
+        .map_err(|error| {
+            super::super::AppError::bad_request(format!("Invalid room_id: {error}"))
+        })?;
+    let request_meta = request_metadata(request_meta).with_timeout(None);
+    let principal = {
+        let client_api = state.shared_api_runtime.client_api.clone();
+        let user_service = state.user_service.clone();
+        synctv_api_common::impls::ClientApiImpl::execute_room_actor_endpoint(
+            client_api,
+            &request_meta,
+            public_room_id,
+            EndpointRateLimitCategory::WebSocket,
+            move |_client_api, actor| async move {
+                Ok::<_, synctv_api_common::impls::ApiError>(match actor {
+                    synctv_api_common::impls::client::RoomActor::User { user_id, .. } => {
+                        let username = user_service
+                            .get_user(&user_id)
+                            .await
+                            .map_err(synctv_api_common::impls::ApiError::from)?
+                            .username;
+                        synctv_api_common::impls::messaging::RealtimePrincipal::user(
+                            user_id, username,
+                        )
+                    }
+                    synctv_api_common::impls::client::RoomActor::Guest(access) => {
+                        let identity = synctv_api_common::impls::messaging::GuestRealtimeIdentity {
+                            guest_id: access.guest_id,
+                            display_name: access.display_name,
+                            session_id: access.session_id,
+                            token_jti: access.token_jti,
+                            room_guest_version: access.room_guest_version,
+                            permissions: access.permissions,
+                        };
+                        synctv_api_common::impls::messaging::RealtimePrincipal::guest(
+                            room_id, identity,
+                        )
+                        .map_err(|error| {
+                            synctv_api_common::impls::ApiError::Internal(error.to_string())
+                        })?
+                    }
+                })
+            },
+        )
+        .await
+        .map_err(super::super::error::map_api_error)?
+    };
+
+    let (outgoing_tx, outgoing_rx) =
+        tokio::sync::mpsc::channel::<synctv_proto::client::ServerMessage>(64);
+    let sender = Arc::new(HttpWatchMessageSender {
+        sender: outgoing_tx,
+    });
+    let session = ResourceWatchSession::new(ResourceWatchSessionConfig {
+        room_id,
+        principal,
+        room_service: state.room_service.clone(),
+        chat_service: state.chat_service.clone(),
+        clock: state.shared_api_runtime.client_api.clock.clone(),
+        event_service,
+        connection_service: state.connection_manager.clone(),
+        presence_service: state.presence_service.clone(),
+        public_id_codec: state.shared_api_runtime.public_id_codec.clone(),
+        sender,
+        playback_service: state.shared_api_runtime.client_api.clone(),
+        playlist_items_snapshot_service: state.shared_api_runtime.client_api.clone(),
+        room_settings_snapshot_service:
+            synctv_api_common::impls::room_settings_snapshot::default_room_settings_snapshot_service(
+                state.room_service.clone(),
+            ),
+    });
+    let prepared_session = session
+        .prepare(&observe)
+        .await
+        .map_err(map_resource_watch_prepare_error)?;
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let session_cancel = cancel_token.clone();
+    tokio::spawn(async move {
+        if let Err(error) = prepared_session.run(session_cancel).await {
+            tracing::warn!(error = %error, "HTTP resource watch session ended with error");
+        }
+    });
+
+    let stream = ReceiverStream::new(outgoing_rx)
+        .filter_map(move |message| sse_event_from_server_message(format, message));
+    let stream = CancelOnDropStream::new(stream, cancel_token);
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+pub async fn watch_room_settings(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<synctv_proto::client::RoomPathRequest>,
+    headers: HeaderMap,
+    Query(query): Query<WatchQuery>,
+) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+    let room_id = path.room_id;
+    let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
+    let request = WatchRoomSettingsRequest {
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,
+        room_settings: Some(synctv_proto::client::ObserveRoomSettings {
+            after_event_sequence,
+        }),
+    };
+    let observe = synctv_api_common::impls::messaging::watch_room_settings_observe(request)
+        .map_err(super::super::AppError::bad_request)?;
+    open_resource_watch_sse(state, request_meta, room_id, observe, format).await
+}
+
+pub async fn watch_playlist_items(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<synctv_proto::client::RoomPathRequest>,
+    headers: HeaderMap,
+    Query(query): Query<WatchPlaylistItemsQuery>,
+) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+    let room_id = path.room_id;
+    let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
+    let request = ListPlaylistItemsRequest {
+        playlist_id: query.playlist_id.unwrap_or_default(),
+        target: None,
+        pagination: Some(match query.cursor {
+            Some(cursor) => synctv_proto::client::list_playlist_items_request::Pagination::Cursor(
+                synctv_proto::client::CursorPagination { cursor },
+            ),
+            None => synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination {
+                    page: query.page.unwrap_or(1),
+                },
+            ),
+        }),
+        page_size: query.page_size.unwrap_or_default(),
+        search: query.search.unwrap_or_default(),
+        source_provider: query
+            .source_provider
+            .unwrap_or(SourceProvider::Unspecified as i32),
+        provider_instance_name: query.provider_instance_name.unwrap_or_default(),
+        sort_by: query.sort_by.unwrap_or_default(),
+        sort_direction: query.sort_direction.unwrap_or_default(),
+        availability: query.availability.unwrap_or_default(),
+        refresh: query.refresh.unwrap_or_default(),
+        preview_source_config: None,
+    };
+    let request = WatchPlaylistItemsRequest {
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,
+        playlist_items: Some(synctv_proto::client::ObservePlaylistItems {
+            request: Some(request),
+            after_event_sequence,
+        }),
+    };
+    let observe = synctv_api_common::impls::messaging::watch_playlist_items_observe(request)
+        .map_err(super::super::AppError::bad_request)?;
+    open_resource_watch_sse(state, request_meta, room_id, observe, format).await
+}
+
+pub async fn watch_room_members(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<synctv_proto::client::RoomPathRequest>,
+    headers: HeaderMap,
+    Query(query): Query<WatchQuery>,
+) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+    let room_id = path.room_id;
+    let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
+    let request = WatchRoomMemberEventsRequest {
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,
+        room_member_events: Some(synctv_proto::client::ObserveRoomMemberEvents {
+            after_event_sequence,
+        }),
+    };
+    let observe = synctv_api_common::impls::messaging::watch_room_member_events_observe(request)
+        .map_err(super::super::AppError::bad_request)?;
+    open_resource_watch_sse(state, request_meta, room_id, observe, format).await
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{roomId}/watch/chat-events",
+        tag = "Room",
+        params(
+            ("roomId" = String, Path, description = "Room ID"),
+            ("format" = Option<String>, Query, description = "SSE payload format: json or protobuf"),
+            ("afterEventSequence" = Option<i64>, Query, description = "Replay chat events strictly after this durable event sequence"),
+            ("includeMessageTypes" = Option<String>, Query, description = "Comma-separated ChatMessageType enum integers to include. Empty uses default user-visible message types."),
+            ("deliveryMode" = Option<i32>, Query, description = "Resource delivery mode enum integer")
+        ),
+        responses(
+            (status = 200, description = "SSE stream of chat resource events"),
+            (status = 400, description = "Invalid request or event cursor", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Realtime manager unavailable", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn watch_chat_events(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<synctv_proto::client::RoomPathRequest>,
+    headers: HeaderMap,
+    Query(query): Query<WatchQuery>,
+) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+    let room_id = path.room_id;
+    let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
+    let request = WatchChatEventsRequest {
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,
+        chat_events: Some(synctv_proto::client::ObserveChatEvents {
+            after_event_sequence,
+            include_message_types: parse_include_message_types(
+                query.include_message_types.as_deref(),
+            )?,
+        }),
+    };
+    let observe = synctv_api_common::impls::messaging::watch_chat_events_observe(request)
+        .map_err(super::super::AppError::bad_request)?;
+    open_resource_watch_sse(state, request_meta, room_id, observe, format).await
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{roomId}/watch/chat-pin-events",
+        tag = "Room",
+        params(
+            ("roomId" = String, Path, description = "Room ID"),
+            ("format" = Option<String>, Query, description = "SSE payload format: json or protobuf"),
+            ("afterEventSequence" = Option<i64>, Query, description = "Replay chat pin events strictly after this durable event sequence"),
+            ("deliveryMode" = Option<i32>, Query, description = "Resource delivery mode enum integer")
+        ),
+        responses(
+            (status = 200, description = "SSE stream of chat pin resource events"),
+            (status = 400, description = "Invalid request or event cursor", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Realtime manager unavailable", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn watch_chat_pin_events(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<synctv_proto::client::RoomPathRequest>,
+    headers: HeaderMap,
+    Query(query): Query<WatchQuery>,
+) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+    let room_id = path.room_id;
+    let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
+    let request = WatchChatPinEventsRequest {
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,
+        chat_pin_events: Some(synctv_proto::client::ObserveChatPinEvents {
+            after_event_sequence,
+        }),
+    };
+    let observe = synctv_api_common::impls::messaging::watch_chat_pin_events_observe(request)
+        .map_err(super::super::AppError::bad_request)?;
+    open_resource_watch_sse(state, request_meta, room_id, observe, format).await
+}

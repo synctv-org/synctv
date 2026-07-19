@@ -754,7 +754,7 @@ mod tests {
 
     #[test]
     fn test_media_name_input_accepts_plain_text_ampersands() {
-        let title = "ROSÉ & Bruno Mars - APT. (Official Music Video)";
+        let title = "ROSÉ & Bruno Mars - APT. (Official Music Video)";
         assert!(matches!(
             validate_media_name_input(title),
             Ok(ref validated) if validated == title

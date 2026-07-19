@@ -25,11 +25,11 @@ use synctv_proto::source_config as source_config_proto;
 use super::map_runtime_error;
 
 pub(crate) struct ManagementAlistRuntime {
-    inner: Arc<synctv_api::AlistApiImpl>,
+    inner: Arc<synctv_api::providers::AlistApiImpl>,
 }
 
 impl ManagementAlistRuntime {
-    pub(crate) fn new(inner: Arc<synctv_api::AlistApiImpl>) -> Self {
+    pub(crate) fn new(inner: Arc<synctv_api::providers::AlistApiImpl>) -> Self {
         Self { inner }
     }
 }
@@ -172,11 +172,11 @@ impl AlistRuntime for ManagementAlistRuntime {
 }
 
 pub(crate) struct ManagementEmbyRuntime {
-    inner: Arc<synctv_api::EmbyApiImpl>,
+    inner: Arc<synctv_api::providers::EmbyApiImpl>,
 }
 
 impl ManagementEmbyRuntime {
-    pub(crate) fn new(inner: Arc<synctv_api::EmbyApiImpl>) -> Self {
+    pub(crate) fn new(inner: Arc<synctv_api::providers::EmbyApiImpl>) -> Self {
         Self { inner }
     }
 }
@@ -254,11 +254,11 @@ impl EmbyRuntime for ManagementEmbyRuntime {
 }
 
 pub(crate) struct ManagementDouyinRuntime {
-    inner: Arc<synctv_api::DouyinApiImpl>,
+    inner: Arc<synctv_api::providers::DouyinApiImpl>,
 }
 
 impl ManagementDouyinRuntime {
-    pub(crate) fn new(inner: Arc<synctv_api::DouyinApiImpl>) -> Self {
+    pub(crate) fn new(inner: Arc<synctv_api::providers::DouyinApiImpl>) -> Self {
         Self { inner }
     }
 }
@@ -316,11 +316,11 @@ impl DouyinRuntime for ManagementDouyinRuntime {
 }
 
 pub(crate) struct ManagementTikTokRuntime {
-    inner: Arc<synctv_api::TikTokApiImpl>,
+    inner: Arc<synctv_api::providers::TikTokApiImpl>,
 }
 
 impl ManagementTikTokRuntime {
-    pub(crate) fn new(inner: Arc<synctv_api::TikTokApiImpl>) -> Self {
+    pub(crate) fn new(inner: Arc<synctv_api::providers::TikTokApiImpl>) -> Self {
         Self { inner }
     }
 }
@@ -389,11 +389,11 @@ impl TikTokRuntime for ManagementTikTokRuntime {
 }
 
 pub(crate) struct ManagementTwitchRuntime {
-    inner: Arc<synctv_api::TwitchApiImpl>,
+    inner: Arc<synctv_api::providers::TwitchApiImpl>,
 }
 
 impl ManagementTwitchRuntime {
-    pub(crate) fn new(inner: Arc<synctv_api::TwitchApiImpl>) -> Self {
+    pub(crate) fn new(inner: Arc<synctv_api::providers::TwitchApiImpl>) -> Self {
         Self { inner }
     }
 }
@@ -451,11 +451,11 @@ impl TwitchRuntime for ManagementTwitchRuntime {
 }
 
 pub(crate) struct ManagementBilibiliRuntime {
-    inner: Arc<synctv_api::BilibiliApiImpl>,
+    inner: Arc<synctv_api::providers::BilibiliApiImpl>,
 }
 
 impl ManagementBilibiliRuntime {
-    pub(crate) fn new(inner: Arc<synctv_api::BilibiliApiImpl>) -> Self {
+    pub(crate) fn new(inner: Arc<synctv_api::providers::BilibiliApiImpl>) -> Self {
         Self { inner }
     }
 }
@@ -582,11 +582,11 @@ impl BilibiliRuntime for ManagementBilibiliRuntime {
 }
 
 pub(crate) struct ManagementProviderCommonRuntime {
-    inner: Arc<synctv_api::ProviderCommonApiImpl>,
+    inner: Arc<synctv_api::providers::ProviderCommonApiImpl>,
 }
 
 impl ManagementProviderCommonRuntime {
-    pub(crate) fn new(inner: Arc<synctv_api::ProviderCommonApiImpl>) -> Self {
+    pub(crate) fn new(inner: Arc<synctv_api::providers::ProviderCommonApiImpl>) -> Self {
         Self { inner }
     }
 }

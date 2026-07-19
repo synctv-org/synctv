@@ -263,8 +263,7 @@ impl ChatMetadata {
     pub const fn user(&self) -> Option<&ChatUserMetadata> {
         match self {
             Self::User(metadata) => Some(metadata),
-            Self::MemberJoined(_) => None,
-            Self::PlaybackChanged(_) => None,
+            Self::MemberJoined(_) | Self::PlaybackChanged(_) => None,
         }
     }
 
@@ -272,8 +271,7 @@ impl ChatMetadata {
     pub fn user_mut(&mut self) -> Option<&mut ChatUserMetadata> {
         match self {
             Self::User(metadata) => Some(metadata),
-            Self::MemberJoined(_) => None,
-            Self::PlaybackChanged(_) => None,
+            Self::MemberJoined(_) | Self::PlaybackChanged(_) => None,
         }
     }
 }

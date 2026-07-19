@@ -21,8 +21,8 @@ use crate::{
     repository::{
         chat::InsertChatMessageEvent,
         realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
-        ChatRepository, PlaybackHistoryDirection, PlaybackHistoryRepository,
-        PlaybackSourceMetadataRepository, RoomPlaybackStateRepository,
+        AppendPlaybackHistoryEntry, ChatRepository, PlaybackHistoryDirection,
+        PlaybackHistoryRepository, PlaybackSourceMetadataRepository, RoomPlaybackStateRepository,
     },
     service::{media::BackendPlaybackRequest, media::MediaService, PermissionService, UserService},
     Clock, Error, Result, SystemClock,
@@ -583,7 +583,7 @@ impl PlaybackService {
         {
             return Ok(());
         }
-        let Some(_) = current
+        let Some(()) = current
             .playing_media_id
             .map(|_| ())
             .or_else(|| current.playing_playlist_id.map(|_| ()))
@@ -692,12 +692,14 @@ impl PlaybackService {
                     let entry = self
                         .history_repo
                         .append_entry_on_conn(
-                            &updated.room_id,
-                            updated.playing_media_id,
-                            updated.playing_playlist_id,
-                            updated.target.as_ref(),
-                            updated.position,
-                            selected_by_user_id,
+                            AppendPlaybackHistoryEntry {
+                                room_id: &updated.room_id,
+                                media_id: updated.playing_media_id,
+                                playlist_id: updated.playing_playlist_id,
+                                target: updated.target.as_ref(),
+                                position_seconds: updated.position,
+                                selected_by_user_id,
+                            },
                             &mut tx,
                         )
                         .await?;
@@ -927,9 +929,11 @@ impl PlaybackService {
             room_id,
             actor_user_id,
             Some(actor_user_id),
-            media_id,
-            playlist_id,
-            target,
+            SwitchPlaybackTarget {
+                media_id,
+                playlist_id,
+                target,
+            },
             None,
         )
         .await
@@ -940,20 +944,14 @@ impl PlaybackService {
         room_id: RoomId,
         actor_user_id: UserId,
         recorded_actor_user_id: Option<UserId>,
-        media_id: Option<MediaId>,
-        playlist_id: Option<PlaylistId>,
-        target: Option<ProviderTarget>,
+        target: SwitchPlaybackTarget,
         outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<RoomPlaybackState> {
         self.switch_internal(PlaybackSwitchCommand {
             room_id,
             actor_user_id,
             recorded_actor_user_id,
-            target: SwitchPlaybackTarget {
-                media_id,
-                playlist_id,
-                target,
-            },
+            target,
             bypass_room_permissions: true,
             outbox_event_factory,
         })

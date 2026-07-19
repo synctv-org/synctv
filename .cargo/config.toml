@@ -1,2 +1,2 @@
 [build]
-rustflags = ["-Zthreads=8"]
+rustflags = ["-Zthreads=8", "-Zshare-generics=y"]

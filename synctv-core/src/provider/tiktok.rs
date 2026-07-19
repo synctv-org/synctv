@@ -686,16 +686,16 @@ fn stream_format(format: TikTokStreamFormat) -> &'static str {
 }
 
 fn variant_key_for(variant: &TikTokVariant) -> String {
-    let source = Url::parse(&variant.url)
-        .ok()
-        .map(|url| {
+    let source = Url::parse(&variant.url).ok().map_or_else(
+        || variant.url.clone(),
+        |url| {
             format!(
                 "{}{}",
                 url.host_str().unwrap_or_default().to_ascii_lowercase(),
                 url.path()
             )
-        })
-        .unwrap_or_else(|| variant.url.clone());
+        },
+    );
     format!(
         "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
         stream_format(variant.format),

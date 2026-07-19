@@ -7,162 +7,37 @@ license.workspace = true
 
 [features]
 default = ["tls-aws-lc", "tls-webpki-roots"]
-openapi = ["synctv-proto/openapi", "dep:utoipa", "dep:utoipa-swagger-ui"]
-k8s = ["dep:kube", "dep:k8s-openapi", "synctv-cluster/k8s"]
+openapi = ["synctv-api-common/openapi", "synctv-api-http/openapi"]
+k8s = [
+    "synctv-api-common/k8s",
+    "synctv-api-http/k8s",
+    "synctv-api-grpc/k8s",
+]
 tls-aws-lc = [
-    "synctv-core/tls-aws-lc",
-    "synctv-proxy/tls-aws-lc",
-    "synctv-cluster/tls-aws-lc",
-    "synctv-realtime/tls-aws-lc",
-    "synctv-media-providers/tls-aws-lc",
-    "synctv-livestream/tls-aws-lc",
-    "synctv-proto/tls-aws-lc",
-    "synctv-common/tls-aws-lc",
-    "tonic/tls-aws-lc",
-    "sqlx/tls-rustls-aws-lc-rs",
-    "reqwest/rustls",
-    "kube?/aws-lc-rs",
+    "synctv-api-common/tls-aws-lc",
+    "synctv-api-http/tls-aws-lc",
+    "synctv-api-grpc/tls-aws-lc",
 ]
 tls-ring = [
-    "synctv-core/tls-ring",
-    "synctv-proxy/tls-ring",
-    "synctv-cluster/tls-ring",
-    "synctv-realtime/tls-ring",
-    "synctv-media-providers/tls-ring",
-    "synctv-livestream/tls-ring",
-    "synctv-proto/tls-ring",
-    "synctv-common/tls-ring",
-    "sqlx/tls-rustls-ring-webpki",
-    "tonic/tls-ring",
-    "reqwest/rustls-no-provider",
-    "kube?/ring",
+    "synctv-api-common/tls-ring",
+    "synctv-api-http/tls-ring",
+    "synctv-api-grpc/tls-ring",
 ]
 tls-webpki-roots = [
-    "synctv-core/tls-webpki-roots",
-    "synctv-proxy/tls-webpki-roots",
-    "synctv-cluster/tls-webpki-roots",
-    "synctv-realtime/tls-webpki-roots",
-    "synctv-media-providers/tls-webpki-roots",
-    "synctv-livestream/tls-webpki-roots",
-    "synctv-proto/tls-webpki-roots",
-    "synctv-common/tls-webpki-roots",
-    "tonic/tls-webpki-roots",
-    "redis/tokio-rustls-comp",
-    "redis/tls-rustls-webpki-roots",
-    "tokio-tungstenite/rustls-tls-webpki-roots",
-    "kube?/rustls-tls",
-    "kube?/webpki-roots",
+    "synctv-api-common/tls-webpki-roots",
+    "synctv-api-http/tls-webpki-roots",
+    "synctv-api-grpc/tls-webpki-roots",
 ]
 tls-native-roots = [
-    "synctv-core/tls-native-roots",
-    "synctv-proxy/tls-native-roots",
-    "synctv-cluster/tls-native-roots",
-    "synctv-realtime/tls-native-roots",
-    "synctv-media-providers/tls-native-roots",
-    "synctv-livestream/tls-native-roots",
-    "synctv-proto/tls-native-roots",
-    "synctv-common/tls-native-roots",
-    "tonic/tls-native-roots",
-    "redis/tokio-rustls-comp",
-    "tokio-tungstenite/rustls-tls-native-roots",
-    "kube?/rustls-tls",
+    "synctv-api-common/tls-native-roots",
+    "synctv-api-http/tls-native-roots",
+    "synctv-api-grpc/tls-native-roots",
 ]
 
 [dependencies]
-# Internal
-synctv-adapter = { workspace = true, default-features = false }
-synctv-core = { workspace = true, default-features = false }
-synctv-proxy = { workspace = true, default-features = false }
-synctv-cluster = { workspace = true, default-features = false }
-synctv-realtime = { workspace = true, default-features = false }
-synctv-media-providers = { workspace = true, default-features = false }
-synctv-livestream = { workspace = true, default-features = false }
-synctv-proto = { workspace = true, default-features = false, features = ["main", "providers", "playback-provider"] }
-synctv-common = { workspace = true, default-features = false }
-webauthn-rs.workspace = true
-webauthn-rs-proto.workspace = true
-
-# Async
-tokio.workspace = true
-tokio-util.workspace = true
-tokio-stream.workspace = true
-async-trait.workspace = true
-futures.workspace = true
-
-# gRPC
-tonic.workspace = true
-tonic-prost.workspace = true
-tonic-web.workspace = true
-tonic-reflection.workspace = true
-tonic-health.workspace = true
-tonic-types.workspace = true
-prost.workspace = true
-prost-protovalidate.workspace = true
-opaque-ke.workspace = true
-sha2_010.workspace = true
-prost-types.workspace = true
-prost-reflect = { workspace = true, features = ["serde"] }
-pbjson-types.workspace = true
-
-# HTTP
-axum.workspace = true
-tower.workspace = true
-tower-http.workspace = true
-hyper.workspace = true
-reqwest.workspace = true
-http-body-util.workspace = true
-
-# Serialization
-serde.workspace = true
-serde_json.workspace = true
-utoipa = { workspace = true, optional = true }
-utoipa-swagger-ui = { workspace = true, optional = true }
-
-# Database
-sqlx.workspace = true
-
-# Redis
-redis.workspace = true
-
-# Utilities
-anyhow.workspace = true
-thiserror.workspace = true
-bytes.workspace = true
-rand.workspace = true
-parking_lot.workspace = true
-hostname.workspace = true
-base64.workspace = true
-uuid.workspace = true
-url.workspace = true
-percent-encoding.workspace = true
-urlencoding.workspace = true
-ipnet.workspace = true
-dashmap.workspace = true
-kube = { workspace = true, optional = true }
-k8s-openapi = { workspace = true, optional = true }
-
-# Cryptography (for M3U8 proxy tokens)
-aes-gcm.workspace = true
-sha2.workspace = true
-hmac.workspace = true
-hex.workspace = true
-subtle.workspace = true
-
-# Time
-chrono.workspace = true
-
-# Logging
-tracing.workspace = true
-tracing-subscriber.workspace = true
-
-clap.workspace = true
-regex.workspace = true
-ammonia.workspace = true
-garde.workspace = true
-
-# Caching
-moka.workspace = true
-rayon.workspace = true
+synctv-api-common = { workspace = true, default-features = false }
+synctv-api-http = { workspace = true, default-features = false }
+synctv-api-grpc = { workspace = true, default-features = false }
 
 [lints]
 workspace = true
@@ -184,3 +59,14 @@ chrono.workspace = true
 axum = { workspace = true, features = ["ws"] }
 tokio-tungstenite.workspace = true
 prost.workspace = true
+async-trait.workspace = true
+sqlx.workspace = true
+tonic.workspace = true
+synctv-common = { workspace = true, default-features = false }
+tokio-util.workspace = true
+uuid.workspace = true
+redis.workspace = true
+opaque-ke.workspace = true
+sha2_010.workspace = true
+serde.workspace = true
+synctv-proxy = { workspace = true, default-features = false }

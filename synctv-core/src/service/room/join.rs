@@ -1,3 +1,4 @@
+use futures::future::BoxFuture;
 use sqlx::{Postgres, Transaction};
 
 use crate::{
@@ -75,7 +76,7 @@ impl RoomService {
         .await
     }
 
-    pub(super) async fn join_room_with_password_proof(
+    pub(super) fn join_room_with_password_proof(
         &self,
         room_id: RoomId,
         user_id: UserId,
@@ -83,118 +84,128 @@ impl RoomService {
         remark_name: String,
         display_tag: String,
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
-    ) -> Result<(Room, RoomMember, Vec<RoomMemberWithUser>)> {
-        tracing::info!(
-            room_id = %room_id,
-            user_id = %user_id,
-            has_password = matches!(password_proof, RoomPasswordJoinProof::Plaintext(_) | RoomPasswordJoinProof::OpaqueVerified { .. }),
-            "User attempting to join room"
-        );
+    ) -> BoxFuture<'_, Result<(Room, RoomMember, Vec<RoomMemberWithUser>)>> {
+        Box::pin(async move {
+            tracing::info!(
+                room_id = %room_id,
+                user_id = %user_id,
+                has_password = matches!(password_proof, RoomPasswordJoinProof::Plaintext(_) | RoomPasswordJoinProof::OpaqueVerified { .. }),
+                "User attempting to join room"
+            );
 
-        let ctx = self
-            .room_repo
-            .get_join_context(&room_id, &user_id)
-            .await?
-            .ok_or_else(|| {
-                tracing::warn!(room_id = %room_id, user_id = %user_id, "Room not found");
-                Error::NotFound("Room not found".to_string())
-            })?;
+            let ctx = self
+                .room_repo
+                .get_join_context(&room_id, &user_id)
+                .await?
+                .ok_or_else(|| {
+                    tracing::warn!(room_id = %room_id, user_id = %user_id, "Room not found");
+                    Error::NotFound("Room not found".to_string())
+                })?;
 
-        self.ensure_room_creator_is_active_for_access(&ctx.room, &user_id)
-            .await?;
+            self.ensure_room_creator_is_active_for_access(&ctx.room, &user_id)
+                .await?;
 
-        if ctx.room.is_banned {
-            tracing::warn!(room_id = %room_id, user_id = %user_id, "Attempted to join banned room");
-            return Err(Error::Authorization("Room is banned".to_string()));
-        }
+            if ctx.room.is_banned {
+                tracing::warn!(room_id = %room_id, user_id = %user_id, "Attempted to join banned room");
+                return Err(Error::Authorization("Room is banned".to_string()));
+            }
 
-        if ctx.room.status != RoomStatus::Active {
-            tracing::warn!(room_id = %room_id, user_id = %user_id, status = ?ctx.room.status, "Attempted to join inactive room");
-            return Err(Error::InvalidInput("Room is closed".to_string()));
-        }
+            if ctx.room.status != RoomStatus::Active {
+                tracing::warn!(room_id = %room_id, user_id = %user_id, status = ?ctx.room.status, "Attempted to join inactive room");
+                return Err(Error::InvalidInput("Room is closed".to_string()));
+            }
 
-        if ctx.is_in_kick_cooldown {
-            tracing::warn!(room_id = %room_id, user_id = %user_id, "Kicked user attempted to join room during cooldown");
-            return Err(Error::kick_cooldown_denied());
-        }
-        if self
-            .member_repo
-            .is_in_kick_cooldown(&room_id, &user_id)
-            .await?
-        {
-            tracing::warn!(room_id = %room_id, user_id = %user_id, "Kicked user attempted to join room during cooldown");
-            return Err(Error::kick_cooldown_denied());
-        }
+            if ctx.is_in_kick_cooldown {
+                tracing::warn!(room_id = %room_id, user_id = %user_id, "Kicked user attempted to join room during cooldown");
+                return Err(Error::kick_cooldown_denied());
+            }
+            if self
+                .member_repo
+                .is_in_kick_cooldown(&room_id, &user_id)
+                .await?
+            {
+                tracing::warn!(room_id = %room_id, user_id = %user_id, "Kicked user attempted to join room during cooldown");
+                return Err(Error::kick_cooldown_denied());
+            }
 
-        self.verify_room_password_join_proof(&ctx, &room_id, &user_id, &password_proof)?;
+            self.verify_room_password_join_proof(&ctx, &room_id, &user_id, &password_proof)?;
 
-        if let Some(ref lock) = self.distributed_lock {
-            let lock_key = format!("join_room:{room_id}:{user_id}");
-            return crate::service::with_coordination_lock(lock.as_ref(), &lock_key, 10, || {
-                let password_proof = password_proof.clone();
-                let remark_name = remark_name.clone();
-                let display_tag = display_tag.clone();
-                let outbox_event_factory = outbox_event_factory.clone();
-                async move {
-                    let fresh_ctx = self
-                        .room_repo
-                        .get_join_context(&room_id, &user_id)
-                        .await?
-                        .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+            if let Some(ref lock) = self.distributed_lock {
+                let lock_key = format!("join_room:{room_id}:{user_id}");
+                return Box::pin(crate::service::with_coordination_lock(
+                    lock.as_ref(),
+                    &lock_key,
+                    10,
+                    || {
+                        let password_proof = password_proof.clone();
+                        let remark_name = remark_name.clone();
+                        let display_tag = display_tag.clone();
+                        let outbox_event_factory = outbox_event_factory.clone();
+                        async move {
+                            let fresh_ctx = self
+                                .room_repo
+                                .get_join_context(&room_id, &user_id)
+                                .await?
+                                .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
-                    self.ensure_room_creator_is_active_for_access(&fresh_ctx.room, &user_id)
-                        .await?;
+                            self.ensure_room_creator_is_active_for_access(
+                                &fresh_ctx.room,
+                                &user_id,
+                            )
+                            .await?;
 
-                    if fresh_ctx.room.is_banned {
-                        return Err(Error::Authorization("Room is banned".to_string()));
-                    }
+                            if fresh_ctx.room.is_banned {
+                                return Err(Error::Authorization("Room is banned".to_string()));
+                            }
 
-                    if fresh_ctx.room.status != RoomStatus::Active {
-                        return Err(Error::InvalidInput("Room is closed".to_string()));
-                    }
-                    if fresh_ctx.is_in_kick_cooldown {
-                        return Err(Error::kick_cooldown_denied());
-                    }
-                    if self
-                        .member_repo
-                        .is_in_kick_cooldown(&room_id, &user_id)
-                        .await?
-                    {
-                        return Err(Error::kick_cooldown_denied());
-                    }
+                            if fresh_ctx.room.status != RoomStatus::Active {
+                                return Err(Error::InvalidInput("Room is closed".to_string()));
+                            }
+                            if fresh_ctx.is_in_kick_cooldown {
+                                return Err(Error::kick_cooldown_denied());
+                            }
+                            if self
+                                .member_repo
+                                .is_in_kick_cooldown(&room_id, &user_id)
+                                .await?
+                            {
+                                return Err(Error::kick_cooldown_denied());
+                            }
 
-                    self.verify_room_password_join_proof(
-                        &fresh_ctx,
-                        &room_id,
-                        &user_id,
-                        &password_proof,
-                    )?;
+                            self.verify_room_password_join_proof(
+                                &fresh_ctx,
+                                &room_id,
+                                &user_id,
+                                &password_proof,
+                            )?;
 
-                    self.do_join_room(JoinRoomExecution {
-                        room: fresh_ctx.room,
-                        settings: fresh_ctx.settings,
-                        room_id,
-                        user_id,
-                        remark_name,
-                        display_tag,
-                        outbox_event_factory,
-                    })
-                    .await
-                }
+                            self.do_join_room(JoinRoomExecution {
+                                room: fresh_ctx.room,
+                                settings: fresh_ctx.settings,
+                                room_id,
+                                user_id,
+                                remark_name,
+                                display_tag,
+                                outbox_event_factory,
+                            })
+                            .await
+                        }
+                    },
+                ))
+                .await;
+            }
+
+            self.do_join_room(JoinRoomExecution {
+                room: ctx.room,
+                settings: ctx.settings,
+                room_id,
+                user_id,
+                remark_name,
+                display_tag,
+                outbox_event_factory,
             })
-            .await;
-        }
-
-        self.do_join_room(JoinRoomExecution {
-            room: ctx.room,
-            settings: ctx.settings,
-            room_id,
-            user_id,
-            remark_name,
-            display_tag,
-            outbox_event_factory,
+            .await
         })
-        .await
     }
 
     fn verify_room_password_join_proof(

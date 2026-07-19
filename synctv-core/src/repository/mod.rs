@@ -61,7 +61,9 @@ pub(crate) use jsonb::{JsonbArray, OptionalJsonbArray};
 pub use media::{MediaListItem, MediaRepository};
 pub use notification::NotificationRepository;
 pub use playback::RoomPlaybackStateRepository;
-pub use playback_history::{PlaybackHistoryDirection, PlaybackHistoryRepository};
+pub use playback_history::{
+    AppendPlaybackHistoryEntry, PlaybackHistoryDirection, PlaybackHistoryRepository,
+};
 pub use playback_session::{NewProviderPlaybackSession, ProviderPlaybackSessionRepository};
 pub use playback_source_metadata::PlaybackSourceMetadataRepository;
 pub use playlist::{PlaylistListItem, PlaylistRepository};

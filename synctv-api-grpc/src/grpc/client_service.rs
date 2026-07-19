@@ -1,0 +1,416 @@
+use std::sync::Arc;
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
+use tonic::{Request, Response, Status};
+
+use synctv_api_common::impls::messaging::{
+    GuestRealtimeIdentity, MessageSender, RealtimeJoinError, RealtimePrincipal,
+    ResourceWatchSession, ResourceWatchSessionConfig,
+};
+use synctv_core::models::{Room, RoomId};
+use synctv_core::service::{
+    ContentFilter, RateLimitConfig, RequestRateLimiterService, RoomService as CoreRoomService,
+    UserService as CoreUserService,
+};
+use synctv_proto::client::ServerMessage;
+use synctv_realtime::fanout::RealtimeEventService;
+use synctv_realtime::sync::ConnectionRuntime;
+
+use super::map_api_error;
+use synctv_api_common::impls::{ApiError, EndpointRateLimitCategory};
+
+mod auth;
+mod email;
+mod public;
+mod room;
+mod streaming;
+mod user;
+use streaming::{GrpcMessageSender, WATCH_STREAM_BUFFER_SIZE};
+
+pub(super) type GrpcStatusStream<T> =
+    std::pin::Pin<Box<dyn tokio_stream::Stream<Item = Result<T, Status>> + Send + 'static>>;
+
+fn map_message_stream_join_error(error: RealtimeJoinError) -> Status {
+    error.log_if_internal("grpc_message_stream_pre_join");
+    map_api_error(ApiError::from(error))
+}
+
+fn invalid_argument_status(message: impl Into<String>) -> Status {
+    map_api_error(ApiError::InvalidInput(message.into()))
+}
+
+fn unauthenticated_status(message: impl Into<String>) -> Status {
+    map_api_error(ApiError::Authentication(message.into()))
+}
+
+fn permission_denied_status(message: impl Into<String>) -> Status {
+    map_api_error(ApiError::Authorization(message.into()))
+}
+
+#[cfg(test)]
+fn unavailable_status(message: impl Into<String>) -> Status {
+    map_api_error(ApiError::ServiceUnavailable(message.into()))
+}
+
+fn realtime_room_access_error(room: &Room) -> Option<Status> {
+    if room.is_banned {
+        return Some(permission_denied_status("This room has been banned"));
+    }
+
+    if room.status.is_closed() {
+        return Some(permission_denied_status(
+            "This room is closed and not accepting new connections",
+        ));
+    }
+
+    None
+}
+
+fn map_message_stream_membership_error(err: synctv_core::Error) -> Status {
+    map_api_error(synctv_api_common::impls::ClientApiImpl::map_room_access_error(err))
+}
+
+struct GrpcRoomMetadata {
+    public_room_id: String,
+    room_id: RoomId,
+}
+
+/// Options for `ClientService` construction
+#[derive(Clone)]
+pub struct ClientServiceOptions {
+    pub user_service: CoreUserService,
+    pub room_service: CoreRoomService,
+    pub chat_service: Arc<synctv_core::service::ChatService>,
+    pub event_service: Arc<dyn RealtimeEventService>,
+    pub rate_limiter: Arc<dyn RequestRateLimiterService>,
+    pub rate_limit_config: RateLimitConfig,
+    pub content_filter: ContentFilter,
+    pub connection_service: Arc<dyn ConnectionRuntime>,
+    pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
+    pub email_api: Option<Arc<synctv_api_common::impls::EmailApiImpl>>,
+    pub runtime_settings: Arc<synctv_api_common::ApiRuntimeSettings>,
+    pub client_api: Arc<synctv_api_common::impls::ClientApiImpl>,
+    pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
+    pub heartbeat_schedule: synctv_api_common::impls::HeartbeatSchedule,
+}
+
+/// `ClientService` implementation
+#[derive(Clone)]
+pub struct ClientServiceImpl {
+    user_service: Arc<CoreUserService>,
+    room_service: Arc<CoreRoomService>,
+    chat_service: Arc<synctv_core::service::ChatService>,
+    event_service: Arc<dyn RealtimeEventService>,
+    rate_limiter: Arc<dyn RequestRateLimiterService>,
+    rate_limit_config: Arc<RateLimitConfig>,
+    content_filter: Arc<ContentFilter>,
+    connection_service: Arc<dyn ConnectionRuntime>,
+    presence_service: Arc<synctv_core::service::OnlinePresenceService>,
+    email_api: Option<Arc<synctv_api_common::impls::EmailApiImpl>>,
+    client_api: Arc<synctv_api_common::impls::ClientApiImpl>,
+    runtime_settings: Arc<synctv_api_common::ApiRuntimeSettings>,
+    notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
+    heartbeat_schedule: synctv_api_common::impls::HeartbeatSchedule,
+}
+
+impl ClientServiceImpl {
+    fn email_api_unavailable_error() -> synctv_api_common::impls::ApiError {
+        synctv_api_common::impls::ApiError::ServiceUnavailable(
+            synctv_common::messages::EMAIL_SERVICE_UNAVAILABLE.to_string(),
+        )
+    }
+
+    #[must_use]
+    pub fn new(config: ClientServiceOptions) -> Self {
+        Self {
+            user_service: Arc::new(config.user_service),
+            room_service: Arc::new(config.room_service),
+            chat_service: config.chat_service,
+            event_service: config.event_service,
+            rate_limiter: config.rate_limiter,
+            rate_limit_config: Arc::new(config.rate_limit_config),
+            content_filter: Arc::new(config.content_filter),
+            connection_service: config.connection_service,
+            presence_service: config.presence_service,
+            email_api: config.email_api,
+            client_api: config.client_api,
+            runtime_settings: config.runtime_settings,
+            notification_service: config.notification_service,
+            heartbeat_schedule: config.heartbeat_schedule,
+        }
+    }
+
+    /// Resolve the shared `EmailApiImpl`, or return an error when email is not configured.
+    fn email_api(
+        &self,
+    ) -> Result<&Arc<synctv_api_common::impls::EmailApiImpl>, synctv_api_common::impls::ApiError>
+    {
+        self.email_api
+            .as_ref()
+            .ok_or_else(Self::email_api_unavailable_error)
+    }
+
+    fn request_metadata<T>(
+        &self,
+        request: &Request<T>,
+    ) -> Result<synctv_api_common::impls::RequestMetadata, Status> {
+        super::request_metadata(
+            request,
+            &self.runtime_settings,
+            Some(super::grpc_unary_request_timeout()),
+        )
+    }
+
+    fn room_metadata(
+        &self,
+        request: &Request<impl std::fmt::Debug>,
+    ) -> Result<GrpcRoomMetadata, Status> {
+        let public_room_id = request
+            .metadata()
+            .get("x-room-id")
+            .ok_or_else(|| invalid_argument_status("Missing x-room-id header"))?
+            .to_str()
+            .map_err(|_| invalid_argument_status("Invalid x-room-id header"))?;
+
+        let room_id = self
+            .client_api
+            .public_id_codec
+            .decode_room_id(public_room_id)
+            .map_err(|error| invalid_argument_status(format!("Invalid room_id: {error}")))?;
+
+        Ok(GrpcRoomMetadata {
+            public_room_id: public_room_id.to_string(),
+            room_id,
+        })
+    }
+
+    fn room_request_context(
+        &self,
+        request: &Request<impl std::fmt::Debug>,
+    ) -> Result<(synctv_api_common::impls::RequestMetadata, String), Status> {
+        let room = self.room_metadata(request)?;
+        Ok((self.request_metadata(request)?, room.public_room_id))
+    }
+
+    fn internal_room_request_context(
+        &self,
+        request: &Request<impl std::fmt::Debug>,
+    ) -> Result<(synctv_api_common::impls::RequestMetadata, RoomId), Status> {
+        let room = self.room_metadata(request)?;
+        Ok((self.request_metadata(request)?, room.room_id))
+    }
+
+    fn extract_guest_token_from_authorization(
+        authorization: Option<&str>,
+    ) -> Result<Option<String>, Status> {
+        let Some(authorization) = authorization else {
+            return Ok(None);
+        };
+        let token = synctv_core::service::JwtValidator::extract_bearer_token(authorization)
+            .map_err(|_| unauthenticated_status("Invalid authorization header"))?;
+        if synctv_core::service::JwtService::token_type_hint(&token)
+            == Some(synctv_core::service::TokenType::Guest)
+        {
+            Ok(Some(token))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn execute_room_actor_endpoint<T, F, Fut>(
+        &self,
+        metadata: synctv_api_common::impls::RequestMetadata,
+        public_room_id: String,
+        category: EndpointRateLimitCategory,
+        operation: F,
+    ) -> Result<T, Status>
+    where
+        T: Send + 'static,
+        F: FnOnce(
+                Arc<synctv_api_common::impls::ClientApiImpl>,
+                synctv_api_common::impls::client::RoomActor,
+            ) -> Fut
+            + Send
+            + 'static,
+        Fut: std::future::Future<Output = Result<T, synctv_api_common::impls::ApiError>>
+            + Send
+            + 'static,
+    {
+        let client_api = self.client_api.clone();
+        synctv_api_common::impls::ClientApiImpl::execute_room_actor_endpoint(
+            client_api,
+            &metadata,
+            public_room_id,
+            category,
+            operation,
+        )
+        .await
+        .map_err(map_api_error)
+    }
+
+    async fn execute_room_actor_endpoint_with_control<T, F, Fut>(
+        &self,
+        metadata: synctv_api_common::impls::RequestMetadata,
+        public_room_id: String,
+        category: EndpointRateLimitCategory,
+        operation: F,
+    ) -> Result<T, Status>
+    where
+        T: Send + 'static,
+        F: FnOnce(
+                Arc<synctv_api_common::impls::ClientApiImpl>,
+                synctv_core::provider::ExecutionControl,
+                synctv_api_common::impls::client::RoomActor,
+            ) -> Fut
+            + Send
+            + 'static,
+        Fut: std::future::Future<Output = Result<T, synctv_api_common::impls::ApiError>>
+            + Send
+            + 'static,
+    {
+        let client_api = self.client_api.clone();
+        synctv_api_common::impls::ClientApiImpl::execute_room_actor_endpoint_with_control(
+            client_api,
+            &metadata,
+            public_room_id,
+            category,
+            operation,
+        )
+        .await
+        .map_err(map_api_error)
+    }
+
+    async fn watch_principal(
+        &self,
+        metadata: &synctv_api_common::impls::RequestMetadata,
+        room_id: RoomId,
+    ) -> Result<RealtimePrincipal, Status> {
+        let executor = self.client_api.clone();
+        if let Some(guest_token) =
+            Self::extract_guest_token_from_authorization(metadata.authorization.as_deref())?
+        {
+            let public_room_id = self
+                .client_api
+                .public_id_codec
+                .encode_room_id(room_id)
+                .map_err(|error| invalid_argument_status(format!("Invalid room_id: {error}")))?;
+            let client_api = self.client_api.clone();
+            return executor
+                .execute_public_endpoint(
+                    metadata,
+                    EndpointRateLimitCategory::WebSocket,
+                    move || async move {
+                        let access = client_api
+                            .validate_guest_room_access(&guest_token, &public_room_id)
+                            .await?;
+                        let identity = GuestRealtimeIdentity {
+                            guest_id: access.guest_id,
+                            display_name: access.display_name,
+                            session_id: access.session_id,
+                            token_jti: access.token_jti,
+                            room_guest_version: access.room_guest_version,
+                            permissions: access.permissions,
+                        };
+                        RealtimePrincipal::guest(room_id, identity).map_err(|error| {
+                            synctv_api_common::impls::ApiError::Internal(error.to_string())
+                        })
+                    },
+                )
+                .await
+                .map_err(map_api_error);
+        }
+
+        let user_id = executor
+            .execute_user_endpoint(
+                metadata,
+                EndpointRateLimitCategory::WebSocket,
+                move |authenticated| async move {
+                    Ok::<_, synctv_api_common::impls::ApiError>(authenticated.user_id)
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        let user = self
+            .user_service
+            .get_user(&user_id)
+            .await
+            .map_err(|err| map_api_error(ApiError::from(err)))?;
+        Ok(RealtimePrincipal::user(user_id, user.username))
+    }
+
+    #[allow(clippy::result_large_err)]
+    async fn open_watch_stream<E, F>(
+        &self,
+        metadata: synctv_api_common::impls::RequestMetadata,
+        room_id: RoomId,
+        observe: synctv_proto::client::ObserveResource,
+        map_event: F,
+    ) -> Result<Response<GrpcStatusStream<E>>, Status>
+    where
+        E: Send + 'static,
+        F: Fn(ServerMessage) -> Option<E> + Send + Sync + 'static,
+    {
+        let event_service = self.event_service.clone();
+        let principal = self.watch_principal(&metadata, room_id).await?;
+
+        let room = self
+            .room_service
+            .get_room(&room_id)
+            .await
+            .map_err(|err| map_api_error(ApiError::from(err)))?;
+        if let Some(status) = realtime_room_access_error(&room) {
+            return Err(status);
+        }
+
+        let (outgoing_tx, outgoing_rx) =
+            tokio::sync::mpsc::channel::<ServerMessage>(WATCH_STREAM_BUFFER_SIZE);
+        let sender = Arc::new(GrpcMessageSender::new(outgoing_tx));
+        let session = ResourceWatchSession::new(ResourceWatchSessionConfig {
+            room_id,
+            principal,
+            room_service: self.room_service.clone(),
+            chat_service: Some(self.chat_service.clone()),
+            clock: self.client_api.clock.clone(),
+            event_service,
+            connection_service: self.connection_service.clone(),
+            presence_service: self.presence_service.clone(),
+            public_id_codec: self.client_api.public_id_codec.clone(),
+            sender: Arc::clone(&sender) as Arc<dyn MessageSender>,
+            playback_service: self.client_api.clone(),
+            playlist_items_snapshot_service: self.client_api.clone(),
+            room_settings_snapshot_service:
+                synctv_api_common::impls::room_settings_snapshot::default_room_settings_snapshot_service(
+                    self.room_service.clone(),
+                ),
+        });
+
+        let prepared_session = session
+            .prepare(&observe)
+            .await
+            .map_err(map_message_stream_join_error)?;
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let session_cancel = cancel_token.clone();
+        tokio::spawn(async move {
+            if let Err(error) = prepared_session.run(session_cancel).await {
+                tracing::warn!(error = %error, "Resource watch session ended with error");
+            }
+        });
+
+        let response_close_sender = sender.sender.clone();
+        let response_close_token = cancel_token.clone();
+        tokio::spawn(async move {
+            response_close_sender.closed().await;
+            response_close_token.cancel();
+        });
+
+        let output_stream = ReceiverStream::new(outgoing_rx).filter_map(move |message| {
+            let event = map_event(message);
+            event.map(Ok::<_, Status>)
+        });
+
+        Ok(Response::new(Box::pin(output_stream)))
+    }
+}
+
+#[cfg(test)]
+mod tests;

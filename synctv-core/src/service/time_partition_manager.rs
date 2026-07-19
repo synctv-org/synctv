@@ -114,13 +114,13 @@ impl TimePartitionManager {
             let like_pattern = format!("{table_name}_%");
             let regex_pattern = format!(r"^{table_name}_[0-9]{{4}}_[0-9]{{2}}_[0-9]{{2}}$");
             let rows = sqlx::query_as::<_, PartitionNameRow>(
-                r#"SELECT tablename
+                r"SELECT tablename
                    FROM pg_tables
                    WHERE schemaname = 'public'
                      AND tablename LIKE $1
                      AND tablename ~ $2
                      AND tablename < $3
-                   ORDER BY tablename"#,
+                   ORDER BY tablename",
             )
             .bind(like_pattern)
             .bind(regex_pattern)

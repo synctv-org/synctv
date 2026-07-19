@@ -774,14 +774,14 @@ async fn test_playback_history_cleanup_preserves_cursor_and_adjacent_navigation(
     let old_timestamp = Utc::now() - chrono::Duration::days(2);
     ensure_playback_history_partition_for(&pool, old_timestamp).await;
     sqlx::query(
-        r#"UPDATE room_playback_history AS history
+        r"UPDATE room_playback_history AS history
            SET created_at = $2
            WHERE history.room_id = $1
              AND history.id <> (
                  SELECT state.history_cursor_id
                  FROM room_playback_state AS state
                  WHERE state.room_id = $1
-             )"#,
+             )",
     )
     .bind(room.id.as_i64())
     .bind(old_timestamp)
@@ -1059,7 +1059,7 @@ async fn test_previous_recomputes_history_after_optimistic_retry() {
 
     let mut tx = pool.begin().await.checked("D transaction should begin");
     let inserted = sqlx::query_as::<_, (i64, chrono::DateTime<Utc>)>(
-        r#"INSERT INTO room_playback_history (
+        r"INSERT INTO room_playback_history (
                room_id, sequence, media_id, target_hash, position_seconds, selected_by_user_id
            )
            SELECT $1, 4, $2, target_hash, 0.0, $3
@@ -1067,7 +1067,7 @@ async fn test_previous_recomputes_history_after_optimistic_retry() {
            WHERE room_id = $1 AND media_id = $4
            ORDER BY sequence DESC
            LIMIT 1
-           RETURNING id, created_at"#,
+           RETURNING id, created_at",
     )
     .bind(room.id.as_i64())
     .bind(media_d.id.as_i64())
@@ -1077,7 +1077,7 @@ async fn test_previous_recomputes_history_after_optimistic_retry() {
     .await
     .checked("D history entry should be inserted");
     sqlx::query(
-        r#"UPDATE room_playback_state
+        r"UPDATE room_playback_state
            SET playing_media_id = $2,
                playing_playlist_id = NULL,
                target = NULL,
@@ -1086,7 +1086,7 @@ async fn test_previous_recomputes_history_after_optimistic_retry() {
                history_cursor_created_at = $4,
                playback_generation = playback_generation + 1,
                version = version + 1
-           WHERE room_id = $1"#,
+           WHERE room_id = $1",
     )
     .bind(room.id.as_i64())
     .bind(media_d.id.as_i64())

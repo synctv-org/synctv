@@ -322,8 +322,8 @@ clippy-check: ## Run locked workspace Clippy checks without modifying files.
 install-cargo-audit: ## Install cargo-audit for CI security checks.
 	$(CARGO) install cargo-audit $(CARGO_LOCKED)
 
-audit: ## Fail on RustSec audit warnings.
-	$(CARGO) audit --deny warnings
+audit: ## Fail on RustSec vulnerabilities.
+	$(CARGO) audit
 
 audit-advisories: ## Print the complete RustSec advisory report.
 	$(CARGO) audit

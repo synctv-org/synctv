@@ -2097,28 +2097,33 @@ async fn test_chat_events_sse_unknown_last_event_id_returns_bad_request() -> Tes
 }
 
 #[tokio::test]
-async fn test_public_rooms_route_is_reachable_without_auth() -> TestResult {
-    let state = test_app_state();
-    let app = register_all_routes().with_state(state);
-
-    let request = test_request(
+async fn test_public_and_authenticated_room_discovery_routes_are_separate() -> TestResult {
+    synctv_core::install_process_crypto_provider();
+    let public_app = register_all_routes().with_state(test_app_state());
+    let public_request = test_request(
         Request::builder()
             .method("GET")
-            .uri("/api/rooms?page=1&pageSize=10")
+            .uri("/api/rooms/discover?page=1&pageSize=10")
             .body(Body::empty()),
     )?;
-    let response = test_response(app.oneshot(request).await)?;
+    let public_response = test_response(public_app.oneshot(public_request).await)?;
+    assert_ne!(public_response.status(), StatusCode::UNAUTHORIZED);
+    assert_ne!(public_response.status(), StatusCode::NOT_FOUND);
 
-    assert_ne!(
-        response.status(),
-        StatusCode::UNAUTHORIZED,
-        "public room listing must not require auth"
-    );
-    assert_ne!(
-        response.status(),
-        StatusCode::NOT_FOUND,
-        "public room listing route must be registered"
-    );
+    for uri in [
+        "/api/user/rooms/discover?page=1&pageSize=10",
+        "/api/user/rooms/room_123/discovery",
+    ] {
+        let user_app = register_all_routes().with_state(test_app_state());
+        let user_request = test_request(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .body(Body::empty()),
+        )?;
+        let user_response = test_response(user_app.oneshot(user_request).await)?;
+        assert_eq!(user_response.status(), StatusCode::UNAUTHORIZED, "{uri}");
+    }
     Ok(())
 }
 
@@ -3411,7 +3416,7 @@ async fn test_http_request_metadata_rejects_non_utf8_authorization_header() -> T
     let request = test_request(
         Request::builder()
             .method("GET")
-            .uri("/api/rooms/hot")
+            .uri("/api/rooms/discover")
             .header(
                 axum::http::header::AUTHORIZATION,
                 axum::http::HeaderValue::from_bytes(&[0xff])?,
@@ -3432,7 +3437,7 @@ async fn test_http_request_metadata_rejects_non_utf8_user_agent_header() -> Test
     let request = test_request(
         Request::builder()
             .method("GET")
-            .uri("/api/rooms/hot")
+            .uri("/api/rooms/discover")
             .header(
                 axum::http::header::USER_AGENT,
                 axum::http::HeaderValue::from_bytes(&[0xff])?,

@@ -11,15 +11,16 @@ use synctv_api::ClientApiImpl;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
-        Media, MediaId, Playlist, PlaylistId, RoomId, SignupMethod, User, UserId, UserRole,
-        UserStatus,
+        room_settings::AllowGuestJoin, Media, MediaId, Playlist, PlaylistId, RoomId, SignupMethod,
+        User, UserId, UserRole, UserStatus,
     },
-    repository::{MediaRepository, PlaylistRepository, UserRepository},
+    repository::{MediaRepository, PlaylistRepository, SettingsRepository, UserRepository},
     service::{
-        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService,
+        RoomServiceOptions, RuntimeSettingsStore, SettingsService, UserService,
     },
 };
-use synctv_core_testing::{create_test_pool, TestContainer};
+use synctv_core_testing::{create_test_pool, create_test_pool_with_db_and_label, TestContainer};
 use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
 
 fn public_id_codec() -> synctv_api::PublicIdCodec {
@@ -149,9 +150,21 @@ async fn create_client_api_fixture() -> ClientApiFixture {
     let playlist_repo = PlaylistRepository::new(pool.clone());
     let media_repo = MediaRepository::new(pool.clone());
     let user_service = Arc::new(make_user_service(&pool));
-
-    let room_service = RoomService::new_for_tests(pool.clone(), (*user_service).clone())
-        .expect("room service should build");
+    let settings_service = Arc::new(SettingsService::new(
+        SettingsRepository::new(pool.clone()),
+        pool.clone(),
+    ));
+    settings_service.initialize().await.unwrap();
+    let runtime_settings_store = Arc::new(RuntimeSettingsStore::new(settings_service));
+    let room_service = RoomService::new_with_options(
+        pool.clone(),
+        (*user_service).clone(),
+        RoomServiceOptions {
+            runtime_settings_store: Some(runtime_settings_store.clone()),
+            ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
+        },
+    )
+    .expect("room service should build");
     let room_service = Arc::new(room_service);
 
     let owner = user_repo
@@ -187,7 +200,7 @@ async fn create_client_api_fixture() -> ClientApiFixture {
             publish_key_service: None,
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
-            runtime_settings_store: None,
+            runtime_settings_store: Some(runtime_settings_store),
             public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
@@ -210,6 +223,250 @@ async fn create_client_api_fixture() -> ClientApiFixture {
         creator,
         room,
     }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn single_room_discovery_uses_primary_while_feed_uses_read_pool() {
+    let (primary_postgres, primary_pool) =
+        create_test_pool_with_db_and_label("synctv_test", "discovery-primary").await;
+    let (read_postgres, read_pool) =
+        create_test_pool_with_db_and_label("synctv_test", "discovery-read").await;
+    let user_repo = UserRepository::new(primary_pool.clone());
+    let user_service = Arc::new(make_user_service(&primary_pool));
+    let settings_service = Arc::new(SettingsService::new(
+        SettingsRepository::new(primary_pool.clone()),
+        primary_pool.clone(),
+    ));
+    settings_service.initialize().await.unwrap();
+    let runtime_settings_store = Arc::new(RuntimeSettingsStore::new(settings_service));
+    let room_service = Arc::new(
+        RoomService::new_with_options(
+            primary_pool.clone(),
+            (*user_service).clone(),
+            RoomServiceOptions {
+                read_pool: Some(read_pool.clone()),
+                runtime_settings_store: Some(runtime_settings_store.clone()),
+                ..RoomServiceOptions::test_defaults_with_settings(primary_pool.clone())
+            },
+        )
+        .expect("room service should build"),
+    );
+    let owner = user_repo
+        .create(&make_user("primary_discovery_owner"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Primary Discovery Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let connection_service = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    let mut runtime = support::client_api_runtime();
+    runtime.presence_service = connection_service.presence_service();
+    let client_api = ClientApiImpl::new_with_runtime(
+        synctv_api::ClientApiOptions {
+            read_pool: Some(read_pool.clone()),
+            user_service,
+            room_service,
+            connection_service,
+            runtime_settings: Arc::new(Config::default()),
+            publish_key_service: None,
+            jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+            live_streaming_infrastructure: None,
+            runtime_settings_store: Some(runtime_settings_store),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
+            chat_service: None,
+            provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
+                "test:provider:",
+            )),
+            email_api: None,
+            passkey_service: None,
+        },
+        runtime,
+    );
+    let room_public_id = public_id_codec().encode_room_id(room.id).unwrap();
+
+    let feed = client_api
+        .discover_public_rooms(synctv_proto::client::DiscoverRoomsRequest {
+            page: 1,
+            page_size: 20,
+            search: String::new(),
+            category_id: String::new(),
+            label_ids: Vec::new(),
+        })
+        .await
+        .unwrap();
+    assert!(feed.featured_rooms.is_empty());
+    assert!(feed.rooms.is_empty());
+
+    let public_item = client_api
+        .get_public_room_discovery(synctv_proto::client::GetRoomDiscoveryRequest {
+            room_id: room_public_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(public_item.room.as_ref().unwrap().name, room.name);
+    assert_eq!(public_item.room.as_ref().unwrap().member_count, 1);
+
+    let user_item = client_api
+        .get_room_discovery(
+            &owner.id,
+            synctv_proto::client::GetRoomDiscoveryRequest {
+                room_id: room_public_id,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(user_item.joined);
+    assert_eq!(
+        user_item.access,
+        synctv_proto::client::RoomDiscoveryAccess::Enter as i32
+    );
+
+    drop(client_api);
+    drop(user_repo);
+    primary_pool.close().await;
+    read_pool.close().await;
+    primary_postgres.cleanup().await;
+    read_postgres.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn public_room_discovery_exposes_direct_guest_entry_and_token_flow() {
+    let fixture = Box::pin(create_client_api_fixture()).await;
+    let ClientApiFixture {
+        client_api,
+        room,
+        owner,
+        ..
+    } = &fixture;
+
+    let mut settings = client_api
+        .room_service
+        .get_room_settings(&room.id)
+        .await
+        .unwrap();
+    settings.allow_guest_join = AllowGuestJoin(true);
+    client_api
+        .room_service
+        .set_settings(room.id, owner.id, settings)
+        .await
+        .unwrap();
+
+    let response = client_api
+        .discover_public_rooms(synctv_proto::client::DiscoverRoomsRequest {
+            page: 1,
+            page_size: 20,
+            search: room.name.clone(),
+            category_id: String::new(),
+            label_ids: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let room_public_id = public_id_codec().encode_room_id(room.id).unwrap();
+    let item = response
+        .rooms
+        .iter()
+        .find(|item| {
+            item.room
+                .as_ref()
+                .is_some_and(|listed| listed.id == room_public_id)
+        })
+        .expect("guest-enabled room should be discoverable");
+    assert!(item.can_join);
+    assert!(!item.joined);
+    assert!(!item.favorited);
+    assert_eq!(
+        item.access,
+        synctv_proto::client::RoomDiscoveryAccess::Guest as i32
+    );
+
+    let token = client_api
+        .create_guest_token_with_control(
+            synctv_proto::client::CreateGuestTokenRequest {
+                room_id: room_public_id,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!token.token.is_empty());
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn old_guest_token_is_rejected_after_room_creator_becomes_inactive() {
+    let fixture = Box::pin(create_client_api_fixture()).await;
+    let ClientApiFixture {
+        client_api,
+        user_repo,
+        room,
+        owner,
+        ..
+    } = &fixture;
+
+    let mut settings = client_api
+        .room_service
+        .get_room_settings(&room.id)
+        .await
+        .unwrap();
+    settings.allow_guest_join = AllowGuestJoin(true);
+    client_api
+        .room_service
+        .set_settings(room.id, owner.id, settings)
+        .await
+        .unwrap();
+
+    let room_public_id = public_id_codec().encode_room_id(room.id).unwrap();
+    let token = client_api
+        .create_guest_token_with_control(
+            synctv_proto::client::CreateGuestTokenRequest {
+                room_id: room_public_id.clone(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    client_api
+        .validate_guest_room_access(&token.token, &room_public_id)
+        .await
+        .unwrap();
+
+    user_repo.ban(&owner.id, None, None).await.unwrap();
+
+    let old_token_error = client_api
+        .validate_guest_room_access(&token.token, &room_public_id)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(old_token_error, synctv_api::ApiError::Authorization(_)),
+        "old guest tokens must stop authorizing access when the room creator is inactive"
+    );
+
+    let new_token_error = client_api
+        .create_guest_token_with_control(
+            synctv_proto::client::CreateGuestTokenRequest {
+                room_id: room_public_id,
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(new_token_error, synctv_api::ApiError::Authorization(_)),
+        "inactive room creators must prevent new guest token issuance"
+    );
+
+    fixture.cleanup().await;
 }
 
 #[tokio::test]
@@ -595,67 +852,74 @@ async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
         .unwrap();
 
     let list_response = client_api
-        .list_rooms(
-            synctv_proto::client::ListRoomsRequest {
-                page: 1,
-                page_size: 20,
-                search: String::new(),
-                sort_by: synctv_proto::client::RoomListSortBy::CreatedAt as i32,
-                sort_direction: synctv_proto::client::SortDirection::Desc as i32,
-                category_id: String::new(),
-                label_ids: Vec::new(),
-            },
-            None,
-        )
+        .discover_public_rooms(synctv_proto::client::DiscoverRoomsRequest {
+            page: 1,
+            page_size: 20,
+            search: String::new(),
+            category_id: String::new(),
+            label_ids: Vec::new(),
+        })
         .await
         .unwrap();
 
     let room_public_id = public_id_codec().encode_room_id(room.id).unwrap();
     let listed_room = list_response
-        .rooms
+        .featured_rooms
         .iter()
-        .find(|candidate| candidate.id == room_public_id)
+        .chain(list_response.rooms.iter())
+        .find(|item| {
+            item.room
+                .as_ref()
+                .is_some_and(|room| room.id == room_public_id)
+        })
         .expect("public list should still surface the room");
+    let listed_room = listed_room.room.as_ref().unwrap();
     assert_eq!(
         listed_room.availability,
         synctv_proto::client::ResourceAvailability::CreatorInactive as i32
     );
 
-    let check_response = client_api
-        .check_room(synctv_proto::client::CheckRoomRequest {
+    let discovery_item = client_api
+        .get_public_room_discovery(synctv_proto::client::GetRoomDiscoveryRequest {
             room_id: room_public_id.clone(),
         })
         .await
         .unwrap();
 
-    assert!(check_response.exists, "room should still exist");
+    let discovered_room = discovery_item.room.as_ref().unwrap();
     assert_eq!(
-        check_response.availability,
+        discovered_room.availability,
         synctv_proto::client::ResourceAvailability::CreatorInactive as i32
     );
-    assert!(
-        check_response.name.is_empty(),
-        "public check_room must not leak room name"
-    );
+    assert_eq!(discovered_room.name, room.name);
 
-    let hot_response = client_api
-        .get_hot_rooms(synctv_proto::client::GetHotRoomsRequest { limit: 10 })
+    let authenticated = client_api
+        .discover_rooms(
+            &owner.id,
+            synctv_proto::client::DiscoverRoomsRequest {
+                page: 1,
+                page_size: 20,
+                search: room.name.clone(),
+                category_id: String::new(),
+                label_ids: Vec::new(),
+            },
+        )
         .await
         .unwrap();
-
-    let hot_room = hot_response
+    let joined_item = authenticated
         .rooms
         .iter()
-        .find_map(|entry| {
-            entry
-                .room
+        .find(|item| {
+            item.room
                 .as_ref()
-                .filter(|candidate| candidate.id == room_public_id)
+                .is_some_and(|listed| listed.id == room_public_id)
         })
-        .expect("hot rooms should still surface the room");
+        .expect("joined room should remain visible to its member");
+    assert!(joined_item.joined);
+    assert!(!joined_item.can_join);
     assert_eq!(
-        hot_room.availability,
-        synctv_proto::client::ResourceAvailability::CreatorInactive as i32
+        joined_item.access,
+        synctv_proto::client::RoomDiscoveryAccess::Unavailable as i32
     );
 
     client_api
@@ -668,7 +932,7 @@ async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn hot_rooms_considers_online_rooms_outside_newest_page() {
+async fn room_discovery_prioritizes_online_rooms_outside_newest_page() {
     let fixture = Box::pin(create_client_api_fixture()).await;
     let ClientApiFixture {
         client_api,
@@ -704,20 +968,39 @@ async fn hot_rooms_considers_online_rooms_outside_newest_page() {
     }
 
     let response = client_api
-        .get_hot_rooms(synctv_proto::client::GetHotRoomsRequest { limit: 1 })
+        .discover_public_rooms(synctv_proto::client::DiscoverRoomsRequest {
+            page: 1,
+            page_size: 1,
+            search: String::new(),
+            category_id: String::new(),
+            label_ids: Vec::new(),
+        })
         .await
         .unwrap();
 
     let top_room = response
-        .rooms
+        .featured_rooms
         .first()
-        .and_then(|entry| entry.room.as_ref())
-        .expect("hot rooms should return one room");
+        .expect("room discovery should return one featured room");
+    let top_room = top_room.room.as_ref().unwrap();
     assert_eq!(
         top_room.id,
         public_id_codec().encode_room_id(room.id).unwrap()
     );
-    assert_eq!(response.rooms[0].online_count, 1);
+    assert_eq!(
+        top_room
+            .presence
+            .as_ref()
+            .map(|value| value.online_user_count),
+        Some(1)
+    );
+
+    let first_popular_room = response
+        .rooms
+        .first()
+        .expect("room discovery should return one non-featured room");
+    let first_popular_room = first_popular_room.room.as_ref().unwrap();
+    assert_ne!(first_popular_room.id, top_room.id);
 
     client_api
         .connection_service

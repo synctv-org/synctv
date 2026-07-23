@@ -1278,12 +1278,10 @@ mod tests {
 
     #[test]
     fn validate_room_list_requests_reject_invalid_pagination_and_enums() {
-        let list_rooms = crate::client::ListRoomsRequest {
+        let list_rooms = crate::client::DiscoverRoomsRequest {
             page: -1,
             page_size: 101,
             search: String::new(),
-            sort_by: 99,
-            sort_direction: 99,
             category_id: String::new(),
             label_ids: Vec::new(),
         };
@@ -1318,12 +1316,10 @@ mod tests {
 
     #[test]
     fn validate_room_list_requests_accept_defaultable_values() {
-        crate::validate(&crate::client::ListRoomsRequest {
+        crate::validate(&crate::client::DiscoverRoomsRequest {
             page: 0,
             page_size: 0,
             search: "room".into(),
-            sort_by: crate::client::RoomListSortBy::Unspecified as i32,
-            sort_direction: crate::client::SortDirection::Unspecified as i32,
             category_id: String::new(),
             label_ids: Vec::new(),
         })

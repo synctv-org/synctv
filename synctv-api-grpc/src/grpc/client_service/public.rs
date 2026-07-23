@@ -3,62 +3,49 @@ use tonic::{Request, Response, Status};
 use super::{map_api_error, ClientServiceImpl};
 use synctv_api_common::impls::{ApiError, EndpointRateLimitCategory};
 use synctv_proto::client::{
-    public_service_server::PublicService, CheckRoomRequest, CheckRoomResponse, GetHotRoomsRequest,
-    GetHotRoomsResponse, GetPublicSettingsRequest, GetPublicSettingsResponse, GetServerInfoRequest,
-    GetServerInfoResponse, GetServerTimeRequest, GetServerTimeResponse, ListRoomsRequest,
-    ListRoomsResponse,
+    public_service_server::PublicService, DiscoverRoomsRequest, DiscoverRoomsResponse,
+    GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomDiscoveryRequest,
+    GetServerInfoRequest, GetServerInfoResponse, GetServerTimeRequest, GetServerTimeResponse,
+    RoomDiscoveryItem,
 };
 
 #[tonic::async_trait]
 // Tonic generated service traits require `Result<Response<_>, tonic::Status>`.
 #[allow(clippy::result_large_err)]
 impl PublicService for ClientServiceImpl {
-    async fn check_room(
+    async fn get_room_discovery(
         &self,
-        request: Request<CheckRoomRequest>,
-    ) -> Result<Response<CheckRoomResponse>, Status> {
+        request: Request<GetRoomDiscoveryRequest>,
+    ) -> Result<Response<RoomDiscoveryItem>, Status> {
         let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
         let response = executor
-            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, || async move {
-                client_api.check_room(req).await
-            })
+            .execute_public_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move || async move { client_api.get_public_room_discovery(req).await },
+            )
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
-    async fn list_rooms(
+    async fn discover_rooms(
         &self,
-        request: Request<ListRoomsRequest>,
-    ) -> Result<Response<ListRoomsResponse>, Status> {
+        request: Request<DiscoverRoomsRequest>,
+    ) -> Result<Response<DiscoverRoomsResponse>, Status> {
         let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
         let response = executor
-            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, || async move {
-                client_api.list_rooms(req, None).await
-            })
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn get_hot_rooms(
-        &self,
-        request: Request<GetHotRoomsRequest>,
-    ) -> Result<Response<GetHotRoomsResponse>, Status> {
-        let metadata = self.request_metadata(&request)?;
-        let req = request.into_inner();
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        let response = executor
-            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, || async move {
-                client_api.get_hot_rooms(req).await
-            })
+            .execute_public_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move || async move { client_api.discover_public_rooms(req).await },
+            )
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))

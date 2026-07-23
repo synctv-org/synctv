@@ -85,6 +85,10 @@ When a finite sequential playlist reaches the end, auto-advance must persist a s
 
 Read-replica use is opt-in per repository method. Route only allowlisted, eventually consistent list/discovery reads through `DatabasePools::read()`.
 
+The home room feed is an allowlisted eventual-consistency boundary. Room windows, taxonomy, room settings, member counts, password-presence flags, creator public profiles, and viewer/joined/favorite display state use repository read pools. Replica lag is acceptable because these values only shape list presentation; join, favorite, room mutation, authentication, and authorization operations revalidate against the primary pool before producing side effects.
+
+Fetching one discovery item by `room_id` is an actionable invitation and join entry point, so its complete projection uses the primary pool. When the home feed composes several read-pool queries, a missing creator profile or viewer state is filled from the primary pool by missing ID. This fallback handles connections backed by replicas at different replay positions while keeping the normal feed path on the read pool. A feed item that still lacks required related data after fallback is filtered out; an ID lookup returns `404 Not Found` when a concurrent deletion prevents its projection from being assembled.
+
 Keep these operations on the primary pool:
 
 - writes, transactions, migrations, and status checks;

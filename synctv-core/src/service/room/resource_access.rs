@@ -81,6 +81,45 @@ impl RoomService {
             .collect())
     }
 
+    async fn load_active_creators_eventually_consistent<'a, I>(
+        &self,
+        creator_ids: I,
+    ) -> Result<HashSet<UserId>>
+    where
+        I: IntoIterator<Item = &'a UserId>,
+    {
+        let unique_ids: Vec<UserId> = creator_ids
+            .into_iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        if unique_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        let mut creators = self
+            .user_service
+            .get_users_by_ids_eventually_consistent(&unique_ids)
+            .await?;
+        let loaded_ids = creators.iter().map(|user| user.id).collect::<HashSet<_>>();
+        let missing_ids = unique_ids
+            .iter()
+            .copied()
+            .filter(|user_id| !loaded_ids.contains(user_id))
+            .collect::<Vec<_>>();
+        if !missing_ids.is_empty() {
+            creators.extend(self.user_service.get_users_by_ids(&missing_ids).await?);
+        }
+
+        Ok(creators
+            .into_iter()
+            .filter(|user| user.status.is_active() && !user.is_banned)
+            .map(|user| user.id)
+            .collect())
+    }
+
     async fn ensure_resource_creator_is_active_for_client_access(
         &self,
         creator_id: Option<&UserId>,
@@ -151,12 +190,49 @@ impl RoomService {
         Ok(Self::room_client_availability(room, &active_creators))
     }
 
+    pub async fn ensure_guest_room_available(&self, room: &Room) -> Result<()> {
+        if room.is_banned {
+            return Err(Error::Authorization(
+                "This room has been banned".to_string(),
+            ));
+        }
+        if room.status.is_closed() {
+            return Err(Error::Authorization(
+                "This room is closed and not accepting new connections".to_string(),
+            ));
+        }
+        if !self.room_availability(room).await?.is_available() {
+            return Err(Error::Authorization(
+                "This room is currently unavailable".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn room_availability_batch(
         &self,
         rooms: &[Room],
     ) -> Result<HashMap<RoomId, ClientResourceAvailability>> {
         let active_creators = self
             .load_active_creators(rooms.iter().map(|room| &room.created_by))
+            .await?;
+        Ok(rooms
+            .iter()
+            .map(|room| {
+                (
+                    room.id,
+                    Self::room_client_availability(room, &active_creators),
+                )
+            })
+            .collect())
+    }
+
+    pub async fn room_availability_batch_eventually_consistent(
+        &self,
+        rooms: &[Room],
+    ) -> Result<HashMap<RoomId, ClientResourceAvailability>> {
+        let active_creators = self
+            .load_active_creators_eventually_consistent(rooms.iter().map(|room| &room.created_by))
             .await?;
         Ok(rooms
             .iter()

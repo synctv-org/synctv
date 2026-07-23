@@ -5081,7 +5081,7 @@ async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator(
         .checked("test operation should succeed");
 
     let (rooms, total) = room_service
-        .list_accessible_joined_rooms_with_query(
+        .list_accessible_joined_rooms_with_query_eventually_consistent(
             &member.id,
             &MyRoomListQuery {
                 pagination: PageParams::default(),

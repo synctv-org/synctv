@@ -3,10 +3,7 @@
 //! Transport handlers deserialize inputs and hand requests to `impls`; request
 //! validation belongs in the impl/core layers shared by HTTP and gRPC.
 
-use axum::{
-    extract::{rejection::QueryRejection, FromRequestParts, Query},
-    http::request::Parts,
-};
+use axum::{extract::FromRequestParts, http::request::Parts};
 use serde::de::DeserializeOwned;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,10 +23,10 @@ impl<T> std::ops::DerefMut for ProtoQuery<T> {
     }
 }
 
-fn map_query_rejection(rejection: &QueryRejection) -> super::AppError {
-    super::AppError::from(synctv_api_common::impls::ApiError::InvalidInput(
-        rejection.body_text(),
-    ))
+fn map_query_rejection(message: impl std::fmt::Display) -> super::AppError {
+    super::AppError::from(synctv_api_common::impls::ApiError::InvalidInput(format!(
+        "Failed to deserialize query string: {message}"
+    )))
 }
 
 impl<S, T> FromRequestParts<S> for ProtoQuery<T>
@@ -39,11 +36,18 @@ where
 {
     type Rejection = super::AppError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let Query(value) = Query::<T>::from_request_parts(parts, state)
-            .await
-            .map_err(|rejection| map_query_rejection(&rejection))?;
-        Ok(Self(value))
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        let deserializer = serde_html_form::Deserializer::from_bytes(
+            parts.uri.query().unwrap_or_default().as_bytes(),
+        );
+        std::future::ready(
+            serde_path_to_error::deserialize(deserializer)
+                .map(Self)
+                .map_err(map_query_rejection),
+        )
     }
 }
 
@@ -64,10 +68,22 @@ mod tests {
         page: i32,
     }
 
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RepeatedQuery {
+        #[serde(default)]
+        label_ids: Vec<String>,
+    }
+
     type TestResult<T = ()> = anyhow::Result<T>;
 
     async fn query_handler(ProtoQuery(query): ProtoQuery<PageQuery>) -> &'static str {
         assert_eq!(query.page, 1);
+        "ok"
+    }
+
+    async fn repeated_query_handler(ProtoQuery(query): ProtoQuery<RepeatedQuery>) -> &'static str {
+        assert_eq!(query.label_ids, ["roomlbl_1", "roomlbl_2"]);
         "ok"
     }
 
@@ -101,6 +117,19 @@ mod tests {
             error_info["metadata"]["errorCode"],
             synctv_api_common::impls::error_codes::INVALID_ARGUMENT.to_string()
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn proto_query_preserves_repeated_fields() -> TestResult {
+        let app = Router::new().route("/test", get(repeated_query_handler));
+        let request = Request::builder()
+            .uri("/test?labelIds=roomlbl_1&labelIds=roomlbl_2")
+            .body(Body::empty())?;
+
+        let response = app.oneshot(request).await?.into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
         Ok(())
     }
 

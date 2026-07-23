@@ -8,17 +8,18 @@ use synctv_proto::client::{
     CompleteUserAvatarUploadSessionRequest, CompleteUserAvatarUploadSessionResponse,
     ConfirmEmailBindRequest, CreateRoomRequest, CreateUserAvatarUploadSessionRequest,
     CreateUserAvatarUploadSessionResponse, DeletePasskeyRequest, DeletePasskeyResponse,
-    FavoriteRoomRequest, FavoriteRoomResponse, FinishOpaquePasswordUpdateRequest,
-    FinishPasskeyBindRequest, FinishRoomPasswordLoginRequest,
+    DiscoverRoomsRequest, DiscoverRoomsResponse, FavoriteRoomRequest, FavoriteRoomResponse,
+    FinishOpaquePasswordUpdateRequest, FinishPasskeyBindRequest, FinishRoomPasswordLoginRequest,
     FinishSensitiveOperationVerificationRequest, FinishSensitiveOperationVerificationResponse,
-    GetProfileRequest, GetRoomRequest, GetRoomResponse, GetUserAvatarObjectRequest,
-    GetUserPreferencesRequest, GetUserPreferencesResponse, JoinRoomRequest, JoinRoomResponse,
-    ListFavoriteRoomsRequest, ListFavoriteRoomsResponse, ListMyRoomsRequest, ListMyRoomsResponse,
-    ListPasskeysRequest, ListPasskeysResponse, LogoutRequest, LogoutResponse, PasskeyCredential,
-    RequestSensitiveOperationEmailCodeRequest, RequestSensitiveOperationEmailCodeResponse, Room,
-    SetUsernameRequest, StartEmailBindRequest, StartEmailBindResponse,
-    StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse, StartPasskeyBindRequest,
-    StartPasskeyBindResponse, StartRoomPasswordLoginRequest, StartRoomPasswordLoginResponse,
+    GetProfileRequest, GetRoomDiscoveryRequest, GetRoomRequest, GetRoomResponse,
+    GetUserAvatarObjectRequest, GetUserPreferencesRequest, GetUserPreferencesResponse,
+    JoinRoomRequest, JoinRoomResponse, ListFavoriteRoomsRequest, ListFavoriteRoomsResponse,
+    ListMyRoomsRequest, ListMyRoomsResponse, ListPasskeysRequest, ListPasskeysResponse,
+    LogoutRequest, LogoutResponse, PasskeyCredential, RequestSensitiveOperationEmailCodeRequest,
+    RequestSensitiveOperationEmailCodeResponse, Room, RoomDiscoveryItem, SetUsernameRequest,
+    StartEmailBindRequest, StartEmailBindResponse, StartOpaquePasswordUpdateRequest,
+    StartOpaquePasswordUpdateResponse, StartPasskeyBindRequest, StartPasskeyBindResponse,
+    StartRoomPasswordLoginRequest, StartRoomPasswordLoginResponse,
     StartSensitiveOperationPasskeyRequest, StartSensitiveOperationPasskeyResponse,
     StartSensitiveOperationVerificationRequest, StartSensitiveOperationVerificationResponse,
     UnbindEmailRequest, UnfavoriteRoomRequest, UnfavoriteRoomResponse, UpdateUserAvatarRequest,
@@ -721,6 +722,50 @@ impl UserService for ClientServiceImpl {
                         client_ip.as_deref(),
                     ))
                     .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn get_room_discovery(
+        &self,
+        request: Request<GetRoomDiscoveryRequest>,
+    ) -> Result<Response<RoomDiscoveryItem>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |authenticated| async move {
+                    client_api
+                        .get_room_discovery(&authenticated.user_id, req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn discover_rooms(
+        &self,
+        request: Request<DiscoverRoomsRequest>,
+    ) -> Result<Response<DiscoverRoomsResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |authenticated| async move {
+                    client_api.discover_rooms(&authenticated.user_id, req).await
                 },
             )
             .await

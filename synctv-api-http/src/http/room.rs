@@ -34,12 +34,12 @@ pub(crate) use execute::execute_room_actor_endpoint;
 use execute::request_metadata;
 #[cfg(feature = "openapi")]
 pub(crate) use lifecycle::{
-    __path_check_room, __path_create_room, __path_get_hot_rooms, __path_get_room, __path_join_room,
-    __path_leave_room, __path_list_or_get_rooms,
+    __path_create_room, __path_discover_rooms, __path_get_room, __path_get_room_discovery,
+    __path_join_room, __path_leave_room,
 };
 pub(crate) use lifecycle::{
-    check_room, create_room, delete_room, get_hot_rooms, get_room, join_room, leave_room,
-    list_or_get_rooms, list_room_categories, list_room_labels,
+    create_room, delete_room, discover_rooms, get_room, get_room_discovery, join_room, leave_room,
+    list_room_categories, list_room_labels,
 };
 #[cfg(feature = "openapi")]
 pub(crate) use media::{

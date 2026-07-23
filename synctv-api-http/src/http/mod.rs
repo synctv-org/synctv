@@ -591,11 +591,13 @@ fn register_write_routes() -> Router<AppState> {
 /// Rate limited: 100 req/min.
 fn register_read_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/rooms", get(room::list_or_get_rooms))
-        .route("/api/rooms/hot", get(room::get_hot_rooms))
+        .route("/api/rooms/discover", get(room::discover_rooms))
         .route("/api/rooms/categories", get(room::list_room_categories))
         .route("/api/rooms/labels", get(room::list_room_labels))
-        .route("/api/rooms/{roomId}/check", get(room::check_room))
+        .route(
+            "/api/rooms/{roomId}/discovery",
+            get(room::get_room_discovery),
+        )
         .route("/api/rooms/{roomId}", get(room::get_room))
         .route("/api/rooms/{roomId}/settings", get(room::get_room_settings))
         .route("/api/rooms/{roomId}/members", get(room::get_room_members))
@@ -763,6 +765,11 @@ fn register_playlist_cover_object_routes() -> Router<AppState> {
 fn register_extracted_user_routes() -> Router<AppState> {
     Router::new()
         .route("/api/user", get(user::get_me))
+        .route("/api/user/rooms/discover", get(user::discover_rooms))
+        .route(
+            "/api/user/rooms/{roomId}/discovery",
+            get(user::get_room_discovery),
+        )
         .route("/api/user/rooms", get(user::list_my_rooms))
         .route("/api/user/favorite-rooms", get(user::list_favorite_rooms))
         .route(

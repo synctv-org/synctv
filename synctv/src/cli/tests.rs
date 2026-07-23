@@ -5276,7 +5276,6 @@ fn render_human_output_uses_room_and_member_enums_by_context() {
             creator: None,
             category: None,
             labels: Vec::new(),
-            favorited: false,
         }),
         playback_state: None,
         membership_status: synctv_proto::common::MemberStatus::Active as i32,
@@ -5349,33 +5348,6 @@ fn render_human_output_uses_room_and_member_enums_by_context() {
         "2026-04-04 08:34:17 +00:00 (UTC) (1775291657)"
     );
     assert_eq!(instances["instances"][0]["status"], "disconnected");
-}
-
-#[test]
-fn render_human_output_includes_room_favorite_state() {
-    let room = synctv_proto::client::Room {
-        id: "room-1".into(),
-        name: "General".into(),
-        created_by: "owner-1".into(),
-        status: synctv_proto::common::RoomStatus::Active as i32,
-        availability: synctv_proto::client::ResourceAvailability::Available as i32,
-        favorited: true,
-        ..Default::default()
-    };
-
-    let favorite = render_human_output(&synctv_proto::client::FavoriteRoomResponse {
-        room: Some(room.clone()),
-    })
-    .expect("favorite room human output should render");
-    let favorites = render_human_output(&synctv_proto::client::ListFavoriteRoomsResponse {
-        rooms: vec![room],
-        total: 1,
-    })
-    .expect("favorite rooms human output should render");
-
-    assert_eq!(favorite["room"]["favorited"], true);
-    assert_eq!(favorites["rooms"][0]["favorited"], true);
-    assert_eq!(favorites["total"], 1);
 }
 
 #[test]

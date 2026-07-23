@@ -79,6 +79,10 @@ Provider 手动验证覆盖完整 `PlaybackResult`：
 
 读库按 repository method 显式选择。只有白名单内、允许最终一致的列表/发现类读取走 `DatabasePools::read()`。
 
+首页房间 feed 属于允许最终一致的白名单边界。房间窗口、taxonomy、房间设置、成员数量、密码存在状态、创建者公开资料，以及 viewer/joined/favorite 展示状态使用 repository read pool。副本延迟只影响列表展示；加入、收藏、房间变更、认证和授权操作会在产生副作用前通过主库重新校验。
+
+按 `room_id` 获取单个 discovery item 是邀请和加入流程的操作入口，完整 projection 使用主库。首页 feed 组装多个 read-pool 查询时，创建者资料或 viewer state 缺失会按缺失 ID 从主库补读；这种补读处理多副本连接回放进度不同的情况，同时让正常 feed 请求继续由读库承担。补读后仍缺少必要关联数据的 feed item 会被过滤；按 ID 查询在并发删除导致 projection 无法完整组装时返回 `404 Not Found`。
+
 这些操作使用主库：
 
 - 写入、事务、migration 和 status 检查；

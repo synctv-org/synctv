@@ -1,8 +1,11 @@
+use std::collections::HashSet;
+
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 use crate::{
     models::{OpaquePasswordRecord, RoomId},
+    repository::pools::RepoPools,
     Error, Result,
 };
 
@@ -52,18 +55,32 @@ pub struct StoredRoomPasswordCredential {
 
 #[derive(Clone)]
 pub struct RoomPasswordRepository {
-    pool: PgPool,
+    pools: RepoPools,
 }
 
 impl RoomPasswordRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pools: RepoPools::new(pool),
+        }
+    }
+
+    #[must_use]
+    pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
+        Self {
+            pools: RepoPools::with_read(pool, read_pool),
+        }
     }
 
     #[must_use]
     pub const fn pool(&self) -> &PgPool {
-        &self.pool
+        self.pools.primary()
+    }
+
+    #[must_use]
+    pub fn eventually_consistent_pool(&self) -> &PgPool {
+        self.pools.read()
     }
 
     pub async fn get_opaque_credential(
@@ -90,7 +107,7 @@ impl RoomPasswordRepository {
             "#,
             room_id as &RoomId
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?;
 
         Ok(row.map(|row| StoredRoomPasswordCredential {
@@ -119,10 +136,46 @@ impl RoomPasswordRepository {
             "#,
             room_id as &RoomId
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?;
 
         Ok(row.map(Into::into))
+    }
+
+    pub async fn enabled_room_ids(&self, room_ids: &[RoomId]) -> Result<HashSet<RoomId>> {
+        self.enabled_room_ids_from_pool(room_ids, self.pools.primary())
+            .await
+    }
+
+    pub async fn enabled_room_ids_eventually_consistent(
+        &self,
+        room_ids: &[RoomId],
+    ) -> Result<HashSet<RoomId>> {
+        self.enabled_room_ids_from_pool(room_ids, self.pools.read())
+            .await
+    }
+
+    async fn enabled_room_ids_from_pool(
+        &self,
+        room_ids: &[RoomId],
+        pool: &PgPool,
+    ) -> Result<HashSet<RoomId>> {
+        if room_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        let ids = room_ids.iter().map(RoomId::as_i64).collect::<Vec<_>>();
+        let rows = sqlx::query_scalar!(
+            r#"
+            SELECT room_id AS "room_id!: RoomId"
+            FROM room_password_credentials
+            WHERE room_id = ANY($1) AND enabled
+            "#,
+            &ids,
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows.into_iter().collect())
     }
 
     pub async fn set_opaque_credential_with_executor<'e, E>(

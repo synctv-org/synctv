@@ -2362,7 +2362,6 @@ pub fn try_room_to_proto_with_availability_and_presence(
             .iter()
             .map(|label| room_label_to_proto(label, public_id_codec))
             .collect::<Result<Vec<_>, _>>()?,
-        favorited: false,
     })
 }
 
@@ -2391,26 +2390,6 @@ pub fn try_room_to_proto_with_availability_presence_and_cover(
         .map(|file| stored_file_reference_to_resource_cover(file, cover_access))
         .transpose()?;
     Ok(proto)
-}
-
-#[cfg(test)]
-pub(super) fn hot_room_to_proto(
-    room: &synctv_core::models::Room,
-    settings: Option<&synctv_core::models::RoomSettings>,
-    online_count: i32,
-    total_members: i32,
-    public_id_codec: &synctv_adapter::PublicIdCodec,
-) -> Result<synctv_proto::client::RoomWithStats, crate::impls::ApiError> {
-    Ok(synctv_proto::client::RoomWithStats {
-        room: Some(try_room_to_proto_basic(
-            room,
-            settings,
-            Some(total_members),
-            public_id_codec,
-        )?),
-        online_count,
-        total_members,
-    })
 }
 
 #[must_use]

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO room_password_credentials (room_id, enabled, version) VALUES ($1, FALSE, 1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ea59eaf7c603555916424b3ec51c5e8c28717b1dcd5c9b3d1e1864f37bd36b06"
+}

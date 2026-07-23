@@ -207,19 +207,22 @@ impl RoomService {
         permission_service: PermissionService,
         options: RoomServiceOptions,
     ) -> Self {
-        let room_repo = RoomRepository::new(pool.clone());
-        let taxonomy_repo = crate::repository::RoomTaxonomyRepository::new(pool.clone());
-        let room_settings_repo = RoomSettingsRepository::new(pool.clone());
-        let member_repo = RoomMemberRepository::new(pool.clone());
+        let read_pool = options.read_pool.clone().unwrap_or_else(|| pool.clone());
+        let room_repo = RoomRepository::new_with_read_pool(pool.clone(), read_pool.clone());
+        let taxonomy_repo = crate::repository::RoomTaxonomyRepository::new_with_read_pool(
+            pool.clone(),
+            read_pool.clone(),
+        );
+        let room_settings_repo =
+            RoomSettingsRepository::new_with_read_pool(pool.clone(), read_pool.clone());
+        let member_repo = RoomMemberRepository::new_with_read_pool(pool.clone(), read_pool.clone());
         let media_repo = MediaRepository::new(pool.clone());
         let playlist_repo = PlaylistRepository::new(pool.clone());
         let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
         let playback_source_metadata_repo = PlaybackSourceMetadataRepository::new(pool.clone());
-        let chat_repo = options.read_pool.clone().map_or_else(
-            || ChatRepository::new(pool.clone()),
-            |read_pool| ChatRepository::new_with_read_pool(pool.clone(), read_pool),
-        );
-        let room_password_repo = RoomPasswordRepository::new(pool.clone());
+        let chat_repo = ChatRepository::new_with_read_pool(pool.clone(), read_pool.clone());
+        let room_password_repo =
+            RoomPasswordRepository::new_with_read_pool(pool.clone(), read_pool);
 
         let notification_service = NotificationService::default();
 

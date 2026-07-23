@@ -57,26 +57,6 @@ pub(super) fn proto_room_status_filter(
         .map_err(|_| ApiError::InvalidInput("Unsupported room status".to_string()))
 }
 
-pub(super) fn proto_room_list_sort_by(
-    value: i32,
-) -> Result<synctv_core::models::RoomListSortBy, ApiError> {
-    match synctv_proto::client::RoomListSortBy::try_from(value)
-        .map_err(|_| ApiError::InvalidInput("Unsupported room list sort field".to_string()))?
-    {
-        synctv_proto::client::RoomListSortBy::Unspecified
-        | synctv_proto::client::RoomListSortBy::CreatedAt => {
-            Ok(synctv_core::models::RoomListSortBy::CreatedAt)
-        }
-        synctv_proto::client::RoomListSortBy::Name => Ok(synctv_core::models::RoomListSortBy::Name),
-        synctv_proto::client::RoomListSortBy::UpdatedAt => {
-            Ok(synctv_core::models::RoomListSortBy::UpdatedAt)
-        }
-        synctv_proto::client::RoomListSortBy::LastActivityAt => {
-            Ok(synctv_core::models::RoomListSortBy::LastActivityAt)
-        }
-    }
-}
-
 pub(super) fn proto_my_room_relation(
     value: i32,
 ) -> Result<synctv_core::models::MyRoomRelation, ApiError> {
@@ -141,8 +121,7 @@ pub(super) fn proto_sort_direction(
 pub(super) const DEFAULT_ROOM_PAGE: u32 = 1;
 pub(super) const DEFAULT_ROOM_PAGE_SIZE: u32 = 20;
 pub(super) const MAX_ROOM_PAGE_SIZE: u32 = 100;
-pub(super) const DEFAULT_HOT_ROOM_LIMIT: i64 = 10;
-pub(super) const DEFAULT_HOT_ROOM_LIMIT_USIZE: usize = 10;
+pub(super) const DISCOVERY_FEATURED_ROOM_COUNT: usize = 5;
 
 pub(super) fn validate_room_password_for_set(password: &str) -> Result<(), ApiError> {
     synctv_core::validation::validate_room_password_for_set(password)
@@ -218,24 +197,6 @@ pub(super) fn required_playback_position_seconds(value: f64) -> Result<f64, ApiE
         ));
     }
     Ok(value)
-}
-
-pub(super) fn positive_i64_to_usize(
-    value: i64,
-    default: usize,
-    field: &'static str,
-) -> Result<usize, ApiError> {
-    let value = if value <= 0 {
-        i64::try_from(default)
-            .map_err(|_| ApiError::Internal(format!("{field} default exceeds i64::MAX")))?
-    } else {
-        value
-    };
-    usize::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds usize::MAX")))
-}
-
-pub(super) fn usize_to_i32_api(value: usize, field: &'static str) -> Result<i32, ApiError> {
-    i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
 }
 
 pub(super) fn i64_to_i32_api(value: i64, field: &'static str) -> Result<i32, ApiError> {
@@ -655,8 +616,8 @@ pub(super) async fn chat_message_read_receipts_to_proto(
     })
 }
 
-pub(super) fn build_public_room_list_query(
-    req: synctv_proto::client::ListRoomsRequest,
+pub(super) fn build_room_discovery_query(
+    req: synctv_proto::client::DiscoverRoomsRequest,
     public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomListQuery, ApiError> {
     crate::impls::validate_proto_request(&req)?;
@@ -675,11 +636,8 @@ pub(super) fn build_public_room_list_query(
         is_banned: Some(false),
         category_id: parse_optional_room_category_id(&req.category_id, public_id_codec)?,
         label_ids: parse_room_label_ids(&req.label_ids, public_id_codec)?,
-        sort_by: proto_room_list_sort_by(req.sort_by)?,
-        sort_direction: proto_sort_direction(
-            req.sort_direction,
-            synctv_core::models::SortDirection::Desc,
-        )?,
+        sort_by: synctv_core::models::RoomListSortBy::LastActivityAt,
+        sort_direction: synctv_core::models::SortDirection::Desc,
         ..Default::default()
     })
 }
@@ -743,14 +701,6 @@ pub(super) fn build_transfer_room_ownership_request(
 ) -> Result<UserId, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     crate::impls::proto_validated_user_id(req.new_owner_user_id, public_id_codec)
-}
-
-pub(super) fn build_check_room_request(
-    req: synctv_proto::client::CheckRoomRequest,
-    public_id_codec: &synctv_adapter::PublicIdCodec,
-) -> Result<synctv_core::models::RoomId, ApiError> {
-    crate::impls::validate_proto_request(&req)?;
-    crate::impls::proto_validated_room_id(req.room_id, public_id_codec)
 }
 
 pub fn build_create_websocket_ticket_request(

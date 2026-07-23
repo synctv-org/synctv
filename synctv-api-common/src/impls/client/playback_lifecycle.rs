@@ -32,20 +32,7 @@ pub trait ProviderPlaybackLifecycleApi: Send + Sync {
 
     fn lifecycle_providers_manager(&self) -> Arc<ProvidersManager>;
 
-    fn lifecycle_session_repo(&self) -> Result<ProviderPlaybackSessionRepository, ApiError> {
-        let credential_repo = self
-            .lifecycle_room_service()
-            .media_service()
-            .credential_repo()
-            .ok_or_else(|| {
-                ApiError::Internal(
-                    "provider playback lifecycle requires credential repository wiring".to_string(),
-                )
-            })?;
-        Ok(ProviderPlaybackSessionRepository::new(
-            credential_repo.pool().clone(),
-        ))
-    }
+    fn lifecycle_session_repo(&self) -> ProviderPlaybackSessionRepository;
 
     fn lifecycle_provider_context<'a>(
         &'a self,
@@ -95,7 +82,7 @@ pub trait ProviderPlaybackLifecycleApi: Send + Sync {
                 "provider playback position must be finite and non-negative".to_string(),
             ));
         }
-        let repo = self.lifecycle_session_repo()?;
+        let repo = self.lifecycle_session_repo();
         repo.renew_generation(state.room_id, state.playback_generation, is_paused)
             .await
             .map_err(ApiError::from)?;
@@ -142,7 +129,7 @@ pub trait ProviderPlaybackLifecycleApi: Send + Sync {
         previous: Option<&RoomPlaybackState>,
         current: &RoomPlaybackState,
     ) -> Result<(), ApiError> {
-        let repo = self.lifecycle_session_repo()?;
+        let repo = self.lifecycle_session_repo();
         if let Some(previous) = previous {
             if previous.playback_generation != current.playback_generation {
                 let reason = if current.playing_media_id.is_none()
@@ -231,7 +218,7 @@ pub trait ProviderPlaybackLifecycleApi: Send + Sync {
     }
 
     async fn reap_provider_lifecycle_sessions(&self, force: bool) -> Result<(), ApiError> {
-        let repo = self.lifecycle_session_repo()?;
+        let repo = self.lifecycle_session_repo();
         if force {
             repo.request_all_stop(ProviderPlaybackStopReason::Shutdown)
                 .await
@@ -280,6 +267,10 @@ impl ProviderPlaybackLifecycleApi for ClientApiImpl {
             .providers_manager()
             .clone()
     }
+
+    fn lifecycle_session_repo(&self) -> ProviderPlaybackSessionRepository {
+        ProviderPlaybackSessionRepository::new(self.user_service.pool().clone())
+    }
 }
 
 #[async_trait]
@@ -297,5 +288,9 @@ impl ProviderPlaybackLifecycleApi for AdminApiImpl {
             .media_service()
             .providers_manager()
             .clone()
+    }
+
+    fn lifecycle_session_repo(&self) -> ProviderPlaybackSessionRepository {
+        ProviderPlaybackSessionRepository::new(self.user_service.pool().clone())
     }
 }

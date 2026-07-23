@@ -1256,18 +1256,17 @@ impl OnlinePresenceService {
             .smembers(self.rooms_key())
             .await
             .map_err(|error| Error::Internal(format!("read hot room presence index: {error}")))?;
-        let mut stats = Vec::new();
-        for room_id in room_ids {
-            let Ok(room_id) = room_id.parse::<RoomId>() else {
-                continue;
-            };
-            let Some(stat) = self.redis_room_stats(room_id).await? else {
-                continue;
-            };
-            if stat.online_user_count > 0 {
-                stats.push(stat);
-            }
-        }
+        drop(redis);
+        let mut stats = stream::iter(
+            room_ids
+                .into_iter()
+                .filter_map(|room_id| room_id.parse::<RoomId>().ok()),
+        )
+        .map(|room_id| self.redis_room_stats(room_id))
+        .buffered(PRESENCE_BATCH_CONCURRENCY)
+        .try_filter_map(|stat| async move { Ok(stat.filter(|stat| stat.online_user_count > 0)) })
+        .try_collect::<Vec<_>>()
+        .await?;
         stats.sort_by_key(|stat| (std::cmp::Reverse(stat.online_user_count), stat.room_id));
         Ok(Some(stats))
     }

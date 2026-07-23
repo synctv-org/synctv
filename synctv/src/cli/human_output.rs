@@ -138,7 +138,6 @@ pub(in crate::cli) struct HumanRoom {
     is_banned: bool,
     availability: String,
     version: i64,
-    favorited: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1057,7 +1056,6 @@ impl ToHuman for synctv_proto::client::Room {
             availability: humanize_resource_availability(i64::from(self.availability))
                 .unwrap_or_else(|| self.availability.to_string()),
             version: self.version,
-            favorited: self.favorited,
         }
     }
 }
@@ -1811,17 +1809,6 @@ impl ToHuman for synctv_proto::client::JoinRoomResponse {
             room: self.room.to_human(),
             playback_state: self.playback_state.to_human(),
             members: self.members.to_human(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::client::ListRoomsResponse {
-    type Human = HumanRoomsResponse<HumanRoom>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanRoomsResponse {
-            rooms: self.rooms.to_human(),
-            total: self.total,
         }
     }
 }

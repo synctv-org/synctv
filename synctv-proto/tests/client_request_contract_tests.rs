@@ -753,13 +753,11 @@ fn test_oauth2_provider_type_path_request_rejects_invalid_provider_type() {
 }
 
 #[test]
-fn test_list_rooms_request_rejects_too_long_search() {
-    let request = synctv_proto::client::ListRoomsRequest {
+fn test_discover_rooms_request_rejects_too_long_search() {
+    let request = synctv_proto::client::DiscoverRoomsRequest {
         page: 1,
         page_size: 20,
         search: "a".repeat(101),
-        sort_by: synctv_proto::client::RoomListSortBy::Unspecified as i32,
-        sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
         category_id: String::new(),
         label_ids: Vec::new(),
     };
@@ -779,8 +777,8 @@ fn test_create_room_request_defaults_optional_taxonomy_fields_from_json() {
 }
 
 #[test]
-fn test_list_rooms_request_defaults_taxonomy_filters_from_json() {
-    let request: synctv_proto::client::ListRoomsRequest =
+fn test_discover_rooms_request_defaults_taxonomy_filters_from_json() {
+    let request: synctv_proto::client::DiscoverRoomsRequest =
         serde_json::from_str("{}").expect("request should deserialize");
 
     assert!(request.category_id.is_empty());

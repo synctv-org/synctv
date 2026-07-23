@@ -13,10 +13,12 @@ use tokio_stream::{Stream, StreamExt};
 
 use super::super::websocket::RealtimeTransportFormat;
 use super::query::{
-    parse_watch_delivery_mode, watch_after_event_sequence, WatchPlaylistItemsQuery, WatchQuery,
+    parse_watch_delivery_mode, validate_include_message_types, watch_after_event_sequence,
+    WatchPlaylistItemsQuery, WatchQuery,
 };
 use super::request_metadata;
 use super::{AppResult, AppState, RequestMetadata};
+use crate::http::validation::ProtoQuery;
 use synctv_api_common::impls::messaging::{
     MessageSender, RealtimeJoinError, ResourceWatchSession, ResourceWatchSessionConfig,
 };
@@ -29,28 +31,6 @@ use synctv_proto::source_config::SourceProvider;
 
 struct HttpWatchMessageSender {
     sender: tokio::sync::mpsc::Sender<synctv_proto::client::ServerMessage>,
-}
-
-fn parse_include_message_types(value: Option<&str>) -> AppResult<Vec<i32>> {
-    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(Vec::new());
-    };
-    value
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            let raw = part.parse::<i32>().map_err(|_| {
-                super::super::AppError::bad_request("Invalid includeMessageTypes entry")
-            })?;
-            match synctv_proto::client::ChatMessageType::try_from(raw) {
-                Ok(synctv_proto::client::ChatMessageType::Unspecified) | Err(_) => Err(
-                    super::super::AppError::bad_request("Invalid includeMessageTypes entry"),
-                ),
-                Ok(_) => Ok(raw),
-            }
-        })
-        .collect()
 }
 
 impl MessageSender for HttpWatchMessageSender {
@@ -381,7 +361,7 @@ pub async fn watch_room_members(
             ("roomId" = String, Path, description = "Room ID"),
             ("format" = Option<String>, Query, description = "SSE payload format: json or protobuf"),
             ("afterEventSequence" = Option<i64>, Query, description = "Replay chat events strictly after this durable event sequence"),
-            ("includeMessageTypes" = Option<String>, Query, description = "Comma-separated ChatMessageType enum integers to include. Empty uses default user-visible message types."),
+            ("includeMessageTypes" = Vec<i32>, Query, description = "Repeated ChatMessageType enum integers to include. Empty uses default user-visible message types."),
             ("deliveryMode" = Option<i32>, Query, description = "Resource delivery mode enum integer")
         ),
         responses(
@@ -401,7 +381,7 @@ pub async fn watch_chat_events(
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
     headers: HeaderMap,
-    Query(query): Query<WatchQuery>,
+    ProtoQuery(query): ProtoQuery<WatchQuery>,
 ) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
     let room_id = path.room_id;
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
@@ -410,9 +390,7 @@ pub async fn watch_chat_events(
         delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,
         chat_events: Some(synctv_proto::client::ObserveChatEvents {
             after_event_sequence,
-            include_message_types: parse_include_message_types(
-                query.include_message_types.as_deref(),
-            )?,
+            include_message_types: validate_include_message_types(query.include_message_types)?,
         }),
     };
     let observe = synctv_api_common::impls::messaging::watch_chat_events_observe(request)

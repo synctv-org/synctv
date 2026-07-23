@@ -251,16 +251,10 @@ impl ClientApiImpl {
             .get_room(&room_id)
             .await
             .map_err(ApiError::from)?;
-        if room.is_banned {
-            return Err(ApiError::Authorization(
-                "This room has been banned".to_string(),
-            ));
-        }
-        if room.status.is_closed() {
-            return Err(ApiError::Authorization(
-                "This room is closed and not accepting new connections".to_string(),
-            ));
-        }
+        self.room_service
+            .ensure_guest_room_available(&room)
+            .await
+            .map_err(ApiError::from)?;
 
         let (_, guest_version) = tokio::try_join!(
             async {

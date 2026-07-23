@@ -4,23 +4,38 @@ use sqlx::PgPool;
 
 use crate::{
     models::{RoomId, RoomSettings},
+    repository::pools::RepoPools,
     Error, Result,
 };
 
 #[derive(Clone)]
 pub struct RoomSettingsRepository {
-    pool: PgPool,
+    pools: RepoPools,
 }
 
 impl RoomSettingsRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pools: RepoPools::new(pool),
+        }
+    }
+
+    #[must_use]
+    pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
+        Self {
+            pools: RepoPools::with_read(pool, read_pool),
+        }
     }
 
     #[must_use]
     pub const fn pool(&self) -> &PgPool {
-        &self.pool
+        self.pools.primary()
+    }
+
+    #[must_use]
+    pub fn eventually_consistent_pool(&self) -> &PgPool {
+        self.pools.read()
     }
 
     pub async fn get(&self, room_id: &RoomId) -> Result<RoomSettings> {
@@ -37,7 +52,7 @@ impl RoomSettingsRepository {
             "#,
             room_id as &RoomId,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?;
 
         Ok(row.map_or_else(
@@ -91,7 +106,7 @@ impl RoomSettingsRepository {
     }
 
     pub async fn set_settings(&self, room_id: &RoomId, settings: &RoomSettings) -> Result<()> {
-        self.set_settings_with_executor(room_id, settings, &self.pool)
+        self.set_settings_with_executor(room_id, settings, self.pools.primary())
             .await
     }
 
@@ -104,9 +119,30 @@ impl RoomSettingsRepository {
             .collect())
     }
 
+    pub async fn get_batch_eventually_consistent(
+        &self,
+        room_ids: &[RoomId],
+    ) -> Result<HashMap<RoomId, RoomSettings>> {
+        Ok(self
+            .get_batch_with_version_from_pool(room_ids, self.pools.read())
+            .await?
+            .into_iter()
+            .map(|(room_id, (settings, _version))| (room_id, settings))
+            .collect())
+    }
+
     pub async fn get_batch_with_version(
         &self,
         room_ids: &[RoomId],
+    ) -> Result<HashMap<RoomId, (RoomSettings, i64)>> {
+        self.get_batch_with_version_from_pool(room_ids, self.pools.primary())
+            .await
+    }
+
+    async fn get_batch_with_version_from_pool(
+        &self,
+        room_ids: &[RoomId],
+        pool: &PgPool,
     ) -> Result<HashMap<RoomId, (RoomSettings, i64)>> {
         if room_ids.is_empty() {
             return Ok(HashMap::new());
@@ -121,7 +157,7 @@ impl RoomSettingsRepository {
             "#,
             &ids,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
 
         let mut result = room_ids
@@ -144,7 +180,7 @@ impl RoomSettingsRepository {
             room_id,
             settings,
             expected_version,
-            &self.pool,
+            self.pools.primary(),
         )
         .await
     }
@@ -161,7 +197,7 @@ impl RoomSettingsRepository {
             settings,
             expected_version,
             new_version,
-            &self.pool,
+            self.pools.primary(),
         )
         .await
     }
@@ -270,7 +306,7 @@ impl RoomSettingsRepository {
             "DELETE FROM room_settings WHERE room_id = $1",
             room_id as &RoomId,
         )
-        .execute(&self.pool)
+        .execute(self.pools.primary())
         .await?;
 
         Ok(())

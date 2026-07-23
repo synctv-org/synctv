@@ -1,7 +1,19 @@
 use axum::http::HeaderMap;
 
 use super::AppResult;
-use synctv_proto::client::{GetPlaybackRequest, ResourceDeliveryMode};
+use synctv_proto::client::{ChatMessageType, GetPlaybackRequest, ResourceDeliveryMode};
+
+pub(super) fn validate_include_message_types(values: Vec<i32>) -> AppResult<Vec<i32>> {
+    values
+        .into_iter()
+        .map(|raw| match ChatMessageType::try_from(raw) {
+            Ok(ChatMessageType::Unspecified) | Err(_) => Err(super::super::AppError::bad_request(
+                "Invalid includeMessageTypes entry",
+            )),
+            Ok(_) => Ok(raw),
+        })
+        .collect()
+}
 
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,7 +38,8 @@ pub struct WatchQuery {
     pub delivery_mode: Option<i32>,
     pub format: Option<String>,
     pub after_event_sequence: Option<i64>,
-    pub include_message_types: Option<String>,
+    #[serde(default)]
+    pub include_message_types: Vec<i32>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]

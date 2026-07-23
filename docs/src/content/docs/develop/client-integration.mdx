@@ -36,6 +36,12 @@ OpenAPI 和 protobuf 定义请求、响应和消息结构；客户端还需要�
 | 运维管理 | management gRPC/CLI | 不要把 management 端点暴露给普通客户端。CLI 是日常入口。 |
 | 媒体播放 | Provider 返回的直连 URL 或 SyncTV proxy URL | Provider 决定 header、代理策略和 Range 行为。客户端不要猜测底层上游规则。 |
 
+## 房间发现 API
+
+匿名首页 feed 使用 `GET /api/rooms/discover`，按房间 ID 获取公共卡片使用 `GET /api/rooms/{roomId}/discovery`。公共响应通过 `RoomDiscoveryItem` 返回 `can_join` 与 `GUEST`、`SIGN_IN`、`UNAVAILABLE` 等访问状态，其中 `GUEST` 表示客户端可以直接发起游客身份流程。登录首页使用 `GET /api/user/rooms/discover`，单房间发现使用 `GET /api/user/rooms/{roomId}/discovery`，响应还会返回 `joined`、`favorited` 以及 `ENTER`、`PASSWORD`、`REQUEST_APPROVAL`、`FULL`、`COOLDOWN` 等当前用户访问状态。收藏操作只适用于已经加入的房间。
+
+未筛选的第一页会在 `featured_rooms` 返回最多五个领先房间，`rooms` 从这批精选之后开始，`total` 统计可分页的 `rooms` 序列。搜索、分类和标签筛选会返回空 `featured_rooms`，所有匹配项都通过 `rooms` 分页。用户仅能收藏已加入的房间，客户端应只在 `joined` 为 true 时展示收藏控件。
+
 ## 聊天消息 API
 
 房间聊天是持久化消息系统。HTTP 和 gRPC 负责历史、单条消息、上下文、发送、编辑、删除、附件上传会话和已读状态；实时连接负责订阅之后的消息事件推送。

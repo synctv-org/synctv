@@ -36,6 +36,12 @@ Implement sign-in, room list, ticket creation, Realtime, and playbacks first. Th
 | Operations management | management gRPC or CLI | Do not expose the management endpoint to normal clients. Prefer the CLI. |
 | Media playback | Direct provider URL or SyncTV proxy URL | Providers decide headers, proxy policy, and Range behavior. Clients should not infer upstream rules. |
 
+## Room Discovery API
+
+Use `GET /api/rooms/discover` for the anonymous home feed and `GET /api/rooms/{roomId}/discovery` for one public room card. Public `RoomDiscoveryItem` responses include `can_join` and an access state such as `GUEST`, `SIGN_IN`, or `UNAVAILABLE`; `GUEST` starts the direct guest identity flow. Signed-in clients use `GET /api/user/rooms/discover` and `GET /api/user/rooms/{roomId}/discovery`; these responses also include `joined`, `favorited`, and user-specific access states such as `ENTER`, `PASSWORD`, `REQUEST_APPROVAL`, `FULL`, or `COOLDOWN`. Favorites apply only to rooms the user has joined.
+
+On the unfiltered first page, `featured_rooms` contains up to five leading rooms and `rooms` starts after that featured set. `total` counts the pageable `rooms` sequence. Search, category, and label filters return an empty `featured_rooms` list and paginate every match through `rooms`. A room can be favorited only while the viewer is an active member; clients should expose favorite controls only when `joined` is true.
+
 ## Chat Message API
 
 Room chat is a durable message system. HTTP and gRPC handle history, single-message lookup, context lookup, send, edit, delete, attachment upload sessions, and read state. Realtime connections deliver message events after explicit subscription.

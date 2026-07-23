@@ -697,7 +697,6 @@ impl ManagementServiceImpl {
     async fn client_room_for_favorite_response(
         &self,
         room: &Room,
-        favorited: bool,
     ) -> Result<client_proto::Room, Status> {
         let (settings, member_count, creator) = tokio::join!(
             self.room_service.get_room_settings(&room.id),
@@ -707,15 +706,13 @@ impl ManagementServiceImpl {
         let settings = settings.map_err(map_core_error)?;
         let member_count = member_count.map_err(map_core_error)?;
         let creator = creator.map_err(map_core_error)?;
-        let mut response = created_room_to_client_proto(
+        created_room_to_client_proto(
             room,
             &settings,
             member_count,
             &creator,
             &self.public_id_codec,
-        )?;
-        response.favorited = favorited;
-        Ok(response)
+        )
     }
 
     async fn favorite_room_for_actor(
@@ -732,7 +729,7 @@ impl ManagementServiceImpl {
             .await
             .map_err(map_core_error)?;
         Ok(client_proto::FavoriteRoomResponse {
-            room: Some(self.client_room_for_favorite_response(&room, true).await?),
+            room: Some(self.client_room_for_favorite_response(&room).await?),
         })
     }
 
@@ -750,7 +747,7 @@ impl ManagementServiceImpl {
             .await
             .map_err(map_core_error)?;
         Ok(client_proto::UnfavoriteRoomResponse {
-            room: Some(self.client_room_for_favorite_response(&room, false).await?),
+            room: Some(self.client_room_for_favorite_response(&room).await?),
         })
     }
 
@@ -777,7 +774,7 @@ impl ManagementServiceImpl {
         let rooms_ref = &rooms;
         let response_rooms = stream::iter(0..rooms.len())
             .map(|index| async move {
-                self.client_room_for_favorite_response(&rooms_ref[index], true)
+                self.client_room_for_favorite_response(&rooms_ref[index])
                     .await
             })
             .buffered(MANAGEMENT_ROOM_LOAD_CONCURRENCY)

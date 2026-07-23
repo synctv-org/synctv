@@ -80,6 +80,15 @@ impl UserService {
         self.repository.get_by_ids(user_ids).await
     }
 
+    pub async fn get_users_by_ids_eventually_consistent(
+        &self,
+        user_ids: &[UserId],
+    ) -> Result<Vec<User>> {
+        self.repository
+            .get_by_ids_eventually_consistent(user_ids)
+            .await
+    }
+
     /// Get user by username.
     pub async fn get_user_by_username(&self, username: &str) -> Result<User> {
         let username = Self::canonical_username(username);

@@ -13,12 +13,13 @@ use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::client::User;
 use synctv_proto::client::{
     CloseAccountRequest, CloseAccountResponse, DeletePasskeyRequest, DeletePasskeyResponse,
-    FavoriteRoomRequest, FavoriteRoomResponse, FinishPasskeyBindRequest,
-    FinishSensitiveOperationVerificationRequest, FinishSensitiveOperationVerificationResponse,
+    DiscoverRoomsRequest, DiscoverRoomsResponse, FavoriteRoomRequest, FavoriteRoomResponse,
+    FinishPasskeyBindRequest, FinishSensitiveOperationVerificationRequest,
+    FinishSensitiveOperationVerificationResponse, GetRoomDiscoveryRequest,
     ListFavoriteRoomsRequest, ListFavoriteRoomsResponse, ListMyRoomsResponse, ListPasskeysResponse,
     PasskeyCredential, RequestSensitiveOperationEmailCodeRequest,
-    RequestSensitiveOperationEmailCodeResponse, RoomPathRequest, StartPasskeyBindRequest,
-    StartPasskeyBindResponse, StartSensitiveOperationPasskeyRequest,
+    RequestSensitiveOperationEmailCodeResponse, RoomDiscoveryItem, RoomPathRequest,
+    StartPasskeyBindRequest, StartPasskeyBindResponse, StartSensitiveOperationPasskeyRequest,
     StartSensitiveOperationPasskeyResponse, StartSensitiveOperationVerificationRequest,
     StartSensitiveOperationVerificationResponse, UnfavoriteRoomRequest, UnfavoriteRoomResponse,
 };
@@ -992,6 +993,81 @@ pub async fn list_my_rooms(
             &request_meta,
             EndpointRateLimitCategory::Read,
             |auth| async move { client_api.list_my_rooms(&auth.user_id, req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+/// Discover public rooms with membership, favorite, and access state for the current user.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/user/rooms/discover",
+        tag = "User",
+        params(DiscoverRoomsRequest),
+        responses(
+            (status = 200, description = "Authenticated room discovery", body = DiscoverRoomsResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub async fn discover_rooms(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ProtoQuery(req): ProtoQuery<DiscoverRoomsRequest>,
+) -> AppResult<Json<DiscoverRoomsResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            |auth| async move { client_api.discover_rooms(&auth.user_id, req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+/// Get one public room's discovery card for the current user.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/user/rooms/{roomId}/discovery",
+        tag = "User",
+        params(("roomId" = String, Path, description = "Room ID")),
+        responses(
+            (status = 200, description = "Authenticated room discovery item", body = RoomDiscoveryItem),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Room not found or unavailable", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub async fn get_room_discovery(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(req): Path<GetRoomDiscoveryRequest>,
+) -> AppResult<Json<RoomDiscoveryItem>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            |auth| async move { client_api.get_room_discovery(&auth.user_id, req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;

@@ -62,6 +62,15 @@ impl RoomService {
         self.member_service.count_members_batch(room_ids).await
     }
 
+    pub async fn get_member_count_batch_eventually_consistent(
+        &self,
+        room_ids: &[&RoomId],
+    ) -> Result<std::collections::HashMap<RoomId, i32>> {
+        self.member_repo
+            .count_by_rooms_batch_eventually_consistent(room_ids)
+            .await
+    }
+
     /// Get a specific room member record.
     pub async fn get_member(
         &self,

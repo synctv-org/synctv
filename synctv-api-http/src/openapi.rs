@@ -78,6 +78,8 @@ pub struct GoogleRpcStatusSchema {
         user::finish_passkey_bind,
         user::list_passkeys,
         user::delete_passkey,
+        user::discover_rooms,
+        user::get_room_discovery,
         user::list_my_rooms,
         user::close_account,
         email::request_password_reset,
@@ -300,9 +302,8 @@ pub struct GoogleRpcStatusSchema {
         playback_provider_live_proxy::head_live_proxy_hls_segment,
         websocket::websocket_room_connect_doc,
         room::create_room,
-        room::list_or_get_rooms,
-        room::get_hot_rooms,
-        room::check_room,
+        room::discover_rooms,
+        room::get_room_discovery,
         room::get_room,
         room::join_room,
         room::leave_room,
@@ -516,13 +517,12 @@ pub struct GoogleRpcStatusSchema {
             client::DeleteRoomResponse,
             client::CreateRoomRequest,
             client::Room,
-            client::ListRoomsResponse,
+            client::DiscoverRoomsResponse,
+            client::RoomDiscoveryItem,
             client::RoomCategory,
             client::RoomLabel,
             client::ListRoomCategoriesResponse,
             client::ListRoomLabelsResponse,
-            client::GetHotRoomsResponse,
-            client::CheckRoomResponse,
             client::GetRoomResponse,
             client::JoinRoomRequest,
             client::JoinRoomResponse,
@@ -1091,7 +1091,8 @@ mod tests {
             ("/api/auth/email/confirm", "post"),
             ("/api/auth/opaque/registration/start", "post"),
             ("/api/auth/opaque/registration/finish", "post"),
-            ("/api/rooms", "get"),
+            ("/api/rooms/discover", "get"),
+            ("/api/rooms/{roomId}/discovery", "get"),
         ] {
             assert!(
                 doc["paths"][path][method].get("security").is_none(),
@@ -1106,6 +1107,18 @@ mod tests {
             !notifications_security.is_empty(),
             "authenticated endpoints should keep bearer auth requirements"
         );
+        for path in [
+            "/api/user/rooms/discover",
+            "/api/user/rooms/{roomId}/discovery",
+        ] {
+            let security = doc["paths"][path]["get"]["security"]
+                .as_array()
+                .ok_or_else(|| test_error("user discovery should declare security"))?;
+            assert!(
+                !security.is_empty(),
+                "GET {path} should require bearer auth"
+            );
+        }
         Ok(())
     }
 
@@ -1843,18 +1856,16 @@ mod tests {
         let doc = openapi_json()?;
 
         assert!(
-            doc["paths"]["/api/rooms/hot"]["get"]["responses"]["400"].is_object(),
-            "hot rooms should document validation errors"
+            doc["paths"]["/api/rooms/discover"]["get"]["responses"]["400"].is_object(),
+            "room discovery should document validation errors"
         );
         assert!(
-            doc["paths"]["/api/rooms/{roomId}/check"]["get"]["responses"]["400"].is_object(),
-            "check room should document invalid room IDs"
+            doc["paths"]["/api/rooms/{roomId}/discovery"]["get"]["responses"]["400"].is_object(),
+            "room discovery item should document invalid room IDs"
         );
         assert!(
-            doc["paths"]["/api/rooms/{roomId}/check"]["get"]["responses"]
-                .get("404")
-                .is_none(),
-            "check room returns 200 with exists=false for missing rooms"
+            doc["paths"]["/api/rooms/{roomId}/discovery"]["get"]["responses"]["404"].is_object(),
+            "room discovery item should document missing rooms"
         );
         Ok(())
     }

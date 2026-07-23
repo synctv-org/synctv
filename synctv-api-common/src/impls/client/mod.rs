@@ -47,7 +47,7 @@ mod tests;
 use futures::{future::BoxFuture, stream as futures_stream, StreamExt as _, TryStreamExt as _};
 use std::collections::HashMap;
 use std::sync::Arc;
-use synctv_core::models::{RoomId, RoomPermissionSet, RoomStatus};
+use synctv_core::models::{RoomId, RoomPermissionSet};
 use synctv_core::service::{
     ChatService, ContentReportService, ReviewService, RoomService, UserService,
 };
@@ -913,16 +913,10 @@ impl ClientApiImpl {
             .get_room(&room_id)
             .await
             .map_err(ApiError::from)?;
-        if room.is_banned {
-            return Err(ApiError::Authorization(
-                "This room has been banned".to_string(),
-            ));
-        }
-        if room.status == RoomStatus::Closed {
-            return Err(ApiError::Authorization(
-                "This room is closed and not accepting new connections".to_string(),
-            ));
-        }
+        self.room_service
+            .ensure_guest_room_available(&room)
+            .await
+            .map_err(ApiError::from)?;
 
         let (room_settings, guest_version) = tokio::try_join!(
             async {
@@ -1286,78 +1280,6 @@ impl ClientApiImpl {
             self.execute_public_endpoint_with_control(&metadata, category, operation)
                 .await
         })
-    }
-
-    pub fn execute_optional_user_endpoint<'a, T, E, F, Fut>(
-        &'a self,
-        metadata: &'a RequestMetadata,
-        category: EndpointRateLimitCategory,
-        operation: F,
-    ) -> BoxFuture<'a, Result<T, ApiError>>
-    where
-        T: Send + 'a,
-        E: Into<ApiError> + Send + 'a,
-        F: FnOnce(Option<synctv_core::service::AuthenticatedToken>) -> Fut + Send + 'a,
-        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
-    {
-        self.request_executor().execute_optional_user(
-            metadata,
-            category,
-            move |authenticated| async move { operation(authenticated).await.map_err(Into::into) },
-        )
-    }
-
-    pub fn execute_optional_user_endpoint_with_context<'a, T, E, F, Fut>(
-        &'a self,
-        metadata: &'a RequestMetadata,
-        category: EndpointRateLimitCategory,
-        operation: F,
-    ) -> BoxFuture<'a, Result<T, ApiError>>
-    where
-        T: Send + 'a,
-        E: Into<ApiError> + Send + 'a,
-        F: FnOnce(ApiRequestContext, Option<synctv_core::service::AuthenticatedToken>) -> Fut
-            + Send
-            + 'a,
-        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
-    {
-        self.request_executor().execute_optional_user_with_context(
-            metadata,
-            category,
-            move |request_context, authenticated| async move {
-                operation(request_context, authenticated)
-                    .await
-                    .map_err(Into::into)
-            },
-        )
-    }
-
-    pub fn execute_optional_user_endpoint_with_control<'a, T, E, F, Fut>(
-        &'a self,
-        metadata: &'a RequestMetadata,
-        category: EndpointRateLimitCategory,
-        operation: F,
-    ) -> BoxFuture<'a, Result<T, ApiError>>
-    where
-        T: Send + 'a,
-        E: Into<ApiError> + Send + 'a,
-        F: FnOnce(
-                synctv_core::provider::ExecutionControl,
-                Option<synctv_core::service::AuthenticatedToken>,
-            ) -> Fut
-            + Send
-            + 'a,
-        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
-    {
-        self.request_executor().execute_optional_user_with_control(
-            metadata,
-            category,
-            move |request_control, authenticated| async move {
-                operation(request_control, authenticated)
-                    .await
-                    .map_err(Into::into)
-            },
-        )
     }
 
     pub fn execute_user_endpoint<'a, T, E, F, Fut>(

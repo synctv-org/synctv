@@ -78,6 +78,8 @@ service UserService {
   rpc JoinRoom(JoinRoomRequest) returns (JoinRoomResponse);
   rpc StartRoomPasswordLogin(StartRoomPasswordLoginRequest) returns (StartRoomPasswordLoginResponse);
   rpc FinishRoomPasswordLogin(FinishRoomPasswordLoginRequest) returns (JoinRoomResponse);
+  rpc GetRoomDiscovery(GetRoomDiscoveryRequest) returns (RoomDiscoveryItem);
+  rpc DiscoverRooms(DiscoverRoomsRequest) returns (DiscoverRoomsResponse);
   rpc ListMyRooms(ListMyRoomsRequest) returns (ListMyRoomsResponse);
   rpc FavoriteRoom(FavoriteRoomRequest) returns (FavoriteRoomResponse);
   rpc UnfavoriteRoom(UnfavoriteRoomRequest) returns (UnfavoriteRoomResponse);
@@ -221,9 +223,8 @@ service RoomService {
 // HTTP routes: public room discovery uses /api/rooms/*, public settings uses /api/public/settings,
 // server identity uses /api/public/server-info, server time uses /api/public/time.
 service PublicService {
-  rpc CheckRoom(CheckRoomRequest) returns (CheckRoomResponse);
-  rpc ListRooms(ListRoomsRequest) returns (ListRoomsResponse);
-  rpc GetHotRooms(GetHotRoomsRequest) returns (GetHotRoomsResponse);
+  rpc GetRoomDiscovery(GetRoomDiscoveryRequest) returns (RoomDiscoveryItem);
+  rpc DiscoverRooms(DiscoverRoomsRequest) returns (DiscoverRoomsResponse);
   rpc GetPublicSettings(GetPublicSettingsRequest) returns (GetPublicSettingsResponse);
   rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse);
   rpc GetServerTime(GetServerTimeRequest) returns (GetServerTimeResponse);
@@ -552,7 +553,6 @@ message Room {
   UserPublicView creator = 15;
   RoomCategory category = 16;
   repeated RoomLabel labels = 17;
-  bool favorited = 18;
 }
 
 message RoomCategory {
@@ -1287,6 +1287,7 @@ message GetRoomRequest {
 message GetRoomResponse {
   Room room = 1;
   PlaybackState playback_state = 2;
+  bool favorited = 3;
 }
 
 message JoinRoomRequest {
@@ -1314,14 +1315,14 @@ message LeaveRoomResponse {
   bool success = 1;
 }
 
-message ListRoomsRequest {
+message DiscoverRoomsRequest {
   option (buf.validate.message).cel = {
-    id: "list_rooms.page"
+    id: "discover_rooms.page"
     message: "page must be 0 (use default) or at least 1"
     expression: "this.page == 0 || this.page >= 1"
   };
   option (buf.validate.message).cel = {
-    id: "list_rooms.page_size"
+    id: "discover_rooms.page_size"
     message: "page_size must be 0 (use default) or between 1 and 100"
     expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
   };
@@ -1329,13 +1330,11 @@ message ListRoomsRequest {
   int32 page = 1;
   int32 page_size = 2;
   string search = 3 [(buf.validate.field).string = {max_len: 100}]; // Optional search by name/description
-  RoomListSortBy sort_by = 4 [(buf.validate.field).enum.defined_only = true];
-  SortDirection sort_direction = 5 [(buf.validate.field).enum.defined_only = true];
-  string category_id = 6 [(buf.validate.field).string = {
+  string category_id = 4 [(buf.validate.field).string = {
     max_len: 64
     pattern: "^$|^roomcat_[A-Za-z0-9]+$"
   }];
-  repeated string label_ids = 7 [
+  repeated string label_ids = 5 [
     (buf.validate.field).repeated.max_items = 10,
     (buf.validate.field).repeated.items.string = {
       min_len: 1
@@ -1345,9 +1344,33 @@ message ListRoomsRequest {
   ];
 }
 
-message ListRoomsResponse {
-  repeated Room rooms = 1;
-  int32 total = 2;
+message DiscoverRoomsResponse {
+  repeated RoomDiscoveryItem featured_rooms = 1;
+  repeated RoomDiscoveryItem rooms = 2;
+  int32 total = 3;
+}
+
+enum RoomDiscoveryAccess {
+  ROOM_DISCOVERY_ACCESS_UNSPECIFIED = 0;
+  ROOM_DISCOVERY_ACCESS_ENTER = 1;
+  ROOM_DISCOVERY_ACCESS_JOIN = 2;
+  ROOM_DISCOVERY_ACCESS_PASSWORD = 3;
+  ROOM_DISCOVERY_ACCESS_REQUEST_APPROVAL = 4;
+  ROOM_DISCOVERY_ACCESS_PENDING_APPROVAL = 5;
+  ROOM_DISCOVERY_ACCESS_SIGN_IN = 6;
+  ROOM_DISCOVERY_ACCESS_INVITATION = 7;
+  ROOM_DISCOVERY_ACCESS_FULL = 8;
+  ROOM_DISCOVERY_ACCESS_UNAVAILABLE = 9;
+  ROOM_DISCOVERY_ACCESS_COOLDOWN = 10;
+  ROOM_DISCOVERY_ACCESS_GUEST = 11;
+}
+
+message RoomDiscoveryItem {
+  Room room = 1;
+  bool joined = 2;
+  bool favorited = 3;
+  bool can_join = 4;
+  RoomDiscoveryAccess access = 5;
 }
 
 message ListRoomCategoriesRequest {
@@ -1423,14 +1446,6 @@ enum RoomMemberListSortBy {
   ROOM_MEMBER_LIST_SORT_BY_JOINED_AT = 1;
   ROOM_MEMBER_LIST_SORT_BY_USERNAME = 2;
   ROOM_MEMBER_LIST_SORT_BY_ROLE = 3;
-}
-
-enum RoomListSortBy {
-  ROOM_LIST_SORT_BY_UNSPECIFIED = 0;
-  ROOM_LIST_SORT_BY_CREATED_AT = 1;
-  ROOM_LIST_SORT_BY_UPDATED_AT = 2;
-  ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT = 3;
-  ROOM_LIST_SORT_BY_NAME = 4;
 }
 
 enum PlaylistListSortBy {
@@ -4601,6 +4616,7 @@ message MyRoom {
   uint64 permissions = 2; // User's permissions in this room
   synctv.common.RoomMemberRole role = 3; // Room member role
   MyRoomRelation relation = 4;
+  bool favorited = 5;
 }
 
 message FavoriteRoomRequest {
@@ -4650,7 +4666,7 @@ message ListFavoriteRoomsResponse {
 }
 
 // Room Discovery
-message CheckRoomRequest {
+message GetRoomDiscoveryRequest {
   string room_id = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 64
@@ -4716,32 +4732,6 @@ message RoomPlaylistTargetPathRequest {
     max_len: 64
     pattern: "^pl_[A-Za-z0-9]+$"
   }];
-}
-
-message CheckRoomResponse {
-  bool exists = 1;
-  bool requires_password = 2;
-  string name = 3;
-  ResourceAvailability availability = 4;
-}
-
-message GetHotRoomsRequest {
-  option (buf.validate.message).cel = {
-    id: "get_hot_rooms.limit"
-    message: "limit must be 0 (use default) or between 1 and 50"
-    expression: "this.limit == 0 || (this.limit >= 1 && this.limit <= 50)"
-  };
-  int32 limit = 1;
-}
-
-message GetHotRoomsResponse {
-  repeated RoomWithStats rooms = 1;
-}
-
-message RoomWithStats {
-  Room room = 1;
-  int32 online_count = 2; // Current online users
-  int32 total_members = 3;
 }
 
 // ==================== Public Settings ====================

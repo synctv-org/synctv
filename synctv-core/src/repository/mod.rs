@@ -73,7 +73,7 @@ pub use review::{
     RoomJoinReviewListQuery, RoomJoinReviewRecord, UserRegistrationReviewListQuery,
     UserRegistrationReviewRecord,
 };
-pub use room::RoomRepository;
+pub use room::{RoomDiscoveryViewerState, RoomRepository};
 pub use room_member::RoomMemberRepository;
 pub use room_password::RoomPasswordRepository;
 pub use room_resource_event::{

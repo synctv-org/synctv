@@ -102,6 +102,15 @@ impl RoomService {
         self.taxonomy_repo.list_categories(enabled_only).await
     }
 
+    pub async fn list_room_categories_eventually_consistent(
+        &self,
+        enabled_only: bool,
+    ) -> Result<Vec<RoomCategory>> {
+        self.taxonomy_repo
+            .list_categories_eventually_consistent(enabled_only)
+            .await
+    }
+
     pub async fn list_room_labels(
         &self,
         enabled_only: bool,
@@ -109,6 +118,16 @@ impl RoomService {
     ) -> Result<Vec<RoomLabel>> {
         self.taxonomy_repo
             .list_labels(enabled_only, category_id)
+            .await
+    }
+
+    pub async fn list_room_labels_eventually_consistent(
+        &self,
+        enabled_only: bool,
+        category_id: Option<RoomCategoryId>,
+    ) -> Result<Vec<RoomLabel>> {
+        self.taxonomy_repo
+            .list_labels_eventually_consistent(enabled_only, category_id)
             .await
     }
 
@@ -213,6 +232,26 @@ impl RoomService {
 
         let room_ids: Vec<RoomId> = rooms.iter().map(|room| room.id).collect();
         let labels = self.taxonomy_repo.labels_for_rooms(&room_ids).await?;
+
+        for room in rooms {
+            room.labels = labels.get(&room.id).cloned().unwrap_or_default();
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn hydrate_rooms_taxonomy_eventually_consistent(
+        &self,
+        rooms: &mut [Room],
+    ) -> Result<()> {
+        if rooms.is_empty() {
+            return Ok(());
+        }
+
+        let room_ids: Vec<RoomId> = rooms.iter().map(|room| room.id).collect();
+        let labels = self
+            .taxonomy_repo
+            .labels_for_rooms_eventually_consistent(&room_ids)
+            .await?;
 
         for room in rooms {
             room.labels = labels.get(&room.id).cloned().unwrap_or_default();

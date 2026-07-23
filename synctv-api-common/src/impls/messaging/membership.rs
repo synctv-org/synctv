@@ -1,5 +1,5 @@
 use synctv_core::{
-    models::{RoomId, RoomMember, RoomSettings, RoomStatus, UserId},
+    models::{RoomId, RoomMember, RoomSettings, UserId},
     service::RoomService,
 };
 
@@ -48,13 +48,21 @@ impl<'a> RealtimeMembershipProbe<'a> {
             )
         })?;
 
-        if room.is_banned {
-            return Ok(Some("This room has been banned".to_string()));
-        }
-        if room.status == RoomStatus::Closed {
-            return Ok(Some(
-                "This room is closed and not accepting new connections".to_string(),
-            ));
+        if let Err(error) = self.room_service.ensure_guest_room_available(&room).await {
+            return match guest_policy_error_to_denial_reason(error) {
+                Ok(reason) => Ok(reason),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        room_id = %room_id,
+                        user_id = %user_id,
+                        "Failed to validate guest room availability"
+                    );
+                    Err(RealtimeJoinError::ServiceUnavailable(
+                        "Room availability validation temporarily unavailable".to_string(),
+                    ))
+                }
+            };
         }
 
         let policy_denial = self

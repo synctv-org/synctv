@@ -11,6 +11,7 @@ use crate::{
 };
 
 use super::{
+    pools::RepoPools,
     query_builder::{ilike_contains_pattern, WhereClauseBuilder},
     required_count,
     room_taxonomy::{optional_room_category_from_parts, OptionalRoomCategoryRowParts},
@@ -28,7 +29,7 @@ pub struct KickCooldownInsert<'a> {
 /// Room member repository for database operations
 #[derive(Clone)]
 pub struct RoomMemberRepository {
-    pool: PgPool,
+    pools: RepoPools,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -167,16 +168,30 @@ fn count_i64_to_u64(value: i64, field: &'static str) -> Result<u64> {
 impl RoomMemberRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pools: RepoPools::new(pool),
+        }
+    }
+
+    #[must_use]
+    pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
+        Self {
+            pools: RepoPools::with_read(pool, read_pool),
+        }
     }
 
     #[must_use]
     pub const fn pool(&self) -> &PgPool {
-        &self.pool
+        self.pools.primary()
+    }
+
+    #[must_use]
+    pub fn eventually_consistent_pool(&self) -> &PgPool {
+        self.pools.read()
     }
 
     pub async fn lifecycle_version(&self, room_id: &RoomId, user_id: &UserId) -> Result<i64> {
-        self.lifecycle_version_with_executor(room_id, user_id, &self.pool)
+        self.lifecycle_version_with_executor(room_id, user_id, self.pools.primary())
             .await
     }
 
@@ -428,7 +443,7 @@ impl RoomMemberRepository {
     /// Add user to room with role.
     ///
     pub async fn add(&self, member: &RoomMember) -> Result<RoomMember> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pools.primary().begin().await?;
         let added = self.add_with_executor(member, &mut tx).await?;
         tx.commit().await?;
         Ok(added)
@@ -460,7 +475,7 @@ impl RoomMemberRepository {
         .bind(user_id)
         .bind(counted_before)
         .bind(visited_at)
-        .execute(&self.pool)
+        .execute(self.pools.primary())
         .await?;
 
         Ok(result.rows_affected() == 1)
@@ -555,7 +570,7 @@ impl RoomMemberRepository {
         member: &RoomMember,
         options: &AddMemberOptions,
     ) -> Result<RoomMember> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pools.primary().begin().await?;
         let result = self.add_with_options_tx(member, options, &mut tx).await?;
         tx.commit().await?;
         Ok(result)
@@ -723,7 +738,7 @@ impl RoomMemberRepository {
     /// Used during user deletion/ban to clean up room memberships.
     /// Returns the number of memberships removed.
     pub async fn remove_all_for_user(&self, user_id: &UserId) -> Result<u64> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pools.primary().begin().await?;
         let removed = self
             .remove_all_for_user_with_executor(user_id, &mut tx)
             .await?;
@@ -876,7 +891,7 @@ impl RoomMemberRepository {
 
     /// Delete a user's current room membership.
     pub async fn remove(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pools.primary().begin().await?;
         let removed = self
             .remove_with_version_executor(room_id, user_id, &mut tx)
             .await?
@@ -911,7 +926,7 @@ impl RoomMemberRepository {
             room_id as &RoomId,
             user_id as &UserId,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .map(Self::typed_row_to_member)
         .transpose()?;
@@ -921,7 +936,7 @@ impl RoomMemberRepository {
 
     /// Get current member by ID without applying kick cooldown access filters.
     pub async fn get_any(&self, room_id: &RoomId, user_id: &UserId) -> Result<Option<RoomMember>> {
-        self.get_any_with_executor(room_id, user_id, &self.pool)
+        self.get_any_with_executor(room_id, user_id, self.pools.primary())
             .await
     }
 
@@ -988,7 +1003,7 @@ impl RoomMemberRepository {
              ORDER BY rm.joined_at ASC"#,
             room_id.as_i64()
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pools.primary())
         .await?;
 
         rows.into_iter()
@@ -1057,7 +1072,7 @@ impl RoomMemberRepository {
         }
         let total_count: i64 = count_builder
             .build_query_scalar()
-            .fetch_one(&self.pool)
+            .fetch_one(self.pools.primary())
             .await?;
 
         let mut list_builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
@@ -1101,7 +1116,7 @@ impl RoomMemberRepository {
 
         let rows = list_builder
             .build_query_as::<RoomMemberWithUserRow>()
-            .fetch_all(&self.pool)
+            .fetch_all(self.pools.primary())
             .await?;
         let members: Result<Vec<RoomMemberWithUser>> = rows
             .into_iter()
@@ -1143,7 +1158,7 @@ impl RoomMemberRepository {
              ORDER BY rm.joined_at ASC"#,
             room_id.as_i64()
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pools.primary())
         .await?;
 
         let online_set: std::collections::HashSet<_> = online_user_ids
@@ -1190,7 +1205,7 @@ impl RoomMemberRepository {
             role as RoomRole,
             current_version,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .map(Self::typed_row_to_member)
         .transpose()?;
@@ -1215,7 +1230,7 @@ impl RoomMemberRepository {
             role,
             current_version,
             new_version,
-            &self.pool,
+            self.pools.primary(),
         )
         .await
     }
@@ -1274,7 +1289,7 @@ impl RoomMemberRepository {
             user_id,
             remark_name,
             display_tag,
-            &self.pool,
+            self.pools.primary(),
         )
         .await
     }
@@ -1464,7 +1479,7 @@ impl RoomMemberRepository {
             added_permissions,
             removed_permissions,
             current_version,
-            &self.pool,
+            self.pools.primary(),
         )
         .await
     }
@@ -1487,7 +1502,7 @@ impl RoomMemberRepository {
                 current_version,
                 new_version,
             },
-            &self.pool,
+            self.pools.primary(),
         )
         .await
     }
@@ -1605,7 +1620,7 @@ impl RoomMemberRepository {
             added_permissions,
             removed_permissions,
             current_version,
-            &self.pool,
+            self.pools.primary(),
         )
         .await
     }
@@ -1628,7 +1643,7 @@ impl RoomMemberRepository {
                 current_version,
                 new_version,
             },
-            &self.pool,
+            self.pools.primary(),
         )
         .await
     }
@@ -1761,7 +1776,7 @@ impl RoomMemberRepository {
             user_id as &UserId,
             permission_bits_to_i64(permission)?,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .map(Self::typed_row_to_member)
         .transpose()?;
@@ -1802,7 +1817,7 @@ impl RoomMemberRepository {
             permission_bits_to_i64(permission)?,
             role as RoomRole,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .map(Self::typed_row_to_member)
         .transpose()?;
@@ -1852,7 +1867,7 @@ impl RoomMemberRepository {
             current_version,
             new_version,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .map(Self::typed_row_to_member)
         .transpose()?;
@@ -1893,7 +1908,7 @@ impl RoomMemberRepository {
             user_id as &UserId,
             permission_bits_to_i64(permission)?,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .map(Self::typed_row_to_member)
         .transpose()?;
@@ -1934,7 +1949,7 @@ impl RoomMemberRepository {
             permission_bits_to_i64(permission)?,
             role as RoomRole,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .map(Self::typed_row_to_member)
         .transpose()?;
@@ -1984,7 +1999,7 @@ impl RoomMemberRepository {
             current_version,
             new_version,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .map(Self::typed_row_to_member)
         .transpose()?;
@@ -2025,7 +2040,7 @@ impl RoomMemberRepository {
             user_id as &UserId,
             permission_bits_to_i64(permission)?,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .map(Self::typed_row_to_member)
         .transpose()?;
@@ -2066,7 +2081,7 @@ impl RoomMemberRepository {
             permission_bits_to_i64(permission)?,
             role as RoomRole,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .map(Self::typed_row_to_member)
         .transpose()?;
@@ -2116,7 +2131,7 @@ impl RoomMemberRepository {
             current_version,
             new_version,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .map(Self::typed_row_to_member)
         .transpose()?;
@@ -2157,7 +2172,7 @@ impl RoomMemberRepository {
             user_id as &UserId,
             permission_bits_to_i64(permission)?,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .map(Self::typed_row_to_member)
         .transpose()?;
@@ -2198,7 +2213,7 @@ impl RoomMemberRepository {
             permission_bits_to_i64(permission)?,
             role as RoomRole,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .map(Self::typed_row_to_member)
         .transpose()?;
@@ -2248,7 +2263,7 @@ impl RoomMemberRepository {
             current_version,
             new_version,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .map(Self::typed_row_to_member)
         .transpose()?;
@@ -2290,7 +2305,7 @@ impl RoomMemberRepository {
             user_id as &UserId,
             current_version,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .map(Self::typed_row_to_member)
         .transpose()?;
@@ -2339,7 +2354,7 @@ impl RoomMemberRepository {
             current_version,
             new_version,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .map(Self::typed_row_to_member)
         .transpose()?;
@@ -2370,7 +2385,7 @@ impl RoomMemberRepository {
             room_id as &RoomId,
             user_id as &UserId,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pools.primary())
         .await?;
 
         Ok(exists)
@@ -2390,7 +2405,7 @@ impl RoomMemberRepository {
             room_id as &RoomId,
             user_id as &UserId,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pools.primary())
         .await?;
 
         Ok(exists)
@@ -2469,7 +2484,7 @@ impl RoomMemberRepository {
             "#,
             room_id as &RoomId,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pools.primary())
         .await?;
 
         i32::try_from(count)
@@ -2483,6 +2498,23 @@ impl RoomMemberRepository {
     pub async fn count_by_rooms_batch(
         &self,
         room_ids: &[&RoomId],
+    ) -> Result<std::collections::HashMap<RoomId, i32>> {
+        self.count_by_rooms_batch_from_pool(room_ids, self.pools.primary())
+            .await
+    }
+
+    pub async fn count_by_rooms_batch_eventually_consistent(
+        &self,
+        room_ids: &[&RoomId],
+    ) -> Result<std::collections::HashMap<RoomId, i32>> {
+        self.count_by_rooms_batch_from_pool(room_ids, self.pools.read())
+            .await
+    }
+
+    async fn count_by_rooms_batch_from_pool(
+        &self,
+        room_ids: &[&RoomId],
+        pool: &PgPool,
     ) -> Result<std::collections::HashMap<RoomId, i32>> {
         if room_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
@@ -2505,7 +2537,7 @@ impl RoomMemberRepository {
             "#,
             &ids,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
 
         let mut map = std::collections::HashMap::with_capacity(rows.len());
@@ -2534,7 +2566,7 @@ impl RoomMemberRepository {
             "#,
             user_id as &UserId,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pools.primary())
         .await?;
         let total_count = required_count(total_count, "user room membership total")?;
 
@@ -2551,7 +2583,7 @@ impl RoomMemberRepository {
             limit,
             offset,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pools.primary())
         .await?;
 
         let room_ids = rows.into_iter().map(|row| row.room_id).collect();
@@ -2604,7 +2636,7 @@ impl RoomMemberRepository {
             sqlx::query_scalar::<_, i64>(trusted_dynamic_sql(count_sql)).bind(user_id),
             search_pattern.as_deref(),
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pools.primary())
         .await?;
         let sql = format!(
             r"
@@ -2652,7 +2684,7 @@ impl RoomMemberRepository {
                 .bind(offset),
             search_pattern.as_deref(),
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pools.primary())
         .await?;
 
         let results = rows
@@ -2664,10 +2696,20 @@ impl RoomMemberRepository {
     }
 
     /// List only rooms whose creator is still active.
-    pub async fn list_accessible_by_user_with_query(
+    pub async fn list_accessible_by_user_with_query_eventually_consistent(
         &self,
         user_id: &UserId,
         query: &MyRoomListQuery,
+    ) -> Result<(Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>, i64)> {
+        self.list_accessible_by_user_with_query_from_pool(user_id, query, self.pools.read())
+            .await
+    }
+
+    async fn list_accessible_by_user_with_query_from_pool(
+        &self,
+        user_id: &UserId,
+        query: &MyRoomListQuery,
+        pool: &PgPool,
     ) -> Result<(Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>, i64)> {
         let limit = query.pagination.limit_i64()?;
         let offset = query.pagination.offset_i64()?;
@@ -2688,7 +2730,7 @@ impl RoomMemberRepository {
             sqlx::query_scalar::<_, i64>(trusted_dynamic_sql(count_sql)).bind(user_id),
             search_pattern.as_deref(),
         )
-        .fetch_one(&self.pool)
+        .fetch_one(pool)
         .await?;
         let sql = format!(
             r"
@@ -2736,7 +2778,7 @@ impl RoomMemberRepository {
                 .bind(offset),
             search_pattern.as_deref(),
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
 
         let results = rows
@@ -2768,7 +2810,7 @@ impl RoomMemberRepository {
              ORDER BY rm.joined_at ASC"#,
             room_id.as_i64()
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pools.primary())
         .await?;
 
         rows.into_iter()
@@ -2791,7 +2833,7 @@ impl RoomMemberRepository {
         actor_id: &UserId,
         target_id: &UserId,
     ) -> Result<bool> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pools.primary().begin().await?;
         let removed = self
             .kick_with_role_check_with_executor(room_id, actor_id, target_id, &mut tx)
             .await?;

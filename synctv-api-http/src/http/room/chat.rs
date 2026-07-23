@@ -6,7 +6,7 @@ use axum::{
 use super::execute::execute_room_actor_endpoint;
 use super::types::{ChatMessagePath, ChatReactionPath};
 use crate::http::validation::ProtoQuery;
-use crate::http::{middleware::RequestMetadata, AppError, AppResult, AppState};
+use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use synctv_api_common::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
     ChatMessageEvent, ChatMessageEventResponse, ChatMessageReceive, ChatPinEventResponse,
@@ -20,34 +20,6 @@ use synctv_proto::client::{
     SetChatReactionRequest, UnpinChatMessageRequest,
 };
 
-fn parse_include_message_types(value: &str) -> AppResult<Vec<i32>> {
-    let normalized = value
-        .trim()
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .trim();
-    if normalized.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    normalized
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            let raw = part
-                .parse::<i32>()
-                .map_err(|_| AppError::bad_request("Invalid includeMessageTypes entry"))?;
-            match synctv_proto::client::ChatMessageType::try_from(raw) {
-                Ok(synctv_proto::client::ChatMessageType::Unspecified) | Err(_) => {
-                    Err(AppError::bad_request("Invalid includeMessageTypes entry"))
-                }
-                Ok(_) => Ok(raw),
-            }
-        })
-        .collect()
-}
-
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
@@ -58,7 +30,7 @@ pub struct GetChatHistoryQuery {
     #[serde(default)]
     cursor: String,
     #[serde(default)]
-    include_message_types: String,
+    include_message_types: Vec<i32>,
 }
 
 impl GetChatHistoryQuery {
@@ -66,7 +38,9 @@ impl GetChatHistoryQuery {
         Ok(GetChatHistoryRequest {
             limit: self.limit,
             cursor: self.cursor,
-            include_message_types: parse_include_message_types(&self.include_message_types)?,
+            include_message_types: super::query::validate_include_message_types(
+                self.include_message_types,
+            )?,
         })
     }
 }
@@ -135,7 +109,7 @@ pub struct GetChatPlaybackMessagesQuery {
     #[serde(default)]
     include_deleted: bool,
     #[serde(default)]
-    include_message_types: String,
+    include_message_types: Vec<i32>,
 }
 
 impl GetChatPlaybackMessagesQuery {
@@ -162,7 +136,9 @@ impl GetChatPlaybackMessagesQuery {
             after_seconds: self.after_seconds,
             limit: self.limit,
             include_deleted: self.include_deleted,
-            include_message_types: parse_include_message_types(&self.include_message_types)?,
+            include_message_types: super::query::validate_include_message_types(
+                self.include_message_types,
+            )?,
         })
     }
 }

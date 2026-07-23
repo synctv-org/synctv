@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use sqlx::{PgConnection, PgPool, Postgres, QueryBuilder};
 
 use super::{
+    pools::RepoPools,
     query_builder::ilike_contains_pattern,
     required_count,
     room_taxonomy::{optional_room_category_from_parts, OptionalRoomCategoryRowParts},
@@ -154,10 +155,18 @@ pub struct JoinRoomContext {
     pub password_version: Option<i32>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RoomDiscoveryViewerState {
+    pub joined: bool,
+    pub favorited: bool,
+    pub pending_join_request: bool,
+    pub in_kick_cooldown: bool,
+}
+
 /// Room repository for database operations
 #[derive(Clone)]
 pub struct RoomRepository {
-    pool: PgPool,
+    pools: RepoPools,
 }
 
 const ACCESSIBLE_ROOM_CREATOR_CONDITION: &str =
@@ -180,12 +189,26 @@ fn count_i64_to_i32(count: i64) -> Result<i32> {
 impl RoomRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pools: RepoPools::new(pool),
+        }
+    }
+
+    #[must_use]
+    pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
+        Self {
+            pools: RepoPools::with_read(pool, read_pool),
+        }
     }
 
     #[must_use]
     pub const fn pool(&self) -> &PgPool {
-        &self.pool
+        self.pools.primary()
+    }
+
+    #[must_use]
+    pub fn eventually_consistent_pool(&self) -> &PgPool {
+        self.pools.read()
     }
 
     /// Create a new room.
@@ -193,7 +216,7 @@ impl RoomRepository {
     /// Product policies such as duplicate-name handling belong in the service
     /// layer; this repository method only persists a validated room row.
     pub async fn create(&self, room: &Room) -> Result<Room> {
-        self.create_with_taxonomy_executor(room, None, &self.pool)
+        self.create_with_taxonomy_executor(room, None, self.pools.primary())
             .await
     }
 
@@ -283,7 +306,8 @@ impl RoomRepository {
         creator_id: &UserId,
         name: &str,
     ) -> Result<bool> {
-        Self::active_name_exists_for_creator_with_executor(creator_id, name, &self.pool).await
+        Self::active_name_exists_for_creator_with_executor(creator_id, name, self.pools.primary())
+            .await
     }
 
     pub async fn active_name_exists_for_creator_with_executor<'e, E>(
@@ -349,7 +373,7 @@ impl RoomRepository {
             "#,
             room_id as &RoomId
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?;
 
         Ok(room.map(Into::into))
@@ -404,8 +428,25 @@ impl RoomRepository {
         Ok(room.map(Into::into))
     }
 
-    /// Get active, non-banned rooms by ID.
     pub async fn list_active_unbanned_by_ids(&self, room_ids: &[RoomId]) -> Result<Vec<Room>> {
+        self.list_active_unbanned_by_ids_from_pool(room_ids, self.pools.primary())
+            .await
+    }
+
+    /// Eventually consistent room lookup for public discovery projections.
+    pub async fn list_active_unbanned_by_ids_eventually_consistent(
+        &self,
+        room_ids: &[RoomId],
+    ) -> Result<Vec<Room>> {
+        self.list_active_unbanned_by_ids_from_pool(room_ids, self.pools.read())
+            .await
+    }
+
+    async fn list_active_unbanned_by_ids_from_pool(
+        &self,
+        room_ids: &[RoomId],
+        pool: &PgPool,
+    ) -> Result<Vec<Room>> {
         if room_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -453,7 +494,7 @@ impl RoomRepository {
             "#,
             &ids
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
@@ -477,7 +518,7 @@ impl RoomRepository {
     /// BEFORE UPDATE trigger, so we omit it from the SET clause.
     pub async fn update(&self, room: &Room, old_version: i32) -> Result<Room> {
         let category_id = room.category.as_ref().map(|category| category.id);
-        self.update_with_taxonomy_executor(room, category_id, old_version, &self.pool)
+        self.update_with_taxonomy_executor(room, category_id, old_version, self.pools.primary())
             .await
     }
 
@@ -594,7 +635,7 @@ impl RoomRepository {
             room_id as &RoomId,
             crate::SystemClock.now(),
         )
-        .execute(&self.pool)
+        .execute(self.pools.primary())
         .await?;
 
         Ok(result.rows_affected() > 0)
@@ -602,7 +643,7 @@ impl RoomRepository {
 
     /// Hard delete room (used for cleanup of partially created rooms).
     pub async fn hard_delete(&self, room_id: &RoomId) -> Result<bool> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pools.primary().begin().await?;
         let deleted =
             super::room_cleanup::hard_delete_room_and_cleanup_in_tx(&mut tx, room_id).await?;
         tx.commit().await?;
@@ -751,10 +792,69 @@ impl RoomRepository {
         }
     }
 
-    /// List rooms with pagination and filters
-    pub async fn list(&self, query: &RoomListQuery) -> Result<(Vec<Room>, i64)> {
-        let limit = query.pagination.limit_i64()?;
-        let offset = query.pagination.offset_i64()?;
+    fn push_excluded_room_ids(
+        builder: &mut QueryBuilder<Postgres>,
+        excluded_room_ids: &[RoomId],
+        has_condition: &mut bool,
+    ) {
+        if excluded_room_ids.is_empty() {
+            return;
+        }
+        let ids = excluded_room_ids
+            .iter()
+            .map(RoomId::as_i64)
+            .collect::<Vec<_>>();
+        Self::push_where_prefix(builder, has_condition);
+        builder.push("r.id <> ALL(").push_bind(ids).push(")");
+    }
+
+    pub async fn list_window_excluding(
+        &self,
+        query: &RoomListQuery,
+        excluded_room_ids: &[RoomId],
+        offset: u64,
+        limit: u64,
+    ) -> Result<(Vec<Room>, i64)> {
+        self.list_window_excluding_from_pool(
+            query,
+            excluded_room_ids,
+            offset,
+            limit,
+            self.pools.primary(),
+        )
+        .await
+    }
+
+    /// Eventually consistent paginated room window for discovery feeds.
+    pub async fn list_window_excluding_eventually_consistent(
+        &self,
+        query: &RoomListQuery,
+        excluded_room_ids: &[RoomId],
+        offset: u64,
+        limit: u64,
+    ) -> Result<(Vec<Room>, i64)> {
+        self.list_window_excluding_from_pool(
+            query,
+            excluded_room_ids,
+            offset,
+            limit,
+            self.pools.read(),
+        )
+        .await
+    }
+
+    async fn list_window_excluding_from_pool(
+        &self,
+        query: &RoomListQuery,
+        excluded_room_ids: &[RoomId],
+        offset: u64,
+        limit: u64,
+        pool: &PgPool,
+    ) -> Result<(Vec<Room>, i64)> {
+        let offset = i64::try_from(offset)
+            .map_err(|_| Error::InvalidInput("room list offset is too large".to_string()))?;
+        let limit = i64::try_from(limit)
+            .map_err(|_| Error::InvalidInput("room list limit is too large".to_string()))?;
         let search_pattern = query.search.as_deref().and_then(ilike_contains_pattern);
 
         let mut count_builder = QueryBuilder::<Postgres>::new("SELECT COUNT(*) FROM rooms r");
@@ -765,10 +865,8 @@ impl RoomRepository {
             search_pattern.as_ref(),
             &mut has_condition,
         );
-        let count: i64 = count_builder
-            .build_query_scalar()
-            .fetch_one(&self.pool)
-            .await?;
+        Self::push_excluded_room_ids(&mut count_builder, excluded_room_ids, &mut has_condition);
+        let count: i64 = count_builder.build_query_scalar().fetch_one(pool).await?;
 
         let mut list_builder = QueryBuilder::<Postgres>::new("SELECT ");
         Self::push_room_projection(&mut list_builder);
@@ -780,6 +878,7 @@ impl RoomRepository {
             search_pattern.as_ref(),
             &mut has_condition,
         );
+        Self::push_excluded_room_ids(&mut list_builder, excluded_room_ids, &mut has_condition);
         list_builder
             .push(" ORDER BY ")
             .push(Self::order_by_sql(query))
@@ -789,13 +888,118 @@ impl RoomRepository {
             .push_bind(offset);
         let rooms = list_builder
             .build_query_as::<RoomRow>()
-            .fetch_all(&self.pool)
+            .fetch_all(pool)
             .await?
             .into_iter()
             .map(Into::into)
             .collect();
 
         Ok((rooms, count))
+    }
+
+    /// Eventually consistent ranked room window for discovery feeds.
+    pub async fn list_ranked_window_eventually_consistent(
+        &self,
+        query: &RoomListQuery,
+        ranked_room_ids: &[RoomId],
+        offset: u64,
+        limit: u64,
+    ) -> Result<(Vec<Room>, i64)> {
+        self.list_ranked_window_from_pool(query, ranked_room_ids, offset, limit, self.pools.read())
+            .await
+    }
+
+    async fn list_ranked_window_from_pool(
+        &self,
+        query: &RoomListQuery,
+        ranked_room_ids: &[RoomId],
+        offset: u64,
+        limit: u64,
+        pool: &PgPool,
+    ) -> Result<(Vec<Room>, i64)> {
+        if ranked_room_ids.is_empty() {
+            return Ok((Vec::new(), 0));
+        }
+
+        let offset = i64::try_from(offset)
+            .map_err(|_| Error::InvalidInput("ranked room offset is too large".to_string()))?;
+        let limit = i64::try_from(limit)
+            .map_err(|_| Error::InvalidInput("ranked room limit is too large".to_string()))?;
+        let ranked_ids = ranked_room_ids
+            .iter()
+            .map(RoomId::as_i64)
+            .collect::<Vec<_>>();
+        let search_pattern = query.search.as_deref().and_then(ilike_contains_pattern);
+
+        let mut count_builder = QueryBuilder::<Postgres>::new(
+            "WITH ranked AS (
+                SELECT room_id, rank
+                FROM unnest(",
+        );
+        count_builder.push_bind(ranked_ids.clone()).push(
+            "::bigint[]) WITH ORDINALITY AS ranked(room_id, rank)
+             )
+             SELECT COUNT(*)
+             FROM ranked
+             JOIN rooms r ON r.id = ranked.room_id",
+        );
+        let mut has_condition = false;
+        Self::push_room_list_filters(
+            &mut count_builder,
+            query,
+            search_pattern.as_ref(),
+            &mut has_condition,
+        );
+        let count: i64 = count_builder.build_query_scalar().fetch_one(pool).await?;
+
+        let mut list_builder = QueryBuilder::<Postgres>::new(
+            "WITH ranked AS (
+                SELECT room_id, rank
+                FROM unnest(",
+        );
+        list_builder.push_bind(ranked_ids).push(
+            "::bigint[]) WITH ORDINALITY AS ranked(room_id, rank)
+             )
+             SELECT ",
+        );
+        Self::push_room_projection(&mut list_builder);
+        list_builder.push(
+            " FROM ranked
+              JOIN rooms r ON r.id = ranked.room_id
+              LEFT JOIN room_categories rc ON rc.id = r.category_id",
+        );
+        let mut has_condition = false;
+        Self::push_room_list_filters(
+            &mut list_builder,
+            query,
+            search_pattern.as_ref(),
+            &mut has_condition,
+        );
+        list_builder
+            .push(" ORDER BY ranked.rank LIMIT ")
+            .push_bind(limit)
+            .push(" OFFSET ")
+            .push_bind(offset);
+        let rooms = list_builder
+            .build_query_as::<RoomRow>()
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect();
+
+        Ok((rooms, count))
+    }
+
+    /// List rooms with pagination and filters
+    pub async fn list(&self, query: &RoomListQuery) -> Result<(Vec<Room>, i64)> {
+        self.list_window_excluding(
+            query,
+            &[],
+            query.pagination.offset(),
+            query.pagination.limit(),
+        )
+        .await
     }
 
     /// List only rooms whose creator is still active.
@@ -816,7 +1020,7 @@ impl RoomRepository {
         count_builder.push(ACCESSIBLE_ROOM_CREATOR_CONDITION);
         let count: i64 = count_builder
             .build_query_scalar()
-            .fetch_one(&self.pool)
+            .fetch_one(self.pools.primary())
             .await?;
 
         let mut list_builder = QueryBuilder::<Postgres>::new("SELECT ");
@@ -840,7 +1044,7 @@ impl RoomRepository {
             .push_bind(offset);
         let rooms = list_builder
             .build_query_as::<RoomRow>()
-            .fetch_all(&self.pool)
+            .fetch_all(self.pools.primary())
             .await?
             .into_iter()
             .map(Into::into)
@@ -882,7 +1086,7 @@ impl RoomRepository {
         );
         let count: i64 = count_builder
             .build_query_scalar()
-            .fetch_one(&self.pool)
+            .fetch_one(self.pools.primary())
             .await?;
 
         let mut list_builder = QueryBuilder::<Postgres>::new("SELECT ");
@@ -917,7 +1121,7 @@ impl RoomRepository {
             .push_bind(offset);
         let rooms = list_builder
             .build_query_as::<RoomRow>()
-            .fetch_all(&self.pool)
+            .fetch_all(self.pools.primary())
             .await?
             .into_iter()
             .map(Into::into)
@@ -927,7 +1131,7 @@ impl RoomRepository {
     }
 
     pub async fn favorite_for_user(&self, user_id: &UserId, room_id: &RoomId) -> Result<()> {
-        let affected = sqlx::query(
+        let affected = sqlx::query!(
             "INSERT INTO room_favorites (user_id, room_id)
              SELECT rm.user_id, rm.room_id
              FROM room_members rm
@@ -936,10 +1140,10 @@ impl RoomRepository {
                AND rm.room_id = $2
                AND r.deleted_at IS NULL
              ON CONFLICT (user_id, room_id) DO NOTHING",
+            user_id as &UserId,
+            room_id as &RoomId,
         )
-        .bind(user_id)
-        .bind(room_id)
-        .execute(&self.pool)
+        .execute(self.pools.primary())
         .await?
         .rows_affected();
 
@@ -960,35 +1164,35 @@ impl RoomRepository {
             return Err(Error::NotFound(format!("Room {room_id} not found")));
         }
 
-        sqlx::query(
+        sqlx::query!(
             "DELETE FROM room_favorites
              WHERE user_id = $1 AND room_id = $2",
+            user_id as &UserId,
+            room_id as &RoomId,
         )
-        .bind(user_id)
-        .bind(room_id)
-        .execute(&self.pool)
+        .execute(self.pools.primary())
         .await?;
         Ok(())
     }
 
     async fn is_current_member(&self, user_id: &UserId, room_id: &RoomId) -> Result<bool> {
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (
+        let exists = sqlx::query_scalar!(
+            r#"SELECT EXISTS (
                 SELECT 1
                 FROM room_members
                 WHERE user_id = $1 AND room_id = $2
-             )",
+             ) AS "exists!""#,
+            user_id as &UserId,
+            room_id as &RoomId,
         )
-        .bind(user_id)
-        .bind(room_id)
-        .fetch_one(&self.pool)
+        .fetch_one(self.pools.primary())
         .await?;
         Ok(exists)
     }
 
     pub async fn is_favorited_by_user(&self, user_id: &UserId, room_id: &RoomId) -> Result<bool> {
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (
+        let exists = sqlx::query_scalar!(
+            r#"SELECT EXISTS (
                 SELECT 1
                 FROM room_favorites rf
                 WHERE rf.user_id = $1
@@ -998,27 +1202,37 @@ impl RoomRepository {
                       FROM room_members rm
                       WHERE rm.user_id = rf.user_id AND rm.room_id = rf.room_id
                   )
-             )",
+             ) AS "exists!""#,
+            user_id as &UserId,
+            room_id as &RoomId,
         )
-        .bind(user_id)
-        .bind(room_id)
-        .fetch_one(&self.pool)
+        .fetch_one(self.pools.primary())
         .await?;
         Ok(exists)
     }
 
-    pub async fn favorite_room_ids_for_user(
+    pub async fn favorite_room_ids_for_user_eventually_consistent(
         &self,
         user_id: &UserId,
         room_ids: &[RoomId],
+    ) -> Result<HashSet<RoomId>> {
+        self.favorite_room_ids_for_user_from_pool(user_id, room_ids, self.pools.read())
+            .await
+    }
+
+    async fn favorite_room_ids_for_user_from_pool(
+        &self,
+        user_id: &UserId,
+        room_ids: &[RoomId],
+        pool: &PgPool,
     ) -> Result<HashSet<RoomId>> {
         if room_ids.is_empty() {
             return Ok(HashSet::new());
         }
 
         let ids: Vec<i64> = room_ids.iter().map(RoomId::as_i64).collect();
-        let rows: Vec<RoomId> = sqlx::query_scalar(
-            "SELECT room_id
+        let rows = sqlx::query_scalar!(
+            r#"SELECT room_id AS "room_id!: RoomId"
              FROM room_favorites rf
              WHERE rf.user_id = $1
                AND rf.room_id = ANY($2)
@@ -1026,13 +1240,90 @@ impl RoomRepository {
                    SELECT 1
                    FROM room_members rm
                    WHERE rm.user_id = rf.user_id AND rm.room_id = rf.room_id
-               )",
+               )"#,
+            user_id as &UserId,
+            &ids,
         )
-        .bind(user_id)
-        .bind(ids)
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
         Ok(rows.into_iter().collect())
+    }
+
+    pub async fn discovery_viewer_states_eventually_consistent(
+        &self,
+        viewer_id: &UserId,
+        room_ids: &[RoomId],
+    ) -> Result<std::collections::HashMap<RoomId, RoomDiscoveryViewerState>> {
+        self.discovery_viewer_states_from_pool(viewer_id, room_ids, self.pools.read())
+            .await
+    }
+
+    pub async fn discovery_viewer_states(
+        &self,
+        viewer_id: &UserId,
+        room_ids: &[RoomId],
+    ) -> Result<std::collections::HashMap<RoomId, RoomDiscoveryViewerState>> {
+        self.discovery_viewer_states_from_pool(viewer_id, room_ids, self.pools.primary())
+            .await
+    }
+
+    async fn discovery_viewer_states_from_pool(
+        &self,
+        viewer_id: &UserId,
+        room_ids: &[RoomId],
+        pool: &PgPool,
+    ) -> Result<std::collections::HashMap<RoomId, RoomDiscoveryViewerState>> {
+        if room_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let ids = room_ids.iter().map(RoomId::as_i64).collect::<Vec<_>>();
+        let rows = sqlx::query!(
+            r#"
+            SELECT r.id AS "room_id!: RoomId",
+                   EXISTS (
+                       SELECT 1 FROM room_members rm
+                       WHERE rm.room_id = r.id AND rm.user_id = $2
+                   ) AS "joined!",
+                   EXISTS (
+                       SELECT 1 FROM room_favorites rf
+                       WHERE rf.room_id = r.id AND rf.user_id = $2
+                   ) AS "favorited!",
+                   EXISTS (
+                       SELECT 1 FROM room_join_requests request
+                       WHERE request.room_id = r.id
+                         AND request.user_id = $2
+                         AND request.reviewed_at IS NULL
+                   ) AS "pending_join_request!",
+                   EXISTS (
+                       SELECT 1 FROM room_member_kick_cooldowns cooldown
+                       WHERE cooldown.room_id = r.id
+                         AND cooldown.user_id = $2
+                         AND cooldown.ends_at > CURRENT_TIMESTAMP
+                   ) AS "in_kick_cooldown!"
+            FROM rooms r
+            WHERE r.id = ANY($1)
+            "#,
+            &ids,
+            viewer_id as &UserId,
+        )
+        .fetch_all(pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.room_id,
+                    RoomDiscoveryViewerState {
+                        joined: row.joined,
+                        favorited: row.joined && row.favorited,
+                        pending_join_request: row.pending_join_request,
+                        in_kick_cooldown: row.in_kick_cooldown,
+                    },
+                )
+            })
+            .collect())
     }
 
     pub async fn list_favorites_for_user(
@@ -1073,7 +1364,7 @@ impl RoomRepository {
         count_builder.push(ACCESSIBLE_ROOM_CREATOR_CONDITION);
         let count: i64 = count_builder
             .build_query_scalar()
-            .fetch_one(&self.pool)
+            .fetch_one(self.pools.primary())
             .await?;
 
         let mut list_builder = QueryBuilder::<Postgres>::new("SELECT ");
@@ -1107,7 +1398,7 @@ impl RoomRepository {
             .push_bind(offset);
         let rooms = list_builder
             .build_query_as::<RoomRow>()
-            .fetch_all(&self.pool)
+            .fetch_all(self.pools.primary())
             .await?
             .into_iter()
             .map(Into::into)
@@ -1136,7 +1427,7 @@ impl RoomRepository {
         );
         let count: i64 = count_builder
             .build_query_scalar()
-            .fetch_one(&self.pool)
+            .fetch_one(self.pools.primary())
             .await?;
 
         let mut list_builder = QueryBuilder::<Postgres>::new("SELECT ");
@@ -1171,7 +1462,7 @@ impl RoomRepository {
 
         let rooms_with_count = list_builder
             .build_query_as::<RoomWithCountRow>()
-            .fetch_all(&self.pool)
+            .fetch_all(self.pools.primary())
             .await?
             .into_iter()
             .map(Into::into)
@@ -1192,7 +1483,7 @@ impl RoomRepository {
             "#,
             room_id as &RoomId,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pools.primary())
         .await?;
 
         Ok(exists)
@@ -1222,7 +1513,7 @@ impl RoomRepository {
             "#,
             room_id as &RoomId,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pools.primary())
         .await?;
 
         Ok(exists)
@@ -1239,7 +1530,7 @@ impl RoomRepository {
             ",
                 room_id as &RoomId,
             )
-            .fetch_one(&self.pool)
+            .fetch_one(self.pools.primary())
             .await?,
             "room member",
         )?;
@@ -1263,7 +1554,7 @@ impl RoomRepository {
              WHERE created_by = $1 AND deleted_at IS NULL",
                 creator_id as &UserId,
             )
-            .fetch_one(&self.pool)
+            .fetch_one(self.pools.primary())
             .await?,
             "rooms by creator",
         )?;
@@ -1306,7 +1597,7 @@ impl RoomRepository {
             limit,
             offset
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pools.primary())
         .await?
         .into_iter()
         .map(Into::into)
@@ -1331,7 +1622,7 @@ impl RoomRepository {
              WHERE created_by = $1 AND deleted_at IS NULL",
                 creator_id as &UserId,
             )
-            .fetch_one(&self.pool)
+            .fetch_one(self.pools.primary())
             .await?,
             "rooms by creator with count",
         )?;
@@ -1380,7 +1671,7 @@ impl RoomRepository {
             limit,
             offset
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pools.primary())
         .await?;
 
         let rooms_with_count = rows
@@ -1478,7 +1769,7 @@ impl RoomRepository {
             closed_at,
             room_id as &RoomId
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .ok_or_else(|| crate::Error::NotFound(format!("Room {room_id} not found")))?;
         Ok(room.into())
@@ -1486,7 +1777,7 @@ impl RoomRepository {
 
     /// Update room ban policy using `room_bans`.
     pub async fn update_ban_status(&self, room_id: &RoomId, is_banned: bool) -> Result<Room> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pools.primary().begin().await?;
         let room = Self::update_ban_status_with_executor(room_id, is_banned, &mut tx).await?;
         tx.commit().await?;
         Ok(room)
@@ -1632,7 +1923,7 @@ impl RoomRepository {
             description,
             room_id as &RoomId
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .ok_or_else(|| crate::Error::NotFound(format!("Room {room_id} not found")))?;
 
@@ -1713,7 +2004,7 @@ impl RoomRepository {
             "UPDATE rooms SET last_activity_at = CURRENT_TIMESTAMP WHERE id = $1 AND deleted_at IS NULL",
             room_id as &RoomId,
         )
-        .execute(&self.pool)
+        .execute(self.pools.primary())
         .await?;
         Ok(())
     }
@@ -1782,7 +2073,7 @@ impl RoomRepository {
             room_id as &RoomId,
             user_id as &UserId
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?;
 
         let Some(row) = row else { return Ok(None) };

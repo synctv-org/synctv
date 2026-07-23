@@ -683,36 +683,6 @@ fn test_room_to_proto_banned() -> TestResult {
 }
 
 #[test]
-fn test_hot_room_embedded_room_member_count_uses_total_member_count() -> TestResult {
-    let public_id_codec = test_public_id_codec();
-    let room = make_test_room(RoomStatus::Active);
-    let settings = synctv_core::models::RoomSettings::default();
-    let online_count = 3;
-    let total_members = 17;
-
-    let proto = api_ok(hot_room_to_proto(
-        &room,
-        Some(&settings),
-        online_count,
-        total_members,
-        &public_id_codec,
-    ))?;
-    let embedded_room = proto
-        .room
-        .as_ref()
-        .ok_or_else(|| test_error("hot room should include embedded room"))?;
-
-    assert_eq!(
-        embedded_room.member_count, total_members,
-        "embedded Room.member_count should reflect total active members"
-    );
-    assert_eq!(proto.online_count, online_count);
-    assert_eq!(proto.total_members, total_members);
-    assert_ne!(embedded_room.member_count, online_count);
-    Ok(())
-}
-
-#[test]
 fn test_playback_state_to_proto() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let state = synctv_core::models::RoomPlaybackState {

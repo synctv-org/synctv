@@ -186,6 +186,8 @@ serde_yaml = "=0.9.34"
 serde_ignored = "=0.1.14"
 toml = "=1.1.2"
 serde_urlencoded = "=0.7.1"
+serde_html_form = "=0.4.1"
+serde_path_to_error = "=0.1.20"
 indexmap = "=2.14.0"
 bincode = { version = "=2.0.1", features = ["serde"] }
 

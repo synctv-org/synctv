@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (\n                SELECT 1\n                FROM room_favorites rf\n                WHERE rf.user_id = $1\n                  AND rf.room_id = $2\n                  AND EXISTS (\n                      SELECT 1\n                      FROM room_members rm\n                      WHERE rm.user_id = rf.user_id AND rm.room_id = rf.room_id\n                  )\n             ) AS \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e57dbe1a33b43691981fe022cde79a71a8373b2a7abf02d7d2c4136cee27d60c"
+}

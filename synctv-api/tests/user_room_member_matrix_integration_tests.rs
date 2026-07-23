@@ -906,25 +906,64 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .await
         .unwrap();
 
-    let public_rooms = client_api
-        .list_rooms(
-            synctv_proto::client::ListRoomsRequest {
+    let joined_room_public_id = public_id_codec()
+        .encode_room_id(joined_room.id)
+        .expect("joined room public id");
+    client_api
+        .favorite_room(
+            &actor.id,
+            synctv_proto::client::FavoriteRoomRequest {
+                room_id: joined_room_public_id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let authenticated_rooms = client_api
+        .discover_rooms(
+            &actor.id,
+            synctv_proto::client::DiscoverRoomsRequest {
                 page: 1,
                 page_size: 20,
                 search: "Matrix".to_string(),
-                sort_by: synctv_proto::client::RoomListSortBy::Name as i32,
-                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
                 category_id: String::new(),
                 label_ids: Vec::new(),
             },
-            None,
         )
+        .await
+        .unwrap();
+    let joined_discovery = authenticated_rooms
+        .featured_rooms
+        .iter()
+        .chain(authenticated_rooms.rooms.iter())
+        .find(|item| {
+            item.room
+                .as_ref()
+                .is_some_and(|room| room.id == joined_room_public_id)
+        })
+        .expect("authenticated discovery should contain joined room");
+    assert!(joined_discovery.joined);
+    assert!(joined_discovery.favorited);
+    assert!(!joined_discovery.can_join);
+    assert_eq!(
+        joined_discovery.access,
+        synctv_proto::client::RoomDiscoveryAccess::Enter as i32
+    );
+
+    let public_rooms = client_api
+        .discover_public_rooms(synctv_proto::client::DiscoverRoomsRequest {
+            page: 1,
+            page_size: 20,
+            search: "Matrix".to_string(),
+            category_id: String::new(),
+            label_ids: Vec::new(),
+        })
         .await
         .unwrap();
     let public_names: Vec<&str> = public_rooms
         .rooms
         .iter()
-        .map(|room| room.name.as_str())
+        .filter_map(|item| item.room.as_ref().map(|room| room.name.as_str()))
         .collect();
     assert!(public_names.contains(&"Matrix Public Room"));
     assert!(public_names.contains(&"Matrix Joined Count Room"));

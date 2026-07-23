@@ -236,6 +236,15 @@ impl UserRepository {
 
     /// Get multiple users by IDs in a single batch query
     pub async fn get_by_ids(&self, user_ids: &[UserId]) -> Result<Vec<User>> {
+        self.get_by_ids_from_pool(user_ids, self.pool()).await
+    }
+
+    pub async fn get_by_ids_eventually_consistent(&self, user_ids: &[UserId]) -> Result<Vec<User>> {
+        self.get_by_ids_from_pool(user_ids, self.eventually_consistent_pool())
+            .await
+    }
+
+    async fn get_by_ids_from_pool(&self, user_ids: &[UserId], pool: &PgPool) -> Result<Vec<User>> {
         if user_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -266,7 +275,7 @@ impl UserRepository {
             "#,
             &ids
         )
-        .fetch_all(self.pool())
+        .fetch_all(pool)
         .await?;
 
         Ok(users)

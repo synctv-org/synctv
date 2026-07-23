@@ -7,6 +7,7 @@ use crate::{
         RoomCategory, RoomCategoryId, RoomId, RoomLabel, RoomLabelId, UpsertRoomCategory,
         UpsertRoomLabel, UserId,
     },
+    repository::pools::RepoPools,
     Result,
 };
 
@@ -139,13 +140,32 @@ pub struct RoomTaxonomyAssignment {
 
 #[derive(Clone)]
 pub struct RoomTaxonomyRepository {
-    pool: PgPool,
+    pools: RepoPools,
 }
 
 impl RoomTaxonomyRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pools: RepoPools::new(pool),
+        }
+    }
+
+    #[must_use]
+    pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
+        Self {
+            pools: RepoPools::with_read(pool, read_pool),
+        }
+    }
+
+    #[must_use]
+    pub const fn pool(&self) -> &PgPool {
+        self.pools.primary()
+    }
+
+    #[must_use]
+    pub fn eventually_consistent_pool(&self) -> &PgPool {
+        self.pools.read()
     }
 
     pub async fn category_id_by_key(&self, key: &str) -> Result<Option<RoomCategoryId>> {
@@ -157,12 +177,29 @@ impl RoomTaxonomyRepository {
             "#,
             key
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?;
         Ok(id)
     }
 
     pub async fn list_categories(&self, enabled_only: bool) -> Result<Vec<RoomCategory>> {
+        self.list_categories_from_pool(enabled_only, self.pools.primary())
+            .await
+    }
+
+    pub async fn list_categories_eventually_consistent(
+        &self,
+        enabled_only: bool,
+    ) -> Result<Vec<RoomCategory>> {
+        self.list_categories_from_pool(enabled_only, self.pools.read())
+            .await
+    }
+
+    async fn list_categories_from_pool(
+        &self,
+        enabled_only: bool,
+        pool: &PgPool,
+    ) -> Result<Vec<RoomCategory>> {
         let rows = sqlx::query_as!(
             RoomCategoryRow,
             r#"
@@ -180,7 +217,7 @@ impl RoomTaxonomyRepository {
             "#,
             enabled_only
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
@@ -189,6 +226,25 @@ impl RoomTaxonomyRepository {
         &self,
         enabled_only: bool,
         category_id: Option<RoomCategoryId>,
+    ) -> Result<Vec<RoomLabel>> {
+        self.list_labels_from_pool(enabled_only, category_id, self.pools.primary())
+            .await
+    }
+
+    pub async fn list_labels_eventually_consistent(
+        &self,
+        enabled_only: bool,
+        category_id: Option<RoomCategoryId>,
+    ) -> Result<Vec<RoomLabel>> {
+        self.list_labels_from_pool(enabled_only, category_id, self.pools.read())
+            .await
+    }
+
+    async fn list_labels_from_pool(
+        &self,
+        enabled_only: bool,
+        category_id: Option<RoomCategoryId>,
+        pool: &PgPool,
     ) -> Result<Vec<RoomLabel>> {
         let rows = sqlx::query_as!(
             RoomLabelRow,
@@ -211,7 +267,7 @@ impl RoomTaxonomyRepository {
             enabled_only,
             category_id.map(|id| id.as_i64())
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
@@ -233,7 +289,7 @@ impl RoomTaxonomyRepository {
             "#,
             id.as_i64()
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?;
         Ok(row.map(Into::into))
     }
@@ -257,7 +313,7 @@ impl RoomTaxonomyRepository {
             "#,
             id.as_i64()
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?;
         Ok(row.map(Into::into))
     }
@@ -286,7 +342,7 @@ impl RoomTaxonomyRepository {
             "#,
             &ids
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pools.primary())
         .await?;
         Ok(rows
             .into_iter()
@@ -323,7 +379,7 @@ impl RoomTaxonomyRepository {
             "#,
             &ids
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pools.primary())
         .await?;
         Ok(rows
             .into_iter()
@@ -337,6 +393,23 @@ impl RoomTaxonomyRepository {
     pub async fn labels_for_rooms(
         &self,
         room_ids: &[RoomId],
+    ) -> Result<HashMap<RoomId, Vec<RoomLabel>>> {
+        self.labels_for_rooms_from_pool(room_ids, self.pools.primary())
+            .await
+    }
+
+    pub async fn labels_for_rooms_eventually_consistent(
+        &self,
+        room_ids: &[RoomId],
+    ) -> Result<HashMap<RoomId, Vec<RoomLabel>>> {
+        self.labels_for_rooms_from_pool(room_ids, self.pools.read())
+            .await
+    }
+
+    async fn labels_for_rooms_from_pool(
+        &self,
+        room_ids: &[RoomId],
+        pool: &PgPool,
     ) -> Result<HashMap<RoomId, Vec<RoomLabel>>> {
         if room_ids.is_empty() {
             return Ok(HashMap::new());
@@ -364,7 +437,7 @@ impl RoomTaxonomyRepository {
             "#,
             &ids
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
 
         let mut labels_by_room = HashMap::new();
@@ -415,7 +488,7 @@ impl RoomTaxonomyRepository {
             input.sort_order,
             input.is_enabled
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pools.primary())
         .await?;
         Ok(row.into())
     }
@@ -455,7 +528,7 @@ impl RoomTaxonomyRepository {
             input.sort_order,
             input.is_enabled
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pools.primary())
         .await?;
         Ok(row.into())
     }
@@ -471,7 +544,7 @@ impl RoomTaxonomyRepository {
             "#,
             id.as_i64()
         )
-        .execute(&self.pool)
+        .execute(self.pools.primary())
         .await?
         .rows_affected();
         Ok(deleted > 0)
@@ -491,7 +564,7 @@ impl RoomTaxonomyRepository {
             "#,
             id.as_i64()
         )
-        .execute(&self.pool)
+        .execute(self.pools.primary())
         .await?
         .rows_affected();
         Ok(deleted > 0)
@@ -624,7 +697,7 @@ impl RoomTaxonomyRepository {
             "#,
             request_id as RoomId
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pools.primary())
         .await?;
         Ok(labels)
     }

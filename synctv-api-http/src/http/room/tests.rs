@@ -14,7 +14,7 @@ use axum::{
 };
 use synctv_proto::client::{
     AddMediaBatchRequest, CreatePlaylistRequest, DeleteEntriesRequest, DeleteMediaQuery,
-    DeletePlaylistQuery, EditMediaRequest, GetChatHistoryRequest, GetHotRoomsRequest,
+    DeletePlaylistQuery, DiscoverRoomsRequest, EditMediaRequest, GetChatHistoryRequest,
     JoinRoomRequest, ListPlaylistItemsRequest, ListPlaylistsRequest, MoveMediaRequest,
     MovePlaylistRequest, StartRoomPasswordLoginRequest, UpdatePlaybackStateRequest,
     UpdatePlaylistRequest,
@@ -435,11 +435,20 @@ fn test_chat_history_query_preserves_limit_for_shared_validation() -> TestResult
 }
 
 #[test]
-fn test_hot_rooms_query_preserves_limit_for_shared_validation() -> TestResult {
-    let req: GetHotRoomsRequest = serde_urlencoded::from_str("limit=51")?;
+fn test_room_discovery_query_preserves_page_size_for_shared_validation() -> TestResult {
+    let req: DiscoverRoomsRequest = serde_urlencoded::from_str("pageSize=101")?;
 
-    assert_eq!(req.limit, 51);
+    assert_eq!(req.page_size, 101);
     assert!(synctv_api_common::impls::validate_proto_request(&req).is_err());
+    Ok(())
+}
+
+#[test]
+fn test_room_discovery_query_preserves_repeated_label_ids() -> TestResult {
+    let req: DiscoverRoomsRequest =
+        serde_html_form::from_str("labelIds=roomlbl_1&labelIds=roomlbl_2")?;
+
+    assert_eq!(req.label_ids, ["roomlbl_1", "roomlbl_2"]);
     Ok(())
 }
 
@@ -539,9 +548,9 @@ fn test_parse_chat_history_request_accepts_cursor_only() -> TestResult {
 }
 
 #[test]
-fn test_chat_history_query_accepts_json_array_message_types() -> TestResult {
+fn test_chat_history_query_accepts_repeated_message_types() -> TestResult {
     let query: super::chat::GetChatHistoryQuery =
-        serde_urlencoded::from_str("limit=20&includeMessageTypes=%5B1%2C1001%5D")?;
+        serde_html_form::from_str("limit=20&includeMessageTypes=1&includeMessageTypes=1001")?;
     let req = app_ok(query.into_request())?;
 
     assert_eq!(req.limit, 20);
@@ -617,9 +626,10 @@ fn test_chat_playback_messages_query_accepts_structured_emby_target() -> TestRes
 }
 
 #[test]
-fn test_chat_playback_messages_query_accepts_json_array_message_types() -> TestResult {
-    let query: super::chat::GetChatPlaybackMessagesQuery =
-        serde_urlencoded::from_str("positionSeconds=12.5&includeMessageTypes=%5B1%2C1001%5D")?;
+fn test_chat_playback_messages_query_accepts_repeated_message_types() -> TestResult {
+    let query: super::chat::GetChatPlaybackMessagesQuery = serde_html_form::from_str(
+        "positionSeconds=12.5&includeMessageTypes=1&includeMessageTypes=1001",
+    )?;
     let req = app_ok(query.into_request())?;
 
     assert_eq!(req.include_message_types, vec![1, 1001]);

@@ -2,14 +2,16 @@ use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        AuditAction, AuditTargetType, ChatMessage, ChatMessageType, ContentReportStatus,
-        ContentReportTarget, CreateContentReport, PageParams, ReviewStatus, Room, RoomId,
-        RoomStatus, SignupMethod, User, UserId, UserListQuery,
+        room_settings::MaxMembers, AuditAction, AuditTargetType, ChatMessage, ChatMessageType,
+        ContentReportStatus, ContentReportTarget, CreateContentReport, MyRoomListQuery, PageParams,
+        ReviewStatus, Room, RoomId, RoomListQuery, RoomMember, RoomRole, RoomSettings, RoomStatus,
+        SignupMethod, UpsertRoomCategory, UpsertRoomLabel, User, UserId, UserListQuery,
     },
     repository::{
         AuditLogQuery, AuditLogRepository, BanRecordListQuery, BanRecordRepository, ChatRepository,
         ContentReportListQuery, ContentReportListScope, ContentReportRepository, ReviewRepository,
-        RoomRepository, UserRegistrationReviewListQuery, UserRepository,
+        RoomMemberRepository, RoomPasswordRepository, RoomRepository, RoomSettingsRepository,
+        RoomTaxonomyRepository, UserRegistrationReviewListQuery, UserRepository,
     },
 };
 use synctv_core_testing::{create_test_pool_with_db_and_label, ok, some};
@@ -128,7 +130,7 @@ async fn user_eventual_list_reads_from_read_pool_while_default_list_uses_primary
         create_test_pool_with_db_and_label("synctv_test", "secondary-read-user-read").await;
 
     let primary_user = create_user(&primary_pool, "primary_only_user").await;
-    create_user(&read_pool, "read_pool_user").await;
+    let read_user = create_user(&read_pool, "read_pool_user").await;
 
     let repo = UserRepository::new_with_read_pool(primary_pool, read_pool);
     let (primary_users, primary_total) = ok(
@@ -145,6 +147,11 @@ async fn user_eventual_list_reads_from_read_pool_while_default_list_uses_primary
     );
     assert_eq!(eventual_total, 1);
     assert_eq!(eventual_users[0].username, "read_pool_user");
+    let eventual_users_by_id = ok(
+        repo.get_by_ids_eventually_consistent(&[read_user.id]).await,
+        "eventual user batch should be loaded",
+    );
+    assert_eq!(eventual_users_by_id[0].username, "read_pool_user");
     let loaded = ok(
         repo.get_by_id(&primary_user.id).await,
         "primary user lookup should query primary",
@@ -153,6 +160,300 @@ async fn user_eventual_list_reads_from_read_pool_while_default_list_uses_primary
         some(loaded, "primary user should be visible through get_by_id").username,
         "primary_only_user"
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn homepage_room_reads_use_read_pool_while_primary_methods_stay_strongly_consistent() {
+    let (_primary_container, primary_pool) =
+        create_test_pool_with_db_and_label("synctv_test", "homepage-read-primary").await;
+    let (_read_container, read_pool) =
+        create_test_pool_with_db_and_label("synctv_test", "homepage-read-replica").await;
+
+    let primary_owner = create_user(&primary_pool, "primary_home_owner").await;
+    let read_owner = create_user(&read_pool, "read_home_owner").await;
+    let primary_room = create_room(&primary_pool, "Primary Home Room", primary_owner.id).await;
+    let read_room = create_room(&read_pool, "Read Replica Home Room", read_owner.id).await;
+    assert_eq!(primary_owner.id, read_owner.id);
+    assert_eq!(primary_room.id, read_room.id);
+
+    ok(
+        RoomMemberRepository::new(primary_pool.clone())
+            .add(&RoomMember::new(
+                primary_room.id,
+                primary_owner.id,
+                RoomRole::Creator,
+            ))
+            .await,
+        "primary room member should be created",
+    );
+    ok(
+        RoomMemberRepository::new(read_pool.clone())
+            .add(&RoomMember::new(
+                read_room.id,
+                read_owner.id,
+                RoomRole::Creator,
+            ))
+            .await,
+        "read replica room member should be created",
+    );
+    ok(
+        RoomRepository::new(read_pool.clone())
+            .favorite_for_user(&read_owner.id, &read_room.id)
+            .await,
+        "read replica room should be favorited",
+    );
+
+    let primary_settings = RoomSettings {
+        max_members: MaxMembers(11),
+        ..RoomSettings::default()
+    };
+    let read_settings = RoomSettings {
+        max_members: MaxMembers(37),
+        ..RoomSettings::default()
+    };
+    ok(
+        RoomSettingsRepository::new(primary_pool.clone())
+            .set_settings(&primary_room.id, &primary_settings)
+            .await,
+        "primary room settings should be stored",
+    );
+    ok(
+        RoomSettingsRepository::new(read_pool.clone())
+            .set_settings(&read_room.id, &read_settings)
+            .await,
+        "read replica room settings should be stored",
+    );
+
+    ok(
+        sqlx::query!(
+            "INSERT INTO room_password_credentials (room_id, enabled, version) VALUES ($1, FALSE, 1)",
+            primary_room.id as RoomId,
+        )
+        .execute(&primary_pool)
+        .await,
+        "primary room password state should be stored",
+    );
+    ok(
+        sqlx::query!(
+            "INSERT INTO room_password_credentials (
+                room_id,
+                opaque_record,
+                opaque_credential_identifier,
+                opaque_ciphersuite,
+                opaque_server_setup_version,
+                enabled,
+                version
+             ) VALUES ($1, $2, $3, $4, $5, TRUE, 1)",
+            read_room.id as RoomId,
+            b"read-home-opaque-record".as_slice(),
+            b"read-home-credential-id".as_slice(),
+            "ristretto255",
+            1_i32,
+        )
+        .execute(&read_pool)
+        .await,
+        "read replica room password state should be stored",
+    );
+
+    let primary_taxonomy = RoomTaxonomyRepository::new(primary_pool.clone());
+    let read_taxonomy = RoomTaxonomyRepository::new(read_pool.clone());
+    ok(
+        primary_taxonomy
+            .upsert_category(&UpsertRoomCategory {
+                key: "primary-home".to_string(),
+                name: "Primary Home".to_string(),
+                description: String::new(),
+                sort_order: 0,
+                is_enabled: true,
+            })
+            .await,
+        "primary category should be stored",
+    );
+    let read_category = ok(
+        read_taxonomy
+            .upsert_category(&UpsertRoomCategory {
+                key: "read-home".to_string(),
+                name: "Read Home".to_string(),
+                description: String::new(),
+                sort_order: 0,
+                is_enabled: true,
+            })
+            .await,
+        "read replica category should be stored",
+    );
+    let read_label = ok(
+        read_taxonomy
+            .upsert_label(&UpsertRoomLabel {
+                key: "read-featured".to_string(),
+                name: "Read Featured".to_string(),
+                description: String::new(),
+                color: "#336699".to_string(),
+                category_id: Some(read_category.id),
+                sort_order: 0,
+                is_enabled: true,
+            })
+            .await,
+        "read replica label should be stored",
+    );
+    let mut read_connection = ok(
+        read_pool.acquire().await,
+        "read replica connection should be acquired",
+    );
+    ok(
+        RoomTaxonomyRepository::assign_room_labels(
+            read_room.id,
+            &[read_label.id],
+            Some(read_owner.id),
+            &mut read_connection,
+        )
+        .await,
+        "read replica room label should be assigned",
+    );
+
+    let room_repo = RoomRepository::new_with_read_pool(primary_pool.clone(), read_pool.clone());
+    let query = RoomListQuery::default();
+    let (primary_rooms, primary_total) = ok(
+        room_repo.list(&query).await,
+        "primary room list should load",
+    );
+    assert_eq!(primary_total, 1);
+    assert_eq!(primary_rooms[0].name, "Primary Home Room");
+    let (discovery_rooms, discovery_total) = ok(
+        room_repo
+            .list_window_excluding_eventually_consistent(&query, &[], 0, 10)
+            .await,
+        "discovery room window should load",
+    );
+    assert_eq!(discovery_total, 1);
+    assert_eq!(discovery_rooms[0].name, "Read Replica Home Room");
+    let (ranked_rooms, ranked_total) = ok(
+        room_repo
+            .list_ranked_window_eventually_consistent(&query, &[read_room.id], 0, 10)
+            .await,
+        "ranked discovery room window should load",
+    );
+    assert_eq!(ranked_total, 1);
+    assert_eq!(ranked_rooms[0].name, "Read Replica Home Room");
+    let active_rooms = ok(
+        room_repo
+            .list_active_unbanned_by_ids_eventually_consistent(&[read_room.id])
+            .await,
+        "discovery room lookup should load",
+    );
+    assert_eq!(active_rooms[0].name, "Read Replica Home Room");
+    let primary_active_rooms = ok(
+        room_repo
+            .list_active_unbanned_by_ids(&[primary_room.id])
+            .await,
+        "primary discovery room lookup should load",
+    );
+    assert_eq!(primary_active_rooms[0].name, "Primary Home Room");
+    let viewer_states = ok(
+        room_repo
+            .discovery_viewer_states_eventually_consistent(&read_owner.id, &[read_room.id])
+            .await,
+        "discovery viewer state should load",
+    );
+    let viewer_state = viewer_states
+        .get(&read_room.id)
+        .expect("read replica viewer state should exist");
+    assert!(viewer_state.joined);
+    assert!(viewer_state.favorited);
+    let primary_viewer_states = ok(
+        room_repo
+            .discovery_viewer_states(&primary_owner.id, &[primary_room.id])
+            .await,
+        "primary discovery viewer state should load",
+    );
+    let primary_viewer_state = primary_viewer_states
+        .get(&primary_room.id)
+        .expect("primary viewer state should exist");
+    assert!(primary_viewer_state.joined);
+    assert!(!primary_viewer_state.favorited);
+    let favorite_ids = ok(
+        room_repo
+            .favorite_room_ids_for_user_eventually_consistent(&read_owner.id, &[read_room.id])
+            .await,
+        "read replica favorites should load",
+    );
+    assert!(favorite_ids.contains(&read_room.id));
+
+    let member_repo =
+        RoomMemberRepository::new_with_read_pool(primary_pool.clone(), read_pool.clone());
+    let member_counts = ok(
+        member_repo
+            .count_by_rooms_batch_eventually_consistent(&[&read_room.id])
+            .await,
+        "read replica member counts should load",
+    );
+    assert_eq!(member_counts.get(&read_room.id), Some(&1));
+    let (joined_rooms, joined_total) = ok(
+        member_repo
+            .list_accessible_by_user_with_query_eventually_consistent(
+                &read_owner.id,
+                &MyRoomListQuery::default(),
+            )
+            .await,
+        "read replica joined rooms should load",
+    );
+    assert_eq!(joined_total, 1);
+    assert_eq!(joined_rooms[0].0.name, "Read Replica Home Room");
+
+    let settings_repo =
+        RoomSettingsRepository::new_with_read_pool(primary_pool.clone(), read_pool.clone());
+    let loaded_primary_settings = ok(
+        settings_repo.get_batch(&[primary_room.id]).await,
+        "primary room settings should load",
+    );
+    assert_eq!(loaded_primary_settings[&primary_room.id].max_members.0, 11);
+    let loaded_read_settings = ok(
+        settings_repo
+            .get_batch_eventually_consistent(&[read_room.id])
+            .await,
+        "read replica room settings should load",
+    );
+    assert_eq!(loaded_read_settings[&read_room.id].max_members.0, 37);
+
+    let password_repo =
+        RoomPasswordRepository::new_with_read_pool(primary_pool.clone(), read_pool.clone());
+    let primary_password_ids = ok(
+        password_repo.enabled_room_ids(&[primary_room.id]).await,
+        "primary room password states should load",
+    );
+    assert!(primary_password_ids.is_empty());
+    let read_password_ids = ok(
+        password_repo
+            .enabled_room_ids_eventually_consistent(&[read_room.id])
+            .await,
+        "read replica room password states should load",
+    );
+    assert!(read_password_ids.contains(&read_room.id));
+
+    let taxonomy_repo = RoomTaxonomyRepository::new_with_read_pool(primary_pool, read_pool);
+    let categories = ok(
+        taxonomy_repo
+            .list_categories_eventually_consistent(true)
+            .await,
+        "read replica categories should load",
+    );
+    assert!(categories
+        .iter()
+        .any(|category| category.key == "read-home"));
+    let labels = ok(
+        taxonomy_repo
+            .list_labels_eventually_consistent(true, Some(read_category.id))
+            .await,
+        "read replica labels should load",
+    );
+    assert!(labels.iter().any(|label| label.key == "read-featured"));
+    let labels_by_room = ok(
+        taxonomy_repo
+            .labels_for_rooms_eventually_consistent(&[read_room.id])
+            .await,
+        "read replica room labels should load",
+    );
+    assert_eq!(labels_by_room[&read_room.id][0].key, "read-featured");
 }
 
 #[tokio::test]

@@ -11,6 +11,18 @@ enum BilibiliDashManifestMode {
   BILIBILI_DASH_MANIFEST_MODE_PROXY = 2;
 }
 
+enum BilibiliHlsResourceKind {
+  BILIBILI_HLS_RESOURCE_KIND_UNSPECIFIED = 0;
+  BILIBILI_HLS_RESOURCE_KIND_MEDIA = 1;
+  BILIBILI_HLS_RESOURCE_KIND_MANIFEST = 2;
+}
+
+enum BilibiliDashResourceKind {
+  BILIBILI_DASH_RESOURCE_KIND_UNSPECIFIED = 0;
+  BILIBILI_DASH_RESOURCE_KIND_MEDIA = 1;
+  BILIBILI_DASH_RESOURCE_KIND_MANIFEST = 2;
+}
+
 enum BilibiliLiveDanmakuEventType {
   BILIBILI_LIVE_DANMAKU_EVENT_TYPE_UNSPECIFIED = 0;
   BILIBILI_LIVE_DANMAKU_EVENT_TYPE_CHAT = 1;
@@ -50,7 +62,7 @@ message BilibiliHlsManifestResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
-message GetBilibiliHlsSegmentRequest {
+message GetBilibiliHlsResourceRequest {
   string version = 1 [(buf.validate.field).string.min_len = 1];
   string target_url = 2 [(buf.validate.field).string.min_len = 1];
   string sig = 3 [(buf.validate.field).string.min_len = 1];
@@ -59,9 +71,12 @@ message GetBilibiliHlsSegmentRequest {
   int64 exp = 6;
   optional string range = 7;
   bool head = 8;
+  string mode_name = 9 [(buf.validate.field).string.min_len = 1];
+  uint32 media_index = 10;
+  BilibiliHlsResourceKind resource_kind = 11 [(buf.validate.field).enum.defined_only = true];
 }
 
-message BilibiliHlsSegmentResponse {
+message BilibiliHlsResourceResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
@@ -79,19 +94,22 @@ message BilibiliDashManifestResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
-message GetBilibiliDashSegmentRequest {
+message GetBilibiliDashResourceRequest {
   string version = 1 [(buf.validate.field).string.min_len = 1];
   string mode_name = 2 [(buf.validate.field).string.min_len = 1];
-  uint32 url_index = 3;
-  string sig = 4 [(buf.validate.field).string.min_len = 1];
-  string uid = 5 [(buf.validate.field).string.min_len = 1];
-  string rid = 6 [(buf.validate.field).string.min_len = 1];
-  int64 exp = 7;
-  optional string range = 8;
-  bool head = 9;
+  string scope_url = 3 [(buf.validate.field).string.min_len = 1];
+  string resource_path = 4;
+  optional string resource_query = 5;
+  BilibiliDashResourceKind resource_kind = 6 [(buf.validate.field).enum.defined_only = true];
+  string sig = 7 [(buf.validate.field).string.min_len = 1];
+  string uid = 8 [(buf.validate.field).string.min_len = 1];
+  string rid = 9 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 10;
+  optional string range = 11;
+  bool head = 12;
 }
 
-message BilibiliDashSegmentResponse {
+message BilibiliDashResourceResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
@@ -141,9 +159,9 @@ message BilibiliLiveDanmakuEvent {
 service BilibiliPlaybackProviderService {
   rpc GetMediaStream(GetBilibiliMediaStreamRequest) returns (stream BilibiliMediaStreamResponse);
   rpc GetHlsManifest(GetBilibiliHlsManifestRequest) returns (stream BilibiliHlsManifestResponse);
-  rpc GetHlsSegment(GetBilibiliHlsSegmentRequest) returns (stream BilibiliHlsSegmentResponse);
+  rpc GetHlsResource(GetBilibiliHlsResourceRequest) returns (stream BilibiliHlsResourceResponse);
   rpc GetDashManifest(GetBilibiliDashManifestRequest) returns (stream BilibiliDashManifestResponse);
-  rpc GetDashSegment(GetBilibiliDashSegmentRequest) returns (stream BilibiliDashSegmentResponse);
+  rpc GetDashResource(GetBilibiliDashResourceRequest) returns (stream BilibiliDashResourceResponse);
   rpc GetSubtitle(GetBilibiliSubtitleRequest) returns (stream BilibiliSubtitleResponse);
   rpc GetDanmakuFile(GetBilibiliDanmakuFileRequest) returns (stream BilibiliDanmakuFileResponse);
   rpc WatchLiveDanmaku(WatchBilibiliLiveDanmakuRequest) returns (stream BilibiliLiveDanmakuEvent);

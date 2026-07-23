@@ -702,11 +702,11 @@ webrtc:
   # the built-in STUN server is skipped when no public address is found.
   # stun_external_addr: ""
   # Filter private/internal ICE candidates before sending them to clients.
-  filter_private_ice_candidates: true
+  filter_private_ice_candidates: false
   # --- External ICE Servers ---
   # Configured dynamically via the settings API (no restart required):
   #   "webrtc.external_ice_servers" - JSON array of ICE server objects, e.g.:
-  #       [{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]
+  #       [{"urls":["stun:stun.example.com:3478"]},{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]
 
   # ============================================================================
   # Dynamic ICE Servers Configuration
@@ -716,8 +716,7 @@ webrtc:
   #
   # Setting key: "webrtc.external_ice_servers"
   # Value: JSON array of ICE server objects
-  #   Default:
-  #   [{"urls":["stun:stun.l.google.com:19302"]},{"urls":["stun:stun1.l.google.com:19302"]}]
+  #   Default: [] (the built-in STUN server is used)
   #
   # Changes take effect immediately without restarting the server.
 

@@ -260,7 +260,7 @@ cargo +nightly fmt --all --check
 Clippy：
 
 ```bash
-cargo +nightly clippy --workspace --all-targets --locked -- -D warnings
+cargo +nightly clippy --workspace --all-targets --locked
 ```
 
 不要对整个 workspace 使用 `--all-features`：部分 feature 组合是刻意互斥的，

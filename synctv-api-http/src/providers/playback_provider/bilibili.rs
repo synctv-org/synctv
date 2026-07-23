@@ -6,14 +6,15 @@ use axum::{
         IntoResponse, Response,
     },
 };
+use base64::Engine as _;
 use futures::{FutureExt, StreamExt};
 use synctv_proto::playback_provider::bilibili::{
     BilibiliDanmakuFileResponse, BilibiliDashManifestMode, BilibiliDashManifestResponse,
-    BilibiliDashSegmentResponse, BilibiliHlsManifestResponse, BilibiliHlsSegmentResponse,
-    BilibiliMediaStreamResponse, BilibiliSubtitleResponse, GetBilibiliDanmakuFileRequest,
-    GetBilibiliDashManifestRequest, GetBilibiliDashSegmentRequest, GetBilibiliHlsManifestRequest,
-    GetBilibiliHlsSegmentRequest, GetBilibiliMediaStreamRequest, GetBilibiliSubtitleRequest,
-    WatchBilibiliLiveDanmakuRequest,
+    BilibiliDashResourceKind, BilibiliDashResourceResponse, BilibiliHlsManifestResponse,
+    BilibiliHlsResourceKind, BilibiliHlsResourceResponse, BilibiliMediaStreamResponse,
+    BilibiliSubtitleResponse, GetBilibiliDanmakuFileRequest, GetBilibiliDashManifestRequest,
+    GetBilibiliDashResourceRequest, GetBilibiliHlsManifestRequest, GetBilibiliHlsResourceRequest,
+    GetBilibiliMediaStreamRequest, GetBilibiliSubtitleRequest, WatchBilibiliLiveDanmakuRequest,
 };
 
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
@@ -38,6 +39,30 @@ pub struct BilibiliDashManifestPath {
     pub mode_name: String,
     #[serde(default)]
     pub manifest_mode: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BilibiliHlsResourcePath {
+    pub version: String,
+    pub mode_name: String,
+    pub media_index: u32,
+    pub resource_kind: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BilibiliDashResourcePath {
+    pub version: String,
+    pub mode_name: String,
+    pub resource_kind: String,
+    pub scope: String,
+    pub uid: String,
+    pub rid: String,
+    pub exp: i64,
+    pub sig: String,
+    #[serde(default)]
+    pub resource_path: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -73,7 +98,7 @@ impl PlaybackProviderHttpResponse for BilibiliHlsManifestResponse {
     }
 }
 
-impl PlaybackProviderHttpResponse for BilibiliHlsSegmentResponse {
+impl PlaybackProviderHttpResponse for BilibiliHlsResourceResponse {
     fn chunk(self) -> Option<synctv_proto::playback_provider::common::StreamChunk> {
         self.chunk
     }
@@ -85,7 +110,7 @@ impl PlaybackProviderHttpResponse for BilibiliDashManifestResponse {
     }
 }
 
-impl PlaybackProviderHttpResponse for BilibiliDashSegmentResponse {
+impl PlaybackProviderHttpResponse for BilibiliDashResourceResponse {
     fn chunk(self) -> Option<synctv_proto::playback_provider::common::StreamChunk> {
         self.chunk
     }
@@ -250,21 +275,21 @@ pub async fn get_bilibili_hls_manifest(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/bilibili/{version}/hls-segments",
+        path = "/api/playback-providers/bilibili/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
-        responses((status = 200, description = "Bilibili HLS segment"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
+        params(("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        responses((status = 200, description = "Bilibili HLS resource"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
-pub fn get_bilibili_hls_segment(
-    Path(version): Path<String>,
+pub fn get_bilibili_hls_resource(
+    Path(path): Path<BilibiliHlsResourcePath>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
-    bilibili_hls_segment(
-        version,
+    bilibili_hls_resource(
+        path,
         state,
         request_meta,
         headers,
@@ -277,21 +302,21 @@ pub fn get_bilibili_hls_segment(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/bilibili/{version}/hls-segments",
+        path = "/api/playback-providers/bilibili/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
-        responses((status = 200, description = "Bilibili HLS segment metadata"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
+        params(("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        responses((status = 200, description = "Bilibili HLS resource metadata"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
-pub fn head_bilibili_hls_segment(
-    Path(version): Path<String>,
+pub fn head_bilibili_hls_resource(
+    Path(path): Path<BilibiliHlsResourcePath>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
-    bilibili_hls_segment(
-        version,
+    bilibili_hls_resource(
+        path,
         state,
         request_meta,
         headers,
@@ -300,8 +325,8 @@ pub fn head_bilibili_hls_segment(
     )
 }
 
-async fn bilibili_hls_segment(
-    version: String,
+async fn bilibili_hls_resource(
+    path: BilibiliHlsResourcePath,
     state: AppState,
     request_meta: RequestMetadata,
     headers: HeaderMap,
@@ -310,8 +335,8 @@ async fn bilibili_hls_segment(
 ) -> AppResult<axum::response::Response> {
     let (sig, uid, rid, exp) =
         signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
-    let req = GetBilibiliHlsSegmentRequest {
-        version,
+    let req = GetBilibiliHlsResourceRequest {
+        version: path.version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,
         sig,
         uid,
@@ -319,16 +344,19 @@ async fn bilibili_hls_segment(
         exp,
         range: range_header(&headers).map_err(crate::http::error::map_api_error)?,
         head: method == Method::HEAD,
+        mode_name: path.mode_name,
+        media_index: path.media_index,
+        resource_kind: bilibili_hls_resource_kind(&path.resource_kind)?,
     };
     let state_for_stream = state.clone();
-    stream_http_response::<BilibiliHlsSegmentResponse, _>(
+    stream_http_response::<BilibiliHlsResourceResponse, _>(
         state,
         request_meta,
         method,
         move |request_control| {
             let state = state_for_stream;
             async move {
-                synctv_api_common::playback_provider::bilibili::get_bilibili_hls_segment(
+                synctv_api_common::playback_provider::bilibili::get_bilibili_hls_resource(
                     bilibili_deps(&state, Some(&request_control)),
                     req,
                 )
@@ -393,20 +421,20 @@ pub async fn get_bilibili_dash_manifest(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/bilibili/{version}/dash-segments/{modeName}/{urlIndex}",
+        path = "/api/playback-providers/bilibili/{version}/dash-resources/{modeName}/{resourceKind}/{scope}/{uid}/{rid}/{exp}/{sig}/{resourcePath}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
-        responses((status = 200, description = "Bilibili DASH segment"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
+        params(("version" = String, Path), ("modeName" = String, Path), ("resourceKind" = String, Path), ("scope" = String, Path), ("uid" = String, Path), ("rid" = String, Path), ("exp" = i64, Path), ("sig" = String, Path), ("resourcePath" = String, Path)),
+        responses((status = 200, description = "Bilibili DASH resource"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
-pub fn get_bilibili_dash_segment(
-    Path(path): Path<BilibiliIndexedPath>,
+pub fn get_bilibili_dash_resource(
+    Path(path): Path<BilibiliDashResourcePath>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
-    bilibili_dash_segment(
+    bilibili_dash_resource(
         path,
         state,
         request_meta,
@@ -420,20 +448,20 @@ pub fn get_bilibili_dash_segment(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/bilibili/{version}/dash-segments/{modeName}/{urlIndex}",
+        path = "/api/playback-providers/bilibili/{version}/dash-resources/{modeName}/{resourceKind}/{scope}/{uid}/{rid}/{exp}/{sig}/{resourcePath}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
-        responses((status = 200, description = "Bilibili DASH segment metadata"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
+        params(("version" = String, Path), ("modeName" = String, Path), ("resourceKind" = String, Path), ("scope" = String, Path), ("uid" = String, Path), ("rid" = String, Path), ("exp" = i64, Path), ("sig" = String, Path), ("resourcePath" = String, Path)),
+        responses((status = 200, description = "Bilibili DASH resource metadata"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
-pub fn head_bilibili_dash_segment(
-    Path(path): Path<BilibiliIndexedPath>,
+pub fn head_bilibili_dash_resource(
+    Path(path): Path<BilibiliDashResourcePath>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
-    bilibili_dash_segment(
+    bilibili_dash_resource(
         path,
         state,
         request_meta,
@@ -443,36 +471,49 @@ pub fn head_bilibili_dash_segment(
     )
 }
 
-async fn bilibili_dash_segment(
-    path: BilibiliIndexedPath,
+async fn bilibili_dash_resource(
+    path: BilibiliDashResourcePath,
     state: AppState,
     request_meta: RequestMetadata,
     headers: HeaderMap,
-    query_string: String,
+    resource_query: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
-    let req = GetBilibiliDashSegmentRequest {
+    let scope_url = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&path.scope)
+        .map_err(|_| {
+            crate::http::error::map_api_error(synctv_api_common::impls::ApiError::InvalidInput(
+                "Invalid Bilibili DASH resource scope".to_string(),
+            ))
+        })?;
+    let scope_url = String::from_utf8(scope_url).map_err(|_| {
+        crate::http::error::map_api_error(synctv_api_common::impls::ApiError::InvalidInput(
+            "Invalid Bilibili DASH scope encoding".to_string(),
+        ))
+    })?;
+    let req = GetBilibiliDashResourceRequest {
         version: path.version,
         mode_name: path.mode_name,
-        url_index: path.url_index,
-        sig,
-        uid,
-        rid,
-        exp,
+        scope_url,
+        resource_path: path.resource_path,
+        resource_query: (!resource_query.is_empty()).then_some(resource_query),
+        resource_kind: bilibili_dash_resource_kind(&path.resource_kind)?,
+        sig: path.sig,
+        uid: path.uid,
+        rid: path.rid,
+        exp: path.exp,
         range: range_header(&headers).map_err(crate::http::error::map_api_error)?,
         head: method == Method::HEAD,
     };
     let state_for_stream = state.clone();
-    stream_http_response::<BilibiliDashSegmentResponse, _>(
+    stream_http_response::<BilibiliDashResourceResponse, _>(
         state,
         request_meta,
         method,
         move |request_control| {
             let state = state_for_stream;
             async move {
-                synctv_api_common::playback_provider::bilibili::get_bilibili_dash_segment(
+                synctv_api_common::playback_provider::bilibili::get_bilibili_dash_resource(
                     bilibili_deps(&state, Some(&request_control)),
                     req,
                 )
@@ -650,6 +691,30 @@ fn dash_manifest_mode(
             )),
         },
     )
+}
+
+fn bilibili_hls_resource_kind(value: &str) -> AppResult<i32> {
+    match value {
+        "media" => Ok(BilibiliHlsResourceKind::Media as i32),
+        "manifest" => Ok(BilibiliHlsResourceKind::Manifest as i32),
+        _ => Err(crate::http::error::map_api_error(
+            synctv_api_common::impls::ApiError::InvalidInput(
+                "Invalid Bilibili HLS resource kind".to_string(),
+            ),
+        )),
+    }
+}
+
+fn bilibili_dash_resource_kind(value: &str) -> AppResult<i32> {
+    match value {
+        "media" => Ok(BilibiliDashResourceKind::Media as i32),
+        "manifest" => Ok(BilibiliDashResourceKind::Manifest as i32),
+        _ => Err(crate::http::error::map_api_error(
+            synctv_api_common::impls::ApiError::InvalidInput(
+                "Invalid Bilibili DASH resource kind".to_string(),
+            ),
+        )),
+    }
 }
 
 fn bilibili_deps<'a>(

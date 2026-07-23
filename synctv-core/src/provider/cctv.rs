@@ -141,8 +141,13 @@ impl CctvProvider {
         let mut playback_infos = HashMap::new();
         let mut first_mode = None;
         let mut video_hls_mode = None;
-        for (index, stream) in playback.streams.into_iter().enumerate() {
-            let mode = unique_mode_name(&playback_infos, &stream.name, stream.kind, index);
+        for stream in playback.streams {
+            let mode = match stream.kind {
+                CctvStreamKind::VideoHls => "video_hls",
+                CctvStreamKind::AudioHls => "audio_hls",
+                CctvStreamKind::Http => "http",
+            }
+            .to_string();
             first_mode.get_or_insert_with(|| mode.clone());
             if stream.kind == CctvStreamKind::VideoHls {
                 video_hls_mode.get_or_insert_with(|| mode.clone());
@@ -151,28 +156,26 @@ impl CctvProvider {
                 CctvStreamKind::VideoHls | CctvStreamKind::AudioHls => "m3u8",
                 CctvStreamKind::Http => detect_direct_url_format(&stream.url),
             };
-            playback_infos.insert(
-                mode,
-                PlaybackInfo {
-                    thumbnail: metadata.thumbnail_url.clone(),
-                    medias: vec![PlaybackMedia {
-                        name: stream.name.clone(),
-                        format: format.to_string(),
-                        expire_at: None,
-                        metadata: None,
-                        provider: PlaybackMediaProvider::Cctv(PlaybackCctvMedia::Refresh {
-                            resource: resource.to_string(),
-                            stream_name: stream.name,
-                            stream_kind: playback_stream_kind(stream.kind),
-                        }),
-                    }],
-                    default_media_index: Some(0),
-                    subtitles: Vec::new(),
-                    default_subtitle_index: None,
-                    danmakus: Vec::new(),
-                    default_danmaku_index: None,
-                },
-            );
+            let info = playback_infos.entry(mode).or_insert_with(|| PlaybackInfo {
+                thumbnail: metadata.thumbnail_url.clone(),
+                medias: Vec::new(),
+                default_media_index: Some(0),
+                subtitles: Vec::new(),
+                default_subtitle_index: None,
+                danmakus: Vec::new(),
+                default_danmaku_index: None,
+            });
+            info.medias.push(PlaybackMedia {
+                name: stream.name.clone(),
+                format: format.to_string(),
+                expire_at: None,
+                metadata: None,
+                provider: PlaybackMediaProvider::Cctv(PlaybackCctvMedia::Refresh {
+                    resource: resource.to_string(),
+                    stream_name: stream.name,
+                    stream_kind: playback_stream_kind(stream.kind),
+                }),
+            });
         }
         let default_mode = video_hls_mode
             .or(first_mode)
@@ -228,37 +231,6 @@ const fn playback_stream_kind(kind: CctvStreamKind) -> CctvPlaybackStreamKind {
         CctvStreamKind::VideoHls => CctvPlaybackStreamKind::VideoHls,
         CctvStreamKind::AudioHls => CctvPlaybackStreamKind::AudioHls,
         CctvStreamKind::Http => CctvPlaybackStreamKind::Http,
-    }
-}
-
-fn unique_mode_name(
-    existing: &HashMap<String, PlaybackInfo>,
-    name: &str,
-    kind: CctvStreamKind,
-    index: usize,
-) -> String {
-    let suffix = match kind {
-        CctvStreamKind::VideoHls => "hls",
-        CctvStreamKind::AudioHls => "audio",
-        CctvStreamKind::Http => "http",
-    };
-    let base = format!("{name}_{suffix}")
-        .to_ascii_lowercase()
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('_')
-        .to_string();
-    if existing.contains_key(&base) {
-        format!("{base}_{index}")
-    } else {
-        base
     }
 }
 
@@ -386,7 +358,7 @@ mod tests {
         )
         .expect("CCTV playback should map");
         assert_eq!(result.duration_seconds, Some(123.0));
-        assert_eq!(result.default_mode, "hls_hls");
+        assert_eq!(result.default_mode, "video_hls");
         assert!(matches!(
             result.playback_infos[&result.default_mode].medias[0].provider,
             PlaybackMediaProvider::Cctv(PlaybackCctvMedia::Refresh {

@@ -403,6 +403,10 @@ enum ObservedResource {
 }
 
 impl ResourceObservation {
+    fn accepts_inline_playback_state_event(&self) -> bool {
+        matches!(self.resource, ObservedResource::PlaybackState)
+    }
+
     fn room_resource_cursor_types(&self) -> Option<&'static [RoomResourceKind]> {
         match &self.resource {
             ObservedResource::PlaybackState => Some(&[RoomResourceKind::PlaybackState]),
@@ -585,6 +589,51 @@ impl ResourceObserver {
             state: tokio::sync::Mutex::new(ResourceObserverState::default()),
             observation_change: tokio::sync::Notify::new(),
         }
+    }
+
+    async fn username_for_chat_message(
+        &self,
+        message: &synctv_core::models::ChatMessage,
+    ) -> Result<Option<String>, String> {
+        if message.message_type.is_system() {
+            return Ok(None);
+        }
+        let Some(user_id) = message.user_id else {
+            return Ok(None);
+        };
+        self.room_service
+            .user_service()
+            .get_username(&user_id)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn chat_message_event_to_proto(
+        &self,
+        event: &synctv_core::models::ChatMessageEvent,
+    ) -> Result<synctv_proto::client::ChatMessageEvent, String> {
+        let username = self
+            .username_for_chat_message(&event.message.message)
+            .await?;
+        let mut proto = chat_message_event_to_proto(event, &self.public_id_codec)?;
+        if let Some(message) = proto.message.as_mut() {
+            message.username = username;
+        }
+        Ok(proto)
+    }
+
+    async fn chat_pin_event_to_proto(
+        &self,
+        event: &synctv_core::models::ChatPinEvent,
+    ) -> Result<synctv_proto::client::ChatPinEvent, String> {
+        let username = self
+            .username_for_chat_message(&event.message.message)
+            .await?;
+        let mut proto = chat_pin_event_to_proto(event, &self.public_id_codec)?;
+        if let Some(message) = proto.message.as_mut() {
+            message.username = username;
+        }
+        Ok(proto)
     }
 
     async fn resource_actor(&self) -> Result<RoomActor, String> {
@@ -1311,21 +1360,20 @@ impl MediaResourceHub {
                     ) {
                         continue;
                     }
-                    let event_payload =
-                        match chat_message_event_to_proto(event, &observer.public_id_codec) {
-                            Ok(event) => event,
-                            Err(error) => {
-                                tracing::warn!(
-                                    room_id = %observer.room_id,
-                                    user_id = %observer.user_id,
-                                    observe_id = %updated_observation.observe_id,
-                                    error = %error,
-                                    "Failed to convert chat event for resource observer"
-                                );
-                                chat_outcome.record_send_failure(key.connection_id.clone(), error);
-                                continue;
-                            }
-                        };
+                    let event_payload = match observer.chat_message_event_to_proto(event).await {
+                        Ok(event) => event,
+                        Err(error) => {
+                            tracing::warn!(
+                                room_id = %observer.room_id,
+                                user_id = %observer.user_id,
+                                observe_id = %updated_observation.observe_id,
+                                error = %error,
+                                "Failed to convert chat event for resource observer"
+                            );
+                            chat_outcome.record_send_failure(key.connection_id.clone(), error);
+                            continue;
+                        }
+                    };
                     let changed = synctv_proto::client::ResourceEvent {
                         observe_id: updated_observation.observe_id.clone(),
                         payload: Some(synctv_proto::client::resource_event::Payload::ChatEvent(
@@ -1372,21 +1420,20 @@ impl MediaResourceHub {
                     ) {
                         continue;
                     }
-                    let event_payload =
-                        match chat_pin_event_to_proto(event, &observer.public_id_codec) {
-                            Ok(event) => event,
-                            Err(error) => {
-                                tracing::warn!(
-                                    room_id = %observer.room_id,
-                                    user_id = %observer.user_id,
-                                    observe_id = %updated_observation.observe_id,
-                                    error = %error,
-                                    "Failed to convert chat pin event for resource observer"
-                                );
-                                chat_outcome.record_send_failure(key.connection_id.clone(), error);
-                                continue;
-                            }
-                        };
+                    let event_payload = match observer.chat_pin_event_to_proto(event).await {
+                        Ok(event) => event,
+                        Err(error) => {
+                            tracing::warn!(
+                                room_id = %observer.room_id,
+                                user_id = %observer.user_id,
+                                observe_id = %updated_observation.observe_id,
+                                error = %error,
+                                "Failed to convert chat pin event for resource observer"
+                            );
+                            chat_outcome.record_send_failure(key.connection_id.clone(), error);
+                            continue;
+                        }
+                    };
                     let changed = synctv_proto::client::ResourceEvent {
                         observe_id: updated_observation.observe_id.clone(),
                         payload: Some(synctv_proto::client::resource_event::Payload::ChatPinEvent(
@@ -1521,7 +1568,16 @@ impl MediaResourceHub {
                             );
                             continue;
                         };
-                        if !matches!(observation.resource, ObservedResource::PlaybackState) {
+                        if !observation.accepts_inline_playback_state_event() {
+                            refresh_plan.insert(
+                                key.clone(),
+                                (
+                                    Arc::downgrade(&observer),
+                                    observation.clone(),
+                                    force,
+                                    *revision,
+                                ),
+                            );
                             continue;
                         }
                         let cursor = event_cursor.clone().unwrap_or_else(|| {
@@ -1606,22 +1662,21 @@ impl MediaResourceHub {
                         ) {
                             continue;
                         }
-                        let event_payload =
-                            match chat_message_event_to_proto(event, &observer.public_id_codec) {
-                                Ok(event) => event,
-                                Err(error) => {
-                                    tracing::warn!(
-                                        room_id = %observer.room_id,
-                                        user_id = %observer.user_id,
-                                        observe_id = %updated_observation.observe_id,
-                                        error = %error,
-                                        "Failed to convert chat event for resource observer"
-                                    );
-                                    event_outcome
-                                        .record_send_failure(key.connection_id.clone(), error);
-                                    continue;
-                                }
-                            };
+                        let event_payload = match observer.chat_message_event_to_proto(event).await
+                        {
+                            Ok(event) => event,
+                            Err(error) => {
+                                tracing::warn!(
+                                    room_id = %observer.room_id,
+                                    user_id = %observer.user_id,
+                                    observe_id = %updated_observation.observe_id,
+                                    error = %error,
+                                    "Failed to convert chat event for resource observer"
+                                );
+                                event_outcome.record_send_failure(key.connection_id.clone(), error);
+                                continue;
+                            }
+                        };
                         let changed = synctv_proto::client::ResourceEvent {
                             observe_id: updated_observation.observe_id.clone(),
                             payload: Some(
@@ -1662,22 +1717,20 @@ impl MediaResourceHub {
                         ) {
                             continue;
                         }
-                        let event_payload =
-                            match chat_pin_event_to_proto(event, &observer.public_id_codec) {
-                                Ok(event) => event,
-                                Err(error) => {
-                                    tracing::warn!(
-                                        room_id = %observer.room_id,
-                                        user_id = %observer.user_id,
-                                        observe_id = %updated_observation.observe_id,
-                                        error = %error,
-                                        "Failed to convert chat pin event for resource observer"
-                                    );
-                                    event_outcome
-                                        .record_send_failure(key.connection_id.clone(), error);
-                                    continue;
-                                }
-                            };
+                        let event_payload = match observer.chat_pin_event_to_proto(event).await {
+                            Ok(event) => event,
+                            Err(error) => {
+                                tracing::warn!(
+                                    room_id = %observer.room_id,
+                                    user_id = %observer.user_id,
+                                    observe_id = %updated_observation.observe_id,
+                                    error = %error,
+                                    "Failed to convert chat pin event for resource observer"
+                                );
+                                event_outcome.record_send_failure(key.connection_id.clone(), error);
+                                continue;
+                            }
+                        };
                         let changed = synctv_proto::client::ResourceEvent {
                             observe_id: updated_observation.observe_id.clone(),
                             payload: Some(
@@ -2454,11 +2507,7 @@ impl ResourceObserver {
                                     observe_id: observe_id.to_string(),
                                     payload: Some(
                                         synctv_proto::client::resource_event::Payload::ChatEvent(
-                                            chat_message_event_to_proto(
-                                                event,
-                                                &self.public_id_codec,
-                                            )
-                                            .map_err(|error| error.clone())?,
+                                            self.chat_message_event_to_proto(event).await?,
                                         ),
                                     ),
                                     event_cursor: Some(cursor),
@@ -2591,7 +2640,7 @@ impl ResourceObserver {
                                     observe_id: observe_id.to_string(),
                                     payload: Some(
                                         synctv_proto::client::resource_event::Payload::ChatPinEvent(
-                                            chat_pin_event_to_proto(&event, &self.public_id_codec)?,
+                                            self.chat_pin_event_to_proto(&event).await?,
                                         ),
                                     ),
                                     event_cursor: Some(cursor),
@@ -3354,8 +3403,37 @@ impl ResourceObserver {
         }
     }
 
-    async fn self_room_member_snapshot(&self) -> Result<synctv_proto::common::RoomMember, String> {
+    pub(super) async fn self_room_member_snapshot(
+        &self,
+    ) -> Result<synctv_proto::common::RoomMember, String> {
         const PAGE_SIZE: u32 = 500;
+        if let RoomActor::Guest(access) = &self.actor {
+            let permissions = self
+                .room_service
+                .get_guest_permissions(&self.room_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            let stats = self
+                .presence_service
+                .user_room_stats(self.user_id, self.room_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            return Ok(synctv_proto::common::RoomMember {
+                room_id: self
+                    .public_id_codec
+                    .encode_room_id(self.room_id)
+                    .map_err(|error| format!("Failed to encode room public id: {error}"))?,
+                user_id: access.guest_id.clone(),
+                username: access.display_name.clone(),
+                role: synctv_proto::common::RoomMemberRole::Guest as i32,
+                permissions: permissions.bits(),
+                joined_at: 0,
+                is_online: stats.is_online,
+                connection_count: i32::try_from(stats.connection_count)
+                    .map_err(|_| "guest connection count exceeds i32 range".to_string())?,
+                ..Default::default()
+            });
+        }
         let mut page = 1_u32;
         let member = loop {
             let (members, total) = self
@@ -3476,6 +3554,19 @@ mod tests {
         }
     }
 
+    fn playback_history_observation() -> ResourceObservation {
+        ResourceObservation {
+            observe_id: "playback-history".to_string(),
+            last_fingerprint: String::new(),
+            delivery_mode: ResourceDeliveryMode::PushSnapshot,
+            resource: ObservedResource::PlaybackHistory {
+                request: synctv_proto::client::ListPlaybackHistoryRequest::default(),
+            },
+            expires_at: None,
+            last_sent_event_sequence: 0,
+        }
+    }
+
     #[test]
     fn playback_tracks_room_resource_dependency_types() {
         let observation = playback_observation();
@@ -3491,6 +3582,19 @@ mod tests {
                 ][..]
             )
         );
+    }
+
+    #[test]
+    fn playback_state_event_refreshes_playback_history_snapshot() {
+        let playback_state = playback_state_observation();
+        let playback_history = playback_history_observation();
+
+        assert!(playback_state.accepts_inline_playback_state_event());
+        assert!(!playback_history.accepts_inline_playback_state_event());
+        assert!(ResourceObserver::observation_invalidated_by_invalidation(
+            &playback_history,
+            &ResourceInvalidation::PlaybackState,
+        ));
     }
 
     #[test]

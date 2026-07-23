@@ -172,7 +172,7 @@ Client guidance:
 
 - Use access tokens only for short-lived API calls.
 - Use guest tokens only for the public room they were issued for. They can read or participate in guest-enabled room data, but cannot log in, refresh a session, log out, call account APIs, or access media resources.
-- When a room grants guests `use_webrtc`, guests use the same guest token to fetch ICE servers, connect to Realtime, and send WebRTC signaling.
+- When a room grants guests `use_voice_chat` or `use_p2p_media`, guests use the same guest token to fetch ICE servers, connect to Realtime, and send signaling for the authorized business session.
 - Use refresh tokens only for session refresh. Do not put them in WebSocket query strings, media URLs, or third-party requests.
 - After refresh, replace the locally stored token pair with the server response. Avoid concurrent refresh attempts with stale refresh tokens.
 - When a user enables 2FA, local login must complete MFA before receiving an acceptable token. OAuth2 login is not part of local 2FA, but OAuth2-issued tokens are accepted for that login path.
@@ -315,11 +315,58 @@ Authorization: Bearer <access_token_or_guest_token>
 
 Access rules:
 
-- A signed-in member must belong to the room and have `use_webrtc`.
-- A guest must use a guest token issued for that room, and the room must allow guests and grant `use_webrtc`.
+- A signed-in member must belong to the room and have `use_voice_chat` or `use_p2p_media`.
+- A guest must use a guest token issued for that room, and the room must allow guests and grant one of the WebRTC business permissions.
 - If the room is closed, banned, password-protected, or guest access is revoked, guests cannot fetch fresh ICE configuration.
 
 The response includes a `webrtc` status object. Clients can surface a non-secret warning when `builtin_stun_state` is `degraded` or when no ICE servers are returned, while still using any external STUN/TURN servers present in `servers`.
+
+For a voice join, clients should generate a UUID in `WebRTCVoiceJoinCommand.client_operation_id` before optimistically enabling the local microphone and audio session. When the room is at capacity, the server returns a realtime error carrying the same operation ID. The client rolls back only the matching pending join by closing local tracks, audio mode, and established PeerConnections. The field is optional; interactive clients should send it consistently.
+
+## P2P Media Clients
+
+Every entry in `PlaybackInfo.medias` carries its own URL, `format`, and optional `p2p_delivery`:
+
+| Field | Client use |
+| --- | --- |
+| `PlaybackMedia.format` | Select progressive, HLS, or DASH local-gateway handling |
+| `p2p_delivery.swarm_id` | Identify byte-equivalent content within the room |
+| `p2p_delivery.swarm_ticket` | Short-lived credential for joining the media swarm |
+
+The Provider decides byte equivalence. Clients use the server-returned swarm ID directly; URLs, proxy paths, signatures, and viewer-specific headers are transport details. Live representations and resources without a stable identity omit `p2p_delivery`.
+
+Recommended lifecycle:
+
+<Steps>
+1. Select one `PlaybackMedia` and read its `format` and `p2p_delivery`.
+2. When the user enables P2P and delivery metadata is present, start a random local HTTP gateway bound only to loopback.
+3. Send `WebRTCMediaSwarmJoin`, discover peers, and exchange `WebRTCMediaOffer`, `WebRTCMediaAnswer`, and `WebRTCMediaIceCandidate` events for each DataChannel.
+4. Build piece keys from player requests and check the memory hot cache, persistent cache, available peers, then the HTTP origin.
+5. On media or source changes, P2P disable, or room exit, send leave and release the swarm connections and local mapping.
+</Steps>
+
+The HLS gateway rewrites manifests and segment URLs. The DASH gateway supplies a local `BaseURL` for segment requests expanded by the player. Progressive media uses aligned Range pieces. Small static resources such as subtitles can use whole-resource pieces. Gateways should deduplicate concurrent requests for the same piece and apply explicit capacity and timeout limits to caches, resource mappings, peer requests, and origin HTTP.
+
+Clients let users select a persistent-cache capacity of 64, 128, 256, 512, or 1024 MiB, with 128 MiB as the default. Disk entries use `swarm_id + piece_key` and remain reusable across playback sessions. Capacity eviction follows LRU; every access refreshes an entry, and ten minutes without access expires it. Clients remove expired entries during cache initialization, reads, writes, minutely maintenance, and clean shutdown. The next initialization also removes expired files, corrupted index entries, and orphaned temporary files left by an interrupted process. The memory hot tier uses at most 32 MiB and is further bounded by the selected cache capacity.
+
+Origin fallback uses cancellable phase-specific racing:
+
+- The header phase starts timing when the origin request begins. After 2 seconds without response headers, the client queries peers and retries every second after a confirmed miss. The complete header phase has a 15-second budget. Origin headers cancel the old peer discovery, availability query, transfer, and queued permit; a completed peer piece cancels the origin request.
+- The body phase maintains a 3-second idle timer from the latest chunk. A peer hedge starts when no bytes arrive for 3 seconds, the average rate after a 2-second observation stays below 256 KiB/s, or the current piece has been reading for more than 5 seconds. The origin keeps reading and an in-flight peer query stays active. Confirmed peer misses retry every second, and either completed side cancels the other.
+- Progressive media prefetches the next two aligned 1 MiB pieces from peers after delivering the current piece. Consumption gives an active prefetch a 150 ms join window, then starts the origin while preserving that peer request in the race. At most two prefetch tasks stay active globally. HLS and DASH keep using the player's segment request window for prefetch, while the local gateway deduplicates concurrent requests for the same piece.
+
+Clients expose two peer-data validation levels:
+
+| Level | Behavior | Cost and boundary |
+| --- | --- | --- |
+| Standard | Validate transfer framing, declared length, piece-size limits, and timeouts | Default; validation itself adds no network traffic and trusts peers admitted through room authorization |
+| Origin sampling | Randomly select 10% of peer pieces, read the same bytes from the origin, and compare SHA-256 | A sampled piece adds an equal amount of origin traffic; a conflict uses origin bytes and isolates that peer for the current swarm session |
+
+Origin sampling treats the Provider-returned origin HTTP resource as the trust anchor. When the origin is temporarily unavailable, the client records an unavailable check and continues with the peer piece to preserve playback availability. Majority agreement among peers cannot resist coordinated identities, while container-header or keyframe parsing proves only that bytes are parseable. Neither signal establishes content authenticity. If the server later supplies trusted piece digests, clients should prefer complete per-piece digest validation.
+
+The security level controls integrity validation only. Header and body racing, repeated peer lookup, concurrent origin and peer work, bytes received before cancellation, and progressive prefetch are shared scheduling policies across every security level. Standard mode can therefore produce additional transfer traffic.
+
+Clients should continuously record peer count, HTTP and P2P download, P2P upload, transferred bytes, cache size, and hit rate. Metrics stay outside playback correctness decisions, and origin HTTP remains the availability fallback.
 
 ## Media URLs and Headers
 

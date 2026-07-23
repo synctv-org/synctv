@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS room_playback_progress (
         CHECK ("position" >= 0),
     CONSTRAINT room_playback_progress_has_supported_source
         CHECK (
-            (media_id IS NOT NULL AND playlist_id IS NULL AND target IS NULL)
+            (media_id IS NOT NULL AND target IS NULL)
             OR (media_id IS NULL AND playlist_id IS NOT NULL AND target IS NOT NULL)
         ),
     CONSTRAINT room_playback_progress_target_hash_sha256
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS room_playback_history (
     PRIMARY KEY (room_id, id, created_at),
     CONSTRAINT room_playback_history_position_seconds_non_negative CHECK (position_seconds >= 0),
     CONSTRAINT room_playback_history_has_supported_source CHECK (
-        (media_id IS NOT NULL AND playlist_id IS NULL AND target IS NULL)
+        (media_id IS NOT NULL AND target IS NULL)
         OR (media_id IS NULL AND playlist_id IS NOT NULL AND target IS NOT NULL)
     ),
     CONSTRAINT room_playback_history_target_hash_sha256

@@ -386,10 +386,10 @@ mod tests {
     #[test]
     fn test_member_with_added_permissions() {
         let mut member = test_member(RoomRole::Member);
-        member.added_permissions = RoomMemberPermissionBits::USE_WEBRTC;
+        member.added_permissions = RoomMemberPermissionBits::USE_VOICE_CHAT;
         let default = RoomPermissionSet::default_member();
         let result = member.effective_permissions(default);
-        assert!(result.has(crate::models::RoomPermission::USE_WEBRTC));
+        assert!(result.has(crate::models::RoomPermission::USE_VOICE_CHAT));
         assert!(result.has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
     }
 
@@ -421,16 +421,16 @@ mod tests {
         let default = RoomPermissionSet::default_guest();
         let result = member.effective_permissions(default);
         assert!(!result.has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
-        assert!(!result.has(crate::models::RoomPermission::VIEW_MEDIA));
+        assert!(!result.has(crate::models::RoomPermission::BROWSE_LIBRARY));
     }
 
     #[test]
     fn test_guest_accepts_guest_assignable_override() {
         let mut member = test_member(RoomRole::Guest);
-        member.added_permissions = RoomGuestPermissionBits::USE_WEBRTC;
+        member.added_permissions = RoomGuestPermissionBits::USE_VOICE_CHAT;
         let default = RoomPermissionSet::default_guest();
         let result = member.effective_permissions(default);
-        assert!(result.has(crate::models::RoomPermission::USE_WEBRTC));
+        assert!(result.has(crate::models::RoomPermission::USE_VOICE_CHAT));
     }
 
     #[test]

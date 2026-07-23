@@ -51,6 +51,13 @@ pub enum DisconnectSignal {
     UserFromRoom { user_id: UserId, room_id: RoomId },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VoiceRtcJoinOutcome {
+    Joined,
+    AlreadyJoined,
+    RoomAtCapacity,
+}
+
 struct ConnectionIdClaim<'a> {
     manager: &'a ConnectionManager,
     connection_id: String,
@@ -173,6 +180,7 @@ pub struct ConnectionManager {
     /// Striped async mutexes that serialize lifecycle mutations for a single
     /// connection ID across register/join_room/unregister operations.
     connection_lifecycle_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
+    voice_room_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
 }
 
 /// Maximum capacity of the pending retry queue for failed Redis counter operations.
@@ -298,6 +306,11 @@ impl ConnectionManager {
                     .map(|_| Arc::new(tokio::sync::Mutex::new(())))
                     .collect(),
             ),
+            voice_room_locks: Arc::new(
+                (0..CONNECTION_LIFECYCLE_LOCK_STRIPES)
+                    .map(|_| Arc::new(tokio::sync::Mutex::new(())))
+                    .collect(),
+            ),
         }
     }
 
@@ -363,6 +376,19 @@ impl ConnectionManager {
         Arc::clone(&self.connection_lifecycle_locks[index])
     }
 
+    fn voice_room_lock(&self, room_id: &RoomId) -> Arc<tokio::sync::Mutex<()>> {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        room_id.hash(&mut hasher);
+        let shard_count = self.voice_room_locks.len();
+        debug_assert!(shard_count > 0, "voice room lock stripes must exist");
+        let index = u64_to_usize_saturating(hasher.finish() % shard_count as u64);
+        Arc::clone(&self.voice_room_locks[index])
+    }
+
+    fn voice_room_key(&self, room_id: &RoomId) -> String {
+        self.redis_key("voice_rtc:room", room_id)
+    }
+
     fn schedule_idle_timeout(&self, connection_id: &str, last_activity: Instant) {
         let deadline = last_activity + self.limits.idle_timeout;
         self.timeout_index
@@ -377,15 +403,15 @@ impl ConnectionManager {
             .schedule_max_duration(connection_id, deadline);
     }
 
-    fn schedule_rtc_timeout(&self, connection_id: &str, rtc_joined_at: Instant) {
-        let deadline = rtc_joined_at + self.limits.webrtc_session_timeout;
+    fn schedule_voice_rtc_timeout(&self, connection_id: &str, voice_rtc_joined_at: Instant) {
+        let deadline = voice_rtc_joined_at + self.limits.webrtc_session_timeout;
         self.timeout_index
             .lock()
-            .schedule_rtc(connection_id, deadline);
+            .schedule_voice_rtc(connection_id, deadline);
     }
 
-    fn clear_rtc_timeout(&self, connection_id: &str) {
-        self.timeout_index.lock().clear_rtc(connection_id);
+    fn clear_voice_rtc_timeout(&self, connection_id: &str) {
+        self.timeout_index.lock().clear_voice_rtc(connection_id);
     }
 
     fn remove_timeout_tracking(&self, connection_id: &str) {
@@ -1390,6 +1416,10 @@ impl ConnectionManager {
                         self.room_connections.remove(room_id);
                     }
                 }
+                if conn_info.voice_rtc_joined {
+                    self.release_voice_rtc_slot_best_effort(room_id, connection_id)
+                        .await;
+                }
             }
 
             // Decrement distributed Redis counters and remove metadata with one
@@ -1479,7 +1509,7 @@ impl ConnectionManager {
             (
                 timeout_index.take_due_idle(now),
                 timeout_index.take_due_max_duration(now),
-                timeout_index.take_due_rtc(now),
+                timeout_index.take_due_voice_rtc(now),
             )
         };
 
@@ -1519,14 +1549,14 @@ impl ConnectionManager {
 
             // Check WebRTC session timeout
             // Only check if the connection is marked as RTC-joined
-            if conn.rtc_joined {
-                if let Some(rtc_duration) = conn.rtc_session_duration() {
+            if conn.voice_rtc_joined {
+                if let Some(rtc_duration) = conn.voice_rtc_session_duration() {
                     if rtc_duration > self.limits.webrtc_session_timeout {
                         warn!(
                             connection_id = %conn.connection_id,
                             user_id = %conn.user_id,
                             room_id = ?conn.room_id,
-                            rtc_session_duration = ?rtc_duration,
+                            voice_rtc_session_duration = ?rtc_duration,
                             webrtc_session_timeout = ?self.limits.webrtc_session_timeout,
                             "WebRTC session timeout"
                         );
@@ -1542,7 +1572,7 @@ impl ConnectionManager {
 
         // Now apply RTC state mutations outside the DashMap iteration
         for (room_id, user_id, conn_id) in rtc_timeouts {
-            self.mark_rtc_joined(&room_id, &user_id, &conn_id, false);
+            self.mark_voice_rtc_joined(&room_id, &user_id, &conn_id, false);
         }
 
         to_disconnect

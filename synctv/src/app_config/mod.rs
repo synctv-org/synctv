@@ -1187,7 +1187,7 @@ impl Default for WebRTCConfig {
             stun_port: 3478,
             stun_host: "0.0.0.0".to_string(),
             stun_external_addr: String::new(),
-            filter_private_ice_candidates: true,
+            filter_private_ice_candidates: false,
         }
     }
 }

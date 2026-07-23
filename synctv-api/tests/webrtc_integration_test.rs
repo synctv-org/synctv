@@ -3,7 +3,7 @@
 //! Comprehensive tests for WebRTC functionality including:
 //! - ICE servers configuration (STUN)
 //! - WebRTC signaling (Offer/Answer/ICE candidate exchange)
-//! - Permission checks (`USE_WEBRTC` permission required)
+//! - Permission checks (`USE_VOICE_CHAT` permission required)
 //! - Multi-user peer-to-peer scenarios
 //!
 //! These tests validate the complete WebRTC flow from ICE server discovery
@@ -12,7 +12,9 @@
 #![allow(clippy::unwrap_used)]
 
 mod support;
-use synctv_core::models::{RoomGuestPermissionBits, RoomMemberPermissionBits};
+use synctv_core::models::{
+    RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMemberPermissionBits,
+};
 
 // Test Infrastructure Setup
 
@@ -361,10 +363,10 @@ mod permissions {
                 room.id,
                 creator.id,
                 member.id,
-                RoomMemberPermissionBits::USE_WEBRTC,
+                RoomMemberPermissionBits::USE_VOICE_CHAT,
             )
             .await
-            .expect("grant USE_WEBRTC");
+            .expect("grant USE_VOICE_CHAT");
 
         let response = fixture
             .client_api
@@ -393,7 +395,7 @@ mod permissions {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_guest_with_use_webrtc_permission_can_bootstrap_ice_servers() {
+    async fn test_guest_with_use_voice_chat_permission_can_bootstrap_ice_servers() {
         let fixture = build_client_api_fixture("api-webrtc-guest-ice").await;
 
         persist_external_ice_servers(
@@ -426,7 +428,7 @@ mod permissions {
             .expect("load room settings");
         settings.allow_guest_join = AllowGuestJoin(true);
         settings.guest_added_permissions =
-            GuestAddedPermissions(RoomGuestPermissionBits::USE_WEBRTC);
+            GuestAddedPermissions(RoomGuestPermissionBits::USE_VOICE_CHAT);
         fixture
             .room_service
             .set_settings(room.id, creator.id, settings)
@@ -480,7 +482,7 @@ mod permissions {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_get_ice_servers_denies_member_without_use_webrtc_permission() {
+    async fn test_get_ice_servers_accepts_either_business_permission_and_denies_without_both() {
         let fixture = build_client_api_fixture("api-webrtc-permissions").await;
 
         let creator = register_fixture_user(&fixture, "webrtc_creator").await;
@@ -510,16 +512,34 @@ mod permissions {
                 room.id,
                 creator.id,
                 member.id,
-                RoomMemberPermissionBits::USE_WEBRTC,
+                RoomMemberPermissionBits::USE_VOICE_CHAT,
             )
             .await
-            .expect("revoke USE_WEBRTC");
+            .expect("revoke USE_VOICE_CHAT");
+
+        fixture
+            .client_api
+            .get_ice_servers(&room.id, &member.id)
+            .await
+            .expect("USE_P2P_MEDIA alone should authorize ICE bootstrap");
+
+        fixture
+            .room_service
+            .member_service()
+            .revoke_permission(
+                room.id,
+                creator.id,
+                member.id,
+                RoomAdminPermissionBits::USE_P2P_MEDIA,
+            )
+            .await
+            .expect("revoke USE_P2P_MEDIA");
 
         let err = fixture
             .client_api
             .get_ice_servers(&room.id, &member.id)
             .await
-            .expect_err("members without USE_WEBRTC must be denied");
+            .expect_err("members without an RTC business permission must be denied");
 
         match err {
             ApiError::Authorization(message) => {
@@ -679,35 +699,3 @@ mod ice_filtering {
         assert!(relay_candidate.contains("typ relay"));
     }
 }
-
-// Integration Test Notes
-
-// would be added here in a real-world scenario. These tests validate:
-//    User B sends answer → User A receives
-//    the signaling server
-//    rejected when attempting to send WebRTC messages
-//    server replicas via Redis pub/sub
-// Such tests would require:
-// - testcontainers for PostgreSQL and Redis
-// - WebSocket client library for connection testing
-// - Mocking or actual implementation of connection manager
-// Example test structure:
-// #[tokio::test]
-// async fn test_webrtc_offer_answer_flow() {
-//     let infra = TestInfra::setup().await;
-//     let user_a = infra.create_test_user("alice").await;
-//     let user_b = infra.create_test_user("bob").await;
-//     let room = infra.create_test_room("test_room").await;
-//     let ws_a = infra.connect_websocket(&user_a, &room).await;
-//     let ws_b = infra.connect_websocket(&user_b, &room).await;
-//     // User A sends offer
-//     ws_a.send(Message::WebRtcOffer { to_user_id: user_b.id, sdp: "..." }).await;
-//     // User B receives offer
-//     let offer = ws_b.recv().await.expect("Should receive offer");
-//     assert_matches!(offer, Message::WebRtcOffer { .. });
-//     // User B sends answer
-//     ws_b.send(Message::WebRtcAnswer { to_user_id: user_a.id, sdp: "..." }).await;
-//     // User A receives answer
-//     let answer = ws_a.recv().await.expect("Should receive answer");
-//     assert_matches!(answer, Message::WebRtcAnswer { .. });
-// }

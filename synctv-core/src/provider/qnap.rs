@@ -712,7 +712,7 @@ impl MediaProvider for QnapProvider {
             insert_mode(
                 &mut playback_infos,
                 &format!("transcoded_{}", resolution.label()),
-                &format!("{} {}", file.filename, resolution.label()),
+                resolution.label(),
                 &config.path,
                 QnapPlaybackMode::PreTranscoded {
                     height: resolution_height(*resolution),
@@ -722,10 +722,25 @@ impl MediaProvider for QnapProvider {
                 subtitles.clone(),
             );
         }
+        let prefer_transcode = !ready.is_empty()
+            && super::playback_profile_prefers_transcode(
+                ctx.playback_client_profile(),
+                detect_direct_url_format(&config.path),
+            );
+        if prefer_transcode {
+            if let Some(info) = playback_infos.get_mut("transcoded") {
+                info.default_media_index = info.medias.len().checked_sub(1);
+            }
+        }
         let capabilities = capabilities_from(&auth.login, &hardware);
         let result = PlaybackResult {
             playback_infos,
-            default_mode: "original".to_string(),
+            default_mode: if prefer_transcode {
+                "transcoded"
+            } else {
+                "original"
+            }
+            .to_string(),
             provider: Self::NAME.to_string(),
             provider_instance_name: auth.instance_name,
             duration_seconds: None,
@@ -746,11 +761,12 @@ impl MediaProvider for QnapProvider {
         super::cached_versioned_playback_or_fill(
             Self::NAME,
             &format!(
-                "playback:{owner}:{}:room:{}:{}",
+                "playback:{owner}:{}:room:{}:{}:profile:{}",
                 config.server_id,
                 ctx.room_id
                     .map_or_else(|| "none".to_string(), |room| room.to_string()),
-                config.path
+                config.path,
+                super::playback_profile_cache_token(ctx.playback_client_profile())
             ),
             PLAYBACK_CACHE_TTL,
             ctx,
@@ -1122,34 +1138,39 @@ fn insert_mode(
     server_id: &str,
     subtitles: Vec<PlaybackSubtitle>,
 ) {
-    infos.insert(
-        mode_name.to_string(),
-        PlaybackInfo {
+    let route_name = if mode_name.starts_with("transcoded_") {
+        "transcoded"
+    } else {
+        mode_name
+    };
+    let info = infos
+        .entry(route_name.to_string())
+        .or_insert_with(|| PlaybackInfo {
             thumbnail: Some(path.to_string()),
-            medias: vec![PlaybackMedia {
-                name: media_name.to_string(),
-                format: match mode {
-                    QnapPlaybackMode::Original => detect_direct_url_format(path).to_string(),
-                    QnapPlaybackMode::PreTranscoded { .. } => "mp4".to_string(),
-                },
-                expire_at: None,
-                metadata: None,
-                provider: PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Refresh {
-                    credential_owner_id: owner.to_string(),
-                    server_id: server_id.to_string(),
-                    resource: QnapPlaybackResource {
-                        path: path.to_string(),
-                        mode,
-                    },
-                }),
-            }],
+            medias: Vec::new(),
             default_media_index: Some(0),
             subtitles,
             default_subtitle_index: None,
             danmakus: Vec::new(),
             default_danmaku_index: None,
+        });
+    info.medias.push(PlaybackMedia {
+        name: media_name.to_string(),
+        format: match mode {
+            QnapPlaybackMode::Original => detect_direct_url_format(path).to_string(),
+            QnapPlaybackMode::PreTranscoded { .. } => "mp4".to_string(),
         },
-    );
+        expire_at: None,
+        metadata: None,
+        provider: PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Refresh {
+            credential_owner_id: owner.to_string(),
+            server_id: server_id.to_string(),
+            resource: QnapPlaybackResource {
+                path: path.to_string(),
+                mode,
+            },
+        }),
+    });
 }
 
 fn mark_qnap_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
@@ -1347,6 +1368,37 @@ fn decode_target(target: Option<&ProviderTarget>) -> Result<Option<String>, Prov
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pre_transcoded_resolutions_share_one_mode() {
+        let owner = UserId::new();
+        let mut infos = HashMap::new();
+        insert_mode(
+            &mut infos,
+            "transcoded_720p",
+            "720p",
+            "/Movies/Movie.mkv",
+            QnapPlaybackMode::PreTranscoded { height: 720 },
+            owner,
+            "server",
+            Vec::new(),
+        );
+        insert_mode(
+            &mut infos,
+            "transcoded_1080p",
+            "1080p",
+            "/Movies/Movie.mkv",
+            QnapPlaybackMode::PreTranscoded { height: 1080 },
+            owner,
+            "server",
+            Vec::new(),
+        );
+
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos["transcoded"].medias.len(), 2);
+        assert_eq!(infos["transcoded"].medias[0].name, "720p");
+        assert_eq!(infos["transcoded"].medias[1].name, "1080p");
+    }
 
     #[test]
     fn related_subtitles_accept_language_suffixes() {

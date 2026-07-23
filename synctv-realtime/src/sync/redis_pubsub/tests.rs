@@ -856,7 +856,7 @@ async fn test_dispatch_event_drops_malformed_webrtc_target() -> TestResult {
     pubsub
         .dispatch_event(
             &format!("synctv:room:{room_id}"),
-            RealtimeEvent::WebRTCSignaling {
+            RealtimeEvent::WebRTCVoiceSignaling {
                 event_id: synctv_common::snanoid!(16),
                 room_id,
                 message_type: WebRTCSignalKind::Offer,

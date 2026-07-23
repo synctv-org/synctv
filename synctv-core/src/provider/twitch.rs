@@ -752,49 +752,19 @@ impl TwitchProvider {
         provider_instance_name: Option<&str>,
     ) -> Result<PlaybackResult, ProviderError> {
         let mut infos = HashMap::new();
-        for (index, quality) in playback.qualities.into_iter().enumerate() {
-            let mode = unique_mode_name(&infos, &quality.name, index);
+        for quality in playback.qualities {
             let format = if quality.url.contains(".m3u8") {
                 "m3u8"
             } else {
                 "mp4"
             };
-            infos.insert(
-                mode,
-                PlaybackInfo {
+            let mode = if format == "m3u8" { "hls" } else { format };
+            let info = infos
+                .entry(mode.to_string())
+                .or_insert_with(|| PlaybackInfo {
                     thumbnail: metadata.thumbnail_url.clone(),
-                    medias: vec![PlaybackMedia {
-                        name: quality.name.clone(),
-                        format: format.to_string(),
-                        expire_at: None,
-                        metadata: Some(PlaybackMediaMetadata {
-                            resolution: quality
-                                .width
-                                .zip(quality.height)
-                                .map(|(width, height)| format!("{width}x{height}")),
-                            bitrate: quality
-                                .bandwidth
-                                .and_then(|value| i64::try_from(value).ok()),
-                            codec: quality.codecs,
-                            fps: quality
-                                .frame_rate
-                                .as_deref()
-                                .and_then(|value| value.parse::<f64>().ok())
-                                .and_then(rounded_i32),
-                        }),
-                        provider: PlaybackMediaProvider::Twitch(PlaybackTwitchMedia::Refresh {
-                            resource_kind: match playback.resource.kind {
-                                TwitchResourceKind::Channel => TwitchPlaybackResourceKind::Channel,
-                                TwitchResourceKind::Video => TwitchPlaybackResourceKind::Video,
-                                TwitchResourceKind::Clip => TwitchPlaybackResourceKind::Clip,
-                            },
-                            resource_id: playback.resource.id.clone(),
-                            quality_name: quality.name.clone(),
-                            credential_owner_id,
-                            provider_instance_name: provider_instance_name.map(str::to_owned),
-                        }),
-                    }],
-                    default_media_index: Some(0),
+                    medias: Vec::new(),
+                    default_media_index: None,
                     subtitles: Vec::new(),
                     default_subtitle_index: None,
                     danmakus: (playback.resource.kind == TwitchResourceKind::Channel)
@@ -809,8 +779,44 @@ impl TwitchProvider {
                         .collect(),
                     default_danmaku_index: (playback.resource.kind == TwitchResourceKind::Channel)
                         .then_some(0),
-                },
-            );
+                });
+            let media_index = info.medias.len();
+            let is_source = quality.name.eq_ignore_ascii_case("chunked")
+                || quality.name.to_ascii_lowercase().contains("source");
+            info.medias.push(PlaybackMedia {
+                name: quality.name.clone(),
+                format: format.to_string(),
+                expire_at: None,
+                metadata: Some(PlaybackMediaMetadata {
+                    resolution: quality
+                        .width
+                        .zip(quality.height)
+                        .map(|(width, height)| format!("{width}x{height}")),
+                    bitrate: quality
+                        .bandwidth
+                        .and_then(|value| i64::try_from(value).ok()),
+                    codec: quality.codecs,
+                    fps: quality
+                        .frame_rate
+                        .as_deref()
+                        .and_then(|value| value.parse::<f64>().ok())
+                        .and_then(rounded_i32),
+                }),
+                provider: PlaybackMediaProvider::Twitch(PlaybackTwitchMedia::Refresh {
+                    resource_kind: match playback.resource.kind {
+                        TwitchResourceKind::Channel => TwitchPlaybackResourceKind::Channel,
+                        TwitchResourceKind::Video => TwitchPlaybackResourceKind::Video,
+                        TwitchResourceKind::Clip => TwitchPlaybackResourceKind::Clip,
+                    },
+                    resource_id: playback.resource.id.clone(),
+                    quality_name: quality.name.clone(),
+                    credential_owner_id,
+                    provider_instance_name: provider_instance_name.map(str::to_owned),
+                }),
+            });
+            if is_source || info.default_media_index.is_none() {
+                info.default_media_index = Some(media_index);
+            }
         }
         if infos.is_empty() {
             return Err(ProviderError::ApiError(
@@ -818,10 +824,9 @@ impl TwitchProvider {
             ));
         }
         let default_mode = infos
-            .keys()
-            .find(|name| name.contains("chunked") || name.contains("source"))
-            .cloned()
-            .or_else(|| infos.keys().next().cloned())
+            .contains_key("hls")
+            .then(|| "hls".to_string())
+            .or_else(|| infos.keys().min().cloned())
             .ok_or_else(|| ProviderError::ApiError("Twitch playback is empty".to_string()))?;
         Ok(PlaybackResult {
             playback_infos: infos,
@@ -884,37 +889,6 @@ fn mark_twitch_playback_resources(result: &mut PlaybackResult, version: &str, ex
                 media_index: *media_index,
             });
         }
-    }
-}
-
-fn unique_mode_name(
-    existing: &HashMap<String, PlaybackInfo>,
-    quality: &str,
-    index: usize,
-) -> String {
-    let base = quality
-        .trim()
-        .to_ascii_lowercase()
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('_')
-        .to_string();
-    let base = if base.is_empty() {
-        format!("quality_{index}")
-    } else {
-        base
-    };
-    if existing.contains_key(&base) {
-        format!("{base}_{index}")
-    } else {
-        base
     }
 }
 
@@ -1567,7 +1541,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_maps_each_twitch_quality_to_a_mode() {
+    fn playback_groups_twitch_qualities_into_one_hls_mode() {
         let mut result = TwitchProvider::playback_result(
             TwitchPlayback {
                 resource: TwitchResource {
@@ -1615,13 +1589,15 @@ mod tests {
             None,
         )
         .expect("playback should map");
-        assert_eq!(result.default_mode, "chunked");
-        assert_eq!(result.playback_infos.len(), 2);
+        assert_eq!(result.default_mode, "hls");
+        assert_eq!(result.playback_infos.len(), 1);
         assert_eq!(result.is_live, Some(true));
         let source = result
             .playback_infos
-            .get("chunked")
+            .get("hls")
             .expect("test operation should succeed");
+        assert_eq!(source.medias.len(), 2);
+        assert_eq!(source.default_media_index, Some(0));
         assert!(matches!(
             source.medias[0].provider,
             PlaybackMediaProvider::Twitch(PlaybackTwitchMedia::Refresh { .. })
@@ -1634,7 +1610,7 @@ mod tests {
         mark_twitch_playback_resources(&mut result, "version-1", 12345);
         let source = result
             .playback_infos
-            .get("chunked")
+            .get("hls")
             .expect("test operation should succeed");
         assert!(matches!(
             source.medias[0].provider,

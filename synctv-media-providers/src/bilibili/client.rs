@@ -1675,6 +1675,7 @@ impl BilibiliClient {
                     .map(|d| VideoSegment {
                         url: d.url.clone(),
                         size: d.size,
+                        duration_millis: d.length,
                     })
                     .collect();
                 let url = required_first_segment_url(&segments, "video URL")?;
@@ -2017,6 +2018,7 @@ impl BilibiliClient {
                     .map(|d| VideoSegment {
                         url: d.url.clone(),
                         size: d.size,
+                        duration_millis: d.length,
                     })
                     .collect();
                 let url = required_first_segment_url(&segments, "PGC URL")?;
@@ -2996,71 +2998,132 @@ impl BilibiliClient {
             let room_id_str = room_id_str.clone();
             let play_info_url = play_info_url.clone();
             async move {
-                let mut req = client.get(play_info_url).query(&[
-                    ("room_id", room_id_str.as_str()),
-                    ("protocol", "0,1"),
-                    ("format", "0,1,2"),
-                    ("codec", "0,1"),
-                    ("qn", "10000"),
-                    ("platform", "web"),
-                    ("ptype", "8"),
-                ]);
-                req = req.header("Referer", REFERER);
-                if let Some(ref cookies) = cookie_header {
-                    req = req.header("Cookie", cookies.as_str());
-                }
-                let resp = check_response(req.send().await?).await?;
-                let json: types::RoomPlayInfoResp = json_with_limit(resp).await?;
+                let fetch = |qn: u64| {
+                    let client = client.clone();
+                    let cookie_header = cookie_header.clone();
+                    let room_id_str = room_id_str.clone();
+                    let play_info_url = play_info_url.clone();
+                    async move {
+                        let qn = qn.to_string();
+                        let mut req = client.get(play_info_url).query(&[
+                            ("room_id", room_id_str.as_str()),
+                            ("protocol", "0,1"),
+                            ("format", "0,1,2"),
+                            ("codec", "0,1"),
+                            ("qn", qn.as_str()),
+                            ("platform", "web"),
+                            ("ptype", "8"),
+                        ]);
+                        req = req.header("Referer", REFERER);
+                        if let Some(ref cookies) = cookie_header {
+                            req = req.header("Cookie", cookies.as_str());
+                        }
+                        let resp = check_response(req.send().await?).await?;
+                        let json: types::RoomPlayInfoResp = json_with_limit(resp).await?;
+                        if json.code != 0 {
+                            return Err(bilibili_api_error(i64::from(json.code), "live streams"));
+                        }
+                        Ok(json)
+                    }
+                };
 
-                if json.code != 0 {
-                    return Err(bilibili_api_error(i64::from(json.code), "live streams"));
-                }
-
-                let mut streams = Vec::new();
-
-                let stream_list = json
+                let initial = fetch(10_000).await?;
+                let Some(initial_playurl) = initial
                     .data
                     .playurl_info
                     .as_ref()
                     .and_then(|info| info.playurl.as_ref())
-                    .map(|playurl| &playurl.stream[..])
-                    .unwrap_or_default();
+                else {
+                    return Ok(Vec::new());
+                };
+                let quality_names = initial_playurl
+                    .g_qn_desc
+                    .iter()
+                    .map(|quality| (quality.qn, quality.desc.clone()))
+                    .collect::<HashMap<_, _>>();
+                let mut qualities = initial_playurl
+                    .stream
+                    .iter()
+                    .flat_map(|stream| &stream.format)
+                    .flat_map(|format| &format.codec)
+                    .flat_map(|codec| codec.accept_qn.iter().copied())
+                    .collect::<Vec<_>>();
+                qualities.push(10_000);
+                qualities.sort_unstable();
+                qualities.dedup();
 
-                for stream in stream_list {
-                    // Filter by protocol: when hls=true, only include HLS streams;
-                    // when hls=false, only include HTTP-FLV streams.
-                    let dominated = if hls { "http_hls" } else { "http_stream" };
-                    if !stream.protocol_name.is_empty() && stream.protocol_name != dominated {
-                        continue;
-                    }
-                    for format in &stream.format {
-                        for codec in &format.codec {
-                            let quality = quality_to_u32(codec.current_qn, "live stream URL")?;
-                            let desc = codec
-                                .accept_qn
-                                .first()
-                                .map_or_else(|| "Unknown".to_string(), |q| format!("{q}P"));
-
-                            let urls: Vec<String> = codec
-                                .url_info
-                                .iter()
-                                .filter(|info| !info.host.is_empty())
-                                .map(|info| {
-                                    format!("{}{}{}", info.host, codec.base_url, info.extra)
-                                })
-                                .collect();
-
-                            if !urls.is_empty() {
-                                streams.push(LiveStream {
-                                    quality,
-                                    urls,
-                                    desc,
-                                });
+                let dominated = if hls { "http_hls" } else { "http_stream" };
+                let mut streams = Vec::new();
+                for requested_quality in qualities {
+                    let response = if requested_quality == 10_000 {
+                        initial.clone()
+                    } else {
+                        fetch(requested_quality).await?
+                    };
+                    let stream_list = response
+                        .data
+                        .playurl_info
+                        .as_ref()
+                        .and_then(|info| info.playurl.as_ref())
+                        .map(|playurl| &playurl.stream[..])
+                        .unwrap_or_default();
+                    for stream in stream_list {
+                        if !stream.protocol_name.is_empty() && stream.protocol_name != dominated {
+                            continue;
+                        }
+                        for format in &stream.format {
+                            for codec in &format.codec {
+                                let quality = quality_to_u32(codec.current_qn, "live stream URL")?;
+                                if u64::from(quality) != requested_quality
+                                    && requested_quality != 10_000
+                                {
+                                    continue;
+                                }
+                                let urls = codec
+                                    .url_info
+                                    .iter()
+                                    .filter(|info| !info.host.is_empty())
+                                    .map(|info| LiveStreamUrl {
+                                        host: info.host.clone(),
+                                        url: format!(
+                                            "{}{}{}",
+                                            info.host, codec.base_url, info.extra
+                                        ),
+                                    })
+                                    .collect::<Vec<_>>();
+                                if !urls.is_empty() {
+                                    streams.push(LiveStream {
+                                        quality,
+                                        quality_name: quality_names
+                                            .get(&u64::from(quality))
+                                            .filter(|name| !name.trim().is_empty())
+                                            .cloned()
+                                            .unwrap_or_else(|| format!("Quality {quality}")),
+                                        protocol: stream.protocol_name.clone(),
+                                        format: format.format_name.clone(),
+                                        codec: codec.codec_name.clone(),
+                                        urls,
+                                    });
+                                }
                             }
                         }
                     }
                 }
-
+                streams.sort_by(|left, right| {
+                    right
+                        .quality
+                        .cmp(&left.quality)
+                        .then(left.protocol.cmp(&right.protocol))
+                        .then(left.format.cmp(&right.format))
+                        .then(left.codec.cmp(&right.codec))
+                });
+                streams.dedup_by(|left, right| {
+                    left.quality == right.quality
+                        && left.protocol == right.protocol
+                        && left.format == right.format
+                        && left.codec == right.codec
+                        && left.urls == right.urls
+                });
                 Ok(streams)
             }
         })
@@ -4063,6 +4126,7 @@ pub enum BilibiliResource {
 pub struct VideoSegment {
     pub url: String,
     pub size: u64,
+    pub duration_millis: u64,
 }
 
 /// Video URL information
@@ -4193,8 +4257,17 @@ pub struct PgcSeasonIndexPage {
 #[derive(Debug, Clone)]
 pub struct LiveStream {
     pub quality: u32,
-    pub urls: Vec<String>,
-    pub desc: String,
+    pub urls: Vec<LiveStreamUrl>,
+    pub quality_name: String,
+    pub protocol: String,
+    pub format: String,
+    pub codec: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveStreamUrl {
+    pub host: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

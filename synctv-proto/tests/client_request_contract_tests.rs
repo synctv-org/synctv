@@ -52,6 +52,7 @@ fn direct_url_media_source_config(
                     is_live: None,
                     duration_seconds: None,
                     prefer_proxy: None,
+                    proxy_only: None,
                 },
             ),
         ),
@@ -149,13 +150,15 @@ fn test_protojson_custom_json_name_rejects_proto_field_name() {
 fn test_room_settings_patch_uses_lower_camel_case_fields() {
     let patch: UpdateRoomSettingsRequest =
         serde_json::from_str(
-            r#"{"settings":{"chatEnabled":false,"allowGuestJoin":true},"updateMask":"chatEnabled,allowGuestJoin"}"#,
+            r#"{"settings":{"chatEnabled":false,"allowGuestJoin":true,"voiceChatEnabled":false,"p2pMediaEnabled":false},"updateMask":"chatEnabled,allowGuestJoin,voiceChatEnabled,p2pMediaEnabled"}"#,
         )
             .expect("lowerCamelCase room settings patch should deserialize");
 
     let settings = patch.settings.expect("settings");
     assert_eq!(settings.chat_enabled, Some(false));
     assert_eq!(settings.allow_guest_join, Some(true));
+    assert_eq!(settings.voice_chat_enabled, Some(false));
+    assert_eq!(settings.p2p_media_enabled, Some(false));
 
     let error = serde_json::from_str::<UpdateRoomSettingsRequest>(
         r#"{"settings":{"chat_enabled":false,"allow_guest_join":true},"updateMask":"chatEnabled,allowGuestJoin"}"#,
@@ -487,6 +490,18 @@ fn test_start_playback_request_serializes_dynamic_playlist_target() {
         json["target"],
         serde_json::to_value(emby_target("provider-item-1")).expect("target should serialize")
     );
+}
+
+#[test]
+fn test_start_playback_request_accepts_static_playlist_context() {
+    let request = StartPlaybackRequest {
+        media_id: "med_1".to_string(),
+        playlist_id: "pl_1".to_string(),
+        target: None,
+        client_operation_id: None,
+    };
+
+    synctv_proto::validate(&request).expect("static playlist context should be valid");
 }
 
 #[test]

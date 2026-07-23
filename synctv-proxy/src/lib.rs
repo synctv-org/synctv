@@ -11,6 +11,7 @@ mod cors;
 mod error;
 pub mod grpc;
 mod manifest;
+mod mpd;
 mod redirect;
 pub mod slice_cache;
 
@@ -33,7 +34,11 @@ pub use error::{
     proxy_error_kind, proxy_error_kind_from_std_error, proxy_range_not_satisfiable_total_size,
     ProxyErrorKind,
 };
-pub use manifest::{percent_encode, rewrite_m3u8, rewrite_m3u8_with_url_mapper, MAX_M3U8_URLS};
+pub use manifest::{
+    percent_encode, rewrite_m3u8, rewrite_m3u8_with_typed_url_mapper, rewrite_m3u8_with_url_mapper,
+    HlsResourceKind, MAX_M3U8_URLS,
+};
+pub use mpd::{rewrite_mpd_with_url_mapper, MpdResourceKind};
 pub(crate) use redirect::{
     send_head_with_redirect_validation_with_control_and_timeout, validate_target_url_against_ssrf,
 };

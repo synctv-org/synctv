@@ -649,6 +649,11 @@ impl StreamMessage for WebSocketStream {
                         return Some(decode_client_message_json(&text));
                     }
                 }
+                Some(Ok(axum::extract::ws::Message::Ping(payload))) => {
+                    if let Err(error) = reply_to_websocket_ping(&self.raw_sender, payload).await {
+                        return Some(Err(error));
+                    }
+                }
                 Some(Ok(axum::extract::ws::Message::Close(_))) => {
                     return None; // Graceful close
                 }
@@ -681,6 +686,16 @@ impl StreamMessage for WebSocketStream {
                 }
             })
     }
+}
+
+async fn reply_to_websocket_ping(
+    raw_sender: &tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
+    payload: axum::body::Bytes,
+) -> Result<(), String> {
+    raw_sender
+        .send(axum::extract::ws::Message::Pong(payload))
+        .await
+        .map_err(|_| "Failed to reply to WebSocket ping: channel closed".to_string())
 }
 
 /// WebSocket message sender implementation
@@ -1392,6 +1407,13 @@ async fn handle_socket(
                 .runtime_settings
                 .webrtc
                 .filter_private_ice_candidates,
+            swarm_signing_key: state.shared_api_runtime.client_api.signing_key.clone(),
+            media_swarm_tracker: state
+                .shared_api_runtime
+                .client_api
+                .media_swarm_tracker
+                .clone(),
+            runtime_settings_store: state.runtime_settings_store.clone(),
         },
     );
     let connection_id = stream_handler.connection_id().to_string();

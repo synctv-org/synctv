@@ -4,10 +4,10 @@ use axum::{
 };
 use futures::FutureExt;
 use synctv_proto::playback_provider::alist::{
-    AlistFileStreamResponse, AlistSubtitleResponse, AlistThumbnailResponse,
-    AlistTranscodedHlsManifestResponse, AlistTranscodedHlsSegmentResponse,
+    AlistFileStreamResponse, AlistHlsResourceKind, AlistSubtitleResponse, AlistThumbnailResponse,
+    AlistTranscodedHlsManifestResponse, AlistTranscodedHlsResourceResponse,
     GetAlistFileStreamRequest, GetAlistSubtitleRequest, GetAlistThumbnailRequest,
-    GetAlistTranscodedHlsManifestRequest, GetAlistTranscodedHlsSegmentRequest,
+    GetAlistTranscodedHlsManifestRequest, GetAlistTranscodedHlsResourceRequest,
 };
 
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
@@ -22,6 +22,15 @@ pub struct AlistIndexedPath {
     pub version: String,
     pub mode_name: String,
     pub url_index: u32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlistHlsResourcePath {
+    pub version: String,
+    pub mode_name: String,
+    pub media_index: u32,
+    pub resource_kind: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -44,7 +53,7 @@ impl PlaybackProviderHttpResponse for AlistTranscodedHlsManifestResponse {
     }
 }
 
-impl PlaybackProviderHttpResponse for AlistTranscodedHlsSegmentResponse {
+impl PlaybackProviderHttpResponse for AlistTranscodedHlsResourceResponse {
     fn chunk(self) -> Option<synctv_proto::playback_provider::common::StreamChunk> {
         self.chunk
     }
@@ -245,10 +254,10 @@ pub async fn get_alist_transcoded_hls_manifest(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/alist/{version}/transcoded-hls-segments",
+        path = "/api/playback-providers/alist/{version}/transcoded-hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
         tag = "Alist Playback Provider",
         params(
-            ("version" = String, Path),
+            ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path),
             ("targetUrl" = String, Query),
             ("sig" = String, Query),
             ("uid" = String, Query),
@@ -256,21 +265,21 @@ pub async fn get_alist_transcoded_hls_manifest(
             ("exp" = i64, Query)
         ),
         responses(
-            (status = 200, description = "Alist transcoded HLS segment"),
+            (status = 200, description = "Alist transcoded HLS resource"),
             (status = 400, description = "Invalid targetUrl", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
-pub fn get_alist_transcoded_hls_segment(
-    Path(version): Path<String>,
+pub fn get_alist_transcoded_hls_resource(
+    Path(path): Path<AlistHlsResourcePath>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
-    alist_transcoded_hls_segment(
-        version,
+    alist_transcoded_hls_resource(
+        path,
         state,
         request_meta,
         headers,
@@ -283,10 +292,10 @@ pub fn get_alist_transcoded_hls_segment(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/alist/{version}/transcoded-hls-segments",
+        path = "/api/playback-providers/alist/{version}/transcoded-hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
         tag = "Alist Playback Provider",
         params(
-            ("version" = String, Path),
+            ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path),
             ("targetUrl" = String, Query),
             ("sig" = String, Query),
             ("uid" = String, Query),
@@ -294,21 +303,21 @@ pub fn get_alist_transcoded_hls_segment(
             ("exp" = i64, Query)
         ),
         responses(
-            (status = 200, description = "Alist transcoded HLS segment metadata"),
+            (status = 200, description = "Alist transcoded HLS resource metadata"),
             (status = 400, description = "Invalid targetUrl", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
-pub fn head_alist_transcoded_hls_segment(
-    Path(version): Path<String>,
+pub fn head_alist_transcoded_hls_resource(
+    Path(path): Path<AlistHlsResourcePath>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
-    alist_transcoded_hls_segment(
-        version,
+    alist_transcoded_hls_resource(
+        path,
         state,
         request_meta,
         headers,
@@ -317,8 +326,8 @@ pub fn head_alist_transcoded_hls_segment(
     )
 }
 
-async fn alist_transcoded_hls_segment(
-    version: String,
+async fn alist_transcoded_hls_resource(
+    path: AlistHlsResourcePath,
     state: AppState,
     request_meta: RequestMetadata,
     headers: HeaderMap,
@@ -327,8 +336,8 @@ async fn alist_transcoded_hls_segment(
 ) -> AppResult<axum::response::Response> {
     let (sig, uid, rid, exp) =
         signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
-    let req = GetAlistTranscodedHlsSegmentRequest {
-        version,
+    let req = GetAlistTranscodedHlsResourceRequest {
+        version: path.version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,
         sig,
         uid,
@@ -336,16 +345,19 @@ async fn alist_transcoded_hls_segment(
         exp,
         range: range_header(&headers).map_err(crate::http::error::map_api_error)?,
         head: method == Method::HEAD,
+        mode_name: path.mode_name,
+        media_index: path.media_index,
+        resource_kind: alist_hls_resource_kind(&path.resource_kind)?,
     };
     let state_for_stream = state.clone();
-    stream_http_response::<AlistTranscodedHlsSegmentResponse, _>(
+    stream_http_response::<AlistTranscodedHlsResourceResponse, _>(
         state,
         request_meta,
         method,
         move |request_control| {
             let state = state_for_stream;
             async move {
-                synctv_api_common::playback_provider::alist::get_alist_transcoded_hls_segment(
+                synctv_api_common::playback_provider::alist::get_alist_transcoded_hls_resource(
                     alist_deps(&state, Some(&request_control)),
                     req,
                 )
@@ -471,6 +483,18 @@ pub async fn get_alist_thumbnail(
         },
     )
     .await
+}
+
+fn alist_hls_resource_kind(value: &str) -> AppResult<i32> {
+    match value {
+        "media" => Ok(AlistHlsResourceKind::Media as i32),
+        "manifest" => Ok(AlistHlsResourceKind::Manifest as i32),
+        _ => Err(crate::http::error::map_api_error(
+            synctv_api_common::impls::ApiError::InvalidInput(
+                "Invalid Alist HLS resource kind".to_string(),
+            ),
+        )),
+    }
 }
 
 fn alist_deps<'a>(

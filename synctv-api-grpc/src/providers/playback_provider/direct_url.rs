@@ -3,9 +3,11 @@ use std::sync::Arc;
 use futures::FutureExt;
 use synctv_proto::playback_provider::direct_url::direct_url_playback_provider_service_server::DirectUrlPlaybackProviderService;
 use synctv_proto::playback_provider::direct_url::{
-    DirectUrlHlsManifestResponse, DirectUrlHlsSegmentResponse, DirectUrlStreamResponse,
-    DirectUrlSubtitleResponse, GetDirectUrlHlsManifestRequest, GetDirectUrlHlsSegmentRequest,
-    GetDirectUrlStreamRequest, GetDirectUrlSubtitleRequest,
+    DirectUrlDashManifestResponse, DirectUrlDashResourceResponse, DirectUrlHlsManifestResponse,
+    DirectUrlHlsResourceResponse, DirectUrlStreamResponse, DirectUrlSubtitleResponse,
+    GetDirectUrlDashManifestRequest, GetDirectUrlDashResourceRequest,
+    GetDirectUrlHlsManifestRequest, GetDirectUrlHlsResourceRequest, GetDirectUrlStreamRequest,
+    GetDirectUrlSubtitleRequest,
 };
 use tonic::{Request, Response, Status};
 
@@ -38,7 +40,9 @@ impl DirectUrlPlaybackProviderGrpcService {
 impl DirectUrlPlaybackProviderService for DirectUrlPlaybackProviderGrpcService {
     type GetStreamStream = GrpcResponseStream<DirectUrlStreamResponse>;
     type GetHlsManifestStream = GrpcResponseStream<DirectUrlHlsManifestResponse>;
-    type GetHlsSegmentStream = GrpcResponseStream<DirectUrlHlsSegmentResponse>;
+    type GetHlsResourceStream = GrpcResponseStream<DirectUrlHlsResourceResponse>;
+    type GetDashManifestStream = GrpcResponseStream<DirectUrlDashManifestResponse>;
+    type GetDashResourceStream = GrpcResponseStream<DirectUrlDashResourceResponse>;
     type GetSubtitleStream = GrpcResponseStream<DirectUrlSubtitleResponse>;
 
     async fn get_stream(
@@ -85,10 +89,10 @@ impl DirectUrlPlaybackProviderService for DirectUrlPlaybackProviderGrpcService {
         .await
     }
 
-    async fn get_hls_segment(
+    async fn get_hls_resource(
         &self,
-        request: Request<GetDirectUrlHlsSegmentRequest>,
-    ) -> Result<Response<Self::GetHlsSegmentStream>, Status> {
+        request: Request<GetDirectUrlHlsResourceRequest>,
+    ) -> Result<Response<Self::GetHlsResourceStream>, Status> {
         let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
@@ -96,7 +100,51 @@ impl DirectUrlPlaybackProviderService for DirectUrlPlaybackProviderGrpcService {
         execute_playback_provider_stream(state.clone(), metadata, move |request_control| {
             let state = state.clone();
             async move {
-                synctv_api_common::playback_provider::direct_url::get_direct_url_hls_segment(
+                synctv_api_common::playback_provider::direct_url::get_direct_url_hls_resource(
+                    direct_url_deps(&state, Some(&request_control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn get_dash_manifest(
+        &self,
+        request: Request<GetDirectUrlDashManifestRequest>,
+    ) -> Result<Response<Self::GetDashManifestStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+
+        execute_playback_provider_stream(state.clone(), metadata, move |request_control| {
+            let state = state.clone();
+            async move {
+                synctv_api_common::playback_provider::direct_url::get_direct_url_dash_manifest(
+                    direct_url_deps(&state, Some(&request_control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn get_dash_resource(
+        &self,
+        request: Request<GetDirectUrlDashResourceRequest>,
+    ) -> Result<Response<Self::GetDashResourceStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+
+        execute_playback_provider_stream(state.clone(), metadata, move |request_control| {
+            let state = state.clone();
+            async move {
+                synctv_api_common::playback_provider::direct_url::get_direct_url_dash_resource(
                     direct_url_deps(&state, Some(&request_control)),
                     req,
                 )

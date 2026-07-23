@@ -2,6 +2,7 @@ use super::*;
 use crate::app_config::default_management_unix_socket_path;
 use clap::{CommandFactory, Parser};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -44,6 +45,7 @@ fn direct_url_media_source_config(
                     is_live: None,
                     duration_seconds: None,
                     prefer_proxy: None,
+                    proxy_only: None,
                     medias: vec![synctv_proto::source_config::DirectUrlMediaResourceConfig {
                         name: String::new(),
                         url: url.to_string(),
@@ -992,6 +994,8 @@ fn room_create_settings_json_is_applied_as_patch_to_defaults() {
     assert_eq!(settings.max_members, 100);
     assert!(settings.allow_auto_join);
     assert!(!settings.allow_guest_join);
+    assert!(settings.voice_chat_enabled);
+    assert!(settings.p2p_media_enabled);
 }
 
 #[test]
@@ -4220,7 +4224,7 @@ fn cli_parses_room_member_permission_names() {
         "room-1",
         "alice",
         "--added-permissions",
-        "send-chat-messages,use-webrtc",
+        "send-chat-messages,use-voice-chat,use-p2p-media",
         "--removed-permissions",
         r#"["send_chat_messages"]"#,
     ]);
@@ -4235,7 +4239,8 @@ fn cli_parses_room_member_permission_names() {
                 args.added_permissions.map(u64::from),
                 Some(
                     RoomMemberPermissionBits::SEND_CHAT_MESSAGES
-                        | RoomMemberPermissionBits::USE_WEBRTC
+                        | RoomMemberPermissionBits::USE_VOICE_CHAT
+                        | RoomMemberPermissionBits::USE_P2P_MEDIA
                 )
             );
             assert_eq!(
@@ -5284,7 +5289,7 @@ fn render_human_output_uses_room_and_member_enums_by_context() {
             display_tag: String::new(),
             role: synctv_proto::common::RoomMemberRole::Creator as i32,
             permissions: RoomAdminPermissionBits::SEND_CHAT_MESSAGES
-                | RoomAdminPermissionBits::VIEW_MEDIA,
+                | RoomAdminPermissionBits::BROWSE_LIBRARY,
             added_permissions: RoomMemberPermissionBits::MANAGE_OWN_MEDIA,
             removed_permissions: RoomMemberPermissionBits::SEND_CHAT_MESSAGES,
             admin_added_permissions: RoomAdminPermissionBits::REMOVE_MEMBERS,
@@ -5321,7 +5326,7 @@ fn render_human_output_uses_room_and_member_enums_by_context() {
     assert_eq!(rendered["members"][0]["role"], "creator");
     assert_eq!(
         rendered["members"][0]["permissionNames"],
-        string_values(&["send_chat_messages", "view_media"])
+        string_values(&["send_chat_messages", "browse_library"])
     );
     assert_eq!(
         rendered["members"][0]["addedPermissionNames"],
@@ -5710,6 +5715,7 @@ fn build_get_playback_cli_output_omits_absolute_urls_for_explicit_endpoint_mode(
                             format: "mp4".into(),
                             expire_at: None,
                             metadata: None,
+                            p2p_delivery: None,
                         }],
                         default_media_index: Some(0),
                         subtitles: Vec::new(),
@@ -5750,6 +5756,7 @@ fn build_get_playback_cli_output_prefers_default_hls_media() {
         format: "m3u8".into(),
         expire_at: None,
         metadata: None,
+        p2p_delivery: None,
     };
     let output = build_get_playback_cli_output(
         synctv_proto::client::GetPlaybackResponse {
@@ -5804,6 +5811,46 @@ fn build_get_playback_cli_output_prefers_default_hls_media() {
 
     assert_eq!(output.hls_pull_url.as_deref(), Some("/resources/hls_hls/0"));
     assert_eq!(output.hls_pull_url, output.default_pull_url);
+}
+
+#[test]
+fn build_get_playback_cli_output_uses_the_first_media_when_default_index_is_omitted() {
+    let output = build_get_playback_cli_output(
+        synctv_proto::client::GetPlaybackResponse {
+            playback_state: None,
+            playback: Some(synctv_proto::client::Playback {
+                playback_infos: HashMap::from([(
+                    "direct".to_string(),
+                    synctv_proto::client::PlaybackInfo {
+                        medias: vec![
+                            synctv_proto::client::PlaybackMedia {
+                                url: "https://media.example/first.mp4".to_string(),
+                                format: "mp4".to_string(),
+                                ..Default::default()
+                            },
+                            synctv_proto::client::PlaybackMedia {
+                                url: "https://media.example/second.mp4".to_string(),
+                                format: "mp4".to_string(),
+                                ..Default::default()
+                            },
+                        ],
+                        default_media_index: None,
+                        ..Default::default()
+                    },
+                )]),
+                default_mode: "direct".to_string(),
+                ..Default::default()
+            }),
+        },
+        &GlobalConfigArgs::default(),
+    );
+
+    assert!(output.pull_urls[0].default);
+    assert!(!output.pull_urls[1].default);
+    assert_eq!(
+        output.default_pull_url.as_deref(),
+        Some("https://media.example/first.mp4")
+    );
 }
 
 #[test]

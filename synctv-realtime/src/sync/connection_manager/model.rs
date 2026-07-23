@@ -11,8 +11,8 @@ pub(super) struct TimeoutIndex {
     idle_by_connection: HashMap<String, Instant>,
     max_deadlines: BTreeSet<ConnectionDeadline>,
     max_by_connection: HashMap<String, Instant>,
-    rtc_deadlines: BTreeSet<ConnectionDeadline>,
-    rtc_by_connection: HashMap<String, Instant>,
+    voice_rtc_deadlines: BTreeSet<ConnectionDeadline>,
+    voice_rtc_by_connection: HashMap<String, Instant>,
 }
 
 impl TimeoutIndex {
@@ -59,19 +59,19 @@ impl TimeoutIndex {
         );
     }
 
-    pub(super) fn schedule_rtc(&mut self, connection_id: &str, deadline: Instant) {
+    pub(super) fn schedule_voice_rtc(&mut self, connection_id: &str, deadline: Instant) {
         Self::update_deadline(
-            &mut self.rtc_deadlines,
-            &mut self.rtc_by_connection,
+            &mut self.voice_rtc_deadlines,
+            &mut self.voice_rtc_by_connection,
             connection_id,
             deadline,
         );
     }
 
-    pub(super) fn clear_rtc(&mut self, connection_id: &str) {
+    pub(super) fn clear_voice_rtc(&mut self, connection_id: &str) {
         Self::clear_deadline(
-            &mut self.rtc_deadlines,
-            &mut self.rtc_by_connection,
+            &mut self.voice_rtc_deadlines,
+            &mut self.voice_rtc_by_connection,
             connection_id,
         );
     }
@@ -88,8 +88,8 @@ impl TimeoutIndex {
             connection_id,
         );
         Self::clear_deadline(
-            &mut self.rtc_deadlines,
-            &mut self.rtc_by_connection,
+            &mut self.voice_rtc_deadlines,
+            &mut self.voice_rtc_by_connection,
             connection_id,
         );
     }
@@ -122,10 +122,10 @@ impl TimeoutIndex {
         due
     }
 
-    pub(super) fn take_due_rtc(&mut self, now: Instant) -> Vec<String> {
-        let due = Self::collect_due(&mut self.rtc_deadlines, now);
+    pub(super) fn take_due_voice_rtc(&mut self, now: Instant) -> Vec<String> {
+        let due = Self::collect_due(&mut self.voice_rtc_deadlines, now);
         for connection_id in &due {
-            self.rtc_by_connection.remove(connection_id);
+            self.voice_rtc_by_connection.remove(connection_id);
         }
         due
     }
@@ -142,8 +142,8 @@ pub struct ConnectionInfo {
     pub connected_at: Instant,
     pub last_activity: Instant,
     pub message_count: u64,
-    pub rtc_joined: bool,
-    pub rtc_joined_at: Option<Instant>,
+    pub voice_rtc_joined: bool,
+    pub voice_rtc_joined_at: Option<Instant>,
 }
 
 /// Serializable version of `ConnectionInfo` for Redis persistence.
@@ -152,14 +152,13 @@ pub(super) struct ConnectionInfoPersistent {
     pub(super) connection_id: String,
     pub(super) registration_token: String,
     pub(super) user_id: UserId,
-    #[serde(default)]
     pub(super) actor_id: String,
     pub(super) room_id: Option<RoomId>,
     pub(super) connected_at_unix: u64,
     pub(super) last_activity_unix: u64,
     pub(super) message_count: u64,
-    pub(super) rtc_joined: bool,
-    pub(super) rtc_joined_at_unix: Option<u64>,
+    pub(super) voice_rtc_joined: bool,
+    pub(super) voice_rtc_joined_at_unix: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,8 +204,8 @@ impl From<&ConnectionInfo> for ConnectionInfoPersistent {
         let now_unix = u64::try_from(synctv_core::SystemClock.now().timestamp()).unwrap_or(0);
         let connected_at_unix = now_unix.saturating_sub(info.connected_at.elapsed().as_secs());
         let last_activity_unix = now_unix.saturating_sub(info.last_activity.elapsed().as_secs());
-        let rtc_joined_at_unix = info
-            .rtc_joined_at
+        let voice_rtc_joined_at_unix = info
+            .voice_rtc_joined_at
             .map(|joined| now_unix.saturating_sub(joined.elapsed().as_secs()));
 
         Self {
@@ -218,8 +217,31 @@ impl From<&ConnectionInfo> for ConnectionInfoPersistent {
             connected_at_unix,
             last_activity_unix,
             message_count: info.message_count,
-            rtc_joined: info.rtc_joined,
-            rtc_joined_at_unix,
+            voice_rtc_joined: info.voice_rtc_joined,
+            voice_rtc_joined_at_unix,
+        }
+    }
+}
+
+impl ConnectionInfoPersistent {
+    pub(super) fn into_connection_info(self) -> ConnectionInfo {
+        let now = Instant::now();
+        let now_unix = u64::try_from(synctv_core::SystemClock.now().timestamp()).unwrap_or(0);
+        let instant_from_unix = |timestamp: u64| {
+            now.checked_sub(Duration::from_secs(now_unix.saturating_sub(timestamp)))
+                .unwrap_or(now)
+        };
+        ConnectionInfo {
+            connection_id: self.connection_id,
+            registration_token: self.registration_token,
+            user_id: self.user_id,
+            actor_id: self.actor_id,
+            room_id: self.room_id,
+            connected_at: instant_from_unix(self.connected_at_unix),
+            last_activity: instant_from_unix(self.last_activity_unix),
+            message_count: self.message_count,
+            voice_rtc_joined: self.voice_rtc_joined,
+            voice_rtc_joined_at: self.voice_rtc_joined_at_unix.map(instant_from_unix),
         }
     }
 }
@@ -242,8 +264,8 @@ impl ConnectionInfo {
             connected_at: now,
             last_activity: now,
             message_count: 0,
-            rtc_joined: false,
-            rtc_joined_at: None,
+            voice_rtc_joined: false,
+            voice_rtc_joined_at: None,
         }
     }
 
@@ -258,7 +280,7 @@ impl ConnectionInfo {
     }
 
     #[must_use]
-    pub fn rtc_session_duration(&self) -> Option<Duration> {
-        self.rtc_joined_at.map(|joined| joined.elapsed())
+    pub fn voice_rtc_session_duration(&self) -> Option<Duration> {
+        self.voice_rtc_joined_at.map(|joined| joined.elapsed())
     }
 }

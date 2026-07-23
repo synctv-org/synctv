@@ -1,6 +1,6 @@
 //! TikTok media provider adapter.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -468,13 +468,13 @@ impl TikTokProvider {
         provider_instance_name: Option<&str>,
     ) -> Result<PlaybackResult, ProviderError> {
         let mut infos = HashMap::new();
+        let variants = semantically_distinct_variants(&media.variants);
         let preferred_video_key = (media.metadata.kind == TikTokMediaKind::Video)
             .then(|| {
-                media
-                    .variants
+                variants
                     .iter()
                     .max_by_key(|variant| video_variant_score(variant))
-                    .map(variant_key_for)
+                    .map(|variant| variant_key_for(variant))
             })
             .flatten();
         let mut preferred_video_mode = None;
@@ -496,42 +496,50 @@ impl TikTokProvider {
                 }),
             })
             .collect::<Vec<_>>();
-        for (index, variant) in media.variants.iter().enumerate() {
-            let mode = unique_mode_name(&infos, variant, index);
-            if preferred_video_key.as_deref() == Some(variant_key_for(variant).as_str()) {
-                preferred_video_mode = Some(mode.clone());
-            }
-            infos.insert(
-                mode,
-                PlaybackInfo {
+        for variant in variants {
+            let format = stream_format(variant.format);
+            let mode = if format == "m3u8" { "hls" } else { format };
+            let info = infos
+                .entry(mode.to_string())
+                .or_insert_with(|| PlaybackInfo {
                     thumbnail: media.metadata.cover.as_ref().map(|cover| cover.url.clone()),
-                    medias: vec![PlaybackMedia {
-                        name: variant.quality.clone(),
-                        format: stream_format(variant.format).to_string(),
-                        expire_at: None,
-                        metadata: Some(PlaybackMediaMetadata {
-                            resolution: variant
-                                .width
-                                .zip(variant.height)
-                                .map(|(width, height)| format!("{width}x{height}")),
-                            bitrate: variant.bitrate.and_then(|value| i64::try_from(value).ok()),
-                            codec: variant.codec.clone(),
-                            fps: None,
-                        }),
-                        provider: PlaybackMediaProvider::TikTok(PlaybackTikTokMedia::Refresh {
-                            resource: resource.clone(),
-                            variant_key: variant_key_for(variant),
-                            credential_owner_id,
-                            provider_instance_name: provider_instance_name.map(str::to_owned),
-                        }),
-                    }],
-                    default_media_index: Some(0),
+                    medias: Vec::new(),
+                    default_media_index: None,
                     subtitles: subtitles.clone(),
                     default_subtitle_index: (!subtitles.is_empty()).then_some(0),
                     danmakus: Vec::new(),
                     default_danmaku_index: None,
-                },
-            );
+                });
+            let media_index = info.medias.len();
+            let is_preferred = preferred_video_key.as_deref()
+                == Some(variant_key_for(variant).as_str())
+                || variant.quality.to_ascii_lowercase().contains("origin");
+            info.medias.push(PlaybackMedia {
+                name: variant.quality.clone(),
+                format: format.to_string(),
+                expire_at: None,
+                metadata: Some(PlaybackMediaMetadata {
+                    resolution: variant
+                        .width
+                        .zip(variant.height)
+                        .map(|(width, height)| format!("{width}x{height}")),
+                    bitrate: variant.bitrate.and_then(|value| i64::try_from(value).ok()),
+                    codec: variant.codec.clone(),
+                    fps: None,
+                }),
+                provider: PlaybackMediaProvider::TikTok(PlaybackTikTokMedia::Refresh {
+                    resource: resource.clone(),
+                    variant_key: variant_key_for(variant),
+                    credential_owner_id,
+                    provider_instance_name: provider_instance_name.map(str::to_owned),
+                }),
+            });
+            if is_preferred || info.default_media_index.is_none() {
+                info.default_media_index = Some(media_index);
+            }
+            if is_preferred {
+                preferred_video_mode = Some(mode.to_string());
+            }
         }
         if infos.is_empty() {
             return Err(ProviderError::ApiError(
@@ -686,16 +694,6 @@ fn stream_format(format: TikTokStreamFormat) -> &'static str {
 }
 
 fn variant_key_for(variant: &TikTokVariant) -> String {
-    let source = Url::parse(&variant.url).ok().map_or_else(
-        || variant.url.clone(),
-        |url| {
-            format!(
-                "{}{}",
-                url.host_str().unwrap_or_default().to_ascii_lowercase(),
-                url.path()
-            )
-        },
-    );
     format!(
         "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
         stream_format(variant.format),
@@ -703,13 +701,21 @@ fn variant_key_for(variant: &TikTokVariant) -> String {
         variant.codec.as_deref().unwrap_or_default(),
         variant.width.unwrap_or_default(),
         variant.height.unwrap_or_default(),
+        variant.bitrate.unwrap_or_default(),
         variant.audio_only,
         variant.watermarked,
-        source,
     )
 }
 
-fn video_variant_score(variant: &TikTokVariant) -> (bool, bool, bool, bool) {
+fn semantically_distinct_variants(variants: &[TikTokVariant]) -> Vec<&TikTokVariant> {
+    let mut seen = HashSet::new();
+    variants
+        .iter()
+        .filter(|variant| seen.insert(variant_key_for(variant)))
+        .collect()
+}
+
+fn video_variant_score(variant: &TikTokVariant) -> (bool, bool, bool, bool, u64, u64) {
     let is_tiktok_play_endpoint = Url::parse(&variant.url)
         .ok()
         .and_then(|url| {
@@ -722,37 +728,12 @@ fn video_variant_score(variant: &TikTokVariant) -> (bool, bool, bool, bool) {
         !variant.watermarked,
         variant.codec.as_deref() == Some("avc"),
         variant.format == TikTokStreamFormat::Mp4,
+        variant
+            .width
+            .zip(variant.height)
+            .map_or(0, |(width, height)| u64::from(width) * u64::from(height)),
+        variant.bitrate.unwrap_or_default(),
     )
-}
-
-fn unique_mode_name(
-    infos: &HashMap<String, PlaybackInfo>,
-    variant: &TikTokVariant,
-    index: usize,
-) -> String {
-    let base = format!("{}_{}", variant.quality, stream_format(variant.format))
-        .to_ascii_lowercase()
-        .chars()
-        .map(|value| {
-            if value.is_ascii_alphanumeric() {
-                value
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('_')
-        .to_string();
-    let base = if base.is_empty() {
-        format!("variant_{index}")
-    } else {
-        base
-    };
-    if infos.contains_key(&base) {
-        format!("{base}_{index}")
-    } else {
-        base
-    }
 }
 
 fn tiktok_headers(cookie: Option<&str>, kind: TikTokMediaKind) -> HashMap<String, String> {
@@ -1064,6 +1045,21 @@ impl DynamicPlaylistProvider for TikTokProvider {
 mod tests {
     use super::*;
 
+    fn variant(url: &str, quality: &str, width: u32, height: u32, bitrate: u64) -> TikTokVariant {
+        TikTokVariant {
+            url: url.to_string(),
+            format: TikTokStreamFormat::Mp4,
+            quality: quality.to_string(),
+            codec: Some("avc".to_string()),
+            width: Some(width),
+            height: Some(height),
+            bitrate: Some(bitrate),
+            audio_only: false,
+            watermarked: false,
+            headers_required: true,
+        }
+    }
+
     fn item(video_id: &str) -> DirectoryItem {
         DirectoryItem {
             name: video_id.to_string(),
@@ -1129,5 +1125,35 @@ mod tests {
                 .target,
             ProviderTarget::tiktok("1".to_string())
         );
+    }
+
+    #[test]
+    fn semantic_video_variants_collapse_mirror_urls() {
+        let variants = vec![
+            variant("https://mirror-a.test/video.mp4", "540p", 960, 540, 900_000),
+            variant("https://mirror-b.test/video.mp4", "540p", 960, 540, 900_000),
+            variant(
+                "https://mirror-a.test/video-720.mp4",
+                "720p",
+                1280,
+                720,
+                1_800_000,
+            ),
+        ];
+
+        let distinct = semantically_distinct_variants(&variants);
+
+        assert_eq!(distinct.len(), 2);
+        assert_eq!(distinct[0].url, "https://mirror-a.test/video.mp4");
+        assert_eq!(distinct[1].quality, "720p");
+        assert_eq!(variant_key_for(&variants[0]), variant_key_for(&variants[1]));
+    }
+
+    #[test]
+    fn video_variant_score_prefers_higher_quality_for_equivalent_sources() {
+        let low = variant("https://cdn.test/low.mp4", "540p", 960, 540, 900_000);
+        let high = variant("https://cdn.test/high.mp4", "1080p", 1920, 1080, 4_000_000);
+
+        assert!(video_variant_score(&high) > video_variant_score(&low));
     }
 }

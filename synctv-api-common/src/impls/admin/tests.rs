@@ -148,6 +148,7 @@ fn test_runtime_settings() -> synctv_core::service::RuntimeSettings {
         },
         webrtc: synctv_core::service::WebRtcRuntimeSettings {
             external_ice_servers: synctv_core::service::IceServerList(Vec::new()),
+            max_voice_participants_per_room: 8,
         },
         chat: synctv_core::service::ChatRuntimeSettings {
             max_messages_per_room: 500,
@@ -2457,6 +2458,7 @@ fn test_runtime_settings_field_mask_maps_repeated_fields_directly() -> TestResul
                 }),
                 webrtc: Some(synctv_proto::admin::WebRtcSettingsPatch {
                     external_ice_servers: Vec::new(),
+                    max_voice_participants_per_room: Some(12),
                 }),
                 cors: Some(synctv_proto::admin::CorsSettingsPatch {
                     allowed_origins: vec!["https://app.example.com".to_string()],
@@ -2467,6 +2469,7 @@ fn test_runtime_settings_field_mask_maps_repeated_fields_directly() -> TestResul
                 "oauth2.providers",
                 "email.whitelist_domains",
                 "webrtc.external_ice_servers",
+                "webrtc.max_voice_participants_per_room",
                 "cors.allowed_origins",
             ],
         ),
@@ -2481,12 +2484,11 @@ fn test_runtime_settings_field_mask_maps_repeated_fields_directly() -> TestResul
         patch.email.and_then(|section| section.whitelist_domains),
         Some(vec!["example.com".to_string()])
     );
-    assert_eq!(
-        patch
-            .webrtc
-            .and_then(|section| section.external_ice_servers),
-        Some(Vec::new())
-    );
+    let webrtc = patch
+        .webrtc
+        .ok_or_else(|| test_error("WebRTC patch should be present"))?;
+    assert_eq!(webrtc.external_ice_servers, Some(Vec::new()));
+    assert_eq!(webrtc.max_voice_participants_per_room, Some(12));
     assert_eq!(
         patch.cors.and_then(|section| section.allowed_origins),
         Some(vec!["https://app.example.com".to_string()])

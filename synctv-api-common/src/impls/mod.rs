@@ -955,6 +955,7 @@ pub fn classify_error(err: &str) -> ErrorKind {
         || lower.contains("not allowed")
         || lower.contains("no longer allowed")
         || lower.contains("not accepting new connections")
+        || lower.contains("disabled for this room")
         || lower.contains("account is no longer available")
         || lower.contains("banned")
     {
@@ -970,6 +971,7 @@ pub fn classify_error(err: &str) -> ErrorKind {
     {
         ErrorKind::Conflict
     } else if lower.contains("room at capacity")
+        || lower.contains("voice chat room at capacity")
         || lower.contains("user at capacity")
         || lower.contains("server at capacity")
         || lower.contains("room capacity exceeded")
@@ -978,6 +980,7 @@ pub fn classify_error(err: &str) -> ErrorKind {
     {
         ErrorKind::RateLimited
     } else if lower.contains("distributed room capacity check unavailable")
+        || lower.contains("distributed voice chat capacity check unavailable")
         || lower.contains("distributed user connection check unavailable")
         || lower.contains("distributed total connection check unavailable")
     {
@@ -998,6 +1001,7 @@ pub fn classify_error(err: &str) -> ErrorKind {
         || lower.contains("not currently joined")
         || lower.contains("not in this room")
         || lower.contains("has not joined webrtc")
+        || lower.contains("has not joined room voice chat")
     {
         ErrorKind::InvalidArgument
     } else {

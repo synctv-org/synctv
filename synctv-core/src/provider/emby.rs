@@ -34,6 +34,16 @@ use super::upstream_transport::emby as emby_upstream;
 
 const EMBY_TICKS_PER_SECOND: u128 = 10_000_000;
 
+#[derive(Debug, Clone, Copy)]
+pub struct EmbyHlsResourceRequest<'a> {
+    pub version: &'a str,
+    pub mode_name: &'a str,
+    pub media_index: usize,
+    pub target_url: &'a str,
+    pub is_manifest: bool,
+    pub range_header: Option<&'a str>,
+}
+
 fn emby_item_types(item_types: &[String]) -> Vec<String> {
     if item_types.is_empty() {
         return vec![
@@ -144,7 +154,6 @@ fn mark_emby_playback_resources(result: &mut PlaybackResult, version: &str, expi
         }
 
         let mut proxy_info = original_info.clone();
-        let proxy_is_hls = super::playback_info_is_hls(&mode_name, &original_info);
         proxy_info.medias = original_info
             .medias
             .iter()
@@ -155,25 +164,27 @@ fn mark_emby_playback_resources(result: &mut PlaybackResult, version: &str, expi
                     media.name.clone(),
                     media.format.clone(),
                     media.expire_at.map(|dt| dt.timestamp()),
-                    PlaybackMediaProvider::Emby(if proxy_is_hls {
-                        PlaybackEmbyMedia::ProxyHlsManifest {
-                            version: version.to_string(),
-                            expires_at,
-                            mode_name: mode_name.clone(),
-                            url_index,
-                            url,
-                            headers: media.upstream_headers(),
-                        }
-                    } else {
-                        PlaybackEmbyMedia::ProxyMediaStream {
-                            version: version.to_string(),
-                            expires_at,
-                            mode_name: mode_name.clone(),
-                            url_index,
-                            url,
-                            headers: media.upstream_headers(),
-                        }
-                    }),
+                    PlaybackMediaProvider::Emby(
+                        if super::playback_media_is_hls(&mode_name, media) {
+                            PlaybackEmbyMedia::ProxyHlsManifest {
+                                version: version.to_string(),
+                                expires_at,
+                                mode_name: mode_name.clone(),
+                                url_index,
+                                url,
+                                headers: media.upstream_headers(),
+                            }
+                        } else {
+                            PlaybackEmbyMedia::ProxyMediaStream {
+                                version: version.to_string(),
+                                expires_at,
+                                mode_name: mode_name.clone(),
+                                url_index,
+                                url,
+                                headers: media.upstream_headers(),
+                            }
+                        },
+                    ),
                 ))
             })
             .collect();
@@ -1430,7 +1441,7 @@ impl EmbyProvider {
                             headers: emby_auth_headers.clone(),
                         }),
                     )],
-                    default_media_index: None,
+                    default_media_index: Some(0),
                     subtitles,
                     default_subtitle_index: None,
                     danmakus: Vec::new(),
@@ -1441,27 +1452,27 @@ impl EmbyProvider {
             // Also add transcode URLs if available
             if !source.transcoding_url.is_empty() {
                 let transcode_url = emby_server_url(&config.host, &source.transcoding_url)?;
-
-                playback_infos.insert(
-                    format!("{mode_name}_transcode"),
-                    PlaybackInfo {
-                        thumbnail: None,
-                        medias: vec![playback_media(
-                            format!("{mode_name} Transcode"),
-                            "hls".to_string(),
-                            Some(emby_expires_at),
-                            PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct {
-                                url: transcode_url,
-                                headers: emby_auth_headers.clone(),
-                            }),
-                        )],
-                        default_media_index: None,
-                        subtitles: Vec::new(), // Subtitles burned in for transcode
-                        default_subtitle_index: None,
-                        danmakus: Vec::new(),
-                        default_danmaku_index: None,
-                    },
-                );
+                let info = playback_infos
+                    .get_mut(&mode_name)
+                    .expect("media source mode was inserted above");
+                let transcode_index = info.medias.len();
+                info.medias.push(playback_media(
+                    "Transcode".to_string(),
+                    "hls".to_string(),
+                    Some(emby_expires_at),
+                    PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct {
+                        url: transcode_url,
+                        headers: emby_auth_headers.clone(),
+                    }),
+                ));
+                if playback_client_profile.is_some_and(|profile| {
+                    matches!(
+                        profile.stream_preference,
+                        super::PlaybackStreamPreference::Transcode
+                    )
+                }) {
+                    info.default_media_index = Some(transcode_index);
+                }
             }
         }
 
@@ -2101,14 +2112,11 @@ impl EmbyProvider {
     ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
         let versioned =
             super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        let playback_info = versioned
+        let media = versioned
             .result
             .playback_infos
             .get(mode_name)
-            .ok_or(ProviderError::NotFound)?;
-        let media = playback_info
-            .medias
-            .get(url_index)
+            .and_then(|info| info.medias.get(url_index))
             .ok_or(ProviderError::NotFound)?;
         let url = media.upstream_url().ok_or(ProviderError::NotFound)?;
         Ok(
@@ -2119,27 +2127,37 @@ impl EmbyProvider {
         )
     }
 
-    pub async fn get_hls_segment(
+    pub async fn get_hls_resource(
         &self,
         store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
-        version: &str,
-        target_url: String,
+        request: EmbyHlsResourceRequest<'_>,
         request_context: Option<&super::ExecutionControl>,
-        range_header: Option<&str>,
     ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
         let versioned =
-            super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        let headers = versioned
+            super::playback_transport::lookup_versioned(store, request.version, request_context)
+                .await?;
+        let media = versioned
             .result
             .playback_infos
-            .get(&versioned.result.default_mode)
-            .and_then(|info| info.medias.first())
-            .map_or_else(HashMap::new, PlaybackMedia::upstream_headers);
-        super::playback_transport::transport_action_for_target_url(
-            target_url,
-            headers,
-            range_header,
-        )
+            .get(request.mode_name)
+            .and_then(|info| info.medias.get(request.media_index))
+            .ok_or(ProviderError::NotFound)?;
+        if request.is_manifest {
+            Ok(
+                super::playback_transport::PlaybackTransportAction::M3u8Rewrite {
+                    url: request.target_url.to_string(),
+                    headers: media.upstream_headers(),
+                },
+            )
+        } else {
+            Ok(
+                super::playback_transport::PlaybackTransportAction::FetchAndForward {
+                    url: request.target_url.to_string(),
+                    headers: media.upstream_headers(),
+                    range_header: request.range_header.map(ToString::to_string),
+                },
+            )
+        }
     }
 
     pub async fn get_subtitle(

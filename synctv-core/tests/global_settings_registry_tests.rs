@@ -35,9 +35,9 @@ fn test_room_password_policy_parse_and_display() {
 }
 
 #[test]
-fn test_stun_server_list_updates() {
+fn test_external_ice_server_list_defaults_empty_and_accepts_custom_servers() {
     let list = IceServerList::new();
-    assert_eq!(list.0.len(), 2);
+    assert!(list.0.is_empty());
 
     let custom = IceServerList(vec![
         ConfiguredIceServer::new(vec!["stun:custom1.example.com:19302".to_string()]),

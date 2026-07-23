@@ -168,6 +168,7 @@ fn apply_smtp_proxy_patch(
 #[derive(Debug, Clone, Default)]
 pub struct WebRtcSettingsPatch {
     pub external_ice_servers: Option<Vec<synctv_core::service::ConfiguredIceServer>>,
+    pub max_voice_participants_per_room: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -195,6 +196,8 @@ pub struct RoomSettingsUpdatePatch {
     pub require_approval: Option<bool>,
     pub allow_auto_join: Option<bool>,
     pub chat_enabled: Option<bool>,
+    pub voice_chat_enabled: Option<bool>,
+    pub p2p_media_enabled: Option<bool>,
     pub auto_play: Option<RoomAutoPlaySettingsPatch>,
     pub admin_added_permissions: Option<u64>,
     pub admin_removed_permissions: Option<u64>,
@@ -469,6 +472,7 @@ impl AdminApiImpl {
                     .into_iter()
                     .map(proto_ice_server)
                     .collect(),
+                max_voice_participants_per_room: settings.webrtc.max_voice_participants_per_room,
             }),
             chat: Some(synctv_proto::admin::ChatSettings {
                 max_messages_per_room: settings.chat.max_messages_per_room,
@@ -668,6 +672,10 @@ impl AdminApiImpl {
             if let Some(servers) = webrtc.external_ice_servers {
                 current.webrtc.external_ice_servers = synctv_core::service::IceServerList(servers);
                 update_mask.webrtc.external_ice_servers = true;
+            }
+            if let Some(value) = webrtc.max_voice_participants_per_room {
+                current.webrtc.max_voice_participants_per_room = value;
+                update_mask.webrtc.max_voice_participants_per_room = true;
             }
         }
 
@@ -894,6 +902,16 @@ impl AdminApiImpl {
         if let Some(value) = patch.chat_enabled {
             core_patch.chat_enabled =
                 Some(synctv_core::models::room_settings::ChatEnabled::new(value));
+        }
+        if let Some(value) = patch.voice_chat_enabled {
+            core_patch.voice_chat_enabled = Some(
+                synctv_core::models::room_settings::VoiceChatEnabled::new(value),
+            );
+        }
+        if let Some(value) = patch.p2p_media_enabled {
+            core_patch.p2p_media_enabled = Some(
+                synctv_core::models::room_settings::P2pMediaEnabled::new(value),
+            );
         }
         if let Some(auto_play) = patch.auto_play {
             let mut value = settings.auto_play.value.clone();

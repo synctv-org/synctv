@@ -93,7 +93,7 @@ authorization: Bearer <guest_token>
 | 房间成员列表 | 成员加入、离开、权限变化需要同步 UI |
 | WebRTC 信令 | offer、answer、ICE candidate 需要房间内转发；目标地址使用 `public_actor_id:conn_id`，登录用户是 `usr_*`，游客是 `gst_*` |
 
-WebRTC 客户端在发送信令前调用 `GET /api/rooms/<roomId>/webrtc/ice-servers` 获取 ICE servers。该接口和 Realtime 使用同一套房间 actor 权限：登录成员和游客都通过 `Authorization: Bearer <token>` 认证，并且都必须拥有 `use_webrtc`。
+WebRTC 客户端在发送信令前调用 `GET /api/rooms/<roomId>/webrtc/ice-servers` 获取 ICE servers。该接口和 Realtime 使用同一套房间 actor 权限：登录成员和游客都通过 `Authorization: Bearer <token>` 认证，并拥有 `use_voice_chat` 或 `use_p2p_media`。每条信令还会按会话类型校验对应业务权限。
 
 ## 消息范围
 
@@ -106,7 +106,9 @@ WebRTC 客户端在发送信令前调用 `GET /api/rooms/<roomId>/webrtc/ice-ser
 | `playback_progress` | 上报当前播放位置和播放状态 |
 | `playback_update` | 发起播放状态更新命令 |
 | `webrtc_offer` / `webrtc_answer` / `webrtc_ice_candidate` | WebRTC 信令转发 |
-| `webrtc_join` / `webrtc_leave` | 加入或离开 WebRTC 会话 |
+| `webrtc_join` / `webrtc_leave` | 加入或离开语音 WebRTC 会话 |
+| `media_swarm_join` | 携带 `PlaybackMedia.p2p_delivery.swarm_ticket` 宣告加入单个媒体 swarm |
+| `media_swarm_leave` | 使用 `swarm_id` 离开当前连接已加入的媒体 swarm |
 | `observeResource` | 订阅实时资源 |
 | `unobserveResource` | 取消订阅实时资源 |
 
@@ -123,9 +125,26 @@ WebRTC 客户端在发送信令前调用 `GET /api/rooms/<roomId>/webrtc/ice-ser
 | `playlistCreated` / `playlistUpdated` / `playlistDeleted` | 播放列表变更广播 |
 | `permissionChanged` / `userJoined` / `userLeft` / `roomMembers` | 成员和权限变化 |
 | `chatEvent` 或 `resourceChanged.chatEvent` | 显式订阅后的聊天消息事件 |
+| `resourceChanged.webrtcEvent.mediaSwarmPeers` | 当前 swarm 的有界 Peer 候选响应 |
 | `resourceObserved` / `resourceChanged` / `resourceObserveError` | 实时资源观察结果 |
 
 字段的完整结构以 `synctv-proto/proto/client.proto` 为准。端到端示例见 [SDK 与 API 示例](../sdk-and-api-examples/)。
+
+## 媒体 swarm 信令
+
+P2P 媒体和语音聊天使用独立的 WebRTC 会话。两者共享 ICE 配置和 Realtime 连接，各自维护 Peer 发现、PeerConnection、DataChannel 与生命周期。
+
+客户端从当前 `PlaybackMedia.p2p_delivery` 取得 `swarm_id` 和 `swarm_ticket`，随后发送 `media_swarm_join`。服务端验证 ticket 绑定的房间、actor、swarm 和有效期，通过当前连接返回最多 16 个同房间、同 swarm 的候选 Peer。客户端每 30 秒重新宣告一次；服务端与客户端均按 90 秒成员有效期清理失联连接，主动 leave 会立即完成清理。
+
+媒体会话的 offer、answer 和 ICE candidate 使用以下字段：
+
+| 字段 | 值 |
+| --- | --- |
+| `to` | 目标 `public_actor_id:conn_id` |
+| `data` | opaque SDP 或 ICE candidate JSON |
+| `swarm_id` | 当前单个资源的 swarm ID |
+
+服务端在加入时验证 ticket。后续媒体信令验证发送方与目标连接都已加入同房间、同 swarm，再转发 opaque SDP 或 ICE 数据。Voice 与 Media 使用独立的 protobuf command/event 类型，因此 Voice 消息只包含 `to`/`from` 和 `data`，Media 消息额外包含 `swarm_id`。客户端自行维护各 Peer 拥有的分片、可用性查询、传输排序和缓存。服务端 tracker 只保存短期 swarm 成员关系并返回有界候选集合，媒体资源清单和分片库存由客户端维护。
 
 ## 消息分发
 

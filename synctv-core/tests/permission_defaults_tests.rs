@@ -55,5 +55,6 @@ async fn test_creator_has_all_permissions() {
     assert!(perms.has(RoomPermission::REMOVE_MEMBERS));
     assert!(perms.has(RoomPermission::SEND_CHAT_MESSAGES));
     assert!(perms.has(RoomPermission::MANAGE_OWN_MEDIA));
-    assert!(perms.has(RoomPermission::USE_WEBRTC));
+    assert!(perms.has(RoomPermission::USE_VOICE_CHAT));
+    assert!(perms.has(RoomPermission::USE_P2P_MEDIA));
 }

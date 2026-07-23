@@ -216,7 +216,7 @@ fn test_validate_override_bits_for_guest_accepts_guest_bitspace() {
         validate_override_bits_for_role(
             RoomRole::Guest,
             RoomGuestPermissionBits::VIEW_CHAT_HISTORY,
-            RoomGuestPermissionBits::USE_WEBRTC,
+            RoomGuestPermissionBits::USE_VOICE_CHAT,
         ),
         "guest override bits should validate in the guest bitspace",
     );
@@ -225,7 +225,7 @@ fn test_validate_override_bits_for_guest_accepts_guest_bitspace() {
 #[test]
 fn test_settings_validate_permissions_within_limits_is_ok() {
     let settings = RoomSettings {
-        guest_added_permissions: GuestAddedPermissions(RoomGuestPermissionBits::USE_WEBRTC),
+        guest_added_permissions: GuestAddedPermissions(RoomGuestPermissionBits::USE_VOICE_CHAT),
         ..RoomSettings::default()
     };
     assert!(validate_room_settings(&settings).is_ok());
@@ -327,10 +327,10 @@ fn test_room_member_add_and_remove_permissions() {
     assert_eq!(member.added_permissions, 0);
     assert_eq!(member.removed_permissions, 0);
 
-    member.add_permissions(crate::models::RoomMemberPermissionBits::USE_WEBRTC);
+    member.add_permissions(crate::models::RoomMemberPermissionBits::USE_VOICE_CHAT);
     assert_eq!(
         member.added_permissions,
-        crate::models::RoomMemberPermissionBits::USE_WEBRTC
+        crate::models::RoomMemberPermissionBits::USE_VOICE_CHAT
     );
 
     member.remove_permissions(crate::models::RoomMemberPermissionBits::SEND_CHAT_MESSAGES);
@@ -340,7 +340,7 @@ fn test_room_member_add_and_remove_permissions() {
     );
 
     let effective = member.effective_permissions(RoomPermissionSet::default_member());
-    assert!(effective.has(crate::models::RoomPermission::USE_WEBRTC));
+    assert!(effective.has(crate::models::RoomPermission::USE_VOICE_CHAT));
     assert!(!effective.has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
 }
 

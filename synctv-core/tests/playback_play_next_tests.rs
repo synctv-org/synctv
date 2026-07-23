@@ -601,6 +601,57 @@ async fn test_sequential_advance_to_next() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_sequential_advance_preserves_static_playlist_context() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(&pool);
+    let owner = user_repo
+        .create(&make_user("seq_context_owner"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "Sequential Context".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
+    let media1 = insert_media(&pool, &playlist.id, &room.id, "context_1", 0).await;
+    let media2 = insert_media(&pool, &playlist.id, &room.id, "context_2", 1).await;
+    let playback = room_service.playback_service();
+
+    let selected = playback
+        .switch(room.id, owner.id, Some(media1.id), Some(playlist.id), None)
+        .await
+        .checked("static playlist selection should succeed");
+    assert_eq!(selected.playing_playlist_id, Some(playlist.id));
+
+    let advanced = playback
+        .play_next(&room.id, &make_settings_with_mode(PlayMode::Sequential))
+        .await
+        .checked("play next should succeed")
+        .checked("second playlist item should exist");
+    assert_eq!(advanced.playing_media_id, Some(media2.id));
+    assert_eq!(advanced.playing_playlist_id, Some(playlist.id));
+    assert!(advanced.target.is_none());
+
+    let history = playback
+        .list_playback_history(&room.id, None, 10)
+        .await
+        .checked("history should be listed");
+    assert_eq!(history.entries.len(), 2);
+    assert!(history
+        .entries
+        .iter()
+        .all(|entry| entry.playlist_id == Some(playlist.id)));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_auto_advance_after_previous_uses_recorded_forward_history() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -630,17 +681,22 @@ async fn test_auto_advance_after_previous_uses_recorded_forward_history() {
         .switch(room.id, owner.id, Some(media_a.id), None, None)
         .await
         .checked("test operation should succeed");
+    playback
+        .seek(room.id, owner.id, 42.0)
+        .await
+        .checked("test operation should succeed");
     let settings = make_settings_with_mode(PlayMode::Sequential);
     playback
         .play_next(&room.id, &settings)
         .await
         .checked("test operation should succeed")
         .checked("A should advance to B");
-    playback
+    let previous = playback
         .play_previous_for_user(&room.id, owner.id, None)
         .await
         .checked("test operation should succeed")
         .checked("B should return to A");
+    assert_eq!(previous.position, 0.0);
     let history = playback
         .list_playback_history(&room.id, None, 10)
         .await

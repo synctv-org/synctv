@@ -960,9 +960,9 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/bilibili/{version}/hls-segments",
-            get(crate::providers::playback_provider::bilibili::get_bilibili_hls_segment)
-                .head(crate::providers::playback_provider::bilibili::head_bilibili_hls_segment)
+            "/api/playback-providers/bilibili/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            get(crate::providers::playback_provider::bilibili::get_bilibili_hls_resource)
+                .head(crate::providers::playback_provider::bilibili::head_bilibili_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
@@ -976,9 +976,15 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/bilibili/{version}/dash-segments/{modeName}/{urlIndex}",
-            get(crate::providers::playback_provider::bilibili::get_bilibili_dash_segment)
-                .head(crate::providers::playback_provider::bilibili::head_bilibili_dash_segment)
+            "/api/playback-providers/bilibili/{version}/dash-resources/{modeName}/{resourceKind}/{scope}/{uid}/{rid}/{exp}/{sig}",
+            get(crate::providers::playback_provider::bilibili::get_bilibili_dash_resource)
+                .head(crate::providers::playback_provider::bilibili::head_bilibili_dash_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/bilibili/{version}/dash-resources/{modeName}/{resourceKind}/{scope}/{uid}/{rid}/{exp}/{sig}/{*resourcePath}",
+            get(crate::providers::playback_provider::bilibili::get_bilibili_dash_resource)
+                .head(crate::providers::playback_provider::bilibili::head_bilibili_dash_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
@@ -1003,9 +1009,26 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/direct-url/{version}/hls-segments",
-            get(crate::providers::playback_provider::direct_url::get_direct_url_hls_segment)
-                .head(crate::providers::playback_provider::direct_url::head_direct_url_hls_segment)
+            "/api/playback-providers/direct-url/{version}/hls-resources/{modeName}/{urlIndex}/{resourceKind}",
+            get(crate::providers::playback_provider::direct_url::get_direct_url_hls_resource)
+                .head(crate::providers::playback_provider::direct_url::head_direct_url_hls_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/direct-url/{version}/dash-manifests/{modeName}/{urlIndex}",
+            get(crate::providers::playback_provider::direct_url::get_direct_url_dash_manifest)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/direct-url/{version}/dash-resources/{modeName}/{urlIndex}/{resourceKind}/{scope}/{uid}/{rid}/{exp}/{sig}",
+            get(crate::providers::playback_provider::direct_url::get_direct_url_dash_resource)
+                .head(crate::providers::playback_provider::direct_url::head_direct_url_dash_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/direct-url/{version}/dash-resources/{modeName}/{urlIndex}/{resourceKind}/{scope}/{uid}/{rid}/{exp}/{sig}/{*resourcePath}",
+            get(crate::providers::playback_provider::direct_url::get_direct_url_dash_resource)
+                .head(crate::providers::playback_provider::direct_url::head_direct_url_dash_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
@@ -1258,9 +1281,9 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/alist/{version}/transcoded-hls-segments",
-            get(crate::providers::playback_provider::alist::get_alist_transcoded_hls_segment)
-                .head(crate::providers::playback_provider::alist::head_alist_transcoded_hls_segment)
+            "/api/playback-providers/alist/{version}/transcoded-hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            get(crate::providers::playback_provider::alist::get_alist_transcoded_hls_resource)
+                .head(crate::providers::playback_provider::alist::head_alist_transcoded_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
@@ -1285,9 +1308,9 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/emby/{version}/hls-segments",
-            get(crate::providers::playback_provider::emby::get_emby_hls_segment)
-                .head(crate::providers::playback_provider::emby::head_emby_hls_segment)
+            "/api/playback-providers/emby/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            get(crate::providers::playback_provider::emby::get_emby_hls_resource)
+                .head(crate::providers::playback_provider::emby::head_emby_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(

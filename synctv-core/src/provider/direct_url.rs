@@ -14,6 +14,7 @@ use crate::models::media::{
 };
 use crate::models::{detect_direct_url_format, DirectUrlMediaSourceConfig};
 use async_trait::async_trait;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::time::Duration;
 use synctv_common::ssrf::SsrfTargetError;
@@ -22,6 +23,28 @@ use url::Url;
 /// Direct URL `MediaProvider`
 pub struct DirectUrlProvider {
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DirectUrlHlsResourceRequest<'a> {
+    pub version: &'a str,
+    pub mode_name: &'a str,
+    pub url_index: usize,
+    pub target_url: &'a str,
+    pub is_manifest: bool,
+    pub range_header: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DirectUrlDashResourceRequest<'a> {
+    pub version: &'a str,
+    pub mode_name: &'a str,
+    pub url_index: usize,
+    pub scope_url: &'a str,
+    pub resource_path: &'a str,
+    pub resource_query: Option<&'a str>,
+    pub is_manifest: bool,
+    pub range_header: Option<&'a str>,
 }
 
 impl DirectUrlProvider {
@@ -193,6 +216,40 @@ impl DirectUrlProvider {
     }
 }
 
+fn p2p_resource_id(media: &crate::models::DirectUrlMediaResourceConfig) -> String {
+    let mut headers = media.headers.iter().collect::<Vec<_>>();
+    headers.sort_unstable_by(|left, right| left.0.cmp(right.0).then(left.1.cmp(right.1)));
+    let canonical = serde_json::to_vec(&(
+        "direct_url_v1",
+        media.url.split('#').next().unwrap_or_default(),
+        media.inferred_format().to_ascii_lowercase(),
+        headers,
+    ))
+    .unwrap_or_default();
+    format!("direct_url:{}", hex::encode(Sha256::digest(canonical)))
+}
+
+fn p2p_descriptor(media: &PlaybackMedia) -> Option<String> {
+    let PlaybackMediaProvider::DirectUrl(
+        PlaybackDirectUrlMedia::Direct {
+            p2p_resource_id, ..
+        }
+        | PlaybackDirectUrlMedia::ProxyStream {
+            p2p_resource_id, ..
+        }
+        | PlaybackDirectUrlMedia::ProxyHlsManifest {
+            p2p_resource_id, ..
+        }
+        | PlaybackDirectUrlMedia::ProxyDashManifest {
+            p2p_resource_id, ..
+        },
+    ) = &media.provider
+    else {
+        return None;
+    };
+    Some(p2p_resource_id.clone())
+}
+
 fn playback_media(
     name: String,
     format: String,
@@ -212,15 +269,10 @@ fn mark_direct_url_playback_resources(
     result: &mut PlaybackResult,
     version: &str,
     expires_at: i64,
-    prefer_proxy_default: bool,
+    prefer_proxy: bool,
+    proxy_only: bool,
 ) {
-    // Direct URL usually keeps the upstream mode as default. When headers are
-    // required, the proxy sibling becomes default because the server must own
-    // those transport headers for browser and app clients alike.
-    let prefer_proxy_default =
-        prefer_proxy_default || super::signed_playback_default_needs_proxy(result);
     let original_default_mode = result.default_mode.clone();
-    let mut selected_default_mode = original_default_mode.clone();
     let original_modes = result
         .playback_infos
         .iter()
@@ -232,55 +284,72 @@ fn mark_direct_url_playback_resources(
             continue;
         }
 
-        let original_has_transport_headers =
-            super::playback_info_has_transport_headers(&original_info);
-
         let proxy_mode_name = format!("proxy_{mode_name}");
-        if prefer_proxy_default && mode_name == original_default_mode {
-            selected_default_mode.clone_from(&proxy_mode_name);
-        }
         if result.playback_infos.contains_key(&proxy_mode_name) {
-            if original_has_transport_headers {
-                result.playback_infos.remove(&mode_name);
-            }
             continue;
         }
 
         let mut proxy_info = original_info.clone();
-        let proxy_is_hls = super::playback_info_is_hls(&mode_name, &original_info);
-        proxy_info.medias = original_info
+        let proxy_medias = original_info
             .medias
             .iter()
             .enumerate()
             .filter_map(|(url_index, media)| {
                 let url = media.upstream_url()?.to_string();
                 let headers = media.upstream_headers();
-                Some(playback_media(
-                    media.name.clone(),
-                    media.format.clone(),
-                    media.expire_at.map(|dt| dt.timestamp()),
-                    PlaybackMediaProvider::DirectUrl(if proxy_is_hls {
-                        PlaybackDirectUrlMedia::ProxyHlsManifest {
-                            version: version.to_string(),
-                            expires_at,
-                            mode_name: mode_name.clone(),
-                            url_index,
-                            url,
-                            headers,
-                        }
-                    } else {
-                        PlaybackDirectUrlMedia::ProxyStream {
-                            version: version.to_string(),
-                            expires_at,
-                            mode_name: mode_name.clone(),
-                            url_index,
-                            url,
-                            headers,
-                        }
-                    }),
+                let p2p_resource_id = p2p_descriptor(media)?;
+                Some((
+                    url_index,
+                    playback_media(
+                        media.name.clone(),
+                        media.format.clone(),
+                        media.expire_at.map(|dt| dt.timestamp()),
+                        PlaybackMediaProvider::DirectUrl(
+                            if super::playback_media_is_dash(&mode_name, media) {
+                                PlaybackDirectUrlMedia::ProxyDashManifest {
+                                    p2p_resource_id,
+                                    version: version.to_string(),
+                                    expires_at,
+                                    mode_name: mode_name.clone(),
+                                    url_index,
+                                    url,
+                                    headers,
+                                }
+                            } else if super::playback_media_is_hls(&mode_name, media) {
+                                PlaybackDirectUrlMedia::ProxyHlsManifest {
+                                    p2p_resource_id,
+                                    version: version.to_string(),
+                                    expires_at,
+                                    mode_name: mode_name.clone(),
+                                    url_index,
+                                    url,
+                                    headers,
+                                }
+                            } else {
+                                PlaybackDirectUrlMedia::ProxyStream {
+                                    p2p_resource_id,
+                                    version: version.to_string(),
+                                    expires_at,
+                                    mode_name: mode_name.clone(),
+                                    url_index,
+                                    url,
+                                    headers,
+                                }
+                            },
+                        ),
+                    ),
                 ))
             })
-            .collect();
+            .collect::<Vec<_>>();
+        if proxy_medias.is_empty() {
+            continue;
+        }
+        let original_default_index = original_info.default_media_index.unwrap_or(0);
+        let proxy_default_index = proxy_medias
+            .iter()
+            .position(|(source_index, _)| *source_index == original_default_index);
+        proxy_info.default_media_index = original_info.default_media_index.and(proxy_default_index);
+        proxy_info.medias = proxy_medias.into_iter().map(|(_, media)| media).collect();
         proxy_info.subtitles = original_info
             .subtitles
             .iter()
@@ -301,12 +370,14 @@ fn mark_direct_url_playback_resources(
             .collect();
 
         result.playback_infos.insert(proxy_mode_name, proxy_info);
-        if original_has_transport_headers {
+        if proxy_only {
             result.playback_infos.remove(&mode_name);
         }
     }
 
-    result.default_mode = selected_default_mode;
+    if prefer_proxy || proxy_only {
+        result.default_mode = format!("proxy_{original_default_mode}");
+    }
 }
 
 impl DirectUrlProvider {
@@ -364,27 +435,90 @@ impl DirectUrlProvider {
         })
     }
 
-    pub async fn get_hls_segment(
+    pub async fn get_hls_resource(
+        &self,
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
+        request: DirectUrlHlsResourceRequest<'_>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, request.version, request_context)
+                .await?;
+        let media = versioned
+            .result
+            .playback_infos
+            .get(request.mode_name)
+            .and_then(|info| info.medias.get(request.url_index))
+            .ok_or(ProviderError::NotFound)?;
+        if request.is_manifest {
+            Ok(PlaybackTransportAction::M3u8Rewrite {
+                url: request.target_url.to_string(),
+                headers: media.upstream_headers(),
+            })
+        } else {
+            Ok(PlaybackTransportAction::FetchAndForward {
+                url: request.target_url.to_string(),
+                headers: media.upstream_headers(),
+                range_header: request.range_header.map(ToString::to_string),
+            })
+        }
+    }
+
+    pub async fn get_dash_manifest(
         &self,
         store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
         version: &str,
-        target_url: String,
+        mode_name: &str,
+        url_index: usize,
         request_context: Option<&super::ExecutionControl>,
-        range_header: Option<&str>,
     ) -> Result<PlaybackTransportAction, ProviderError> {
         let versioned =
             super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        let headers = versioned
+        let media = versioned
             .result
             .playback_infos
-            .get(&versioned.result.default_mode)
-            .and_then(|info| info.medias.first())
-            .map_or_else(HashMap::new, PlaybackMedia::upstream_headers);
-        super::playback_transport::transport_action_for_target_url(
-            target_url,
-            headers,
-            range_header,
-        )
+            .get(mode_name)
+            .and_then(|info| info.medias.get(url_index))
+            .ok_or(ProviderError::NotFound)?;
+        let url = media.upstream_url().ok_or(ProviderError::NotFound)?;
+        Ok(PlaybackTransportAction::MpdRewrite {
+            url: url.to_string(),
+            headers: media.upstream_headers(),
+        })
+    }
+
+    pub async fn get_dash_resource(
+        &self,
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
+        request: DirectUrlDashResourceRequest<'_>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, request.version, request_context)
+                .await?;
+        let media = versioned
+            .result
+            .playback_infos
+            .get(request.mode_name)
+            .and_then(|info| info.medias.get(request.url_index))
+            .ok_or(ProviderError::NotFound)?;
+        let target_url = resolve_dash_scope_target(
+            request.scope_url,
+            request.resource_path,
+            request.resource_query,
+        )?;
+        if request.is_manifest {
+            Ok(PlaybackTransportAction::MpdRewrite {
+                url: target_url,
+                headers: media.upstream_headers(),
+            })
+        } else {
+            Ok(PlaybackTransportAction::FetchAndForward {
+                url: target_url,
+                headers: media.upstream_headers(),
+                range_header: request.range_header.map(ToString::to_string),
+            })
+        }
     }
 
     pub async fn get_subtitle(
@@ -418,6 +552,14 @@ impl DirectUrlProvider {
             range_header: None,
         })
     }
+}
+
+fn resolve_dash_scope_target(
+    scope_url: &str,
+    resource_path: &str,
+    resource_query: Option<&str>,
+) -> Result<String, ProviderError> {
+    super::playback_transport::resolve_dash_scope_target(scope_url, resource_path, resource_query)
 }
 
 #[async_trait]
@@ -495,6 +637,7 @@ impl MediaProvider for DirectUrlProvider {
                                 version,
                                 expires_at,
                                 config.prefer_proxy == Some(true),
+                                config.proxy_only,
                             );
                         },
                     )
@@ -538,6 +681,7 @@ impl MediaProvider for DirectUrlProvider {
                             format,
                             None,
                             PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct {
+                                p2p_resource_id: p2p_resource_id(media),
                                 url: media.url.clone(),
                                 headers: media.headers.clone(),
                             }),
@@ -593,6 +737,7 @@ impl MediaProvider for DirectUrlProvider {
             },
         );
 
+        let is_live = config.inferred_live_status();
         let metadata = PlaybackMetadata::DirectUrl(DirectUrlPlaybackMetadata {
             format: Some(format.clone()),
             filename: first_media
@@ -600,8 +745,8 @@ impl MediaProvider for DirectUrlProvider {
                 .split('/')
                 .next_back()
                 .map(ToString::to_string),
+            p2p_eligible: is_live == Some(false),
         });
-        let is_live = config.inferred_live_status();
         let duration_seconds = if is_live == Some(true) {
             None
         } else {
@@ -630,6 +775,7 @@ impl MediaProvider for DirectUrlProvider {
                     version,
                     expires_at,
                     config.prefer_proxy == Some(true),
+                    config.proxy_only,
                 );
             },
         )
@@ -689,14 +835,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generate_playback_uses_proxy_default_when_requested() {
+    async fn generate_playback_returns_only_proxy_when_requested() {
         let provider = DirectUrlProvider::new();
         let ctx = test_context();
         let mut config = crate::models::DirectUrlMediaSourceConfig::single(
             "https://example.com/video.mp4".to_string(),
             HashMap::new(),
         );
-        config.prefer_proxy = Some(true);
+        config.proxy_only = true;
         let source_config = crate::models::MediaSourceConfig::DirectUrl(config);
 
         let result = provider
@@ -705,8 +851,345 @@ mod tests {
             .expect("direct url playback should generate");
 
         assert_eq!(result.default_mode, "proxy_direct");
+        assert!(!result.playback_infos.contains_key("direct"));
+        assert!(result.playback_infos.contains_key("proxy_direct"));
+        let proxy = p2p_descriptor(&result.playback_infos["proxy_direct"].medias[0])
+            .expect("proxy resource should carry provider identity");
+        assert!(proxy.starts_with("direct_url:"));
+    }
+
+    #[tokio::test]
+    async fn generate_playback_prefers_proxy_while_returning_both_modes() {
+        let provider = DirectUrlProvider::new();
+        let ctx = test_context();
+        let mut config = crate::models::DirectUrlMediaSourceConfig::single(
+            "https://example.com/video.mp4".to_string(),
+            HashMap::from([("authorization".to_string(), "Bearer secret".to_string())]),
+        );
+        config.prefer_proxy = Some(true);
+
+        let result = provider
+            .generate_playback(&ctx, &crate::models::MediaSourceConfig::DirectUrl(config))
+            .await
+            .expect("preferred proxy playback should generate");
+
+        assert_eq!(result.default_mode, "proxy_direct");
         assert!(result.playback_infos.contains_key("direct"));
         assert!(result.playback_infos.contains_key("proxy_direct"));
+        assert_eq!(
+            result.playback_infos["direct"].medias[0].upstream_headers()["authorization"],
+            "Bearer secret"
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_playback_proxy_only_takes_priority_over_prefer_proxy() {
+        let provider = DirectUrlProvider::new();
+        let ctx = test_context();
+        let mut config = crate::models::DirectUrlMediaSourceConfig::single(
+            "https://example.com/video.mp4".to_string(),
+            HashMap::new(),
+        );
+        config.prefer_proxy = Some(true);
+        config.proxy_only = true;
+
+        let result = provider
+            .generate_playback(&ctx, &crate::models::MediaSourceConfig::DirectUrl(config))
+            .await
+            .expect("proxy-only playback should generate");
+
+        assert_eq!(result.default_mode, "proxy_direct");
+        assert!(!result.playback_infos.contains_key("direct"));
+        assert!(result.playback_infos.contains_key("proxy_direct"));
+    }
+
+    #[tokio::test]
+    async fn generate_playback_selects_proxy_transport_per_media() {
+        let provider = DirectUrlProvider::new();
+        let ctx = test_context();
+        let media = |name: &str, format: &str| crate::models::DirectUrlMediaResourceConfig {
+            name: name.to_string(),
+            url: format!("https://example.com/{name}.{format}"),
+            headers: HashMap::new(),
+            format: format.to_string(),
+        };
+        let source_config = crate::models::MediaSourceConfig::DirectUrl(
+            crate::models::DirectUrlMediaSourceConfig {
+                is_live: Some(false),
+                duration_seconds: Some(20.0),
+                prefer_proxy: Some(false),
+                proxy_only: false,
+                medias: vec![
+                    media("video", "mp4"),
+                    media("playlist", "hls"),
+                    media("manifest", "dash"),
+                    media("archive", "flv"),
+                ],
+                default_media_index: Some(0),
+                subtitles: Vec::new(),
+                default_subtitle_index: None,
+                danmakus: Vec::new(),
+                default_danmaku_index: None,
+            },
+        );
+
+        let result = provider
+            .generate_playback(&ctx, &source_config)
+            .await
+            .expect("mixed direct URL playback should generate");
+        let proxy = &result.playback_infos["proxy_direct"];
+        let direct = &result.playback_infos["direct"];
+
+        assert_eq!(result.default_mode, "direct");
+        assert_eq!(direct.medias.len(), 4);
+        assert_eq!(
+            p2p_descriptor(&direct.medias[0]),
+            p2p_descriptor(&proxy.medias[0])
+        );
+
+        assert_eq!(
+            proxy
+                .medias
+                .iter()
+                .map(|media| media.format.as_str())
+                .collect::<Vec<_>>(),
+            vec!["mp4", "hls", "dash", "flv"]
+        );
+        assert!(matches!(
+            proxy.medias[0].provider,
+            PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::ProxyStream { .. })
+        ));
+        assert!(matches!(
+            proxy.medias[1].provider,
+            PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::ProxyHlsManifest { .. })
+        ));
+        assert!(matches!(
+            proxy.medias[2].provider,
+            PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::ProxyDashManifest { .. })
+        ));
+        assert!(matches!(
+            proxy.medias[3].provider,
+            PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::ProxyStream { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn generate_playback_keeps_direct_and_proxy_modes_with_transport_headers() {
+        let provider = DirectUrlProvider::new();
+        let ctx = test_context();
+        let source_config = crate::models::MediaSourceConfig::DirectUrl(
+            crate::models::DirectUrlMediaSourceConfig {
+                is_live: Some(false),
+                duration_seconds: Some(20.0),
+                prefer_proxy: Some(false),
+                proxy_only: false,
+                medias: vec![
+                    crate::models::DirectUrlMediaResourceConfig {
+                        name: "Protected MP4".to_string(),
+                        url: "https://example.com/protected.mp4".to_string(),
+                        headers: HashMap::from([(
+                            "authorization".to_string(),
+                            "Bearer secret".to_string(),
+                        )]),
+                        format: "mp4".to_string(),
+                    },
+                    crate::models::DirectUrlMediaResourceConfig {
+                        name: "Public DASH".to_string(),
+                        url: "https://example.com/public.mpd".to_string(),
+                        headers: HashMap::new(),
+                        format: "dash".to_string(),
+                    },
+                ],
+                default_media_index: Some(1),
+                subtitles: Vec::new(),
+                default_subtitle_index: None,
+                danmakus: Vec::new(),
+                default_danmaku_index: None,
+            },
+        );
+
+        let result = provider
+            .generate_playback(&ctx, &source_config)
+            .await
+            .expect("mixed protected MP4 and public DASH should generate");
+
+        assert_eq!(result.default_mode, "direct");
+        let direct = &result.playback_infos["direct"];
+        assert_eq!(direct.default_media_index, Some(1));
+        assert_eq!(direct.medias.len(), 2);
+        assert_eq!(direct.medias[0].format, "mp4");
+        assert_eq!(
+            direct.medias[0].upstream_headers()["authorization"],
+            "Bearer secret"
+        );
+        assert_eq!(direct.medias[1].format, "dash");
+        let proxy = &result.playback_infos["proxy_direct"];
+        assert_eq!(proxy.medias.len(), 2);
+        assert_eq!(proxy.medias[0].format, "mp4");
+        assert_eq!(proxy.medias[1].format, "dash");
+        assert!(matches!(
+            proxy.medias[1].provider,
+            PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::ProxyDashManifest { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn generate_playback_proxies_dash_transport_headers() {
+        let config = crate::models::DirectUrlMediaSourceConfig {
+            is_live: Some(false),
+            duration_seconds: None,
+            prefer_proxy: None,
+            proxy_only: true,
+            medias: vec![crate::models::DirectUrlMediaResourceConfig {
+                name: "Protected DASH".to_string(),
+                url: "https://example.com/protected.mpd".to_string(),
+                headers: HashMap::from([(
+                    "authorization".to_string(),
+                    "Bearer secret".to_string(),
+                )]),
+                format: "dash".to_string(),
+            }],
+            default_media_index: None,
+            subtitles: Vec::new(),
+            default_subtitle_index: None,
+            danmakus: Vec::new(),
+            default_danmaku_index: None,
+        };
+        let provider = DirectUrlProvider::new();
+        let ctx = test_context();
+        let result = provider
+            .generate_playback(&ctx, &crate::models::MediaSourceConfig::DirectUrl(config))
+            .await
+            .expect("protected DASH should generate through the proxy");
+
+        assert_eq!(result.default_mode, "proxy_direct");
+        assert!(!result.playback_infos.contains_key("direct"));
+        let proxy = &result.playback_infos["proxy_direct"];
+        assert_eq!(proxy.medias.len(), 1);
+        assert!(matches!(
+            &proxy.medias[0].provider,
+            PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::ProxyDashManifest {
+                headers,
+                ..
+            }) if headers.get("authorization").map(String::as_str) == Some("Bearer secret")
+        ));
+    }
+
+    #[tokio::test]
+    async fn dash_proxy_actions_preserve_media_headers_range_and_query() {
+        let provider = DirectUrlProvider::new();
+        let ctx = test_context();
+        let mut config = crate::models::DirectUrlMediaSourceConfig::single(
+            "https://cdn.example.com/dash/manifest.mpd".to_string(),
+            HashMap::from([("authorization".to_string(), "Bearer secret".to_string())]),
+        );
+        config.proxy_only = true;
+        config.medias[0].format = "dash".to_string();
+        let result = provider
+            .generate_playback(&ctx, &crate::models::MediaSourceConfig::DirectUrl(config))
+            .await
+            .expect("protected DASH should generate");
+        let PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::ProxyDashManifest {
+            version,
+            ..
+        }) = &result.playback_infos["proxy_direct"].medias[0].provider
+        else {
+            panic!("DASH media should use the DASH proxy transport");
+        };
+
+        let manifest = provider
+            .get_dash_manifest(ctx.store.as_ref(), version, "direct", 0, None)
+            .await
+            .expect("DASH manifest action should resolve");
+        assert!(matches!(
+            manifest,
+            PlaybackTransportAction::MpdRewrite { ref url, ref headers }
+                if url == "https://cdn.example.com/dash/manifest.mpd"
+                    && headers.get("authorization").map(String::as_str) == Some("Bearer secret")
+        ));
+
+        let segment = provider
+            .get_dash_resource(
+                ctx.store.as_ref(),
+                DirectUrlDashResourceRequest {
+                    version,
+                    mode_name: "direct",
+                    url_index: 0,
+                    scope_url: "https://cdn.example.com/dash/video/",
+                    resource_path: "representation/segment-12.m4s",
+                    resource_query: Some("token=a%2Bb"),
+                    is_manifest: false,
+                    range_header: Some("bytes=100-199"),
+                },
+                None,
+            )
+            .await
+            .expect("DASH segment action should resolve");
+        assert!(matches!(
+            segment,
+            PlaybackTransportAction::FetchAndForward {
+                ref url,
+                ref headers,
+                range_header: Some(ref range),
+            } if url == "https://cdn.example.com/dash/video/representation/segment-12.m4s?token=a%2Bb"
+                && headers.get("authorization").map(String::as_str) == Some("Bearer secret")
+                && range == "bytes=100-199"
+        ));
+    }
+
+    #[test]
+    fn dash_scope_resolves_relative_resources_and_preserves_query() {
+        let target = resolve_dash_scope_target(
+            "https://cdn.example.com/video/representation/",
+            "segments/chunk-12.m4s",
+            Some("token=a%2Bb&part=2"),
+        )
+        .expect("relative resource should resolve inside the signed scope");
+
+        assert_eq!(
+            target,
+            "https://cdn.example.com/video/representation/segments/chunk-12.m4s?token=a%2Bb&part=2"
+        );
+    }
+
+    #[test]
+    fn dash_scope_supports_an_exact_resource() {
+        let target = resolve_dash_scope_target(
+            "https://cdn.example.com/live/refresh.mpd?token=abc",
+            "",
+            None,
+        )
+        .expect("empty path should resolve to the signed resource itself");
+
+        assert_eq!(target, "https://cdn.example.com/live/refresh.mpd?token=abc");
+    }
+
+    #[test]
+    fn dash_scope_rejects_path_and_origin_escape() {
+        for resource_path in [
+            "../secret.m4s",
+            "%2e%2e/secret.m4s",
+            "%252e%252e%252fsecret.m4s",
+            "https://evil.example/secret.m4s",
+            "\\\\evil.example\\secret.m4s",
+        ] {
+            assert!(
+                resolve_dash_scope_target(
+                    "https://cdn.example.com/video/representation/",
+                    resource_path,
+                    None,
+                )
+                .is_err(),
+                "resource path should be rejected: {resource_path}"
+            );
+        }
+
+        assert!(resolve_dash_scope_target(
+            "https://cdn.example.com/live/refresh.mpd",
+            "other.mpd",
+            None,
+        )
+        .is_err());
     }
 
     #[test]

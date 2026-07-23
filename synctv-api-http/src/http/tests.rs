@@ -2593,7 +2593,7 @@ async fn test_provider_proxy_routes_use_streaming_rate_limit_tier() -> TestResul
     let first_request = test_request(
         Request::builder()
             .method("GET")
-            .uri("/api/playback-providers/bilibili/v1/hls-segments?targetUrl=https%3A%2F%2Fcdn.example.com%2Fseg.ts&sig=s&uid=u&rid=r&exp=1")
+            .uri("/api/playback-providers/bilibili/v1/hls-resources/direct/0/media?targetUrl=https%3A%2F%2Fcdn.example.com%2Fseg.ts&sig=s&uid=u&rid=r&exp=1")
             .body(Body::empty()),
     )?;
     let first = test_response(app.clone().oneshot(first_request).await)?;
@@ -2602,7 +2602,7 @@ async fn test_provider_proxy_routes_use_streaming_rate_limit_tier() -> TestResul
     let second_request = test_request(
         Request::builder()
             .method("GET")
-            .uri("/api/playback-providers/bilibili/v1/hls-segments?targetUrl=https%3A%2F%2Fcdn.example.com%2Fseg.ts&sig=s&uid=u&rid=r&exp=1")
+            .uri("/api/playback-providers/bilibili/v1/hls-resources/direct/0/media?targetUrl=https%3A%2F%2Fcdn.example.com%2Fseg.ts&sig=s&uid=u&rid=r&exp=1")
             .body(Body::empty()),
     )?;
     let second = test_response(app.oneshot(second_request).await)?;
@@ -2611,6 +2611,42 @@ async fn test_provider_proxy_routes_use_streaming_rate_limit_tier() -> TestResul
         StatusCode::TOO_MANY_REQUESTS,
         "playback provider endpoints must use the streaming rate-limit bucket"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_direct_url_manifest_and_resource_routes_are_reachable() -> TestResult {
+    let state = test_app_state();
+    let app = register_all_routes().with_state(state);
+    let scope = base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        "https://cdn.example.com/dash/video/",
+    );
+    let routes = [
+        "/api/playback-providers/direct-url/v1/hls-resources/direct/0/media?targetUrl=https%3A%2F%2Fcdn.example.com%2Fsegment.ts&sig=s&uid=u&rid=r&exp=1".to_string(),
+        "/api/playback-providers/direct-url/v1/dash-manifests/direct/0?sig=s&uid=u&rid=r&exp=1".to_string(),
+        format!(
+            "/api/playback-providers/direct-url/v1/dash-resources/direct/0/media/{scope}/u/r/1/s"
+        ),
+        format!(
+            "/api/playback-providers/direct-url/v1/dash-resources/direct/0/media/{scope}/u/r/1/s/video/segment-1.m4s?token=x"
+        ),
+    ];
+
+    for route in routes {
+        let request = test_request(
+            Request::builder()
+                .method("GET")
+                .uri(&route)
+                .body(Body::empty()),
+        )?;
+        let response = test_response(app.clone().oneshot(request).await)?;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "route should reach playback access validation: {route}"
+        );
+    }
     Ok(())
 }
 

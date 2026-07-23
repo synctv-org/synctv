@@ -16,6 +16,7 @@ pub(crate) mod access;
 pub(crate) mod context;
 pub(crate) mod credential_resolver;
 pub(crate) mod error;
+mod p2p_media;
 pub(crate) mod playback_profile;
 pub(crate) mod playback_transport;
 pub(crate) mod provider_client;
@@ -57,6 +58,7 @@ pub use access::{
 };
 pub use context::ProviderContext;
 pub use error::ProviderError;
+pub use p2p_media::{playback_media_p2p_delivery, P2pMediaDelivery};
 pub use playback_profile::{
     PlaybackAudioCapability, PlaybackClientProfile, PlaybackContainer, PlaybackStreamPreference,
     PlaybackSubtitlePreference, PlaybackVideoCodec,
@@ -80,6 +82,38 @@ pub use traits::{
     PreparedSourceConfig, ProviderCredentialDependency, ProviderPlaybackSessionLifecycle,
     SourceConfig, SourceConfigKind, SourceCover,
 };
+
+pub(crate) fn playback_profile_prefers_transcode(
+    profile: Option<&PlaybackClientProfile>,
+    original_format: &str,
+) -> bool {
+    let Some(profile) = profile else {
+        return false;
+    };
+    match profile.stream_preference {
+        PlaybackStreamPreference::Transcode => true,
+        PlaybackStreamPreference::DirectPlay => false,
+        PlaybackStreamPreference::Auto => {
+            if profile.supported_containers.is_empty() {
+                return false;
+            }
+            let container = match original_format.trim().to_ascii_lowercase().as_str() {
+                "mp4" | "m4v" => Some(PlaybackContainer::Mp4),
+                "mkv" => Some(PlaybackContainer::Mkv),
+                "webm" => Some(PlaybackContainer::Webm),
+                _ => None,
+            };
+            container.is_none_or(|container| !profile.supported_containers.contains(&container))
+        }
+    }
+}
+
+pub(crate) fn playback_profile_cache_token(profile: Option<&PlaybackClientProfile>) -> String {
+    profile.map_or_else(
+        || "default".to_string(),
+        PlaybackClientProfile::cache_fingerprint,
+    )
+}
 
 use crate::models::media::{PlaybackMedia, PlaybackMediaProvider, PlaybackRtmpMedia};
 use crate::models::{normalize_provider_instance_name, MediaId, RoomId};
@@ -145,34 +179,36 @@ pub(crate) fn subtitle_headers_for_proxy(
 // Re-export providers
 pub use acfun::{AcFunDanmakuStream, AcFunLiveDanmakuEvent, AcFunProvider};
 pub use alist::{
-    AlistListItem, AlistListRequest, AlistListResponse, AlistLoginAndPersistRequest,
-    AlistLoginCredential, AlistLoginRequest, AlistMeRequest, AlistMeResponse,
-    AlistPersistLoginCredentialRequest, AlistPersistedLoginResponse, AlistProvider,
-    AlistSearchItem, AlistSearchRequest, AlistSearchResponse,
+    AlistHlsResourceRequest, AlistListItem, AlistListRequest, AlistListResponse,
+    AlistLoginAndPersistRequest, AlistLoginCredential, AlistLoginRequest, AlistMeRequest,
+    AlistMeResponse, AlistPersistLoginCredentialRequest, AlistPersistedLoginResponse,
+    AlistProvider, AlistSearchItem, AlistSearchRequest, AlistSearchResponse,
 };
 pub use bilibili::{
-    BilibiliCaptchaResponse, BilibiliDashManifestMode, BilibiliDashProxyUrlMapper,
+    BilibiliCaptchaResponse, BilibiliDashManifestMode, BilibiliDashResourceRequest,
     BilibiliFavoriteFolder, BilibiliFollowedPgcPage, BilibiliFollowedPgcSeason,
-    BilibiliHistoryItem, BilibiliHistoryPage, BilibiliLiveArea, BilibiliLiveDanmuHost,
-    BilibiliLiveDanmuInfoRequest, BilibiliLiveDanmuInfoResponse, BilibiliMatchRequest,
-    BilibiliMatchResponse, BilibiliMatchedResource, BilibiliPageInfo, BilibiliParseLivePageRequest,
-    BilibiliParsePgcPageRequest, BilibiliParseVideoPageRequest, BilibiliPersistedQrLoginResponse,
-    BilibiliPgcSeasonIndexItem, BilibiliPgcSeasonIndexPage, BilibiliPgcTimelineItem,
-    BilibiliProvider, BilibiliQrCodeResponse, BilibiliQrLoginRequest, BilibiliQrLoginResponse,
-    BilibiliQrLoginStatus, BilibiliSmsLoginRequest, BilibiliSmsLoginResponse,
-    BilibiliSmsLoginTokenCodec, BilibiliSmsRequest, BilibiliSmsResponse, BilibiliUserInfoRequest,
-    BilibiliUserInfoResponse, BilibiliVideoInfo, DASH_MANIFEST_METADATA_KEY, LIVE_DANMAKU_FORMAT,
-    LIVE_DANMAKU_TRACK_NAME,
+    BilibiliHistoryItem, BilibiliHistoryPage, BilibiliHlsResourceRequest, BilibiliLiveArea,
+    BilibiliLiveDanmuHost, BilibiliLiveDanmuInfoRequest, BilibiliLiveDanmuInfoResponse,
+    BilibiliMatchRequest, BilibiliMatchResponse, BilibiliMatchedResource, BilibiliPageInfo,
+    BilibiliParseLivePageRequest, BilibiliParsePgcPageRequest, BilibiliParseVideoPageRequest,
+    BilibiliPersistedQrLoginResponse, BilibiliPgcSeasonIndexItem, BilibiliPgcSeasonIndexPage,
+    BilibiliPgcTimelineItem, BilibiliProvider, BilibiliQrCodeResponse, BilibiliQrLoginRequest,
+    BilibiliQrLoginResponse, BilibiliQrLoginStatus, BilibiliSmsLoginRequest,
+    BilibiliSmsLoginResponse, BilibiliSmsLoginTokenCodec, BilibiliSmsRequest, BilibiliSmsResponse,
+    BilibiliUserInfoRequest, BilibiliUserInfoResponse, BilibiliVideoInfo,
+    DASH_MANIFEST_METADATA_KEY, LIVE_DANMAKU_FORMAT, LIVE_DANMAKU_TRACK_NAME,
 };
 pub use cctv::CctvProvider;
 pub use cloudreve::{CloudreveBind, CloudreveListResponse, CloudreveProvider};
-pub use direct_url::DirectUrlProvider;
+pub use direct_url::{
+    DirectUrlDashResourceRequest, DirectUrlHlsResourceRequest, DirectUrlProvider,
+};
 pub use douyin::{DouyinBind, DouyinDanmakuEvent, DouyinDanmakuStream, DouyinProvider};
 pub use douyu::{DouyuDanmakuEvent, DouyuDanmakuStream, DouyuProvider};
 pub use emby::{
-    EmbyListItem, EmbyListRequest, EmbyListResponse, EmbyLoginAndPersistRequest,
-    EmbyLoginCredential, EmbyLoginRequest, EmbyLoginResponse, EmbyMeRequest, EmbyMeResponse,
-    EmbyPersistedLoginResponse, EmbyProvider, EmbyUserPolicy,
+    EmbyHlsResourceRequest, EmbyListItem, EmbyListRequest, EmbyListResponse,
+    EmbyLoginAndPersistRequest, EmbyLoginCredential, EmbyLoginRequest, EmbyLoginResponse,
+    EmbyMeRequest, EmbyMeResponse, EmbyPersistedLoginResponse, EmbyProvider, EmbyUserPolicy,
 };
 pub use fnos::{FnosBind, FnosLoginResult, FnosProvider};
 pub use huya::{HuyaDanmakuEvent, HuyaDanmakuStream, HuyaProvider};
@@ -190,27 +226,19 @@ pub use twitch::{TwitchBind, TwitchChatEvent, TwitchChatStream, TwitchProvider};
 pub use youtube::{YoutubeBind, YoutubeProvider};
 
 fn playback_info_is_hls(mode_name: &str, info: &PlaybackInfo) -> bool {
-    info.medias.iter().any(|media| {
-        let format = media.format.as_str();
-        format == "m3u8" || format == "hls" || mode_name.contains("hls")
-    })
-}
-
-fn playback_info_has_transport_headers(info: &PlaybackInfo) -> bool {
     info.medias
         .iter()
-        .any(|media| !media.upstream_headers().is_empty())
-        || info
-            .subtitles
-            .iter()
-            .any(|subtitle| !subtitle.upstream_headers().is_empty())
+        .any(|media| playback_media_is_hls(mode_name, media))
 }
 
-fn signed_playback_default_needs_proxy(result: &PlaybackResult) -> bool {
-    result
-        .playback_infos
-        .get(&result.default_mode)
-        .is_some_and(playback_info_has_transport_headers)
+fn playback_media_is_hls(mode_name: &str, media: &PlaybackMedia) -> bool {
+    let format = media.format.trim().to_ascii_lowercase();
+    format == "m3u8" || format == "hls" || mode_name.contains("hls")
+}
+
+fn playback_media_is_dash(mode_name: &str, media: &PlaybackMedia) -> bool {
+    let format = media.format.trim().to_ascii_lowercase();
+    format == "mpd" || format == "dash" || mode_name.contains("dash")
 }
 
 /// Bundle of all in-process provider adapters.

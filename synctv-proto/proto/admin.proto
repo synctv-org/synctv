@@ -172,7 +172,7 @@ message RuntimeSettings {
   ProxySettings proxy = 6 [(buf.validate.field).required = true];
   RtmpSettings rtmp = 7 [(buf.validate.field).required = true];
   EmailSettings email = 8 [(buf.validate.field).required = true];
-  WebRtcSettings webrtc = 9 [(buf.validate.field).required = true];
+  WebRTCSettings webrtc = 9 [(buf.validate.field).required = true];
   ChatSettings chat = 10 [(buf.validate.field).required = true];
   CorsSettings cors = 11 [(buf.validate.field).required = true];
   ServerSettings server = 12 [(buf.validate.field).required = true];
@@ -318,8 +318,9 @@ message SmtpProxy {
   SmtpCredentials credentials = 2;
 }
 
-message WebRtcSettings {
+message WebRTCSettings {
   repeated synctv.client.IceServer external_ice_servers = 1;
+  uint32 max_voice_participants_per_room = 2;
 }
 
 message ChatSettings {
@@ -351,7 +352,7 @@ message RuntimeSettingsPatch {
   ProxySettingsPatch proxy = 6;
   RtmpSettingsPatch rtmp = 7;
   EmailSettingsPatch email = 8;
-  WebRtcSettingsPatch webrtc = 9;
+  WebRTCSettingsPatch webrtc = 9;
   ChatSettingsPatch chat = 10;
   CorsSettingsPatch cors = 11;
   ServerSettingsPatch server = 12;
@@ -420,8 +421,9 @@ message EmailSettingsPatch {
   repeated string whitelist_domains = 10;
 }
 
-message WebRtcSettingsPatch {
+message WebRTCSettingsPatch {
   repeated synctv.client.IceServer external_ice_servers = 1;
+  optional uint32 max_voice_participants_per_room = 2;
 }
 
 message ChatSettingsPatch {

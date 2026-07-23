@@ -1,6 +1,6 @@
 //! Douyin media provider adapter.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -493,33 +493,27 @@ impl DouyinProvider {
         provider_instance_name: Option<&str>,
     ) -> Result<PlaybackResult, ProviderError> {
         let mut infos = HashMap::new();
-        for (index, variant) in media.variants.iter().enumerate() {
-            let mode = unique_mode_name(&infos, variant, index);
-            infos.insert(
-                mode,
-                PlaybackInfo {
+        let variants = semantically_distinct_variants(&media.variants);
+        let preferred_video_key = (media.metadata.kind == DouyinMediaKind::Video)
+            .then(|| {
+                variants
+                    .iter()
+                    .max_by_key(|variant| video_variant_score(variant))
+                    .map(|variant| variant_key_for(variant))
+            })
+            .flatten();
+        for variant in variants {
+            let format = stream_format(variant.format);
+            let mode = match format {
+                "m3u8" => "hls",
+                other => other,
+            };
+            let info = infos
+                .entry(mode.to_string())
+                .or_insert_with(|| PlaybackInfo {
                     thumbnail: media.metadata.cover.as_ref().map(|cover| cover.url.clone()),
-                    medias: vec![PlaybackMedia {
-                        name: variant.quality.clone(),
-                        format: stream_format(variant.format).to_string(),
-                        expire_at: None,
-                        metadata: Some(PlaybackMediaMetadata {
-                            resolution: variant
-                                .width
-                                .zip(variant.height)
-                                .map(|(width, height)| format!("{width}x{height}")),
-                            bitrate: variant.bitrate.and_then(|value| i64::try_from(value).ok()),
-                            codec: variant.codec.clone(),
-                            fps: variant.fps.and_then(|value| i32::try_from(value).ok()),
-                        }),
-                        provider: PlaybackMediaProvider::Douyin(PlaybackDouyinMedia::Refresh {
-                            resource: resource.clone(),
-                            variant_key: variant_key_for(variant),
-                            credential_owner_id,
-                            provider_instance_name: provider_instance_name.map(str::to_owned),
-                        }),
-                    }],
-                    default_media_index: Some(0),
+                    medias: Vec::new(),
+                    default_media_index: None,
                     subtitles: Vec::new(),
                     default_subtitle_index: None,
                     danmakus: (media.metadata.kind == DouyinMediaKind::Live)
@@ -534,24 +528,49 @@ impl DouyinProvider {
                         .collect(),
                     default_danmaku_index: (media.metadata.kind == DouyinMediaKind::Live)
                         .then_some(0),
-                },
-            );
+                });
+            let media_index = info.medias.len();
+            let is_preferred = preferred_video_key.as_deref()
+                == Some(variant_key_for(variant).as_str())
+                || variant.quality.to_ascii_lowercase().contains("origin");
+            info.medias.push(PlaybackMedia {
+                name: variant.quality.clone(),
+                format: format.to_string(),
+                expire_at: None,
+                metadata: Some(PlaybackMediaMetadata {
+                    resolution: variant
+                        .width
+                        .zip(variant.height)
+                        .map(|(width, height)| format!("{width}x{height}")),
+                    bitrate: variant.bitrate.and_then(|value| i64::try_from(value).ok()),
+                    codec: variant.codec.clone(),
+                    fps: variant.fps.and_then(|value| i32::try_from(value).ok()),
+                }),
+                provider: PlaybackMediaProvider::Douyin(PlaybackDouyinMedia::Refresh {
+                    resource: resource.clone(),
+                    variant_key: variant_key_for(variant),
+                    credential_owner_id,
+                    provider_instance_name: provider_instance_name.map(str::to_owned),
+                }),
+            });
+            if is_preferred || info.default_media_index.is_none() {
+                info.default_media_index = Some(media_index);
+            }
         }
         if infos.is_empty() {
             return Err(ProviderError::ApiError(
                 if media.metadata.is_live {
-                    "Douyin returned no playable variants"
-                } else {
                     "Douyin live room is offline"
+                } else {
+                    "Douyin returned no playable variants"
                 }
                 .to_string(),
             ));
         }
         let default_mode = infos
-            .keys()
-            .find(|mode| mode.contains("origin") && mode.contains("hls"))
-            .cloned()
-            .or_else(|| infos.keys().next().cloned())
+            .contains_key("hls")
+            .then(|| "hls".to_string())
+            .or_else(|| infos.keys().min().cloned())
             .ok_or_else(|| ProviderError::ApiError("Douyin playback is empty".to_string()))?;
         Ok(PlaybackResult {
             playback_infos: infos,
@@ -672,44 +691,38 @@ fn stream_format(format: DouyinStreamFormat) -> &'static str {
 
 fn variant_key_for(variant: &DouyinVariant) -> String {
     format!(
-        "{}\n{}\n{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
         stream_format(variant.format),
         variant.quality,
         variant.codec.as_deref().unwrap_or_default(),
         variant.width.unwrap_or_default(),
         variant.height.unwrap_or_default(),
+        variant.fps.unwrap_or_default(),
+        variant.bitrate.unwrap_or_default(),
         variant.audio_only
     )
 }
 
-fn unique_mode_name(
-    infos: &HashMap<String, PlaybackInfo>,
-    variant: &DouyinVariant,
-    index: usize,
-) -> String {
-    let base = format!("{}_{}", variant.quality, stream_format(variant.format))
-        .to_ascii_lowercase()
-        .chars()
-        .map(|value| {
-            if value.is_ascii_alphanumeric() {
-                value
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('_')
-        .to_string();
-    let base = if base.is_empty() {
-        format!("variant_{index}")
-    } else {
-        base
-    };
-    if infos.contains_key(&base) {
-        format!("{base}_{index}")
-    } else {
-        base
-    }
+fn semantically_distinct_variants(variants: &[DouyinVariant]) -> Vec<&DouyinVariant> {
+    let mut seen = HashSet::new();
+    variants
+        .iter()
+        .filter(|variant| seen.insert(variant_key_for(variant)))
+        .collect()
+}
+
+fn video_variant_score(variant: &DouyinVariant) -> (bool, bool, bool, u64, u64, u32) {
+    (
+        !variant.audio_only,
+        variant.codec.as_deref() == Some("avc"),
+        variant.format == DouyinStreamFormat::Mp4,
+        variant
+            .width
+            .zip(variant.height)
+            .map_or(0, |(width, height)| u64::from(width) * u64::from(height)),
+        variant.bitrate.unwrap_or_default(),
+        variant.fps.unwrap_or_default(),
+    )
 }
 
 fn douyin_headers(cookie: Option<&str>, kind: DouyinMediaKind) -> HashMap<String, String> {
@@ -1016,5 +1029,84 @@ impl DynamicPlaylistProvider for DouyinProvider {
             PlayMode::Sequential | PlayMode::RepeatAll | PlayMode::RepeatOne => None,
         };
         selected.map(|item| Self::next_item(base, item)).transpose()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn variant(
+        url: &str,
+        quality: &str,
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate: u64,
+    ) -> DouyinVariant {
+        DouyinVariant {
+            url: url.to_string(),
+            format: DouyinStreamFormat::Mp4,
+            quality: quality.to_string(),
+            codec: Some("avc".to_string()),
+            width: Some(width),
+            height: Some(height),
+            fps: Some(fps),
+            bitrate: Some(bitrate),
+            audio_only: false,
+            headers_required: true,
+        }
+    }
+
+    #[test]
+    fn semantic_video_variants_collapse_mirror_urls() {
+        let variants = vec![
+            variant(
+                "https://mirror-a.test/video.mp4",
+                "540p",
+                960,
+                540,
+                30,
+                900_000,
+            ),
+            variant(
+                "https://mirror-b.test/video.mp4",
+                "540p",
+                960,
+                540,
+                30,
+                900_000,
+            ),
+            variant(
+                "https://mirror-a.test/video-720.mp4",
+                "720p",
+                1280,
+                720,
+                60,
+                1_800_000,
+            ),
+        ];
+
+        let distinct = semantically_distinct_variants(&variants);
+
+        assert_eq!(distinct.len(), 2);
+        assert_eq!(distinct[0].url, "https://mirror-a.test/video.mp4");
+        assert_eq!(distinct[1].quality, "720p");
+        assert_eq!(variant_key_for(&variants[0]), variant_key_for(&variants[1]));
+    }
+
+    #[test]
+    fn video_variant_score_prefers_higher_quality_for_equivalent_sources() {
+        let low = variant("https://cdn.test/low.mp4", "540p", 960, 540, 30, 900_000);
+        let high = variant(
+            "https://cdn.test/high.mp4",
+            "1080p",
+            1920,
+            1080,
+            60,
+            4_000_000,
+        );
+
+        assert!(video_variant_score(&high) > video_variant_score(&low));
     }
 }

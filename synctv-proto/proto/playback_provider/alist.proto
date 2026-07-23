@@ -5,6 +5,12 @@ package synctv.playback_provider.alist;
 import "proto/buf/validate/validate.proto";
 import "proto/playback_provider/common.proto";
 
+enum AlistHlsResourceKind {
+  ALIST_HLS_RESOURCE_KIND_UNSPECIFIED = 0;
+  ALIST_HLS_RESOURCE_KIND_MEDIA = 1;
+  ALIST_HLS_RESOURCE_KIND_MANIFEST = 2;
+}
+
 message GetAlistFileStreamRequest {
   string version = 1 [(buf.validate.field).string.min_len = 1];
   string mode_name = 2 [(buf.validate.field).string.min_len = 1];
@@ -35,7 +41,7 @@ message AlistTranscodedHlsManifestResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
-message GetAlistTranscodedHlsSegmentRequest {
+message GetAlistTranscodedHlsResourceRequest {
   string version = 1 [(buf.validate.field).string.min_len = 1];
   string target_url = 2 [(buf.validate.field).string.min_len = 1];
   string sig = 3 [(buf.validate.field).string.min_len = 1];
@@ -44,9 +50,12 @@ message GetAlistTranscodedHlsSegmentRequest {
   int64 exp = 6;
   optional string range = 7;
   bool head = 8;
+  string mode_name = 9 [(buf.validate.field).string.min_len = 1];
+  uint32 media_index = 10;
+  AlistHlsResourceKind resource_kind = 11 [(buf.validate.field).enum.defined_only = true];
 }
 
-message AlistTranscodedHlsSegmentResponse {
+message AlistTranscodedHlsResourceResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
@@ -79,7 +88,7 @@ message AlistThumbnailResponse {
 service AlistPlaybackProviderService {
   rpc GetFileStream(GetAlistFileStreamRequest) returns (stream AlistFileStreamResponse);
   rpc GetTranscodedHlsManifest(GetAlistTranscodedHlsManifestRequest) returns (stream AlistTranscodedHlsManifestResponse);
-  rpc GetTranscodedHlsSegment(GetAlistTranscodedHlsSegmentRequest) returns (stream AlistTranscodedHlsSegmentResponse);
+  rpc GetTranscodedHlsResource(GetAlistTranscodedHlsResourceRequest) returns (stream AlistTranscodedHlsResourceResponse);
   rpc GetSubtitle(GetAlistSubtitleRequest) returns (stream AlistSubtitleResponse);
   rpc GetThumbnail(GetAlistThumbnailRequest) returns (stream AlistThumbnailResponse);
 }

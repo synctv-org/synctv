@@ -16,7 +16,7 @@ use crate::{
         ChatPlaybackChangedMetadata, ChatPlaybackMetadata, MediaId, PlayMode, PlaybackChangeReason,
         PlaybackHistoryEntry, PlaybackHistoryPage, PlaybackSourceIdentity, PlaybackSourceMetadata,
         PlaylistId, ProviderTarget, RealtimeEvent, RoomId, RoomPlaybackState, RoomSettings,
-        SourceProvider, UserId,
+        SourceProvider, TwitchTargetKind, UserId,
     },
     repository::{
         chat::InsertChatMessageEvent,
@@ -117,6 +117,35 @@ enum PlaybackHistoryTransition {
     SelectEntry(PlaybackHistoryEntry),
 }
 
+fn live_status_for_target(target: &ProviderTarget) -> Option<bool> {
+    match target {
+        ProviderTarget::Bilibili(crate::models::BilibiliTarget::Live { .. })
+        | ProviderTarget::Twitch(crate::models::TwitchTarget {
+            kind: TwitchTargetKind::Live,
+            ..
+        }) => Some(true),
+        ProviderTarget::Bilibili(
+            crate::models::BilibiliTarget::Video { .. }
+            | crate::models::BilibiliTarget::VideoPart { .. }
+            | crate::models::BilibiliTarget::PgcEpisode { .. },
+        )
+        | ProviderTarget::Twitch(crate::models::TwitchTarget {
+            kind: TwitchTargetKind::Video | TwitchTargetKind::Clip,
+            ..
+        })
+        | ProviderTarget::Alist(_)
+        | ProviderTarget::Emby(_)
+        | ProviderTarget::Cloudreve(_)
+        | ProviderTarget::Fnos(_)
+        | ProviderTarget::Qnap(_)
+        | ProviderTarget::Synology(_)
+        | ProviderTarget::Nextcloud(_)
+        | ProviderTarget::Seafile(_)
+        | ProviderTarget::TrueNas(_) => Some(false),
+        ProviderTarget::Youtube(_) | ProviderTarget::Douyin(_) | ProviderTarget::TikTok(_) => None,
+    }
+}
+
 fn live_status_for_media_source(
     provider: SourceProvider,
     source_config: &crate::models::MediaSourceConfig,
@@ -153,28 +182,30 @@ fn live_status_for_playlist_source(
     provider: SourceProvider,
     source_config: &crate::models::PlaylistSourceConfig,
 ) -> Option<bool> {
-    match provider {
-        SourceProvider::Alist
-        | SourceProvider::Emby
-        | SourceProvider::Synology
-        | SourceProvider::Nextcloud
-        | SourceProvider::Seafile
-        | SourceProvider::TrueNas => (source_config.provider() == provider).then_some(false),
-        SourceProvider::DirectUrl
-        | SourceProvider::Bilibili
-        | SourceProvider::Rtmp
-        | SourceProvider::LiveProxy
-        | SourceProvider::Cloudreve
-        | SourceProvider::Twitch
-        | SourceProvider::Huya
-        | SourceProvider::Douyu
-        | SourceProvider::Douyin
-        | SourceProvider::AcFun
-        | SourceProvider::Cctv
-        | SourceProvider::Fnos
-        | SourceProvider::Qnap
-        | SourceProvider::Youtube
-        | SourceProvider::TikTok => None,
+    if source_config.provider() != provider {
+        return None;
+    }
+    match source_config {
+        crate::models::PlaylistSourceConfig::Youtube(
+            crate::models::YoutubePlaylistSourceConfig::Channel { content, .. },
+        ) => Some(matches!(
+            content,
+            crate::models::YoutubeChannelContent::Live
+        )),
+        crate::models::PlaylistSourceConfig::Douyin(_)
+        | crate::models::PlaylistSourceConfig::TikTok(_)
+        | crate::models::PlaylistSourceConfig::Alist(_)
+        | crate::models::PlaylistSourceConfig::Emby(_)
+        | crate::models::PlaylistSourceConfig::Cloudreve(_)
+        | crate::models::PlaylistSourceConfig::Fnos(_)
+        | crate::models::PlaylistSourceConfig::Qnap(_)
+        | crate::models::PlaylistSourceConfig::Synology(_)
+        | crate::models::PlaylistSourceConfig::Nextcloud(_)
+        | crate::models::PlaylistSourceConfig::Seafile(_)
+        | crate::models::PlaylistSourceConfig::TrueNas(_) => Some(false),
+        crate::models::PlaylistSourceConfig::Bilibili(_)
+        | crate::models::PlaylistSourceConfig::Twitch(_)
+        | crate::models::PlaylistSourceConfig::Youtube(_) => None,
     }
 }
 
@@ -318,9 +349,27 @@ impl PlaybackService {
                 .get_room_media(&entry.room_id, &media_id)
                 .await?
                 .ok_or_else(|| Error::NotFound("Playback history media not found".to_string()))?;
-            return self
-                .ensure_creator_is_active(media.creator_id.as_ref(), "Media")
-                .await;
+            self.ensure_creator_is_active(media.creator_id.as_ref(), "Media")
+                .await?;
+
+            if let Some(playlist_id) = entry.playlist_id {
+                let playlist = self
+                    .media_service
+                    .get_room_playlist(&entry.room_id, &playlist_id)
+                    .await?
+                    .ok_or_else(|| {
+                        Error::NotFound("Playback history playlist not found".to_string())
+                    })?;
+                if playlist.is_dynamic() || media.playlist_id != Some(playlist_id) {
+                    return Err(Error::InvalidInput(
+                        "Playback history media does not belong to its static playlist".to_string(),
+                    ));
+                }
+                self.ensure_creator_is_active(playlist.creator_id.as_ref(), "Playlist")
+                    .await?;
+            }
+
+            return Ok(());
         }
         if let Some(playlist_id) = entry.playlist_id {
             let playlist = self
@@ -379,6 +428,10 @@ impl PlaybackService {
         &self,
         state: &RoomPlaybackState,
     ) -> Result<Option<bool>> {
+        if let Some(status) = state.target.as_ref().and_then(live_status_for_target) {
+            return Ok(Some(status));
+        }
+
         if let Some(media_id) = state.playing_media_id {
             let Some(media) = self
                 .media_service
@@ -596,14 +649,35 @@ impl PlaybackService {
         Ok(updated_state)
     }
 
-    fn chat_playback_metadata(state: &RoomPlaybackState, position: f64) -> ChatPlaybackMetadata {
-        ChatPlaybackMetadata {
+    pub async fn chat_playback_metadata_for_state(
+        &self,
+        state: &RoomPlaybackState,
+        position: f64,
+    ) -> Result<Option<ChatPlaybackMetadata>> {
+        let Some(identity) = PlaybackSourceIdentity::from_state(state)? else {
+            return Ok(None);
+        };
+        let source_metadata = self.source_metadata_repo.get(&identity).await?;
+        let is_live = match source_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.is_live)
+        {
+            Some(is_live) => Some(is_live),
+            None => self.source_live_status_for_state(state).await?,
+        };
+        let duration_seconds = source_metadata.and_then(|metadata| metadata.duration_seconds);
+
+        Ok(Some(ChatPlaybackMetadata {
             media_id: state.playing_media_id,
             playlist_id: state.playing_playlist_id,
             target: state.target.clone(),
             target_hash: None,
-            position_seconds: Some(position.max(0.0)),
-        }
+            position_seconds: ChatPlaybackMetadata::position_for_source(
+                position,
+                is_live,
+                duration_seconds,
+            ),
+        }))
     }
 
     async fn insert_playback_changed_chat_tx(
@@ -611,8 +685,7 @@ impl PlaybackService {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         previous: &RoomPlaybackState,
         current: &RoomPlaybackState,
-        reason: PlaybackChangeReason,
-        actor_user_id: Option<UserId>,
+        metadata: ChatPlaybackChangedMetadata,
     ) -> Result<Option<RealtimeEvent>> {
         if previous.playing_media_id == current.playing_media_id
             && previous.playing_playlist_id == current.playing_playlist_id
@@ -628,7 +701,7 @@ impl PlaybackService {
             return Ok(None);
         };
 
-        let event_actor = if let Some(actor) = actor_user_id {
+        let event_actor = if let Some(actor) = metadata.actor_user_id {
             actor
         } else {
             sqlx::query_scalar::<_, UserId>("SELECT created_by FROM rooms WHERE id = $1")
@@ -636,17 +709,10 @@ impl PlaybackService {
                 .fetch_one(&mut **tx)
                 .await?
         };
-        let from = (previous.playing_media_id.is_some() || previous.playing_playlist_id.is_some())
-            .then(|| Self::chat_playback_metadata(previous, previous.computed_position()));
         let mut message = ChatMessage::new(current.room_id, event_actor, "Playback changed".into());
         message.user_id = None;
         message.message_type = ChatMessageType::SystemPlaybackChanged;
-        message.metadata = Some(ChatMetadata::PlaybackChanged(ChatPlaybackChangedMetadata {
-            from,
-            to: Self::chat_playback_metadata(current, current.position),
-            reason,
-            actor_user_id,
-        }));
+        message.metadata = Some(ChatMetadata::PlaybackChanged(metadata));
         let occurred_at = self.clock.now();
         message.created_at = occurred_at;
         let event_id = synctv_common::snanoid!(16);
@@ -700,6 +766,15 @@ impl PlaybackService {
         actor_user_id: Option<UserId>,
         outbox_event_factory: Option<&RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<RoomPlaybackState> {
+        let from_chat_metadata = self
+            .chat_playback_metadata_for_state(previous, previous.computed_position())
+            .await?;
+        let to_chat_metadata = self
+            .chat_playback_metadata_for_state(state, state.position)
+            .await?
+            .ok_or_else(|| {
+                Error::Internal("playback transition has no target source".to_string())
+            })?;
         let reservation = self
             .begin_playback_write_from_db_version(&state.room_id, previous.version)
             .await?;
@@ -752,7 +827,17 @@ impl PlaybackService {
             self.insert_playback_outbox_tx(&mut tx, &updated, outbox_event_factory)
                 .await?;
             let chat_event = self
-                .insert_playback_changed_chat_tx(&mut tx, previous, &updated, reason, actor_user_id)
+                .insert_playback_changed_chat_tx(
+                    &mut tx,
+                    previous,
+                    &updated,
+                    ChatPlaybackChangedMetadata {
+                        from: from_chat_metadata,
+                        to: to_chat_metadata,
+                        reason,
+                        actor_user_id,
+                    },
+                )
                 .await?;
             Ok((updated, chat_event))
         }
@@ -1128,10 +1213,13 @@ impl PlaybackService {
                     state.clone()
                 };
 
-                let next_target = if let Some(ref playlist_id) = selection_state.playing_playlist_id {
+                let next_target = if let (None, Some(playlist_id)) = (
+                    selection_state.playing_media_id,
+                    selection_state.playing_playlist_id,
+                ) {
                     let playlist = self
                         .media_service
-                        .get_room_playlist(room_id, playlist_id)
+                        .get_room_playlist(room_id, &playlist_id)
                         .await?
                         .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
                     match self
@@ -1150,7 +1238,7 @@ impl PlaybackService {
                         return Ok(None);
                     };
                     self.media_service
-                        .next_dynamic_playlist_item(room_id, playlist_id, current_target, mode)
+                        .next_dynamic_playlist_item(room_id, &playlist_id, current_target, mode)
                         .await
                         .and_then(|item| {
                             item.map(|item| {
@@ -1320,7 +1408,7 @@ impl PlaybackService {
                             Err(error) => return Err(error),
                         }
                         updated_state.playing_media_id = Some(next.id);
-                        updated_state.playing_playlist_id = None;
+                        updated_state.playing_playlist_id = next.playlist_id;
                         updated_state.target = None;
                     }
                     NextTarget::Dynamic {
@@ -1494,7 +1582,7 @@ impl PlaybackService {
                     updated.playing_media_id = entry.media_id;
                     updated.playing_playlist_id = entry.playlist_id;
                     updated.target.clone_from(&entry.target);
-                    updated.position = entry.position_seconds;
+                    updated.position = 0.0;
                     updated.is_playing = true;
                     updated.updated_at = self.clock.now();
                     let saved = self
@@ -1551,7 +1639,18 @@ impl PlaybackService {
         &self,
         room_id: &RoomId,
         settings: &RoomSettings,
+        position: f64,
+    ) -> Result<Option<RoomPlaybackState>> {
+        self.check_and_auto_play_with_outbox(room_id, settings, position, None)
+            .await
+    }
+
+    pub async fn check_and_auto_play_with_outbox(
+        &self,
+        room_id: &RoomId,
+        settings: &RoomSettings,
         _position: f64,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<Option<RoomPlaybackState>> {
         let enabled = settings.auto_play.value.enabled;
 
@@ -1560,13 +1659,15 @@ impl PlaybackService {
         }
 
         let state = self.get_state(room_id).await?;
-        self.auto_advance_state_if_due(&state, settings).await
+        self.auto_advance_state_if_due(&state, settings, outbox_event_factory)
+            .await
     }
 
     async fn auto_advance_state_if_due(
         &self,
         state: &RoomPlaybackState,
         settings: &RoomSettings,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<Option<RoomPlaybackState>> {
         if !settings.auto_play.value.enabled || !state.is_playing {
             return Ok(None);
@@ -1583,7 +1684,15 @@ impl PlaybackService {
         };
 
         if state.computed_position() >= duration_seconds - 1.0 {
-            self.play_next(&state.room_id, settings).await
+            self.play_next_internal(
+                &state.room_id,
+                settings,
+                None,
+                true,
+                PlaybackChangeReason::AutoAdvance,
+                outbox_event_factory,
+            )
+            .await
         } else {
             Ok(None)
         }
@@ -1594,6 +1703,17 @@ impl PlaybackService {
         settings_repo: &crate::repository::RoomSettingsRepository,
         room_ids: &[RoomId],
         limit: i64,
+    ) -> Result<usize> {
+        self.auto_advance_due_sources_for_rooms_with_outbox(settings_repo, room_ids, limit, None)
+            .await
+    }
+
+    pub async fn auto_advance_due_sources_for_rooms_with_outbox(
+        &self,
+        settings_repo: &crate::repository::RoomSettingsRepository,
+        room_ids: &[RoomId],
+        limit: i64,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<usize> {
         // The caller passes rooms active on this process. In a cluster the same
         // room can be active on several nodes, so duplicate scans are expected.
@@ -1612,7 +1732,7 @@ impl PlaybackService {
         for (_metadata, state) in candidates {
             let settings = settings_repo.get(&state.room_id).await?;
             if self
-                .auto_advance_state_if_due(&state, &settings)
+                .auto_advance_state_if_due(&state, &settings, outbox_event_factory.clone())
                 .await?
                 .is_some()
             {
@@ -1925,7 +2045,7 @@ impl PlaybackService {
             return Ok(state);
         }
 
-        if let Some(ref media_id) = target.media_id {
+        let media = if let Some(ref media_id) = target.media_id {
             let media = self
                 .media_service
                 .get_room_media(&room_id, media_id)
@@ -1934,7 +2054,10 @@ impl PlaybackService {
 
             self.ensure_creator_is_active(media.creator_id.as_ref(), "Media")
                 .await?;
-        }
+            Some(media)
+        } else {
+            None
+        };
 
         if let Some(ref playlist_id) = target.playlist_id {
             let playlist = self
@@ -1943,32 +2066,46 @@ impl PlaybackService {
                 .await?
                 .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
 
-            if !playlist.is_dynamic() {
-                return Err(Error::InvalidInput(
-                    "playlist_id playback target must reference a dynamic playlist".to_string(),
-                ));
-            }
-
             self.ensure_creator_is_active(playlist.creator_id.as_ref(), "Playlist")
                 .await?;
 
-            let resolved = self
-                .media_service
-                .resolve_dynamic_playlist_item(
-                    room_id,
-                    actor_user_id,
-                    playlist_id,
-                    target.target.as_ref().ok_or_else(|| {
-                        Error::InvalidInput(
-                            "target is required for dynamic playlist playback".to_string(),
-                        )
-                    })?,
-                )
-                .await?;
-            if resolved.is_none() {
-                return Err(Error::NotFound(
-                    "Dynamic playlist item not found".to_string(),
-                ));
+            if let Some(media) = media.as_ref() {
+                if playlist.is_dynamic() {
+                    return Err(Error::InvalidInput(
+                        "static media playlist context must reference a static playlist"
+                            .to_string(),
+                    ));
+                }
+                if media.playlist_id.as_ref() != Some(playlist_id) {
+                    return Err(Error::InvalidInput(
+                        "media does not belong to the specified playlist".to_string(),
+                    ));
+                }
+            } else {
+                if !playlist.is_dynamic() {
+                    return Err(Error::InvalidInput(
+                        "dynamic playback target must reference a dynamic playlist".to_string(),
+                    ));
+                }
+
+                let resolved = self
+                    .media_service
+                    .resolve_dynamic_playlist_item(
+                        room_id,
+                        actor_user_id,
+                        playlist_id,
+                        target.target.as_ref().ok_or_else(|| {
+                            Error::InvalidInput(
+                                "target is required for dynamic playlist playback".to_string(),
+                            )
+                        })?,
+                    )
+                    .await?;
+                if resolved.is_none() {
+                    return Err(Error::NotFound(
+                        "Dynamic playlist item not found".to_string(),
+                    ));
+                }
             }
         }
 

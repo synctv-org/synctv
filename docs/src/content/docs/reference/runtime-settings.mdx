@@ -68,18 +68,18 @@ runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通�
 | --- | --- | --- | --- |
 | `permissions.adminDefaultPermissions` | 权限名称数组 | 内置 admin 权限集合 | 房间 admin 全局默认权限 |
 | `permissions.memberDefaultPermissions` | 权限名称数组 | 内置 member 权限集合 | 房间 member 全局默认权限 |
-| `permissions.guestDefaultPermissions` | 权限名称数组 | `[]` | 房间 guest 全局默认权限；只允许 `view_members`、`view_chat_history`、`use_webrtc` |
+| `permissions.guestDefaultPermissions` | 权限名称数组 | `[]` | 房间 guest 全局默认权限；只允许 `view_members`、`view_chat_history`、`use_voice_chat`、`use_p2p_media` |
 
 这些设置使用 JSON 数组保存稳定的权限名称，例如：
 
 ```json
-["send_chat_messages", "manage_own_media", "view_media", "view_members"]
+["send_chat_messages", "manage_own_media", "browse_library", "view_members"]
 ```
 
-`permissions.guestDefaultPermissions` 使用独立 guest 上限，不能写入 `view_media`、`send_chat_messages`、媒体资源、播放控制或管理权限。允许的示例：
+`permissions.guestDefaultPermissions` 使用独立 guest 上限，不能写入 `browse_library`、`send_chat_messages`、媒体资源、播放控制或管理权限。允许的示例：
 
 ```json
-["view_members", "view_chat_history", "use_webrtc"]
+["view_members", "view_chat_history", "use_voice_chat", "use_p2p_media"]
 ```
 
 完整权限名称、角色默认集合和房间覆盖规则见 [房间、权限与用户偏好](../../use/rooms-permissions/)。
@@ -185,9 +185,10 @@ SOCKS5 代理 URL 只包含 scheme、host 和 port。代理认证信息位于 `s
 
 ### WebRTC
 
-| Key | 类型 | 默认值 | 说明 |
-| --- | --- | --- | --- |
-| `webrtc.externalIceServers` | JSON/字符串结构 | Google STUN 两项 | 返回给原生客户端的外部 ICE servers |
+| Key | 类型 | 默认值 | 校验 | 说明 |
+| --- | --- | --- | --- | --- |
+| `webrtc.externalIceServers` | JSON/字符串结构 | Google STUN 两项 | 有效 ICE server 数组 | 返回给原生客户端的外部 ICE servers |
+| `webrtc.maxVoiceParticipantsPerRoom` | u32 | `8` | `2..=32` | 每个房间同时加入语音通话的 Mesh 参与者上限 |
 
 默认值是：
 
@@ -199,6 +200,8 @@ SOCKS5 代理 URL 只包含 scheme、host 和 port。代理认证信息位于 `s
 ```
 
 内置 STUN 监听端口、host、candidate 过滤等启动配置见 [WebRTC 配置](../../configuration/webrtc/)。
+
+语音人数上限在每次加入时动态读取。降低上限会阻止后续参与者加入，当前通话连接保持；离开或断开连接会立即释放席位。多副本部署通过 Redis 原子协调房间席位。
 
 ### Chat
 

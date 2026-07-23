@@ -41,20 +41,20 @@ async fn test_simple_rtc_state_check() {
     mgr.join_room("conn1", room).await.unwrap();
 
     // Join WebRTC
-    mgr.mark_rtc_joined(&room, &user, "conn1", true);
+    mgr.mark_voice_rtc_joined(&room, &user, "conn1", true);
 
     // Verify RTC state
     let conn = mgr.get_connection("conn1");
     assert!(conn.is_some());
-    assert!(conn.unwrap().rtc_joined);
+    assert!(conn.unwrap().voice_rtc_joined);
 
     // Leave WebRTC
-    mgr.mark_rtc_joined(&room, &user, "conn1", false);
+    mgr.mark_voice_rtc_joined(&room, &user, "conn1", false);
 
     // Verify RTC state cleared
     let conn = mgr.get_connection("conn1");
     assert!(conn.is_some());
-    assert!(!conn.unwrap().rtc_joined);
+    assert!(!conn.unwrap().voice_rtc_joined);
 
     // Cleanup
     mgr.unregister("conn1").await;

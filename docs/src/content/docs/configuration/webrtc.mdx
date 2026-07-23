@@ -36,7 +36,7 @@ webrtc:
 
 ## `webrtc.enable_builtin_stun`
 
-默认值：`true`。
+默认值：`false`。
 
 作用：是否启动 SyncTV 内置 STUN server。
 
@@ -89,17 +89,11 @@ webrtc:
 
 ## `webrtc.filter_private_ice_candidates`
 
-默认值：`true`。
+默认值：`false`。
 
 作用：过滤私网、回环、链路本地 ICE candidates，减少内部网络信息泄露。
 
-生产环境建议保持开启。
-
-什么时候关闭：
-
-- 客户端都在同一个局域网。
-- 本地开发调试。
-- 你明确需要暴露内网候选地址。
+默认配置允许同机和局域网客户端直接连接，适合自包含部署。所有客户端均可获得有效的公网 STUN 或 TURN candidate，且部署需要隐藏本地网络地址时可以开启过滤。
 
 ## 外部 ICE servers
 
@@ -127,6 +121,18 @@ webrtc.external_ice_servers
 - TURN 凭据可能需要更新。
 - 管理员可能希望不重启服务就调整 ICE servers。
 - 多节点需要统一动态下发。
+
+## 语音通话容量
+
+当前语音通话使用房间内 WebRTC Mesh。每个参与者会与其余 `N-1` 个参与者建立 PeerConnection，因此客户端上行和房间总连接数会随人数快速增长。`webrtc.maxVoiceParticipantsPerRoom` 默认限制为 8 人，可在 runtime settings 中动态设置为 2 到 32。
+
+服务端在语音 join 时原子占用席位。降低上限只影响后续 join；当前通话继续保持，leave、断线和会话过期会释放席位。多副本部署使用 Redis 协调同一房间的全局人数。
+
+面向超大房间的语音应使用 SFU：每个客户端向服务端发送一路 Opus，SFU 根据活跃说话人和订阅优先级转发有限数量的下行音轨。该模型将客户端上行固定为一路，也能集中实施带宽、发言权限和房间容量策略。
+
+## 房间动态开关
+
+房间管理员通过 `voiceChatEnabled` 和 `p2pMediaEnabled` 独立控制语音与媒体 P2P。设置更新沿现有房间设置版本化 fanout 传播到所有副本和客户端。关闭后服务端立即释放当前连接登记的语音席位与媒体 swarm；新 join、offer、answer、ICE 和 swarm join 返回权限类错误。客户端观察 `room_settings`，收到关闭状态后销毁本地 PeerConnection、音轨、DataChannel 和 P2P gateway，并隐藏相关入口。
 
 ## 部署检查清单
 

@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use synctv_core::models::{
     ChatMentionInput, ChatMessageEvent, ChatMessageType, ChatMessageWithAttachments, ChatPinEvent,
     ChatPlaybackMessagesQuery, CreateChatAttachmentUploadSession, MarkChatRead, PageParams,
-    RoomListQuery, RoomListSortBy, RoomStatus, SendChatMessage, SetChatReaction, SortDirection,
-    StoreFileUploadResult, UserId,
+    PlaybackSourceIdentity, RoomListQuery, RoomListSortBy, RoomStatus, SendChatMessage,
+    SetChatReaction, SortDirection, StoreFileUploadResult, UserId,
 };
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::ClientResourceAvailability;
@@ -1909,11 +1909,17 @@ impl ClientApiImpl {
             .get_state(&room_id)
             .await
             .map_err(ApiError::from)?;
+        let playback_metadata = self
+            .room_service
+            .playback_service()
+            .chat_playback_metadata_for_state(&playback_state, playback_state.computed_position())
+            .await
+            .map_err(ApiError::from)?;
         let metadata = crate::impls::messaging::chat_metadata_for_send(
             chat_metadata_from_proto(req.metadata.as_ref())?,
             &req.display_position,
             &req.display_color,
-            Some(&playback_state),
+            playback_metadata,
         )
         .map_err(ApiError::InvalidInput)?;
         let outcome = chat_service
@@ -2538,6 +2544,24 @@ impl ClientApiImpl {
             optional_positive_window_seconds(req.after_seconds, 30.0, "after_seconds")?;
         let limit = optional_positive_limit(req.limit, 200, 500, "limit")?;
         let selection = chat_message_selection_from_proto_values(&req.include_message_types)?;
+        let target_hash = synctv_core::models::try_hash_playback_target(target.as_ref())
+            .map_err(ApiError::from)?;
+        let source_metadata = self
+            .room_service
+            .playback_service()
+            .get_playback_source_metadata(&PlaybackSourceIdentity {
+                room_id: actor.room_id(),
+                media_id,
+                playlist_id,
+                target_hash,
+            })
+            .await
+            .map_err(ApiError::from)?;
+        if source_metadata.is_some_and(|metadata| metadata.is_live == Some(true)) {
+            return Ok(synctv_proto::client::GetChatPlaybackMessagesResponse {
+                messages: Vec::new(),
+            });
+        }
         let messages = chat_service
             .get_playback_messages_with_attachments_for_viewer(
                 ChatPlaybackMessagesQuery {

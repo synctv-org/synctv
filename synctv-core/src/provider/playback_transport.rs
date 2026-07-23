@@ -34,6 +34,16 @@ pub enum PlaybackTransportAction {
         url: String,
         headers: HashMap<String, String>,
     },
+    /// Fetch an MPEG-DASH MPD manifest, rewrite its resource scopes, then forward.
+    MpdRewrite {
+        url: String,
+        headers: HashMap<String, String>,
+    },
+    /// Rewrite an already generated MPEG-DASH MPD body through the signed
+    /// resource pipeline.
+    MpdBodyRewrite { body: Vec<u8>, source_url: String },
+    /// Rewrite an already generated M3U8 body through the normal signed segment pipeline.
+    M3u8BodyRewrite { body: Vec<u8> },
     /// Return a direct response body with a content type.
     ///
     /// Used for provider-specific responses that do not involve upstream
@@ -130,6 +140,81 @@ pub(crate) fn transport_action_for_target_url(
             range_header: range_header.map(ToString::to_string),
         })
     }
+}
+
+pub(crate) fn resolve_dash_scope_target(
+    scope_url: &str,
+    resource_path: &str,
+    resource_query: Option<&str>,
+) -> Result<String, ProviderError> {
+    let scope = url::Url::parse(scope_url).map_err(|error| {
+        ProviderError::InvalidConfig(format!("Invalid DASH scope URL: {error}"))
+    })?;
+    if !matches!(scope.scheme(), "http" | "https") {
+        return Err(ProviderError::InvalidConfig(
+            "DASH scope URL must use HTTP or HTTPS".to_string(),
+        ));
+    }
+    validate_dash_resource_path(resource_path)?;
+    if resource_path.is_empty() {
+        return Ok(scope.to_string());
+    }
+    if !scope.path().ends_with('/') {
+        return Err(ProviderError::InvalidConfig(
+            "DASH exact resource scope does not accept a child path".to_string(),
+        ));
+    }
+
+    let mut relative = resource_path.to_string();
+    if let Some(query) = resource_query.filter(|query| !query.is_empty()) {
+        relative.push('?');
+        relative.push_str(query);
+    }
+    let target = scope.join(&relative).map_err(|error| {
+        ProviderError::InvalidConfig(format!("Invalid DASH resource URL: {error}"))
+    })?;
+    if target.scheme() != scope.scheme()
+        || target.host_str() != scope.host_str()
+        || target.port_or_known_default() != scope.port_or_known_default()
+    {
+        return Err(ProviderError::InvalidConfig(
+            "DASH resource escaped its signed origin scope".to_string(),
+        ));
+    }
+    if !target.path().starts_with(scope.path()) {
+        return Err(ProviderError::InvalidConfig(
+            "DASH resource escaped its signed path scope".to_string(),
+        ));
+    }
+    Ok(target.to_string())
+}
+
+fn validate_dash_resource_path(resource_path: &str) -> Result<(), ProviderError> {
+    let mut decoded = resource_path.to_string();
+    loop {
+        let next = percent_encoding::percent_decode_str(&decoded)
+            .decode_utf8()
+            .map_err(|_| {
+                ProviderError::InvalidConfig(
+                    "DASH resource path contains invalid UTF-8 encoding".to_string(),
+                )
+            })?
+            .into_owned();
+        if next == decoded {
+            break;
+        }
+        decoded = next;
+    }
+    if decoded.starts_with('/')
+        || decoded.starts_with('\\')
+        || decoded.contains('\\')
+        || decoded.split('/').any(|segment| segment == "..")
+    {
+        return Err(ProviderError::InvalidConfig(
+            "DASH resource path must stay within its signed path scope".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Look up a cached `VersionedPlayback` from the store by version string.

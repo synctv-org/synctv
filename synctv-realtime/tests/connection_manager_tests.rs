@@ -278,15 +278,15 @@ async fn test_rtc_connections_filter() {
     mgr.join_room("c2", room).await.unwrap();
 
     // Mark only c1 as RTC-joined
-    mgr.mark_rtc_joined(&room, &u1, "c1", true);
+    mgr.mark_voice_rtc_joined(&room, &u1, "c1", true);
 
-    let rtc = mgr.get_rtc_connections(&room);
+    let rtc = mgr.get_voice_rtc_connections(&room);
     assert_eq!(rtc.len(), 1, "Only 1 connection should be RTC-joined");
     assert_eq!(rtc[0].connection_id, "c1");
 
     // Mark c1 as not RTC-joined
-    mgr.mark_rtc_joined(&room, &u1, "c1", false);
-    let rtc = mgr.get_rtc_connections(&room);
+    mgr.mark_voice_rtc_joined(&room, &u1, "c1", false);
+    let rtc = mgr.get_voice_rtc_connections(&room);
     assert_eq!(
         rtc.len(),
         0,

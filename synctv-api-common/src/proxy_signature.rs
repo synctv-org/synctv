@@ -15,6 +15,8 @@ const DOMAIN_SEPARATOR: &[u8] = b"synctv-proxy-sign";
 /// Default proxy URL lifetime (30 minutes).
 const DEFAULT_EXPIRY_SECS: i64 = 30 * 60;
 const MAX_EXPIRY_SECS: i64 = 24 * 60 * 60;
+const MEDIA_SWARM_TICKET_EXPIRY_SECS: i64 = 24 * 60 * 60;
+const MEDIA_SWARM_TICKET_DOMAIN: &str = "synctv-media-swarm-v1";
 
 /// HMAC-SHA256 signing key for proxy URLs.
 ///
@@ -192,6 +194,63 @@ impl ProxySigningKey {
     #[must_use]
     pub const fn default_expiry_secs() -> i64 {
         DEFAULT_EXPIRY_SECS
+    }
+
+    /// Create a room- and actor-bound capability for joining one media swarm.
+    #[must_use]
+    pub fn sign_media_swarm_ticket(&self, room_id: &str, actor_id: &str, swarm_id: &str) -> String {
+        let expires_at = synctv_core::SystemClock
+            .now()
+            .timestamp()
+            .saturating_add(MEDIA_SWARM_TICKET_EXPIRY_SECS);
+        let mut mac = self.key.clone();
+        mac.update(
+            Self::media_swarm_ticket_message(room_id, actor_id, swarm_id, expires_at).as_bytes(),
+        );
+        format!("{expires_at}.{}", hex::encode(mac.finalize().into_bytes()))
+    }
+
+    /// Verify a media swarm capability without resolving playback or provider state.
+    pub fn verify_media_swarm_ticket(
+        &self,
+        room_id: &str,
+        actor_id: &str,
+        swarm_id: &str,
+        ticket: &str,
+    ) -> Result<(), ProxySignatureError> {
+        let (expires_at, signature) = ticket
+            .split_once('.')
+            .ok_or(ProxySignatureError::InvalidSignature)?;
+        let expires_at = expires_at
+            .parse::<i64>()
+            .map_err(|_| ProxySignatureError::InvalidSignature)?;
+        let now = synctv_core::SystemClock.now().timestamp();
+        if now > expires_at {
+            return Err(ProxySignatureError::Expired);
+        }
+        let lifetime = expires_at.saturating_sub(now);
+        if !(1..=MEDIA_SWARM_TICKET_EXPIRY_SECS).contains(&lifetime) {
+            return Err(ProxySignatureError::InvalidLifetime);
+        }
+        let signature =
+            hex::decode(signature).map_err(|_| ProxySignatureError::InvalidSignature)?;
+        let mut mac = self.key.clone();
+        mac.update(
+            Self::media_swarm_ticket_message(room_id, actor_id, swarm_id, expires_at).as_bytes(),
+        );
+        mac.verify_slice(&signature)
+            .map_err(|_| ProxySignatureError::InvalidSignature)
+    }
+
+    fn media_swarm_ticket_message(
+        room_id: &str,
+        actor_id: &str,
+        swarm_id: &str,
+        expires_at: i64,
+    ) -> String {
+        format!(
+            "{MEDIA_SWARM_TICKET_DOMAIN}\nroom:{room_id}\nactor:{actor_id}\nswarm:{swarm_id}\nexpires:{expires_at}"
+        )
     }
 }
 
@@ -390,6 +449,33 @@ mod tests {
             user_id: "user-1".to_string(),
             expires_at: synctv_core::SystemClock.now().timestamp() + 3600,
             target_url: None,
+        }
+    }
+
+    #[test]
+    fn media_swarm_ticket_roundtrip() {
+        let key = test_key();
+        let ticket = key.sign_media_swarm_ticket("room_1", "usr_1", "sm1_resource");
+
+        assert!(key
+            .verify_media_swarm_ticket("room_1", "usr_1", "sm1_resource", &ticket)
+            .is_ok());
+    }
+
+    #[test]
+    fn media_swarm_ticket_binds_room_actor_and_swarm() {
+        let key = test_key();
+        let ticket = key.sign_media_swarm_ticket("room_1", "usr_1", "sm1_resource");
+
+        for (room_id, actor_id, swarm_id) in [
+            ("room_2", "usr_1", "sm1_resource"),
+            ("room_1", "usr_2", "sm1_resource"),
+            ("room_1", "usr_1", "sm1_other"),
+        ] {
+            assert!(matches!(
+                key.verify_media_swarm_ticket(room_id, actor_id, swarm_id, &ticket),
+                Err(ProxySignatureError::InvalidSignature)
+            ));
         }
     }
 

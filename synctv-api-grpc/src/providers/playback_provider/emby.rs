@@ -3,9 +3,9 @@ use std::sync::Arc;
 use futures::FutureExt;
 use synctv_proto::playback_provider::emby::emby_playback_provider_service_server::EmbyPlaybackProviderService;
 use synctv_proto::playback_provider::emby::{
-    EmbyHlsManifestResponse, EmbyHlsSegmentResponse, EmbyMediaStreamResponse, EmbySubtitleResponse,
-    GetEmbyHlsManifestRequest, GetEmbyHlsSegmentRequest, GetEmbyMediaStreamRequest,
-    GetEmbySubtitleRequest,
+    EmbyHlsManifestResponse, EmbyHlsResourceResponse, EmbyMediaStreamResponse,
+    EmbySubtitleResponse, GetEmbyHlsManifestRequest, GetEmbyHlsResourceRequest,
+    GetEmbyMediaStreamRequest, GetEmbySubtitleRequest,
 };
 use tonic::{Request, Response, Status};
 
@@ -38,7 +38,7 @@ impl EmbyPlaybackProviderGrpcService {
 impl EmbyPlaybackProviderService for EmbyPlaybackProviderGrpcService {
     type GetMediaStreamStream = GrpcResponseStream<EmbyMediaStreamResponse>;
     type GetHlsManifestStream = GrpcResponseStream<EmbyHlsManifestResponse>;
-    type GetHlsSegmentStream = GrpcResponseStream<EmbyHlsSegmentResponse>;
+    type GetHlsResourceStream = GrpcResponseStream<EmbyHlsResourceResponse>;
     type GetSubtitleStream = GrpcResponseStream<EmbySubtitleResponse>;
 
     async fn get_media_stream(
@@ -85,10 +85,10 @@ impl EmbyPlaybackProviderService for EmbyPlaybackProviderGrpcService {
         .await
     }
 
-    async fn get_hls_segment(
+    async fn get_hls_resource(
         &self,
-        request: Request<GetEmbyHlsSegmentRequest>,
-    ) -> Result<Response<Self::GetHlsSegmentStream>, Status> {
+        request: Request<GetEmbyHlsResourceRequest>,
+    ) -> Result<Response<Self::GetHlsResourceStream>, Status> {
         let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
@@ -96,7 +96,7 @@ impl EmbyPlaybackProviderService for EmbyPlaybackProviderGrpcService {
         execute_playback_provider_stream(state.clone(), metadata, move |request_control| {
             let state = state.clone();
             async move {
-                synctv_api_common::playback_provider::emby::get_emby_hls_segment(
+                synctv_api_common::playback_provider::emby::get_emby_hls_resource(
                     emby_deps(&state, Some(&request_control)),
                     req,
                 )

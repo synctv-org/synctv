@@ -78,11 +78,11 @@ webrtc:
 
 ## `webrtc.filter_private_ice_candidates`
 
-Default: `true`.
+Default: `false`.
 
 Filters private, loopback, and link-local ICE candidates to reduce internal network information exposure.
 
-Keep it enabled in production. Disable only for local development or LAN-only deployments where private candidates are required.
+The default allows direct same-device and LAN connections for self-contained deployments. Enable filtering when every client has a usable public STUN or TURN candidate and hiding local network addresses is required.
 
 ## External ICE Servers
 
@@ -106,6 +106,18 @@ Value format:
 ```
 
 Runtime settings are used because TURN credentials may rotate and administrators may need to adjust ICE servers without restarting the service.
+
+## Voice Call Capacity
+
+Voice calls currently use a room-scoped WebRTC Mesh. Each participant creates PeerConnections to the other `N-1` participants, so client upload and total room connection count grow quickly. `webrtc.maxVoiceParticipantsPerRoom` defaults to 8 and can be changed dynamically from 2 through 32 in runtime settings.
+
+The server atomically reserves a slot during voice join. Lowering the limit affects subsequent joins while existing calls continue; leave, disconnect, and session expiry release slots. Multi-replica deployments use Redis to coordinate a global room count.
+
+Large rooms should use an SFU architecture: each client sends one Opus uplink, and the SFU forwards a bounded set of downlink tracks based on active speakers and subscription priority. This keeps client upload fixed at one stream and centralizes bandwidth, speaking-permission, and room-capacity policy.
+
+## Dynamic Room Capabilities
+
+Room administrators control voice and media P2P independently through `voiceChatEnabled` and `p2pMediaEnabled`. Updates use the existing versioned room-settings fanout across replicas and clients. Disabling a capability immediately releases voice slots and media swarms registered by each connection. Subsequent joins, offers, answers, ICE candidates, and swarm joins return a permission-class error. Clients observe `room_settings`, destroy local PeerConnections, tracks, DataChannels, and the P2P gateway when disabled, and hide the corresponding controls.
 
 ## Deployment Checklist
 

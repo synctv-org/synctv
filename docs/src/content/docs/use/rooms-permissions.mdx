@@ -54,7 +54,8 @@ SyncTV 有两层角色，不能混为一谈。
 | 基础房间实时状态 | 是 | 不需要配置 | 连接后用于显示房间存在、设置和播放状态 |
 | 成员列表 | 否 | `view_members` | 只读 |
 | 聊天历史 | 否 | `view_chat_history` | 只读 |
-| WebRTC 信令 | 否 | `use_webrtc` | 只允许信令参与，不授予房间管理能力 |
+| 语音聊天 | 否 | `use_voice_chat` | 允许参与房间语音会话 |
+| P2P 媒体分发 | 否 | `use_p2p_media` | 允许与同房间、同媒体 swarm 的客户端交换媒体分片 |
 | 媒体资源 | 否 | 否 | 游客不能读取、浏览或管理媒体资源 |
 | 聊天发送 | 否 | 否 | `send_chat_messages` 只适用于登录成员 |
 | 播放控制、成员管理、房间设置 | 否 | 否 | 必须是登录成员并具有对应权限 |
@@ -99,10 +100,11 @@ SyncTV 有两层角色，不能混为一谈。
 | `manage_room_settings` | 修改房间设置 |
 | `delete_chat_messages` | 删除其他房间成员发送的聊天消息 |
 | `delete_room` | 删除房间，不可作为普通房间内委派权限 |
-| `view_media` | 查看媒体资源 |
+| `browse_library` | 浏览媒体库 |
 | `view_members` | 查看成员列表 |
 | `view_chat_history` | 查看聊天历史 |
-| `use_webrtc` | 使用 WebRTC 语音/视频能力 |
+| `use_voice_chat` | 使用房间语音聊天 |
+| `use_p2p_media` | 使用房间内 P2P 媒体分发 |
 
 ## 房间设置
 
@@ -118,10 +120,14 @@ SyncTV 有两层角色，不能混为一谈。
 | `requireApproval` | `false` | 加入房间是否需要审核 |
 | `allowAutoJoin` | `true` | 是否允许符合条件的用户自动加入 |
 | `chatEnabled` | `true` | 是否启用聊天 |
+| `voiceChatEnabled` | `true` | 是否开放房间语音通话 |
+| `p2pMediaEnabled` | `true` | 是否开放房间内 P2P 媒体分发 |
 | `autoPlay` | `{}` | 自动播放策略，例如 `{"enabled":true,"mode":1,"delay":5}` |
 | `adminAddedPermissions` / `adminRemovedPermissions` | 空权限集合 | 房间 admin 默认权限增减 |
 | `memberAddedPermissions` / `memberRemovedPermissions` | 空权限集合 | 房间 member 默认权限增减 |
 | `guestAddedPermissions` / `guestRemovedPermissions` | 空权限集合 | 房间 guest 默认权限增减 |
+
+语音和媒体 P2P 同时受房间能力开关与成员权限控制。例如，成员需要 `use_voice_chat` 权限且 `voiceChatEnabled=true` 才能加入语音。房间管理员关闭能力后，服务端通过房间设置实时事件清理当前语音席位和媒体 swarm，并拒绝后续 join 与信令；客户端收到同一设置快照后关闭本地连接并隐藏对应入口。关闭已建立的媒体 DataChannel 依赖客户端执行该实时事件，严格的服务端媒体撤销需要使用 SFU 中继架构。
 
 示例：
 

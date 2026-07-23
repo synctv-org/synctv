@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
-use super::PlaybackService;
+use super::{PlaybackService, RealtimeOutboxPlaybackStateEventFactory};
 use crate::models::RoomId;
 use crate::repository::RoomSettingsRepository;
 
@@ -36,6 +36,8 @@ pub struct PlaybackAutoAdvanceService {
     playback_service: PlaybackService,
     settings_repo: RoomSettingsRepository,
     active_room_source: Option<Arc<dyn ActivePlaybackRoomSource>>,
+    outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+    publish_after_outbox_commit: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl PlaybackAutoAdvanceService {
@@ -50,6 +52,8 @@ impl PlaybackAutoAdvanceService {
             playback_service,
             settings_repo,
             active_room_source: None,
+            outbox_event_factory: None,
+            publish_after_outbox_commit: None,
         }
     }
 
@@ -59,6 +63,17 @@ impl PlaybackAutoAdvanceService {
         active_room_source: Arc<dyn ActivePlaybackRoomSource>,
     ) -> Self {
         self.active_room_source = Some(active_room_source);
+        self
+    }
+
+    #[must_use]
+    pub fn with_realtime_fanout(
+        mut self,
+        outbox_event_factory: RealtimeOutboxPlaybackStateEventFactory,
+        publish_after_outbox_commit: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        self.outbox_event_factory = Some(outbox_event_factory);
+        self.publish_after_outbox_commit = Some(publish_after_outbox_commit);
         self
     }
 
@@ -95,15 +110,19 @@ impl PlaybackAutoAdvanceService {
                             }
                         };
 
-                        match service
+                        let result = service
                             .playback_service
-                            .auto_advance_due_sources_for_rooms(
+                            .auto_advance_due_sources_for_rooms_with_outbox(
                                 &service.settings_repo,
                                 &active_room_ids,
                                 Self::DEFAULT_SCAN_LIMIT,
+                                service.outbox_event_factory.clone(),
                             )
-                            .await
-                        {
+                            .await;
+                        if let Some(publish) = &service.publish_after_outbox_commit {
+                            publish();
+                        }
+                        match result {
                             Ok(advanced) if advanced > 0 => {
                                 info!(advanced, "Playback auto-advance completed");
                             }

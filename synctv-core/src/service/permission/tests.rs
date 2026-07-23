@@ -299,7 +299,7 @@ fn test_admin_uses_admin_overrides() {
     let mut member = make_member(RoomRole::Admin);
     member.admin_added_permissions = RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE;
     member.admin_removed_permissions = RoomAdminPermissionBits::REMOVE_MEMBERS;
-    member.added_permissions = RoomMemberPermissionBits::USE_WEBRTC;
+    member.added_permissions = RoomMemberPermissionBits::USE_VOICE_CHAT;
 
     let role_default = RoomPermissionSet::default_admin();
     let effective = member.effective_permissions(role_default);
@@ -320,19 +320,19 @@ fn test_creator_ignores_all_overrides() {
 #[test]
 fn test_guest_allow_deny_pattern() {
     let mut member = make_member(RoomRole::Guest);
-    member.added_permissions = RoomGuestPermissionBits::USE_WEBRTC;
+    member.added_permissions = RoomGuestPermissionBits::USE_VOICE_CHAT;
     let role_default = RoomPermissionSet::default_guest();
     let effective = member.effective_permissions(role_default);
-    assert!(effective.has(crate::models::RoomPermission::USE_WEBRTC));
+    assert!(effective.has(crate::models::RoomPermission::USE_VOICE_CHAT));
     assert!(!effective.has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
-    assert!(!effective.has(crate::models::RoomPermission::VIEW_MEDIA));
+    assert!(!effective.has(crate::models::RoomPermission::BROWSE_LIBRARY));
 }
 
 #[test]
 fn test_three_layer_permission_chain() {
-    // Layer 2: Room adds USE_WEBRTC, removes CHAT
+    // Layer 2: Room adds USE_VOICE_CHAT, removes CHAT
     let settings = RoomSettings {
-        member_added_permissions: MemberAddedPermissions(RoomMemberPermissionBits::USE_WEBRTC),
+        member_added_permissions: MemberAddedPermissions(RoomMemberPermissionBits::USE_VOICE_CHAT),
         member_removed_permissions: MemberRemovedPermissions(
             RoomMemberPermissionBits::SEND_CHAT_MESSAGES,
         ),
@@ -345,7 +345,7 @@ fn test_three_layer_permission_chain() {
             RoomAdminPermissionBits::SEND_CHAT_MESSAGES | RoomAdminPermissionBits::MANAGE_OWN_MEDIA,
         ),
     );
-    assert!(role_default.has(crate::models::RoomPermission::USE_WEBRTC));
+    assert!(role_default.has(crate::models::RoomPermission::USE_VOICE_CHAT));
     assert!(!role_default.has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
 
     // Layer 3: Member re-adds CHAT, removes MANAGE_OWN_MEDIA
@@ -356,8 +356,8 @@ fn test_three_layer_permission_chain() {
     let effective = member.effective_permissions(role_default);
     assert!(effective.has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
     assert!(!effective.has(crate::models::RoomPermission::MANAGE_OWN_MEDIA));
-    assert!(effective.has(crate::models::RoomPermission::USE_WEBRTC));
-    assert!(!effective.has(crate::models::RoomPermission::VIEW_MEDIA));
+    assert!(effective.has(crate::models::RoomPermission::USE_VOICE_CHAT));
+    assert!(!effective.has(crate::models::RoomPermission::BROWSE_LIBRARY));
 }
 
 #[test]
@@ -423,28 +423,28 @@ fn test_room_rejects_chat_for_guest() {
     };
     let perms = compiled_role_default(&RoomRole::Guest, &settings);
     assert!(!perms.has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
-    assert!(!perms.has(crate::models::RoomPermission::VIEW_MEDIA));
+    assert!(!perms.has(crate::models::RoomPermission::BROWSE_LIBRARY));
 }
 
 #[test]
 fn test_room_adds_webrtc_for_guest() {
     let settings = RoomSettings {
-        guest_added_permissions: GuestAddedPermissions(RoomGuestPermissionBits::USE_WEBRTC),
+        guest_added_permissions: GuestAddedPermissions(RoomGuestPermissionBits::USE_VOICE_CHAT),
         ..RoomSettings::default()
     };
     let perms = compiled_role_default(&RoomRole::Guest, &settings);
-    assert!(perms.has(crate::models::RoomPermission::USE_WEBRTC));
-    assert!(!perms.has(crate::models::RoomPermission::VIEW_MEDIA));
+    assert!(perms.has(crate::models::RoomPermission::USE_VOICE_CHAT));
+    assert!(!perms.has(crate::models::RoomPermission::BROWSE_LIBRARY));
 }
 
 #[test]
-fn test_room_removes_view_media_for_guest() {
+fn test_room_removes_browse_library_for_guest() {
     let settings = RoomSettings {
         guest_removed_permissions: GuestRemovedPermissions(1 << 21),
         ..RoomSettings::default()
     };
     let perms = compiled_role_default(&RoomRole::Guest, &settings);
-    assert!(!perms.has(crate::models::RoomPermission::VIEW_MEDIA));
+    assert!(!perms.has(crate::models::RoomPermission::BROWSE_LIBRARY));
 }
 
 #[test]
@@ -452,19 +452,19 @@ fn test_three_layer_guest_chain() {
     // Layer 1: Global defaults for Guest (no media resource permissions)
     // Layer 2: Room adds WebRTC for guests
     let settings = RoomSettings {
-        guest_added_permissions: GuestAddedPermissions(RoomGuestPermissionBits::USE_WEBRTC),
+        guest_added_permissions: GuestAddedPermissions(RoomGuestPermissionBits::USE_VOICE_CHAT),
         ..RoomSettings::default()
     };
     let role_default = compiled_role_default(&RoomRole::Guest, &settings);
-    assert!(!role_default.has(crate::models::RoomPermission::VIEW_MEDIA));
-    assert!(role_default.has(crate::models::RoomPermission::USE_WEBRTC));
+    assert!(!role_default.has(crate::models::RoomPermission::BROWSE_LIBRARY));
+    assert!(role_default.has(crate::models::RoomPermission::USE_VOICE_CHAT));
 
     // Layer 3: Per-actor removal can still remove guest-level permissions.
     let mut member = make_member(RoomRole::Guest);
-    member.removed_permissions = crate::models::RoomGuestPermissionBits::USE_WEBRTC;
+    member.removed_permissions = crate::models::RoomGuestPermissionBits::USE_VOICE_CHAT;
     let effective = member.effective_permissions(role_default);
-    assert!(!effective.has(crate::models::RoomPermission::VIEW_MEDIA));
-    assert!(!effective.has(crate::models::RoomPermission::USE_WEBRTC));
+    assert!(!effective.has(crate::models::RoomPermission::BROWSE_LIBRARY));
+    assert!(!effective.has(crate::models::RoomPermission::USE_VOICE_CHAT));
 }
 
 #[test]
@@ -515,7 +515,7 @@ fn test_creator_always_all_regardless_of_room_settings() {
 fn test_admin_ignores_member_level_added_permissions() {
     let mut member = make_member(RoomRole::Admin);
     // Set member-level overrides (should be ignored for Admin role)
-    member.added_permissions = RoomMemberPermissionBits::USE_WEBRTC;
+    member.added_permissions = RoomMemberPermissionBits::USE_VOICE_CHAT;
     member.removed_permissions = RoomMemberPermissionBits::SEND_CHAT_MESSAGES;
     // Admin-level overrides: these should apply
     member.admin_added_permissions = 0;
@@ -523,8 +523,8 @@ fn test_admin_ignores_member_level_added_permissions() {
 
     let role_default = RoomPermissionSet::default_admin();
     let effective = member.effective_permissions(role_default);
-    // DEFAULT_MEMBER already includes USE_WEBRTC; member-level grant is redundant and ignored.
-    assert!(effective.has(crate::models::RoomPermission::USE_WEBRTC));
+    // DEFAULT_MEMBER already includes USE_VOICE_CHAT; member-level grant is redundant and ignored.
+    assert!(effective.has(crate::models::RoomPermission::USE_VOICE_CHAT));
     // member-level CHAT deny should NOT apply to admin
     assert!(effective.has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
 }
@@ -566,13 +566,13 @@ fn test_room_level_add_and_remove_same_permission_for_member() {
 #[test]
 fn test_room_level_add_and_remove_same_permission_for_guest() {
     let settings = RoomSettings {
-        guest_added_permissions: GuestAddedPermissions(RoomGuestPermissionBits::USE_WEBRTC),
-        guest_removed_permissions: GuestRemovedPermissions(RoomGuestPermissionBits::USE_WEBRTC),
+        guest_added_permissions: GuestAddedPermissions(RoomGuestPermissionBits::USE_VOICE_CHAT),
+        guest_removed_permissions: GuestRemovedPermissions(RoomGuestPermissionBits::USE_VOICE_CHAT),
         ..RoomSettings::default()
     };
     let perms = compiled_role_default(&RoomRole::Guest, &settings);
     // Remove wins over add
-    assert!(!perms.has(crate::models::RoomPermission::USE_WEBRTC));
+    assert!(!perms.has(crate::models::RoomPermission::USE_VOICE_CHAT));
 }
 
 #[test]

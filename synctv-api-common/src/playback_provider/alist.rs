@@ -2,10 +2,10 @@ use futures::StreamExt;
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::AlistPlaybackProviderService;
 use synctv_proto::playback_provider::alist::{
-    AlistFileStreamResponse, AlistSubtitleResponse, AlistThumbnailResponse,
-    AlistTranscodedHlsManifestResponse, AlistTranscodedHlsSegmentResponse,
+    AlistFileStreamResponse, AlistHlsResourceKind, AlistSubtitleResponse, AlistThumbnailResponse,
+    AlistTranscodedHlsManifestResponse, AlistTranscodedHlsResourceResponse,
     GetAlistFileStreamRequest, GetAlistSubtitleRequest, GetAlistThumbnailRequest,
-    GetAlistTranscodedHlsManifestRequest, GetAlistTranscodedHlsSegmentRequest,
+    GetAlistTranscodedHlsManifestRequest, GetAlistTranscodedHlsResourceRequest,
 };
 
 use super::common::{
@@ -33,9 +33,9 @@ pub type AlistTranscodedHlsManifestResponseStream = std::pin::Pin<
             + 'static,
     >,
 >;
-pub type AlistTranscodedHlsSegmentResponseStream = std::pin::Pin<
+pub type AlistTranscodedHlsResourceResponseStream = std::pin::Pin<
     Box<
-        dyn futures::Stream<Item = Result<AlistTranscodedHlsSegmentResponse, ApiError>>
+        dyn futures::Stream<Item = Result<AlistTranscodedHlsResourceResponse, ApiError>>
             + Send
             + 'static,
     >,
@@ -116,10 +116,18 @@ pub async fn get_alist_transcoded_hls_manifest(
         )
         .await
         .map_err(ApiError::from)?;
-    let segment_base =
-        playback_provider_route_base("alist", &req.version, "transcoded-hls-segments");
+    let segment_base = format!(
+        "{}/{}/{}",
+        playback_provider_route_base("alist", &req.version, "transcoded-hls-resources"),
+        urlencoding::encode(&req.mode_name),
+        req.url_index
+    );
+    let resource = format!(
+        "transcoded-hls-resources/{}/{}/*",
+        req.mode_name, req.url_index
+    );
     let stream = playback_transport_action_to_chunk_stream(
-        deps.chunk_deps_with_hls(&segment_base, &claims, "transcoded-hls-segments"),
+        deps.chunk_deps_with_hls(&segment_base, &claims, &resource),
         action,
         false,
     )
@@ -129,17 +137,22 @@ pub async fn get_alist_transcoded_hls_manifest(
     })))
 }
 
-pub async fn get_alist_transcoded_hls_segment(
+pub async fn get_alist_transcoded_hls_resource(
     deps: AlistPlaybackProviderDeps<'_>,
-    req: GetAlistTranscodedHlsSegmentRequest,
-) -> Result<AlistTranscodedHlsSegmentResponseStream, ApiError> {
+    req: GetAlistTranscodedHlsResourceRequest,
+) -> Result<AlistTranscodedHlsResourceResponseStream, ApiError> {
     crate::impls::validate_proto_request(&req)?;
+    let kind = alist_hls_resource_kind(req.resource_kind)?;
+    let kind_name = alist_hls_resource_kind_name(kind);
     let head = req.head;
     let (store, claims) = verify_alist_access(
         &deps,
         PlaybackProviderAccessRequest {
             version: &req.version,
-            resource: "transcoded-hls-segments".to_string(),
+            resource: format!(
+                "transcoded-hls-resources/{}/{}/{kind_name}",
+                req.mode_name, req.media_index
+            ),
             signature: &req.sig,
             user_id: &req.uid,
             room_id: &req.rid,
@@ -150,26 +163,62 @@ pub async fn get_alist_transcoded_hls_segment(
     .await?;
     let action = deps
         .playback_provider_service
-        .transcoded_hls_segment_action(
-            &req.version,
-            &req.target_url,
-            req.range.as_deref(),
+        .transcoded_hls_resource_action(
+            synctv_core::provider::AlistHlsResourceRequest {
+                version: &req.version,
+                mode_name: &req.mode_name,
+                media_index: req.media_index as usize,
+                target_url: &req.target_url,
+                is_manifest: kind == AlistHlsResourceKind::Manifest,
+                range_header: req.range.as_deref(),
+            },
             store,
             deps.request_control,
         )
         .await
         .map_err(ApiError::from)?;
-    let segment_base =
-        playback_provider_route_base("alist", &req.version, "transcoded-hls-segments");
-    let stream = playback_transport_action_to_chunk_stream(
-        deps.chunk_deps_with_hls(&segment_base, &claims, "transcoded-hls-segments"),
-        action,
-        head,
-    )
-    .await?;
+    let stream = if kind == AlistHlsResourceKind::Manifest {
+        let segment_base = format!(
+            "{}/{}/{}",
+            playback_provider_route_base("alist", &req.version, "transcoded-hls-resources"),
+            urlencoding::encode(&req.mode_name),
+            req.media_index
+        );
+        let resource = format!(
+            "transcoded-hls-resources/{}/{}/*",
+            req.mode_name, req.media_index
+        );
+        playback_transport_action_to_chunk_stream(
+            deps.chunk_deps_with_hls(&segment_base, &claims, &resource),
+            action,
+            head,
+        )
+        .await?
+    } else {
+        playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, head).await?
+    };
     Ok(Box::pin(stream.map(|chunk| {
-        chunk.map(|chunk| AlistTranscodedHlsSegmentResponse { chunk: Some(chunk) })
+        chunk.map(|chunk| AlistTranscodedHlsResourceResponse { chunk: Some(chunk) })
     })))
+}
+
+fn alist_hls_resource_kind(value: i32) -> Result<AlistHlsResourceKind, ApiError> {
+    let kind = AlistHlsResourceKind::try_from(value)
+        .map_err(|_| ApiError::InvalidInput("Invalid Alist HLS resource kind".to_string()))?;
+    match kind {
+        AlistHlsResourceKind::Media | AlistHlsResourceKind::Manifest => Ok(kind),
+        AlistHlsResourceKind::Unspecified => Err(ApiError::InvalidInput(
+            "Alist HLS resource kind is required".to_string(),
+        )),
+    }
+}
+
+const fn alist_hls_resource_kind_name(kind: AlistHlsResourceKind) -> &'static str {
+    match kind {
+        AlistHlsResourceKind::Media => "media",
+        AlistHlsResourceKind::Manifest => "manifest",
+        AlistHlsResourceKind::Unspecified => "unspecified",
+    }
 }
 
 pub async fn get_alist_subtitle(
@@ -269,7 +318,7 @@ impl<'a> AlistPlaybackProviderDeps<'a> {
         &self,
         segment_base: &'a str,
         claims: &'a crate::proxy_signature::ProxyUrlClaims,
-        resource: &'static str,
+        resource: &'a str,
     ) -> PlaybackTransportExecutorDeps<'a> {
         PlaybackTransportExecutorDeps {
             hls_rewrite: Some(HlsRewriteSigning {

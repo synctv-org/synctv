@@ -21,7 +21,7 @@ use synctv_proto::client::GetIceServersResponse;
 ///
 /// Path: `GET /api/rooms/{roomId}/webrtc/ice-servers`
 /// Auth: Required (JWT or room-bound guest token)
-/// Permissions: `USE_WEBRTC`
+/// Permissions: `USE_VOICE_CHAT` or `USE_P2P_MEDIA`
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(

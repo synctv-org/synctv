@@ -313,6 +313,8 @@ message RoomSettings {
   uint64 member_removed_permissions = 10;
   uint64 guest_added_permissions = 11;
   uint64 guest_removed_permissions = 12;
+  bool voice_chat_enabled = 13;
+  bool p2p_media_enabled = 14;
 }
 
 message AlistTarget {
@@ -1387,6 +1389,8 @@ message RoomSettingsPatch {
   optional uint64 member_removed_permissions = 10;
   optional uint64 guest_added_permissions = 11;
   optional uint64 guest_removed_permissions = 12;
+  optional bool voice_chat_enabled = 13;
+  optional bool p2p_media_enabled = 14;
 }
 
 message UpdateRoomSettingsRequest {
@@ -1901,13 +1905,14 @@ message ListPlaylistsResponse {
 }
 
 // HTTP API: Start playback of either:
-// 1. A concrete media item (`media_id`)
+// 1. A concrete media item (`media_id`), optionally with its static playlist context
+//    (`media_id` + `playlist_id`)
 // 2. A dynamic playlist item (`playlist_id` + `target`)
 message StartPlaybackRequest {
   option (buf.validate.message).cel = {
-    id: "start_playback.single_target"
-    message: "media_id and playlist_id cannot both be set"
-    expression: "!(this.media_id != '' && this.playlist_id != '')"
+    id: "start_playback.dynamic_target"
+    message: "target requires playlist_id without media_id"
+    expression: "!has(this.target) || (this.playlist_id != '' && this.media_id == '')"
   };
   option (buf.validate.message).cel = {
     id: "start_playback.clear_target"
@@ -1915,17 +1920,12 @@ message StartPlaybackRequest {
     expression: "(this.media_id != '' || this.playlist_id != '') || !has(this.target)"
   };
   option (buf.validate.message).cel = {
-    id: "start_playback.static_target"
-    message: "target must be omitted when switching to a static media item"
-    expression: "this.media_id == '' || !has(this.target)"
+    id: "start_playback.playlist_source"
+    message: "playlist_id without media_id requires target"
+    expression: "this.playlist_id == '' || this.media_id != '' || has(this.target)"
   };
-  option (buf.validate.message).cel = {
-    id: "start_playback.playlist_target"
-    message: "target is required when switching to a dynamic playlist item"
-    expression: "this.playlist_id == '' || has(this.target)"
-  };
-  string media_id = 1; // Static media ID. Mutually exclusive with playlist_id.
-  string playlist_id = 2; // Dynamic playlist ID. Requires target. Mutually exclusive with media_id.
+  string media_id = 1; // Static media ID. May include its static playlist_id as navigation context.
+  string playlist_id = 2; // Static context with media_id, or dynamic playlist ID with target.
   ProviderTarget target = 3; // Provider-facing playback target payload. Omit for static media playback.
   optional string client_operation_id = 4 [(buf.validate.field).string = {uuid: true}];
 }
@@ -2836,6 +2836,21 @@ message PlaybackMedia {
 
   // Media-level metadata (resolution, codec, bitrate, fps, etc.)
   optional PlaybackMediaMetadata metadata = 5;
+
+  // Server-approved room-scoped P2P delivery identity and resource strategy.
+  // Omitted when this representation must use its origin directly.
+  optional P2pMediaDelivery p2p_delivery = 7;
+}
+
+message P2pMediaDelivery {
+  string swarm_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  string swarm_ticket = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+  }];
 }
 
 // Media-level metadata
@@ -2898,7 +2913,7 @@ message ClientMessage {
     UpdatePlaybackRequest playback_update = 4;
     ObserveResource observe_resource = 5;
     UnobserveResource unobserve_resource = 6;
-    WebRtcCommand webrtc = 7;
+    WebRTCCommand webrtc = 7;
   }
 }
 
@@ -3147,7 +3162,7 @@ message ResourceEvent {
     ChatMessageEvent chat_event = 9;
     OnlineCount online_count = 10;
     OnlineEvent online_event = 12;
-    WebRtcEvent webrtc_event = 13;
+    WebRTCEvent webrtc_event = 13;
     synctv.common.RoomMember self_room_member = 14;
     ChatPinEvent chat_pin_event = 15;
     ListPlaybackHistoryResponse playback_history = 16;
@@ -4854,62 +4869,142 @@ message ConfirmPasswordResetResponse {
 
 // ==================== WebRTC Signaling Messages ====================
 
-// WebRTC Offer (SDP offer from initiator)
-// Client sends this to another specific peer through the server
-message WebRTCOffer {
-  string to = 1; // Target: "public_user_id:conn_id"
-  string from = 2; // Sender: Set by server, format: "public_user_id|conn_id"
-  string data = 3; // SDP offer (JSON string, opaque to server)
+message WebRTCVoiceOfferCommand {
+  string to = 1; // Target: "public_actor_id:conn_id".
+  string data = 2; // SDP offer JSON, opaque to the server.
 }
 
-// WebRTC Answer (SDP answer from receiver)
-// Response to an offer
-message WebRTCAnswer {
-  string to = 1; // Target: "public_user_id:conn_id"
-  string from = 2; // Sender: Set by server, format: "public_user_id|conn_id"
-  string data = 3; // SDP answer (JSON string, opaque to server)
+message WebRTCVoiceAnswerCommand {
+  string to = 1;
+  string data = 2; // SDP answer JSON, opaque to the server.
 }
 
-// WebRTC ICE Candidate
-// Sent repeatedly during ICE negotiation
-message WebRTCIceCandidate {
-  string to = 1; // Target: "public_user_id:conn_id"
-  string from = 2; // Sender: Set by server, format: "public_user_id|conn_id"
-  string data = 3; // ICE candidate (JSON string, opaque to server)
+message WebRTCVoiceIceCandidateCommand {
+  string to = 1;
+  string data = 2; // ICE candidate JSON, opaque to the server.
 }
 
-// WebRTC Join (user joins WebRTC session)
-// Broadcast to all users who already joined RTC in the room
-message WebRTCJoin {
-  string user_id = 1; // Joiner's user ID
-  string conn_id = 2; // Joiner's connection ID
-  string username = 3; // Joiner's display name (for UI)
+message WebRTCVoiceOffer {
+  string from = 1; // Sender: "public_actor_id:conn_id".
+  string data = 2;
 }
 
-// WebRTC Leave (user leaves WebRTC session)
-// Broadcast to all users in the WebRTC session
-message WebRTCLeave {
-  string user_id = 1; // Leaver's user ID
-  string conn_id = 2; // Leaver's connection ID
+message WebRTCVoiceAnswer {
+  string from = 1;
+  string data = 2;
 }
 
-message WebRtcCommand {
+message WebRTCVoiceIceCandidate {
+  string from = 1;
+  string data = 2;
+}
+
+message WebRTCVoiceJoinCommand {
+  optional string client_operation_id = 1;
+}
+
+message WebRTCVoiceLeaveCommand {}
+
+message WebRTCVoicePeerJoined {
+  string user_id = 1;
+  string conn_id = 2;
+  string username = 3;
+}
+
+message WebRTCVoicePeerLeft {
+  string user_id = 1;
+  string conn_id = 2;
+}
+
+message WebRTCMediaOfferCommand {
+  string to = 1;
+  string data = 2;
+  string swarm_id = 3;
+}
+
+message WebRTCMediaAnswerCommand {
+  string to = 1;
+  string data = 2;
+  string swarm_id = 3;
+}
+
+message WebRTCMediaIceCandidateCommand {
+  string to = 1;
+  string data = 2;
+  string swarm_id = 3;
+}
+
+message WebRTCMediaOffer {
+  string from = 1;
+  string data = 2;
+  string swarm_id = 3;
+}
+
+message WebRTCMediaAnswer {
+  string from = 1;
+  string data = 2;
+  string swarm_id = 3;
+}
+
+message WebRTCMediaIceCandidate {
+  string from = 1;
+  string data = 2;
+  string swarm_id = 3;
+}
+
+message WebRTCMediaSwarmJoin {
+  string swarm_id = 1;
+  string swarm_ticket = 2;
+}
+
+message WebRTCMediaSwarmLeave {
+  string swarm_id = 1;
+}
+
+message WebRTCMediaPeerLeft {
+  string swarm_id = 1;
+  string user_id = 2;
+  string conn_id = 3;
+}
+
+message WebRTCMediaSwarmPeer {
+  string user_id = 1; // Public actor ID.
+  string conn_id = 2;
+}
+
+message WebRTCMediaSwarmPeers {
+  string swarm_id = 1;
+  repeated WebRTCMediaSwarmPeer peers = 2;
+  string swarm_ticket = 3;
+}
+
+message WebRTCCommand {
   oneof command {
-    WebRTCOffer offer = 1;
-    WebRTCAnswer answer = 2;
-    WebRTCIceCandidate ice_candidate = 3;
-    WebRTCJoin join = 4;
-    WebRTCLeave leave = 5;
+    WebRTCVoiceOfferCommand voice_offer = 1;
+    WebRTCVoiceAnswerCommand voice_answer = 2;
+    WebRTCVoiceIceCandidateCommand voice_ice_candidate = 3;
+    WebRTCVoiceJoinCommand voice_join = 4;
+    WebRTCVoiceLeaveCommand voice_leave = 5;
+    WebRTCMediaOfferCommand media_offer = 6;
+    WebRTCMediaAnswerCommand media_answer = 7;
+    WebRTCMediaIceCandidateCommand media_ice_candidate = 8;
+    WebRTCMediaSwarmJoin media_swarm_join = 9;
+    WebRTCMediaSwarmLeave media_swarm_leave = 10;
   }
 }
 
-message WebRtcEvent {
+message WebRTCEvent {
   oneof event {
-    WebRTCOffer offer = 1;
-    WebRTCAnswer answer = 2;
-    WebRTCIceCandidate ice_candidate = 3;
-    WebRTCJoin join = 4;
-    WebRTCLeave leave = 5;
+    WebRTCVoiceOffer voice_offer = 1;
+    WebRTCVoiceAnswer voice_answer = 2;
+    WebRTCVoiceIceCandidate voice_ice_candidate = 3;
+    WebRTCVoicePeerJoined voice_peer_joined = 4;
+    WebRTCVoicePeerLeft voice_peer_left = 5;
+    WebRTCMediaOffer media_offer = 6;
+    WebRTCMediaAnswer media_answer = 7;
+    WebRTCMediaIceCandidate media_ice_candidate = 8;
+    WebRTCMediaSwarmPeers media_swarm_peers = 9;
+    WebRTCMediaPeerLeft media_peer_left = 10;
   }
 }
 
@@ -4924,7 +5019,7 @@ message GetIceServersRequest {}
 
 message GetIceServersResponse {
   repeated IceServer servers = 1;
-  optional WebRtcStatus webrtc = 2;
+  optional WebRTCStatus webrtc = 2;
 }
 
 message MemoryHealth {
@@ -4932,7 +5027,7 @@ message MemoryHealth {
   string status = 2;
 }
 
-message WebRtcStatus {
+message WebRTCStatus {
   string mode = 1;
   string builtin_stun_state = 2;
   bool builtin_stun_configured = 3;
@@ -4951,7 +5046,7 @@ message HealthDetails {
   optional string livestream = 6;
   optional MemoryHealth memory = 7;
   optional string message = 8;
-  optional WebRtcStatus webrtc = 9;
+  optional WebRTCStatus webrtc = 9;
 }
 
 message HealthResponse {

@@ -816,16 +816,198 @@ async fn test_rtc_timeout_marks_connection_left_before_disconnect() -> TestResul
 
     manager.register("conn1".to_string(), user_id).await?;
     manager.join_room("conn1", room_id).await?;
-    manager.mark_rtc_joined(&room_id, &user_id, "conn1", true);
+    manager.mark_voice_rtc_joined(&room_id, &user_id, "conn1", true);
 
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     let timeouts = manager.check_timeouts();
     assert_eq!(timeouts, vec!["conn1".to_string()]);
     assert!(
-        manager.get_rtc_connections(&room_id).is_empty(),
+        manager.get_voice_rtc_connections(&room_id).is_empty(),
         "RTC timeout should clear joined state before disconnect handling"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn voice_rtc_capacity_is_atomic_and_leave_releases_a_slot() -> TestResult {
+    let manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    let room_id = RoomId::expect_positive(10_000_093);
+    let participant_limit: usize = 3;
+    let contender_count: usize = 10;
+    for index in 0..contender_count {
+        let connection_id = format!("voice-capacity-{index}");
+        let user_id = UserId::expect_positive(
+            10_001_000 + i64::try_from(index).expect("test index should fit i64"),
+        );
+        manager.register(connection_id.clone(), user_id).await?;
+        manager.join_room(&connection_id, room_id).await?;
+    }
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(contender_count));
+    let mut tasks = tokio::task::JoinSet::new();
+    for index in 0..contender_count {
+        let manager = Arc::clone(&manager);
+        let barrier = Arc::clone(&barrier);
+        tasks.spawn(async move {
+            let connection_id = format!("voice-capacity-{index}");
+            let user_id = UserId::expect_positive(
+                10_001_000 + i64::try_from(index).expect("test index should fit i64"),
+            );
+            barrier.wait().await;
+            manager
+                .try_join_voice_rtc(&room_id, &user_id, &connection_id, participant_limit)
+                .await
+                .map(|outcome| (connection_id, user_id, outcome))
+        });
+    }
+
+    let mut joined = Vec::new();
+    let mut rejected = Vec::new();
+    while let Some(result) = tasks.join_next().await {
+        let (connection_id, user_id, outcome) = result??;
+        match outcome {
+            VoiceRtcJoinOutcome::Joined => joined.push((connection_id, user_id)),
+            VoiceRtcJoinOutcome::RoomAtCapacity => rejected.push((connection_id, user_id)),
+            VoiceRtcJoinOutcome::AlreadyJoined => {
+                return Err(missing("first join attempt cannot already be joined"));
+            }
+        }
+    }
+
+    assert_eq!(joined.len(), participant_limit);
+    assert_eq!(rejected.len(), contender_count - participant_limit);
+    assert_eq!(
+        manager.get_voice_rtc_connections(&room_id).len(),
+        participant_limit
+    );
+
+    let (leaving_connection, leaving_user) = joined
+        .pop()
+        .ok_or_else(|| missing("one joined participant is required"))?;
+    assert!(
+        manager
+            .leave_voice_rtc(&room_id, &leaving_user, &leaving_connection)
+            .await?
+    );
+    let (replacement_connection, replacement_user) = rejected
+        .pop()
+        .ok_or_else(|| missing("one rejected participant is required"))?;
+    assert_eq!(
+        manager
+            .try_join_voice_rtc(
+                &room_id,
+                &replacement_user,
+                &replacement_connection,
+                participant_limit,
+            )
+            .await?,
+        VoiceRtcJoinOutcome::Joined
+    );
+    assert_eq!(
+        manager.get_voice_rtc_connections(&room_id).len(),
+        participant_limit
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker Redis"]
+async fn voice_rtc_capacity_is_atomic_across_replicas() -> TestResult {
+    use redis::AsyncCommands;
+
+    let (_container, client, conn_a, prefix) =
+        docker_redis_connection("voice-capacity-replicas:").await?;
+    let conn_b = redis::aio::ConnectionManager::new(client.clone()).await?;
+    let manager_a =
+        Arc::new(ConnectionManager::new(ConnectionLimits::default()).with_redis(conn_a, &prefix));
+    let manager_b =
+        Arc::new(ConnectionManager::new(ConnectionLimits::default()).with_redis(conn_b, &prefix));
+    let room_id = RoomId::expect_positive(10_000_094);
+    let participant_limit: usize = 3;
+    let contender_count: usize = 10;
+
+    for index in 0..contender_count {
+        let manager = if index % 2 == 0 {
+            &manager_a
+        } else {
+            &manager_b
+        };
+        let connection_id = format!("voice-replica-capacity-{index}");
+        let user_id = UserId::expect_positive(
+            10_002_000 + i64::try_from(index).expect("test index should fit i64"),
+        );
+        manager.register(connection_id.clone(), user_id).await?;
+        manager.join_room(&connection_id, room_id).await?;
+    }
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(contender_count));
+    let mut tasks = tokio::task::JoinSet::new();
+    for index in 0..contender_count {
+        let manager = if index % 2 == 0 {
+            Arc::clone(&manager_a)
+        } else {
+            Arc::clone(&manager_b)
+        };
+        let barrier = Arc::clone(&barrier);
+        tasks.spawn(async move {
+            let connection_id = format!("voice-replica-capacity-{index}");
+            let user_id = UserId::expect_positive(
+                10_002_000 + i64::try_from(index).expect("test index should fit i64"),
+            );
+            barrier.wait().await;
+            manager
+                .try_join_voice_rtc(&room_id, &user_id, &connection_id, participant_limit)
+                .await
+                .map(|outcome| (manager, connection_id, user_id, outcome))
+        });
+    }
+
+    let mut joined = Vec::new();
+    let mut rejected = Vec::new();
+    while let Some(result) = tasks.join_next().await {
+        let (manager, connection_id, user_id, outcome) = result??;
+        match outcome {
+            VoiceRtcJoinOutcome::Joined => joined.push((manager, connection_id, user_id)),
+            VoiceRtcJoinOutcome::RoomAtCapacity => {
+                rejected.push((manager, connection_id, user_id));
+            }
+            VoiceRtcJoinOutcome::AlreadyJoined => {
+                return Err(missing("first join attempt cannot already be joined"));
+            }
+        }
+    }
+
+    assert_eq!(joined.len(), participant_limit);
+    assert_eq!(rejected.len(), contender_count - participant_limit);
+    let mut redis = redis::aio::ConnectionManager::new(client).await?;
+    let distributed_count: usize = redis.zcard(manager_a.voice_room_key(&room_id)).await?;
+    assert_eq!(distributed_count, participant_limit);
+
+    let (leaving_manager, leaving_connection, leaving_user) = joined
+        .pop()
+        .ok_or_else(|| missing("one joined participant is required"))?;
+    assert!(
+        leaving_manager
+            .leave_voice_rtc(&room_id, &leaving_user, &leaving_connection)
+            .await?
+    );
+    let (replacement_manager, replacement_connection, replacement_user) = rejected
+        .pop()
+        .ok_or_else(|| missing("one rejected participant is required"))?;
+    assert_eq!(
+        replacement_manager
+            .try_join_voice_rtc(
+                &room_id,
+                &replacement_user,
+                &replacement_connection,
+                participant_limit,
+            )
+            .await?,
+        VoiceRtcJoinOutcome::Joined
+    );
+    let distributed_count: usize = redis.zcard(manager_a.voice_room_key(&room_id)).await?;
+    assert_eq!(distributed_count, participant_limit);
     Ok(())
 }
 
@@ -907,8 +1089,8 @@ async fn test_redis_recovery_reconciles_stale_connections() -> TestResult {
         connected_at_unix: 0,
         last_activity_unix: 0,
         message_count: 0,
-        rtc_joined: false,
-        rtc_joined_at_unix: None,
+        voice_rtc_joined: false,
+        voice_rtc_joined_at_unix: None,
     };
     let _: () = redis_conn
         .set(&unrelated_conn_key, serde_json::to_string(&foreign_meta)?)
@@ -1069,8 +1251,8 @@ async fn test_distributed_queries_prune_stale_index_members() -> TestResult {
         connected_at_unix: 0,
         last_activity_unix: 0,
         message_count: 0,
-        rtc_joined: false,
-        rtc_joined_at_unix: None,
+        voice_rtc_joined: false,
+        voice_rtc_joined_at_unix: None,
     };
     let valid_metadata = ConnectionInfoPersistent {
         connection_id: valid.to_string(),
@@ -1081,8 +1263,8 @@ async fn test_distributed_queries_prune_stale_index_members() -> TestResult {
         connected_at_unix: 0,
         last_activity_unix: 0,
         message_count: 0,
-        rtc_joined: false,
-        rtc_joined_at_unix: None,
+        voice_rtc_joined: false,
+        voice_rtc_joined_at_unix: None,
     };
 
     let _: () = redis_conn
@@ -1418,8 +1600,8 @@ async fn test_pending_retries_cleanup_metadata_and_indexes_after_recovery() -> T
         connected_at_unix: 0,
         last_activity_unix: 0,
         message_count: 0,
-        rtc_joined: false,
-        rtc_joined_at_unix: None,
+        voice_rtc_joined: false,
+        voice_rtc_joined_at_unix: None,
     };
     let _: () = verify_conn
         .set(&conn_key, serde_json::to_string(&metadata)?)
@@ -1476,8 +1658,8 @@ fn test_connection_info_persistent_serialization() -> TestResult {
         connected_at_unix: 1000,
         last_activity_unix: 2000,
         message_count: 5,
-        rtc_joined: true,
-        rtc_joined_at_unix: Some(1500),
+        voice_rtc_joined: true,
+        voice_rtc_joined_at_unix: Some(1500),
     };
 
     let json = serde_json::to_string(&persistent)?;
@@ -1491,7 +1673,7 @@ fn test_connection_info_persistent_serialization() -> TestResult {
         Some(RoomId::expect_positive(20_000_402))
     );
     assert_eq!(deserialized.message_count, 5);
-    assert!(deserialized.rtc_joined);
+    assert!(deserialized.voice_rtc_joined);
     Ok(())
 }
 

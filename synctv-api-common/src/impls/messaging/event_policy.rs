@@ -15,16 +15,6 @@ pub const fn should_broadcast_user_left(
     }
 }
 
-pub const fn should_transition_webrtc_membership(
-    current_rtc_joined: Option<bool>,
-    target_joined: bool,
-) -> Result<bool, &'static str> {
-    match current_rtc_joined {
-        Some(current) => Ok(current != target_joined),
-        None => Err("Connection not found"),
-    }
-}
-
 #[inline]
 pub fn disconnect_signal_requires_skip_cleanup(
     signal: &DisconnectSignal,

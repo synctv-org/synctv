@@ -147,17 +147,9 @@ impl Default for LivestreamRuntimeSettings {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WebRtcRuntimeSettings {
     pub filter_private_ice_candidates: bool,
-}
-
-impl Default for WebRtcRuntimeSettings {
-    fn default() -> Self {
-        Self {
-            filter_private_ice_candidates: true,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

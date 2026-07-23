@@ -1,15 +1,19 @@
 use futures::StreamExt;
 use synctv_core::provider::ExecutionControl;
+use synctv_core::provider::{DirectUrlDashResourceRequest, DirectUrlHlsResourceRequest};
 use synctv_core::service::DirectUrlPlaybackProviderService;
 use synctv_proto::playback_provider::direct_url::{
-    DirectUrlHlsManifestResponse, DirectUrlHlsSegmentResponse, DirectUrlStreamResponse,
-    DirectUrlSubtitleResponse, GetDirectUrlHlsManifestRequest, GetDirectUrlHlsSegmentRequest,
-    GetDirectUrlStreamRequest, GetDirectUrlSubtitleRequest,
+    DirectUrlDashManifestResponse, DirectUrlDashResourceResponse, DirectUrlHlsManifestResponse,
+    DirectUrlHlsResourceResponse, DirectUrlManifestResourceKind, DirectUrlStreamResponse,
+    DirectUrlSubtitleResponse, GetDirectUrlDashManifestRequest, GetDirectUrlDashResourceRequest,
+    GetDirectUrlHlsManifestRequest, GetDirectUrlHlsResourceRequest, GetDirectUrlStreamRequest,
+    GetDirectUrlSubtitleRequest,
 };
 
 use super::common::{
-    playback_provider_route_base, playback_transport_action_to_chunk_stream,
-    verify_playback_provider_access_with_deps, HasPlaybackProviderAccessFields, HlsRewriteSigning,
+    dash_transport_action_to_chunk_stream, playback_provider_route_base,
+    playback_transport_action_to_chunk_stream, verify_playback_provider_access_with_deps,
+    DashRewriteSigning, HasPlaybackProviderAccessFields, HlsRewriteSigning,
     PlaybackProviderAccessRequest, PlaybackProviderApiRuntime, PlaybackTransportExecutorDeps,
 };
 use crate::impls::ApiError;
@@ -30,8 +34,24 @@ pub type DirectUrlHlsManifestResponseStream = std::pin::Pin<
         dyn futures::Stream<Item = Result<DirectUrlHlsManifestResponse, ApiError>> + Send + 'static,
     >,
 >;
-pub type DirectUrlHlsSegmentResponseStream = std::pin::Pin<
-    Box<dyn futures::Stream<Item = Result<DirectUrlHlsSegmentResponse, ApiError>> + Send + 'static>,
+pub type DirectUrlHlsResourceResponseStream = std::pin::Pin<
+    Box<
+        dyn futures::Stream<Item = Result<DirectUrlHlsResourceResponse, ApiError>> + Send + 'static,
+    >,
+>;
+pub type DirectUrlDashManifestResponseStream = std::pin::Pin<
+    Box<
+        dyn futures::Stream<Item = Result<DirectUrlDashManifestResponse, ApiError>>
+            + Send
+            + 'static,
+    >,
+>;
+pub type DirectUrlDashResourceResponseStream = std::pin::Pin<
+    Box<
+        dyn futures::Stream<Item = Result<DirectUrlDashResourceResponse, ApiError>>
+            + Send
+            + 'static,
+    >,
 >;
 pub type DirectUrlSubtitleResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<DirectUrlSubtitleResponse, ApiError>> + Send + 'static>,
@@ -103,9 +123,15 @@ pub async fn get_direct_url_hls_manifest(
         )
         .await
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base("direct-url", &req.version, "hls-segments");
+    let resource_base = format!(
+        "{}/{}/{}",
+        playback_provider_route_base("direct-url", &req.version, "hls-resources"),
+        urlencoding::encode(&req.mode_name),
+        req.url_index
+    );
+    let resource_prefix = format!("hls-resources/{}/{}/*", req.mode_name, req.url_index);
     let stream = playback_transport_action_to_chunk_stream(
-        deps.chunk_deps_with_hls(&segment_base, &claims, "hls-segments"),
+        deps.chunk_deps_with_hls(&resource_base, &claims, &resource_prefix),
         action,
         false,
     )
@@ -115,17 +141,22 @@ pub async fn get_direct_url_hls_manifest(
     })))
 }
 
-pub async fn get_direct_url_hls_segment(
+pub async fn get_direct_url_hls_resource(
     deps: DirectUrlPlaybackProviderDeps<'_>,
-    req: GetDirectUrlHlsSegmentRequest,
-) -> Result<DirectUrlHlsSegmentResponseStream, ApiError> {
+    req: GetDirectUrlHlsResourceRequest,
+) -> Result<DirectUrlHlsResourceResponseStream, ApiError> {
     crate::impls::validate_proto_request(&req)?;
+    let kind = manifest_resource_kind(req.resource_kind)?;
+    let kind_name = manifest_resource_kind_name(kind);
     let head = req.head;
     let (store, claims) = verify_direct_url_access(
         &deps,
         PlaybackProviderAccessRequest {
             version: &req.version,
-            resource: "hls-segments".to_string(),
+            resource: format!(
+                "hls-resources/{}/{}/{kind_name}",
+                req.mode_name, req.url_index
+            ),
             signature: &req.sig,
             user_id: &req.uid,
             room_id: &req.rid,
@@ -136,25 +167,180 @@ pub async fn get_direct_url_hls_segment(
     .await?;
     let action = deps
         .playback_provider_service
-        .hls_segment_action(
-            &req.version,
-            &req.target_url,
-            req.range.as_deref(),
+        .hls_resource_action(
+            DirectUrlHlsResourceRequest {
+                version: &req.version,
+                mode_name: &req.mode_name,
+                url_index: req.url_index as usize,
+                target_url: &req.target_url,
+                is_manifest: kind == DirectUrlManifestResourceKind::Manifest,
+                range_header: req.range.as_deref(),
+            },
             store,
             deps.request_control,
         )
         .await
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base("direct-url", &req.version, "hls-segments");
-    let stream = playback_transport_action_to_chunk_stream(
-        deps.chunk_deps_with_hls(&segment_base, &claims, "hls-segments"),
+    let stream = if kind == DirectUrlManifestResourceKind::Manifest {
+        let resource_base = format!(
+            "{}/{}/{}",
+            playback_provider_route_base("direct-url", &req.version, "hls-resources"),
+            urlencoding::encode(&req.mode_name),
+            req.url_index
+        );
+        let resource_prefix = format!("hls-resources/{}/{}/*", req.mode_name, req.url_index);
+        playback_transport_action_to_chunk_stream(
+            deps.chunk_deps_with_hls(&resource_base, &claims, &resource_prefix),
+            action,
+            head,
+        )
+        .await?
+    } else {
+        playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, head).await?
+    };
+    Ok(Box::pin(stream.map(|chunk| {
+        chunk.map(|chunk| DirectUrlHlsResourceResponse { chunk: Some(chunk) })
+    })))
+}
+
+pub async fn get_direct_url_dash_manifest(
+    deps: DirectUrlPlaybackProviderDeps<'_>,
+    req: GetDirectUrlDashManifestRequest,
+) -> Result<DirectUrlDashManifestResponseStream, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    let (store, claims) = verify_direct_url_access(
+        &deps,
+        PlaybackProviderAccessRequest {
+            version: &req.version,
+            resource: format!("dash-manifests/{}/{}", req.mode_name, req.url_index),
+            signature: &req.sig,
+            user_id: &req.uid,
+            room_id: &req.rid,
+            expires_at: req.exp,
+            target_url: None,
+        },
+    )
+    .await?;
+    let action = deps
+        .playback_provider_service
+        .dash_manifest_action(
+            &req.version,
+            &req.mode_name,
+            req.url_index as usize,
+            store,
+            deps.request_control,
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let resource_base = format!(
+        "{}/{}/{}",
+        playback_provider_route_base("direct-url", &req.version, "dash-resources"),
+        urlencoding::encode(&req.mode_name),
+        req.url_index
+    );
+    let resource_prefix = format!("dash-resources/{}/{}", req.mode_name, req.url_index);
+    let stream = dash_transport_action_to_chunk_stream(
+        deps.chunk_deps(),
         action,
-        head,
+        DashRewriteSigning {
+            resource_base: &resource_base,
+            resource_prefix: &resource_prefix,
+            claims: &claims,
+        },
+        false,
     )
     .await?;
     Ok(Box::pin(stream.map(|chunk| {
-        chunk.map(|chunk| DirectUrlHlsSegmentResponse { chunk: Some(chunk) })
+        chunk.map(|chunk| DirectUrlDashManifestResponse { chunk: Some(chunk) })
     })))
+}
+
+pub async fn get_direct_url_dash_resource(
+    deps: DirectUrlPlaybackProviderDeps<'_>,
+    req: GetDirectUrlDashResourceRequest,
+) -> Result<DirectUrlDashResourceResponseStream, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    let kind = manifest_resource_kind(req.resource_kind)?;
+    let kind_name = manifest_resource_kind_name(kind);
+    let (store, claims) = verify_direct_url_access(
+        &deps,
+        PlaybackProviderAccessRequest {
+            version: &req.version,
+            resource: format!(
+                "dash-resources/{}/{}/{kind_name}",
+                req.mode_name, req.url_index
+            ),
+            signature: &req.sig,
+            user_id: &req.uid,
+            room_id: &req.rid,
+            expires_at: req.exp,
+            target_url: Some(&req.scope_url),
+        },
+    )
+    .await?;
+    let is_manifest = kind == DirectUrlManifestResourceKind::Manifest;
+    let action = deps
+        .playback_provider_service
+        .dash_resource_action(
+            DirectUrlDashResourceRequest {
+                version: &req.version,
+                mode_name: &req.mode_name,
+                url_index: req.url_index as usize,
+                scope_url: &req.scope_url,
+                resource_path: &req.resource_path,
+                resource_query: req.resource_query.as_deref(),
+                is_manifest,
+                range_header: req.range.as_deref(),
+            },
+            store,
+            deps.request_control,
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let stream = if is_manifest {
+        let resource_base = format!(
+            "{}/{}/{}",
+            playback_provider_route_base("direct-url", &req.version, "dash-resources"),
+            urlencoding::encode(&req.mode_name),
+            req.url_index
+        );
+        let resource_prefix = format!("dash-resources/{}/{}", req.mode_name, req.url_index);
+        dash_transport_action_to_chunk_stream(
+            deps.chunk_deps(),
+            action,
+            DashRewriteSigning {
+                resource_base: &resource_base,
+                resource_prefix: &resource_prefix,
+                claims: &claims,
+            },
+            req.head,
+        )
+        .await?
+    } else {
+        playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, req.head).await?
+    };
+    Ok(Box::pin(stream.map(|chunk| {
+        chunk.map(|chunk| DirectUrlDashResourceResponse { chunk: Some(chunk) })
+    })))
+}
+
+fn manifest_resource_kind(value: i32) -> Result<DirectUrlManifestResourceKind, ApiError> {
+    let kind = DirectUrlManifestResourceKind::try_from(value)
+        .map_err(|_| ApiError::InvalidInput("Invalid manifest resource kind".to_string()))?;
+    match kind {
+        DirectUrlManifestResourceKind::Media | DirectUrlManifestResourceKind::Manifest => Ok(kind),
+        DirectUrlManifestResourceKind::Unspecified => Err(ApiError::InvalidInput(
+            "Manifest resource kind is required".to_string(),
+        )),
+    }
+}
+
+const fn manifest_resource_kind_name(kind: DirectUrlManifestResourceKind) -> &'static str {
+    match kind {
+        DirectUrlManifestResourceKind::Media => "media",
+        DirectUrlManifestResourceKind::Manifest => "manifest",
+        DirectUrlManifestResourceKind::Unspecified => "unspecified",
+    }
 }
 
 pub async fn get_direct_url_subtitle(
@@ -224,7 +410,7 @@ impl<'a> DirectUrlPlaybackProviderDeps<'a> {
         &self,
         segment_base: &'a str,
         claims: &'a crate::proxy_signature::ProxyUrlClaims,
-        resource: &'static str,
+        resource: &'a str,
     ) -> PlaybackTransportExecutorDeps<'a> {
         PlaybackTransportExecutorDeps {
             hls_rewrite: Some(HlsRewriteSigning {

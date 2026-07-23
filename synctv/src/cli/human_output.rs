@@ -214,7 +214,7 @@ pub(in crate::cli) struct HumanChatMessage {
     id: String,
     room_id: String,
     user_id: String,
-    username: String,
+    username: Option<String>,
     content: String,
     timestamp: String,
     display_position: String,

@@ -86,6 +86,7 @@ pub(super) async fn execute_media(media_command: MediaCommand) -> Result<()> {
                         is_live: Some(false),
                         duration_seconds: None,
                         prefer_proxy: Some(false),
+                        proxy_only: None,
                     }),
                     playlist_id: normalized_optional_cli_value(args.playlist_id.as_deref())
                         .unwrap_or_default(),

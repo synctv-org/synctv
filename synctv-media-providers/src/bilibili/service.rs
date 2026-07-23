@@ -317,6 +317,7 @@ fn to_proto_video_url(url_info: super::client::VideoUrlInfo) -> VideoUrl {
             .map(|s| ProtoVideoSegment {
                 url: s.url,
                 size: s.size,
+                duration_millis: s.duration_millis,
             })
             .collect(),
     }
@@ -710,8 +711,18 @@ impl BilibiliInterface for BilibiliService {
                 .into_iter()
                 .map(|s| crate::transport_dto::bilibili::LiveStream {
                     quality: u64::from(s.quality),
-                    urls: s.urls,
-                    desc: s.desc,
+                    urls: s
+                        .urls
+                        .into_iter()
+                        .map(|url| crate::transport_dto::bilibili::LiveStreamUrl {
+                            host: url.host,
+                            url: url.url,
+                        })
+                        .collect(),
+                    quality_name: s.quality_name,
+                    protocol: s.protocol,
+                    format: s.format,
+                    codec: s.codec,
                 })
                 .collect(),
         })

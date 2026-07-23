@@ -54,7 +54,8 @@ Guests can enter public rooms that explicitly allow guest access, but they do no
 | Basic realtime room state | Yes | No setting required | Lets the client show room existence, settings, and playback state after connecting |
 | Member list | No | `view_members` | Read-only |
 | Chat history | No | `view_chat_history` | Read-only |
-| WebRTC signaling | No | `use_webrtc` | Allows signaling participation only; does not grant room administration |
+| Voice chat | No | `use_voice_chat` | Join room voice sessions |
+| P2P media delivery | No | `use_p2p_media` | Exchange media pieces with clients in the same room and media swarm |
 | Media resources | No | No | Guests cannot read, browse, or manage media resources |
 | Chat sending | No | No | `send_chat_messages` is only for signed-in members |
 | Playback control, member management, room settings | No | No | Requires a signed-in member with the matching permission |
@@ -99,10 +100,11 @@ Runtime settings and administration surfaces use stable snake_case permission na
 | `manage_room_settings` | Modify room settings |
 | `delete_chat_messages` | Delete chat messages created by other room members |
 | `delete_room` | Delete room; not a normal room-delegable permission |
-| `view_media` | View media resources |
+| `browse_library` | Browse the media library |
 | `view_members` | View member list |
 | `view_chat_history` | View chat history |
-| `use_webrtc` | Use WebRTC voice/video features |
+| `use_voice_chat` | Use room voice chat |
+| `use_p2p_media` | Use room-scoped P2P media delivery |
 
 ## Room Settings
 
@@ -118,10 +120,14 @@ Room settings control join policy, room features, and default permissions.
 | `requireApproval` | `false` | Require join approval |
 | `allowAutoJoin` | `true` | Allow eligible users to auto-join |
 | `chatEnabled` | `true` | Enable chat |
+| `voiceChatEnabled` | `true` | Enable room voice calls |
+| `p2pMediaEnabled` | `true` | Enable in-room P2P media delivery |
 | `autoPlay` | `{}` | Auto-play policy, for example `{"enabled":true,"mode":1,"delay":5}` |
 | `adminAddedPermissions` / `adminRemovedPermissions` | Empty permission set | Admin default permission changes |
 | `memberAddedPermissions` / `memberRemovedPermissions` | Empty permission set | Member default permission changes |
 | `guestAddedPermissions` / `guestRemovedPermissions` | Empty permission set | Guest default permission changes |
+
+Voice and media P2P require both the room capability and the member permission. For example, voice join requires `use_voice_chat` and `voiceChatEnabled=true`. When a room administrator disables a capability, the server uses the realtime room-settings event to release current voice slots and media swarms and rejects subsequent joins and signaling. Clients consume the same settings snapshot, close local sessions, and hide the corresponding controls. Closing an established media DataChannel relies on the client processing this event; strict server-enforced media revocation requires an SFU relay architecture.
 
 Example:
 

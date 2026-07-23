@@ -102,6 +102,22 @@ fn test_ws_query_with_ticket() {
     assert_eq!(query.ticket, "ticket_abc");
 }
 
+#[tokio::test]
+async fn test_websocket_ping_reply_preserves_payload() -> TestResult {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let payload = axum::body::Bytes::from_static(b"client-liveness");
+
+    reply_to_websocket_ping(&tx, payload.clone())
+        .await
+        .map_err(test_error)?;
+
+    assert_eq!(
+        rx.recv().await,
+        Some(axum::extract::ws::Message::Pong(payload))
+    );
+    Ok(())
+}
+
 #[test]
 fn test_realtime_transport_format_defaults_to_json() -> TestResult {
     assert_eq!(

@@ -4,9 +4,9 @@ use futures::FutureExt;
 use synctv_proto::playback_provider::alist::alist_playback_provider_service_server::AlistPlaybackProviderService;
 use synctv_proto::playback_provider::alist::{
     AlistFileStreamResponse, AlistSubtitleResponse, AlistThumbnailResponse,
-    AlistTranscodedHlsManifestResponse, AlistTranscodedHlsSegmentResponse,
+    AlistTranscodedHlsManifestResponse, AlistTranscodedHlsResourceResponse,
     GetAlistFileStreamRequest, GetAlistSubtitleRequest, GetAlistThumbnailRequest,
-    GetAlistTranscodedHlsManifestRequest, GetAlistTranscodedHlsSegmentRequest,
+    GetAlistTranscodedHlsManifestRequest, GetAlistTranscodedHlsResourceRequest,
 };
 use tonic::{Request, Response, Status};
 
@@ -39,7 +39,7 @@ impl AlistPlaybackProviderGrpcService {
 impl AlistPlaybackProviderService for AlistPlaybackProviderGrpcService {
     type GetFileStreamStream = GrpcResponseStream<AlistFileStreamResponse>;
     type GetTranscodedHlsManifestStream = GrpcResponseStream<AlistTranscodedHlsManifestResponse>;
-    type GetTranscodedHlsSegmentStream = GrpcResponseStream<AlistTranscodedHlsSegmentResponse>;
+    type GetTranscodedHlsResourceStream = GrpcResponseStream<AlistTranscodedHlsResourceResponse>;
     type GetSubtitleStream = GrpcResponseStream<AlistSubtitleResponse>;
     type GetThumbnailStream = GrpcResponseStream<AlistThumbnailResponse>;
 
@@ -85,10 +85,10 @@ impl AlistPlaybackProviderService for AlistPlaybackProviderGrpcService {
         .await
     }
 
-    async fn get_transcoded_hls_segment(
+    async fn get_transcoded_hls_resource(
         &self,
-        request: Request<GetAlistTranscodedHlsSegmentRequest>,
-    ) -> Result<Response<Self::GetTranscodedHlsSegmentStream>, Status> {
+        request: Request<GetAlistTranscodedHlsResourceRequest>,
+    ) -> Result<Response<Self::GetTranscodedHlsResourceStream>, Status> {
         let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
@@ -96,7 +96,7 @@ impl AlistPlaybackProviderService for AlistPlaybackProviderGrpcService {
         execute_playback_provider_stream(state, metadata, move |request_control| {
             let state = state_for_stream;
             async move {
-                synctv_api_common::playback_provider::alist::get_alist_transcoded_hls_segment(
+                synctv_api_common::playback_provider::alist::get_alist_transcoded_hls_resource(
                     alist_deps(&state, Some(&request_control)),
                     req,
                 )

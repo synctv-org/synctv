@@ -122,6 +122,8 @@ pub fn room_settings_to_proto(
         member_removed_permissions: settings.member_removed_permissions.0,
         guest_added_permissions: settings.guest_added_permissions.0,
         guest_removed_permissions: settings.guest_removed_permissions.0,
+        voice_chat_enabled: settings.voice_chat_enabled.0,
+        p2p_media_enabled: settings.p2p_media_enabled.0,
     }
 }
 
@@ -153,6 +155,12 @@ pub fn room_settings_from_proto(
             settings.allow_auto_join,
         ),
         chat_enabled: synctv_core::models::room_settings::ChatEnabled::new(settings.chat_enabled),
+        voice_chat_enabled: synctv_core::models::room_settings::VoiceChatEnabled::new(
+            settings.voice_chat_enabled,
+        ),
+        p2p_media_enabled: synctv_core::models::room_settings::P2pMediaEnabled::new(
+            settings.p2p_media_enabled,
+        ),
         auto_play: synctv_core::models::room_settings::AutoPlay::new(
             synctv_core::models::AutoPlaySettings {
                 enabled: auto_play.enabled,
@@ -190,7 +198,8 @@ pub fn apply_room_settings_patch_from_proto(
     use synctv_core::models::room_settings::{
         AdminAddedPermissions, AdminRemovedPermissions, AllowAutoJoin, AllowGuestJoin, AutoPlay,
         ChatEnabled, GuestAddedPermissions, GuestRemovedPermissions, MaxMembers,
-        MemberAddedPermissions, MemberRemovedPermissions, RequireApproval, RoomSettingsPatch,
+        MemberAddedPermissions, MemberRemovedPermissions, P2pMediaEnabled, RequireApproval,
+        RoomSettingsPatch, VoiceChatEnabled,
     };
 
     let patch = request
@@ -216,6 +225,12 @@ pub fn apply_room_settings_patch_from_proto(
     }
     if let Some(value) = patch.chat_enabled {
         typed_patch.chat_enabled = Some(ChatEnabled::new(value));
+    }
+    if let Some(value) = patch.voice_chat_enabled {
+        typed_patch.voice_chat_enabled = Some(VoiceChatEnabled::new(value));
+    }
+    if let Some(value) = patch.p2p_media_enabled {
+        typed_patch.p2p_media_enabled = Some(P2pMediaEnabled::new(value));
     }
     if let Some(auto_play) = patch.auto_play {
         let mut value = settings.auto_play.value.clone();
@@ -1479,6 +1494,7 @@ fn direct_url_media_source_config_to_proto(
         is_live: config.is_live,
         duration_seconds: config.duration_seconds,
         prefer_proxy: config.prefer_proxy,
+        proxy_only: config.proxy_only.then_some(true),
         medias: config
             .medias
             .into_iter()
@@ -1850,7 +1866,7 @@ fn checked_index_i32(
     usize_to_i32(index, field)
 }
 
-fn can_view_media_source_config(
+fn can_browse_library_source_config(
     media: &synctv_core::models::Media,
     viewer_id: Option<synctv_core::models::UserId>,
 ) -> bool {
@@ -2410,7 +2426,7 @@ pub fn try_media_to_proto_for_viewer_without_cover(
     viewer_id: Option<synctv_core::models::UserId>,
     public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_proto::client::Media, crate::impls::ApiError> {
-    let can_view_source = can_view_media_source_config(media, viewer_id);
+    let can_view_source = can_browse_library_source_config(media, viewer_id);
     Ok(synctv_proto::client::Media {
         id: encode_media_id_for_proto(media.id, public_id_codec)?,
         room_id: encode_room_id_for_proto(media.room_id, public_id_codec)?,
@@ -2850,7 +2866,7 @@ pub fn try_playback_to_proto(
         .map(|(mode, info)| {
             Ok((
                 mode.clone(),
-                playback_info_to_proto(info, public_id_codec, signing)?,
+                playback_info_to_proto(result, mode, info, public_id_codec, signing)?,
             ))
         })
         .collect::<Result<_, crate::impls::ApiError>>()?;
@@ -3481,6 +3497,8 @@ fn proxy_resource_for_thumbnail(
 
 /// Convert models `PlaybackInfo` to proto `PlaybackInfo`
 fn playback_info_to_proto(
+    result: &synctv_core::models::media::PlaybackResult,
+    mode_name: &str,
     info: &synctv_core::models::media::PlaybackInfo,
     public_id_codec: &synctv_adapter::PublicIdCodec,
     signing: Option<&PlaybackHttpSigningContext<'_>>,
@@ -3500,7 +3518,8 @@ fn playback_info_to_proto(
         medias: info
             .medias
             .iter()
-            .map(|media| playback_media_to_proto(media, signing))
+            .enumerate()
+            .map(|(index, media)| playback_media_to_proto(result, mode_name, index, media, signing))
             .collect::<Result<_, _>>()?,
         default_media_index,
         subtitles: info
@@ -3526,10 +3545,32 @@ fn playback_info_to_proto(
 
 /// Convert models `PlaybackMedia` to proto `PlaybackMedia`.
 fn playback_media_to_proto(
+    result: &synctv_core::models::media::PlaybackResult,
+    mode_name: &str,
+    media_index: usize,
     media: &synctv_core::models::media::PlaybackMedia,
     signing: Option<&PlaybackHttpSigningContext<'_>>,
 ) -> Result<synctv_proto::client::PlaybackMedia, crate::impls::ApiError> {
     let url_value = playback_media_url(media, signing)?;
+    let p2p_delivery =
+        synctv_core::provider::playback_media_p2p_delivery(result, mode_name, media_index, media)
+            .map(|delivery| {
+                let signing = signing.ok_or_else(|| {
+                    crate::impls::ApiError::Internal(
+                        "P2P media delivery requires playback signing context".to_string(),
+                    )
+                })?;
+                let swarm_ticket = signing.signing_key.sign_media_swarm_ticket(
+                    signing.room_id,
+                    signing.user_id,
+                    &delivery.swarm_id,
+                );
+                Ok::<_, crate::impls::ApiError>(synctv_proto::client::P2pMediaDelivery {
+                    swarm_id: delivery.swarm_id,
+                    swarm_ticket,
+                })
+            })
+            .transpose()?;
     Ok(synctv_proto::client::PlaybackMedia {
         name: media.name.clone(),
         url: require_non_empty_url(&url_value, "playback")?,
@@ -3541,6 +3582,7 @@ fn playback_media_to_proto(
             .as_ref()
             .map(playback_media_metadata_to_proto)
             .transpose()?,
+        p2p_delivery,
     })
 }
 
@@ -3557,7 +3599,8 @@ fn playback_media_headers_for_proto(
         | PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct { headers, .. })
         | PlaybackMediaProvider::Bilibili(
             PlaybackBilibiliMedia::Direct { headers, .. }
-            | PlaybackBilibiliMedia::DirectDashManifest { headers, .. },
+            | PlaybackBilibiliMedia::DirectDashManifest { headers, .. }
+            | PlaybackBilibiliMedia::DurlManifest { headers, .. },
         )
         | PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct { headers, .. })
         | PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct { headers, .. }) => headers.clone(),
@@ -3696,6 +3739,19 @@ fn playback_media_url(
             mode_name,
             ..
         }) => dash_manifest_resource(version, *expires_at, mode_name, "direct"),
+        PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest {
+            version,
+            expires_at,
+            mode_name,
+            ..
+        }) => versioned_indexed_resource(
+            "bilibili",
+            version,
+            *expires_at,
+            "hls-manifests",
+            mode_name,
+            0,
+        ),
         PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::ProxyDashManifest {
             version,
             expires_at,
@@ -3754,6 +3810,20 @@ fn playback_media_url(
             version,
             *expires_at,
             "hls-manifests",
+            mode_name,
+            *url_index,
+        ),
+        PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::ProxyDashManifest {
+            version,
+            expires_at,
+            mode_name,
+            url_index,
+            ..
+        }) => versioned_indexed_resource(
+            synctv_core::provider::DirectUrlProvider::NAME,
+            version,
+            *expires_at,
+            "dash-manifests",
             mode_name,
             *url_index,
         ),
@@ -4635,6 +4705,8 @@ mod playback_conversion_tests {
 
     #[test]
     fn live_danmaku_provider_converts_to_live_endpoint() {
+        let key = signing_key();
+        let signing = signing_context(&key);
         let room_id = synctv_core::models::RoomId::new();
         let media_id = synctv_core::models::MediaId::new();
         let codec = codec();
@@ -4662,7 +4734,7 @@ mod playback_conversion_tests {
             .default_danmaku_index(0)
             .build();
 
-        let proto = try_playback_to_proto(&playback_result(info), &codec, None)
+        let proto = try_playback_to_proto(&playback_result(info), &codec, Some(&signing))
             .expect("playback should convert");
         let danmaku = &proto.playback_infos["dash"].danmakus[0];
         let public_media_id = codec
@@ -4723,6 +4795,8 @@ mod playback_conversion_tests {
 
     #[test]
     fn playback_to_proto_serializes_provider_selected_default_indices() {
+        let key = signing_key();
+        let signing = signing_context(&key);
         let info = PlaybackInfo::builder()
             .add_media(PlaybackMedia::simple(
                 "first".to_string(),
@@ -4754,7 +4828,7 @@ mod playback_conversion_tests {
             .default_subtitle_index(1)
             .build();
 
-        let proto = try_playback_to_proto(&playback_result(info), &codec(), None)
+        let proto = try_playback_to_proto(&playback_result(info), &codec(), Some(&signing))
             .expect("playback should convert");
         let info = &proto.playback_infos["dash"];
 
@@ -4774,6 +4848,7 @@ mod playback_conversion_tests {
                 expire_at: None,
                 metadata: None,
                 provider: PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::ProxyStream {
+                    p2p_resource_id: "direct_url:test".to_string(),
                     version: "v 1".to_string(),
                     expires_at: synctv_core::SystemClock.now().timestamp() + 1800,
                     mode_name: mode_name.to_string(),
@@ -5018,5 +5093,64 @@ mod playback_conversion_tests {
             .parse_and_verify_query(signed_query(thumbnail), "alist", "v 1", "thumbnail")
             .expect("thumbnail signature should verify");
         assert_eq!(claims.resource, "thumbnail");
+    }
+
+    #[test]
+    fn static_playback_exposes_server_approved_p2p_delivery() {
+        let info = PlaybackInfo::builder()
+            .add_media(PlaybackMedia {
+                name: "1080p".to_string(),
+                format: "mp4".to_string(),
+                expire_at: None,
+                metadata: None,
+                provider: PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct {
+                    p2p_resource_id: "direct_url:movie".to_string(),
+                    url: "https://cdn.example.com/movie.mp4?token=private".to_string(),
+                    headers: HashMap::new(),
+                }),
+            })
+            .build();
+
+        let key = signing_key();
+        let signing = signing_context(&key);
+        let proto = try_playback_to_proto(
+            &playback_result_with_mode("direct", info),
+            &codec(),
+            Some(&signing),
+        )
+        .expect("playback should convert");
+        let delivery = proto.playback_infos["direct"].medias[0]
+            .p2p_delivery
+            .as_ref()
+            .expect("static media should expose P2P delivery");
+
+        assert!(delivery.swarm_id.starts_with("sm3_"));
+        assert!(!delivery.swarm_ticket.is_empty());
+    }
+
+    #[test]
+    fn live_playback_omits_p2p_delivery() {
+        let info = PlaybackInfo::builder()
+            .add_media(PlaybackMedia {
+                name: "live".to_string(),
+                format: "hls".to_string(),
+                expire_at: None,
+                metadata: None,
+                provider: PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct {
+                    p2p_resource_id: "direct_url:live".to_string(),
+                    url: "https://live.example.com/index.m3u8".to_string(),
+                    headers: HashMap::new(),
+                }),
+            })
+            .build();
+        let mut result = playback_result_with_mode("hls", info);
+        result.is_live = true;
+
+        let key = signing_key();
+        let signing = signing_context(&key);
+        let proto = try_playback_to_proto(&result, &codec(), Some(&signing))
+            .expect("playback should convert");
+
+        assert!(proto.playback_infos["hls"].medias[0].p2p_delivery.is_none());
     }
 }

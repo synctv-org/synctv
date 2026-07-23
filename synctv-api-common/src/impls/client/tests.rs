@@ -75,7 +75,7 @@ fn guest_access(permissions: RoomPermissionSet) -> super::GuestRoomAccess {
 async fn test_shared_room_actor_playlist_items_rejects_guest_without_media_resource_permission() {
     let err = super::ClientApiImpl::require_guest_permission(
         &guest_access(RoomPermissionSet::empty()),
-        RoomPermission::VIEW_MEDIA,
+        RoomPermission::BROWSE_LIBRARY,
     )
     .expect_err("guest media-resource reads must be rejected before any repository lookup");
 
@@ -89,17 +89,17 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_without_media_resou
 async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resource_permission_requested(
 ) {
     let requested = RoomPermissionSet(
-        synctv_core::models::RoomAdminPermissionBits::VIEW_MEDIA
-            | synctv_core::models::RoomAdminPermissionBits::USE_WEBRTC,
+        synctv_core::models::RoomAdminPermissionBits::BROWSE_LIBRARY
+            | synctv_core::models::RoomAdminPermissionBits::USE_VOICE_CHAT,
     );
     let capped = RoomPermissionSet(
         requested.0 & RoomGuestPermissionBits::to_permissions(RoomGuestPermissionBits::ALL),
     );
-    assert!(!capped.has(synctv_core::models::RoomPermission::VIEW_MEDIA));
+    assert!(!capped.has(synctv_core::models::RoomPermission::BROWSE_LIBRARY));
 
     let err = super::ClientApiImpl::require_guest_permission(
         &guest_access(capped),
-        RoomPermission::VIEW_MEDIA,
+        RoomPermission::BROWSE_LIBRARY,
     )
     .expect_err("guest media-resource reads must stay rejected after guest permission capping");
 
@@ -127,7 +127,7 @@ fn update_room_settings_rejects_empty_request() {
 #[test]
 fn test_guest_actor_cannot_satisfy_signed_in_room_operations() {
     let actor = super::RoomActor::Guest(guest_access(RoomPermissionSet(
-        synctv_core::models::RoomAdminPermissionBits::USE_WEBRTC,
+        synctv_core::models::RoomAdminPermissionBits::USE_VOICE_CHAT,
     )));
     let err = actor
         .require_user_id()
@@ -1625,10 +1625,10 @@ fn test_effective_permissions_applies_member_overrides() {
     let base = RoomRole::Member.permissions();
 
     // Add a specific permission bit
-    member.added_permissions = RoomMemberPermissionBits::USE_WEBRTC;
+    member.added_permissions = RoomMemberPermissionBits::USE_VOICE_CHAT;
     let effective = member.effective_permissions(base);
     assert!(
-        effective.has(RoomPermission::USE_WEBRTC),
+        effective.has(RoomPermission::USE_VOICE_CHAT),
         "Added permission bit should be present in effective permissions"
     );
 

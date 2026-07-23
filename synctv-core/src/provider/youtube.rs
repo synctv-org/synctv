@@ -604,33 +604,43 @@ impl YoutubeProvider {
             provider_instance_name,
         );
         let mut playback_infos = HashMap::new();
-        let mut best_progressive_mode = None;
+        let mut best_progressive = None;
         for format in &streaming.formats {
             if format.url.is_none() {
                 continue;
             }
-            let mode = unique_mode_name(&playback_infos, &format_mode_name(format), format.itag);
-            if best_progressive_mode
+            let media = playback_info(
+                format.name(),
+                format.container(),
+                YoutubePlaybackResource::Format { itag: format.itag },
+                format_metadata(format),
+                thumbnail.clone(),
+                subtitles.clone(),
+                expires_at,
+                &details.video_id,
+                credential_owner_id,
+                provider_instance_name.map(str::to_owned),
+            );
+            let info = playback_infos
+                .entry("progressive".to_string())
+                .or_insert_with(|| PlaybackInfo {
+                    thumbnail: thumbnail.clone(),
+                    medias: Vec::new(),
+                    default_media_index: None,
+                    subtitles: subtitles.clone(),
+                    default_subtitle_index: None,
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                });
+            let media_index = info.medias.len();
+            info.medias.extend(media.medias);
+            if best_progressive
                 .as_ref()
                 .is_none_or(|(height, _)| format.height.unwrap_or_default() > *height)
             {
-                best_progressive_mode = Some((format.height.unwrap_or_default(), mode.clone()));
+                best_progressive = Some((format.height.unwrap_or_default(), media_index));
+                info.default_media_index = Some(media_index);
             }
-            playback_infos.insert(
-                mode,
-                playback_info(
-                    format.name(),
-                    format.container(),
-                    YoutubePlaybackResource::Format { itag: format.itag },
-                    format_metadata(format),
-                    thumbnail.clone(),
-                    subtitles.clone(),
-                    expires_at,
-                    &details.video_id,
-                    credential_owner_id,
-                    provider_instance_name.map(str::to_owned),
-                ),
-            );
         }
         if streaming.hls_manifest_url.is_some() {
             playback_infos.insert(
@@ -671,7 +681,7 @@ impl YoutubeProvider {
                 .contains_key("hls")
                 .then(|| "hls".to_string())
         } else {
-            best_progressive_mode.map(|(_, mode)| mode)
+            best_progressive.map(|_| "progressive".to_string())
         }
         .or_else(|| playback_infos.keys().next().cloned())
         .ok_or_else(|| {
@@ -897,40 +907,6 @@ fn format_metadata(format: &YoutubeFormat) -> Option<PlaybackMediaMetadata> {
         codec: format.codecs().first().cloned(),
         fps: format.fps.and_then(|value| i32::try_from(value).ok()),
     })
-}
-
-fn format_mode_name(format: &YoutubeFormat) -> String {
-    format
-        .quality_label
-        .clone()
-        .or_else(|| format.quality.clone())
-        .unwrap_or_else(|| format!("itag_{}", format.itag))
-}
-
-fn unique_mode_name(existing: &HashMap<String, PlaybackInfo>, name: &str, itag: u32) -> String {
-    let base = name
-        .to_ascii_lowercase()
-        .chars()
-        .map(|value| {
-            if value.is_ascii_alphanumeric() {
-                value
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('_')
-        .to_string();
-    let base = if base.is_empty() {
-        format!("itag_{itag}")
-    } else {
-        base
-    };
-    if existing.contains_key(&base) {
-        format!("{base}_{itag}")
-    } else {
-        base
-    }
 }
 
 fn mark_youtube_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
@@ -1370,15 +1346,16 @@ mod tests {
         )
         .expect("player response should map");
 
-        assert_eq!(result.default_mode, "720p");
+        assert_eq!(result.default_mode, "progressive");
         assert_eq!(result.duration_seconds, Some(212.0));
         assert_eq!(result.is_live, Some(false));
-        assert!(result.playback_infos.contains_key("360p"));
-        assert!(result.playback_infos.contains_key("720p"));
+        assert!(result.playback_infos.contains_key("progressive"));
         assert!(result.playback_infos.contains_key("hls"));
         assert!(result.playback_infos.contains_key("dash"));
 
-        let progressive = &result.playback_infos["720p"];
+        let progressive = &result.playback_infos["progressive"];
+        assert_eq!(progressive.medias.len(), 2);
+        assert_eq!(progressive.default_media_index, Some(1));
         assert_eq!(
             progressive.thumbnail.as_deref(),
             Some("https://img.example/maxres.jpg")
@@ -1396,7 +1373,7 @@ mod tests {
                 )
         }));
         assert!(matches!(
-            progressive.medias[0].provider,
+            progressive.medias[1].provider,
             PlaybackMediaProvider::Youtube(PlaybackYoutubeMedia::Refresh {
                 resource: YoutubePlaybackResource::Format { itag: 22 },
                 ..

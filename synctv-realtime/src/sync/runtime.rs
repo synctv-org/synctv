@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::connection_manager::{
     ConnectionInfo, ConnectionLimits, ConnectionManager, ConnectionMetrics, DisconnectSignal,
-    ShutdownReport,
+    ShutdownReport, VoiceRtcJoinOutcome,
 };
 use super::room_hub::{ConnectionId, RoomLifecycleEvent, RoomMessageHub};
 use super::{RealtimeEvent, SharedRealtimeEvent};
@@ -181,13 +181,44 @@ pub trait ConnectionRuntime: Send + Sync {
 
     fn get_connection(&self, connection_id: &str) -> Option<ConnectionInfo>;
 
+    async fn get_connection_distributed(
+        &self,
+        connection_id: &str,
+    ) -> std::result::Result<Option<ConnectionInfo>, String>;
+
     fn get_user_connections(&self, user_id: &UserId) -> Vec<ConnectionInfo>;
 
     fn get_room_connections(&self, room_id: &RoomId) -> Vec<ConnectionInfo>;
 
     fn get_connection_id(&self, room_id: &RoomId, user_id: &UserId) -> Option<String>;
 
-    fn mark_rtc_joined(&self, room_id: &RoomId, user_id: &UserId, conn_id: &str, joined: bool);
+    async fn try_join_voice_rtc(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        conn_id: &str,
+        max_participants: usize,
+    ) -> std::result::Result<VoiceRtcJoinOutcome, String>;
+
+    async fn leave_voice_rtc(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        conn_id: &str,
+    ) -> std::result::Result<bool, String>;
+
+    fn mark_voice_rtc_joined(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        conn_id: &str,
+        joined: bool,
+    );
+
+    async fn sync_connection_metadata_distributed(
+        &self,
+        connection_id: &str,
+    ) -> std::result::Result<(), String>;
 
     fn connection_count(&self) -> usize;
 
@@ -293,6 +324,13 @@ impl ConnectionRuntime for ConnectionManager {
         ConnectionManager::get_connection(self, connection_id)
     }
 
+    async fn get_connection_distributed(
+        &self,
+        connection_id: &str,
+    ) -> std::result::Result<Option<ConnectionInfo>, String> {
+        ConnectionManager::get_connection_distributed(self, connection_id).await
+    }
+
     fn get_user_connections(&self, user_id: &UserId) -> Vec<ConnectionInfo> {
         ConnectionManager::get_user_connections(self, user_id)
     }
@@ -305,8 +343,41 @@ impl ConnectionRuntime for ConnectionManager {
         ConnectionManager::get_connection_id(self, room_id, user_id)
     }
 
-    fn mark_rtc_joined(&self, room_id: &RoomId, user_id: &UserId, conn_id: &str, joined: bool) {
-        ConnectionManager::mark_rtc_joined(self, room_id, user_id, conn_id, joined);
+    async fn try_join_voice_rtc(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        conn_id: &str,
+        max_participants: usize,
+    ) -> std::result::Result<VoiceRtcJoinOutcome, String> {
+        ConnectionManager::try_join_voice_rtc(self, room_id, user_id, conn_id, max_participants)
+            .await
+    }
+
+    async fn leave_voice_rtc(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        conn_id: &str,
+    ) -> std::result::Result<bool, String> {
+        ConnectionManager::leave_voice_rtc(self, room_id, user_id, conn_id).await
+    }
+
+    fn mark_voice_rtc_joined(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        conn_id: &str,
+        joined: bool,
+    ) {
+        ConnectionManager::mark_voice_rtc_joined(self, room_id, user_id, conn_id, joined);
+    }
+
+    async fn sync_connection_metadata_distributed(
+        &self,
+        connection_id: &str,
+    ) -> std::result::Result<(), String> {
+        ConnectionManager::sync_connection_metadata_distributed(self, connection_id).await
     }
 
     fn connection_count(&self) -> usize {

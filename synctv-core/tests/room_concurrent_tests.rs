@@ -472,7 +472,7 @@ async fn test_concurrent_permission_grant() {
 
         // Grant different permissions to each member
         let permission = match i {
-            0 | 1 => RoomAdminPermissionBits::USE_WEBRTC,
+            0 | 1 => RoomAdminPermissionBits::USE_VOICE_CHAT,
             2 => RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
             3 => RoomAdminPermissionBits::SEND_CHAT_MESSAGES,
             _ => RoomAdminPermissionBits::MANAGE_OWN_MEDIA,
@@ -555,12 +555,12 @@ async fn test_optimistic_lock_conflict_retry_on_permission_update() {
     let permission_updates = [
         RoomAdminPermissionBits::SEND_CHAT_MESSAGES,
         RoomAdminPermissionBits::MANAGE_OWN_MEDIA,
-        RoomAdminPermissionBits::VIEW_MEDIA,
+        RoomAdminPermissionBits::BROWSE_LIBRARY,
         RoomAdminPermissionBits::VIEW_MEMBERS,
         RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
-        RoomAdminPermissionBits::USE_WEBRTC,
-        RoomAdminPermissionBits::SEND_CHAT_MESSAGES | RoomAdminPermissionBits::USE_WEBRTC,
-        RoomAdminPermissionBits::MANAGE_OWN_MEDIA | RoomAdminPermissionBits::VIEW_MEDIA,
+        RoomAdminPermissionBits::USE_VOICE_CHAT,
+        RoomAdminPermissionBits::SEND_CHAT_MESSAGES | RoomAdminPermissionBits::USE_VOICE_CHAT,
+        RoomAdminPermissionBits::MANAGE_OWN_MEDIA | RoomAdminPermissionBits::BROWSE_LIBRARY,
         RoomAdminPermissionBits::VIEW_MEMBERS | RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
         RoomAdminPermissionBits::SEND_CHAT_MESSAGES | RoomAdminPermissionBits::MANAGE_OWN_MEDIA,
     ];

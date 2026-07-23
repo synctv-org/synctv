@@ -1116,6 +1116,16 @@ pub struct PlayUrlInfoWrapper {
 pub struct PlayUrlContainer {
     #[serde(default)]
     pub stream: Vec<StreamEntry>,
+    #[serde(default)]
+    pub g_qn_desc: Vec<LiveQualityDescription>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LiveQualityDescription {
+    #[serde(default)]
+    pub qn: u64,
+    #[serde(default)]
+    pub desc: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1129,11 +1139,15 @@ pub struct StreamEntry {
 #[derive(Debug, Clone, Deserialize)]
 pub struct FormatEntry {
     #[serde(default)]
+    pub format_name: String,
+    #[serde(default)]
     pub codec: Vec<CodecEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CodecEntry {
+    #[serde(default)]
+    pub codec_name: String,
     #[serde(default)]
     pub current_qn: u64,
     #[serde(default)]

@@ -12,6 +12,7 @@ fn direct_url_media_source_config(url: impl Into<String>) -> MediaSourceConfig {
         is_live: None,
         duration_seconds: None,
         prefer_proxy: None,
+        proxy_only: false,
         medias: vec![DirectUrlMediaResourceConfig {
             name: String::new(),
             url: url.into(),

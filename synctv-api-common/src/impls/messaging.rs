@@ -11,7 +11,7 @@
 //! - All logic encapsulated in `StreamMessageHandler` (rate limiting, filtering, permissions)
 //! - Complete IO abstraction via `StreamMessage` trait for both sending and receiving
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 use synctv_common::ExecutionControl;
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
@@ -78,8 +78,6 @@ pub use observed_playback::{
 #[cfg(test)]
 pub use observed_playback::{ObservedPlaybackLifecycleEvent, ObservedPlaybackLifecycleSubscriber};
 mod playback;
-#[cfg(test)]
-pub use playback::should_persist_playback_progress;
 mod resource_watch;
 pub use resource_watch::{
     watch_chat_events_observe, watch_chat_pin_events_observe, watch_playback_observe,
@@ -105,7 +103,7 @@ pub use codec::{
 mod event_policy;
 pub use event_policy::{
     admin_event_requires_skip_cleanup, disconnect_signal_requires_skip_cleanup,
-    should_broadcast_user_left, should_transition_webrtc_membership,
+    should_broadcast_user_left,
 };
 #[cfg(test)]
 pub use event_policy::{watch_admin_event_matches, watch_disconnect_signal_matches};
@@ -150,6 +148,9 @@ use crate::impls::client::room_role_to_proto;
 mod transport;
 pub use transport::{MessageSender, StreamMessage};
 
+mod media_swarm_tracker;
+pub use media_swarm_tracker::{MediaSwarmPeer, MediaSwarmTracker};
+
 mod notifications;
 use notifications::{system_notification_server_message, user_notification_server_message};
 
@@ -189,6 +190,9 @@ pub struct StreamMessageHandler {
     rate_limit_config: Arc<RateLimitConfig>,
     content_filter: Arc<ContentFilter>,
     public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
+    swarm_signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
+    media_swarm_tracker: Arc<MediaSwarmTracker>,
+    runtime_settings_store: Option<Arc<synctv_core::service::RuntimeSettingsStore>>,
     sender: Arc<dyn MessageSender>,
     playback_service: Arc<dyn PlaybackService>,
     playlist_items_snapshot_service: Arc<dyn PlaylistItemsSnapshotService>,
@@ -199,7 +203,10 @@ pub struct StreamMessageHandler {
     ws_message_rate_limit: u32,
     /// Tracks whether this connection has an active WebRTC session.
     /// Used by `cleanup()` to decrement `WEBRTC_PEERS_ACTIVE` on ungraceful disconnect.
-    has_webrtc_session: Arc<std::sync::atomic::AtomicBool>,
+    has_voice_rtc_session: Arc<std::sync::atomic::AtomicBool>,
+    /// Media swarms announced by this connection.
+    active_media_swarms: Arc<parking_lot::Mutex<BTreeSet<String>>>,
+    room_capability_transition_lock: Arc<tokio::sync::Mutex<()>>,
     /// When true, `cleanup()` skips broadcasting `UserLeft`.
     ///
     /// Used when:
@@ -228,10 +235,6 @@ pub struct StreamMessageHandler {
     /// Instance-level concurrency configuration for backpressure control.
     /// This replaces the global `MESSAGE_PROCESSING_SEMAPHORE` with per-AppState configuration.
     concurrency_config: Arc<MessageConcurrencyConfig>,
-    /// Throttle state for playback progress DB writes.
-    /// Stores the (last_written_position, last_write_time) to avoid
-    /// writing to the DB on every progress heartbeat.
-    last_progress_write: Arc<tokio::sync::Mutex<Option<(f64, tokio::time::Instant)>>>,
     heartbeat_schedule: HeartbeatSchedule,
     filter_private_ice_candidates: bool,
 }
@@ -266,6 +269,9 @@ pub struct StreamMessageHandlerRuntime {
     pub ws_message_rate_limit: u32,
     pub heartbeat_schedule: HeartbeatSchedule,
     pub filter_private_ice_candidates: bool,
+    pub swarm_signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
+    pub media_swarm_tracker: Arc<MediaSwarmTracker>,
+    pub runtime_settings_store: Option<Arc<synctv_core::service::RuntimeSettingsStore>>,
 }
 
 impl StreamMessageHandlerRuntime {
@@ -292,7 +298,15 @@ impl StreamMessageHandlerRuntime {
             notification_service: None,
             ws_message_rate_limit: 50,
             heartbeat_schedule: HeartbeatSchedule::production(),
-            filter_private_ice_candidates: true,
+            filter_private_ice_candidates: false,
+            swarm_signing_key: Arc::new(
+                crate::proxy_signature::ProxySigningKey::try_derive_from(
+                    b"test-swarm-signing-key-with-at-least-32-bytes",
+                )
+                .expect("test swarm signing key"),
+            ),
+            media_swarm_tracker: Arc::new(MediaSwarmTracker::new(None, "test:")),
+            runtime_settings_store: None,
         }
     }
 }
@@ -318,6 +332,9 @@ impl Clone for StreamMessageHandler {
             rate_limit_config: Arc::clone(&self.rate_limit_config),
             content_filter: Arc::clone(&self.content_filter),
             public_id_codec: Arc::clone(&self.public_id_codec),
+            swarm_signing_key: Arc::clone(&self.swarm_signing_key),
+            media_swarm_tracker: Arc::clone(&self.media_swarm_tracker),
+            runtime_settings_store: self.runtime_settings_store.clone(),
             sender: Arc::clone(&self.sender),
             playback_service: self.playback_service.clone(),
             playlist_items_snapshot_service: self.playlist_items_snapshot_service.clone(),
@@ -325,14 +342,15 @@ impl Clone for StreamMessageHandler {
             room_settings_snapshot_service: Arc::clone(&self.room_settings_snapshot_service),
             resource_observer: Arc::clone(&self.resource_observer),
             ws_message_rate_limit: self.ws_message_rate_limit,
-            has_webrtc_session: Arc::clone(&self.has_webrtc_session),
+            has_voice_rtc_session: Arc::clone(&self.has_voice_rtc_session),
+            active_media_swarms: Arc::clone(&self.active_media_swarms),
+            room_capability_transition_lock: Arc::clone(&self.room_capability_transition_lock),
             skip_cleanup_user_left: Arc::clone(&self.skip_cleanup_user_left),
             current_room_role: Arc::clone(&self.current_room_role),
             membership_cache: Arc::clone(&self.membership_cache),
             pending_room_event_rx: Arc::clone(&self.pending_room_event_rx),
             pending_initial_join_state: Arc::clone(&self.pending_initial_join_state),
             concurrency_config: Arc::clone(&self.concurrency_config),
-            last_progress_write: Arc::clone(&self.last_progress_write),
             heartbeat_schedule: self.heartbeat_schedule,
             filter_private_ice_candidates: self.filter_private_ice_candidates,
         }
@@ -366,6 +384,13 @@ impl StreamMessageHandler {
         match message.message.as_ref() {
             Some(Message::PlaybackStateUpdate(update)) => update.client_operation_id.as_deref(),
             Some(Message::PlaybackUpdate(update)) => update.client_operation_id.as_deref(),
+            Some(Message::Webrtc(command)) => command.command.as_ref().and_then(|command| {
+                if let synctv_proto::client::web_rtc_command::Command::VoiceJoin(join) = command {
+                    join.client_operation_id.as_deref()
+                } else {
+                    None
+                }
+            }),
             _ => None,
         }
     }
@@ -450,6 +475,9 @@ impl StreamMessageHandler {
             rate_limit_config,
             content_filter,
             public_id_codec,
+            swarm_signing_key: runtime.swarm_signing_key,
+            media_swarm_tracker: runtime.media_swarm_tracker,
+            runtime_settings_store: runtime.runtime_settings_store,
             sender,
             playback_service: runtime.playback_service,
             playlist_items_snapshot_service: runtime.playlist_items_snapshot_service,
@@ -457,7 +485,9 @@ impl StreamMessageHandler {
             room_settings_snapshot_service,
             resource_observer,
             ws_message_rate_limit: runtime.ws_message_rate_limit,
-            has_webrtc_session: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            has_voice_rtc_session: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            active_media_swarms: Arc::new(parking_lot::Mutex::new(BTreeSet::new())),
+            room_capability_transition_lock: Arc::new(tokio::sync::Mutex::new(())),
             skip_cleanup_user_left: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             current_room_role: Arc::new(std::sync::atomic::AtomicI32::new(
                 synctv_proto::common::RoomMemberRole::Member as i32,
@@ -466,7 +496,6 @@ impl StreamMessageHandler {
             pending_room_event_rx: Arc::new(tokio::sync::Mutex::new(None)),
             pending_initial_join_state: Arc::new(tokio::sync::Mutex::new(None)),
             concurrency_config,
-            last_progress_write: Arc::new(tokio::sync::Mutex::new(None)),
             heartbeat_schedule,
             filter_private_ice_candidates: runtime.filter_private_ice_candidates,
         }
@@ -505,13 +534,14 @@ impl StreamMessageHandler {
         use synctv_proto::client::server_message::Message;
         use synctv_proto::client::web_rtc_event::Event;
         use synctv_proto::client::{
-            ResourceEvent, ServerMessage, WebRtcAnswer, WebRtcEvent, WebRtcIceCandidate,
-            WebRtcJoin, WebRtcLeave, WebRtcOffer,
+            ResourceEvent, ServerMessage, WebRtcEvent, WebRtcMediaAnswer, WebRtcMediaIceCandidate,
+            WebRtcMediaOffer, WebRtcMediaPeerLeft, WebRtcVoiceAnswer, WebRtcVoiceIceCandidate,
+            WebRtcVoiceOffer, WebRtcVoicePeerJoined, WebRtcVoicePeerLeft,
         };
         use synctv_realtime::sync::WebRTCSignalKind;
 
         let payload = match event {
-            RealtimeEvent::WebRTCSignaling {
+            RealtimeEvent::WebRTCVoiceSignaling {
                 message_type,
                 from,
                 to,
@@ -525,45 +555,97 @@ impl StreamMessageHandler {
                     return Ok(None);
                 }
                 match message_type {
-                    WebRTCSignalKind::Offer => Event::Offer(WebRtcOffer {
+                    WebRTCSignalKind::Offer => Event::VoiceOffer(WebRtcVoiceOffer {
                         from: from.clone(),
-                        to: to.clone(),
                         data: data.clone(),
                     }),
-                    WebRTCSignalKind::Answer => Event::Answer(WebRtcAnswer {
+                    WebRTCSignalKind::Answer => Event::VoiceAnswer(WebRtcVoiceAnswer {
                         from: from.clone(),
-                        to: to.clone(),
                         data: data.clone(),
                     }),
-                    WebRTCSignalKind::IceCandidate => Event::IceCandidate(WebRtcIceCandidate {
-                        from: from.clone(),
-                        to: to.clone(),
-                        data: data.clone(),
-                    }),
+                    WebRTCSignalKind::IceCandidate => {
+                        Event::VoiceIceCandidate(WebRtcVoiceIceCandidate {
+                            from: from.clone(),
+                            data: data.clone(),
+                        })
+                    }
                 }
             }
-            RealtimeEvent::WebRTCJoin {
+            RealtimeEvent::WebRTCMediaSignaling {
+                message_type,
+                from,
+                to,
+                data,
+                swarm_id,
+                ..
+            } => {
+                let Some((actor_id, conn_id)) = to.rsplit_once(':') else {
+                    return Ok(None);
+                };
+                if conn_id != self.connection_id.as_str() || actor_id != self.public_actor_id()? {
+                    return Ok(None);
+                }
+                match message_type {
+                    WebRTCSignalKind::Offer => Event::MediaOffer(WebRtcMediaOffer {
+                        from: from.clone(),
+                        data: data.clone(),
+                        swarm_id: swarm_id.clone(),
+                    }),
+                    WebRTCSignalKind::Answer => Event::MediaAnswer(WebRtcMediaAnswer {
+                        from: from.clone(),
+                        data: data.clone(),
+                        swarm_id: swarm_id.clone(),
+                    }),
+                    WebRTCSignalKind::IceCandidate => {
+                        Event::MediaIceCandidate(WebRtcMediaIceCandidate {
+                            from: from.clone(),
+                            data: data.clone(),
+                            swarm_id: swarm_id.clone(),
+                        })
+                    }
+                }
+            }
+            RealtimeEvent::WebRTCVoicePeerJoined {
                 actor_id,
                 conn_id,
                 username,
                 ..
             } => {
-                if conn_id == self.connection_id.as_str() || !self.current_connection_rtc_joined() {
+                if conn_id == self.connection_id.as_str() || !self.current_connection_voice_joined()
+                {
                     return Ok(None);
                 }
-                Event::Join(WebRtcJoin {
+                Event::VoicePeerJoined(WebRtcVoicePeerJoined {
                     user_id: actor_id.clone(),
                     conn_id: conn_id.clone(),
                     username: username.clone(),
                 })
             }
-            RealtimeEvent::WebRTCLeave {
+            RealtimeEvent::WebRTCVoicePeerLeft {
                 actor_id, conn_id, ..
             } => {
-                if conn_id == self.connection_id.as_str() || !self.current_connection_rtc_joined() {
+                if conn_id == self.connection_id.as_str() || !self.current_connection_voice_joined()
+                {
                     return Ok(None);
                 }
-                Event::Leave(WebRtcLeave {
+                Event::VoicePeerLeft(WebRtcVoicePeerLeft {
+                    user_id: actor_id.clone(),
+                    conn_id: conn_id.clone(),
+                })
+            }
+            RealtimeEvent::MediaSwarmPeerLeft {
+                actor_id,
+                conn_id,
+                swarm_id,
+                ..
+            } => {
+                if conn_id == self.connection_id.as_str()
+                    || !self.active_media_swarms.lock().contains(swarm_id)
+                {
+                    return Ok(None);
+                }
+                Event::MediaPeerLeft(WebRtcMediaPeerLeft {
+                    swarm_id: swarm_id.clone(),
                     user_id: actor_id.clone(),
                     conn_id: conn_id.clone(),
                 })
@@ -582,10 +664,10 @@ impl StreamMessageHandler {
         }))
     }
 
-    fn current_connection_rtc_joined(&self) -> bool {
+    fn current_connection_voice_joined(&self) -> bool {
         self.connection_service
             .get_connection(self.connection_id.as_str())
-            .is_some_and(|connection| connection.rtc_joined)
+            .is_some_and(|connection| connection.voice_rtc_joined)
     }
 
     fn apply_connection_state_from_room_event(&self, event: &RealtimeEvent) {
@@ -638,7 +720,8 @@ impl StreamMessageHandler {
         match resource {
             synctv_proto::client::observe_resource::Resource::PlaybackState(_)
             | synctv_proto::client::observe_resource::Resource::RoomSettings(_)
-            | synctv_proto::client::observe_resource::Resource::OnlineCount(_) => {
+            | synctv_proto::client::observe_resource::Resource::OnlineCount(_)
+            | synctv_proto::client::observe_resource::Resource::SelfRoomMember(_) => {
                 if self.principal.is_guest() {
                     self.ensure_guest_admission_for_action().await?;
                 }
@@ -667,12 +750,6 @@ impl StreamMessageHandler {
                 self.check_realtime_permission(RoomPermission::VIEW_MEMBERS)
                     .await
                     .map_err(|e| e.to_string())
-            }
-            synctv_proto::client::observe_resource::Resource::SelfRoomMember(_) => {
-                if self.principal.is_guest() {
-                    return Err("Guests do not have a room member permission snapshot".to_string());
-                }
-                Ok(())
             }
             synctv_proto::client::observe_resource::Resource::ChatEvents(_)
             | synctv_proto::client::observe_resource::Resource::ChatPinEvents(_) => {
@@ -1112,6 +1189,7 @@ impl StreamMessageHandler {
                 event = event_rx.recv() => {
                     if let Some(event) = event {
                         self.apply_connection_state_from_room_event(&event);
+                        self.apply_rtc_access_change(&event).await;
                         match self.webrtc_event_server_message_for_current_connection(&event) {
                             Ok(Some(message)) => {
                                 if let Err(error) = stream.send(message) {
@@ -1735,56 +1813,63 @@ impl StreamMessageHandler {
     /// Cleanup on disconnect
     async fn cleanup(&self, room_id: &str) {
         self.resource_observer.clear_observations().await;
+        self.leave_all_media_swarms().await;
 
         // If this connection had an active WebRTC session, decrement the metric
-        // and broadcast WebRtcLeave so other peers can clean up.
-        // Use Acquire ordering to synchronize with the Release store in handle_webrtc_join/leave.
+        // and broadcast WebRTCVoicePeerLeft so other peers can clean up.
+        // Use Acquire ordering to synchronize with the Release store in handle_webrtc_voice_join/leave_webrtc_voice_session.
         // IMPORTANT: We must check if the connection is STILL marked as RTC-joined
         // in the connection manager before decrementing the metric. This prevents
         // a race condition where:
-        // 1. Cleanup task times out the WebRTC session (mark_rtc_joined(false))
+        // 1. Cleanup task times out the WebRTC session (mark_voice_rtc_joined(false))
         // 2. Connection ungracefully disconnects
-        // 3. cleanup() sees has_webrtc_session=true and decrements the metric again
+        // 3. cleanup() sees has_voice_rtc_session=true and decrements the metric again
         // Result: Metric underflow (negative value)
         // By checking the connection manager's state, we ensure idempotency:
         // - If the cleanup task already timed out the session, the connection
-        //   manager will have rtc_joined=false, and we skip the decrement
+        //   manager will have voice_rtc_joined=false, and we skip the decrement
         // - If the user explicitly left WebRTC, the flag is already false, and we skip
         // - Only if the connection truly had an active session do we decrement
         if self
-            .has_webrtc_session
+            .has_voice_rtc_session
             .swap(false, std::sync::atomic::Ordering::Acquire)
         {
-            // Check if the connection is still marked as RTC-joined in the connection manager
-            // This prevents double-decrement if the cleanup task already timed out the session
-            let is_still_rtc_joined = self
+            let should_publish_leave = match self
                 .connection_service
-                .get_connection(self.connection_id.as_str())
-                .is_some_and(|conn| conn.rtc_joined);
+                .leave_voice_rtc(&self.room_id, &self.user_id, self.connection_id.as_str())
+                .await
+            {
+                Ok(left) => left,
+                Err(error) => {
+                    // unregister() will retry Redis slot cleanup while the local joined flag
+                    // remains set after a distributed metadata synchronization failure.
+                    tracing::warn!(
+                        room_id = %self.room_id,
+                        user_id = %self.user_id,
+                        connection_id = %self.connection_id,
+                        error = %error,
+                        "Voice chat leave cleanup failed; unregister will continue cleanup"
+                    );
+                    self.connection_service
+                        .get_connection(self.connection_id.as_str())
+                        .is_some_and(|connection| connection.voice_rtc_joined)
+                }
+            };
 
-            if is_still_rtc_joined {
-                // Only decrement the metric if the connection was still RTC-joined
+            if should_publish_leave {
                 synctv_core::metrics::application::WEBRTC_PEERS_ACTIVE.dec();
 
-                // Mark the connection as no longer RTC-joined in the connection manager
-                self.connection_service.mark_rtc_joined(
-                    &self.room_id,
-                    &self.user_id,
-                    self.connection_id.as_str(),
-                    false,
-                );
-
-                // Broadcast WebRtcLeave so other peers know this user dropped
+                // Broadcast WebRTCVoicePeerLeft so other peers know this user dropped
                 match self.public_actor_id() {
                     Ok(actor_id) => {
-                        let leave_event = RealtimeEvent::WebRTCLeave {
-                            event_id: synctv_common::snanoid!(16),
-                            room_id: self.room_id,
-                            actor_id,
-                            conn_id: self.connection_id.as_str().to_string(),
-                            timestamp: self.clock.now(),
-                        };
-                        self.event_service.broadcast(leave_event);
+                        self.event_service
+                            .broadcast(RealtimeEvent::WebRTCVoicePeerLeft {
+                                event_id: synctv_common::snanoid!(16),
+                                room_id: self.room_id,
+                                actor_id,
+                                conn_id: self.connection_id.as_str().to_string(),
+                                timestamp: self.clock.now(),
+                            });
                     }
                     Err(error) => {
                         tracing::error!(
@@ -2030,6 +2115,7 @@ impl StreamMessageHandler {
                         match event {
                             Some(event) => {
                                 event_handler.apply_connection_state_from_room_event(&event);
+                                event_handler.apply_rtc_access_change(&event).await;
                                 let is_room_shutdown = matches!(
                                     event.as_ref(),
                                     RealtimeEvent::RoomDeleted { .. }
@@ -2618,12 +2704,20 @@ impl StreamMessageHandler {
             .get_state(&self.room_id)
             .await
             .map_err(|error| format!("Failed to load playback state for chat metadata: {error}"))?;
+        let playback_metadata = self
+            .room_service
+            .playback_service()
+            .chat_playback_metadata_for_state(&playback_state, playback_state.computed_position())
+            .await
+            .map_err(|error| {
+                format!("Failed to load playback source metadata for chat: {error}")
+            })?;
         let metadata = chat_metadata_for_send(
             chat_metadata_from_proto(chat_msg.metadata.as_ref())
                 .map_err(|error| error.to_string())?,
             &chat_msg.display_position,
             &chat_msg.display_color,
-            Some(&playback_state),
+            playback_metadata,
         )?;
         let outcome = self
             .chat_service

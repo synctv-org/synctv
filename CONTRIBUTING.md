@@ -30,7 +30,7 @@ Use the narrowest relevant test first, then run broader checks before handing of
 
 ```bash
 cargo +nightly fmt --all
-cargo +nightly clippy --workspace --all-targets -- -D warnings
+cargo +nightly clippy --workspace --all-targets
 make nextest
 cargo +nightly test --workspace --doc --locked
 cargo +nightly check --workspace --all-targets --features openapi

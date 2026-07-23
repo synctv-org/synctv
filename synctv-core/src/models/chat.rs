@@ -304,6 +304,22 @@ pub struct ChatPlaybackMetadata {
 }
 
 impl ChatPlaybackMetadata {
+    #[must_use]
+    pub fn position_for_source(
+        position_seconds: f64,
+        is_live: Option<bool>,
+        duration_seconds: Option<f64>,
+    ) -> Option<f64> {
+        if is_live == Some(true) || !position_seconds.is_finite() {
+            return None;
+        }
+
+        let position_seconds = position_seconds.max(0.0);
+        let duration_seconds =
+            duration_seconds.filter(|duration| duration.is_finite() && *duration > 0.0);
+        Some(duration_seconds.map_or(position_seconds, |duration| position_seconds.min(duration)))
+    }
+
     pub fn normalize_target_hash(&mut self) -> crate::Result<()> {
         self.target_hash = self
             .target
@@ -909,6 +925,38 @@ mod tests {
                 crate::models::try_hash_playback_target(Some(&target))
                     .expect("target hash should compute")
             )
+        );
+    }
+
+    #[test]
+    fn chat_playback_position_is_clamped_to_known_duration() {
+        assert_eq!(
+            ChatPlaybackMetadata::position_for_source(130.0, Some(false), Some(120.0)),
+            Some(120.0)
+        );
+        assert_eq!(
+            ChatPlaybackMetadata::position_for_source(100.0, Some(false), Some(120.0)),
+            Some(100.0)
+        );
+    }
+
+    #[test]
+    fn chat_playback_position_uses_clock_when_duration_is_unknown() {
+        assert_eq!(
+            ChatPlaybackMetadata::position_for_source(130.0, Some(false), None),
+            Some(130.0)
+        );
+        assert_eq!(
+            ChatPlaybackMetadata::position_for_source(130.0, None, Some(f64::NAN)),
+            Some(130.0)
+        );
+    }
+
+    #[test]
+    fn chat_playback_position_is_absent_for_live_sources() {
+        assert_eq!(
+            ChatPlaybackMetadata::position_for_source(130.0, Some(true), Some(120.0)),
+            None
         );
     }
 }

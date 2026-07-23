@@ -591,7 +591,7 @@ async fn test_critical_event_classification() {
     }
     .is_critical());
 
-    assert!(!RealtimeEvent::WebRTCJoin {
+    assert!(!RealtimeEvent::WebRTCVoicePeerJoined {
         event_id: synctv_common::snanoid!(16),
         room_id: rid("r1"),
         actor_id: "usr_u1".to_string(),

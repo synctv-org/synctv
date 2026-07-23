@@ -56,7 +56,7 @@ impl MediaService {
             .check_permission(
                 &room_id,
                 &user_id,
-                crate::models::RoomPermission::VIEW_MEDIA,
+                crate::models::RoomPermission::BROWSE_LIBRARY,
             )
             .await?;
         if source_config.provider() != source_provider {
@@ -227,7 +227,7 @@ impl MediaService {
             .check_permission(
                 &room_id,
                 &user_id,
-                crate::models::RoomPermission::VIEW_MEDIA,
+                crate::models::RoomPermission::BROWSE_LIBRARY,
             )
             .await?;
 

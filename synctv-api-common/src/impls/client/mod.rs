@@ -260,6 +260,7 @@ pub struct ClientApiImpl {
     pub chat_event_dispatcher: Arc<dyn ChatEventDispatcher>,
     /// Redis runtime abstraction derived from the shared connection when available.
     pub redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+    pub media_swarm_tracker: Arc<crate::impls::messaging::MediaSwarmTracker>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478"), set only when the
     /// built-in STUN server started successfully with a valid external address.
     /// When `None`, the built-in STUN entry is omitted from ICE server lists.
@@ -1119,6 +1120,10 @@ impl ClientApiImpl {
             realtime_event_service.clone(),
         );
         let chat_event_dispatcher = runtime.chat_event_dispatcher;
+        let media_swarm_tracker = Arc::new(crate::impls::messaging::MediaSwarmTracker::new(
+            runtime.redis_runtime.clone(),
+            options.runtime_settings.redis.key_prefix.clone(),
+        ));
         Self {
             clock: runtime.clock,
             user_service: options.user_service,
@@ -1145,6 +1150,7 @@ impl ClientApiImpl {
             realtime_event_service,
             chat_event_dispatcher,
             redis_runtime: runtime.redis_runtime,
+            media_swarm_tracker,
             builtin_stun_url: runtime.builtin_stun_url,
             webrtc_status: runtime.webrtc_status,
             provider_access_service: runtime.provider_access_service,

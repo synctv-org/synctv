@@ -8307,6 +8307,7 @@ dependencies = [
  "percent-encoding",
  "prost",
  "protoc-bin-vendored",
+ "quick-xml",
  "rand 0.10.2",
  "rayon",
  "reqwest",

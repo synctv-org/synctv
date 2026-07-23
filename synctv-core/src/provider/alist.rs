@@ -39,6 +39,16 @@ const SHUFFLE_MAX_ITEMS: usize = 200;
 const RELATED_SUBTITLE_FETCH_LIMIT: usize = 32;
 const ALIST_PASSWORD_HASH_SALT: &str = "https://github.com/alist-org/alist";
 
+#[derive(Debug, Clone, Copy)]
+pub struct AlistHlsResourceRequest<'a> {
+    pub version: &'a str,
+    pub mode_name: &'a str,
+    pub media_index: usize,
+    pub target_url: &'a str,
+    pub is_manifest: bool,
+    pub range_header: Option<&'a str>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AlistFileInfo {
     pub name: String,
@@ -482,7 +492,6 @@ fn mark_alist_playback_resources(result: &mut PlaybackResult, version: &str, exp
         }
 
         let mut proxy_info = original_info.clone();
-        let proxy_is_hls = super::playback_info_is_hls(&mode_name, &original_info);
         proxy_info.medias = original_info
             .medias
             .iter()
@@ -493,25 +502,27 @@ fn mark_alist_playback_resources(result: &mut PlaybackResult, version: &str, exp
                     media.name.clone(),
                     media.format.clone(),
                     media.expire_at.map(|dt| dt.timestamp()),
-                    PlaybackMediaProvider::Alist(if proxy_is_hls {
-                        PlaybackAlistMedia::ProxyTranscodedHlsManifest {
-                            version: version.to_string(),
-                            expires_at,
-                            mode_name: mode_name.clone(),
-                            url_index,
-                            url,
-                            headers: media.upstream_headers(),
-                        }
-                    } else {
-                        PlaybackAlistMedia::ProxyFile {
-                            version: version.to_string(),
-                            expires_at,
-                            mode_name: mode_name.clone(),
-                            url_index,
-                            url,
-                            headers: media.upstream_headers(),
-                        }
-                    }),
+                    PlaybackMediaProvider::Alist(
+                        if super::playback_media_is_hls(&mode_name, media) {
+                            PlaybackAlistMedia::ProxyTranscodedHlsManifest {
+                                version: version.to_string(),
+                                expires_at,
+                                mode_name: mode_name.clone(),
+                                url_index,
+                                url,
+                                headers: media.upstream_headers(),
+                            }
+                        } else {
+                            PlaybackAlistMedia::ProxyFile {
+                                version: version.to_string(),
+                                expires_at,
+                                mode_name: mode_name.clone(),
+                                url_index,
+                                url,
+                                headers: media.upstream_headers(),
+                            }
+                        },
+                    ),
                 ))
             })
             .collect();
@@ -1734,30 +1745,30 @@ impl AlistProvider {
                     // AliyunDrive live transcoding URLs are requested from AList/OpenList
                     // with url_expire_sec=14400.
                     let task_expires_at = Some(crate::SystemClock.now().timestamp() + 4 * 60 * 60);
-                    playback_infos.insert(
-                        mode_name.clone(),
-                        PlaybackInfo {
+                    let info = playback_infos
+                        .entry("transcoded".to_string())
+                        .or_insert_with(|| PlaybackInfo {
                             thumbnail: thumbnail.clone(),
-                            medias: vec![playback_media(
-                                quality_name.clone(),
-                                "hls".to_string(),
-                                task_expires_at,
-                                PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct {
-                                    url: task.url.clone(),
-                                    headers: headers.clone(),
-                                }),
-                            )],
+                            medias: Vec::new(),
                             default_media_index: None,
                             subtitles: combined_subtitles.clone(),
                             default_subtitle_index: None,
                             danmakus: Vec::new(),
                             default_danmaku_index: None,
-                        },
-                    );
+                        });
+                    info.medias.push(playback_media(
+                        quality_name.clone(),
+                        "hls".to_string(),
+                        task_expires_at,
+                        PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct {
+                            url: task.url.clone(),
+                            headers: headers.clone(),
+                        }),
+                    ));
                     metadata
                         .transcoding_tasks
                         .push(AlistTranscodingTaskMetadata {
-                            mode_name,
+                            mode_name: "transcoded".to_string(),
                             template_id: task.template_id.clone(),
                             template_name: task.template_name.clone(),
                             template_width: task.template_width,
@@ -1814,9 +1825,19 @@ impl AlistProvider {
 
         // Determine default mode
         let has_direct = playback_infos.contains_key("direct");
-        let default_mode =
+        let selected_mode =
             Self::choose_default_mode(&transcoded_modes, has_direct, playback_client_profile)
                 .unwrap_or_else(|| "direct".to_string());
+        let default_mode = if selected_mode.starts_with("transcoded_") {
+            if let Some(info) = playback_infos.get_mut("transcoded") {
+                info.default_media_index = transcoded_modes
+                    .iter()
+                    .position(|(mode, _)| mode == &selected_mode);
+            }
+            "transcoded".to_string()
+        } else {
+            selected_mode
+        };
 
         PlaybackResult {
             playback_infos,
@@ -2101,14 +2122,11 @@ impl AlistProvider {
     ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
         let versioned =
             super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        let playback_info = versioned
+        let media = versioned
             .result
             .playback_infos
             .get(mode_name)
-            .ok_or(ProviderError::NotFound)?;
-        let media = playback_info
-            .medias
-            .get(url_index)
+            .and_then(|info| info.medias.get(url_index))
             .ok_or(ProviderError::NotFound)?;
         let url = media.upstream_url().ok_or(ProviderError::NotFound)?;
         Ok(
@@ -2119,27 +2137,37 @@ impl AlistProvider {
         )
     }
 
-    pub async fn get_transcoded_hls_segment(
+    pub async fn get_transcoded_hls_resource(
         &self,
         store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
-        version: &str,
-        target_url: String,
+        request: AlistHlsResourceRequest<'_>,
         request_context: Option<&super::ExecutionControl>,
-        range_header: Option<&str>,
     ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
         let versioned =
-            super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        let headers = versioned
+            super::playback_transport::lookup_versioned(store, request.version, request_context)
+                .await?;
+        let media = versioned
             .result
             .playback_infos
-            .get(&versioned.result.default_mode)
-            .and_then(|info| info.medias.first())
-            .map_or_else(HashMap::new, PlaybackMedia::upstream_headers);
-        super::playback_transport::transport_action_for_target_url(
-            target_url,
-            headers,
-            range_header,
-        )
+            .get(request.mode_name)
+            .and_then(|info| info.medias.get(request.media_index))
+            .ok_or(ProviderError::NotFound)?;
+        if request.is_manifest {
+            Ok(
+                super::playback_transport::PlaybackTransportAction::M3u8Rewrite {
+                    url: request.target_url.to_string(),
+                    headers: media.upstream_headers(),
+                },
+            )
+        } else {
+            Ok(
+                super::playback_transport::PlaybackTransportAction::FetchAndForward {
+                    url: request.target_url.to_string(),
+                    headers: media.upstream_headers(),
+                    range_header: request.range_header.map(ToString::to_string),
+                },
+            )
+        }
     }
 
     pub async fn get_subtitle(

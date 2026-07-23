@@ -108,6 +108,8 @@ macro_rules! room_setting {
 }
 
 room_setting!(ChatEnabled, bool, "chatEnabled", true);
+room_setting!(VoiceChatEnabled, bool, "voiceChatEnabled", true);
+room_setting!(P2pMediaEnabled, bool, "p2pMediaEnabled", true);
 room_setting!(AllowGuestJoin, bool, "allowGuestJoin", false);
 room_setting!(RequireApproval, bool, "requireApproval", false);
 room_setting!(AllowAutoJoin, bool, "allowAutoJoin", true);
@@ -249,6 +251,10 @@ pub struct RoomSettings {
     pub allow_auto_join: AllowAutoJoin,
     pub chat_enabled: ChatEnabled,
     #[serde(default)]
+    pub voice_chat_enabled: VoiceChatEnabled,
+    #[serde(default)]
+    pub p2p_media_enabled: P2pMediaEnabled,
+    #[serde(default)]
     pub auto_play: AutoPlay,
     #[serde(default)]
     pub admin_added_permissions: AdminAddedPermissions,
@@ -271,6 +277,8 @@ pub struct RoomSettingsPatch {
     pub require_approval: Option<RequireApproval>,
     pub allow_auto_join: Option<AllowAutoJoin>,
     pub chat_enabled: Option<ChatEnabled>,
+    pub voice_chat_enabled: Option<VoiceChatEnabled>,
+    pub p2p_media_enabled: Option<P2pMediaEnabled>,
     pub auto_play: Option<AutoPlay>,
     pub admin_added_permissions: Option<AdminAddedPermissions>,
     pub admin_removed_permissions: Option<AdminRemovedPermissions>,
@@ -289,6 +297,8 @@ impl RoomSettings {
         self.require_approval.validate_in_settings(self, ctx)?;
         self.allow_auto_join.validate_in_settings(self, ctx)?;
         self.chat_enabled.validate_in_settings(self, ctx)?;
+        self.voice_chat_enabled.validate_in_settings(self, ctx)?;
+        self.p2p_media_enabled.validate_in_settings(self, ctx)?;
         self.auto_play.validate_in_settings(self, ctx)?;
         self.admin_added_permissions
             .validate_in_settings(self, ctx)?;
@@ -331,6 +341,12 @@ impl RoomSettings {
         }
         if let Some(value) = patch.chat_enabled {
             self.chat_enabled = value;
+        }
+        if let Some(value) = patch.voice_chat_enabled {
+            self.voice_chat_enabled = value;
+        }
+        if let Some(value) = patch.p2p_media_enabled {
+            self.p2p_media_enabled = value;
         }
         if let Some(value) = patch.auto_play {
             self.auto_play = value;
@@ -460,6 +476,16 @@ mod tests {
     }
 
     #[test]
+    fn room_capabilities_default_to_enabled_when_fields_are_absent() {
+        let settings: RoomSettings = ok(
+            serde_json::from_str("{}"),
+            "room settings without capability fields should deserialize",
+        );
+        assert!(settings.voice_chat_enabled.0);
+        assert!(settings.p2p_media_enabled.0);
+    }
+
+    #[test]
     fn test_apply_typed_patch_validates_final_settings() {
         let mut settings = RoomSettings::default();
         let result = with_context(|ctx| {
@@ -507,7 +533,7 @@ mod tests {
         let settings = RoomSettings {
             // Give guests additional guest-level abilities.
             guest_added_permissions: GuestAddedPermissions(
-                RoomGuestPermissionBits::USE_WEBRTC | RoomGuestPermissionBits::VIEW_MEMBERS,
+                RoomGuestPermissionBits::USE_VOICE_CHAT | RoomGuestPermissionBits::VIEW_MEMBERS,
             ),
             // But remove one of them.
             guest_removed_permissions: GuestRemovedPermissions(
@@ -517,9 +543,9 @@ mod tests {
         };
         let global = RoomPermissionSet::default_guest();
         let result = settings.guest_permissions(global);
-        assert!(result.has(crate::models::RoomPermission::USE_WEBRTC));
+        assert!(result.has(crate::models::RoomPermission::USE_VOICE_CHAT));
         assert!(!result.has(crate::models::RoomPermission::VIEW_MEMBERS));
-        assert!(!result.has(crate::models::RoomPermission::VIEW_MEDIA));
+        assert!(!result.has(crate::models::RoomPermission::BROWSE_LIBRARY));
     }
 
     #[test]

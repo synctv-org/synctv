@@ -3,21 +3,22 @@ use synctv_core::provider::ExecutionControl;
 use synctv_core::service::{BilibiliLiveDanmakuRequest, BilibiliPlaybackProviderService};
 use synctv_proto::playback_provider::bilibili::{
     BilibiliDanmakuFileResponse, BilibiliDashManifestMode, BilibiliDashManifestResponse,
-    BilibiliDashSegmentResponse, BilibiliHlsManifestResponse, BilibiliHlsSegmentResponse,
-    BilibiliLiveDanmakuEvent, BilibiliLiveDanmakuEventType, BilibiliMediaStreamResponse,
-    BilibiliSubtitleResponse, GetBilibiliDanmakuFileRequest, GetBilibiliDashManifestRequest,
-    GetBilibiliDashSegmentRequest, GetBilibiliHlsManifestRequest, GetBilibiliHlsSegmentRequest,
-    GetBilibiliMediaStreamRequest, GetBilibiliSubtitleRequest, WatchBilibiliLiveDanmakuRequest,
+    BilibiliDashResourceKind, BilibiliDashResourceResponse, BilibiliHlsManifestResponse,
+    BilibiliHlsResourceKind, BilibiliHlsResourceResponse, BilibiliLiveDanmakuEvent,
+    BilibiliLiveDanmakuEventType, BilibiliMediaStreamResponse, BilibiliSubtitleResponse,
+    GetBilibiliDanmakuFileRequest, GetBilibiliDashManifestRequest, GetBilibiliDashResourceRequest,
+    GetBilibiliHlsManifestRequest, GetBilibiliHlsResourceRequest, GetBilibiliMediaStreamRequest,
+    GetBilibiliSubtitleRequest, WatchBilibiliLiveDanmakuRequest,
 };
 
 use super::common::{
-    playback_provider_route_base, playback_transport_action_to_chunk_stream,
-    verify_playback_provider_access_with_deps, HasPlaybackProviderAccessFields, HlsRewriteSigning,
+    dash_transport_action_to_chunk_stream, playback_provider_route_base,
+    playback_transport_action_to_chunk_stream, verify_playback_provider_access_with_deps,
+    DashRewriteSigning, HasPlaybackProviderAccessFields, HlsRewriteSigning,
     PlaybackProviderAccessRequest, PlaybackProviderApiRuntime, PlaybackProviderIdentityRuntime,
     PlaybackTransportExecutorDeps,
 };
 use crate::impls::ApiError;
-use crate::proxy_signature::ProxySigningKeyQueryExt;
 
 const PROVIDER: &str = synctv_core::provider::BilibiliProvider::NAME;
 
@@ -40,16 +41,18 @@ pub type BilibiliMediaStreamResponseStream = std::pin::Pin<
 pub type BilibiliHlsManifestResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<BilibiliHlsManifestResponse, ApiError>> + Send + 'static>,
 >;
-pub type BilibiliHlsSegmentResponseStream = std::pin::Pin<
-    Box<dyn futures::Stream<Item = Result<BilibiliHlsSegmentResponse, ApiError>> + Send + 'static>,
+pub type BilibiliHlsResourceResponseStream = std::pin::Pin<
+    Box<dyn futures::Stream<Item = Result<BilibiliHlsResourceResponse, ApiError>> + Send + 'static>,
 >;
 pub type BilibiliDashManifestResponseStream = std::pin::Pin<
     Box<
         dyn futures::Stream<Item = Result<BilibiliDashManifestResponse, ApiError>> + Send + 'static,
     >,
 >;
-pub type BilibiliDashSegmentResponseStream = std::pin::Pin<
-    Box<dyn futures::Stream<Item = Result<BilibiliDashSegmentResponse, ApiError>> + Send + 'static>,
+pub type BilibiliDashResourceResponseStream = std::pin::Pin<
+    Box<
+        dyn futures::Stream<Item = Result<BilibiliDashResourceResponse, ApiError>> + Send + 'static,
+    >,
 >;
 pub type BilibiliSubtitleResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<BilibiliSubtitleResponse, ApiError>> + Send + 'static>,
@@ -127,9 +130,15 @@ pub async fn get_bilibili_hls_manifest(
         )
         .await
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base("bilibili", &req.version, "hls-segments");
+    let segment_base = format!(
+        "{}/{}/{}",
+        playback_provider_route_base("bilibili", &req.version, "hls-resources"),
+        urlencoding::encode(&req.mode_name),
+        req.url_index
+    );
+    let resource = format!("hls-resources/{}/{}/*", req.mode_name, req.url_index);
     let stream = playback_transport_action_to_chunk_stream(
-        deps.chunk_deps_with_hls(&segment_base, &claims, "hls-segments"),
+        deps.chunk_deps_with_hls(&segment_base, &claims, &resource),
         action,
         false,
     )
@@ -139,17 +148,22 @@ pub async fn get_bilibili_hls_manifest(
     })))
 }
 
-pub async fn get_bilibili_hls_segment(
+pub async fn get_bilibili_hls_resource(
     deps: BilibiliPlaybackProviderDeps<'_>,
-    req: GetBilibiliHlsSegmentRequest,
-) -> Result<BilibiliHlsSegmentResponseStream, ApiError> {
+    req: GetBilibiliHlsResourceRequest,
+) -> Result<BilibiliHlsResourceResponseStream, ApiError> {
     crate::impls::validate_proto_request(&req)?;
+    let kind = bilibili_hls_resource_kind(req.resource_kind)?;
+    let kind_name = bilibili_hls_resource_kind_name(kind);
     let head = req.head;
     let (store, claims) = verify_bilibili_access(
         &deps,
         PlaybackProviderAccessRequest {
             version: &req.version,
-            resource: "hls-segments".to_string(),
+            resource: format!(
+                "hls-resources/{}/{}/{kind_name}",
+                req.mode_name, req.media_index
+            ),
             signature: &req.sig,
             user_id: &req.uid,
             room_id: &req.rid,
@@ -160,24 +174,39 @@ pub async fn get_bilibili_hls_segment(
     .await?;
     let action = deps
         .playback_provider_service
-        .hls_segment_action(
-            &req.version,
-            &req.target_url,
-            req.range.as_deref(),
+        .hls_resource_action(
+            synctv_core::provider::BilibiliHlsResourceRequest {
+                version: &req.version,
+                mode_name: &req.mode_name,
+                media_index: req.media_index as usize,
+                target_url: &req.target_url,
+                is_manifest: kind == BilibiliHlsResourceKind::Manifest,
+                range_header: req.range.as_deref(),
+            },
             store,
             deps.request_control,
         )
         .await
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base("bilibili", &req.version, "hls-segments");
-    let stream = playback_transport_action_to_chunk_stream(
-        deps.chunk_deps_with_hls(&segment_base, &claims, "hls-segments"),
-        action,
-        head,
-    )
-    .await?;
+    let stream = if kind == BilibiliHlsResourceKind::Manifest {
+        let segment_base = format!(
+            "{}/{}/{}",
+            playback_provider_route_base("bilibili", &req.version, "hls-resources"),
+            urlencoding::encode(&req.mode_name),
+            req.media_index
+        );
+        let resource = format!("hls-resources/{}/{}/*", req.mode_name, req.media_index);
+        playback_transport_action_to_chunk_stream(
+            deps.chunk_deps_with_hls(&segment_base, &claims, &resource),
+            action,
+            head,
+        )
+        .await?
+    } else {
+        playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, head).await?
+    };
     Ok(Box::pin(stream.map(|chunk| {
-        chunk.map(|chunk| BilibiliHlsSegmentResponse { chunk: Some(chunk) })
+        chunk.map(|chunk| BilibiliHlsResourceResponse { chunk: Some(chunk) })
     })))
 }
 
@@ -201,26 +230,6 @@ pub async fn get_bilibili_dash_manifest(
         },
     )
     .await?;
-    let dash_segment_base = playback_provider_route_base("bilibili", &req.version, "dash-segments");
-    let mode_name = req.mode_name.clone();
-    let signing_key = deps.runtime.proxy_signing_key;
-    let mut proxy_url_for =
-        (mode == synctv_core::provider::BilibiliDashManifestMode::Proxy).then(|| {
-            Box::new(move |index: usize, _target_url: &str| {
-                let resource = format!("dash-segments/{mode_name}/{index}");
-                let mut segment_claims = claims.clone();
-                segment_claims.resource = resource;
-                segment_claims.target_url = None;
-                let signed_query = signing_key.build_signed_query(&segment_claims);
-                format!(
-                    "{}/{}/{}?{}",
-                    dash_segment_base,
-                    url::form_urlencoded::byte_serialize(mode_name.as_bytes()).collect::<String>(),
-                    index,
-                    signed_query
-                )
-            }) as Box<synctv_core::provider::BilibiliDashProxyUrlMapper<'_>>
-        });
     let action = deps
         .playback_provider_service
         .dash_manifest_action(
@@ -228,53 +237,130 @@ pub async fn get_bilibili_dash_manifest(
             &req.mode_name,
             mode,
             store,
-            proxy_url_for.as_mut().map(|mapper| mapper.as_mut()),
             deps.request_control,
         )
         .await
         .map_err(ApiError::from)?;
-    let stream =
-        playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, false).await?;
+    let stream = if mode == synctv_core::provider::BilibiliDashManifestMode::Proxy {
+        let resource_base = format!(
+            "{}/{}",
+            playback_provider_route_base("bilibili", &req.version, "dash-resources"),
+            urlencoding::encode(&req.mode_name)
+        );
+        let resource_prefix = format!("dash-resources/{}", req.mode_name);
+        dash_transport_action_to_chunk_stream(
+            deps.chunk_deps(),
+            action,
+            DashRewriteSigning {
+                resource_base: &resource_base,
+                resource_prefix: &resource_prefix,
+                claims: &claims,
+            },
+            false,
+        )
+        .await?
+    } else {
+        playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, false).await?
+    };
     Ok(Box::pin(stream.map(|chunk| {
         chunk.map(|chunk| BilibiliDashManifestResponse { chunk: Some(chunk) })
     })))
 }
 
-pub async fn get_bilibili_dash_segment(
+pub async fn get_bilibili_dash_resource(
     deps: BilibiliPlaybackProviderDeps<'_>,
-    req: GetBilibiliDashSegmentRequest,
-) -> Result<BilibiliDashSegmentResponseStream, ApiError> {
+    req: GetBilibiliDashResourceRequest,
+) -> Result<BilibiliDashResourceResponseStream, ApiError> {
     crate::impls::validate_proto_request(&req)?;
+    let kind = bilibili_dash_resource_kind(req.resource_kind)?;
+    let kind_name = bilibili_dash_resource_kind_name(kind);
     let head = req.head;
-    let (store, _) = verify_bilibili_access(
+    let (_, claims) = verify_bilibili_access(
         &deps,
         PlaybackProviderAccessRequest {
             version: &req.version,
-            resource: format!("dash-segments/{}/{}", req.mode_name, req.url_index),
+            resource: format!("dash-resources/{}/{kind_name}", req.mode_name),
             signature: &req.sig,
             user_id: &req.uid,
             room_id: &req.rid,
             expires_at: req.exp,
-            target_url: None,
+            target_url: Some(&req.scope_url),
         },
     )
     .await?;
+    let is_manifest = kind == BilibiliDashResourceKind::Manifest;
     let action = deps
         .playback_provider_service
-        .dash_segment_action(
-            &req.version,
-            &req.mode_name,
-            req.url_index as usize,
-            req.range.as_deref(),
-            store,
-            deps.request_control,
-        )
-        .await
+        .dash_resource_action(synctv_core::provider::BilibiliDashResourceRequest {
+            scope_url: &req.scope_url,
+            resource_path: &req.resource_path,
+            resource_query: req.resource_query.as_deref(),
+            is_manifest,
+            range_header: req.range.as_deref(),
+        })
         .map_err(ApiError::from)?;
-    let stream = playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, head).await?;
+    let stream = if is_manifest {
+        let resource_base = format!(
+            "{}/{}",
+            playback_provider_route_base("bilibili", &req.version, "dash-resources"),
+            urlencoding::encode(&req.mode_name)
+        );
+        let resource_prefix = format!("dash-resources/{}", req.mode_name);
+        dash_transport_action_to_chunk_stream(
+            deps.chunk_deps(),
+            action,
+            DashRewriteSigning {
+                resource_base: &resource_base,
+                resource_prefix: &resource_prefix,
+                claims: &claims,
+            },
+            head,
+        )
+        .await?
+    } else {
+        playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, head).await?
+    };
     Ok(Box::pin(stream.map(|chunk| {
-        chunk.map(|chunk| BilibiliDashSegmentResponse { chunk: Some(chunk) })
+        chunk.map(|chunk| BilibiliDashResourceResponse { chunk: Some(chunk) })
     })))
+}
+
+fn bilibili_hls_resource_kind(value: i32) -> Result<BilibiliHlsResourceKind, ApiError> {
+    let kind = BilibiliHlsResourceKind::try_from(value)
+        .map_err(|_| ApiError::InvalidInput("Invalid Bilibili HLS resource kind".to_string()))?;
+    match kind {
+        BilibiliHlsResourceKind::Media | BilibiliHlsResourceKind::Manifest => Ok(kind),
+        BilibiliHlsResourceKind::Unspecified => Err(ApiError::InvalidInput(
+            "Bilibili HLS resource kind is required".to_string(),
+        )),
+    }
+}
+
+const fn bilibili_hls_resource_kind_name(kind: BilibiliHlsResourceKind) -> &'static str {
+    match kind {
+        BilibiliHlsResourceKind::Media => "media",
+        BilibiliHlsResourceKind::Manifest => "manifest",
+        BilibiliHlsResourceKind::Unspecified => "unspecified",
+    }
+}
+
+fn bilibili_dash_resource_kind(value: i32) -> Result<BilibiliDashResourceKind, ApiError> {
+    let kind = BilibiliDashResourceKind::try_from(value)
+        .map_err(|_| ApiError::InvalidInput("Invalid Bilibili DASH resource kind".to_string()))?;
+    match kind {
+        BilibiliDashResourceKind::Media | BilibiliDashResourceKind::Manifest => Ok(kind),
+        BilibiliDashResourceKind::Unspecified => Err(ApiError::InvalidInput(
+            "Bilibili DASH resource kind is required".to_string(),
+        )),
+    }
+}
+
+const fn bilibili_dash_resource_kind_name(kind: BilibiliDashResourceKind) -> &'static str {
+    match kind {
+        BilibiliDashResourceKind::Media => "media",
+        BilibiliDashResourceKind::Manifest => "manifest",
+        BilibiliDashResourceKind::Unspecified => "unspecified",
+    }
 }
 
 pub async fn get_bilibili_subtitle(
@@ -465,7 +551,7 @@ impl<'a> BilibiliPlaybackProviderDeps<'a> {
         &self,
         segment_base: &'a str,
         claims: &'a crate::proxy_signature::ProxyUrlClaims,
-        resource: &'static str,
+        resource: &'a str,
     ) -> PlaybackTransportExecutorDeps<'a> {
         PlaybackTransportExecutorDeps {
             hls_rewrite: Some(HlsRewriteSigning {

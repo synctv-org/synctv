@@ -338,6 +338,7 @@ mod tests {
                         is_live: None,
                         duration_seconds: None,
                         prefer_proxy: None,
+                        proxy_only: None,
                     },
                 ),
             ),
@@ -377,6 +378,8 @@ mod tests {
             require_approval: false,
             allow_auto_join: true,
             chat_enabled: true,
+            voice_chat_enabled: true,
+            p2p_media_enabled: true,
             auto_play: Some(crate::client::AutoPlaySettings {
                 enabled: true,
                 mode: crate::client::PlayMode::Sequential as i32,
@@ -905,7 +908,7 @@ mod tests {
     #[test]
     fn http_json_create_room_request_accepts_structured_settings() {
         let decoded: crate::client::CreateRoomRequest = serde_json::from_str(
-            r#"{"name":"Movie Night","description":"","settings":{"allowGuestJoin":true,"maxMembers":8,"allowAutoJoin":true,"chatEnabled":true,"autoPlay":{"enabled":true,"mode":1,"delay":0}}}"#,
+            r#"{"name":"Movie Night","description":"","settings":{"allowGuestJoin":true,"maxMembers":8,"allowAutoJoin":true,"chatEnabled":true,"voiceChatEnabled":true,"p2pMediaEnabled":true,"autoPlay":{"enabled":true,"mode":1,"delay":0}}}"#,
         )
         .expect("room settings object should deserialize");
 
@@ -1802,21 +1805,14 @@ mod tests {
     }
 
     #[test]
-    fn validate_start_playback_request_rejects_multiple_targets() {
-        let error = validation_error_text(
-            &crate::validate(&crate::client::StartPlaybackRequest {
-                media_id: "media-1".into(),
-                playlist_id: "playlist-1".into(),
-                target: None,
-                client_operation_id: None,
-            })
-            .unwrap_err(),
-        );
-
-        assert!(
-            error.contains("start_playback") || error.contains("media_id"),
-            "{error}"
-        );
+    fn validate_start_playback_request_accepts_static_playlist_context() {
+        crate::validate(&crate::client::StartPlaybackRequest {
+            media_id: "media-1".into(),
+            playlist_id: "playlist-1".into(),
+            target: None,
+            client_operation_id: None,
+        })
+        .expect("static media should accept its playlist navigation context");
     }
 
     #[test]
@@ -1831,7 +1827,7 @@ mod tests {
             .unwrap_err(),
         );
 
-        assert!(error.contains("target"), "{error}");
+        assert!(error.contains("start_playback.dynamic_target"), "{error}");
     }
 
     #[test]
@@ -1846,7 +1842,7 @@ mod tests {
             .unwrap_err(),
         );
 
-        assert!(error.contains("target"), "{error}");
+        assert!(error.contains("start_playback.playlist_source"), "{error}");
     }
 
     #[test]

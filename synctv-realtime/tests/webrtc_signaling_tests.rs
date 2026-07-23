@@ -30,7 +30,7 @@ fn rid(s: &str) -> RoomId {
 #[test]
 fn test_ice_candidate_event_serialization() {
     let room = rid("room1");
-    let event = RealtimeEvent::WebRTCSignaling {
+    let event = RealtimeEvent::WebRTCVoiceSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
         message_type: WebRTCSignalKind::IceCandidate,
@@ -45,7 +45,7 @@ fn test_ice_candidate_event_serialization() {
     // Serialize
     let json = serde_json::to_string(&event).expect("Should serialize");
     assert!(
-        json.contains(r#""type":"webRTCSignaling"#),
+        json.contains(r#""type":"webRTCVoiceSignaling"#),
         "JSON should contain type field: {json}"
     );
     assert!(json.contains("iceCandidate"));
@@ -53,9 +53,9 @@ fn test_ice_candidate_event_serialization() {
 
     // Deserialize
     let decoded: RealtimeEvent = serde_json::from_str(&json).expect("Should deserialize");
-    assert_eq!(decoded.event_type(), "webrtc_signaling");
+    assert_eq!(decoded.event_type(), "webrtc_voice_signaling");
 
-    if let RealtimeEvent::WebRTCSignaling {
+    if let RealtimeEvent::WebRTCVoiceSignaling {
         message_type,
         from,
         to,
@@ -68,8 +68,40 @@ fn test_ice_candidate_event_serialization() {
         assert_eq!(to, "user2:conn2");
         assert!(data.contains("candidate:"));
     } else {
-        panic!("Expected WebRTCSignaling variant");
+        panic!("expected WebRTCVoiceSignaling variant");
     }
+}
+
+#[test]
+fn test_media_signaling_serialization_has_media_specific_fields() {
+    let event = RealtimeEvent::WebRTCMediaSignaling {
+        event_id: synctv_common::snanoid!(16),
+        room_id: rid("media-room"),
+        message_type: WebRTCSignalKind::Offer,
+        from: "usr_sender:conn1".to_string(),
+        to: "usr_target:conn2".to_string(),
+        data: r#"{"sdp":"media-offer"}"#.to_string(),
+        swarm_id: "sm1_resource".to_string(),
+        timestamp: chrono::Utc::now(),
+    };
+
+    let json = serde_json::to_string(&event).expect("media signaling should serialize");
+    assert!(json.contains(r#""type":"webRTCMediaSignaling"#));
+    assert!(json.contains(r#""swarmId":"sm1_resource"#));
+    assert!(!json.contains("sessionKind"));
+    assert!(!json.contains("swarmTicket"));
+
+    let decoded: RealtimeEvent =
+        serde_json::from_str(&json).expect("media signaling should deserialize");
+    assert_eq!(decoded.event_type(), "webrtc_media_signaling");
+    assert!(matches!(
+        decoded,
+        RealtimeEvent::WebRTCMediaSignaling {
+            message_type: WebRTCSignalKind::Offer,
+            swarm_id,
+            ..
+        } if swarm_id == "sm1_resource"
+    ));
 }
 
 /// Test ICE candidate routing to specific connection.
@@ -90,7 +122,7 @@ async fn test_ice_candidate_routing() {
         .await
         .expect("subscribe should succeed");
 
-    let event = RealtimeEvent::WebRTCSignaling {
+    let event = RealtimeEvent::WebRTCVoiceSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
         message_type: WebRTCSignalKind::IceCandidate,
@@ -132,7 +164,7 @@ async fn test_ice_candidate_routing_uses_explicit_target_connection() {
         .await
         .expect("subscribe should succeed");
 
-    let event = RealtimeEvent::WebRTCSignaling {
+    let event = RealtimeEvent::WebRTCVoiceSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
         message_type: WebRTCSignalKind::IceCandidate,
@@ -169,7 +201,7 @@ a=group:BUNDLE 0 1
 m=audio 9 UDP/TLS/RTP/SAVPF 111 103 104 9 0 8 106 105 13 110 112 113 126
 ...";
 
-    let event = RealtimeEvent::WebRTCSignaling {
+    let event = RealtimeEvent::WebRTCVoiceSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
         message_type: WebRTCSignalKind::Offer,
@@ -183,14 +215,14 @@ m=audio 9 UDP/TLS/RTP/SAVPF 111 103 104 9 0 8 106 105 13 110 112 113 126
     assert!(json.contains("\"offer\""));
 
     let decoded: RealtimeEvent = serde_json::from_str(&json).expect("Should deserialize");
-    if let RealtimeEvent::WebRTCSignaling {
+    if let RealtimeEvent::WebRTCVoiceSignaling {
         message_type, data, ..
     } = decoded
     {
         assert_eq!(message_type, WebRTCSignalKind::Offer);
         assert!(data.contains("v=0"));
     } else {
-        panic!("Expected WebRTCSignaling variant");
+        panic!("expected WebRTCVoiceSignaling variant");
     }
 }
 
@@ -205,7 +237,7 @@ t=0 0
 a=group:BUNDLE 0 1
 ...";
 
-    let event = RealtimeEvent::WebRTCSignaling {
+    let event = RealtimeEvent::WebRTCVoiceSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
         message_type: WebRTCSignalKind::Answer,
@@ -219,10 +251,10 @@ a=group:BUNDLE 0 1
     assert!(json.contains("\"answer\""));
 
     let decoded: RealtimeEvent = serde_json::from_str(&json).expect("Should deserialize");
-    if let RealtimeEvent::WebRTCSignaling { message_type, .. } = decoded {
+    if let RealtimeEvent::WebRTCVoiceSignaling { message_type, .. } = decoded {
         assert_eq!(message_type, WebRTCSignalKind::Answer);
     } else {
-        panic!("Expected WebRTCSignaling variant");
+        panic!("expected WebRTCVoiceSignaling variant");
     }
 }
 
@@ -244,7 +276,7 @@ async fn test_sdp_offer_answer_flow() {
         .expect("subscribe should succeed");
 
     // Caller sends offer
-    let offer = RealtimeEvent::WebRTCSignaling {
+    let offer = RealtimeEvent::WebRTCVoiceSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
         message_type: WebRTCSignalKind::Offer,
@@ -260,7 +292,7 @@ async fn test_sdp_offer_answer_flow() {
     assert!(received.is_ok(), "Callee should receive offer");
 
     // Callee sends answer
-    let answer = RealtimeEvent::WebRTCSignaling {
+    let answer = RealtimeEvent::WebRTCVoiceSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
         message_type: WebRTCSignalKind::Answer,
@@ -283,19 +315,23 @@ async fn test_sdp_offer_answer_flow() {
 fn test_webrtc_join_event() {
     let room = rid("room1");
 
-    let event = RealtimeEvent::WebRTCJoin {
+    let event = RealtimeEvent::WebRTCVoicePeerJoined {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
         actor_id: "usr_user1".to_string(),
         conn_id: "conn1".to_string(),
         username: "testuser".to_string(),
+
         timestamp: chrono::Utc::now(),
     };
 
-    assert_eq!(event.event_type(), "webrtc_join");
+    assert_eq!(event.event_type(), "webrtc_voice_peer_joined");
     assert!(event.room_id().is_some());
     assert!(event.user_id().is_none());
-    assert!(!event.is_critical(), "WebRTCJoin is not critical");
+    assert!(
+        !event.is_critical(),
+        "WebRTCVoicePeerJoined is not critical"
+    );
 }
 
 /// Test WebRTC leave event.
@@ -303,7 +339,7 @@ fn test_webrtc_join_event() {
 fn test_webrtc_leave_event() {
     let room = rid("room1");
 
-    let event = RealtimeEvent::WebRTCLeave {
+    let event = RealtimeEvent::WebRTCVoicePeerLeft {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
         actor_id: "usr_user1".to_string(),
@@ -311,10 +347,10 @@ fn test_webrtc_leave_event() {
         timestamp: chrono::Utc::now(),
     };
 
-    assert_eq!(event.event_type(), "webrtc_leave");
+    assert_eq!(event.event_type(), "webrtc_voice_peer_left");
     assert!(event.room_id().is_some());
     assert!(event.user_id().is_none());
-    assert!(!event.is_critical(), "WebRTCLeave is not critical");
+    assert!(!event.is_critical(), "WebRTCVoicePeerLeft is not critical");
 }
 
 /// Test WebRTC join/leave broadcast in room.
@@ -335,7 +371,7 @@ async fn test_webrtc_join_leave_broadcast() {
         .expect("subscribe should succeed");
 
     // User1 joins WebRTC
-    let join_event = RealtimeEvent::WebRTCJoin {
+    let join_event = RealtimeEvent::WebRTCVoicePeerJoined {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
         actor_id: "usr_user1".to_string(),
@@ -352,7 +388,7 @@ async fn test_webrtc_join_leave_broadcast() {
     assert!(r2.is_ok());
 
     // User1 leaves WebRTC
-    let leave_event = RealtimeEvent::WebRTCLeave {
+    let leave_event = RealtimeEvent::WebRTCVoicePeerLeft {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
         actor_id: "usr_user1".to_string(),
@@ -383,23 +419,23 @@ async fn test_rtc_connection_tracking() {
     mgr.join_room("conn2", room).await.unwrap();
 
     // Initially no RTC connections
-    let rtc = mgr.get_rtc_connections(&room);
+    let rtc = mgr.get_voice_rtc_connections(&room);
     assert!(rtc.is_empty());
 
     // Mark conn1 as RTC joined
-    mgr.mark_rtc_joined(&room, &user1, "conn1", true);
-    let rtc = mgr.get_rtc_connections(&room);
+    mgr.mark_voice_rtc_joined(&room, &user1, "conn1", true);
+    let rtc = mgr.get_voice_rtc_connections(&room);
     assert_eq!(rtc.len(), 1);
     assert_eq!(rtc[0].connection_id, "conn1");
 
     // Mark conn2 as RTC joined
-    mgr.mark_rtc_joined(&room, &user2, "conn2", true);
-    let rtc = mgr.get_rtc_connections(&room);
+    mgr.mark_voice_rtc_joined(&room, &user2, "conn2", true);
+    let rtc = mgr.get_voice_rtc_connections(&room);
     assert_eq!(rtc.len(), 2);
 
     // Unmark conn1
-    mgr.mark_rtc_joined(&room, &user1, "conn1", false);
-    let rtc = mgr.get_rtc_connections(&room);
+    mgr.mark_voice_rtc_joined(&room, &user1, "conn1", false);
+    let rtc = mgr.get_voice_rtc_connections(&room);
     assert_eq!(rtc.len(), 1);
     assert_eq!(rtc[0].connection_id, "conn2");
 }
@@ -460,7 +496,7 @@ async fn test_multi_user_signaling() {
         .expect("subscribe should succeed");
 
     // User1 sends ICE candidate to user2 only
-    let event = RealtimeEvent::WebRTCSignaling {
+    let event = RealtimeEvent::WebRTCVoiceSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
         message_type: WebRTCSignalKind::IceCandidate,
@@ -488,7 +524,7 @@ async fn test_multi_user_signaling() {
 #[test]
 fn test_signaling_event_timestamp() {
     let before = chrono::Utc::now();
-    let event = RealtimeEvent::WebRTCSignaling {
+    let event = RealtimeEvent::WebRTCVoiceSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: rid("room1"),
         message_type: WebRTCSignalKind::Offer,
@@ -519,17 +555,17 @@ async fn test_connection_cleanup_on_webrtc_leave() {
 
     mgr.register("conn1".to_string(), user).await.unwrap();
     mgr.join_room("conn1", room).await.unwrap();
-    mgr.mark_rtc_joined(&room, &user, "conn1", true);
+    mgr.mark_voice_rtc_joined(&room, &user, "conn1", true);
 
     // RTC connection exists
-    let rtc = mgr.get_rtc_connections(&room);
+    let rtc = mgr.get_voice_rtc_connections(&room);
     assert_eq!(rtc.len(), 1);
 
     // Unregister connection (simulating disconnect)
     mgr.unregister("conn1").await;
 
     // RTC connections should be empty
-    let rtc = mgr.get_rtc_connections(&room);
+    let rtc = mgr.get_voice_rtc_connections(&room);
     assert!(rtc.is_empty());
 }
 
@@ -538,7 +574,7 @@ async fn test_connection_cleanup_on_webrtc_leave() {
 /// Test that WebRTC signaling events are not classified as critical.
 #[test]
 fn test_webrtc_signaling_not_critical() {
-    let event = RealtimeEvent::WebRTCSignaling {
+    let event = RealtimeEvent::WebRTCVoiceSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: rid("room1"),
         message_type: WebRTCSignalKind::IceCandidate,
@@ -568,7 +604,7 @@ fn test_large_sdp_payload() {
             .join("\n")
     );
 
-    let event = RealtimeEvent::WebRTCSignaling {
+    let event = RealtimeEvent::WebRTCVoiceSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: rid("room1"),
         message_type: WebRTCSignalKind::Offer,
@@ -582,9 +618,9 @@ fn test_large_sdp_payload() {
     let json = serde_json::to_string(&event).expect("Should serialize large SDP");
     let decoded: RealtimeEvent = serde_json::from_str(&json).expect("Should deserialize");
 
-    if let RealtimeEvent::WebRTCSignaling { data, .. } = decoded {
+    if let RealtimeEvent::WebRTCVoiceSignaling { data, .. } = decoded {
         assert_eq!(data.len(), large_sdp.len());
     } else {
-        panic!("Expected WebRTCSignaling");
+        panic!("expected WebRTCVoiceSignaling");
     }
 }

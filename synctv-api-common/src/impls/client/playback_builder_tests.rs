@@ -41,19 +41,23 @@ fn proto_alist_target(relative_path: &str) -> Option<synctv_proto::client::Provi
 }
 
 #[test]
-fn test_build_start_playback_request_rejects_proto_contract_violation() -> TestResult {
+fn test_build_start_playback_request_accepts_static_playlist_context() -> TestResult {
     let codec = synctv_adapter::PublicIdCodec::plain();
-    let err = api_err(build_start_playback_request(
+    let media_id = MediaId::expect_positive(1);
+    let playlist_id = PlaylistId::expect_positive(2);
+    let parsed = api_ok(build_start_playback_request(
         synctv_proto::client::StartPlaybackRequest {
-            media_id: codec_ok(codec.encode_media_id(MediaId::expect_positive(1)))?,
-            playlist_id: codec_ok(codec.encode_playlist_id(PlaylistId::expect_positive(2)))?,
+            media_id: codec_ok(codec.encode_media_id(media_id))?,
+            playlist_id: codec_ok(codec.encode_playlist_id(playlist_id))?,
             target: None,
             client_operation_id: None,
         },
         &codec,
     ))?;
 
-    assert!(err.to_string().contains("start_playback"));
+    assert_eq!(parsed.media_id, Some(media_id));
+    assert_eq!(parsed.playlist_id, Some(playlist_id));
+    assert!(parsed.target.is_none());
     Ok(())
 }
 
@@ -297,6 +301,64 @@ fn test_build_playback_state_update_seek_parses_full_state() -> TestResult {
     assert_eq!(expected_source.media_id, Some(media_id));
     assert!(expected_source.playlist_id.is_none());
     assert_eq!(expected_source.target_hash, EMPTY_TARGET_HASH);
+    Ok(())
+}
+
+#[test]
+fn test_build_playback_state_update_accepts_omitted_static_playlist_guard() -> TestResult {
+    let codec = synctv_adapter::PublicIdCodec::plain();
+    let media_id = MediaId::expect_positive(56);
+    let media_public_id = codec_ok(codec.encode_media_id(media_id))?;
+    let parsed = api_ok(build_playback_state_update(
+        synctv_proto::client::UpdatePlaybackStateRequest {
+            r#type: synctv_proto::client::PlaybackUpdateType::Play as i32,
+            playing: Some(true),
+            position: Some(1.0),
+            speed: None,
+            version: None,
+            expected_media_id: Some(media_public_id),
+            expected_playlist_id: None,
+            expected_target_hash: Some(EMPTY_TARGET_HASH.to_string()),
+            client_operation_id: None,
+            client_time_millis: None,
+        },
+        &codec,
+    ))?;
+
+    let expected_source = parsed
+        .expected_source
+        .ok_or_else(|| test_error("play should carry source expectation"))?;
+    assert_eq!(expected_source.media_id, Some(media_id));
+    assert!(expected_source.playlist_id.is_none());
+    Ok(())
+}
+
+#[test]
+fn test_build_playback_state_update_accepts_omitted_dynamic_media_guard() -> TestResult {
+    let codec = synctv_adapter::PublicIdCodec::plain();
+    let playlist_id = synctv_core::models::PlaylistId::expect_positive(57);
+    let playlist_public_id = codec_ok(codec.encode_playlist_id(playlist_id))?;
+    let parsed = api_ok(build_playback_state_update(
+        synctv_proto::client::UpdatePlaybackStateRequest {
+            r#type: synctv_proto::client::PlaybackUpdateType::Pause as i32,
+            playing: Some(false),
+            position: Some(1.0),
+            speed: None,
+            version: None,
+            expected_media_id: None,
+            expected_playlist_id: Some(playlist_public_id),
+            expected_target_hash: Some(EMPTY_TARGET_HASH.to_string()),
+            client_operation_id: None,
+            client_time_millis: None,
+        },
+        &codec,
+    ))?;
+
+    let expected_source = parsed
+        .expected_source
+        .ok_or_else(|| test_error("pause should carry source expectation"))?;
+    assert!(expected_source.media_id.is_none());
+    assert_eq!(expected_source.playlist_id, Some(playlist_id));
     Ok(())
 }
 

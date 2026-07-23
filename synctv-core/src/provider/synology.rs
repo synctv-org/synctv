@@ -947,14 +947,26 @@ impl MediaProvider for SynologyProvider {
                 item_id,
                 file_id,
             } => {
-                generate_video_playback(&auth, owner, &config.server_id, *kind, *item_id, *file_id)
-                    .await
+                generate_video_playback(
+                    &auth,
+                    owner,
+                    &config.server_id,
+                    *kind,
+                    *item_id,
+                    *file_id,
+                    ctx.playback_client_profile(),
+                )
+                .await
             }
         }?;
         let cache_identity = serde_json::to_string(config).map_err(ProviderError::JsonError)?;
         let result = super::cached_versioned_playback_or_fill(
             Self::NAME,
-            &format!("playback:{owner}:{}:{cache_identity}", config.server_id),
+            &format!(
+                "playback:{owner}:{}:{cache_identity}:profile:{}",
+                config.server_id,
+                super::playback_profile_cache_token(ctx.playback_client_profile())
+            ),
             PLAYBACK_CACHE_TTL,
             ctx,
             mark_synology_playback_resources,
@@ -1825,6 +1837,7 @@ async fn generate_video_playback(
     kind: SynologyLibraryItemKind,
     item_id: i64,
     file_id: i64,
+    playback_client_profile: Option<&super::PlaybackClientProfile>,
 ) -> Result<PlaybackResult, ProviderError> {
     let sid = required_video_sid(auth)?;
     let item_kind = upstream_item_kind(kind);
@@ -1900,35 +1913,42 @@ async fn generate_video_playback(
     ];
     let mut playback_infos = HashMap::new();
     for (name, profile, format) in profiles {
-        playback_infos.insert(
-            name.to_string(),
-            PlaybackInfo {
+        let mode_name = if name == "raw" { "raw" } else { "transcoded" };
+        let info = playback_infos
+            .entry(mode_name.to_string())
+            .or_insert_with(|| PlaybackInfo {
                 thumbnail: None,
-                medias: vec![PlaybackMedia {
-                    name: item.title.clone(),
-                    format: format.to_string(),
-                    expire_at: None,
-                    metadata: Some(video_file_metadata(file)),
-                    provider: PlaybackMediaProvider::Synology(
-                        crate::models::PlaybackSynologyMedia::Refresh {
-                            credential_owner_id: owner.to_string(),
-                            server_id: server_id.to_string(),
-                            resource: SynologyPlaybackResource::VideoStation {
-                                file_id,
-                                profile,
-                                audio_track: default_audio,
-                                ac3_passthrough: true,
-                            },
-                        },
-                    ),
-                }],
+                medias: Vec::new(),
                 default_media_index: Some(0),
                 subtitles: playback_subtitles.clone(),
                 default_subtitle_index: None,
                 danmakus: Vec::new(),
                 default_danmaku_index: None,
+            });
+        info.medias.push(PlaybackMedia {
+            name: match name {
+                "raw" => "Original".to_string(),
+                "hls_remux" => "Original HLS".to_string(),
+                "medium" => "Medium".to_string(),
+                "low" => "Low".to_string(),
+                _ => name.to_string(),
             },
-        );
+            format: format.to_string(),
+            expire_at: None,
+            metadata: Some(video_file_metadata(file)),
+            provider: PlaybackMediaProvider::Synology(
+                crate::models::PlaybackSynologyMedia::Refresh {
+                    credential_owner_id: owner.to_string(),
+                    server_id: server_id.to_string(),
+                    resource: SynologyPlaybackResource::VideoStation {
+                        file_id,
+                        profile,
+                        audio_track: default_audio,
+                        ac3_passthrough: true,
+                    },
+                },
+            ),
+        });
     }
     let metadata = SynologyPlaybackMetadata {
         title: item.title.clone(),
@@ -1988,9 +2008,16 @@ async fn generate_video_playback(
             })
             .collect(),
     };
+    let default_mode =
+        if super::playback_profile_prefers_transcode(playback_client_profile, &file.container_type)
+        {
+            "transcoded"
+        } else {
+            "raw"
+        };
     Ok(PlaybackResult {
         playback_infos,
-        default_mode: "raw".to_string(),
+        default_mode: default_mode.to_string(),
         provider: SynologyProvider::NAME.to_string(),
         provider_instance_name: auth.instance_name.clone(),
         duration_seconds: duration

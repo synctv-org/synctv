@@ -185,15 +185,15 @@ async fn test_manage_member_permissions_creator_can_set() {
             room.id,
             creator.id,
             target.id,
-            RoomMemberPermissionBits::USE_WEBRTC | RoomMemberPermissionBits::VIEW_CHAT_HISTORY,
+            RoomMemberPermissionBits::USE_VOICE_CHAT | RoomMemberPermissionBits::VIEW_CHAT_HISTORY,
             0,
         )
         .await
         .checked("test operation should succeed");
 
     assert!(
-        updated.added_permissions & RoomMemberPermissionBits::USE_WEBRTC != 0,
-        "USE_WEBRTC should be added"
+        updated.added_permissions & RoomMemberPermissionBits::USE_VOICE_CHAT != 0,
+        "USE_VOICE_CHAT should be added"
     );
     assert!(
         updated.added_permissions & RoomMemberPermissionBits::VIEW_CHAT_HISTORY != 0,
@@ -245,15 +245,15 @@ async fn test_manage_member_permissions_updates_admin_override_fields_for_admin_
             room.id,
             creator.id,
             target.id,
-            RoomAdminPermissionBits::USE_WEBRTC,
+            RoomAdminPermissionBits::USE_VOICE_CHAT,
             RoomAdminPermissionBits::REMOVE_MEMBERS,
         )
         .await
         .checked("test operation should succeed");
 
     assert_eq!(
-        updated.admin_added_permissions & RoomAdminPermissionBits::USE_WEBRTC,
-        RoomAdminPermissionBits::USE_WEBRTC,
+        updated.admin_added_permissions & RoomAdminPermissionBits::USE_VOICE_CHAT,
+        RoomAdminPermissionBits::USE_VOICE_CHAT,
         "admin target must persist allow overrides into admin_added_permissions"
     );
     assert_eq!(
@@ -276,7 +276,7 @@ async fn test_manage_member_permissions_updates_admin_override_fields_for_admin_
         .await
         .checked("test operation should succeed");
     assert!(
-        effective.has(RoomPermission::USE_WEBRTC),
+        effective.has(RoomPermission::USE_VOICE_CHAT),
         "admin allow override should affect effective permissions"
     );
     assert!(
@@ -328,7 +328,7 @@ async fn test_admin_update_member_role_to_admin_persists_admin_overrides() {
             role: Some(RoomRole::Admin),
             added_permissions: 0,
             removed_permissions: 0,
-            admin_added_permissions: RoomAdminPermissionBits::USE_WEBRTC,
+            admin_added_permissions: RoomAdminPermissionBits::USE_VOICE_CHAT,
             admin_removed_permissions: RoomAdminPermissionBits::REMOVE_MEMBERS,
         })
         .await
@@ -336,8 +336,8 @@ async fn test_admin_update_member_role_to_admin_persists_admin_overrides() {
 
     assert_eq!(updated.role, RoomRole::Admin);
     assert_eq!(
-        updated.admin_added_permissions & RoomAdminPermissionBits::USE_WEBRTC,
-        RoomAdminPermissionBits::USE_WEBRTC,
+        updated.admin_added_permissions & RoomAdminPermissionBits::USE_VOICE_CHAT,
+        RoomAdminPermissionBits::USE_VOICE_CHAT,
         "role-to-admin update must persist allow override in admin_added_permissions"
     );
     assert_eq!(
@@ -559,7 +559,7 @@ async fn test_manage_member_permissions_optimistic_lock_retry() {
             room.id,
             creator.id,
             target.id,
-            RoomMemberPermissionBits::USE_WEBRTC,
+            RoomMemberPermissionBits::USE_VOICE_CHAT,
             0,
         )
         .await;
@@ -631,7 +631,7 @@ async fn test_concurrent_single_bit_grants_retry_optimistic_conflicts() {
                 room.id,
                 creator.id,
                 target.id,
-                RoomMemberPermissionBits::USE_WEBRTC,
+                RoomMemberPermissionBits::USE_VOICE_CHAT,
             )
             .await
     });
@@ -664,8 +664,8 @@ async fn test_concurrent_single_bit_grants_retry_optimistic_conflicts() {
         .checked("test operation should succeed")
         .checked("test operation should succeed");
     assert_eq!(
-        refreshed.added_permissions & RoomMemberPermissionBits::USE_WEBRTC,
-        RoomMemberPermissionBits::USE_WEBRTC
+        refreshed.added_permissions & RoomMemberPermissionBits::USE_VOICE_CHAT,
+        RoomMemberPermissionBits::USE_VOICE_CHAT
     );
     assert_eq!(
         refreshed.added_permissions & RoomMemberPermissionBits::VIEW_CHAT_HISTORY,
@@ -716,7 +716,7 @@ async fn test_concurrent_single_bit_revokes_retry_optimistic_conflicts() {
                 room.id,
                 creator.id,
                 target.id,
-                RoomMemberPermissionBits::USE_WEBRTC,
+                RoomMemberPermissionBits::USE_VOICE_CHAT,
             )
             .await
     });
@@ -749,8 +749,8 @@ async fn test_concurrent_single_bit_revokes_retry_optimistic_conflicts() {
         .checked("test operation should succeed")
         .checked("test operation should succeed");
     assert_eq!(
-        refreshed.removed_permissions & RoomMemberPermissionBits::USE_WEBRTC,
-        RoomMemberPermissionBits::USE_WEBRTC
+        refreshed.removed_permissions & RoomMemberPermissionBits::USE_VOICE_CHAT,
+        RoomMemberPermissionBits::USE_VOICE_CHAT
     );
     assert_eq!(
         refreshed.removed_permissions & RoomMemberPermissionBits::VIEW_CHAT_HISTORY,
@@ -798,7 +798,7 @@ async fn test_remanage_member_permissions_clears_all_overrides() {
             room.id,
             creator.id,
             target.id,
-            RoomMemberPermissionBits::USE_WEBRTC | RoomMemberPermissionBits::VIEW_CHAT_HISTORY,
+            RoomMemberPermissionBits::USE_VOICE_CHAT | RoomMemberPermissionBits::VIEW_CHAT_HISTORY,
             RoomMemberPermissionBits::SEND_CHAT_MESSAGES,
         )
         .await
@@ -937,14 +937,14 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
             room.id,
             creator.id,
             target.id,
-            RoomAdminPermissionBits::USE_WEBRTC,
+            RoomAdminPermissionBits::USE_VOICE_CHAT,
         )
         .await
         .checked("test operation should succeed");
 
     assert_eq!(
-        updated.admin_added_permissions & RoomAdminPermissionBits::USE_WEBRTC,
-        RoomAdminPermissionBits::USE_WEBRTC,
+        updated.admin_added_permissions & RoomAdminPermissionBits::USE_VOICE_CHAT,
+        RoomAdminPermissionBits::USE_VOICE_CHAT,
         "grant_permission must target admin_added_permissions for admin members"
     );
     assert_eq!(
@@ -978,7 +978,7 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
         .await
         .checked("test operation should succeed");
     assert!(
-        effective.has(RoomPermission::USE_WEBRTC),
+        effective.has(RoomPermission::USE_VOICE_CHAT),
         "granted admin override should be visible in effective permissions"
     );
     assert!(

@@ -93,7 +93,7 @@ authorization: Bearer <guest_token>
 | Room members | Joins, leaves, and permission changes need UI sync |
 | WebRTC signaling | offer, answer, and ICE candidates need room-scoped forwarding; targets use `public_actor_id:conn_id`, where signed-in users are `usr_*` and guests are `gst_*` |
 
-Before sending signaling messages, WebRTC clients call `GET /api/rooms/<roomId>/webrtc/ice-servers` to fetch ICE servers. That endpoint uses the same room actor permission model as Realtime: signed-in members and guests both authenticate with `Authorization: Bearer <token>`, and both need `use_webrtc`.
+Before sending signaling messages, WebRTC clients call `GET /api/rooms/<roomId>/webrtc/ice-servers` to fetch ICE servers. That endpoint uses the same room actor permission model as Realtime: signed-in members and guests both authenticate with `Authorization: Bearer <token>` and need `use_voice_chat` or `use_p2p_media`. Each signaling command is also checked against its session-specific business permission.
 
 ## Message Scope
 
@@ -106,7 +106,9 @@ Common client messages:
 | `playback_progress` | Report current playback position and play/pause state |
 | `playback_update` | Send a playback state update command |
 | `webrtc_offer` / `webrtc_answer` / `webrtc_ice_candidate` | Forward WebRTC signaling |
-| `webrtc_join` / `webrtc_leave` | Join or leave a WebRTC session |
+| `webrtc_join` / `webrtc_leave` | Join or leave a voice WebRTC session |
+| `media_swarm_join` | Join one media swarm with `PlaybackMedia.p2p_delivery.swarm_ticket` |
+| `media_swarm_leave` | Leave a media swarm already joined by the current connection using `swarm_id` |
 | `observeResource` | Subscribe to a realtime resource |
 | `unobserveResource` | Unsubscribe from a realtime resource |
 
@@ -123,9 +125,26 @@ Common server messages:
 | `playlistCreated` / `playlistUpdated` / `playlistDeleted` | Playlist changed |
 | `permissionChanged` / `userJoined` / `userLeft` / `roomMembers` | Member or permission changed |
 | `chatEvent` or `resourceChanged.chatEvent` | Chat message event after explicit subscription |
+| `resourceChanged.webrtcEvent.mediaSwarmPeers` | Bounded peer candidates for the current swarm |
 | `resourceObserved` / `resourceChanged` / `resourceObserveError` | Resource observation result |
 
 Use `synctv-proto/proto/client.proto` as the source of truth for complete fields. End-to-end examples are in [SDK and API Examples](../sdk-and-api-examples/).
+
+## Media Swarm Signaling
+
+P2P media and voice chat use independent WebRTC sessions. They share ICE configuration and the Realtime connection while maintaining separate peer discovery, PeerConnections, DataChannels, and lifecycles.
+
+The client reads `swarm_id` and `swarm_ticket` from the current `PlaybackMedia.p2p_delivery`, then sends `media_swarm_join`. The server verifies that the ticket binds the room, actor, swarm, and expiration, then returns up to 16 candidate peers from the same room and swarm on the current connection. Clients repeat the announcement every 30 seconds. The server and clients expire silent memberships after 90 seconds, while an explicit leave removes membership immediately.
+
+Media offers, answers, and ICE candidates use these fields:
+
+| Field | Value |
+| --- | --- |
+| `to` | Target `public_actor_id:conn_id` |
+| `data` | Opaque SDP or ICE candidate JSON |
+| `swarm_id` | Swarm ID for the current single resource |
+
+The server verifies the ticket when joining. Subsequent media signaling verifies that both the sender and target connection have joined the same swarm in the same room before forwarding opaque SDP or ICE data. Voice and Media use separate protobuf command/event types: Voice messages contain only `to`/`from` and `data`, while Media messages additionally contain `swarm_id`. Clients maintain peer piece inventories, availability queries, transfer ranking, and caches. The server tracker stores short-lived swarm memberships and returns bounded candidate sets; media-resource lists and piece inventories remain client-owned.
 
 ## Message Dispatch
 

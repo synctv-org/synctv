@@ -19,7 +19,7 @@ use crate::models::{
 };
 use synctv_media_providers::douyu::{
     DouyuClient, DouyuCodec, DouyuDanmakuEvent as UpstreamDanmakuEvent, DouyuMedia, DouyuMetadata,
-    DouyuQuality, DouyuResource, DouyuStreamFormat,
+    DouyuResource, DouyuStreamFormat,
 };
 
 pub struct DouyuProvider {
@@ -183,8 +183,8 @@ impl DouyuProvider {
     fn playback_result(media: DouyuMedia) -> Result<PlaybackResult, ProviderError> {
         let DouyuMedia { metadata, playback } = media;
         let mut infos = HashMap::new();
-        for (index, quality) in playback.qualities.into_iter().enumerate() {
-            let mode = unique_mode_name(&infos, &quality, index);
+        for quality in playback.qualities {
+            let mode = route_name(&quality.cdn_name);
             let format = match quality.format {
                 DouyuStreamFormat::Flv => "flv",
                 DouyuStreamFormat::Hls => "m3u8",
@@ -194,46 +194,53 @@ impl DouyuProvider {
                 DouyuCodec::Hevc => "hevc",
                 DouyuCodec::Aac => "aac",
             };
-            infos.insert(
-                mode,
-                PlaybackInfo {
-                    thumbnail: metadata.thumbnail_url.clone(),
-                    medias: vec![PlaybackMedia {
-                        name: format!("{} ({})", quality.name, quality.cdn_name),
-                        format: format.to_string(),
-                        expire_at: None,
-                        metadata: Some(PlaybackMediaMetadata {
-                            resolution: None,
-                            bitrate: quality.bitrate.and_then(|value| i64::try_from(value).ok()),
-                            codec: Some(codec.to_string()),
-                            fps: None,
+            let info = infos.entry(mode).or_insert_with(|| PlaybackInfo {
+                thumbnail: metadata.thumbnail_url.clone(),
+                medias: Vec::new(),
+                default_media_index: None,
+                subtitles: Vec::new(),
+                default_subtitle_index: None,
+                danmakus: metadata
+                    .is_live
+                    .then(|| PlaybackDanmaku {
+                        name: "Douyu Danmaku".to_string(),
+                        format: Some("synctv-douyu-live".to_string()),
+                        provider: PlaybackDanmakuProvider::Douyu(PlaybackDouyuDanmaku::Refresh {
+                            media_index: 0,
                         }),
-                        provider: PlaybackMediaProvider::Douyu(PlaybackDouyuMedia::Refresh {
-                            room_id: playback.room_id.clone(),
-                            quality_name: quality.name,
-                            cdn: quality.cdn,
-                            rate: quality.rate,
-                            codec: playback_codec(quality.codec),
-                            format: playback_format(quality.format),
-                        }),
-                    }],
-                    default_media_index: Some(0),
-                    subtitles: Vec::new(),
-                    default_subtitle_index: None,
-                    danmakus: metadata
-                        .is_live
-                        .then(|| PlaybackDanmaku {
-                            name: "Douyu Danmaku".to_string(),
-                            format: Some("synctv-douyu-live".to_string()),
-                            provider: PlaybackDanmakuProvider::Douyu(
-                                PlaybackDouyuDanmaku::Refresh { media_index: 0 },
-                            ),
-                        })
-                        .into_iter()
-                        .collect(),
-                    default_danmaku_index: metadata.is_live.then_some(0),
-                },
-            );
+                    })
+                    .into_iter()
+                    .collect(),
+                default_danmaku_index: metadata.is_live.then_some(0),
+            });
+            let media_index = info.medias.len();
+            let is_preferred = quality.name.to_ascii_lowercase().contains("original")
+                && matches!(quality.codec, DouyuCodec::Avc);
+            info.medias.push(PlaybackMedia {
+                name: quality.name.clone(),
+                format: format.to_string(),
+                expire_at: None,
+                metadata: Some(PlaybackMediaMetadata {
+                    resolution: None,
+                    bitrate: quality
+                        .bitrate
+                        .and_then(|value| value.checked_mul(1_000))
+                        .and_then(|value| i64::try_from(value).ok()),
+                    codec: Some(codec.to_string()),
+                    fps: None,
+                }),
+                provider: PlaybackMediaProvider::Douyu(PlaybackDouyuMedia::Refresh {
+                    room_id: playback.room_id.clone(),
+                    quality_name: quality.name,
+                    cdn: quality.cdn,
+                    rate: quality.rate,
+                    codec: playback_codec(quality.codec),
+                    format: playback_format(quality.format),
+                }),
+            });
+            if is_preferred || info.default_media_index.is_none() {
+                info.default_media_index = Some(media_index);
+            }
         }
         if infos.is_empty() {
             return Err(ProviderError::ApiError(
@@ -242,10 +249,8 @@ impl DouyuProvider {
         }
         let default_mode = infos
             .keys()
-            .find(|name| name.contains("original") && name.contains("avc"))
+            .min()
             .cloned()
-            .or_else(|| infos.keys().find(|name| !name.contains("audio")).cloned())
-            .or_else(|| infos.keys().next().cloned())
             .ok_or_else(|| ProviderError::ApiError("Douyu playback is empty".to_string()))?;
         Ok(PlaybackResult {
             playback_infos: infos,
@@ -256,6 +261,27 @@ impl DouyuProvider {
             is_live: Some(metadata.is_live),
             metadata: Some(PlaybackMetadata::Douyu(metadata_model(metadata))),
         })
+    }
+}
+
+fn route_name(cdn: &str) -> String {
+    let normalized = cdn
+        .to_ascii_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string();
+    if normalized.is_empty() {
+        "main".to_string()
+    } else {
+        normalized
     }
 }
 
@@ -315,46 +341,6 @@ const fn playback_format(format: DouyuStreamFormat) -> DouyuPlaybackFormat {
     match format {
         DouyuStreamFormat::Flv => DouyuPlaybackFormat::Flv,
         DouyuStreamFormat::Hls => DouyuPlaybackFormat::Hls,
-    }
-}
-
-fn unique_mode_name(
-    existing: &HashMap<String, PlaybackInfo>,
-    quality: &DouyuQuality,
-    index: usize,
-) -> String {
-    let codec = match quality.codec {
-        DouyuCodec::Avc => "avc",
-        DouyuCodec::Hevc => "hevc",
-        DouyuCodec::Aac => "audio",
-    };
-    let format = match quality.format {
-        DouyuStreamFormat::Flv => "flv",
-        DouyuStreamFormat::Hls => "hls",
-    };
-    let raw = format!("{}_{}_{}_{}", quality.name, quality.cdn, codec, format);
-    let base = raw
-        .to_ascii_lowercase()
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('_')
-        .to_string();
-    let base = if base.is_empty() {
-        format!("quality_{index}")
-    } else {
-        base
-    };
-    if existing.contains_key(&base) {
-        format!("{base}_{index}")
-    } else {
-        base
     }
 }
 
@@ -446,7 +432,7 @@ impl MediaProvider for DouyuProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synctv_media_providers::douyu::DouyuPlayback;
+    use synctv_media_providers::douyu::{DouyuPlayback, DouyuQuality};
 
     #[test]
     fn playback_preserves_douyu_quality_identity() {
@@ -478,20 +464,15 @@ mod tests {
             },
         })
         .expect("playback should map");
-        assert_eq!(result.default_mode, "original_tct_h5_hevc_flv");
+        assert_eq!(result.default_mode, "tencent");
         assert!(matches!(
-            result.playback_infos["original_tct_h5_hevc_flv"].medias[0].provider,
+            result.playback_infos["tencent"].medias[0].provider,
             PlaybackMediaProvider::Douyu(PlaybackDouyuMedia::Refresh {
                 codec: DouyuPlaybackCodec::Hevc,
                 ..
             })
         ));
-        assert_eq!(
-            result.playback_infos["original_tct_h5_hevc_flv"]
-                .danmakus
-                .len(),
-            1
-        );
+        assert_eq!(result.playback_infos["tencent"].danmakus.len(), 1);
     }
 
     #[test]

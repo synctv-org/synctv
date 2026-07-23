@@ -1,8 +1,10 @@
 use prost::Message;
+#[cfg(test)]
+use synctv_core::models::ProviderTarget;
 use synctv_core::models::{
     ChatEventKind, ChatMessageEvent, ChatMessagePin, ChatMessageWithAttachments, ChatMetadata,
     ChatPinEvent, ChatPinEventKind, ChatPlaybackMetadata as CoreChatPlaybackMetadata,
-    ChatPresentationMetadata, ProviderTarget, RoomPlaybackState,
+    ChatPresentationMetadata,
 };
 
 use synctv_proto::client::{ClientMessage, ServerMessage};
@@ -440,6 +442,7 @@ fn validate_chat_metadata_text(
     Ok(Some(trimmed.to_string()))
 }
 
+#[cfg(test)]
 pub fn chat_playback_target_hash(target: &ProviderTarget) -> Result<String, String> {
     synctv_core::models::try_hash_playback_target(Some(target)).map_err(|error| error.to_string())
 }
@@ -448,7 +451,7 @@ pub fn chat_metadata_for_send(
     metadata: Option<ChatMetadata>,
     display_position: &str,
     display_color: &str,
-    playback_state: Option<&RoomPlaybackState>,
+    playback: Option<CoreChatPlaybackMetadata>,
 ) -> Result<Option<ChatMetadata>, String> {
     let mut metadata = match metadata {
         Some(ChatMetadata::User(metadata)) => metadata,
@@ -465,24 +468,7 @@ pub fn chat_metadata_for_send(
     };
     metadata.presentation = (!presentation.is_empty()).then_some(presentation);
 
-    if let Some(state) = playback_state
-        .filter(|state| state.playing_media_id.is_some() || state.playing_playlist_id.is_some())
-    {
-        let position_seconds = state.computed_position().max(0.0);
-        metadata.playback = Some(CoreChatPlaybackMetadata {
-            media_id: state.playing_media_id,
-            playlist_id: state.playing_playlist_id,
-            target: state.target.clone(),
-            target_hash: state
-                .target
-                .as_ref()
-                .map(chat_playback_target_hash)
-                .transpose()?,
-            position_seconds: position_seconds.is_finite().then_some(position_seconds),
-        });
-    } else {
-        metadata.playback = None;
-    }
+    metadata.playback = playback;
 
     let metadata = ChatMetadata::User(metadata);
     Ok((!metadata.is_empty()).then_some(metadata))

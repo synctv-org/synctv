@@ -2158,7 +2158,7 @@ impl ClientApiImpl {
         req: synctv_proto::client::ListPlaylistItemsRequest,
     ) -> Result<synctv_proto::client::ListPlaylistItemsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        self.require_room_permission(actor, synctv_core::models::RoomPermission::VIEW_MEDIA)
+        self.require_room_permission(actor, synctv_core::models::RoomPermission::BROWSE_LIBRARY)
             .await?;
         let rid = actor.room_id();
         let viewer_id = actor.user_id();
@@ -2965,7 +2965,7 @@ impl ClientApiImpl {
     ) -> Result<synctv_proto::client::Media, ApiError> {
         let rid = actor.room_id();
         let mid = crate::impls::parse_media_id_param(media_id, "media_id", &self.public_id_codec)?;
-        self.require_room_permission(actor, synctv_core::models::RoomPermission::VIEW_MEDIA)
+        self.require_room_permission(actor, synctv_core::models::RoomPermission::BROWSE_LIBRARY)
             .await?;
 
         // Direct lookup by ID instead of loading the entire playlist.
@@ -3078,6 +3078,7 @@ mod tests {
                         is_live: None,
                         duration_seconds: None,
                         prefer_proxy: None,
+                        proxy_only: None,
                     },
                 ),
             ),

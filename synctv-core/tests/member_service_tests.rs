@@ -365,14 +365,14 @@ async fn test_grant_permission_bitwise_or() {
             room.id,
             creator.id,
             target.id,
-            RoomMemberPermissionBits::USE_WEBRTC,
+            RoomMemberPermissionBits::USE_VOICE_CHAT,
         )
         .await
         .checked("test operation should succeed");
 
     assert!(
-        updated.added_permissions & RoomMemberPermissionBits::USE_WEBRTC != 0,
-        "USE_WEBRTC should now also be set"
+        updated.added_permissions & RoomMemberPermissionBits::USE_VOICE_CHAT != 0,
+        "USE_VOICE_CHAT should now also be set"
     );
 }
 

@@ -342,23 +342,23 @@ async fn test_rtc_state_management() {
 
     // Initially not RTC joined
     let conn = mgr.get_connection("conn1").unwrap();
-    assert!(!conn.rtc_joined);
+    assert!(!conn.voice_rtc_joined);
 
     // Mark as RTC joined
-    mgr.mark_rtc_joined(&room, &user, "conn1", true);
+    mgr.mark_voice_rtc_joined(&room, &user, "conn1", true);
 
     let conn = mgr.get_connection("conn1").unwrap();
-    assert!(conn.rtc_joined);
+    assert!(conn.voice_rtc_joined);
 
     // Get RTC connections
-    let rtc_conns = mgr.get_rtc_connections(&room);
+    let rtc_conns = mgr.get_voice_rtc_connections(&room);
     assert_eq!(rtc_conns.len(), 1);
     assert_eq!(rtc_conns[0].connection_id, "conn1");
 
     // Unmark
-    mgr.mark_rtc_joined(&room, &user, "conn1", false);
+    mgr.mark_voice_rtc_joined(&room, &user, "conn1", false);
 
-    let rtc_conns = mgr.get_rtc_connections(&room);
+    let rtc_conns = mgr.get_voice_rtc_connections(&room);
     assert!(rtc_conns.is_empty());
 }
 

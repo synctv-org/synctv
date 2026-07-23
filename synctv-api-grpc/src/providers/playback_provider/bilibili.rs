@@ -3,11 +3,11 @@ use std::sync::Arc;
 use futures::{FutureExt, TryStreamExt};
 use synctv_proto::playback_provider::bilibili::bilibili_playback_provider_service_server::BilibiliPlaybackProviderService;
 use synctv_proto::playback_provider::bilibili::{
-    BilibiliDanmakuFileResponse, BilibiliDashManifestResponse, BilibiliDashSegmentResponse,
-    BilibiliHlsManifestResponse, BilibiliHlsSegmentResponse, BilibiliLiveDanmakuEvent,
+    BilibiliDanmakuFileResponse, BilibiliDashManifestResponse, BilibiliDashResourceResponse,
+    BilibiliHlsManifestResponse, BilibiliHlsResourceResponse, BilibiliLiveDanmakuEvent,
     BilibiliMediaStreamResponse, BilibiliSubtitleResponse, GetBilibiliDanmakuFileRequest,
-    GetBilibiliDashManifestRequest, GetBilibiliDashSegmentRequest, GetBilibiliHlsManifestRequest,
-    GetBilibiliHlsSegmentRequest, GetBilibiliMediaStreamRequest, GetBilibiliSubtitleRequest,
+    GetBilibiliDashManifestRequest, GetBilibiliDashResourceRequest, GetBilibiliHlsManifestRequest,
+    GetBilibiliHlsResourceRequest, GetBilibiliMediaStreamRequest, GetBilibiliSubtitleRequest,
     WatchBilibiliLiveDanmakuRequest,
 };
 use tonic::{Request, Response, Status};
@@ -42,9 +42,9 @@ impl BilibiliPlaybackProviderGrpcService {
 impl BilibiliPlaybackProviderService for BilibiliPlaybackProviderGrpcService {
     type GetMediaStreamStream = GrpcResponseStream<BilibiliMediaStreamResponse>;
     type GetHlsManifestStream = GrpcResponseStream<BilibiliHlsManifestResponse>;
-    type GetHlsSegmentStream = GrpcResponseStream<BilibiliHlsSegmentResponse>;
+    type GetHlsResourceStream = GrpcResponseStream<BilibiliHlsResourceResponse>;
     type GetDashManifestStream = GrpcResponseStream<BilibiliDashManifestResponse>;
-    type GetDashSegmentStream = GrpcResponseStream<BilibiliDashSegmentResponse>;
+    type GetDashResourceStream = GrpcResponseStream<BilibiliDashResourceResponse>;
     type GetSubtitleStream = GrpcResponseStream<BilibiliSubtitleResponse>;
     type GetDanmakuFileStream = GrpcResponseStream<BilibiliDanmakuFileResponse>;
     type WatchLiveDanmakuStream = GrpcResponseStream<BilibiliLiveDanmakuEvent>;
@@ -93,10 +93,10 @@ impl BilibiliPlaybackProviderService for BilibiliPlaybackProviderGrpcService {
         .await
     }
 
-    async fn get_hls_segment(
+    async fn get_hls_resource(
         &self,
-        request: Request<GetBilibiliHlsSegmentRequest>,
-    ) -> Result<Response<Self::GetHlsSegmentStream>, Status> {
+        request: Request<GetBilibiliHlsResourceRequest>,
+    ) -> Result<Response<Self::GetHlsResourceStream>, Status> {
         let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
@@ -104,7 +104,7 @@ impl BilibiliPlaybackProviderService for BilibiliPlaybackProviderGrpcService {
         execute_playback_provider_stream(state.clone(), metadata, move |request_control| {
             let state = state.clone();
             async move {
-                synctv_api_common::playback_provider::bilibili::get_bilibili_hls_segment(
+                synctv_api_common::playback_provider::bilibili::get_bilibili_hls_resource(
                     bilibili_deps(&state, Some(&request_control)),
                     req,
                 )
@@ -137,10 +137,10 @@ impl BilibiliPlaybackProviderService for BilibiliPlaybackProviderGrpcService {
         .await
     }
 
-    async fn get_dash_segment(
+    async fn get_dash_resource(
         &self,
-        request: Request<GetBilibiliDashSegmentRequest>,
-    ) -> Result<Response<Self::GetDashSegmentStream>, Status> {
+        request: Request<GetBilibiliDashResourceRequest>,
+    ) -> Result<Response<Self::GetDashResourceStream>, Status> {
         let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
@@ -148,7 +148,7 @@ impl BilibiliPlaybackProviderService for BilibiliPlaybackProviderGrpcService {
         execute_playback_provider_stream(state.clone(), metadata, move |request_control| {
             let state = state.clone();
             async move {
-                synctv_api_common::playback_provider::bilibili::get_bilibili_dash_segment(
+                synctv_api_common::playback_provider::bilibili::get_bilibili_dash_resource(
                     bilibili_deps(&state, Some(&request_control)),
                     req,
                 )

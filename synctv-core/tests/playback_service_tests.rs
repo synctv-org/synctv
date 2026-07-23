@@ -473,6 +473,75 @@ async fn test_switch_media_rejects_target() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_switch_media_validates_static_playlist_context() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("switch_static_context_owner"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "Switch Static Context Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
+    let other_playlist = create_top_level_playlist(&pool, &room.id).await;
+    let media = media_repo
+        .create(&Media {
+            id: MediaId::new(),
+            playlist_id: Some(playlist.id),
+            room_id: room.id,
+            creator_id: Some(owner.id),
+            name: "Static Context Video".to_string(),
+            description: String::new(),
+            position: 0.0,
+            source_provider: SourceProvider::DirectUrl,
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/static-context.mp4",
+            ),
+            provider_instance_name: None,
+            cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .checked("test media should be created");
+
+    let state = room_service
+        .playback_service()
+        .switch(room.id, owner.id, Some(media.id), Some(playlist.id), None)
+        .await
+        .checked("matching static playlist context should be accepted");
+    assert_eq!(state.playing_media_id, Some(media.id));
+    assert_eq!(state.playing_playlist_id, Some(playlist.id));
+    assert!(state.target.is_none());
+
+    let result = room_service
+        .playback_service()
+        .switch(
+            room.id,
+            owner.id,
+            Some(media.id),
+            Some(other_playlist.id),
+            None,
+        )
+        .await;
+    assert!(matches!(result, Err(Error::InvalidInput(_))));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_switch_media_rejects_inactive_creator() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

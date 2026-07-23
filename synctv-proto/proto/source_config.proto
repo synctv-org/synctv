@@ -61,6 +61,7 @@ message DirectUrlMediaSourceConfig {
   optional bool is_live = 7;
   optional double duration_seconds = 8;
   optional bool prefer_proxy = 9;
+  optional bool proxy_only = 10;
 }
 
 message AlistMediaSourceConfig {

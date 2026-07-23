@@ -1090,6 +1090,14 @@ pub enum PlaybackBilibiliMedia {
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         headers: std::collections::HashMap<String, String>,
     },
+    DurlManifest {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        segments: Vec<BilibiliDurlSegment>,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
     ProxyMediaStream {
         version: String,
         expires_at: i64,
@@ -1116,6 +1124,13 @@ pub enum PlaybackBilibiliMedia {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BilibiliDurlSegment {
+    pub url: String,
+    pub duration_millis: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -1123,11 +1138,13 @@ pub enum PlaybackBilibiliMedia {
 )]
 pub enum PlaybackDirectUrlMedia {
     Direct {
+        p2p_resource_id: String,
         url: String,
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         headers: std::collections::HashMap<String, String>,
     },
     ProxyStream {
+        p2p_resource_id: String,
         version: String,
         expires_at: i64,
         mode_name: String,
@@ -1137,6 +1154,17 @@ pub enum PlaybackDirectUrlMedia {
         headers: std::collections::HashMap<String, String>,
     },
     ProxyHlsManifest {
+        p2p_resource_id: String,
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        url_index: usize,
+        url: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
+    ProxyDashManifest {
+        p2p_resource_id: String,
         version: String,
         expires_at: i64,
         mode_name: String,
@@ -1948,6 +1976,9 @@ pub struct DirectUrlPlaybackMetadata {
     pub format: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
+    /// Provider-confirmed eligibility for static byte sharing.
+    #[serde(default)]
+    pub p2p_eligible: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2686,7 +2717,8 @@ impl PlaybackMedia {
             | PlaybackMediaProvider::DirectUrl(
                 PlaybackDirectUrlMedia::Direct { url, .. }
                 | PlaybackDirectUrlMedia::ProxyStream { url, .. }
-                | PlaybackDirectUrlMedia::ProxyHlsManifest { url, .. },
+                | PlaybackDirectUrlMedia::ProxyHlsManifest { url, .. }
+                | PlaybackDirectUrlMedia::ProxyDashManifest { url, .. },
             )
             | PlaybackMediaProvider::Emby(
                 PlaybackEmbyMedia::Direct { url, .. }
@@ -2709,13 +2741,15 @@ impl PlaybackMedia {
             | PlaybackMediaProvider::Bilibili(
                 PlaybackBilibiliMedia::Direct { headers, .. }
                 | PlaybackBilibiliMedia::DirectDashManifest { headers, .. }
+                | PlaybackBilibiliMedia::DurlManifest { headers, .. }
                 | PlaybackBilibiliMedia::ProxyMediaStream { headers, .. }
                 | PlaybackBilibiliMedia::ProxyHlsManifest { headers, .. },
             )
             | PlaybackMediaProvider::DirectUrl(
                 PlaybackDirectUrlMedia::Direct { headers, .. }
                 | PlaybackDirectUrlMedia::ProxyStream { headers, .. }
-                | PlaybackDirectUrlMedia::ProxyHlsManifest { headers, .. },
+                | PlaybackDirectUrlMedia::ProxyHlsManifest { headers, .. }
+                | PlaybackDirectUrlMedia::ProxyDashManifest { headers, .. },
             )
             | PlaybackMediaProvider::Emby(
                 PlaybackEmbyMedia::Direct { headers, .. }

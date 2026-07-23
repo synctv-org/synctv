@@ -732,7 +732,7 @@ pub(in crate::cli) fn build_get_playback_cli_output(
             for (index, playback_media) in info.medias.iter().enumerate() {
                 let is_default = mode == &playback.default_mode
                     && i32::try_from(index)
-                        .is_ok_and(|index| info.default_media_index == Some(index));
+                        .is_ok_and(|index| info.default_media_index.unwrap_or(0) == index);
                 let absolute_url = absolutize_cli_url(&playback_media.url, api_base_url.as_deref());
                 let output = PlaybackPullUrlCliOutput {
                     mode: mode.clone(),
@@ -837,6 +837,12 @@ pub(in crate::cli) fn room_settings_patch_to_full_settings(
             .unwrap_or(defaults.require_approval.0),
         allow_auto_join: patch.allow_auto_join.unwrap_or(defaults.allow_auto_join.0),
         chat_enabled: patch.chat_enabled.unwrap_or(defaults.chat_enabled.0),
+        voice_chat_enabled: patch
+            .voice_chat_enabled
+            .unwrap_or(defaults.voice_chat_enabled.0),
+        p2p_media_enabled: patch
+            .p2p_media_enabled
+            .unwrap_or(defaults.p2p_media_enabled.0),
         auto_play: Some(synctv_proto::client::AutoPlaySettings {
             enabled: auto_play_patch.enabled.unwrap_or(default_auto_play.enabled),
             mode: auto_play_mode,

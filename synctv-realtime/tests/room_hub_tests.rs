@@ -36,7 +36,7 @@ fn chat_event(room: &RoomId, user: &UserId) -> RealtimeEvent {
 }
 
 fn webrtc_event(room: &RoomId) -> RealtimeEvent {
-    RealtimeEvent::WebRTCSignaling {
+    RealtimeEvent::WebRTCVoiceSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: *room,
         message_type: WebRTCSignalKind::Offer,
@@ -131,7 +131,7 @@ async fn test_broadcast_to_connection_reliably_delivers_webrtc_when_channel_full
             .await
             .expect("message should arrive after draining one slot")
             .expect("channel should remain open");
-        if matches!(msg.as_ref(), RealtimeEvent::WebRTCSignaling { .. }) {
+        if matches!(msg.as_ref(), RealtimeEvent::WebRTCVoiceSignaling { .. }) {
             delivered_webrtc = true;
             break;
         }
@@ -232,7 +232,7 @@ async fn test_broadcast_to_connection_keeps_current_thread_target_registered_whe
             .await
             .expect("reliable targeted retry should eventually enqueue once capacity is available")
             .expect("channel should remain open");
-        if matches!(msg.as_ref(), RealtimeEvent::WebRTCSignaling { .. }) {
+        if matches!(msg.as_ref(), RealtimeEvent::WebRTCVoiceSignaling { .. }) {
             delivered_webrtc = true;
             break;
         }

@@ -287,16 +287,12 @@ pub enum RealtimeEvent {
         timestamp: DateTime<Utc>,
     },
 
-    /// WebRTC signaling message.
-    WebRTCSignaling {
+    /// Voice-chat WebRTC signaling message.
+    WebRTCVoiceSignaling {
         event_id: String,
         room_id: RoomId,
         message_type: WebRTCSignalKind,
-        /// Server-set field: `"<user_id>|<conn_id>"`.
-        ///
-        /// The `|` separator is used instead of `:` because user IDs may contain
-        /// colons (e.g., namespaced IDs).  Using `|` makes parsing unambiguous:
-        /// `from.splitn(2, '|')` always yields exactly `[user_id, conn_id]`.
+        /// Server-set field: `"<public_actor_id>:<conn_id>"`.
         from: String,
         /// Client-provided target: `"<user_id>:<conn_id>"`.
         ///
@@ -307,11 +303,25 @@ pub enum RealtimeEvent {
         timestamp: DateTime<Utc>,
     },
 
+    /// Media P2P WebRTC signaling message for one room-scoped swarm.
+    WebRTCMediaSignaling {
+        event_id: String,
+        room_id: RoomId,
+        message_type: WebRTCSignalKind,
+        /// Server-set field: `"<public_actor_id>:<conn_id>"`.
+        from: String,
+        /// Client-provided target: `"<user_id>:<conn_id>"`.
+        to: String,
+        data: String,
+        swarm_id: String,
+        timestamp: DateTime<Utc>,
+    },
+
     /// Actor joined WebRTC call in room.
     ///
     /// `actor_id` is the public realtime actor identifier used by clients in
     /// signaling targets. Signed-in users use `usr_*`; guests use `gst_*`.
-    WebRTCJoin {
+    WebRTCVoicePeerJoined {
         event_id: String,
         room_id: RoomId,
         actor_id: String,
@@ -321,11 +331,21 @@ pub enum RealtimeEvent {
     },
 
     /// Actor left WebRTC call in room.
-    WebRTCLeave {
+    WebRTCVoicePeerLeft {
         event_id: String,
         room_id: RoomId,
         actor_id: String,
         conn_id: String,
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Actor left one media P2P swarm in a room.
+    MediaSwarmPeerLeft {
+        event_id: String,
+        room_id: RoomId,
+        actor_id: String,
+        conn_id: String,
+        swarm_id: String,
         timestamp: DateTime<Utc>,
     },
 
@@ -492,9 +512,11 @@ impl RealtimeEvent {
             | Self::PlaylistDeleted { event_id, .. }
             | Self::PermissionChanged { event_id, .. }
             | Self::RoomSettingsChanged { event_id, .. }
-            | Self::WebRTCSignaling { event_id, .. }
-            | Self::WebRTCJoin { event_id, .. }
-            | Self::WebRTCLeave { event_id, .. }
+            | Self::WebRTCVoiceSignaling { event_id, .. }
+            | Self::WebRTCMediaSignaling { event_id, .. }
+            | Self::WebRTCVoicePeerJoined { event_id, .. }
+            | Self::WebRTCVoicePeerLeft { event_id, .. }
+            | Self::MediaSwarmPeerLeft { event_id, .. }
             | Self::SystemNotification { event_id, .. }
             | Self::KickPublisher { event_id, .. }
             | Self::KickUser { event_id, .. }
@@ -531,9 +553,11 @@ impl RealtimeEvent {
             | Self::PlaylistDeleted { room_id, .. }
             | Self::PermissionChanged { room_id, .. }
             | Self::RoomSettingsChanged { room_id, .. }
-            | Self::WebRTCSignaling { room_id, .. }
-            | Self::WebRTCJoin { room_id, .. }
-            | Self::WebRTCLeave { room_id, .. }
+            | Self::WebRTCVoiceSignaling { room_id, .. }
+            | Self::WebRTCMediaSignaling { room_id, .. }
+            | Self::WebRTCVoicePeerJoined { room_id, .. }
+            | Self::WebRTCVoicePeerLeft { room_id, .. }
+            | Self::MediaSwarmPeerLeft { room_id, .. }
             | Self::KickPublisher { room_id, .. }
             | Self::KickUserFromRoom { room_id, .. }
             | Self::RoomCreated { room_id, .. }
@@ -581,9 +605,11 @@ impl RealtimeEvent {
             | Self::PlaylistDeleted { .. }
             | Self::PermissionChanged { .. }
             | Self::RoomSettingsChanged { .. }
-            | Self::WebRTCSignaling { .. }
-            | Self::WebRTCJoin { .. }
-            | Self::WebRTCLeave { .. } => RealtimeDeliveryRoute::Room,
+            | Self::WebRTCVoiceSignaling { .. }
+            | Self::WebRTCMediaSignaling { .. }
+            | Self::WebRTCVoicePeerJoined { .. }
+            | Self::WebRTCVoicePeerLeft { .. }
+            | Self::MediaSwarmPeerLeft { .. } => RealtimeDeliveryRoute::Room,
         }
     }
 
@@ -631,9 +657,11 @@ impl RealtimeEvent {
             Self::RoomBanned { banned_by, .. } => Some(banned_by),
             Self::RoomOwnerInactive { triggered_by, .. } => Some(triggered_by),
             Self::PermissionChanged { changed_by, .. } => Some(changed_by),
-            Self::WebRTCSignaling { .. }
-            | Self::WebRTCJoin { .. }
-            | Self::WebRTCLeave { .. }
+            Self::WebRTCVoiceSignaling { .. }
+            | Self::WebRTCMediaSignaling { .. }
+            | Self::WebRTCVoicePeerJoined { .. }
+            | Self::WebRTCVoicePeerLeft { .. }
+            | Self::MediaSwarmPeerLeft { .. }
             | Self::GuestJoined { .. }
             | Self::GuestLeft { .. }
             | Self::SystemNotification { .. }
@@ -664,9 +692,11 @@ impl RealtimeEvent {
             | Self::PlaylistDeleted { timestamp, .. }
             | Self::PermissionChanged { timestamp, .. }
             | Self::RoomSettingsChanged { timestamp, .. }
-            | Self::WebRTCSignaling { timestamp, .. }
-            | Self::WebRTCJoin { timestamp, .. }
-            | Self::WebRTCLeave { timestamp, .. }
+            | Self::WebRTCVoiceSignaling { timestamp, .. }
+            | Self::WebRTCMediaSignaling { timestamp, .. }
+            | Self::WebRTCVoicePeerJoined { timestamp, .. }
+            | Self::WebRTCVoicePeerLeft { timestamp, .. }
+            | Self::MediaSwarmPeerLeft { timestamp, .. }
             | Self::SystemNotification { timestamp, .. }
             | Self::KickPublisher { timestamp, .. }
             | Self::KickUser { timestamp, .. }
@@ -691,6 +721,7 @@ impl RealtimeEvent {
                 | Self::KickUser { .. }
                 | Self::KickUserFromRoom { .. }
                 | Self::UserLeft { .. }
+                | Self::MediaSwarmPeerLeft { .. }
                 | Self::PermissionChanged { .. }
                 | Self::RoomBanned { .. }
                 | Self::RoomOwnerInactive { .. }
@@ -751,9 +782,11 @@ impl RealtimeEvent {
             Self::PlaylistDeleted { .. } => "playlist_deleted",
             Self::PermissionChanged { .. } => "permission_changed",
             Self::RoomSettingsChanged { .. } => "room_settings_changed",
-            Self::WebRTCSignaling { .. } => "webrtc_signaling",
-            Self::WebRTCJoin { .. } => "webrtc_join",
-            Self::WebRTCLeave { .. } => "webrtc_leave",
+            Self::WebRTCVoiceSignaling { .. } => "webrtc_voice_signaling",
+            Self::WebRTCMediaSignaling { .. } => "webrtc_media_signaling",
+            Self::WebRTCVoicePeerJoined { .. } => "webrtc_voice_peer_joined",
+            Self::WebRTCVoicePeerLeft { .. } => "webrtc_voice_peer_left",
+            Self::MediaSwarmPeerLeft { .. } => "media_swarm_peer_left",
             Self::SystemNotification { .. } => "system_notification",
             Self::KickPublisher { .. } => "kick_publisher",
             Self::KickUser { .. } => "kick_user",

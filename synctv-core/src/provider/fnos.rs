@@ -1860,6 +1860,34 @@ impl MediaProvider for FnosProvider {
                         }
                     })
                     .collect();
+                let prefer_transcode = super::playback_profile_prefers_transcode(
+                    ctx.playback_client_profile(),
+                    medias
+                        .first()
+                        .map_or("video", |media| media.format.as_str()),
+                );
+                let max_bitrate = ctx
+                    .playback_client_profile()
+                    .and_then(|profile| profile.max_streaming_bitrate)
+                    .and_then(|bitrate| u64::try_from(bitrate).ok());
+                let default_media_index = if prefer_transcode {
+                    medias
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, media)| match &media.provider {
+                            PlaybackMediaProvider::Fnos(PlaybackFnosMedia::TranscodeRefresh {
+                                spec,
+                                ..
+                            }) if max_bitrate.is_none_or(|limit| spec.bitrate <= limit) => {
+                                Some((index, spec.bitrate))
+                            }
+                            _ => None,
+                        })
+                        .max_by_key(|(_, bitrate)| *bitrate)
+                        .map_or(0, |(index, _)| index)
+                } else {
+                    0
+                };
                 let result = PlaybackResult {
                     playback_infos: HashMap::from([(
                         "direct".to_string(),
@@ -1871,7 +1899,7 @@ impl MediaProvider for FnosProvider {
                                 .or(play.item.poster.as_deref())
                                 .map(|path| client.image_url(path, 800)),
                             medias,
-                            default_media_index: Some(0),
+                            default_media_index: Some(default_media_index),
                             subtitles,
                             default_subtitle_index,
                             danmakus: Vec::new(),
@@ -1972,10 +2000,11 @@ impl MediaProvider for FnosProvider {
         let result = super::cached_versioned_playback_or_fill(
             Self::NAME,
             &format!(
-                "playback:{owner}:{}:room:{}:{cache_key}",
+                "playback:{owner}:{}:room:{}:{cache_key}:profile:{}",
                 config.server_id,
                 ctx.room_id
-                    .map_or_else(|| "none".to_string(), |id| id.to_string())
+                    .map_or_else(|| "none".to_string(), |id| id.to_string()),
+                super::playback_profile_cache_token(ctx.playback_client_profile())
             ),
             Duration::from_hours(2),
             ctx,

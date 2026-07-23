@@ -488,7 +488,8 @@ impl ResourceWatchSession {
         match resource {
             synctv_proto::client::observe_resource::Resource::PlaybackState(_)
             | synctv_proto::client::observe_resource::Resource::RoomSettings(_)
-            | synctv_proto::client::observe_resource::Resource::OnlineCount(_) => {
+            | synctv_proto::client::observe_resource::Resource::OnlineCount(_)
+            | synctv_proto::client::observe_resource::Resource::SelfRoomMember(_) => {
                 if self.principal.is_guest() {
                     self.ensure_guest_admission_for_action().await?;
                 }
@@ -515,12 +516,6 @@ impl ResourceWatchSession {
                 }
                 self.check_realtime_permission(RoomPermission::VIEW_MEMBERS)
                     .await
-            }
-            synctv_proto::client::observe_resource::Resource::SelfRoomMember(_) => {
-                if self.principal.is_guest() {
-                    return Err("Guests do not have a room member permission snapshot".to_string());
-                }
-                Ok(())
             }
             synctv_proto::client::observe_resource::Resource::ChatEvents(_)
             | synctv_proto::client::observe_resource::Resource::ChatPinEvents(_) => {

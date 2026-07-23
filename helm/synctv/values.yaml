@@ -543,7 +543,7 @@ config:
     ## metadata, and skips the built-in STUN server if no public address exists.
     stunExternalAddr: ""
     ## External ICE servers are configured dynamically via the settings API.
-    filterPrivateIceCandidates: true
+    filterPrivateIceCandidates: false
 
   ## ConnectionLimitsConfig
   connectionLimits:

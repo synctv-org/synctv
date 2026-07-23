@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use crate::models::{MediaId, RoomId, SourceProvider, UserId};
 use crate::provider::{
-    BilibiliProvider, ExecutionControl, PlaybackTransportAction, ProviderAccessService,
+    AlistHlsResourceRequest, BilibiliDashResourceRequest, BilibiliHlsResourceRequest,
+    BilibiliProvider, DirectUrlDashResourceRequest, DirectUrlHlsResourceRequest,
+    EmbyHlsResourceRequest, ExecutionControl, PlaybackTransportAction, ProviderAccessService,
     ProviderContext, ProviderError, ProviderSet,
 };
 use crate::provider::{LiveFlvAccess, PlaybackTransportServices};
@@ -65,24 +67,16 @@ impl AlistPlaybackProviderService {
             .await
     }
 
-    pub async fn transcoded_hls_segment_action(
+    pub async fn transcoded_hls_resource_action(
         &self,
-        version: &str,
-        target_url: &str,
-        range: Option<&str>,
+        request: AlistHlsResourceRequest<'_>,
         store: Arc<dyn ProviderStore>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<PlaybackTransportAction, ProviderError> {
         self.runtime
             .providers
             .alist
-            .get_transcoded_hls_segment(
-                Some(&store),
-                version,
-                target_url.to_string(),
-                request_control,
-                range,
-            )
+            .get_transcoded_hls_resource(Some(&store), request, request_control)
             .await
     }
 
@@ -172,24 +166,16 @@ impl BilibiliPlaybackProviderService {
             .await
     }
 
-    pub async fn hls_segment_action(
+    pub async fn hls_resource_action(
         &self,
-        version: &str,
-        target_url: &str,
-        range: Option<&str>,
+        request: BilibiliHlsResourceRequest<'_>,
         store: Arc<dyn ProviderStore>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<PlaybackTransportAction, ProviderError> {
         self.runtime
             .providers
             .bilibili
-            .get_hls_segment(
-                Some(&store),
-                version,
-                target_url.to_string(),
-                request_control,
-                range,
-            )
+            .get_hls_resource(Some(&store), request, request_control)
             .await
     }
 
@@ -199,44 +185,20 @@ impl BilibiliPlaybackProviderService {
         mode_name: &str,
         mode: crate::provider::BilibiliDashManifestMode,
         store: Arc<dyn ProviderStore>,
-        proxy_url_for: Option<&mut crate::provider::BilibiliDashProxyUrlMapper<'_>>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<PlaybackTransportAction, ProviderError> {
         self.runtime
             .providers
             .bilibili
-            .get_dash_manifest(
-                Some(&store),
-                version,
-                mode_name,
-                mode,
-                request_control,
-                proxy_url_for,
-            )
+            .get_dash_manifest(Some(&store), version, mode_name, mode, request_control)
             .await
     }
 
-    pub async fn dash_segment_action(
+    pub fn dash_resource_action(
         &self,
-        version: &str,
-        mode_name: &str,
-        url_index: usize,
-        range: Option<&str>,
-        store: Arc<dyn ProviderStore>,
-        request_control: Option<&ExecutionControl>,
+        request: BilibiliDashResourceRequest<'_>,
     ) -> Result<PlaybackTransportAction, ProviderError> {
-        self.runtime
-            .providers
-            .bilibili
-            .get_dash_segment(
-                Some(&store),
-                version,
-                mode_name,
-                url_index,
-                request_control,
-                range,
-            )
-            .await
+        self.runtime.providers.bilibili.get_dash_resource(request)
     }
 
     pub async fn subtitle_action(
@@ -333,24 +295,44 @@ impl DirectUrlPlaybackProviderService {
             .await
     }
 
-    pub async fn hls_segment_action(
+    pub async fn hls_resource_action(
         &self,
-        version: &str,
-        target_url: &str,
-        range: Option<&str>,
+        request: DirectUrlHlsResourceRequest<'_>,
         store: Arc<dyn ProviderStore>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<PlaybackTransportAction, ProviderError> {
         self.runtime
             .providers
             .direct_url
-            .get_hls_segment(
-                Some(&store),
-                version,
-                target_url.to_string(),
-                request_control,
-                range,
-            )
+            .get_hls_resource(Some(&store), request, request_control)
+            .await
+    }
+
+    pub async fn dash_manifest_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        url_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .direct_url
+            .get_dash_manifest(Some(&store), version, mode_name, url_index, request_control)
+            .await
+    }
+
+    pub async fn dash_resource_action(
+        &self,
+        request: DirectUrlDashResourceRequest<'_>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .direct_url
+            .get_dash_resource(Some(&store), request, request_control)
             .await
     }
 
@@ -1408,24 +1390,16 @@ impl EmbyPlaybackProviderService {
             .get_hls_manifest(Some(&store), version, mode_name, url_index, request_control)
             .await
     }
-    pub async fn hls_segment_action(
+    pub async fn hls_resource_action(
         &self,
-        version: &str,
-        target_url: &str,
-        range: Option<&str>,
+        request: EmbyHlsResourceRequest<'_>,
         store: Arc<dyn ProviderStore>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<PlaybackTransportAction, ProviderError> {
         self.runtime
             .providers
             .emby
-            .get_hls_segment(
-                Some(&store),
-                version,
-                target_url.to_string(),
-                request_control,
-                range,
-            )
+            .get_hls_resource(Some(&store), request, request_control)
             .await
     }
     pub async fn subtitle_action(
@@ -1625,7 +1599,7 @@ impl PlaybackProviderRuntime {
             .check_permission(
                 &media.room_id,
                 &request.actor_user_id,
-                crate::models::RoomPermission::VIEW_MEDIA,
+                crate::models::RoomPermission::BROWSE_LIBRARY,
             )
             .await
             .map_err(core_error_to_provider_error)?;

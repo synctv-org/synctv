@@ -48,6 +48,12 @@ pub fn select_room_settings_patch(
                 select_scalar!(allow_auto_join, defaults.allow_auto_join.0);
             }
             "chat_enabled" => select_scalar!(chat_enabled, defaults.chat_enabled.0),
+            "voice_chat_enabled" => {
+                select_scalar!(voice_chat_enabled, defaults.voice_chat_enabled.0);
+            }
+            "p2p_media_enabled" => {
+                select_scalar!(p2p_media_enabled, defaults.p2p_media_enabled.0);
+            }
             "auto_play.enabled" => {
                 let source = source.auto_play.get_or_insert_default();
                 selected.auto_play.get_or_insert_default().enabled = Some(
@@ -161,6 +167,22 @@ mod tests {
                     .0
             )
         );
+    }
+
+    #[test]
+    fn selects_room_realtime_capabilities_independently() {
+        let patch = select_room_settings_patch(
+            synctv_proto::client::RoomSettingsPatch {
+                voice_chat_enabled: Some(false),
+                p2p_media_enabled: Some(false),
+                ..Default::default()
+            },
+            &["voice_chat_enabled".to_string()],
+        )
+        .expect("voice capability mask should be valid");
+
+        assert_eq!(patch.voice_chat_enabled, Some(false));
+        assert_eq!(patch.p2p_media_enabled, None);
     }
 
     #[test]

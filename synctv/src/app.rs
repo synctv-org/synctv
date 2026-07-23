@@ -1342,11 +1342,23 @@ impl Application {
             connection_runtime: cluster.realtime_connection_service.clone(),
         });
 
+        let playback_fanout = synctv_api::playback_fanout::default_playback_fanout_service(
+            cluster.realtime_fanout_service.clone(),
+        );
+        let prepared_fanout = playback_fanout.prepare_system_state_changed_batch_outbox_fanout();
+        let publish_fanout = {
+            let prepared_fanout = prepared_fanout.clone();
+            Arc::new(move || prepared_fanout.publish_after_outbox_commit())
+        };
         let playback_auto_advance = synctv_core::service::PlaybackAutoAdvanceService::new(
             core.services.room_service.playback_service().clone(),
             synctv_core::repository::RoomSettingsRepository::new(infra.pool.clone()),
         )
-        .with_active_room_source(active_room_source.clone());
+        .with_active_room_source(active_room_source.clone())
+        .with_realtime_fanout(
+            prepared_fanout.outbox_factory_with_source_changed(true),
+            publish_fanout,
+        );
         shutdown.register_task(
             "playback_auto_advance",
             playback_auto_advance.spawn(Duration::from_secs(1), cancel.clone()),

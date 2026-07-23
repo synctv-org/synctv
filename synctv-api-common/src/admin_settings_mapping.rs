@@ -79,6 +79,7 @@ pub fn runtime_settings_patch_from_admin_proto(
                     .map(core_ice_server)
                     .collect(),
             ),
+            max_voice_participants_per_room: patch.max_voice_participants_per_room,
         }),
         chat: settings.chat.map(|patch| ChatSettingsPatch {
             max_messages_per_room: patch.max_messages_per_room,
@@ -217,6 +218,9 @@ fn select_runtime_settings_patch(
             "webrtc.external_ice_servers" => {
                 select_required!(webrtc, external_ice_servers, path);
             }
+            "webrtc.max_voice_participants_per_room" => {
+                select_required!(webrtc, max_voice_participants_per_room, path);
+            }
             "chat.max_messages_per_room" => {
                 select_required!(chat, max_messages_per_room, path);
             }
@@ -299,6 +303,8 @@ fn room_settings_patch_from_client_proto(
         require_approval: patch.require_approval,
         allow_auto_join: patch.allow_auto_join,
         chat_enabled: patch.chat_enabled,
+        voice_chat_enabled: patch.voice_chat_enabled,
+        p2p_media_enabled: patch.p2p_media_enabled,
         auto_play: patch
             .auto_play
             .map(auto_play_patch_from_client_proto)

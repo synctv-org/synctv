@@ -5,6 +5,12 @@ package synctv.playback_provider.emby;
 import "proto/buf/validate/validate.proto";
 import "proto/playback_provider/common.proto";
 
+enum EmbyHlsResourceKind {
+  EMBY_HLS_RESOURCE_KIND_UNSPECIFIED = 0;
+  EMBY_HLS_RESOURCE_KIND_MEDIA = 1;
+  EMBY_HLS_RESOURCE_KIND_MANIFEST = 2;
+}
+
 message GetEmbyMediaStreamRequest {
   string version = 1 [(buf.validate.field).string.min_len = 1];
   string mode_name = 2 [(buf.validate.field).string.min_len = 1];
@@ -35,7 +41,7 @@ message EmbyHlsManifestResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
-message GetEmbyHlsSegmentRequest {
+message GetEmbyHlsResourceRequest {
   string version = 1 [(buf.validate.field).string.min_len = 1];
   string target_url = 2 [(buf.validate.field).string.min_len = 1];
   string sig = 3 [(buf.validate.field).string.min_len = 1];
@@ -44,9 +50,12 @@ message GetEmbyHlsSegmentRequest {
   int64 exp = 6;
   optional string range = 7;
   bool head = 8;
+  string mode_name = 9 [(buf.validate.field).string.min_len = 1];
+  uint32 media_index = 10;
+  EmbyHlsResourceKind resource_kind = 11 [(buf.validate.field).enum.defined_only = true];
 }
 
-message EmbyHlsSegmentResponse {
+message EmbyHlsResourceResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
@@ -67,6 +76,6 @@ message EmbySubtitleResponse {
 service EmbyPlaybackProviderService {
   rpc GetMediaStream(GetEmbyMediaStreamRequest) returns (stream EmbyMediaStreamResponse);
   rpc GetHlsManifest(GetEmbyHlsManifestRequest) returns (stream EmbyHlsManifestResponse);
-  rpc GetHlsSegment(GetEmbyHlsSegmentRequest) returns (stream EmbyHlsSegmentResponse);
+  rpc GetHlsResource(GetEmbyHlsResourceRequest) returns (stream EmbyHlsResourceResponse);
   rpc GetSubtitle(GetEmbySubtitleRequest) returns (stream EmbySubtitleResponse);
 }

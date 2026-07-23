@@ -68,18 +68,18 @@ Semantics:
 | --- | --- | --- | --- |
 | `permissions.adminDefaultPermissions` | Permission-name array | Built-in admin permission set | Global default permissions for room admin |
 | `permissions.memberDefaultPermissions` | Permission-name array | Built-in member permission set | Global default permissions for room member |
-| `permissions.guestDefaultPermissions` | Permission-name array | `[]` | Global default permissions for room guest; only `view_members`, `view_chat_history`, and `use_webrtc` are accepted |
+| `permissions.guestDefaultPermissions` | Permission-name array | `[]` | Global default permissions for room guest; only `view_members`, `view_chat_history`, `use_voice_chat`, and `use_p2p_media` are accepted |
 
 These settings are stored as JSON arrays of stable permission names, for example:
 
 ```json
-["send_chat_messages", "manage_own_media", "view_media", "view_members"]
+["send_chat_messages", "manage_own_media", "browse_library", "view_members"]
 ```
 
-`permissions.guestDefaultPermissions` has a dedicated guest ceiling. It rejects `view_media`, `send_chat_messages`, media-resource, playback-control, and administration permissions. Valid example:
+`permissions.guestDefaultPermissions` has a dedicated guest ceiling. It rejects `browse_library`, `send_chat_messages`, media-resource, playback-control, and administration permissions. Valid example:
 
 ```json
-["view_members", "view_chat_history", "use_webrtc"]
+["view_members", "view_chat_history", "use_voice_chat", "use_p2p_media"]
 ```
 
 See [Rooms, Permissions, and Preferences](../../use/rooms-permissions/) for permission names, role defaults, and room override rules.
@@ -185,9 +185,10 @@ Optional configuration is updated through its FieldMask path, for example `{"set
 
 ### WebRTC
 
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `webrtc.externalIceServers` | JSON/string structure | two Google STUN entries | External ICE servers returned to native clients |
+| Key | Type | Default | Validation | Meaning |
+| --- | --- | --- | --- | --- |
+| `webrtc.externalIceServers` | JSON/string structure | two Google STUN entries | Valid ICE server array | External ICE servers returned to native clients |
+| `webrtc.maxVoiceParticipantsPerRoom` | u32 | `8` | `2..=32` | Maximum simultaneous voice Mesh participants per room |
 
 Default value:
 
@@ -199,6 +200,8 @@ Default value:
 ```
 
 Built-in STUN listener configuration is startup configuration. See [WebRTC Configuration](../../configuration/webrtc/).
+
+The voice limit is read dynamically for every join. Lowering it blocks subsequent joins while preserving existing calls; leaving or disconnecting releases a slot immediately. Multi-replica deployments coordinate room slots atomically through Redis.
 
 ### Chat
 

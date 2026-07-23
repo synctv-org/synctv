@@ -73,13 +73,32 @@ SyncTV proxy slice cache 的边界：
 
 完整协议见 [Realtime API](../../develop/realtime-api/)。
 
+## P2P 媒体分发
+
+原生客户端可以在播放同步设置中动态开启 P2P 媒体分发。符合条件的点播 `PlaybackMedia` 会包含 `p2p_delivery`；客户端通过 WebRTC DataChannel 从同一房间、同一资源 swarm 的其他观众获取媒体分片，并保留原始 HTTP 地址作为回退路径。
+
+| 项目 | 行为 |
+| --- | --- |
+| 资源范围 | Provider 为静态点播资源生成房间隔离的 swarm；直播省略 `p2p_delivery` |
+| 媒体格式 | 客户端根据所选 `PlaybackMedia.format` 处理普通文件、HLS 和 DASH |
+| 直连与代理 | Provider 确认两种模式字节一致时，两者使用同一个 swarm |
+| 权限 | 房间成员或游客需要 `use_p2p_media` |
+| 动态开关 | 关闭后客户端离开 swarm、停止 P2P 连接并继续通过 HTTP 播放 |
+| 本地缓存 | 可选择 64、128、256、512 或 1024 MiB，默认 128 MiB；最近使用的分片可跨播放会话复用，连续 10 分钟未访问后自动过期 |
+
+播放器的 P2P 指标展示已连接 Peer、总下载和上传速度、HTTP 下载、P2P 下载与上传、累计流量、缓存大小及命中率。Peer 暂时不可用、ICE 连接失败或分片传输超时时，播放请求会自动使用来源 HTTP。
+
+<Aside type="caution">
+swarm ticket 负责房间、用户和资源隔离。当前传输协议允许 Peer 返回任意媒体字节，适用于彼此信任的房间成员。
+</Aside>
+
 ## WebRTC 和直播
 
 WebRTC 和直播不是普通点播 proxy：
 
 | 能力 | 边界 |
 | --- | --- |
-| WebRTC | 用于房间内实时音视频或信令，依赖 ICE/STUN/TURN 配置和 `use_webrtc` 权限 |
+| WebRTC | 为语音聊天和 P2P 媒体分发提供独立会话，依赖 ICE/STUN/TURN 配置及对应的 `use_voice_chat`、`use_p2p_media` 权限 |
 | RTMP 推流 | 推流入口，通常由主播或房间管理员使用 |
 | HTTP-FLV | 低延迟直播播放路径，受长连接和客户端慢速读取影响 |
 | HLS | playlist/segment 文件路径，多副本需要本地 proxy、共享文件或 OSS backend |

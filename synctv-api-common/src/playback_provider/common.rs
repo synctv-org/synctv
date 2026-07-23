@@ -14,6 +14,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::impls::ApiError;
 use crate::proxy_signature::ProxySigningKeyQueryExt;
+use base64::Engine as _;
 
 pub struct PlaybackProviderAccessDeps<'a> {
     pub proxy_signing_key: &'a ProxySigningKey,
@@ -214,7 +215,15 @@ pub struct PlaybackTransportExecutorDeps<'a> {
 pub struct HlsRewriteSigning<'a> {
     pub segment_base: &'a str,
     pub claims: &'a ProxyUrlClaims,
-    pub resource: &'static str,
+    /// A trailing `/*` enables typed child routes (`manifest` and `media`).
+    pub resource: &'a str,
+}
+
+#[derive(Clone, Copy)]
+pub struct DashRewriteSigning<'a> {
+    pub resource_base: &'a str,
+    pub resource_prefix: &'a str,
+    pub claims: &'a ProxyUrlClaims,
 }
 
 pub struct LivePlaybackDeps<'a> {
@@ -688,18 +697,18 @@ pub async fn playback_transport_action_to_chunk_stream(
             let manifest = std::str::from_utf8(&body)
                 .map_err(|_| ApiError::InvalidInput("M3U8 manifest is not UTF-8".to_string()))?;
             let rewritten = if let Some(hls_rewrite) = deps.hls_rewrite {
-                synctv_proxy::rewrite_m3u8_with_url_mapper(
+                synctv_proxy::rewrite_m3u8_with_typed_url_mapper(
                     manifest,
                     &url,
                     hls_rewrite.segment_base,
-                    move |segment_base, target_url| {
-                        let signed_query =
-                            deps.proxy_signing_key.build_signed_query_with_target_url(
-                                hls_rewrite.claims,
-                                hls_rewrite.resource,
-                                target_url,
-                            );
-                        format!("{segment_base}?{signed_query}")
+                    move |segment_base, target_url, kind| {
+                        build_hls_resource_url(
+                            deps.proxy_signing_key,
+                            hls_rewrite,
+                            segment_base,
+                            target_url,
+                            kind,
+                        )
                     },
                 )
                 .map_err(|error| ApiError::ServiceUnavailable(error.to_string()))?
@@ -715,6 +724,45 @@ pub async fn playback_transport_action_to_chunk_stream(
                 false,
             ))
         }
+        PlaybackTransportAction::M3u8BodyRewrite { body } => {
+            if body.len() > MAX_MANIFEST_SIZE {
+                return Err(ApiError::ServiceUnavailable(
+                    "M3U8 manifest exceeded size limit".to_string(),
+                ));
+            }
+            let manifest = std::str::from_utf8(&body)
+                .map_err(|_| ApiError::InvalidInput("M3U8 manifest is not UTF-8".to_string()))?;
+            let hls_rewrite = deps.hls_rewrite.ok_or_else(|| {
+                ApiError::Internal(
+                    "HLS rewrite action requires API route signing context".to_string(),
+                )
+            })?;
+            let rewritten = synctv_proxy::rewrite_m3u8_with_typed_url_mapper(
+                manifest,
+                "https://synctv.invalid/bilibili-durl.m3u8",
+                hls_rewrite.segment_base,
+                move |segment_base, target_url, kind| {
+                    build_hls_resource_url(
+                        deps.proxy_signing_key,
+                        hls_rewrite,
+                        segment_base,
+                        target_url,
+                        kind,
+                    )
+                },
+            )
+            .map_err(|error| ApiError::ServiceUnavailable(error.to_string()))?;
+            Ok(direct_chunk_stream(
+                rewritten,
+                "application/vnd.apple.mpegurl",
+                200,
+                head,
+            ))
+        }
+        PlaybackTransportAction::MpdRewrite { .. }
+        | PlaybackTransportAction::MpdBodyRewrite { .. } => Err(ApiError::Internal(
+            "MPD rewrite action requires DASH route signing context".to_string(),
+        )),
         PlaybackTransportAction::DirectBody {
             body,
             content_type,
@@ -727,6 +775,137 @@ pub async fn playback_transport_action_to_chunk_stream(
                 .to_string(),
         )),
     }
+}
+
+fn build_hls_resource_url(
+    signing_key: &ProxySigningKey,
+    rewrite: HlsRewriteSigning<'_>,
+    segment_base: &str,
+    target_url: &str,
+    kind: synctv_proxy::HlsResourceKind,
+) -> String {
+    let Some(resource_prefix) = rewrite.resource.strip_suffix("/*") else {
+        let signed_query = signing_key.build_signed_query_with_target_url(
+            rewrite.claims,
+            rewrite.resource,
+            target_url,
+        );
+        return format!("{segment_base}?{signed_query}");
+    };
+    let kind = match kind {
+        synctv_proxy::HlsResourceKind::Manifest => "manifest",
+        synctv_proxy::HlsResourceKind::Media => "media",
+    };
+    let signed_query = signing_key.build_signed_query_with_target_url(
+        rewrite.claims,
+        &format!("{resource_prefix}/{kind}"),
+        target_url,
+    );
+    format!("{segment_base}/{kind}?{signed_query}")
+}
+
+pub async fn dash_transport_action_to_chunk_stream(
+    deps: PlaybackTransportExecutorDeps<'_>,
+    action: PlaybackTransportAction,
+    signing: DashRewriteSigning<'_>,
+    head: bool,
+) -> Result<PlaybackProviderChunkStream, ApiError> {
+    let (body, url) = match action {
+        PlaybackTransportAction::MpdRewrite { url, headers } => {
+            if head {
+                let response = send_playback_provider_request(
+                    &deps,
+                    reqwest::Method::HEAD,
+                    &url,
+                    &headers,
+                    None,
+                )
+                .await
+                .map_err(|error| map_proxy_execution_error(&error))?;
+                return Ok(response_to_chunk_stream(response, true));
+            }
+            let response =
+                send_playback_provider_request(&deps, reqwest::Method::GET, &url, &headers, None)
+                    .await
+                    .map_err(|error| map_proxy_execution_error(&error))?;
+            let status = response.status();
+            if !status.is_success() {
+                return Err(ApiError::ServiceUnavailable(format!(
+                    "Remote MPD returned status {status}"
+                )));
+            }
+            if response
+                .content_length()
+                .is_some_and(|size| size > MAX_MANIFEST_CONTENT_LENGTH)
+            {
+                return Err(ApiError::ServiceUnavailable(
+                    "MPD manifest exceeded size limit".to_string(),
+                ));
+            }
+            let mut body = bytes::BytesMut::with_capacity(
+                response
+                    .content_length()
+                    .and_then(|size| usize::try_from(size).ok())
+                    .unwrap_or(8192)
+                    .min(MAX_MANIFEST_SIZE),
+            );
+            let mut stream = response.bytes_stream();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|error| map_reqwest_error(&error))?;
+                if body.len().saturating_add(chunk.len()) > MAX_MANIFEST_SIZE {
+                    return Err(ApiError::ServiceUnavailable(
+                        "MPD manifest exceeded size limit during streaming read".to_string(),
+                    ));
+                }
+                body.extend_from_slice(&chunk);
+            }
+            (body.freeze(), url)
+        }
+        PlaybackTransportAction::MpdBodyRewrite { body, source_url } => {
+            if body.len() > MAX_MANIFEST_SIZE {
+                return Err(ApiError::ServiceUnavailable(
+                    "MPD manifest exceeded size limit".to_string(),
+                ));
+            }
+            (bytes::Bytes::from(body), source_url)
+        }
+        action => return playback_transport_action_to_chunk_stream(deps, action, head).await,
+    };
+    let manifest = std::str::from_utf8(&body)
+        .map_err(|_| ApiError::InvalidInput("MPD manifest is not UTF-8".to_string()))?;
+    let rewritten = synctv_proxy::rewrite_mpd_with_url_mapper(manifest, &url, |scope_url, kind| {
+        build_dash_scope_url(&deps, signing, scope_url, kind)
+    })
+    .map_err(|error| ApiError::ServiceUnavailable(error.to_string()))?;
+    Ok(direct_chunk_stream(
+        rewritten,
+        "application/dash+xml",
+        200,
+        false,
+    ))
+}
+
+fn build_dash_scope_url(
+    deps: &PlaybackTransportExecutorDeps<'_>,
+    signing: DashRewriteSigning<'_>,
+    scope_url: &str,
+    kind: synctv_proxy::MpdResourceKind,
+) -> String {
+    let kind = match kind {
+        synctv_proxy::MpdResourceKind::Media => "media",
+        synctv_proxy::MpdResourceKind::Manifest => "manifest",
+    };
+    let mut claims = signing.claims.clone();
+    claims.resource = format!("{}/{kind}", signing.resource_prefix);
+    claims.target_url = Some(scope_url.to_string());
+    let signature = deps.proxy_signing_key.sign(&claims);
+    let scope = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(scope_url);
+    let user_id = urlencoding::encode(&claims.user_id);
+    let room_id = urlencoding::encode(&claims.room_id);
+    format!(
+        "{}/{kind}/{scope}/{user_id}/{room_id}/{}/{signature}",
+        signing.resource_base, claims.expires_at
+    )
 }
 
 fn live_segments_disguised_as_png(
@@ -1267,7 +1446,7 @@ mod tests {
         let claims = crate::proxy_signature::ProxyUrlClaims {
             provider: "direct_url".to_string(),
             version: "v1".to_string(),
-            resource: "hls-segments".to_string(),
+            resource: "hls-resources/direct/0/*".to_string(),
             room_id: "room-1".to_string(),
             user_id: "user-1".to_string(),
             expires_at: synctv_core::SystemClock.now().timestamp() + 1800,
@@ -1280,9 +1459,9 @@ mod tests {
             proxy_slice_cache: &proxy_slice_cache,
             request_control: None,
             hls_rewrite: Some(HlsRewriteSigning {
-                segment_base: "/api/playback-providers/direct-url/v1/hls-segments",
+                segment_base: "/api/playback-providers/direct-url/v1/hls-resources/direct/0",
                 claims: &claims,
-                resource: "hls-segments",
+                resource: "hls-resources/direct/0/*",
             }),
         };
         let action = PlaybackTransportAction::M3u8Rewrite {
@@ -1301,8 +1480,204 @@ mod tests {
         let body = std::str::from_utf8(&chunk.data)?.to_string();
 
         assert_eq!(chunk.status, 200);
-        assert!(body.contains("/api/playback-providers/direct-url/v1/hls-segments?"));
+        assert!(
+            body.contains("/api/playback-providers/direct-url/v1/hls-resources/direct/0/media?")
+        );
         assert!(body.contains("targetUrl="));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mpd_rewrite_forwards_headers_and_builds_signed_resource_scopes() -> anyhow::Result<()>
+    {
+        let Some(mock_server) = start_mock_server_or_skip().await? else {
+            return Ok(());
+        };
+        let manifest = r#"<MPD><Location>refresh.mpd?token=next</Location><Period><AdaptationSet><SegmentTemplate initialization="init-$RepresentationID$.m4s" media="video/$RepresentationID$/segment-$Number$.m4s?token=part"/></AdaptationSet></Period></MPD>"#;
+        Mock::given(method("GET"))
+            .and(path("/dash/manifest.mpd"))
+            .and(header("Authorization", "Bearer secret"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(manifest)
+                    .insert_header("Content-Type", "application/dash+xml"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = mock_proxy_client(&mock_server)?;
+        let ssrf_guard = test_ssrf_guard();
+        let proxy_slice_cache =
+            synctv_proxy::slice_cache::SliceCache::new_with_client_and_ssrf_guard(
+                synctv_proxy::slice_cache::SliceCacheConfig::default(),
+                client.clone(),
+                ssrf_guard.clone(),
+            )?;
+        let signing_key = crate::proxy_signature::ProxySigningKey::try_derive_from(
+            b"test-secret-key-for-direct-url-dash",
+        )?;
+        let claims = crate::proxy_signature::ProxyUrlClaims {
+            provider: "direct_url".to_string(),
+            version: "v1".to_string(),
+            resource: "dash-manifests/direct/0".to_string(),
+            room_id: "room-1".to_string(),
+            user_id: "user-1".to_string(),
+            expires_at: synctv_core::SystemClock.now().timestamp() + 1_800,
+            target_url: None,
+        };
+        let deps = PlaybackTransportExecutorDeps {
+            proxy_signing_key: &signing_key,
+            proxy_http_client: &client,
+            ssrf_guard: &ssrf_guard,
+            proxy_slice_cache: &proxy_slice_cache,
+            request_control: None,
+            hls_rewrite: None,
+        };
+        let action = PlaybackTransportAction::MpdRewrite {
+            url: mock_public_url(&mock_server, "/dash/manifest.mpd"),
+            headers: HashMap::from([("Authorization".to_string(), "Bearer secret".to_string())]),
+        };
+
+        let mut stream = dash_transport_action_to_chunk_stream(
+            deps,
+            action,
+            DashRewriteSigning {
+                resource_base: "/api/playback-providers/direct-url/v1/dash-resources/direct/0",
+                resource_prefix: "dash-resources/direct/0",
+                claims: &claims,
+            },
+            false,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let chunk = stream
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("rewritten MPD should emit one chunk"))?
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let body = std::str::from_utf8(&chunk.data)?;
+        let root_scope = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(
+            "http://cdn.example.com:{}/dash/",
+            mock_server.address().port()
+        ));
+        let refresh_scope = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(
+            "http://cdn.example.com:{}/dash/refresh.mpd?token=next",
+            mock_server.address().port()
+        ));
+
+        assert_eq!(chunk.content_type.as_deref(), Some("application/dash+xml"));
+        assert!(body.contains(&format!("/media/{root_scope}/user-1/room-1/")));
+        assert!(body.contains("init-$RepresentationID$.m4s"));
+        assert!(body.contains("segment-$Number$.m4s?token=part"));
+        assert!(body.contains(&format!("/manifest/{refresh_scope}/user-1/room-1/")));
+
+        let generated_claims = crate::proxy_signature::ProxyUrlClaims {
+            provider: "bilibili".to_string(),
+            version: "v1".to_string(),
+            resource: "dash-manifests/dash/proxy".to_string(),
+            room_id: "room-1".to_string(),
+            user_id: "user-1".to_string(),
+            expires_at: synctv_core::SystemClock.now().timestamp() + 1_800,
+            target_url: None,
+        };
+        let deps = PlaybackTransportExecutorDeps {
+            proxy_signing_key: &signing_key,
+            proxy_http_client: &client,
+            ssrf_guard: &ssrf_guard,
+            proxy_slice_cache: &proxy_slice_cache,
+            request_control: None,
+            hls_rewrite: None,
+        };
+        let action = PlaybackTransportAction::MpdBodyRewrite {
+            body: br#"<MPD><Period><AdaptationSet><Representation><BaseURL>https://upos.example/video.m4s?token=private</BaseURL><SegmentBase indexRange="100-200"><Initialization range="0-99"/></SegmentBase></Representation></AdaptationSet></Period></MPD>"#.to_vec(),
+            source_url: "https://synctv.invalid/bilibili-generated.mpd".to_string(),
+        };
+        let mut stream = dash_transport_action_to_chunk_stream(
+            deps,
+            action,
+            DashRewriteSigning {
+                resource_base: "/api/playback-providers/bilibili/v1/dash-resources/dash",
+                resource_prefix: "dash-resources/dash",
+                claims: &generated_claims,
+            },
+            false,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let generated = stream
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("generated MPD should emit one chunk"))?
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let generated_body = std::str::from_utf8(&generated.data)?;
+        let generated_scope = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode("https://upos.example/video.m4s?token=private");
+        assert!(generated_body.contains(&format!(
+            "/api/playback-providers/bilibili/v1/dash-resources/dash/media/{generated_scope}/user-1/room-1/"
+        )));
+        assert!(generated_body.contains("<SegmentBase indexRange=\"100-200\">"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn in_memory_m3u8_rewrite_signs_each_segment() -> anyhow::Result<()> {
+        let Some(mock_server) = start_mock_server_or_skip().await? else {
+            return Ok(());
+        };
+        let client = mock_proxy_client(&mock_server)?;
+        let ssrf_guard = test_ssrf_guard();
+        let proxy_slice_cache =
+            synctv_proxy::slice_cache::SliceCache::new_with_client_and_ssrf_guard(
+                synctv_proxy::slice_cache::SliceCacheConfig::default(),
+                client.clone(),
+                ssrf_guard.clone(),
+            )?;
+        let signing_key = crate::proxy_signature::ProxySigningKey::try_derive_from(
+            b"test-secret-key-for-in-memory-m3u8",
+        )?;
+        let claims = crate::proxy_signature::ProxyUrlClaims {
+            provider: "bilibili".to_string(),
+            version: "v1".to_string(),
+            resource: "hls-resources/durl/0/*".to_string(),
+            room_id: "room-1".to_string(),
+            user_id: "user-1".to_string(),
+            expires_at: synctv_core::SystemClock.now().timestamp() + 1_800,
+            target_url: None,
+        };
+        let deps = PlaybackTransportExecutorDeps {
+            proxy_signing_key: &signing_key,
+            proxy_http_client: &client,
+            ssrf_guard: &ssrf_guard,
+            proxy_slice_cache: &proxy_slice_cache,
+            request_control: None,
+            hls_rewrite: Some(HlsRewriteSigning {
+                segment_base: "/api/playback-providers/bilibili/v1/hls-resources/durl/0",
+                claims: &claims,
+                resource: "hls-resources/durl/0/*",
+            }),
+        };
+        let action = PlaybackTransportAction::M3u8BodyRewrite {
+            body: b"#EXTM3U\n#EXTINF:2,\nhttps://cdn.example/part-1.mp4\n#EXT-X-DISCONTINUITY\n#EXTINF:3,\nhttps://cdn.example/part-2.mp4\n#EXT-X-ENDLIST\n".to_vec(),
+        };
+
+        let mut stream = playback_transport_action_to_chunk_stream(deps, action, false)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let chunk = stream
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("rewritten manifest should emit one chunk"))?
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let body = std::str::from_utf8(&chunk.data)?;
+
+        assert_eq!(
+            body.matches("/api/playback-providers/bilibili/v1/hls-resources/durl/0/media?")
+                .count(),
+            2
+        );
+        assert_eq!(body.matches("targetUrl=").count(), 2);
+        assert!(!body.contains("https://cdn.example/part-1.mp4\n"));
         Ok(())
     }
 }

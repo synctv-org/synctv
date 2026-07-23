@@ -30,7 +30,9 @@ async fn test_allow_override_role_default() {
     );
 
     let settings = RoomSettings {
-        member_removed_permissions: MemberRemovedPermissions(RoomMemberPermissionBits::USE_WEBRTC),
+        member_removed_permissions: MemberRemovedPermissions(
+            RoomMemberPermissionBits::USE_VOICE_CHAT,
+        ),
         ..RoomSettings::default()
     };
     let (room, _) = ok(
@@ -58,7 +60,7 @@ async fn test_allow_override_role_default() {
             .await,
         "allow override permissions should load before grant",
     );
-    assert!(!perms_before.has(RoomPermission::USE_WEBRTC));
+    assert!(!perms_before.has(RoomPermission::USE_VOICE_CHAT));
 
     ok(
         room_service
@@ -67,7 +69,7 @@ async fn test_allow_override_role_default() {
                 room.id,
                 creator.id,
                 member.id,
-                synctv_core::models::RoomAdminPermissionBits::USE_WEBRTC,
+                synctv_core::models::RoomAdminPermissionBits::USE_VOICE_CHAT,
             )
             .await,
         "allow override permission should be granted",
@@ -79,7 +81,7 @@ async fn test_allow_override_role_default() {
             .await,
         "allow override permissions should load after grant",
     );
-    assert!(perms_after.has(RoomPermission::USE_WEBRTC));
+    assert!(perms_after.has(RoomPermission::USE_VOICE_CHAT));
     assert!(perms_after.has(RoomPermission::SEND_CHAT_MESSAGES));
 }
 

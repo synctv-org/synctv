@@ -530,6 +530,7 @@ fn media_source_config_to_proto(
                 is_live: config.is_live,
                 duration_seconds: config.duration_seconds,
                 prefer_proxy: config.prefer_proxy,
+                proxy_only: config.proxy_only.then_some(true),
                 medias: config
                     .medias
                     .into_iter()
@@ -963,6 +964,8 @@ fn room_settings_to_client_proto(
         require_approval: settings.require_approval.0,
         allow_auto_join: settings.allow_auto_join.0,
         chat_enabled: settings.chat_enabled.0,
+        voice_chat_enabled: settings.voice_chat_enabled.0,
+        p2p_media_enabled: settings.p2p_media_enabled.0,
         auto_play: Some(client_proto::AutoPlaySettings {
             enabled: settings.auto_play.value.enabled,
             mode: match settings.auto_play.value.mode {

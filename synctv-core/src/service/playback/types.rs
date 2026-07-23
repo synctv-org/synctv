@@ -186,17 +186,14 @@ pub(super) fn validate_position_update_source(state: &RoomPlaybackState) -> Resu
 }
 
 pub(super) fn validate_switch_target(target: &SwitchPlaybackTarget) -> Result<()> {
-    match (&target.media_id, &target.playlist_id) {
-        (Some(_), Some(_)) => Err(Error::InvalidInput(
-            "media_id and playlist_id cannot both be set".to_string(),
-        )),
-        (None, None) if target.target.is_some() => Err(Error::InvalidInput(
+    match (&target.media_id, &target.playlist_id, &target.target) {
+        (None, None, Some(_)) => Err(Error::InvalidInput(
             "target must be omitted when clearing playback".to_string(),
         )),
-        (Some(_), None) if target.target.is_some() => Err(Error::InvalidInput(
+        (Some(_), _, Some(_)) => Err(Error::InvalidInput(
             "target must be omitted when switching to a static media item".to_string(),
         )),
-        (None, Some(_)) if target.target.is_none() => Err(Error::InvalidInput(
+        (None, Some(_), None) => Err(Error::InvalidInput(
             "target is required when switching to a dynamic playlist item".to_string(),
         )),
         _ => Ok(()),

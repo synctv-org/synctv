@@ -102,13 +102,14 @@ const NAMED_PERMISSIONS: &[(&str, u64)] = &[
         "manage_own_media",
         RoomAdminPermissionBits::MANAGE_OWN_MEDIA,
     ),
-    ("view_media", RoomAdminPermissionBits::VIEW_MEDIA),
+    ("browse_library", RoomAdminPermissionBits::BROWSE_LIBRARY),
     ("view_members", RoomAdminPermissionBits::VIEW_MEMBERS),
     (
         "view_chat_history",
         RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
     ),
-    ("use_webrtc", RoomAdminPermissionBits::USE_WEBRTC),
+    ("use_voice_chat", RoomAdminPermissionBits::USE_VOICE_CHAT),
+    ("use_p2p_media", RoomAdminPermissionBits::USE_P2P_MEDIA),
     ("delete_media", RoomAdminPermissionBits::DELETE_MEDIA),
     ("reorder_media", RoomAdminPermissionBits::REORDER_MEDIA),
     ("clear_media", RoomAdminPermissionBits::CLEAR_MEDIA),
@@ -185,7 +186,7 @@ impl std::str::FromStr for PermissionSet {
 
 #[cfg(test)]
 mod tests {
-    use super::PermissionSet;
+    use super::{validate_webrtc_settings, IceServerList, PermissionSet, WebRtcRuntimeSettings};
     use crate::models::RoomAdminPermissionBits;
     use std::str::FromStr;
 
@@ -201,12 +202,20 @@ mod tests {
     }
 
     #[test]
-    fn permission_set_rejects_case_and_separator_aliases() {
-        for raw in [r#"["MANAGE_LIVE_STREAMS"]"#, r#"["live-control"]"#] {
-            assert!(
-                PermissionSet::from_str(raw).is_err(),
-                "{raw} should be rejected"
-            );
+    fn voice_participant_limit_accepts_mesh_operating_range() {
+        for max_voice_participants_per_room in [2, 8, 32] {
+            assert!(validate_webrtc_settings(&WebRtcRuntimeSettings {
+                external_ice_servers: IceServerList::new(),
+                max_voice_participants_per_room,
+            })
+            .is_ok());
+        }
+        for max_voice_participants_per_room in [1, 33] {
+            assert!(validate_webrtc_settings(&WebRtcRuntimeSettings {
+                external_ice_servers: IceServerList::new(),
+                max_voice_participants_per_room,
+            })
+            .is_err());
         }
     }
 }
@@ -290,10 +299,7 @@ pub struct IceServerList(pub Vec<ConfiguredIceServer>);
 impl IceServerList {
     #[must_use]
     pub fn new() -> Self {
-        Self(vec![
-            ConfiguredIceServer::new(vec!["stun:stun.l.google.com:19302".to_string()]),
-            ConfiguredIceServer::new(vec!["stun:stun1.l.google.com:19302".to_string()]),
-        ])
+        Self(Vec::new())
     }
 }
 
@@ -868,6 +874,7 @@ impl EmailRuntimeSettingsUpdateMask {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WebRtcRuntimeSettingsUpdateMask {
     pub external_ice_servers: bool,
+    pub max_voice_participants_per_room: bool,
 }
 
 impl WebRtcRuntimeSettingsUpdateMask {
@@ -875,12 +882,13 @@ impl WebRtcRuntimeSettingsUpdateMask {
     pub const fn all() -> Self {
         Self {
             external_ice_servers: true,
+            max_voice_participants_per_room: true,
         }
     }
 
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        !self.external_ice_servers
+        !self.external_ice_servers && !self.max_voice_participants_per_room
     }
 }
 
@@ -1027,6 +1035,7 @@ impl EmailRuntimeSettings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebRtcRuntimeSettings {
     pub external_ice_servers: IceServerList,
+    pub max_voice_participants_per_room: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1185,6 +1194,11 @@ fn validate_enabled_email_config(settings: &EmailRuntimeSettings) -> crate::Resu
 }
 
 fn validate_webrtc_settings(settings: &WebRtcRuntimeSettings) -> crate::Result<()> {
+    if !(2..=32).contains(&settings.max_voice_participants_per_room) {
+        return Err(crate::Error::InvalidInput(
+            "webrtc.max_voice_participants_per_room must be between 2 and 32".to_string(),
+        ));
+    }
     for room_defaults in &settings.external_ice_servers.0 {
         if room_defaults.urls.is_empty() {
             return Err(crate::Error::InvalidInput(

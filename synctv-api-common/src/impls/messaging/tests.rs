@@ -653,6 +653,23 @@ fn server_message_contains_chat_event_content(
     }
 }
 
+fn server_message_contains_chat_event_username(
+    message: &synctv_proto::client::ServerMessage,
+    content: &str,
+    username: &str,
+) -> bool {
+    match &message.message {
+        Some(Message::ResourceEvent(changed)) => matches!(
+            changed.payload.as_ref(),
+            Some(synctv_proto::client::resource_event::Payload::ChatEvent(event))
+                if event.message.as_ref().is_some_and(|message| {
+                    message.content == content && message.username.as_deref() == Some(username)
+                })
+        ),
+        _ => false,
+    }
+}
+
 fn empty_playlist_items_response(
     version: impl Into<String>,
 ) -> synctv_proto::client::ListPlaylistItemsResponse {
@@ -2731,6 +2748,13 @@ async fn test_cached_room_subscription_delivers_pre_run_chat_event_after_explici
     let handler = &fixture.handler;
     let event_service = &fixture.event_service;
     let connection_service = &fixture.connection_service;
+    let expected_username = handler
+        .room_service
+        .user_service()
+        .get_username(&handler.user_id)
+        .await
+        .checked("fixture username should load")
+        .checked("fixture user should exist");
     prepare_handler_for_run_after_join(handler, connection_service).await;
 
     handler
@@ -2753,10 +2777,10 @@ async fn test_cached_room_subscription_delivers_pre_run_chat_event_after_explici
     event_service.broadcast(RealtimeEvent::ChatMessageEvent {
         event_id: "evt-prejoin-window".to_string(),
         room_id: handler.room_id,
-        actor_user_id: UserId::expect_positive(113_001),
+        actor_user_id: handler.user_id,
         event: chat_event_with_content(
             handler.room_id,
-            UserId::expect_positive(113_001),
+            handler.user_id,
             "evt-prejoin-window",
             "arrived-before-run-after-join",
         ),
@@ -2790,6 +2814,13 @@ async fn test_cached_room_subscription_delivers_pre_run_chat_event_after_explici
             )),
         "room event broadcast after caching the subscription but before run_after_join must not be lost"
     );
+    assert!(messages.iter().any(|message| {
+        server_message_contains_chat_event_username(
+            message,
+            "arrived-before-run-after-join",
+            &expected_username,
+        )
+    }));
 
     connection_service.disconnect_connection(handler.connection_id());
     wait_for_run_after_join_cleanup(handler, connection_service, event_service, run_task).await;
@@ -7083,9 +7114,9 @@ fn test_resource_backed_events_do_not_emit_direct_server_messages() {
             changed_by: user_id(),
             changed_by_username: "owner".to_string(),
             role_changed: false,
-            new_permissions: RoomPermissionSet(RoomAdminPermissionBits::USE_WEBRTC),
+            new_permissions: RoomPermissionSet(RoomAdminPermissionBits::USE_VOICE_CHAT),
             role: synctv_proto::common::RoomMemberRole::Member as i32,
-            added_permissions: RoomPermissionSet(RoomMemberPermissionBits::USE_WEBRTC),
+            added_permissions: RoomPermissionSet(RoomMemberPermissionBits::USE_VOICE_CHAT),
             removed_permissions: RoomPermissionSet(RoomMemberPermissionBits::SEND_CHAT_MESSAGES),
             admin_added_permissions: RoomPermissionSet(0),
             admin_removed_permissions: RoomPermissionSet(0),
@@ -7201,9 +7232,9 @@ fn test_permission_changed_room_member_event_preserves_presence_snapshot() {
         changed_by: user_id(),
         changed_by_username: "owner".to_string(),
         role_changed: false,
-        new_permissions: RoomPermissionSet(RoomAdminPermissionBits::USE_WEBRTC),
+        new_permissions: RoomPermissionSet(RoomAdminPermissionBits::USE_VOICE_CHAT),
         role: synctv_proto::common::RoomMemberRole::Member as i32,
-        added_permissions: RoomPermissionSet(RoomMemberPermissionBits::USE_WEBRTC),
+        added_permissions: RoomPermissionSet(RoomMemberPermissionBits::USE_VOICE_CHAT),
         removed_permissions: RoomPermissionSet(RoomMemberPermissionBits::SEND_CHAT_MESSAGES),
         admin_added_permissions: RoomPermissionSet(0),
         admin_removed_permissions: RoomPermissionSet(0),
@@ -7224,7 +7255,7 @@ fn test_permission_changed_room_member_event_preserves_presence_snapshot() {
 
 #[test]
 fn test_webrtc_offer_event_conversion() {
-    let event = RealtimeEvent::WebRTCSignaling {
+    let event = RealtimeEvent::WebRTCVoiceSignaling {
         event_id: "evt7".to_string(),
         room_id: room_id(),
         message_type: WebRTCSignalKind::Offer,
@@ -7241,7 +7272,7 @@ fn test_webrtc_offer_event_conversion() {
 
 #[test]
 fn test_webrtc_answer_event_conversion() {
-    let event = RealtimeEvent::WebRTCSignaling {
+    let event = RealtimeEvent::WebRTCVoiceSignaling {
         event_id: "evt8".to_string(),
         room_id: room_id(),
         message_type: WebRTCSignalKind::Answer,
@@ -7258,7 +7289,7 @@ fn test_webrtc_answer_event_conversion() {
 
 #[test]
 fn test_webrtc_ice_candidate_event_conversion() {
-    let event = RealtimeEvent::WebRTCSignaling {
+    let event = RealtimeEvent::WebRTCVoiceSignaling {
         event_id: "evt9".to_string(),
         room_id: room_id(),
         message_type: WebRTCSignalKind::IceCandidate,
@@ -7275,15 +7306,16 @@ fn test_webrtc_ice_candidate_event_conversion() {
 
 #[test]
 fn test_webrtc_join_and_leave_event_conversion() {
-    let join = RealtimeEvent::WebRTCJoin {
+    let join = RealtimeEvent::WebRTCVoicePeerJoined {
         event_id: "evt-webrtc-join".to_string(),
         room_id: room_id(),
         actor_id: "user_1".to_string(),
         conn_id: "conn_1".to_string(),
         username: "alice".to_string(),
+
         timestamp: now(),
     };
-    let leave = RealtimeEvent::WebRTCLeave {
+    let leave = RealtimeEvent::WebRTCVoicePeerLeft {
         event_id: "evt-webrtc-leave".to_string(),
         room_id: room_id(),
         actor_id: "user_1".to_string(),
@@ -7551,36 +7583,6 @@ fn test_private_ice_candidate_detection() {
     );
 }
 
-#[tokio::test]
-async fn test_progress_throttle_first_write_always_allowed() {
-    assert!(super::should_persist_playback_progress(None, 100.0));
-}
-
-#[tokio::test]
-async fn test_progress_throttle_small_position_change_suppressed() {
-    assert!(
-        !super::should_persist_playback_progress(Some((100.0, tokio::time::Instant::now())), 100.5),
-        "Small position change with short elapsed time should be suppressed"
-    );
-}
-
-#[tokio::test]
-async fn test_progress_throttle_large_position_change_allowed() {
-    assert!(
-        super::should_persist_playback_progress(Some((100.0, tokio::time::Instant::now())), 101.5),
-        "Large position change should trigger a write"
-    );
-}
-
-#[tokio::test]
-async fn test_progress_throttle_elapsed_time_allows_write() {
-    let last_time = tokio::time::Instant::now() - std::time::Duration::from_secs_f64(6.0);
-    assert!(
-        super::should_persist_playback_progress(Some((100.0, last_time)), 100.1),
-        "Elapsed time exceeding threshold should trigger a write"
-    );
-}
-
 #[test]
 fn test_user_left_requires_retry_when_distributed_delivery_is_missing() {
     let outcome = RealtimeDeliveryOutcome::from_broadcast(
@@ -7770,14 +7772,15 @@ async fn test_guest_chat_with_client_id_is_rejected() {
 }
 
 #[tokio::test]
-async fn test_guest_playlist_observation_is_rejected_even_if_permission_bits_include_view_media() {
+async fn test_guest_playlist_observation_is_rejected_even_if_permission_bits_include_browse_library(
+) {
     let event_service = test_realtime_manager("guest_playlist_observe_rejected").await;
     let connection_service = test_connection_manager();
     let handler = test_guest_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
         Arc::clone(&event_service),
         connection_service.clone(),
-        RoomPermissionSet(RoomAdminPermissionBits::VIEW_MEDIA),
+        RoomPermissionSet(RoomAdminPermissionBits::BROWSE_LIBRARY),
     );
 
     let err = handler
@@ -7808,8 +7811,8 @@ async fn test_webrtc_command_joins_without_resource_observation() {
     handler
         .handle_client_message(&ClientMessage {
             message: Some(webrtc_command_message(
-                synctv_proto::client::web_rtc_command::Command::Join(
-                    synctv_proto::client::WebRtcJoin::default(),
+                synctv_proto::client::web_rtc_command::Command::VoiceJoin(
+                    synctv_proto::client::WebRtcVoiceJoinCommand::default(),
                 ),
             )),
         })
@@ -7819,9 +7822,872 @@ async fn test_webrtc_command_joins_without_resource_observation() {
     assert!(
         connection_service
             .get_connection(handler.connection_id.as_str())
-            .is_some_and(|connection| connection.rtc_joined),
+            .is_some_and(|connection| connection.voice_rtc_joined),
         "accepted command must join the RTC session"
     );
+    fixture.shutdown().await;
+}
+
+#[test]
+fn webrtc_join_exposes_client_operation_id_for_rejection_correlation() {
+    let message = ClientMessage {
+        message: Some(webrtc_command_message(
+            synctv_proto::client::web_rtc_command::Command::VoiceJoin(
+                synctv_proto::client::WebRtcVoiceJoinCommand {
+                    client_operation_id: Some("ed537455-83d3-43a4-b244-08f3963a4710".to_string()),
+                },
+            ),
+        )),
+    };
+
+    assert_eq!(
+        StreamMessageHandler::client_operation_id(&message),
+        Some("ed537455-83d3-43a4-b244-08f3963a4710")
+    );
+}
+
+#[tokio::test]
+async fn test_webrtc_media_swarm_membership_has_an_independent_voice_lifecycle() {
+    let sender = RecordingMessageSender::new();
+    let fixture = create_start_handler_fixture("media_swarm_voice_lifecycle", sender.clone()).await;
+    let handler = &fixture.handler;
+    let connection_service = &fixture.connection_service;
+    prepare_handler_for_run_after_join(handler, connection_service).await;
+    let swarm_id = "sm1_room_representation";
+    let ticket = handler.swarm_signing_key.sign_media_swarm_ticket(
+        &handler
+            .public_room_id()
+            .checked("room public id should encode"),
+        &handler
+            .public_actor_id()
+            .checked("actor public id should encode"),
+        swarm_id,
+    );
+
+    handler
+        .handle_client_message(&ClientMessage {
+            message: Some(webrtc_command_message(
+                synctv_proto::client::web_rtc_command::Command::MediaSwarmJoin(
+                    synctv_proto::client::WebRtcMediaSwarmJoin {
+                        swarm_id: swarm_id.to_string(),
+                        swarm_ticket: ticket.clone(),
+                    },
+                ),
+            )),
+        })
+        .await
+        .checked("media swarm membership should be announced");
+
+    let response = sender
+        .sent_messages()
+        .into_iter()
+        .rev()
+        .find_map(|message| message.message)
+        .and_then(|message| match message {
+            synctv_proto::client::server_message::Message::ResourceEvent(event) => event.payload,
+            _ => None,
+        })
+        .and_then(|payload| match payload {
+            synctv_proto::client::resource_event::Payload::WebrtcEvent(event) => event.event,
+            _ => None,
+        })
+        .and_then(|event| match event {
+            synctv_proto::client::web_rtc_event::Event::MediaSwarmPeers(peers) => Some(peers),
+            _ => None,
+        })
+        .checked("media swarm join should return a peer discovery response");
+    assert_eq!(response.swarm_id, swarm_id);
+    assert!(response.peers.is_empty());
+
+    let connection = connection_service
+        .get_connection(handler.connection_id.as_str())
+        .checked("connection should remain registered");
+    assert!(!connection.voice_rtc_joined);
+
+    handler
+        .handle_webrtc_voice_join(&synctv_proto::client::WebRtcVoiceJoinCommand::default())
+        .await
+        .checked("voice session should join independently");
+    handler
+        .leave_webrtc_voice_session()
+        .await
+        .checked("voice session should leave independently");
+
+    let peer_leave_message = handler
+        .webrtc_event_server_message_for_current_connection(&RealtimeEvent::MediaSwarmPeerLeft {
+            event_id: "evt-media-swarm-peer-left".to_string(),
+            room_id: handler.room_id,
+            actor_id: "usr_peer".to_string(),
+            conn_id: "peer-connection".to_string(),
+            swarm_id: swarm_id.to_string(),
+            timestamp: now(),
+        })
+        .checked("media swarm peer leave should convert")
+        .checked("active swarm member should receive peer leave");
+    assert!(matches!(
+        peer_leave_message.message,
+        Some(
+            synctv_proto::client::server_message::Message::ResourceEvent(
+                synctv_proto::client::ResourceEvent {
+                    payload: Some(synctv_proto::client::resource_event::Payload::WebrtcEvent(
+                        synctv_proto::client::WebRtcEvent {
+                            event: Some(synctv_proto::client::web_rtc_event::Event::MediaPeerLeft(
+                                _
+                            ))
+                        }
+                    )),
+                    ..
+                }
+            )
+        )
+    ));
+    let (mut room_events, observer_connection_id) = fixture
+        .event_service
+        .subscribe(handler.room_id, handler.user_id)
+        .await
+        .checked("room event observer should subscribe");
+
+    handler
+        .handle_media_swarm_leave(&synctv_proto::client::WebRtcMediaSwarmLeave {
+            swarm_id: swarm_id.to_string(),
+        })
+        .await
+        .checked("media swarm departure should be announced independently");
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), room_events.recv())
+        .await
+        .checked("media swarm leave event should arrive")
+        .checked("media swarm leave event stream should remain open");
+    assert!(matches!(
+        event.as_ref(),
+        RealtimeEvent::MediaSwarmPeerLeft {
+            conn_id,
+            swarm_id: event_swarm_id,
+            ..
+        } if conn_id == handler.connection_id.as_str() && event_swarm_id == swarm_id
+    ));
+    fixture
+        .event_service
+        .unsubscribe(observer_connection_id.as_str());
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_room_capabilities_reject_new_voice_and_media_sessions() {
+    let fixture = create_start_handler_fixture(
+        "disabled_room_realtime_capabilities",
+        FailingMessageSender::fail_after(usize::MAX),
+    )
+    .await;
+    prepare_handler_for_run_after_join(&fixture.handler, &fixture.connection_service).await;
+    let mut settings = fixture
+        .handler
+        .room_service
+        .get_room_settings(&fixture.handler.room_id)
+        .await
+        .checked("room settings should load");
+    settings.voice_chat_enabled = synctv_core::models::room_settings::VoiceChatEnabled::new(false);
+    settings.p2p_media_enabled = synctv_core::models::room_settings::P2pMediaEnabled::new(false);
+    fixture
+        .handler
+        .room_service
+        .set_room_settings(&fixture.handler.room_id, &settings)
+        .await
+        .checked("room settings should update");
+
+    let voice_error = fixture
+        .handler
+        .handle_webrtc_voice_join(&synctv_proto::client::WebRtcVoiceJoinCommand::default())
+        .await
+        .expect_err("disabled voice chat should reject joins");
+    assert_eq!(voice_error, "Voice chat is disabled for this room");
+
+    let swarm_id = "sm1_disabled_room_capability";
+    let ticket = fixture.handler.swarm_signing_key.sign_media_swarm_ticket(
+        &fixture
+            .handler
+            .public_room_id()
+            .checked("room public id should encode"),
+        &fixture
+            .handler
+            .public_actor_id()
+            .checked("actor public id should encode"),
+        swarm_id,
+    );
+    let media_error = fixture
+        .handler
+        .handle_media_swarm_join(&synctv_proto::client::WebRtcMediaSwarmJoin {
+            swarm_id: swarm_id.to_string(),
+            swarm_ticket: ticket,
+        })
+        .await
+        .expect_err("disabled P2P media should reject swarm joins");
+    assert_eq!(media_error, "P2P media is disabled for this room");
+    assert_eq!(
+        crate::impls::classify_error(&voice_error),
+        crate::impls::ErrorKind::PermissionDenied
+    );
+    assert_eq!(
+        crate::impls::classify_error(&media_error),
+        crate::impls::ErrorKind::PermissionDenied
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_room_capability_change_ends_active_voice_and_media_sessions() {
+    let fixture = create_start_handler_fixture(
+        "room_realtime_capability_shutdown",
+        FailingMessageSender::fail_after(usize::MAX),
+    )
+    .await;
+    prepare_handler_for_run_after_join(&fixture.handler, &fixture.connection_service).await;
+    fixture
+        .handler
+        .handle_webrtc_voice_join(&synctv_proto::client::WebRtcVoiceJoinCommand::default())
+        .await
+        .checked("voice chat should join while enabled");
+    let swarm_id = "sm1_room_capability_shutdown";
+    let ticket = fixture.handler.swarm_signing_key.sign_media_swarm_ticket(
+        &fixture
+            .handler
+            .public_room_id()
+            .checked("room public id should encode"),
+        &fixture
+            .handler
+            .public_actor_id()
+            .checked("actor public id should encode"),
+        swarm_id,
+    );
+    fixture
+        .handler
+        .handle_media_swarm_join(&synctv_proto::client::WebRtcMediaSwarmJoin {
+            swarm_id: swarm_id.to_string(),
+            swarm_ticket: ticket,
+        })
+        .await
+        .checked("media swarm should join while enabled");
+
+    let settings = synctv_core::models::RoomSettings {
+        voice_chat_enabled: synctv_core::models::room_settings::VoiceChatEnabled::new(false),
+        p2p_media_enabled: synctv_core::models::room_settings::P2pMediaEnabled::new(false),
+        ..Default::default()
+    };
+    fixture
+        .handler
+        .room_service
+        .set_room_settings(&fixture.handler.room_id, &settings)
+        .await
+        .checked("disabled room capabilities should persist");
+    fixture
+        .handler
+        .apply_rtc_access_change(&RealtimeEvent::RoomSettingsChanged {
+            event_id: "evt-disable-room-capabilities".to_string(),
+            room_id: fixture.handler.room_id,
+            user_id: fixture.handler.user_id,
+            username: fixture.handler.username.clone(),
+            settings,
+            version: 2,
+            timestamp: now(),
+        })
+        .await;
+
+    assert!(fixture
+        .connection_service
+        .get_connection(fixture.handler.connection_id.as_str())
+        .is_some_and(|connection| !connection.voice_rtc_joined));
+    assert!(fixture.handler.active_media_swarms.lock().is_empty());
+    let retry_error = fixture
+        .handler
+        .handle_webrtc_voice_join(&synctv_proto::client::WebRtcVoiceJoinCommand::default())
+        .await
+        .expect_err("voice chat should remain disabled after cleanup");
+    assert_eq!(retry_error, "Voice chat is disabled for this room");
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_permission_revocation_ends_active_voice_and_media_sessions() {
+    let fixture = create_start_handler_fixture(
+        "room_realtime_permission_revocation",
+        FailingMessageSender::fail_after(usize::MAX),
+    )
+    .await;
+    prepare_handler_for_run_after_join(&fixture.handler, &fixture.connection_service).await;
+    fixture
+        .handler
+        .handle_webrtc_voice_join(&synctv_proto::client::WebRtcVoiceJoinCommand::default())
+        .await
+        .checked("voice chat should join before permission revocation");
+    let swarm_id = "sm1_permission_revocation";
+    let ticket = fixture.handler.swarm_signing_key.sign_media_swarm_ticket(
+        &fixture
+            .handler
+            .public_room_id()
+            .checked("room public id should encode"),
+        &fixture
+            .handler
+            .public_actor_id()
+            .checked("actor public id should encode"),
+        swarm_id,
+    );
+    fixture
+        .handler
+        .handle_media_swarm_join(&synctv_proto::client::WebRtcMediaSwarmJoin {
+            swarm_id: swarm_id.to_string(),
+            swarm_ticket: ticket,
+        })
+        .await
+        .checked("media swarm should join before permission revocation");
+
+    fixture
+        .handler
+        .apply_rtc_access_change(&RealtimeEvent::PermissionChanged {
+            event_id: "evt-revoke-rtc-permissions".to_string(),
+            room_id: fixture.handler.room_id,
+            target_user_id: fixture.handler.user_id,
+            target_username: fixture.handler.username.clone(),
+            target_remark_name: String::new(),
+            target_display_tag: String::new(),
+            changed_by: fixture.handler.user_id,
+            changed_by_username: fixture.handler.username.clone(),
+            role_changed: false,
+            new_permissions: RoomPermissionSet::empty(),
+            role: synctv_proto::common::RoomMemberRole::Member as i32,
+            added_permissions: RoomPermissionSet::empty(),
+            removed_permissions: RoomPermissionSet::empty(),
+            admin_added_permissions: RoomPermissionSet::empty(),
+            admin_removed_permissions: RoomPermissionSet::empty(),
+            target_is_online: true,
+            target_connection_count: 1,
+            timestamp: now(),
+        })
+        .await;
+
+    assert!(fixture
+        .connection_service
+        .get_connection(fixture.handler.connection_id.as_str())
+        .is_some_and(|connection| !connection.voice_rtc_joined));
+    assert!(fixture.handler.active_media_swarms.lock().is_empty());
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_room_capability_change_serializes_with_an_in_flight_join() {
+    let fixture = create_start_handler_fixture(
+        "room_capability_join_race",
+        FailingMessageSender::fail_after(usize::MAX),
+    )
+    .await;
+    prepare_handler_for_run_after_join(&fixture.handler, &fixture.connection_service).await;
+    let transition_guard = fixture.handler.room_capability_transition_lock.lock().await;
+    let join_handler = fixture.handler.clone();
+    let join_task = tokio::spawn(async move {
+        join_handler
+            .handle_webrtc_command(&synctv_proto::client::WebRtcCommand {
+                command: Some(synctv_proto::client::web_rtc_command::Command::VoiceJoin(
+                    synctv_proto::client::WebRtcVoiceJoinCommand::default(),
+                )),
+            })
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    let settings = synctv_core::models::RoomSettings {
+        voice_chat_enabled: synctv_core::models::room_settings::VoiceChatEnabled::new(false),
+        ..Default::default()
+    };
+    let event_handler = fixture.handler.clone();
+    let event_task = tokio::spawn(async move {
+        event_handler
+            .apply_rtc_access_change(&RealtimeEvent::RoomSettingsChanged {
+                event_id: "evt-room-capability-join-race".to_string(),
+                room_id: event_handler.room_id,
+                user_id: event_handler.user_id,
+                username: event_handler.username.clone(),
+                settings,
+                version: 2,
+                timestamp: now(),
+            })
+            .await;
+    });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert!(
+        !event_task.is_finished(),
+        "capability transition must wait for the same lock as an in-flight join"
+    );
+
+    drop(transition_guard);
+    join_task
+        .await
+        .checked("join task should complete")
+        .checked("join should use the still-enabled persisted room setting");
+    event_task
+        .await
+        .checked("capability event task should complete");
+    assert!(fixture
+        .connection_service
+        .get_connection(fixture.handler.connection_id.as_str())
+        .is_some_and(|connection| !connection.voice_rtc_joined));
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_guest_self_room_member_snapshot_exposes_effective_permissions() {
+    let fixture = create_start_handler_fixture(
+        "guest_self_room_member_snapshot",
+        FailingMessageSender::fail_after(usize::MAX),
+    )
+    .await;
+    let settings = synctv_core::models::RoomSettings {
+        guest_added_permissions: synctv_core::models::room_settings::GuestAddedPermissions::new(
+            synctv_core::models::RoomGuestPermissionBits::USE_VOICE_CHAT
+                | synctv_core::models::RoomGuestPermissionBits::USE_P2P_MEDIA,
+        ),
+        ..Default::default()
+    };
+    fixture
+        .handler
+        .room_service
+        .set_room_settings(&fixture.handler.room_id, &settings)
+        .await
+        .checked("guest permissions should persist");
+
+    let guest = StreamMessageHandler::new_with_runtime(
+        StreamMessageHandlerConfig {
+            room_id: fixture.handler.room_id,
+            principal: test_guest_principal_with_permissions(RoomPermissionSet::empty()),
+            connection_id: None,
+            room_service: Arc::clone(&fixture.handler.room_service),
+            chat_service: Arc::clone(&fixture.handler.chat_service),
+            event_service: Arc::clone(&fixture.handler.event_service),
+            connection_service: Arc::clone(&fixture.handler.connection_service),
+            rate_limiter: Arc::clone(&fixture.handler.rate_limiter),
+            rate_limit_config: Arc::clone(&fixture.handler.rate_limit_config),
+            content_filter: Arc::clone(&fixture.handler.content_filter),
+            public_id_codec: Arc::clone(&fixture.handler.public_id_codec),
+            sender: FailingMessageSender::fail_after(usize::MAX),
+            concurrency_config: Arc::clone(&fixture.handler.concurrency_config),
+        },
+        test_stream_handler_runtime(),
+    );
+    fixture
+        .connection_service
+        .register_actor(
+            guest.connection_id.clone().into_string(),
+            guest.user_id,
+            guest
+                .public_actor_id()
+                .checked("guest public actor id should encode"),
+        )
+        .await
+        .checked("guest connection should register");
+    fixture
+        .connection_service
+        .join_room(guest.connection_id.as_str(), guest.room_id)
+        .await
+        .checked("guest connection should join room");
+
+    let snapshot = guest
+        .resource_observer
+        .self_room_member_snapshot()
+        .await
+        .checked("guest access snapshot should load");
+    assert_eq!(
+        snapshot.role,
+        synctv_proto::common::RoomMemberRole::Guest as i32
+    );
+    assert_eq!(
+        snapshot.user_id,
+        guest
+            .public_actor_id()
+            .checked("guest public actor id should encode")
+    );
+    assert!(RoomPermissionSet(snapshot.permissions).has(RoomPermission::USE_VOICE_CHAT));
+    assert!(RoomPermissionSet(snapshot.permissions).has(RoomPermission::USE_P2P_MEDIA));
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_voice_and_p2p_media_permissions_are_independent() {
+    let voice_fixture = create_start_handler_fixture(
+        "webrtc_voice_only_permission",
+        FailingMessageSender::fail_after(usize::MAX),
+    )
+    .await;
+    let voice_member_repo = RoomMemberRepository::new(voice_fixture.pool.clone());
+    let voice_member = voice_member_repo
+        .get(
+            &voice_fixture.handler.room_id,
+            &voice_fixture.handler.user_id,
+        )
+        .await
+        .checked("voice-only member should load")
+        .checked("voice-only member should exist");
+    voice_member_repo
+        .update_permissions(
+            &voice_member.room_id,
+            &voice_member.user_id,
+            voice_member.added_permissions,
+            voice_member.removed_permissions | RoomMemberPermissionBits::USE_P2P_MEDIA,
+            voice_member.version,
+        )
+        .await
+        .checked("P2P media permission should be removed");
+    prepare_handler_for_run_after_join(&voice_fixture.handler, &voice_fixture.connection_service)
+        .await;
+
+    voice_fixture
+        .handler
+        .handle_webrtc_voice_join(&synctv_proto::client::WebRtcVoiceJoinCommand::default())
+        .await
+        .checked("voice-only member should join voice chat");
+    let voice_swarm_id = "sm1_permission_isolation";
+    let voice_ticket = voice_fixture
+        .handler
+        .swarm_signing_key
+        .sign_media_swarm_ticket(
+            &voice_fixture
+                .handler
+                .public_room_id()
+                .checked("room public id should encode"),
+            &voice_fixture
+                .handler
+                .public_actor_id()
+                .checked("actor public id should encode"),
+            voice_swarm_id,
+        );
+    let media_error = voice_fixture
+        .handler
+        .handle_media_swarm_join(&synctv_proto::client::WebRtcMediaSwarmJoin {
+            swarm_id: voice_swarm_id.to_string(),
+            swarm_ticket: voice_ticket,
+        })
+        .await
+        .expect_err("voice permission must not authorize P2P media membership");
+    assert!(media_error.contains("P2P media permission denied"));
+    voice_fixture.shutdown().await;
+
+    let media_fixture = create_start_handler_fixture(
+        "webrtc_media_only_permission",
+        FailingMessageSender::fail_after(usize::MAX),
+    )
+    .await;
+    let media_member_repo = RoomMemberRepository::new(media_fixture.pool.clone());
+    let media_member = media_member_repo
+        .get(
+            &media_fixture.handler.room_id,
+            &media_fixture.handler.user_id,
+        )
+        .await
+        .checked("media-only member should load")
+        .checked("media-only member should exist");
+    media_member_repo
+        .update_permissions(
+            &media_member.room_id,
+            &media_member.user_id,
+            media_member.added_permissions,
+            media_member.removed_permissions
+                | RoomMemberPermissionBits::USE_VOICE_CHAT
+                | RoomMemberPermissionBits::BROWSE_LIBRARY,
+            media_member.version,
+        )
+        .await
+        .checked("voice and library browsing permissions should be removed");
+    prepare_handler_for_run_after_join(&media_fixture.handler, &media_fixture.connection_service)
+        .await;
+
+    let voice_error = media_fixture
+        .handler
+        .handle_webrtc_voice_join(&synctv_proto::client::WebRtcVoiceJoinCommand::default())
+        .await
+        .expect_err("P2P media permission must not authorize voice chat");
+    assert!(voice_error.contains("Voice chat permission denied"));
+    let media_swarm_id = "sm1_permission_isolation";
+    let media_ticket = media_fixture
+        .handler
+        .swarm_signing_key
+        .sign_media_swarm_ticket(
+            &media_fixture
+                .handler
+                .public_room_id()
+                .checked("room public id should encode"),
+            &media_fixture
+                .handler
+                .public_actor_id()
+                .checked("actor public id should encode"),
+            media_swarm_id,
+        );
+    media_fixture
+        .handler
+        .handle_media_swarm_join(&synctv_proto::client::WebRtcMediaSwarmJoin {
+            swarm_id: media_swarm_id.to_string(),
+            swarm_ticket: media_ticket,
+        })
+        .await
+        .checked("media-only member should publish P2P media membership");
+    media_fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_webrtc_media_swarm_membership_validates_id_and_ticket_scope() {
+    let fixture = create_start_handler_fixture(
+        "webrtc_media_swarm_membership_validation",
+        FailingMessageSender::fail_after(usize::MAX),
+    )
+    .await;
+    let handler = &fixture.handler;
+    prepare_handler_for_run_after_join(handler, &fixture.connection_service).await;
+
+    let invalid = handler
+        .handle_media_swarm_join(&synctv_proto::client::WebRtcMediaSwarmJoin {
+            swarm_id: "房间".to_string(),
+            swarm_ticket: "unused".to_string(),
+        })
+        .await
+        .expect_err("non-ASCII swarm identifiers must be rejected");
+    assert!(invalid.contains("non-empty ASCII"));
+    let swarm_id = "sm3_client_supplied";
+    let wrong_swarm_ticket = handler.swarm_signing_key.sign_media_swarm_ticket(
+        &handler
+            .public_room_id()
+            .checked("room public id should encode"),
+        &handler
+            .public_actor_id()
+            .checked("actor public id should encode"),
+        "sm3_other_resource",
+    );
+    let error = handler
+        .handle_media_swarm_join(&synctv_proto::client::WebRtcMediaSwarmJoin {
+            swarm_id: swarm_id.to_string(),
+            swarm_ticket: wrong_swarm_ticket,
+        })
+        .await
+        .expect_err("a ticket for another swarm must be rejected");
+    assert!(error.contains("Invalid media swarm ticket"));
+
+    let ticket = handler.swarm_signing_key.sign_media_swarm_ticket(
+        &handler
+            .public_room_id()
+            .checked("room public id should encode"),
+        &handler
+            .public_actor_id()
+            .checked("actor public id should encode"),
+        swarm_id,
+    );
+    handler
+        .handle_media_swarm_join(&synctv_proto::client::WebRtcMediaSwarmJoin {
+            swarm_id: swarm_id.to_string(),
+            swarm_ticket: ticket,
+        })
+        .await
+        .checked("a signed resource swarm should be accepted without playback resolution");
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_media_signaling_requires_both_connections_in_the_same_swarm() {
+    let fixture = create_start_handler_fixture(
+        "webrtc_media_signal_membership",
+        FailingMessageSender::fail_after(usize::MAX),
+    )
+    .await;
+    let handler = &fixture.handler;
+    prepare_handler_for_run_after_join(handler, &fixture.connection_service).await;
+    let swarm_id = "sm3_signal_membership";
+    let ticket = handler.swarm_signing_key.sign_media_swarm_ticket(
+        &handler
+            .public_room_id()
+            .checked("room public id should encode"),
+        &handler
+            .public_actor_id()
+            .checked("actor public id should encode"),
+        swarm_id,
+    );
+    let target_connection_id = "conn_media_signal_target";
+    let actor_id = handler
+        .public_actor_id()
+        .checked("actor public id should encode");
+    fixture
+        .connection_service
+        .register_actor(
+            target_connection_id.to_string(),
+            handler.user_id,
+            actor_id.clone(),
+        )
+        .await
+        .checked("target connection should register");
+    fixture
+        .connection_service
+        .join_room(target_connection_id, handler.room_id)
+        .await
+        .checked("target connection should join room");
+    let target = format!("{actor_id}:{target_connection_id}");
+
+    let source_error = handler
+        .validate_webrtc_media_recipient(&target, swarm_id)
+        .await
+        .expect_err("source membership should be required");
+    assert!(source_error.contains("Source connection"));
+
+    handler
+        .handle_media_swarm_join(&synctv_proto::client::WebRtcMediaSwarmJoin {
+            swarm_id: swarm_id.to_string(),
+            swarm_ticket: ticket.clone(),
+        })
+        .await
+        .checked("source membership should join");
+    let target_error = handler
+        .validate_webrtc_media_recipient(&target, swarm_id)
+        .await
+        .expect_err("target membership should be required");
+    assert!(target_error.contains("Target connection"));
+
+    handler
+        .media_swarm_tracker
+        .announce(
+            handler.room_id,
+            actor_id,
+            target_connection_id.to_string(),
+            swarm_id,
+        )
+        .await
+        .checked("target membership should join");
+    handler
+        .validate_webrtc_media_recipient(&target, swarm_id)
+        .await
+        .checked("same-swarm media signaling should pass");
+
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_webrtc_signaling_to_a_disconnected_target_is_a_successful_noop() {
+    let fixture = create_start_handler_fixture(
+        "webrtc_disconnected_target_noop",
+        FailingMessageSender::fail_after(usize::MAX),
+    )
+    .await;
+    let handler = &fixture.handler;
+    prepare_handler_for_run_after_join(handler, &fixture.connection_service).await;
+    handler
+        .handle_webrtc_voice_join(&synctv_proto::client::WebRtcVoiceJoinCommand::default())
+        .await
+        .checked("source should join voice chat");
+
+    let swarm_id = "sm3_disconnected_target";
+    let ticket = handler.swarm_signing_key.sign_media_swarm_ticket(
+        &handler
+            .public_room_id()
+            .checked("room public id should encode"),
+        &handler
+            .public_actor_id()
+            .checked("actor public id should encode"),
+        swarm_id,
+    );
+    handler
+        .handle_media_swarm_join(&synctv_proto::client::WebRtcMediaSwarmJoin {
+            swarm_id: swarm_id.to_string(),
+            swarm_ticket: ticket,
+        })
+        .await
+        .checked("source should join media swarm");
+
+    let (mut room_events, observer_connection_id) = fixture
+        .event_service
+        .subscribe(handler.room_id, handler.user_id)
+        .await
+        .checked("room event observer should subscribe");
+    let target = format!(
+        "{}:conn_already_disconnected",
+        handler
+            .public_actor_id()
+            .checked("actor public id should encode")
+    );
+
+    handler
+        .handle_webrtc_voice_offer(&synctv_proto::client::WebRtcVoiceOfferCommand {
+            to: target.clone(),
+            data: "voice-offer".to_string(),
+        })
+        .await
+        .checked("voice offer to a disconnected target should be ignored");
+    handler
+        .handle_webrtc_voice_answer(&synctv_proto::client::WebRtcVoiceAnswerCommand {
+            to: target.clone(),
+            data: "voice-answer".to_string(),
+        })
+        .await
+        .checked("voice answer to a disconnected target should be ignored");
+    handler
+        .handle_webrtc_voice_ice_candidate(&synctv_proto::client::WebRtcVoiceIceCandidateCommand {
+            to: target.clone(),
+            data: "voice-candidate".to_string(),
+        })
+        .await
+        .checked("voice ICE candidate to a disconnected target should be ignored");
+    handler
+        .handle_webrtc_media_offer(&synctv_proto::client::WebRtcMediaOfferCommand {
+            to: target.clone(),
+            data: "media-offer".to_string(),
+            swarm_id: swarm_id.to_string(),
+        })
+        .await
+        .checked("media offer to a disconnected target should be ignored");
+    handler
+        .handle_webrtc_media_answer(&synctv_proto::client::WebRtcMediaAnswerCommand {
+            to: target.clone(),
+            data: "media-answer".to_string(),
+            swarm_id: swarm_id.to_string(),
+        })
+        .await
+        .checked("media answer to a disconnected target should be ignored");
+    handler
+        .handle_webrtc_media_ice_candidate(&synctv_proto::client::WebRtcMediaIceCandidateCommand {
+            to: target,
+            data: "media-candidate".to_string(),
+            swarm_id: swarm_id.to_string(),
+        })
+        .await
+        .checked("media ICE candidate to a disconnected target should be ignored");
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), room_events.recv())
+            .await
+            .is_err(),
+        "disconnected-target signaling should not enter room fan-out"
+    );
+    fixture
+        .event_service
+        .unsubscribe(observer_connection_id.as_str());
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_webrtc_disconnected_recipient_still_requires_a_complete_address() {
+    let fixture = create_start_handler_fixture(
+        "webrtc_disconnected_recipient_format",
+        FailingMessageSender::fail_after(usize::MAX),
+    )
+    .await;
+    prepare_handler_for_run_after_join(&fixture.handler, &fixture.connection_service).await;
+    fixture
+        .handler
+        .handle_webrtc_voice_join(&synctv_proto::client::WebRtcVoiceJoinCommand::default())
+        .await
+        .checked("source should join voice chat");
+
+    for recipient in [
+        "missing-separator",
+        ":conn_disconnected",
+        "usr_disconnected:",
+    ] {
+        let error = fixture
+            .handler
+            .validate_webrtc_voice_recipient(recipient)
+            .await
+            .expect_err("incomplete recipient addresses should be rejected");
+        assert!(error.contains("public_actor_id:conn_id"));
+    }
     fixture.shutdown().await;
 }
 
@@ -7886,36 +8752,6 @@ fn test_webrtc_signal_fails_when_no_delivery_path_succeeds() {
     );
 
     assert!(!outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable));
-}
-
-#[test]
-fn test_webrtc_membership_transition_requires_existing_connection() {
-    let result = super::should_transition_webrtc_membership(None, true);
-    assert_eq!(result, Err("Connection not found"));
-}
-
-#[test]
-fn test_webrtc_membership_transition_detects_join_state_change() {
-    let result = super::should_transition_webrtc_membership(Some(false), true);
-    assert_eq!(result, Ok(true));
-}
-
-#[test]
-fn test_webrtc_membership_transition_ignores_duplicate_join() {
-    let result = super::should_transition_webrtc_membership(Some(true), true);
-    assert_eq!(result, Ok(false));
-}
-
-#[test]
-fn test_webrtc_membership_transition_detects_leave_state_change() {
-    let result = super::should_transition_webrtc_membership(Some(true), false);
-    assert_eq!(result, Ok(true));
-}
-
-#[test]
-fn test_webrtc_membership_transition_ignores_duplicate_leave() {
-    let result = super::should_transition_webrtc_membership(Some(false), false);
-    assert_eq!(result, Ok(false));
 }
 
 #[test]
@@ -8011,7 +8847,7 @@ async fn test_guest_webrtc_recipient_validation_uses_public_guest_actor_id() {
         Arc::clone(&event_service),
         connection_service.clone(),
         RoomPermissionSet(
-            RoomPermissionSet::default_guest().0 | RoomAdminPermissionBits::USE_WEBRTC,
+            RoomPermissionSet::default_guest().0 | RoomAdminPermissionBits::USE_VOICE_CHAT,
         ),
     );
     let connection_id = handler.connection_id().to_string();
@@ -8030,7 +8866,12 @@ async fn test_guest_webrtc_recipient_validation_uses_public_guest_actor_id() {
         .join_room(&connection_id, handler.room_id)
         .await
         .checked("join room");
-    connection_service.mark_rtc_joined(&handler.room_id, &handler.user_id, &connection_id, true);
+    connection_service.mark_voice_rtc_joined(
+        &handler.room_id,
+        &handler.user_id,
+        &connection_id,
+        true,
+    );
 
     let guest_target = format!(
         "{}:{}",
@@ -8040,7 +8881,8 @@ async fn test_guest_webrtc_recipient_validation_uses_public_guest_actor_id() {
         connection_id
     );
     handler
-        .validate_webrtc_recipient(&guest_target)
+        .validate_webrtc_voice_recipient(&guest_target)
+        .await
         .checked("gst_* recipient should match the active guest connection");
 
     let internal_user_target = format!(
@@ -8051,10 +8893,11 @@ async fn test_guest_webrtc_recipient_validation_uses_public_guest_actor_id() {
             .checked("encode internal synthetic user id"),
         connection_id
     );
-    assert!(matches!(
-        handler.validate_webrtc_recipient(&internal_user_target),
-        Err(message) if message.contains("does not match")
-    ));
+    let error = handler
+        .validate_webrtc_voice_recipient(&internal_user_target)
+        .await
+        .expect_err("the internal synthetic user id must not address a guest connection");
+    assert!(error.contains("does not match"));
 
     shutdown_test_runtime_resources(event_service, connection_service).await;
 }

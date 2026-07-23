@@ -71,11 +71,30 @@ On reconnect, fetch `playbackState` and observe `playback` with the current `pla
 
 See [Realtime API](../../develop/realtime-api/).
 
+## P2P Media Delivery
+
+Native clients can enable P2P media delivery dynamically from playback sync settings. Eligible on-demand `PlaybackMedia` entries contain `p2p_delivery`. The client obtains media pieces from viewers in the same room and resource swarm over WebRTC DataChannels, with the original HTTP URL retained as the fallback path.
+
+| Item | Behavior |
+| --- | --- |
+| Resource scope | Providers create room-isolated swarms for static on-demand resources; live playback omits `p2p_delivery` |
+| Media formats | The client uses the selected `PlaybackMedia.format` to handle progressive files, HLS, and DASH |
+| Direct and proxy | Both modes share a swarm when the Provider confirms byte equivalence |
+| Permission | Room members or guests need `use_p2p_media` |
+| Runtime toggle | Disabling P2P leaves the swarm, closes P2P connections, and continues playback over HTTP |
+| Local cache | Select 64, 128, 256, 512, or 1024 MiB; the default is 128 MiB. Recently used pieces remain reusable across playback sessions and expire after ten minutes without access |
+
+Player diagnostics report connected peers, aggregate download and upload rates, HTTP download, P2P download and upload, transferred bytes, cache size, and cache hit rate. Playback requests automatically use the HTTP origin when peers, ICE connectivity, or piece transfers are temporarily unavailable.
+
+<Aside type="caution">
+Swarm tickets isolate rooms, actors, and resources. The current transfer protocol allows a peer to return arbitrary media bytes and is intended for rooms whose members trust each other.
+</Aside>
+
 ## WebRTC and Livestreaming
 
 | Capability | Boundary |
 | --- | --- |
-| WebRTC | Room realtime audio/video or signaling; depends on ICE/STUN/TURN and `use_webrtc` |
+| WebRTC | Independent voice-chat and P2P-media sessions using ICE/STUN/TURN and their respective `use_voice_chat` and `use_p2p_media` permissions |
 | RTMP publish | Publisher entry, usually used by streamer or room admin |
 | HTTP-FLV | Low-latency live playback, sensitive to long connections and slow clients |
 | HLS | Playlist/segment files; multi-replica requires local proxy, shared file, or OSS backend |

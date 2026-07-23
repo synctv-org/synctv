@@ -543,6 +543,7 @@ fn direct_url_media_source_config_from_proto(
         is_live: config.is_live,
         duration_seconds: config.duration_seconds,
         prefer_proxy: config.prefer_proxy,
+        proxy_only: config.proxy_only == Some(true),
         medias: config
             .medias
             .into_iter()

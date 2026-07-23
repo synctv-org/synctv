@@ -143,6 +143,23 @@ pub(super) static DECR_DELETE_NEGATIVE_SCRIPT: LazyLock<redis::Script> = LazyLoc
     )
 });
 
+pub(super) static VOICE_RTC_JOIN_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[2])
+        if redis.call('ZSCORE', KEYS[1], ARGV[1]) then
+            return 2
+        end
+        if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[4]) then
+            return 0
+        end
+        redis.call('ZADD', KEYS[1], ARGV[3], ARGV[1])
+        redis.call('EXPIRE', KEYS[1], ARGV[5])
+        return 1
+        ",
+    )
+});
+
 /// A failed Redis counter operation that should be retried.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum PendingRedisOp {

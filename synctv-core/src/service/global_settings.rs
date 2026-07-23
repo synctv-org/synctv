@@ -49,6 +49,7 @@ pub use types::{
 const MAX_CHAT_MESSAGES_LIMIT: u64 = 10_000;
 /// Maximum allowed value for `max_pinned_messages_per_room` setting (0 = unlimited)
 const MAX_PINNED_CHAT_MESSAGES_PER_ROOM_LIMIT: u64 = 1_000;
+pub const DEFAULT_MAX_VOICE_PARTICIPANTS_PER_ROOM: u32 = 8;
 
 setting!(
     ServerNameSetting,
@@ -320,6 +321,21 @@ setting!(
     IceServerList::new()
 );
 setting!(
+    MaxVoiceParticipantsPerRoomSetting,
+    u32,
+    "webrtc.max_voice_participants_per_room",
+    DEFAULT_MAX_VOICE_PARTICIPANTS_PER_ROOM,
+    |value: &u32| -> crate::Result<()> {
+        if (2..=32).contains(value) {
+            Ok(())
+        } else {
+            Err(crate::Error::InvalidInput(
+                "webrtc.max_voice_participants_per_room must be between 2 and 32".into(),
+            ))
+        }
+    }
+);
+setting!(
     MaxMessagesPerRoomSetting,
     u64,
     "chat.max_messages_per_room",
@@ -581,6 +597,7 @@ pub struct EmailSettingsStore {
 #[derive(Clone)]
 pub struct WebRtcSettingsStore {
     pub external_ice_servers: ExternalIceServersSetting,
+    pub max_voice_participants_per_room: MaxVoiceParticipantsPerRoomSetting,
 }
 
 #[derive(Clone)]
@@ -847,6 +864,9 @@ impl RuntimeSettingsStore {
 
         let webrtc = WebRtcSettingsStore {
             external_ice_servers: ExternalIceServersSetting::new(storage.clone()),
+            max_voice_participants_per_room: MaxVoiceParticipantsPerRoomSetting::new(
+                storage.clone(),
+            ),
         };
 
         let chat = ChatSettingsStore {
@@ -968,6 +988,10 @@ impl RuntimeSettingsStore {
             },
             webrtc: WebRtcRuntimeSettings {
                 external_ice_servers: self.webrtc.external_ice_servers.get()?,
+                max_voice_participants_per_room: self
+                    .webrtc
+                    .max_voice_participants_per_room
+                    .get()?,
             },
             chat: ChatRuntimeSettings {
                 max_messages_per_room: self.chat.max_messages_per_room.get()?,
@@ -1219,6 +1243,12 @@ impl RuntimeSettingsStore {
         )?;
         Self::push_update_entry(
             &mut entries,
+            update_mask.webrtc.max_voice_participants_per_room,
+            &self.webrtc.max_voice_participants_per_room,
+            &settings.webrtc.max_voice_participants_per_room,
+        )?;
+        Self::push_update_entry(
+            &mut entries,
             update_mask.chat.max_messages_per_room,
             &self.chat.max_messages_per_room,
             &settings.chat.max_messages_per_room,
@@ -1418,16 +1448,19 @@ mod tests {
     #[test]
     fn test_guest_default_permissions_accept_only_guest_safe_permissions() {
         let allowed: PermissionSet = ok(
-            r#"["view_members","view_chat_history","use_webrtc"]"#.parse(),
+            r#"["view_members","view_chat_history","use_voice_chat","use_p2p_media"]"#.parse(),
             "guest-safe permission set should parse",
         );
         assert!(allowed.validate_guest_default().is_ok());
+        assert!(allowed
+            .bits()
+            .has(crate::models::RoomPermission::USE_P2P_MEDIA));
 
         let empty: PermissionSet = ok("[]".parse(), "empty permission set should parse");
         assert!(empty.validate_guest_default().is_ok());
 
         let rejected: PermissionSet = ok(
-            r#"["view_media","send_chat_messages","manage_own_media"]"#.parse(),
+            r#"["browse_library","send_chat_messages","manage_own_media"]"#.parse(),
             "unsafe permission set should parse",
         );
         let error = err(
@@ -1435,32 +1468,9 @@ mod tests {
             "media-resource and chat permissions must not be guest defaults",
         );
         assert!(error.to_string().contains("permissions.guest_default"));
-        assert!(error.to_string().contains("view_media"));
+        assert!(error.to_string().contains("browse_library"));
         assert!(error.to_string().contains("send_chat_messages"));
         assert!(error.to_string().contains("manage_own_media"));
-    }
-
-    #[test]
-    fn test_permission_set_uses_manage_live_streams_name_only() {
-        let parsed: PermissionSet = ok(
-            r#"["manage_live_streams"]"#.parse(),
-            "manage_live_streams permission set should parse",
-        );
-        assert!(parsed
-            .bits()
-            .has(crate::models::RoomPermission::MANAGE_LIVE_STREAMS));
-        assert_eq!(parsed.to_string(), r#"["manage_live_streams"]"#);
-
-        let error = err(
-            r#"["live_control"]"#.parse::<PermissionSet>(),
-            "legacy live_control permission name must be rejected",
-        );
-        assert!(
-            error
-                .to_string()
-                .contains("unknown permission name 'live_control'"),
-            "unexpected error: {error}"
-        );
     }
 
     #[test]
@@ -1480,9 +1490,10 @@ mod tests {
         let mut settings = RuntimeSettingsStore::new_for_tests()
             .runtime_settings()
             .expect("runtime settings should load");
-        settings.permissions.guest_default_permissions = r#"["view_media","send_chat_messages"]"#
-            .parse()
-            .expect("valid names");
+        settings.permissions.guest_default_permissions =
+            r#"["browse_library","send_chat_messages"]"#
+                .parse()
+                .expect("valid names");
 
         let error = validate_settings(&settings).expect_err("unsafe guest default");
         assert!(
@@ -1491,7 +1502,9 @@ mod tests {
         );
 
         settings.permissions.guest_default_permissions =
-            r#"["view_members","use_webrtc"]"#.parse().expect("valid names");
+            r#"["view_members","use_voice_chat","use_p2p_media"]"#
+                .parse()
+                .expect("valid names");
         assert!(validate_settings(&settings).is_ok());
     }
 

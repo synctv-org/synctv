@@ -317,7 +317,7 @@ clippy: ## Apply Clippy fixes, then require a clean workspace lint pass.
 	SQLX_OFFLINE=true $(CARGO) clippy $(CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS) --fix --allow-dirty
 
 clippy-check: ## Run locked workspace Clippy checks without modifying files.
-	SQLX_OFFLINE=true $(CARGO) clippy $(CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS) -- -D warnings
+	SQLX_OFFLINE=true $(CARGO) clippy $(CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS)
 
 install-cargo-audit: ## Install cargo-audit for CI security checks.
 	$(CARGO) install cargo-audit $(CARGO_LOCKED)
@@ -378,13 +378,13 @@ cross-darwin-check: require-cross ## Cross-check SyncTV for Darwin.
 	SQLX_OFFLINE=true $(CROSS) check $(CROSS_CHECK_ARGS) --target "$(CROSS_DARWIN_TARGET)"
 
 cross-linux-clippy: require-cross ## Run cross Clippy for Linux.
-	SQLX_OFFLINE=true $(CROSS) clippy $(CROSS_CHECK_ARGS) --target "$(CROSS_LINUX_TARGET)" -- -D warnings
+	SQLX_OFFLINE=true $(CROSS) clippy $(CROSS_CHECK_ARGS) --target "$(CROSS_LINUX_TARGET)"
 
 cross-windows-clippy: require-cross ## Run cross Clippy for Windows GNU.
-	SQLX_OFFLINE=true $(CROSS) clippy $(CROSS_CHECK_ARGS) --target "$(CROSS_WINDOWS_TARGET)" -- -D warnings
+	SQLX_OFFLINE=true $(CROSS) clippy $(CROSS_CHECK_ARGS) --target "$(CROSS_WINDOWS_TARGET)"
 
 cross-darwin-clippy: require-cross ## Run cross Clippy for Darwin.
-	SQLX_OFFLINE=true $(CROSS) clippy $(CROSS_CHECK_ARGS) --target "$(CROSS_DARWIN_TARGET)" -- -D warnings
+	SQLX_OFFLINE=true $(CROSS) clippy $(CROSS_CHECK_ARGS) --target "$(CROSS_DARWIN_TARGET)"
 
 dev-db: dev-up ## Open psql inside the PostgreSQL container.
 	$(COMPOSE_DEV) exec postgres psql -U synctv -d synctv

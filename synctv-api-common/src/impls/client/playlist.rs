@@ -592,7 +592,7 @@ impl ClientApiImpl {
         actor: &RoomActor,
         playlist_id: &str,
     ) -> Result<synctv_proto::client::GetPlaylistResponse, ApiError> {
-        self.require_room_permission(actor, synctv_core::models::RoomPermission::VIEW_MEDIA)
+        self.require_room_permission(actor, synctv_core::models::RoomPermission::BROWSE_LIBRARY)
             .await?;
         let rid = actor.room_id();
         let pid = crate::impls::parse_playlist_id_param(
@@ -669,7 +669,7 @@ impl ClientApiImpl {
         req: synctv_proto::client::ListPlaylistsRequest,
     ) -> Result<synctv_proto::client::ListPlaylistsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        self.require_room_permission(actor, synctv_core::models::RoomPermission::VIEW_MEDIA)
+        self.require_room_permission(actor, synctv_core::models::RoomPermission::BROWSE_LIBRARY)
             .await?;
         let rid = actor.room_id();
         let page = page_i32_to_usize(req.page.max(1), "page")?;

@@ -127,6 +127,7 @@ message VideoURL {
 message VideoSegment {
   string url = 1;
   uint64 size = 2;
+  uint64 duration_millis = 3;
 }
 
 message GetVideoURLReq {
@@ -289,10 +290,18 @@ message GetLiveStreamsReq {
   bool hls = 3;
 }
 
+message LiveStreamUrl {
+  string host = 1;
+  string url = 2;
+}
+
 message LiveStream {
   uint64 quality = 1;
-  repeated string urls = 2;
-  string desc = 3;
+  repeated LiveStreamUrl urls = 2;
+  string quality_name = 3;
+  string protocol = 4;
+  string format = 5;
+  string codec = 6;
 }
 
 message GetLiveStreamsResp {

@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use redis::AsyncCommands;
 use tracing::{debug, info, warn};
 
 use super::model::{
@@ -9,12 +10,74 @@ use super::model::{
 use super::redis_state::{
     BATCH_REFRESH_TTLS_SCRIPT, CONNECTION_METADATA_TTL_SECONDS, DECR_DELETE_NEGATIVE_SCRIPT,
     DISTRIBUTED_COUNTER_TTL_SECONDS, INCR_EXPIRE_SCRIPT, SYNC_COUNTER_MIN_SCRIPT,
-    TTL_REFRESH_BATCH_SIZE,
+    TTL_REFRESH_BATCH_SIZE, VOICE_RTC_JOIN_SCRIPT,
 };
-use super::ConnectionManager;
+use super::{ConnectionManager, VoiceRtcJoinOutcome};
 use synctv_core::models::id::{RoomId, UserId};
 
 impl ConnectionManager {
+    /// Resolve connection metadata across replicas.
+    pub async fn get_connection_distributed(
+        &self,
+        connection_id: &str,
+    ) -> Result<Option<ConnectionInfo>, String> {
+        if let Some(connection) = self.get_connection(connection_id) {
+            return Ok(Some(connection));
+        }
+        let Some(mut redis) = self
+            .redis_conn_snapshot_required(
+                "Distributed connection lookup unavailable while Redis is degraded",
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let value: Option<String> = self
+            .redis_op(
+                "load distributed connection metadata",
+                redis.get(self.conn_metadata_key(connection_id)),
+            )
+            .await
+            .map_err(|error| format!("Distributed connection lookup failed: {error}"))?;
+        value
+            .map(|json| {
+                serde_json::from_str::<ConnectionInfoPersistent>(&json)
+                    .map(ConnectionInfoPersistent::into_connection_info)
+                    .map_err(|error| format!("Distributed connection metadata is invalid: {error}"))
+            })
+            .transpose()
+    }
+
+    /// Persist one local connection immediately after security-sensitive state changes.
+    pub async fn sync_connection_metadata_distributed(
+        &self,
+        connection_id: &str,
+    ) -> Result<(), String> {
+        let Some(connection) = self.get_connection(connection_id) else {
+            return Err("Connection not found".to_string());
+        };
+        let Some(mut redis) = self
+            .redis_conn_snapshot_required(
+                "Distributed connection metadata update unavailable while Redis is degraded",
+            )
+            .await?
+        else {
+            return Ok(());
+        };
+        let value = serde_json::to_string(&ConnectionInfoPersistent::from(&connection))
+            .map_err(|error| format!("Failed to encode connection metadata: {error}"))?;
+        self.redis_op(
+            "sync distributed connection metadata",
+            redis.set_ex(
+                self.conn_metadata_key(connection_id),
+                value,
+                i64_to_u64_saturating(CONNECTION_METADATA_TTL_SECONDS),
+            ),
+        )
+        .await
+        .map_err(|error| format!("Distributed connection metadata update failed: {error}"))
+    }
+
     /// Refresh TTLs on all active distributed connection counters and metadata in Redis.
     ///
     /// Long-lived connections (up to 24 hours) outlive the crash-safety TTL
@@ -920,20 +983,145 @@ impl ConnectionManager {
         None
     }
 
+    pub async fn try_join_voice_rtc(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        conn_id: &str,
+        max_participants: usize,
+    ) -> Result<VoiceRtcJoinOutcome, String> {
+        let room_lock = self.voice_room_lock(room_id);
+        let _room_guard = room_lock.lock().await;
+        let current = self
+            .get_connection(conn_id)
+            .ok_or_else(|| "Connection not found".to_string())?;
+        if &current.user_id != user_id || current.room_id.as_ref() != Some(room_id) {
+            return Err("Connection is not in this room".to_string());
+        }
+        if current.voice_rtc_joined {
+            return Ok(VoiceRtcJoinOutcome::AlreadyJoined);
+        }
+
+        let distributed_reserved = if let Some(mut redis) = self
+            .redis_conn_snapshot_required(
+                "Distributed voice chat capacity check unavailable while Redis is degraded",
+            )
+            .await?
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let session_seconds = self.limits.webrtc_session_timeout.as_secs().max(1);
+            let expires_at = now.saturating_add(session_seconds);
+            let key_ttl = session_seconds.saturating_add(60);
+            let result: i64 = self
+                .redis_op(
+                    "reserve distributed voice chat participant",
+                    VOICE_RTC_JOIN_SCRIPT
+                        .key(self.voice_room_key(room_id))
+                        .arg(conn_id)
+                        .arg(now)
+                        .arg(expires_at)
+                        .arg(max_participants)
+                        .arg(key_ttl)
+                        .invoke_async(&mut redis),
+                )
+                .await
+                .map_err(|error| {
+                    format!("Distributed voice chat capacity check failed: {error}")
+                })?;
+            if result == 0 {
+                return Ok(VoiceRtcJoinOutcome::RoomAtCapacity);
+            }
+            true
+        } else {
+            if self.get_voice_rtc_connections(room_id).len() >= max_participants {
+                return Ok(VoiceRtcJoinOutcome::RoomAtCapacity);
+            }
+            false
+        };
+
+        self.mark_voice_rtc_joined(room_id, user_id, conn_id, true);
+        if let Err(error) = self.sync_connection_metadata_distributed(conn_id).await {
+            self.mark_voice_rtc_joined(room_id, user_id, conn_id, false);
+            if distributed_reserved {
+                self.release_voice_rtc_slot_best_effort(room_id, conn_id)
+                    .await;
+            }
+            return Err(error);
+        }
+        Ok(VoiceRtcJoinOutcome::Joined)
+    }
+
+    pub async fn leave_voice_rtc(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        conn_id: &str,
+    ) -> Result<bool, String> {
+        let room_lock = self.voice_room_lock(room_id);
+        let _room_guard = room_lock.lock().await;
+        let current = self
+            .get_connection(conn_id)
+            .ok_or_else(|| "Connection not found".to_string())?;
+        if &current.user_id != user_id || current.room_id.as_ref() != Some(room_id) {
+            return Err("Connection is not in this room".to_string());
+        }
+        if !current.voice_rtc_joined {
+            return Ok(false);
+        }
+
+        self.mark_voice_rtc_joined(room_id, user_id, conn_id, false);
+        if let Err(error) = self.sync_connection_metadata_distributed(conn_id).await {
+            self.mark_voice_rtc_joined(room_id, user_id, conn_id, true);
+            return Err(error);
+        }
+        self.release_voice_rtc_slot_best_effort(room_id, conn_id)
+            .await;
+        Ok(true)
+    }
+
+    pub(super) async fn release_voice_rtc_slot_best_effort(&self, room_id: &RoomId, conn_id: &str) {
+        let Some(mut redis) = self.redis_conn_snapshot().await else {
+            return;
+        };
+        if let Err(error) = self
+            .redis_op(
+                "release distributed voice chat participant",
+                redis.zrem::<_, _, ()>(self.voice_room_key(room_id), conn_id),
+            )
+            .await
+        {
+            warn!(
+                room_id = %room_id,
+                connection_id = %conn_id,
+                error = %error,
+                "Failed to release distributed voice chat participant; expiry remains as safety net"
+            );
+        }
+    }
+
     /// Mark a connection as joined or left WebRTC session
     ///
     /// This is used to track which connections are actively participating in WebRTC calls.
-    pub fn mark_rtc_joined(&self, room_id: &RoomId, user_id: &UserId, conn_id: &str, joined: bool) {
+    pub fn mark_voice_rtc_joined(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        conn_id: &str,
+        joined: bool,
+    ) {
         // Verify the connection belongs to the user and room
         if let Some(mut conn) = self.connections.get_mut(conn_id) {
             if &conn.user_id == user_id && conn.room_id.as_ref() == Some(room_id) {
-                conn.rtc_joined = joined;
+                conn.voice_rtc_joined = joined;
                 // Set or clear the RTC join timestamp
-                conn.rtc_joined_at = if joined { Some(Instant::now()) } else { None };
-                if let Some(rtc_joined_at) = conn.rtc_joined_at {
-                    self.schedule_rtc_timeout(conn_id, rtc_joined_at);
+                conn.voice_rtc_joined_at = if joined { Some(Instant::now()) } else { None };
+                if let Some(voice_rtc_joined_at) = conn.voice_rtc_joined_at {
+                    self.schedule_voice_rtc_timeout(conn_id, voice_rtc_joined_at);
                 } else {
-                    self.clear_rtc_timeout(conn_id);
+                    self.clear_voice_rtc_timeout(conn_id);
                 }
                 debug!(
                     connection_id = %conn_id,
@@ -946,9 +1134,10 @@ impl ConnectionManager {
         }
     }
 
+    /// Replace the connection's voice and media P2P presence atomically.
     /// Get all connections in a room that have joined WebRTC
     #[must_use]
-    pub fn get_rtc_connections(&self, room_id: &RoomId) -> Vec<ConnectionInfo> {
+    pub fn get_voice_rtc_connections(&self, room_id: &RoomId) -> Vec<ConnectionInfo> {
         // Collect IDs first to avoid holding cross-DashMap locks
         let conn_ids: Vec<String> = self
             .room_connections
@@ -959,7 +1148,7 @@ impl ConnectionManager {
         conn_ids
             .iter()
             .filter_map(|id| self.connections.get(id).map(|c| c.clone()))
-            .filter(|conn| conn.rtc_joined)
+            .filter(|conn| conn.voice_rtc_joined)
             .collect()
     }
 

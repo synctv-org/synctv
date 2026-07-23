@@ -1805,7 +1805,9 @@ impl RedisPubSub {
 
             // Route WebRTC signaling to the specific target connection instead
             // of broadcasting SDP/ICE data to all room subscribers.
-            if let RealtimeEvent::WebRTCSignaling { ref to, .. } = event {
+            if let RealtimeEvent::WebRTCVoiceSignaling { ref to, .. }
+            | RealtimeEvent::WebRTCMediaSignaling { ref to, .. } = event
+            {
                 let Some((_target_user, target_conn)) = to.rsplit_once(':') else {
                     warn!(
                         room_id = %room_id,

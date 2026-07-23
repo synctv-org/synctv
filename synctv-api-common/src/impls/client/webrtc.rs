@@ -46,8 +46,48 @@ impl ClientApiImpl {
     ) -> Result<synctv_proto::client::GetIceServersResponse, ApiError> {
         use synctv_proto::client::{GetIceServersResponse, IceServer};
 
-        self.require_room_permission(actor, synctv_core::models::RoomPermission::USE_WEBRTC)
-            .await?;
+        let has_rtc_business_permission = match actor {
+            RoomActor::User { room_id, user_id } => {
+                let voice = self
+                    .room_service
+                    .check_permission(
+                        room_id,
+                        user_id,
+                        synctv_core::models::RoomPermission::USE_VOICE_CHAT,
+                    )
+                    .await;
+                match voice {
+                    Ok(()) => Ok(()),
+                    Err(synctv_core::Error::Authorization(_)) => {
+                        self.room_service
+                            .check_permission(
+                                room_id,
+                                user_id,
+                                synctv_core::models::RoomPermission::USE_P2P_MEDIA,
+                            )
+                            .await
+                    }
+                    Err(error) => Err(error),
+                }
+                .map_err(Self::map_room_access_error)
+            }
+            RoomActor::Guest(access) => {
+                if access
+                    .permissions
+                    .has(synctv_core::models::RoomPermission::USE_VOICE_CHAT)
+                    || access
+                        .permissions
+                        .has(synctv_core::models::RoomPermission::USE_P2P_MEDIA)
+                {
+                    Ok(())
+                } else {
+                    Err(ApiError::Authorization(
+                        "WebRTC transport permission required".to_string(),
+                    ))
+                }
+            }
+        };
+        has_rtc_business_permission?;
         let room_id = actor.room_id();
         let room = self
             .room_service

@@ -314,7 +314,7 @@ fn test_effective_permissions_remove_overrides_add() {
 #[test]
 fn test_member_permissions_maps_member_bitspace() {
     let settings = RoomSettings {
-        member_added_permissions: MemberAddedPermissions(RoomMemberPermissionBits::USE_WEBRTC),
+        member_added_permissions: MemberAddedPermissions(RoomMemberPermissionBits::USE_VOICE_CHAT),
         member_removed_permissions: MemberRemovedPermissions(
             RoomMemberPermissionBits::SEND_CHAT_MESSAGES,
         ),
@@ -322,6 +322,6 @@ fn test_member_permissions_maps_member_bitspace() {
     };
 
     let effective = settings.member_permissions(RoomPermissionSet::default_member());
-    assert!(effective.has(RoomPermission::USE_WEBRTC));
+    assert!(effective.has(RoomPermission::USE_VOICE_CHAT));
     assert!(!effective.has(RoomPermission::SEND_CHAT_MESSAGES));
 }

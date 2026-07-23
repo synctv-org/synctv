@@ -21,10 +21,11 @@ use std::str::FromStr;
 pub enum RoomPermission {
     SendChatMessages,
     ManageOwnMedia,
-    ViewMedia,
+    BrowseLibrary,
     ViewMembers,
     ViewChatHistory,
-    UseWebrtc,
+    UseVoiceChat,
+    UseP2pMedia,
     DeleteMedia,
     ReorderMedia,
     ClearMedia,
@@ -44,10 +45,11 @@ pub enum RoomPermission {
 impl RoomPermission {
     pub const SEND_CHAT_MESSAGES: Self = Self::SendChatMessages;
     pub const MANAGE_OWN_MEDIA: Self = Self::ManageOwnMedia;
-    pub const VIEW_MEDIA: Self = Self::ViewMedia;
+    pub const BROWSE_LIBRARY: Self = Self::BrowseLibrary;
     pub const VIEW_MEMBERS: Self = Self::ViewMembers;
     pub const VIEW_CHAT_HISTORY: Self = Self::ViewChatHistory;
-    pub const USE_WEBRTC: Self = Self::UseWebrtc;
+    pub const USE_VOICE_CHAT: Self = Self::UseVoiceChat;
+    pub const USE_P2P_MEDIA: Self = Self::UseP2pMedia;
     pub const DELETE_MEDIA: Self = Self::DeleteMedia;
     pub const REORDER_MEDIA: Self = Self::ReorderMedia;
     pub const CLEAR_MEDIA: Self = Self::ClearMedia;
@@ -166,27 +168,30 @@ pub struct RoomMemberPermissionBits(pub u64);
 impl RoomMemberPermissionBits {
     pub const SEND_CHAT_MESSAGES: u64 = 1 << 0;
     pub const MANAGE_OWN_MEDIA: u64 = 1 << 1;
-    pub const VIEW_MEDIA: u64 = 1 << 2;
+    pub const BROWSE_LIBRARY: u64 = 1 << 2;
     pub const VIEW_MEMBERS: u64 = 1 << 3;
     pub const VIEW_CHAT_HISTORY: u64 = 1 << 4;
-    pub const USE_WEBRTC: u64 = 1 << 5;
+    pub const USE_VOICE_CHAT: u64 = 1 << 5;
+    pub const USE_P2P_MEDIA: u64 = 1 << 6;
 
     pub const ALL: u64 = Self::SEND_CHAT_MESSAGES
         | Self::MANAGE_OWN_MEDIA
-        | Self::VIEW_MEDIA
+        | Self::BROWSE_LIBRARY
         | Self::VIEW_MEMBERS
         | Self::VIEW_CHAT_HISTORY
-        | Self::USE_WEBRTC;
+        | Self::USE_VOICE_CHAT
+        | Self::USE_P2P_MEDIA;
 
     pub const DEFAULT: u64 = Self::ALL;
 
     pub const NAMES: &[(&str, u64)] = &[
         ("send_chat_messages", Self::SEND_CHAT_MESSAGES),
         ("manage_own_media", Self::MANAGE_OWN_MEDIA),
-        ("view_media", Self::VIEW_MEDIA),
+        ("browse_library", Self::BROWSE_LIBRARY),
         ("view_members", Self::VIEW_MEMBERS),
         ("view_chat_history", Self::VIEW_CHAT_HISTORY),
-        ("use_webrtc", Self::USE_WEBRTC),
+        ("use_voice_chat", Self::USE_VOICE_CHAT),
+        ("use_p2p_media", Self::USE_P2P_MEDIA),
     ];
 
     #[must_use]
@@ -203,8 +208,8 @@ impl RoomMemberPermissionBits {
         if bits & Self::MANAGE_OWN_MEDIA != 0 {
             permissions |= RoomAdminPermissionBits::MANAGE_OWN_MEDIA;
         }
-        if bits & Self::VIEW_MEDIA != 0 {
-            permissions |= RoomAdminPermissionBits::VIEW_MEDIA;
+        if bits & Self::BROWSE_LIBRARY != 0 {
+            permissions |= RoomAdminPermissionBits::BROWSE_LIBRARY;
         }
         if bits & Self::VIEW_MEMBERS != 0 {
             permissions |= RoomAdminPermissionBits::VIEW_MEMBERS;
@@ -212,8 +217,11 @@ impl RoomMemberPermissionBits {
         if bits & Self::VIEW_CHAT_HISTORY != 0 {
             permissions |= RoomAdminPermissionBits::VIEW_CHAT_HISTORY;
         }
-        if bits & Self::USE_WEBRTC != 0 {
-            permissions |= RoomAdminPermissionBits::USE_WEBRTC;
+        if bits & Self::USE_VOICE_CHAT != 0 {
+            permissions |= RoomAdminPermissionBits::USE_VOICE_CHAT;
+        }
+        if bits & Self::USE_P2P_MEDIA != 0 {
+            permissions |= RoomAdminPermissionBits::USE_P2P_MEDIA;
         }
         permissions
     }
@@ -227,8 +235,8 @@ impl RoomMemberPermissionBits {
         if permissions & RoomAdminPermissionBits::MANAGE_OWN_MEDIA != 0 {
             bits |= Self::MANAGE_OWN_MEDIA;
         }
-        if permissions & RoomAdminPermissionBits::VIEW_MEDIA != 0 {
-            bits |= Self::VIEW_MEDIA;
+        if permissions & RoomAdminPermissionBits::BROWSE_LIBRARY != 0 {
+            bits |= Self::BROWSE_LIBRARY;
         }
         if permissions & RoomAdminPermissionBits::VIEW_MEMBERS != 0 {
             bits |= Self::VIEW_MEMBERS;
@@ -236,8 +244,11 @@ impl RoomMemberPermissionBits {
         if permissions & RoomAdminPermissionBits::VIEW_CHAT_HISTORY != 0 {
             bits |= Self::VIEW_CHAT_HISTORY;
         }
-        if permissions & RoomAdminPermissionBits::USE_WEBRTC != 0 {
-            bits |= Self::USE_WEBRTC;
+        if permissions & RoomAdminPermissionBits::USE_VOICE_CHAT != 0 {
+            bits |= Self::USE_VOICE_CHAT;
+        }
+        if permissions & RoomAdminPermissionBits::USE_P2P_MEDIA != 0 {
+            bits |= Self::USE_P2P_MEDIA;
         }
         bits
     }
@@ -254,10 +265,10 @@ pub struct RoomAdminPermissionBits(pub u64);
 impl RoomAdminPermissionBits {
     pub const SEND_CHAT_MESSAGES: u64 = 1 << 0;
     pub const MANAGE_OWN_MEDIA: u64 = 1 << 1;
-    pub const VIEW_MEDIA: u64 = 1 << 2;
+    pub const BROWSE_LIBRARY: u64 = 1 << 2;
     pub const VIEW_MEMBERS: u64 = 1 << 3;
     pub const VIEW_CHAT_HISTORY: u64 = 1 << 4;
-    pub const USE_WEBRTC: u64 = 1 << 5;
+    pub const USE_VOICE_CHAT: u64 = 1 << 5;
     pub const DELETE_MEDIA: u64 = 1 << 6;
     pub const REORDER_MEDIA: u64 = 1 << 7;
     pub const CLEAR_MEDIA: u64 = 1 << 8;
@@ -272,13 +283,14 @@ impl RoomAdminPermissionBits {
     pub const DELETE_CHAT_MESSAGES: u64 = 1 << 17;
     pub const DELETE_ROOM: u64 = 1 << 18;
     pub const VIEW_PLAYBACK_HISTORY: u64 = 1 << 19;
+    pub const USE_P2P_MEDIA: u64 = 1 << 20;
 
     pub const ALL: u64 = Self::SEND_CHAT_MESSAGES
         | Self::MANAGE_OWN_MEDIA
-        | Self::VIEW_MEDIA
+        | Self::BROWSE_LIBRARY
         | Self::VIEW_MEMBERS
         | Self::VIEW_CHAT_HISTORY
-        | Self::USE_WEBRTC
+        | Self::USE_VOICE_CHAT
         | Self::DELETE_MEDIA
         | Self::REORDER_MEDIA
         | Self::CLEAR_MEDIA
@@ -292,17 +304,18 @@ impl RoomAdminPermissionBits {
         | Self::MANAGE_ROOM_SETTINGS
         | Self::DELETE_CHAT_MESSAGES
         | Self::DELETE_ROOM
-        | Self::VIEW_PLAYBACK_HISTORY;
+        | Self::VIEW_PLAYBACK_HISTORY
+        | Self::USE_P2P_MEDIA;
 
     pub const DEFAULT: u64 = Self::ALL & !Self::DELETE_ROOM;
 
     pub const NAMES: &[(&str, u64)] = &[
         ("send_chat_messages", Self::SEND_CHAT_MESSAGES),
         ("manage_own_media", Self::MANAGE_OWN_MEDIA),
-        ("view_media", Self::VIEW_MEDIA),
+        ("browse_library", Self::BROWSE_LIBRARY),
         ("view_members", Self::VIEW_MEMBERS),
         ("view_chat_history", Self::VIEW_CHAT_HISTORY),
-        ("use_webrtc", Self::USE_WEBRTC),
+        ("use_voice_chat", Self::USE_VOICE_CHAT),
         ("delete_media", Self::DELETE_MEDIA),
         ("reorder_media", Self::REORDER_MEDIA),
         ("clear_media", Self::CLEAR_MEDIA),
@@ -317,6 +330,7 @@ impl RoomAdminPermissionBits {
         ("delete_chat_messages", Self::DELETE_CHAT_MESSAGES),
         ("delete_room", Self::DELETE_ROOM),
         ("view_playback_history", Self::VIEW_PLAYBACK_HISTORY),
+        ("use_p2p_media", Self::USE_P2P_MEDIA),
     ];
 
     #[must_use]
@@ -329,10 +343,11 @@ impl RoomAdminPermissionBits {
         match permission {
             crate::models::RoomPermission::SendChatMessages => Self::SEND_CHAT_MESSAGES,
             crate::models::RoomPermission::ManageOwnMedia => Self::MANAGE_OWN_MEDIA,
-            crate::models::RoomPermission::ViewMedia => Self::VIEW_MEDIA,
+            crate::models::RoomPermission::BrowseLibrary => Self::BROWSE_LIBRARY,
             crate::models::RoomPermission::ViewMembers => Self::VIEW_MEMBERS,
             crate::models::RoomPermission::ViewChatHistory => Self::VIEW_CHAT_HISTORY,
-            crate::models::RoomPermission::UseWebrtc => Self::USE_WEBRTC,
+            crate::models::RoomPermission::UseVoiceChat => Self::USE_VOICE_CHAT,
+            crate::models::RoomPermission::UseP2pMedia => Self::USE_P2P_MEDIA,
             crate::models::RoomPermission::DeleteMedia => Self::DELETE_MEDIA,
             crate::models::RoomPermission::ReorderMedia => Self::REORDER_MEDIA,
             crate::models::RoomPermission::ClearMedia => Self::CLEAR_MEDIA,
@@ -361,8 +376,8 @@ impl RoomAdminPermissionBits {
         if bits & Self::MANAGE_OWN_MEDIA != 0 {
             permissions |= RoomAdminPermissionBits::MANAGE_OWN_MEDIA;
         }
-        if bits & Self::VIEW_MEDIA != 0 {
-            permissions |= RoomAdminPermissionBits::VIEW_MEDIA;
+        if bits & Self::BROWSE_LIBRARY != 0 {
+            permissions |= RoomAdminPermissionBits::BROWSE_LIBRARY;
         }
         if bits & Self::VIEW_MEMBERS != 0 {
             permissions |= RoomAdminPermissionBits::VIEW_MEMBERS;
@@ -370,8 +385,8 @@ impl RoomAdminPermissionBits {
         if bits & Self::VIEW_CHAT_HISTORY != 0 {
             permissions |= RoomAdminPermissionBits::VIEW_CHAT_HISTORY;
         }
-        if bits & Self::USE_WEBRTC != 0 {
-            permissions |= RoomAdminPermissionBits::USE_WEBRTC;
+        if bits & Self::USE_VOICE_CHAT != 0 {
+            permissions |= RoomAdminPermissionBits::USE_VOICE_CHAT;
         }
         if bits & Self::DELETE_MEDIA != 0 {
             permissions |= RoomAdminPermissionBits::DELETE_MEDIA;
@@ -412,6 +427,9 @@ impl RoomAdminPermissionBits {
         if bits & Self::DELETE_ROOM != 0 {
             permissions |= RoomAdminPermissionBits::DELETE_ROOM;
         }
+        if bits & Self::USE_P2P_MEDIA != 0 {
+            permissions |= RoomAdminPermissionBits::USE_P2P_MEDIA;
+        }
         permissions
     }
 
@@ -424,8 +442,8 @@ impl RoomAdminPermissionBits {
         if permissions & RoomAdminPermissionBits::MANAGE_OWN_MEDIA != 0 {
             bits |= Self::MANAGE_OWN_MEDIA;
         }
-        if permissions & RoomAdminPermissionBits::VIEW_MEDIA != 0 {
-            bits |= Self::VIEW_MEDIA;
+        if permissions & RoomAdminPermissionBits::BROWSE_LIBRARY != 0 {
+            bits |= Self::BROWSE_LIBRARY;
         }
         if permissions & RoomAdminPermissionBits::VIEW_MEMBERS != 0 {
             bits |= Self::VIEW_MEMBERS;
@@ -433,8 +451,8 @@ impl RoomAdminPermissionBits {
         if permissions & RoomAdminPermissionBits::VIEW_CHAT_HISTORY != 0 {
             bits |= Self::VIEW_CHAT_HISTORY;
         }
-        if permissions & RoomAdminPermissionBits::USE_WEBRTC != 0 {
-            bits |= Self::USE_WEBRTC;
+        if permissions & RoomAdminPermissionBits::USE_VOICE_CHAT != 0 {
+            bits |= Self::USE_VOICE_CHAT;
         }
         if permissions & RoomAdminPermissionBits::DELETE_MEDIA != 0 {
             bits |= Self::DELETE_MEDIA;
@@ -475,6 +493,9 @@ impl RoomAdminPermissionBits {
         if permissions & RoomAdminPermissionBits::DELETE_ROOM != 0 {
             bits |= Self::DELETE_ROOM;
         }
+        if permissions & RoomAdminPermissionBits::USE_P2P_MEDIA != 0 {
+            bits |= Self::USE_P2P_MEDIA;
+        }
         bits
     }
 }
@@ -486,15 +507,18 @@ pub struct RoomGuestPermissionBits(pub u64);
 impl RoomGuestPermissionBits {
     pub const VIEW_MEMBERS: u64 = 1 << 32;
     pub const VIEW_CHAT_HISTORY: u64 = 1 << 33;
-    pub const USE_WEBRTC: u64 = 1 << 34;
+    pub const USE_VOICE_CHAT: u64 = 1 << 34;
+    pub const USE_P2P_MEDIA: u64 = 1 << 35;
 
-    pub const ALL: u64 = Self::VIEW_MEMBERS | Self::VIEW_CHAT_HISTORY | Self::USE_WEBRTC;
+    pub const ALL: u64 =
+        Self::VIEW_MEMBERS | Self::VIEW_CHAT_HISTORY | Self::USE_VOICE_CHAT | Self::USE_P2P_MEDIA;
     pub const DEFAULT: u64 = 0;
 
     pub const NAMES: &[(&str, u64)] = &[
         ("view_members", Self::VIEW_MEMBERS),
         ("view_chat_history", Self::VIEW_CHAT_HISTORY),
-        ("use_webrtc", Self::USE_WEBRTC),
+        ("use_voice_chat", Self::USE_VOICE_CHAT),
+        ("use_p2p_media", Self::USE_P2P_MEDIA),
     ];
 
     #[must_use]
@@ -511,8 +535,11 @@ impl RoomGuestPermissionBits {
         if bits & Self::VIEW_CHAT_HISTORY != 0 {
             permissions |= RoomAdminPermissionBits::VIEW_CHAT_HISTORY;
         }
-        if bits & Self::USE_WEBRTC != 0 {
-            permissions |= RoomAdminPermissionBits::USE_WEBRTC;
+        if bits & Self::USE_VOICE_CHAT != 0 {
+            permissions |= RoomAdminPermissionBits::USE_VOICE_CHAT;
+        }
+        if bits & Self::USE_P2P_MEDIA != 0 {
+            permissions |= RoomAdminPermissionBits::USE_P2P_MEDIA;
         }
         permissions
     }
@@ -526,8 +553,11 @@ impl RoomGuestPermissionBits {
         if permissions & RoomAdminPermissionBits::VIEW_CHAT_HISTORY != 0 {
             bits |= Self::VIEW_CHAT_HISTORY;
         }
-        if permissions & RoomAdminPermissionBits::USE_WEBRTC != 0 {
-            bits |= Self::USE_WEBRTC;
+        if permissions & RoomAdminPermissionBits::USE_VOICE_CHAT != 0 {
+            bits |= Self::USE_VOICE_CHAT;
+        }
+        if permissions & RoomAdminPermissionBits::USE_P2P_MEDIA != 0 {
+            bits |= Self::USE_P2P_MEDIA;
         }
         bits
     }
@@ -792,11 +822,12 @@ mod tests {
 
         let member_perms = Role::Member.permissions();
         assert!(member_perms.has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
-        assert!(member_perms.has(crate::models::RoomPermission::USE_WEBRTC));
+        assert!(member_perms.has(crate::models::RoomPermission::USE_VOICE_CHAT));
+        assert!(member_perms.has(crate::models::RoomPermission::USE_P2P_MEDIA));
         assert!(!member_perms.has(crate::models::RoomPermission::REMOVE_MEMBERS));
 
         let guest_perms = Role::Guest.permissions();
-        assert!(!guest_perms.has(crate::models::RoomPermission::VIEW_MEDIA));
+        assert!(!guest_perms.has(crate::models::RoomPermission::BROWSE_LIBRARY));
         assert!(!guest_perms.has(crate::models::RoomPermission::MANAGE_OWN_MEDIA));
     }
 

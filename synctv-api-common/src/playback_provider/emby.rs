@@ -2,9 +2,9 @@ use futures::StreamExt;
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::EmbyPlaybackProviderService;
 use synctv_proto::playback_provider::emby::{
-    EmbyHlsManifestResponse, EmbyHlsSegmentResponse, EmbyMediaStreamResponse, EmbySubtitleResponse,
-    GetEmbyHlsManifestRequest, GetEmbyHlsSegmentRequest, GetEmbyMediaStreamRequest,
-    GetEmbySubtitleRequest,
+    EmbyHlsManifestResponse, EmbyHlsResourceKind, EmbyHlsResourceResponse, EmbyMediaStreamResponse,
+    EmbySubtitleResponse, GetEmbyHlsManifestRequest, GetEmbyHlsResourceRequest,
+    GetEmbyMediaStreamRequest, GetEmbySubtitleRequest,
 };
 
 use super::common::{
@@ -28,8 +28,8 @@ pub type EmbyMediaStreamResponseStream = std::pin::Pin<
 pub type EmbyHlsManifestResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<EmbyHlsManifestResponse, ApiError>> + Send + 'static>,
 >;
-pub type EmbyHlsSegmentResponseStream = std::pin::Pin<
-    Box<dyn futures::Stream<Item = Result<EmbyHlsSegmentResponse, ApiError>> + Send + 'static>,
+pub type EmbyHlsResourceResponseStream = std::pin::Pin<
+    Box<dyn futures::Stream<Item = Result<EmbyHlsResourceResponse, ApiError>> + Send + 'static>,
 >;
 pub type EmbySubtitleResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<EmbySubtitleResponse, ApiError>> + Send + 'static>,
@@ -100,9 +100,15 @@ pub async fn get_emby_hls_manifest(
         )
         .await
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base("emby", &req.version, "hls-segments");
+    let segment_base = format!(
+        "{}/{}/{}",
+        playback_provider_route_base("emby", &req.version, "hls-resources"),
+        urlencoding::encode(&req.mode_name),
+        req.url_index
+    );
+    let resource = format!("hls-resources/{}/{}/*", req.mode_name, req.url_index);
     let stream = playback_transport_action_to_chunk_stream(
-        deps.chunk_deps_with_hls(&segment_base, &claims, "hls-segments"),
+        deps.chunk_deps_with_hls(&segment_base, &claims, &resource),
         action,
         false,
     )
@@ -112,17 +118,22 @@ pub async fn get_emby_hls_manifest(
     })))
 }
 
-pub async fn get_emby_hls_segment(
+pub async fn get_emby_hls_resource(
     deps: EmbyPlaybackProviderDeps<'_>,
-    req: GetEmbyHlsSegmentRequest,
-) -> Result<EmbyHlsSegmentResponseStream, ApiError> {
+    req: GetEmbyHlsResourceRequest,
+) -> Result<EmbyHlsResourceResponseStream, ApiError> {
     crate::impls::validate_proto_request(&req)?;
+    let kind = emby_hls_resource_kind(req.resource_kind)?;
+    let kind_name = emby_hls_resource_kind_name(kind);
     let head = req.head;
     let (store, claims) = verify_emby_access(
         &deps,
         PlaybackProviderAccessRequest {
             version: &req.version,
-            resource: "hls-segments".to_string(),
+            resource: format!(
+                "hls-resources/{}/{}/{kind_name}",
+                req.mode_name, req.media_index
+            ),
             signature: &req.sig,
             user_id: &req.uid,
             room_id: &req.rid,
@@ -133,25 +144,59 @@ pub async fn get_emby_hls_segment(
     .await?;
     let action = deps
         .playback_provider_service
-        .hls_segment_action(
-            &req.version,
-            &req.target_url,
-            req.range.as_deref(),
+        .hls_resource_action(
+            synctv_core::provider::EmbyHlsResourceRequest {
+                version: &req.version,
+                mode_name: &req.mode_name,
+                media_index: req.media_index as usize,
+                target_url: &req.target_url,
+                is_manifest: kind == EmbyHlsResourceKind::Manifest,
+                range_header: req.range.as_deref(),
+            },
             store,
             deps.request_control,
         )
         .await
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base("emby", &req.version, "hls-segments");
-    let stream = playback_transport_action_to_chunk_stream(
-        deps.chunk_deps_with_hls(&segment_base, &claims, "hls-segments"),
-        action,
-        head,
-    )
-    .await?;
+    let stream = if kind == EmbyHlsResourceKind::Manifest {
+        let segment_base = format!(
+            "{}/{}/{}",
+            playback_provider_route_base("emby", &req.version, "hls-resources"),
+            urlencoding::encode(&req.mode_name),
+            req.media_index
+        );
+        let resource = format!("hls-resources/{}/{}/*", req.mode_name, req.media_index);
+        playback_transport_action_to_chunk_stream(
+            deps.chunk_deps_with_hls(&segment_base, &claims, &resource),
+            action,
+            head,
+        )
+        .await?
+    } else {
+        playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, head).await?
+    };
     Ok(Box::pin(stream.map(|chunk| {
-        chunk.map(|chunk| EmbyHlsSegmentResponse { chunk: Some(chunk) })
+        chunk.map(|chunk| EmbyHlsResourceResponse { chunk: Some(chunk) })
     })))
+}
+
+fn emby_hls_resource_kind(value: i32) -> Result<EmbyHlsResourceKind, ApiError> {
+    let kind = EmbyHlsResourceKind::try_from(value)
+        .map_err(|_| ApiError::InvalidInput("Invalid Emby HLS resource kind".to_string()))?;
+    match kind {
+        EmbyHlsResourceKind::Media | EmbyHlsResourceKind::Manifest => Ok(kind),
+        EmbyHlsResourceKind::Unspecified => Err(ApiError::InvalidInput(
+            "Emby HLS resource kind is required".to_string(),
+        )),
+    }
+}
+
+const fn emby_hls_resource_kind_name(kind: EmbyHlsResourceKind) -> &'static str {
+    match kind {
+        EmbyHlsResourceKind::Media => "media",
+        EmbyHlsResourceKind::Manifest => "manifest",
+        EmbyHlsResourceKind::Unspecified => "unspecified",
+    }
 }
 
 pub async fn get_emby_subtitle(
@@ -221,7 +266,7 @@ impl<'a> EmbyPlaybackProviderDeps<'a> {
         &self,
         segment_base: &'a str,
         claims: &'a crate::proxy_signature::ProxyUrlClaims,
-        resource: &'static str,
+        resource: &'a str,
     ) -> PlaybackTransportExecutorDeps<'a> {
         PlaybackTransportExecutorDeps {
             hls_rewrite: Some(HlsRewriteSigning {

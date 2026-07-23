@@ -154,7 +154,11 @@ const MAX_CONSECUTIVE_DROPS: u32 = 50;
 const ROOM_INDEX_DIRECTORY_KEY_SUFFIX: &str = "room_hub:room_index";
 
 const fn requires_reliable_target_delivery(event: &RealtimeEvent) -> bool {
-    event.is_critical() || matches!(event, RealtimeEvent::WebRTCSignaling { .. })
+    event.is_critical()
+        || matches!(
+            event,
+            RealtimeEvent::WebRTCVoiceSignaling { .. } | RealtimeEvent::WebRTCMediaSignaling { .. }
+        )
 }
 
 async fn run_room_hub_redis_op<T, F>(

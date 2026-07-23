@@ -584,7 +584,7 @@ async fn test_member_cannot_grant_self_permissions() {
             room.id,
             member_user.id,
             member_user.id,
-            RoomMemberPermissionBits::USE_WEBRTC,
+            RoomMemberPermissionBits::USE_VOICE_CHAT,
         )
         .await;
 

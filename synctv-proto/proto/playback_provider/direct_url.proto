@@ -5,6 +5,12 @@ package synctv.playback_provider.direct_url;
 import "proto/buf/validate/validate.proto";
 import "proto/playback_provider/common.proto";
 
+enum DirectUrlManifestResourceKind {
+  DIRECT_URL_MANIFEST_RESOURCE_KIND_UNSPECIFIED = 0;
+  DIRECT_URL_MANIFEST_RESOURCE_KIND_MEDIA = 1;
+  DIRECT_URL_MANIFEST_RESOURCE_KIND_MANIFEST = 2;
+}
+
 message GetDirectUrlStreamRequest {
   string version = 1 [(buf.validate.field).string.min_len = 1];
   string mode_name = 2 [(buf.validate.field).string.min_len = 1];
@@ -35,7 +41,7 @@ message DirectUrlHlsManifestResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
-message GetDirectUrlHlsSegmentRequest {
+message GetDirectUrlHlsResourceRequest {
   string version = 1 [(buf.validate.field).string.min_len = 1];
   string target_url = 2 [(buf.validate.field).string.min_len = 1];
   string sig = 3 [(buf.validate.field).string.min_len = 1];
@@ -44,9 +50,46 @@ message GetDirectUrlHlsSegmentRequest {
   int64 exp = 6;
   optional string range = 7;
   bool head = 8;
+  string mode_name = 9 [(buf.validate.field).string.min_len = 1];
+  uint32 url_index = 10;
+  DirectUrlManifestResourceKind resource_kind = 11 [(buf.validate.field).enum.defined_only = true];
 }
 
-message DirectUrlHlsSegmentResponse {
+message DirectUrlHlsResourceResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetDirectUrlDashManifestRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string mode_name = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 url_index = 3;
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+}
+
+message DirectUrlDashManifestResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetDirectUrlDashResourceRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string mode_name = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 url_index = 3;
+  string scope_url = 4 [(buf.validate.field).string.min_len = 1];
+  string resource_path = 5;
+  optional string resource_query = 6;
+  DirectUrlManifestResourceKind resource_kind = 7 [(buf.validate.field).enum.defined_only = true];
+  string sig = 8 [(buf.validate.field).string.min_len = 1];
+  string uid = 9 [(buf.validate.field).string.min_len = 1];
+  string rid = 10 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 11;
+  optional string range = 12;
+  bool head = 13;
+}
+
+message DirectUrlDashResourceResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
@@ -67,6 +110,8 @@ message DirectUrlSubtitleResponse {
 service DirectUrlPlaybackProviderService {
   rpc GetStream(GetDirectUrlStreamRequest) returns (stream DirectUrlStreamResponse);
   rpc GetHlsManifest(GetDirectUrlHlsManifestRequest) returns (stream DirectUrlHlsManifestResponse);
-  rpc GetHlsSegment(GetDirectUrlHlsSegmentRequest) returns (stream DirectUrlHlsSegmentResponse);
+  rpc GetHlsResource(GetDirectUrlHlsResourceRequest) returns (stream DirectUrlHlsResourceResponse);
+  rpc GetDashManifest(GetDirectUrlDashManifestRequest) returns (stream DirectUrlDashManifestResponse);
+  rpc GetDashResource(GetDirectUrlDashResourceRequest) returns (stream DirectUrlDashResourceResponse);
   rpc GetSubtitle(GetDirectUrlSubtitleRequest) returns (stream DirectUrlSubtitleResponse);
 }

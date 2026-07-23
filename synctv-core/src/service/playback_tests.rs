@@ -86,6 +86,80 @@ fn missing_client_time_has_zero_transport_compensation() {
     assert_eq!(elapsed, 0.0);
 }
 
+#[test]
+fn provider_targets_expose_deterministic_live_status_for_chat_metadata() {
+    assert_eq!(
+        live_status_for_target(&ProviderTarget::bilibili_live(123)),
+        Some(true)
+    );
+    assert_eq!(
+        live_status_for_target(&ProviderTarget::twitch(
+            TwitchTargetKind::Live,
+            "channel".to_string(),
+        )),
+        Some(true)
+    );
+    assert_eq!(
+        live_status_for_target(&ProviderTarget::twitch(
+            TwitchTargetKind::Video,
+            "123".to_string(),
+        )),
+        Some(false)
+    );
+    assert_eq!(
+        live_status_for_target(&ProviderTarget::youtube("video".to_string())),
+        None
+    );
+}
+
+#[test]
+fn dynamic_playlist_configs_expose_known_live_status_for_chat_metadata() {
+    let youtube_live = crate::models::PlaylistSourceConfig::Youtube(
+        crate::models::YoutubePlaylistSourceConfig::Channel {
+            channel_id: "channel".to_string(),
+            content: crate::models::YoutubeChannelContent::Live,
+            shared: false,
+        },
+    );
+    let youtube_videos = crate::models::PlaylistSourceConfig::Youtube(
+        crate::models::YoutubePlaylistSourceConfig::Channel {
+            channel_id: "channel".to_string(),
+            content: crate::models::YoutubeChannelContent::Videos,
+            shared: false,
+        },
+    );
+    let douyin_videos =
+        crate::models::PlaylistSourceConfig::Douyin(crate::models::DouyinPlaylistSourceConfig {
+            sec_uid: "creator".to_string(),
+            shared: false,
+        });
+
+    assert_eq!(
+        live_status_for_playlist_source(SourceProvider::Youtube, &youtube_live),
+        Some(true)
+    );
+    assert_eq!(
+        live_status_for_playlist_source(SourceProvider::Youtube, &youtube_videos),
+        Some(false)
+    );
+    assert_eq!(
+        live_status_for_playlist_source(SourceProvider::Douyin, &douyin_videos),
+        Some(false)
+    );
+    assert_eq!(
+        live_status_for_playlist_source(SourceProvider::TikTok, &douyin_videos),
+        None
+    );
+    assert_eq!(
+        ChatPlaybackMetadata::position_for_source(
+            42.0,
+            live_status_for_playlist_source(SourceProvider::Youtube, &youtube_live),
+            None,
+        ),
+        None
+    );
+}
+
 #[derive(Default)]
 struct CountingL2Backend {
     delete_calls: AtomicUsize,
@@ -364,6 +438,12 @@ fn test_switch_target_source_shape_matches_progress_schema() {
     assert!(validate_switch_target(&SwitchPlaybackTarget {
         media_id: Some(MediaId::expect_positive(30_010)),
         playlist_id: None,
+        target: None,
+    })
+    .is_ok());
+    assert!(validate_switch_target(&SwitchPlaybackTarget {
+        media_id: Some(MediaId::expect_positive(30_012)),
+        playlist_id: Some(PlaylistId::expect_positive(40_012)),
         target: None,
     })
     .is_ok());

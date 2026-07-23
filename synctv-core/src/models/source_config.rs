@@ -4,6 +4,10 @@ use url::Url;
 
 use super::media::SourceProvider;
 
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(
     tag = "provider",
@@ -68,6 +72,8 @@ pub struct DirectUrlMediaSourceConfig {
     pub duration_seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefer_proxy: Option<bool>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub proxy_only: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub medias: Vec<DirectUrlMediaResourceConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,6 +97,7 @@ impl DirectUrlMediaSourceConfig {
             is_live: None,
             duration_seconds: None,
             prefer_proxy: None,
+            proxy_only: false,
             medias: vec![DirectUrlMediaResourceConfig {
                 name: String::new(),
                 url,
@@ -945,6 +952,7 @@ mod tests {
             is_live: None,
             duration_seconds: None,
             prefer_proxy: None,
+            proxy_only: false,
             medias: vec![
                 DirectUrlMediaResourceConfig {
                     name: "manifest".to_string(),
@@ -987,6 +995,7 @@ mod tests {
                 is_live: Some(false),
                 duration_seconds: Some(120.5),
                 prefer_proxy: Some(true),
+                proxy_only: true,
                 medias: vec![DirectUrlMediaResourceConfig {
                     name: "1080p".to_string(),
                     url: "https://example.com/video.mp4".to_string(),
@@ -1015,6 +1024,7 @@ mod tests {
                 "isLive": false,
                 "durationSeconds": 120.5,
                 "preferProxy": true,
+                "proxyOnly": true,
                 "medias": [{
                     "name": "1080p",
                     "url": "https://example.com/video.mp4",
@@ -1093,60 +1103,6 @@ mod tests {
                 "provider": "liveProxy",
                 "url": "rtmp://example.com/live/room"
             }),
-        );
-    }
-
-    #[test]
-    fn media_source_config_storage_rejects_obsolete_shapes() {
-        let snake_case_provider_error = serde_json::from_value::<MediaSourceConfig>(json!({
-            "provider": "direct_url",
-            "medias": [{"url": "https://example.com/video.mp4"}]
-        }))
-        .expect_err("storage uses ProtoJSON lowerCamelCase provider names");
-        assert!(
-            snake_case_provider_error
-                .to_string()
-                .contains("unknown variant `direct_url`"),
-            "{snake_case_provider_error}"
-        );
-
-        let direct_url_error = serde_json::from_value::<MediaSourceConfig>(json!({
-            "provider": "directUrl",
-            "url": "https://example.com/video.mp4",
-            "headers": {"User-Agent": "SyncTV"}
-        }))
-        .expect_err("direct_url storage requires medias[]");
-        let direct_url_error = direct_url_error.to_string();
-        assert!(
-            direct_url_error.contains("unknown field `url`")
-                || direct_url_error.contains("unknown field `headers`"),
-            "{direct_url_error}"
-        );
-
-        let bilibili_error = serde_json::from_value::<MediaSourceConfig>(json!({
-            "provider": "bilibili",
-            "type": "video",
-            "bvid": "BV1234567890",
-            "cid": 42
-        }))
-        .expect_err("bilibili storage requires kind");
-        assert!(
-            bilibili_error.to_string().contains("unknown field `type`")
-                || bilibili_error.to_string().contains("missing field `kind`"),
-            "{bilibili_error}"
-        );
-
-        let alist_error = serde_json::from_value::<MediaSourceConfig>(json!({
-            "provider": "alist",
-            "server_id": "alist-main",
-            "path": "/movies/demo.mkv"
-        }))
-        .expect_err("storage uses ProtoJSON lowerCamelCase field names");
-        assert!(
-            alist_error
-                .to_string()
-                .contains("unknown field `server_id`"),
-            "{alist_error}"
         );
     }
 

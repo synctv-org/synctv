@@ -267,26 +267,25 @@ pub fn build_playback_source_expectation(
         return Ok(None);
     }
 
-    let expected_media_id = expected_media_id.ok_or_else(|| {
-        ApiError::InvalidInput(
-            "expected_media_id is required when expected source is supplied".to_string(),
-        )
-    })?;
-    let expected_playlist_id = expected_playlist_id.ok_or_else(|| {
-        ApiError::InvalidInput(
-            "expected_playlist_id is required when expected source is supplied".to_string(),
-        )
-    })?;
     let expected_target_hash = expected_target_hash.ok_or_else(|| {
         ApiError::InvalidInput(
             "expected_target_hash is required when expected source is supplied".to_string(),
         )
     })?;
 
-    let media_id =
-        crate::impls::proto_validated_optional_media_id(expected_media_id, public_id_codec)?;
-    let playlist_id =
-        crate::impls::proto_validated_optional_playlist_id(expected_playlist_id, public_id_codec)?;
+    let media_id = expected_media_id
+        .map(|value| crate::impls::proto_validated_optional_media_id(value, public_id_codec))
+        .transpose()?
+        .flatten();
+    let playlist_id = expected_playlist_id
+        .map(|value| crate::impls::proto_validated_optional_playlist_id(value, public_id_codec))
+        .transpose()?
+        .flatten();
+    if media_id.is_none() && playlist_id.is_none() {
+        return Err(ApiError::InvalidInput(
+            "expected source requires a media ID or playlist ID".to_string(),
+        ));
+    }
     let target_hash = expected_target_hash.trim().to_ascii_lowercase();
     if target_hash.len() != 64 || !target_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(ApiError::InvalidInput(
@@ -1417,12 +1416,21 @@ impl crate::impls::playback::PlaybackService for ClientApiImpl {
             }
         }
 
-        if let Err(error) = self
+        let prepared_fanout = self
+            .playback_fanout
+            .prepare_system_state_changed_outbox_fanout();
+        let auto_advance_result = self
             .room_service
             .playback_service()
-            .check_and_auto_play(room_id, &settings, state.computed_position())
-            .await
-        {
+            .check_and_auto_play_with_outbox(
+                room_id,
+                &settings,
+                state.computed_position(),
+                Some(prepared_fanout.outbox_factory_with_source_changed(true)),
+            )
+            .await;
+        prepared_fanout.publish_after_outbox_commit();
+        if let Err(error) = auto_advance_result {
             tracing::warn!(
                 room_id = %room_id,
                 error = %error,

@@ -28,10 +28,11 @@ use std::time::Duration;
 
 use crate::models::media::{
     BilibiliDashAudioStream, BilibiliDashManifest, BilibiliDashManifestSlot,
-    BilibiliDashSegmentBase, BilibiliDashVideoStream, BilibiliPlaybackMetadata,
-    PlaybackBilibiliDanmaku, PlaybackBilibiliMedia, PlaybackBilibiliSubtitle, PlaybackDanmaku,
-    PlaybackDanmakuProvider, PlaybackExternalDanmaku, PlaybackExternalSubtitle, PlaybackMedia,
-    PlaybackMediaProvider, PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
+    BilibiliDashSegmentBase, BilibiliDashVideoStream, BilibiliDurlSegment,
+    BilibiliPlaybackMetadata, PlaybackBilibiliDanmaku, PlaybackBilibiliMedia,
+    PlaybackBilibiliSubtitle, PlaybackDanmaku, PlaybackDanmakuProvider, PlaybackExternalDanmaku,
+    PlaybackExternalSubtitle, PlaybackMedia, PlaybackMediaProvider, PlaybackMetadata,
+    PlaybackSubtitle, PlaybackSubtitleProvider,
 };
 use crate::models::{
     normalize_provider_instance_name, validate_provider_instance_name, BilibiliHistoryType,
@@ -59,6 +60,25 @@ struct BilibiliHistoryCursor {
     max: u64,
     view_at: i64,
     business: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BilibiliHlsResourceRequest<'a> {
+    pub version: &'a str,
+    pub mode_name: &'a str,
+    pub media_index: usize,
+    pub target_url: &'a str,
+    pub is_manifest: bool,
+    pub range_header: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BilibiliDashResourceRequest<'a> {
+    pub scope_url: &'a str,
+    pub resource_path: &'a str,
+    pub resource_query: Option<&'a str>,
+    pub is_manifest: bool,
+    pub range_header: Option<&'a str>,
 }
 
 /// Bilibili `MediaProvider`
@@ -1804,6 +1824,16 @@ fn has_dash_manifest_metadata(result: &PlaybackResult, mode_name: &str) -> bool 
     dash_manifest_from_metadata(result, mode_name).is_ok()
 }
 
+fn available_dash_manifest_slots(result: &PlaybackResult) -> Vec<BilibiliDashManifestSlot> {
+    [
+        BilibiliDashManifestSlot::Dash,
+        BilibiliDashManifestSlot::Hevc,
+    ]
+    .into_iter()
+    .filter(|slot| dash_manifest_from_metadata(result, slot.as_str()).is_ok())
+    .collect()
+}
+
 fn dash_manifest_from_upstream(dash: &bilibili_upstream::DashInfo) -> BilibiliDashManifest {
     BilibiliDashManifest {
         duration: dash.duration,
@@ -2060,27 +2090,69 @@ fn mark_bilibili_playback_resources(result: &mut PlaybackResult, version: &str, 
             continue;
         }
 
+        if original_info.medias.len() == 1
+            && matches!(
+                original_info.medias[0].provider,
+                PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest { .. })
+            )
+        {
+            if let Some(info) = result.playback_infos.get_mut(&mode_name) {
+                if let PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest {
+                    version: resource_version,
+                    expires_at: resource_expires_at,
+                    mode_name: resource_mode_name,
+                    ..
+                }) = &mut info.medias[0].provider
+                {
+                    *resource_version = version.to_string();
+                    *resource_expires_at = expires_at;
+                    resource_mode_name.clone_from(&mode_name);
+                }
+            }
+            continue;
+        }
+
         let use_mpd_manifest = original_info
             .medias
             .first()
             .is_some_and(|media| media.format == "mpd")
             && has_dash_manifest_metadata(result, &mode_name);
+        let dash_slots = if use_mpd_manifest {
+            available_dash_manifest_slots(result)
+        } else {
+            Default::default()
+        };
 
         if let Some(info) = result.playback_infos.get_mut(&mode_name) {
             if use_mpd_manifest {
                 let source_media = original_info.medias.first();
-                info.medias = vec![playback_media(
-                    source_media.map_or_else(|| mode_name.clone(), |media| media.name.clone()),
-                    source_media.map_or_else(|| "mpd".to_string(), |media| media.format.clone()),
-                    source_media.and_then(|media| media.expire_at.map(|dt| dt.timestamp())),
-                    PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DirectDashManifest {
-                        version: version.to_string(),
-                        expires_at,
-                        mode_name: mode_name.clone(),
-                        headers: source_media
-                            .map_or_else(bilibili_headers, PlaybackMedia::upstream_headers),
-                    }),
-                )];
+                info.medias = dash_slots
+                    .iter()
+                    .copied()
+                    .map(|slot| {
+                        playback_media(
+                            match slot {
+                                BilibiliDashManifestSlot::Dash => "DASH",
+                                BilibiliDashManifestSlot::Hevc => "HEVC",
+                            }
+                            .to_string(),
+                            "mpd".to_string(),
+                            source_media.and_then(|media| media.expire_at.map(|dt| dt.timestamp())),
+                            PlaybackMediaProvider::Bilibili(
+                                PlaybackBilibiliMedia::DirectDashManifest {
+                                    version: version.to_string(),
+                                    expires_at,
+                                    mode_name: slot.as_str().to_string(),
+                                    headers: source_media.map_or_else(
+                                        bilibili_headers,
+                                        PlaybackMedia::upstream_headers,
+                                    ),
+                                },
+                            ),
+                        )
+                    })
+                    .collect();
+                info.default_media_index = Some(0);
             }
         }
 
@@ -2092,18 +2164,28 @@ fn mark_bilibili_playback_resources(result: &mut PlaybackResult, version: &str, 
         let mut proxy_info = original_info.clone();
         if use_mpd_manifest {
             let source_media = original_info.medias.first();
-            proxy_info.medias = vec![playback_media(
-                source_media.map_or_else(|| mode_name.clone(), |media| media.name.clone()),
-                source_media.map_or_else(|| "mpd".to_string(), |media| media.format.clone()),
-                source_media.and_then(|media| media.expire_at.map(|dt| dt.timestamp())),
-                PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::ProxyDashManifest {
-                    version: version.to_string(),
-                    expires_at,
-                    mode_name: mode_name.clone(),
-                }),
-            )];
+            proxy_info.medias = dash_slots
+                .iter()
+                .copied()
+                .map(|slot| {
+                    playback_media(
+                        match slot {
+                            BilibiliDashManifestSlot::Dash => "DASH",
+                            BilibiliDashManifestSlot::Hevc => "HEVC",
+                        }
+                        .to_string(),
+                        "mpd".to_string(),
+                        source_media.and_then(|media| media.expire_at.map(|dt| dt.timestamp())),
+                        PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::ProxyDashManifest {
+                            version: version.to_string(),
+                            expires_at,
+                            mode_name: slot.as_str().to_string(),
+                        }),
+                    )
+                })
+                .collect();
+            proxy_info.default_media_index = Some(0);
         } else {
-            let proxy_is_hls = super::playback_info_is_hls(&mode_name, &original_info);
             proxy_info.medias = original_info
                 .medias
                 .iter()
@@ -2114,25 +2196,27 @@ fn mark_bilibili_playback_resources(result: &mut PlaybackResult, version: &str, 
                         media.name.clone(),
                         media.format.clone(),
                         media.expire_at.map(|dt| dt.timestamp()),
-                        PlaybackMediaProvider::Bilibili(if proxy_is_hls {
-                            PlaybackBilibiliMedia::ProxyHlsManifest {
-                                version: version.to_string(),
-                                expires_at,
-                                mode_name: mode_name.clone(),
-                                url_index,
-                                url,
-                                headers: media.upstream_headers(),
-                            }
-                        } else {
-                            PlaybackBilibiliMedia::ProxyMediaStream {
-                                version: version.to_string(),
-                                expires_at,
-                                mode_name: mode_name.clone(),
-                                url_index,
-                                url,
-                                headers: media.upstream_headers(),
-                            }
-                        }),
+                        PlaybackMediaProvider::Bilibili(
+                            if super::playback_media_is_hls(&mode_name, media) {
+                                PlaybackBilibiliMedia::ProxyHlsManifest {
+                                    version: version.to_string(),
+                                    expires_at,
+                                    mode_name: mode_name.clone(),
+                                    url_index,
+                                    url,
+                                    headers: media.upstream_headers(),
+                                }
+                            } else {
+                                PlaybackBilibiliMedia::ProxyMediaStream {
+                                    version: version.to_string(),
+                                    expires_at,
+                                    mode_name: mode_name.clone(),
+                                    url_index,
+                                    url,
+                                    headers: media.upstream_headers(),
+                                }
+                            },
+                        ),
                     ))
                 })
                 .collect();
@@ -3822,7 +3906,17 @@ impl DynamicPlaylistProvider for BilibiliProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::{BilibiliProvider, BilibiliSmsLoginSession, BilibiliSmsLoginTokenCodec};
+    use super::{
+        bilibili_durl_media, bilibili_live_playback_infos, build_bilibili_durl_manifest,
+        default_bilibili_live_mode, mark_bilibili_playback_resources, BilibiliProvider,
+        BilibiliSmsLoginSession, BilibiliSmsLoginTokenCodec,
+    };
+    use crate::models::media::{
+        BilibiliDashManifest, BilibiliDashManifests, BilibiliDurlSegment, BilibiliPlaybackMetadata,
+        PlaybackBilibiliMedia, PlaybackMediaProvider, PlaybackMetadata,
+    };
+    use crate::provider::{PlaybackInfo, PlaybackResult};
+    use std::collections::HashMap;
 
     type TestResult<T = ()> = anyhow::Result<T>;
 
@@ -3915,6 +4009,151 @@ mod tests {
         assert_eq!(decoded.view_at, 123_456);
         assert_eq!(decoded.business, "archive");
         Ok(())
+    }
+
+    #[test]
+    fn live_playback_prefers_the_main_route() {
+        let playback_info = || super::PlaybackInfo {
+            thumbnail: None,
+            medias: Vec::new(),
+            default_media_index: None,
+            subtitles: Vec::new(),
+            default_subtitle_index: None,
+            danmakus: Vec::new(),
+            default_danmaku_index: None,
+        };
+        let playback_infos = [
+            ("backup_1".to_string(), playback_info()),
+            ("main".to_string(), playback_info()),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(default_bilibili_live_mode(&playback_infos), "main");
+    }
+
+    #[test]
+    fn durl_segments_are_exposed_as_one_ordered_vod_manifest() -> TestResult {
+        let media = provider_ok(bilibili_durl_media(
+            "MP4",
+            [
+                ("https://cdn.example/part-1.mp4".to_string(), 1_250),
+                ("https://cdn.example/part-2.mp4".to_string(), 2_500),
+            ],
+            Some(123),
+        ))?;
+        let PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest {
+            segments, ..
+        }) = &media.provider
+        else {
+            anyhow::bail!("DURL media should use an in-memory manifest");
+        };
+
+        let manifest = provider_ok(build_bilibili_durl_manifest(segments))?;
+        assert_eq!(manifest.matches("#EXTINF:").count(), 2);
+        assert_eq!(manifest.matches("#EXT-X-DISCONTINUITY").count(), 1);
+        assert!(manifest.contains("#EXT-X-TARGETDURATION:3"));
+        assert!(manifest.contains("#EXTINF:1.250,\nhttps://cdn.example/part-1.mp4"));
+        assert!(manifest.contains("#EXTINF:2.500,\nhttps://cdn.example/part-2.mp4"));
+        assert!(manifest.ends_with("#EXT-X-ENDLIST\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn dash_and_hevc_manifests_remain_qualities_in_one_mode() {
+        let source = super::playback_media(
+            "DASH".to_string(),
+            "mpd".to_string(),
+            None,
+            PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct {
+                url: "https://cdn.example/source.mpd".to_string(),
+                headers: HashMap::new(),
+            }),
+        );
+        let mut result = PlaybackResult {
+            playback_infos: HashMap::from([(
+                "dash".to_string(),
+                PlaybackInfo {
+                    thumbnail: None,
+                    medias: vec![source],
+                    default_media_index: Some(0),
+                    subtitles: Vec::new(),
+                    default_subtitle_index: None,
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                },
+            )]),
+            default_mode: "dash".to_string(),
+            provider: "bilibili".to_string(),
+            provider_instance_name: None,
+            duration_seconds: Some(10.0),
+            is_live: Some(false),
+            metadata: Some(PlaybackMetadata::Bilibili(BilibiliPlaybackMetadata {
+                dash_manifests: BilibiliDashManifests {
+                    dash: Some(BilibiliDashManifest::default()),
+                    hevc: Some(BilibiliDashManifest::default()),
+                },
+                ..Default::default()
+            })),
+        };
+
+        mark_bilibili_playback_resources(&mut result, "version", 123);
+
+        let direct = &result.playback_infos["dash"].medias;
+        assert_eq!(direct.len(), 2);
+        assert_eq!(direct[0].name, "DASH");
+        assert_eq!(direct[1].name, "HEVC");
+        assert!(matches!(
+            &direct[1].provider,
+            PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DirectDashManifest {
+                mode_name,
+                ..
+            }) if mode_name == "hevc"
+        ));
+        assert_eq!(result.playback_infos["proxy_dash"].medias.len(), 2);
+    }
+
+    #[test]
+    fn live_streams_group_quality_variants_by_cdn_host() {
+        let stream = |quality, quality_name: &str, host: &str, suffix: &str| {
+            super::bilibili_upstream::LiveStream {
+                quality,
+                quality_name: quality_name.to_string(),
+                protocol: "http_hls".to_string(),
+                format: "fmp4".to_string(),
+                codec: "avc".to_string(),
+                urls: vec![super::bilibili_upstream::LiveStreamUrl {
+                    host: host.to_string(),
+                    url: format!("{host}/{suffix}.m3u8"),
+                }],
+            }
+        };
+        let infos = bilibili_live_playback_infos(
+            vec![
+                stream(400, "1080P", "https://main.example", "high"),
+                stream(80, "流畅", "https://main.example", "low"),
+                stream(400, "1080P", "https://backup.example", "high"),
+                stream(80, "流畅", "https://backup.example", "low"),
+            ],
+            Some(123),
+            &[],
+        );
+
+        assert_eq!(infos.len(), 2);
+        assert_eq!(infos["main"].medias.len(), 2);
+        assert_eq!(infos["main"].medias[0].name, "1080P");
+        assert_eq!(infos["main"].medias[1].name, "流畅");
+        assert_eq!(infos["backup_1"].medias.len(), 2);
+    }
+
+    #[test]
+    fn durl_manifest_rejects_line_breaks_in_segment_urls() {
+        let error = build_bilibili_durl_manifest(&[BilibiliDurlSegment {
+            url: "https://cdn.example/video.mp4\n#EXT-X-ENDLIST".to_string(),
+            duration_millis: 1_000,
+        }])
+        .expect_err("line breaks must not enter generated manifests");
+        assert!(error.to_string().contains("line break"));
     }
 }
 
@@ -4055,6 +4294,17 @@ impl BilibiliProvider {
             .medias
             .get(url_index)
             .ok_or(ProviderError::NotFound)?;
+        if let PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest {
+            segments,
+            ..
+        }) = &media.provider
+        {
+            return Ok(
+                super::playback_transport::PlaybackTransportAction::M3u8BodyRewrite {
+                    body: build_bilibili_durl_manifest(segments)?.into_bytes(),
+                },
+            );
+        }
         let url = media.upstream_url().ok_or(ProviderError::NotFound)?;
         let headers = media.upstream_headers();
         Ok(
@@ -4069,36 +4319,43 @@ impl BilibiliProvider {
         )
     }
 
-    pub async fn get_hls_segment(
+    pub async fn get_hls_resource(
         &self,
         store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
-        version: &str,
-        target_url: String,
+        request: BilibiliHlsResourceRequest<'_>,
         request_context: Option<&super::ExecutionControl>,
-        range_header: Option<&str>,
     ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
         let versioned =
-            super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        let headers = versioned
+            super::playback_transport::lookup_versioned(store, request.version, request_context)
+                .await?;
+        let media = versioned
             .result
             .playback_infos
-            .get(&versioned.result.default_mode)
-            .map_or_else(bilibili_headers, |info| {
-                let headers = info
-                    .medias
-                    .first()
-                    .map_or_else(HashMap::new, PlaybackMedia::upstream_headers);
-                if headers.is_empty() {
-                    bilibili_headers()
-                } else {
-                    headers
-                }
-            });
-        super::playback_transport::transport_action_for_target_url(
-            target_url,
-            headers,
-            range_header,
-        )
+            .get(request.mode_name)
+            .and_then(|info| info.medias.get(request.media_index))
+            .ok_or(ProviderError::NotFound)?;
+        let headers = media.upstream_headers();
+        let headers = if headers.is_empty() {
+            bilibili_headers()
+        } else {
+            headers
+        };
+        if request.is_manifest {
+            Ok(
+                super::playback_transport::PlaybackTransportAction::M3u8Rewrite {
+                    url: request.target_url.to_string(),
+                    headers,
+                },
+            )
+        } else {
+            Ok(
+                super::playback_transport::PlaybackTransportAction::FetchAndForward {
+                    url: request.target_url.to_string(),
+                    headers,
+                    range_header: request.range_header.map(ToString::to_string),
+                },
+            )
+        }
     }
 
     pub async fn get_dash_manifest(
@@ -4108,55 +4365,53 @@ impl BilibiliProvider {
         mode_name: &str,
         manifest_mode: BilibiliDashManifestMode,
         request_context: Option<&super::ExecutionControl>,
-        proxy_url_for: Option<&mut BilibiliDashProxyUrlMapper<'_>>,
     ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
         let versioned =
             super::playback_transport::lookup_versioned(store, version, request_context).await?;
         let dash = dash_manifest_from_metadata(&versioned.result, mode_name)?;
-        let body = match manifest_mode {
+        let body = build_bilibili_mpd_manifest(&dash, |_index, url| url.to_string())?;
+        Ok(match manifest_mode {
             BilibiliDashManifestMode::Direct => {
-                build_bilibili_mpd_manifest(&dash, |_index, url| url.to_string())?
+                super::playback_transport::PlaybackTransportAction::DirectBody {
+                    body: body.into_bytes(),
+                    content_type: "application/dash+xml".to_string(),
+                    status: 200,
+                }
             }
             BilibiliDashManifestMode::Proxy => {
-                let proxy_url_for = proxy_url_for.ok_or_else(|| {
-                    ProviderError::InvalidConfig(
-                        "Proxy URL mapping is required for proxied DASH manifests".to_string(),
-                    )
-                })?;
-                build_bilibili_mpd_manifest(&dash, proxy_url_for)?
+                super::playback_transport::PlaybackTransportAction::MpdBodyRewrite {
+                    body: body.into_bytes(),
+                    source_url: "https://synctv.invalid/bilibili-generated.mpd".to_string(),
+                }
             }
-        };
-
-        Ok(
-            super::playback_transport::PlaybackTransportAction::DirectBody {
-                body: body.into_bytes(),
-                content_type: "application/dash+xml".to_string(),
-                status: 200,
-            },
-        )
+        })
     }
 
-    pub async fn get_dash_segment(
+    pub fn get_dash_resource(
         &self,
-        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
-        version: &str,
-        mode_name: &str,
-        url_index: usize,
-        request_context: Option<&super::ExecutionControl>,
-        range_header: Option<&str>,
+        request: BilibiliDashResourceRequest<'_>,
     ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
-        let versioned =
-            super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        let dash = dash_manifest_from_metadata(&versioned.result, mode_name)?;
-        let urls = dash_playback_urls(&dash, "DASH segment")?;
-        let url = urls.get(url_index).ok_or(ProviderError::NotFound)?;
-        Ok(
-            super::playback_transport::PlaybackTransportAction::FetchAndForward {
-                url: url.clone(),
-                headers: bilibili_headers(),
-                range_header: range_header.map(ToString::to_string),
-            },
-        )
+        let target_url = super::playback_transport::resolve_dash_scope_target(
+            request.scope_url,
+            request.resource_path,
+            request.resource_query,
+        )?;
+        if request.is_manifest {
+            Ok(
+                super::playback_transport::PlaybackTransportAction::MpdRewrite {
+                    url: target_url,
+                    headers: bilibili_headers(),
+                },
+            )
+        } else {
+            Ok(
+                super::playback_transport::PlaybackTransportAction::FetchAndForward {
+                    url: target_url,
+                    headers: bilibili_headers(),
+                    range_header: request.range_header.map(ToString::to_string),
+                },
+            )
+        }
     }
 
     pub async fn get_subtitle(
@@ -4238,8 +4493,6 @@ pub enum BilibiliDashManifestMode {
     Proxy,
 }
 
-pub type BilibiliDashProxyUrlMapper<'a> = dyn FnMut(usize, &str) -> String + Send + 'a;
-
 fn playback_media(
     name: String,
     format: String,
@@ -4294,6 +4547,71 @@ fn bilibili_direct_medias(
             )
         })
         .collect()
+}
+
+fn bilibili_durl_media(
+    name: &str,
+    segments: impl IntoIterator<Item = (String, u64)>,
+    expires_at: Option<i64>,
+) -> Result<PlaybackMedia, ProviderError> {
+    let segments = segments
+        .into_iter()
+        .map(|(url, duration_millis)| BilibiliDurlSegment {
+            url,
+            duration_millis,
+        })
+        .collect::<Vec<_>>();
+    if segments.is_empty() {
+        return Err(ProviderError::ApiError(
+            "Bilibili DURL playback is empty".to_string(),
+        ));
+    }
+    Ok(playback_media(
+        name.to_string(),
+        "m3u8".to_string(),
+        expires_at,
+        PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest {
+            version: String::new(),
+            expires_at: 0,
+            mode_name: "mp4".to_string(),
+            segments,
+            headers: bilibili_headers(),
+        }),
+    ))
+}
+
+fn build_bilibili_durl_manifest(segments: &[BilibiliDurlSegment]) -> Result<String, ProviderError> {
+    if segments.is_empty() {
+        return Err(ProviderError::NotFound);
+    }
+    if segments
+        .iter()
+        .any(|segment| segment.url.contains('\r') || segment.url.contains('\n'))
+    {
+        return Err(ProviderError::ApiError(
+            "Bilibili DURL segment URL contains a line break".to_string(),
+        ));
+    }
+    let target_duration = segments
+        .iter()
+        .map(|segment| segment.duration_millis.div_ceil(1_000))
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let mut manifest = format!(
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:{target_duration}\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n"
+    );
+    for (index, segment) in segments.iter().enumerate() {
+        if index > 0 {
+            manifest.push_str("#EXT-X-DISCONTINUITY\n");
+        }
+        let duration_seconds = segment.duration_millis / 1_000;
+        let duration_millis = segment.duration_millis % 1_000;
+        let _ = writeln!(manifest, "#EXTINF:{duration_seconds}.{duration_millis:03},");
+        let _ = writeln!(manifest, "{}", segment.url);
+    }
+    manifest.push_str("#EXT-X-ENDLIST\n");
+    Ok(manifest)
 }
 
 fn bilibili_live_headers() -> HashMap<String, String> {
@@ -4531,49 +4849,33 @@ impl BilibiliProvider {
                         })
                         .transpose()?;
 
-                    playback_infos.insert(
-                        "dash".to_string(),
-                        mode_info(
-                            bilibili_direct_medias(
-                                "DASH",
-                                dash_urls,
-                                "mpd",
-                                expires_at,
-                                bilibili_headers(),
-                            ),
-                            subtitles.clone(),
-                            danmakus.clone(),
+                    let mut dash_info = mode_info(
+                        bilibili_direct_medias(
+                            "DASH",
+                            dash_urls,
+                            "mpd",
+                            expires_at,
+                            bilibili_headers(),
                         ),
+                        subtitles,
+                        danmakus,
                     );
+                    dash_info.default_media_index = Some(0);
                     if let Some(hevc_urls) = hevc_urls {
-                        playback_infos.insert(
-                            "hevc".to_string(),
-                            mode_info(
-                                bilibili_direct_medias(
-                                    "HEVC",
-                                    hevc_urls,
-                                    "mpd",
-                                    expires_at,
-                                    bilibili_headers(),
-                                ),
-                                subtitles,
-                                danmakus,
-                            ),
-                        );
+                        dash_info.medias.extend(bilibili_direct_medias(
+                            "HEVC",
+                            hevc_urls,
+                            "mpd",
+                            expires_at,
+                            bilibili_headers(),
+                        ));
                     }
+                    playback_infos.insert("dash".to_string(), dash_info);
                     "dash".to_string()
                 } else {
                     let request =
                         bilibili_video_url_request(&sanitized_cookies, aid, request_bvid, cid, 80);
                     let video_resp = client.get_video_url(request).await?;
-                    let video_urls = non_empty_playback_urls(
-                        video_resp
-                            .segments
-                            .iter()
-                            .map(|segment| segment.url.clone()),
-                        "video durl",
-                    )?;
-
                     if let Some(metadata) = metadata.as_bilibili_mut() {
                         metadata.fallback_format = Some("durl".to_string());
                         metadata.quality = Some(video_resp.current_quality);
@@ -4581,13 +4883,14 @@ impl BilibiliProvider {
                     playback_infos.insert(
                         "mp4".to_string(),
                         mode_info(
-                            bilibili_direct_medias(
+                            vec![bilibili_durl_media(
                                 "MP4",
-                                video_urls,
-                                "mp4",
+                                video_resp
+                                    .segments
+                                    .into_iter()
+                                    .map(|segment| (segment.url, segment.duration_millis)),
                                 expires_at,
-                                bilibili_headers(),
-                            ),
+                            )?],
                             subtitles,
                             danmakus,
                         ),
@@ -4687,45 +4990,32 @@ impl BilibiliProvider {
                         })
                         .transpose()?;
 
-                    playback_infos.insert(
-                        "dash".to_string(),
-                        mode_info(
-                            bilibili_direct_medias(
-                                "DASH",
-                                pgc_urls,
-                                "mpd",
-                                expires_at,
-                                bilibili_headers(),
-                            ),
-                            subtitles.clone(),
-                            danmakus.clone(),
+                    let mut dash_info = mode_info(
+                        bilibili_direct_medias(
+                            "DASH",
+                            pgc_urls,
+                            "mpd",
+                            expires_at,
+                            bilibili_headers(),
                         ),
+                        subtitles,
+                        danmakus,
                     );
+                    dash_info.default_media_index = Some(0);
                     if let Some(hevc_urls) = hevc_urls {
-                        playback_infos.insert(
-                            "hevc".to_string(),
-                            mode_info(
-                                bilibili_direct_medias(
-                                    "HEVC",
-                                    hevc_urls,
-                                    "mpd",
-                                    expires_at,
-                                    bilibili_headers(),
-                                ),
-                                subtitles,
-                                danmakus,
-                            ),
-                        );
+                        dash_info.medias.extend(bilibili_direct_medias(
+                            "HEVC",
+                            hevc_urls,
+                            "mpd",
+                            expires_at,
+                            bilibili_headers(),
+                        ));
                     }
+                    playback_infos.insert("dash".to_string(), dash_info);
                     "dash".to_string()
                 } else {
                     let request = bilibili_pgc_url_request(&sanitized_cookies, epid, cid, 80);
                     let pgc_resp = client.get_pgcurl(request).await?;
-                    let pgc_urls = non_empty_playback_urls(
-                        pgc_resp.segments.iter().map(|segment| segment.url.clone()),
-                        "PGC durl",
-                    )?;
-
                     if let Some(metadata) = metadata.as_bilibili_mut() {
                         metadata.fallback_format = Some("durl".to_string());
                         metadata.quality = Some(pgc_resp.current_quality);
@@ -4733,13 +5023,14 @@ impl BilibiliProvider {
                     playback_infos.insert(
                         "mp4".to_string(),
                         mode_info(
-                            bilibili_direct_medias(
+                            vec![bilibili_durl_media(
                                 "MP4",
-                                pgc_urls,
-                                "mp4",
+                                pgc_resp
+                                    .segments
+                                    .into_iter()
+                                    .map(|segment| (segment.url, segment.duration_millis)),
                                 expires_at,
-                                bilibili_headers(),
-                            ),
+                            )?],
                             subtitles,
                             danmakus,
                         ),
@@ -4764,7 +5055,6 @@ impl BilibiliProvider {
                 let request = bilibili_live_streams_request(sanitized_cookies, room_id);
                 let live_resp = client.get_live_streams(request).await?;
 
-                let mut playback_infos = HashMap::new();
                 let metadata = PlaybackMetadata::Bilibili(BilibiliPlaybackMetadata {
                     content_type: Some("live".to_string()),
                     room_id: Some(room_id),
@@ -4772,33 +5062,14 @@ impl BilibiliProvider {
                 });
                 let live_expires_at = Some(crate::SystemClock.now().timestamp() + 120);
 
-                for stream in live_resp.live_streams {
-                    let quality_name = if stream.desc.is_empty() {
-                        format!("quality_{}", stream.quality)
-                    } else {
-                        format!("{}_{}", stream.desc, stream.quality)
-                    };
-                    playback_infos.insert(
-                        quality_name,
-                        mode_info(
-                            bilibili_direct_medias(
-                                "Live HLS",
-                                stream.urls,
-                                "hls",
-                                live_expires_at,
-                                bilibili_live_headers(),
-                            ),
-                            Vec::new(),
-                            bilibili_live_danmaku_track(ctx).into_iter().collect(),
-                        ),
-                    );
-                }
+                let danmakus: Vec<_> = bilibili_live_danmaku_track(ctx).into_iter().collect();
+                let playback_infos = bilibili_live_playback_infos(
+                    live_resp.live_streams,
+                    live_expires_at,
+                    &danmakus,
+                );
 
-                let default_mode = playback_infos
-                    .keys()
-                    .min()
-                    .cloned()
-                    .unwrap_or_else(|| "direct".to_string());
+                let default_mode = default_bilibili_live_mode(&playback_infos);
 
                 Ok(PlaybackResult {
                     playback_infos,
@@ -4812,4 +5083,82 @@ impl BilibiliProvider {
             }
         }
     }
+}
+
+fn bilibili_live_playback_infos(
+    mut live_streams: Vec<bilibili_upstream::LiveStream>,
+    expires_at: Option<i64>,
+    danmakus: &[PlaybackDanmaku],
+) -> HashMap<String, PlaybackInfo> {
+    live_streams.sort_by_key(|stream| std::cmp::Reverse(stream.quality));
+    let mut route_hosts = Vec::new();
+    for stream in &live_streams {
+        for url in &stream.urls {
+            if !route_hosts.contains(&url.host) {
+                route_hosts.push(url.host.clone());
+            }
+        }
+    }
+
+    route_hosts
+        .iter()
+        .enumerate()
+        .filter_map(|(route_index, route_host)| {
+            let medias = live_streams
+                .iter()
+                .flat_map(|stream| {
+                    stream
+                        .urls
+                        .iter()
+                        .filter(|&candidate| candidate.host == *route_host)
+                        .map(|candidate| {
+                            let mut media = playback_media(
+                                stream.quality_name.clone(),
+                                "m3u8".to_string(),
+                                expires_at,
+                                PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct {
+                                    url: candidate.url.clone(),
+                                    headers: bilibili_live_headers(),
+                                }),
+                            );
+                            media.metadata = Some(crate::models::PlaybackMediaMetadata {
+                                resolution: None,
+                                bitrate: None,
+                                codec: (!stream.codec.is_empty()).then(|| stream.codec.clone()),
+                                fps: None,
+                            });
+                            media
+                        })
+                })
+                .collect::<Vec<_>>();
+            if medias.is_empty() {
+                return None;
+            }
+            let mode_name = if route_index == 0 {
+                "main".to_string()
+            } else {
+                format!("backup_{route_index}")
+            };
+            Some((
+                mode_name,
+                PlaybackInfo {
+                    thumbnail: None,
+                    medias,
+                    default_media_index: Some(0),
+                    subtitles: Vec::new(),
+                    default_subtitle_index: None,
+                    danmakus: danmakus.to_vec(),
+                    default_danmaku_index: (!danmakus.is_empty()).then_some(0),
+                },
+            ))
+        })
+        .collect()
+}
+
+fn default_bilibili_live_mode(playback_infos: &HashMap<String, PlaybackInfo>) -> String {
+    playback_infos
+        .contains_key("main")
+        .then(|| "main".to_string())
+        .or_else(|| playback_infos.keys().min().cloned())
+        .unwrap_or_else(|| "main".to_string())
 }

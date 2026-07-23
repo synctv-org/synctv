@@ -31,6 +31,12 @@ pub(crate) fn room_settings_from_client_proto(
             settings.allow_auto_join,
         ),
         chat_enabled: synctv_core::models::room_settings::ChatEnabled::new(settings.chat_enabled),
+        voice_chat_enabled: synctv_core::models::room_settings::VoiceChatEnabled::new(
+            settings.voice_chat_enabled,
+        ),
+        p2p_media_enabled: synctv_core::models::room_settings::P2pMediaEnabled::new(
+            settings.p2p_media_enabled,
+        ),
         auto_play: synctv_core::models::room_settings::AutoPlay::new(
             synctv_core::models::AutoPlaySettings {
                 enabled: auto_play.enabled,
@@ -247,5 +253,23 @@ pub(crate) fn source_provider_from_proto_filter(
         source_config_proto::SourceProvider::Youtube => {
             Ok(Some(synctv_core::models::SourceProvider::Youtube))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::room_settings_from_client_proto;
+
+    #[test]
+    fn room_capability_switches_map_into_core_settings() {
+        let settings = room_settings_from_client_proto(synctv_proto::client::RoomSettings {
+            voice_chat_enabled: false,
+            p2p_media_enabled: false,
+            ..Default::default()
+        })
+        .expect("room settings should map");
+
+        assert!(!settings.voice_chat_enabled.0);
+        assert!(!settings.p2p_media_enabled.0);
     }
 }

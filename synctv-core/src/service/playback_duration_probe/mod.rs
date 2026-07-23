@@ -9,7 +9,7 @@ use tracing::{error, info, warn};
 
 use super::{media::BackendPlaybackRequest, ActivePlaybackRoomSource, PlaybackService};
 use crate::{
-    models::{PlaybackDurationStatus, PlaybackSourceIdentity, RoomId},
+    models::{PlaybackDurationStatus, PlaybackSourceIdentity, RoomId, RoomPlaybackState},
     provider::PlaybackResult,
     Error, Result,
 };
@@ -226,19 +226,24 @@ impl PlaybackDurationProbeService {
             return Ok(());
         }
 
-        let playback = self
+        let playback = match self
             .playback_service
-            .generate_backend_playback_for_source(BackendPlaybackRequest {
-                room_id: claim.metadata.room_id,
-                media_id: claim.metadata.media_id,
-                playlist_id: claim.metadata.playlist_id,
-                target: Some(claim.state.target.as_ref().ok_or_else(|| {
-                    Error::InvalidInput(
-                        "target is required for dynamic playlist duration probing".to_string(),
-                    )
-                })?),
-            })
-            .await?;
+            .generate_backend_playback_for_source(backend_playback_request(&claim.state))
+            .await
+        {
+            Ok(playback) => playback,
+            Err(error) => {
+                self.mark_failed(
+                    &identity,
+                    claim.metadata.version,
+                    PlaybackDurationStatus::Failed,
+                    &error.to_string(),
+                    Self::RETRY_AFTER_TRANSIENT,
+                )
+                .await?;
+                return Err(error);
+            }
+        };
         let Some(playback) = playback else {
             self.mark_failed(
                 &identity,
@@ -320,6 +325,24 @@ impl PlaybackDurationProbeService {
     }
 }
 
+fn backend_playback_request(state: &RoomPlaybackState) -> BackendPlaybackRequest<'_> {
+    if let Some(media_id) = state.playing_media_id {
+        BackendPlaybackRequest {
+            room_id: state.room_id,
+            media_id: Some(media_id),
+            playlist_id: None,
+            target: None,
+        }
+    } else {
+        BackendPlaybackRequest {
+            room_id: state.room_id,
+            media_id: None,
+            playlist_id: state.playing_playlist_id,
+            target: state.target.as_ref(),
+        }
+    }
+}
+
 fn playback_identity_from_metadata(
     metadata: &crate::models::PlaybackSourceMetadata,
 ) -> PlaybackSourceIdentity {
@@ -346,4 +369,38 @@ fn select_probe_target(playback: &PlaybackResult) -> Option<ProbeTarget> {
         format: media.format.clone(),
         headers: media.upstream_headers(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{AlistTarget, MediaId, PlaylistId, ProviderTarget};
+
+    #[test]
+    fn backend_probe_request_accepts_media_without_provider_target() {
+        let mut state = RoomPlaybackState::new(RoomId::new());
+        state.playing_media_id = Some(MediaId::new());
+        state.playing_playlist_id = Some(PlaylistId::new());
+
+        let request = backend_playback_request(&state);
+
+        assert_eq!(request.media_id, state.playing_media_id);
+        assert_eq!(request.playlist_id, None);
+        assert_eq!(request.target, None);
+    }
+
+    #[test]
+    fn backend_probe_request_preserves_dynamic_playlist_target() {
+        let mut state = RoomPlaybackState::new(RoomId::new());
+        state.playing_playlist_id = Some(PlaylistId::new());
+        state.target = Some(ProviderTarget::Alist(AlistTarget {
+            relative_path: "/video.mp4".to_string(),
+        }));
+
+        let request = backend_playback_request(&state);
+
+        assert_eq!(request.media_id, None);
+        assert_eq!(request.playlist_id, state.playing_playlist_id);
+        assert_eq!(request.target, state.target.as_ref());
+    }
 }

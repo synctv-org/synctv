@@ -510,7 +510,7 @@ mod websocket_e2e {
     };
     use synctv_proto::client::{
         client_message, server_message, ClientMessage, HeartbeatMessage, ServerMessage,
-        WebRtcCommand, WebRtcJoin,
+        WebRtcCommand, WebRtcVoiceJoinCommand,
     };
     use synctv_realtime::sync::{
         build_connection_manager, ConnectionLimits, ConnectionManager, RealtimeConfig,
@@ -848,6 +848,8 @@ mod websocket_e2e {
                 .await
                 .expect("RealtimeManager"),
         );
+        let realtime_fanout_service =
+            synctv_api::local_realtime_fanout_service(realtime_manager.clone());
         let redis_client_for_connections =
             redis::Client::open(redis_url.clone()).expect("Redis client for connection manager");
         let redis_conn_for_connections =
@@ -1134,7 +1136,7 @@ mod websocket_e2e {
             },
             synctv_api::ClientApiRuntime::new_with_services(synctv_api::ClientApiRuntimeServices {
                 clock: Arc::new(synctv_core::SyncedClock::system()),
-                realtime_fanout: synctv_api::disabled_realtime_fanout_service(),
+                realtime_fanout: realtime_fanout_service.clone(),
                 realtime_event_service: realtime_manager.clone(),
                 redis_runtime: None,
                 builtin_stun_url: None,
@@ -1172,7 +1174,7 @@ mod websocket_e2e {
             email_api: None,
             notification_api: None,
             oauth2_api: None,
-            realtime_fanout_service: synctv_api::disabled_realtime_fanout_service(),
+            realtime_fanout_service,
             oauth2_service: None,
             passkey_service: None,
             settings_service: None,
@@ -2889,6 +2891,182 @@ mod websocket_e2e {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
+    async fn test_ws_playback_state_command_fans_out_to_sender_and_peer() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        let (owner_id, owner_token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "playback_command_owner",
+        )
+        .await;
+        let room_id =
+            create_test_room(&server.room_service, &owner_id, "Playback Command Room").await;
+        let room = decode_test_room_id(&room_id);
+        let (member_id, member_token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "playback_command_member",
+        )
+        .await;
+        server
+            .room_service
+            .join_room(room, member_id, None)
+            .await
+            .expect("member join");
+
+        let media = synctv_core::models::Media {
+            id: synctv_core::models::MediaId::new(),
+            playlist_id: None,
+            room_id: room,
+            creator_id: Some(owner_id),
+            name: "Playback command video".to_string(),
+            description: String::new(),
+            position: 0.0,
+            source_provider: synctv_core::models::SourceProvider::DirectUrl,
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/playback-command.mp4",
+            ),
+            provider_instance_name: None,
+            cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
+            added_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            version: 0,
+        };
+        let media = synctv_core::repository::MediaRepository::new(infra.pool.clone())
+            .create(&media)
+            .await
+            .expect("create playback command media");
+        let initial_state = server
+            .room_service
+            .playback_service()
+            .switch(room, owner_id, Some(media.id), None, None)
+            .await
+            .expect("start playback command media");
+        let public_media_id = encode_test_media_id(&media.id);
+        let initial_target_hash = initial_state
+            .target_hash()
+            .expect("hash initial playback command target");
+
+        let mut ws_owner = ws_connect(&server.addr, &room_id, &owner_token).await;
+        let mut ws_member = ws_connect(&server.addr, &room_id, &member_token).await;
+        tokio::join!(
+            drain_until_quiet(&mut ws_owner, 500),
+            drain_until_quiet(&mut ws_member, 500),
+        );
+        send_client_message(
+            &mut ws_owner,
+            &observe_playback_state_message("owner-playback-state"),
+        )
+        .await;
+        send_client_message(
+            &mut ws_member,
+            &observe_playback_state_message("member-playback-state"),
+        )
+        .await;
+        let _ = recv_matching_server_message(
+            &mut ws_owner,
+            std::time::Duration::from_secs(5),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::ResourceObserved(observed))
+                        if observed.observe_id == "owner-playback-state"
+                )
+            },
+            "owner playback_state observation",
+        )
+        .await;
+        let _ = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(5),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::ResourceObserved(observed))
+                        if observed.observe_id == "member-playback-state"
+                )
+            },
+            "member playback_state observation",
+        )
+        .await;
+
+        let operation_id = "3d918f61-3959-49ef-a962-5d94b8ac8470";
+        send_client_message(
+            &mut ws_owner,
+            &ClientMessage {
+                message: Some(client_message::Message::PlaybackStateUpdate(
+                    synctv_proto::client::UpdatePlaybackStateRequest {
+                        r#type: synctv_proto::client::PlaybackUpdateType::Seek as i32,
+                        playing: None,
+                        position: Some(7.5),
+                        speed: None,
+                        version: Some(initial_state.version),
+                        expected_media_id: Some(public_media_id.clone()),
+                        expected_playlist_id: Some(String::new()),
+                        expected_target_hash: Some(initial_target_hash),
+                        client_operation_id: Some(operation_id.to_string()),
+                        client_time_millis: Some(chrono::Utc::now().timestamp_millis()),
+                    },
+                )),
+            },
+        )
+        .await;
+
+        let expected_version = initial_state.version + 1;
+        let owner_event = recv_matching_server_message(
+            &mut ws_owner,
+            std::time::Duration::from_secs(5),
+            |message| {
+                resource_playback_state_matches(message, "owner-playback-state", |state| {
+                    state.version == expected_version
+                        && state.playing_media_id == public_media_id
+                        && state.client_operation_id == operation_id
+                        && state.position >= 7.5
+                })
+            },
+            "sender playback_state command event",
+        )
+        .await;
+        let member_event = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(5),
+            |message| {
+                resource_playback_state_matches(message, "member-playback-state", |state| {
+                    state.version == expected_version
+                        && state.playing_media_id == public_media_id
+                        && state.client_operation_id == operation_id
+                        && state.position >= 7.5
+                })
+            },
+            "peer playback_state command event",
+        )
+        .await;
+        assert!(matches!(
+            owner_event.message,
+            Some(server_message::Message::ResourceEvent(_))
+        ));
+        assert!(matches!(
+            member_event.message,
+            Some(server_message::Message::ResourceEvent(_))
+        ));
+        let persisted = server
+            .room_service
+            .playback_service()
+            .get_state(&room)
+            .await
+            .expect("load persisted playback command state");
+        assert_eq!(persisted.version, expected_version);
+        assert!(persisted.position >= 7.5);
+
+        ws_owner.close(None).await.expect("close owner");
+        ws_member.close(None).await.expect("close member");
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_cross_replica_playback_operation_matrix_via_realtime_events() {
         let infra = TestInfra::new().await;
 
@@ -3784,10 +3962,8 @@ mod websocket_e2e {
             drain_until_quiet(&mut ws2, 1500),
         );
         let rtc_join = webrtc_command_message(
-            synctv_proto::client::web_rtc_command::Command::Join(WebRtcJoin {
-                user_id: String::new(),
-                conn_id: String::new(),
-                username: String::new(),
+            synctv_proto::client::web_rtc_command::Command::VoiceJoin(WebRtcVoiceJoinCommand {
+                client_operation_id: None,
             }),
         );
         send_client_message(&mut ws1, &rtc_join).await;
@@ -3801,7 +3977,9 @@ mod websocket_e2e {
                 if resource_webrtc_event(&msg).is_some_and(|event| {
                     matches!(
                         event.event,
-                        Some(synctv_proto::client::web_rtc_event::Event::Join(_))
+                        Some(synctv_proto::client::web_rtc_event::Event::VoicePeerJoined(
+                            _
+                        ))
                     )
                 }) {
                     return msg;
@@ -3813,7 +3991,7 @@ mod websocket_e2e {
 
         let joined_conn_id =
             match resource_webrtc_event(&join_event).and_then(|event| event.event.as_ref()) {
-                Some(synctv_proto::client::web_rtc_event::Event::Join(joined)) => {
+                Some(synctv_proto::client::web_rtc_event::Event::VoicePeerJoined(joined)) => {
                     joined.conn_id.clone()
                 }
                 other => panic!("Expected WebRTC join resource event, got: {other:?}"),
@@ -3826,23 +4004,23 @@ mod websocket_e2e {
             "test precondition failed: expected two active connections for same user"
         );
 
-        let rtc_joined_connections: Vec<_> = server
+        let voice_rtc_joined_connections: Vec<_> = server
             .connection_manager
             .get_room_connections(&room)
             .into_iter()
-            .filter(|conn| conn.user_id == user_id && conn.rtc_joined)
+            .filter(|conn| conn.user_id == user_id && conn.voice_rtc_joined)
             .collect();
 
         assert_eq!(
-            rtc_joined_connections.len(),
+            voice_rtc_joined_connections.len(),
             2,
             "both same-user connections can independently join WebRTC"
         );
         assert!(
-            rtc_joined_connections
+            voice_rtc_joined_connections
                 .iter()
                 .any(|connection| connection.connection_id == joined_conn_id),
-            "the reported WebRTC join connection must be marked rtc_joined"
+            "the reported WebRTC join connection must be marked voice_rtc_joined"
         );
 
         ws1.close(None).await.expect("close ws1");
@@ -3938,13 +4116,13 @@ mod websocket_e2e {
             1,
             "after targeted disconnect exactly one sender connection should remain"
         );
-        let offer = webrtc_command_message(synctv_proto::client::web_rtc_command::Command::Offer(
-            synctv_proto::client::WebRtcOffer {
-                to: encode_test_user_id(&peer_user_id),
-                from: String::new(),
-                data: "{\"type\":\"offer\",\"sdp\":\"test-sdp\"}".to_string(),
-            },
-        ));
+        let offer =
+            webrtc_command_message(synctv_proto::client::web_rtc_command::Command::VoiceOffer(
+                synctv_proto::client::WebRtcVoiceOfferCommand {
+                    to: encode_test_user_id(&peer_user_id),
+                    data: "{\"type\":\"offer\",\"sdp\":\"test-sdp\"}".to_string(),
+                },
+            ));
         if sender_is_ws2 {
             send_client_message(&mut ws2, &offer).await;
         } else {
@@ -3991,7 +4169,7 @@ mod websocket_e2e {
                                             webrtc
                                         )) if matches!(
                                             webrtc.event.as_ref(),
-                                            Some(synctv_proto::client::web_rtc_event::Event::Offer(_))
+                                            Some(synctv_proto::client::web_rtc_event::Event::VoiceOffer(_))
                                         )
                                     )
                             ) =>
@@ -4062,13 +4240,21 @@ mod websocket_e2e {
             .expect("peer connection must be present")
             .connection_id;
 
-        let offer = webrtc_command_message(synctv_proto::client::web_rtc_command::Command::Offer(
-            synctv_proto::client::WebRtcOffer {
-                to: format!("{}:{}", encode_test_user_id(&peer_user_id), peer_conn_id),
-                from: String::new(),
-                data: "{\"type\":\"offer\",\"sdp\":\"test-sdp\"}".to_string(),
-            },
-        ));
+        send_client_message(
+            &mut ws_sender,
+            &webrtc_command_message(synctv_proto::client::web_rtc_command::Command::VoiceJoin(
+                synctv_proto::client::WebRtcVoiceJoinCommand::default(),
+            )),
+        )
+        .await;
+
+        let offer =
+            webrtc_command_message(synctv_proto::client::web_rtc_command::Command::VoiceOffer(
+                synctv_proto::client::WebRtcVoiceOfferCommand {
+                    to: format!("{}:{}", encode_test_user_id(&peer_user_id), peer_conn_id),
+                    data: "{\"type\":\"offer\",\"sdp\":\"test-sdp\"}".to_string(),
+                },
+            ));
         send_client_message(&mut ws_sender, &offer).await;
 
         let error_message = tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -4087,7 +4273,9 @@ mod websocket_e2e {
         match error_message.message {
             Some(server_message::Message::Error(error)) => {
                 assert!(
-                    error.message.contains("has not joined WebRTC"),
+                    error
+                        .message
+                        .contains("Target connection has not joined room voice chat"),
                     "expected target join-state error, got: {}",
                     error.message
                 );
@@ -4110,7 +4298,7 @@ mod websocket_e2e {
                                             webrtc
                                         )) if matches!(
                                             webrtc.event.as_ref(),
-                                            Some(synctv_proto::client::web_rtc_event::Event::Offer(_))
+                                            Some(synctv_proto::client::web_rtc_event::Event::VoiceOffer(_))
                                         )
                                     )
                             ) =>

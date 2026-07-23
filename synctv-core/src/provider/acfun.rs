@@ -20,7 +20,7 @@ use crate::models::{
 };
 use synctv_media_providers::acfun::{
     AcFunClient, AcFunDanmaku, AcFunLiveDanmakuEvent as UpstreamLiveDanmaku, AcFunMedia,
-    AcFunMetadata, AcFunQuality, AcFunResource, AcFunResourceKind, AcFunStreamFormat,
+    AcFunMetadata, AcFunResource, AcFunResourceKind, AcFunStreamFormat,
 };
 
 pub struct AcFunProvider {
@@ -282,10 +282,13 @@ impl AcFunProvider {
             metadata, playback, ..
         } = media;
         let mut infos = HashMap::new();
-        for (index, quality) in playback.qualities.into_iter().enumerate() {
-            let mode = unique_mode_name(&infos, &quality, index);
+        for quality in playback.qualities {
             let format = match quality.format {
                 AcFunStreamFormat::Hls => "m3u8",
+                AcFunStreamFormat::Flv => "flv",
+            };
+            let mode = match quality.format {
+                AcFunStreamFormat::Hls => "hls",
                 AcFunStreamFormat::Flv => "flv",
             };
             let danmaku = match playback.resource.kind {
@@ -304,40 +307,55 @@ impl AcFunProvider {
                     }),
                 }),
             };
-            infos.insert(
-                mode,
-                PlaybackInfo {
+            let info = infos
+                .entry(mode.to_string())
+                .or_insert_with(|| PlaybackInfo {
                     thumbnail: metadata.thumbnail_url.clone(),
-                    medias: vec![PlaybackMedia {
-                        name: quality.name.clone(),
-                        format: format.to_string(),
-                        expire_at: None,
-                        metadata: Some(PlaybackMediaMetadata {
-                            resolution: quality
-                                .width
-                                .zip(quality.height)
-                                .map(|(width, height)| format!("{width}x{height}")),
-                            bitrate: quality.bitrate.and_then(|value| i64::try_from(value).ok()),
-                            codec: quality.codec.clone(),
-                            fps: quality.fps.and_then(|value| i32::try_from(value).ok()),
-                        }),
-                        provider: PlaybackMediaProvider::AcFun(PlaybackAcFunMedia::Refresh {
-                            resource_kind: resource_kind(playback.resource.kind),
-                            resource_id: playback.resource.id.clone(),
-                            query: playback.resource.query.clone(),
-                            quality_name: quality.name,
-                            quality_type: quality.quality_type,
-                            format: playback_format(quality.format),
-                            bitrate: quality.bitrate,
-                        }),
-                    }],
-                    default_media_index: Some(0),
+                    medias: Vec::new(),
+                    default_media_index: None,
                     subtitles: Vec::new(),
                     default_subtitle_index: None,
                     danmakus: danmaku.into_iter().collect(),
                     default_danmaku_index: Some(0),
-                },
-            );
+                });
+            let media_index = info.medias.len();
+            let bitrate = quality.bitrate;
+            info.medias.push(PlaybackMedia {
+                name: quality.name.clone(),
+                format: format.to_string(),
+                expire_at: None,
+                metadata: Some(PlaybackMediaMetadata {
+                    resolution: quality
+                        .width
+                        .zip(quality.height)
+                        .map(|(width, height)| format!("{width}x{height}")),
+                    bitrate: quality.bitrate.and_then(|value| i64::try_from(value).ok()),
+                    codec: quality.codec.clone(),
+                    fps: quality.fps.and_then(|value| i32::try_from(value).ok()),
+                }),
+                provider: PlaybackMediaProvider::AcFun(PlaybackAcFunMedia::Refresh {
+                    resource_kind: resource_kind(playback.resource.kind),
+                    resource_id: playback.resource.id.clone(),
+                    query: playback.resource.query.clone(),
+                    quality_name: quality.name,
+                    quality_type: quality.quality_type,
+                    format: playback_format(quality.format),
+                    bitrate: quality.bitrate,
+                }),
+            });
+            let current_bitrate = info
+                .default_media_index
+                .and_then(|index| info.medias.get(index))
+                .and_then(|media| media.metadata.as_ref())
+                .and_then(|metadata| metadata.bitrate)
+                .unwrap_or_default();
+            if bitrate
+                .and_then(|value| i64::try_from(value).ok())
+                .unwrap_or_default()
+                >= current_bitrate
+            {
+                info.default_media_index = Some(media_index);
+            }
         }
         if infos.is_empty() {
             return Err(ProviderError::ApiError(
@@ -345,15 +363,9 @@ impl AcFunProvider {
             ));
         }
         let default_mode = infos
-            .iter()
-            .max_by_key(|(_, info)| {
-                info.medias
-                    .first()
-                    .and_then(|media| media.metadata.as_ref())
-                    .and_then(|metadata| metadata.bitrate)
-                    .unwrap_or_default()
-            })
-            .map(|(name, _)| name.clone())
+            .contains_key("hls")
+            .then(|| "hls".to_string())
+            .or_else(|| infos.keys().min().cloned())
             .ok_or_else(|| ProviderError::ApiError("AcFun playback is empty".to_string()))?;
         let duration_seconds = metadata.duration_seconds;
         let is_live = metadata.is_live;
@@ -487,41 +499,6 @@ const fn playback_format(format: AcFunStreamFormat) -> AcFunPlaybackFormat {
     match format {
         AcFunStreamFormat::Hls => AcFunPlaybackFormat::Hls,
         AcFunStreamFormat::Flv => AcFunPlaybackFormat::Flv,
-    }
-}
-
-fn unique_mode_name(
-    existing: &HashMap<String, PlaybackInfo>,
-    quality: &AcFunQuality,
-    index: usize,
-) -> String {
-    let format = match quality.format {
-        AcFunStreamFormat::Hls => "hls",
-        AcFunStreamFormat::Flv => "flv",
-    };
-    let raw = format!("{}_{}", quality.name, format);
-    let base = raw
-        .to_ascii_lowercase()
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('_')
-        .to_string();
-    let base = if base.is_empty() {
-        format!("quality_{index}")
-    } else {
-        base
-    };
-    if existing.contains_key(&base) {
-        format!("{base}_{index}")
-    } else {
-        base
     }
 }
 

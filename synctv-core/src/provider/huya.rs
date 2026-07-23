@@ -18,8 +18,7 @@ use crate::models::{
     PlaybackMetadata,
 };
 use synctv_media_providers::huya::{
-    HuyaClient, HuyaMedia, HuyaMetadata, HuyaQuality, HuyaResource, HuyaResourceKind,
-    HuyaStreamFormat,
+    HuyaClient, HuyaMedia, HuyaMetadata, HuyaResource, HuyaResourceKind, HuyaStreamFormat,
 };
 
 pub struct HuyaProvider {
@@ -233,55 +232,62 @@ impl HuyaProvider {
     fn playback_result(media: HuyaMedia) -> Result<PlaybackResult, ProviderError> {
         let HuyaMedia { metadata, playback } = media;
         let mut infos = HashMap::new();
-        for (index, quality) in playback.qualities.into_iter().enumerate() {
-            let mode = unique_mode_name(&infos, &quality, index);
+        for quality in playback.qualities {
+            let mode = route_name(&quality.cdn);
             let format = match quality.format {
                 HuyaStreamFormat::Flv => "flv",
                 HuyaStreamFormat::Hls => "m3u8",
             };
-            infos.insert(
-                mode,
-                PlaybackInfo {
-                    thumbnail: metadata.thumbnail_url.clone(),
-                    medias: vec![PlaybackMedia {
-                        name: quality.name.clone(),
-                        format: format.to_string(),
-                        expire_at: None,
-                        metadata: Some(PlaybackMediaMetadata {
-                            resolution: quality
-                                .width
-                                .zip(quality.height)
-                                .map(|(width, height)| format!("{width}x{height}")),
-                            bitrate: quality.bitrate.and_then(|value| i64::try_from(value).ok()),
-                            codec: Some("avc".to_string()),
-                            fps: None,
+            let info = infos.entry(mode).or_insert_with(|| PlaybackInfo {
+                thumbnail: metadata.thumbnail_url.clone(),
+                medias: Vec::new(),
+                default_media_index: None,
+                subtitles: Vec::new(),
+                default_subtitle_index: None,
+                danmakus: (playback.resource.kind == HuyaResourceKind::Live)
+                    .then(|| PlaybackDanmaku {
+                        name: "Huya Danmaku".to_string(),
+                        format: Some("synctv-huya-live".to_string()),
+                        provider: PlaybackDanmakuProvider::Huya(PlaybackHuyaDanmaku::Refresh {
+                            media_index: 0,
                         }),
-                        provider: PlaybackMediaProvider::Huya(PlaybackHuyaMedia::Refresh {
-                            resource_kind: resource_kind(playback.resource.kind),
-                            resource_id: playback.resource.id.clone(),
-                            quality_name: quality.name,
-                            cdn: quality.cdn,
-                            format: playback_format(quality.format),
-                            bitrate: quality.bitrate,
-                        }),
-                    }],
-                    default_media_index: Some(0),
-                    subtitles: Vec::new(),
-                    default_subtitle_index: None,
-                    danmakus: (playback.resource.kind == HuyaResourceKind::Live)
-                        .then(|| PlaybackDanmaku {
-                            name: "Huya Danmaku".to_string(),
-                            format: Some("synctv-huya-live".to_string()),
-                            provider: PlaybackDanmakuProvider::Huya(PlaybackHuyaDanmaku::Refresh {
-                                media_index: 0,
-                            }),
-                        })
-                        .into_iter()
-                        .collect(),
-                    default_danmaku_index: (playback.resource.kind == HuyaResourceKind::Live)
-                        .then_some(0),
-                },
-            );
+                    })
+                    .into_iter()
+                    .collect(),
+                default_danmaku_index: (playback.resource.kind == HuyaResourceKind::Live)
+                    .then_some(0),
+            });
+            let media_index = info.medias.len();
+            let is_preferred = matches!(quality.format, HuyaStreamFormat::Hls)
+                && (quality.name.contains("流畅") || quality.name.eq_ignore_ascii_case("smooth"));
+            info.medias.push(PlaybackMedia {
+                name: quality.name.clone(),
+                format: format.to_string(),
+                expire_at: None,
+                metadata: Some(PlaybackMediaMetadata {
+                    resolution: quality
+                        .width
+                        .zip(quality.height)
+                        .map(|(width, height)| format!("{width}x{height}")),
+                    bitrate: quality
+                        .bitrate
+                        .and_then(|value| value.checked_mul(1_000))
+                        .and_then(|value| i64::try_from(value).ok()),
+                    codec: Some("avc".to_string()),
+                    fps: None,
+                }),
+                provider: PlaybackMediaProvider::Huya(PlaybackHuyaMedia::Refresh {
+                    resource_kind: resource_kind(playback.resource.kind),
+                    resource_id: playback.resource.id.clone(),
+                    quality_name: quality.name,
+                    cdn: quality.cdn,
+                    format: playback_format(quality.format),
+                    bitrate: quality.bitrate,
+                }),
+            });
+            if is_preferred || info.default_media_index.is_none() {
+                info.default_media_index = Some(media_index);
+            }
         }
         if infos.is_empty() {
             return Err(ProviderError::ApiError(
@@ -289,35 +295,9 @@ impl HuyaProvider {
             ));
         }
         let default_mode = infos
-            .iter()
-            .filter(|(_, info)| {
-                info.medias
-                    .first()
-                    .is_some_and(|media| media.format == "m3u8")
-            })
-            .min_by_key(|(name, info)| {
-                let media = info.medias.first();
-                let quality_rank = media.map_or(3, |media| {
-                    if media.name.contains("流畅") {
-                        0
-                    } else if media.name.contains("超清") {
-                        1
-                    } else if media.name.contains("原画")
-                        || media.name.eq_ignore_ascii_case("original")
-                    {
-                        2
-                    } else {
-                        3
-                    }
-                });
-                let bitrate = media
-                    .and_then(|media| media.metadata.as_ref())
-                    .and_then(|metadata| metadata.bitrate)
-                    .unwrap_or(i64::MAX);
-                (quality_rank, bitrate, name.as_str())
-            })
-            .map(|(name, _)| name.clone())
-            .or_else(|| infos.keys().min().cloned())
+            .keys()
+            .min()
+            .cloned()
             .ok_or_else(|| ProviderError::ApiError("Huya playback is empty".to_string()))?;
         Ok(PlaybackResult {
             playback_infos: infos,
@@ -330,6 +310,27 @@ impl HuyaProvider {
             is_live: Some(metadata.is_live),
             metadata: Some(PlaybackMetadata::Huya(metadata_model(metadata))),
         })
+    }
+}
+
+fn route_name(cdn: &str) -> String {
+    let normalized = cdn
+        .to_ascii_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string();
+    if normalized.is_empty() {
+        "main".to_string()
+    } else {
+        normalized
     }
 }
 
@@ -368,41 +369,6 @@ const fn playback_format(format: HuyaStreamFormat) -> HuyaPlaybackFormat {
     match format {
         HuyaStreamFormat::Flv => HuyaPlaybackFormat::Flv,
         HuyaStreamFormat::Hls => HuyaPlaybackFormat::Hls,
-    }
-}
-
-fn unique_mode_name(
-    existing: &HashMap<String, PlaybackInfo>,
-    quality: &HuyaQuality,
-    index: usize,
-) -> String {
-    let format = match quality.format {
-        HuyaStreamFormat::Flv => "flv",
-        HuyaStreamFormat::Hls => "hls",
-    };
-    let raw = format!("{}_{}_{}", quality.name, quality.cdn, format);
-    let base = raw
-        .to_ascii_lowercase()
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('_')
-        .to_string();
-    let base = if base.is_empty() {
-        format!("quality_{index}")
-    } else {
-        base
-    };
-    if existing.contains_key(&base) {
-        format!("{base}_{index}")
-    } else {
-        base
     }
 }
 
@@ -499,6 +465,7 @@ impl MediaProvider for HuyaProvider {
 mod tests {
     use super::*;
     use synctv_media_providers::huya::HuyaPlayback;
+    use synctv_media_providers::huya::HuyaQuality;
 
     #[test]
     fn playback_preserves_huya_quality_identity() {
@@ -557,14 +524,15 @@ mod tests {
             },
         })
         .expect("playback should map");
-        assert_eq!(result.default_mode, "al_hls");
+        assert_eq!(result.default_mode, "al");
+        assert_eq!(result.playback_infos["al"].medias.len(), 2);
         assert!(matches!(
-            result.playback_infos["original_al_hls"].medias[0].provider,
+            result.playback_infos["al"].medias[0].provider,
             PlaybackMediaProvider::Huya(PlaybackHuyaMedia::Refresh {
                 format: HuyaPlaybackFormat::Hls,
                 ..
             })
         ));
-        assert_eq!(result.playback_infos["original_al_hls"].danmakus.len(), 1);
+        assert_eq!(result.playback_infos["al"].danmakus.len(), 1);
     }
 }

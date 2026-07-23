@@ -167,7 +167,7 @@ webauthn-rs-proto = "=0.6.1-dev"
 aes-gcm = "=0.11.0"
 aes = "=0.9.1"
 cbc = { version = "=0.2.1", features = ["alloc", "block-padding"] }
-ammonia = "=4.1.3"
+ammonia = "=4.1.4"
 http-acl = "=0.11.0"
 http-acl-reqwest = "=0.11.0"
 sha1 = "=0.11.0"

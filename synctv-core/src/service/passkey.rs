@@ -2,12 +2,15 @@ use std::{sync::Arc, time::Duration};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Transaction};
+use webauthn_rs::fake::{FakePasskeyDistribution, WebauthnFakeCredentialGenerator};
 use webauthn_rs::prelude::{
     AuthenticationResult, CreationChallengeResponse, CredentialID, DiscoverableAuthentication,
     DiscoverableKey, Passkey, PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential,
     RegisterPublicKeyCredential, RequestChallengeResponse, Url, Webauthn, WebauthnBuilder,
 };
+use webauthn_rs_proto::AllowCredentials;
 
 use crate::{
     models::{SignupMethod, User, UserId},
@@ -45,6 +48,9 @@ pub enum PasskeySession {
     },
     DiscoverableLogin {
         state: DiscoverableAuthentication,
+    },
+    DecoyLogin {
+        brute_force_key: String,
     },
     Verification {
         user_id: UserId,
@@ -242,9 +248,11 @@ pub struct StartPasskeyLogin {
 #[derive(Clone)]
 pub struct PasskeyService {
     webauthn: Arc<Webauthn>,
+    rp_id: String,
     repository: WebAuthnCredentialRepository,
     user_service: Arc<crate::service::UserService>,
     session_store: Arc<dyn PasskeySessionStore>,
+    fake_credential_generator: Arc<WebauthnFakeCredentialGenerator<FakePasskeyDistribution>>,
 }
 
 #[derive(Debug, Clone)]
@@ -257,6 +265,7 @@ pub struct PasskeyServiceOptions {
     pub allow_subdomains: bool,
     pub allow_any_port: bool,
     pub timeout_seconds: u64,
+    pub enumeration_protection_secret: String,
 }
 
 impl Default for PasskeyServiceOptions {
@@ -270,6 +279,7 @@ impl Default for PasskeyServiceOptions {
             allow_subdomains: false,
             allow_any_port: false,
             timeout_seconds: 300,
+            enumeration_protection_secret: String::new(),
         }
     }
 }
@@ -300,13 +310,40 @@ impl PasskeyService {
         let webauthn = builder
             .build()
             .map_err(|error| Error::InvalidInput(format!("Invalid WebAuthn config: {error}")))?;
+        if options.enumeration_protection_secret.trim().is_empty() {
+            return Err(Error::InvalidInput(
+                "WebAuthn enumeration protection secret is required".to_string(),
+            ));
+        }
+        let fake_credential_key = Sha256::digest(
+            [
+                b"synctv:webauthn:fake-credential-id:v1:".as_slice(),
+                options.enumeration_protection_secret.as_bytes(),
+            ]
+            .concat(),
+        );
+        let fake_credential_generator = WebauthnFakeCredentialGenerator::new(
+            fake_credential_key.as_slice(),
+        )
+        .map_err(|error| {
+            Error::InvalidInput(format!(
+                "Invalid WebAuthn enumeration protection secret: {error}"
+            ))
+        })?;
 
         Ok(Self {
             webauthn: Arc::new(webauthn),
+            rp_id: options.rp_id.trim().to_string(),
             repository,
             user_service,
             session_store,
+            fake_credential_generator: Arc::new(fake_credential_generator),
         })
+    }
+
+    #[must_use]
+    pub fn rp_id(&self) -> &str {
+        &self.rp_id
     }
 
     pub fn encode_credential_id(credential_id: &[u8]) -> String {
@@ -350,6 +387,33 @@ impl PasskeyService {
             .iter()
             .map(|credential| credential.passkey.clone())
             .collect()
+    }
+
+    fn fake_credential_ids(&self, brute_force_key: &str) -> Result<Vec<CredentialID>> {
+        // FakePasskeyDistribution can legitimately model an account with zero credentials.
+        // This flow has already advertised Passkey, so derive another stable sample until it
+        // contains at least one ID and does not reveal that the account is a decoy.
+        for attempt in 0_u8..16 {
+            let input = if attempt == 0 {
+                brute_force_key.to_string()
+            } else {
+                format!("{brute_force_key}\0{attempt}")
+            };
+            let credentials = self
+                .fake_credential_generator
+                .generate(input.as_bytes())
+                .map_err(|error| {
+                    Error::Internal(format!(
+                        "Failed to generate fake passkey credentials: {error}"
+                    ))
+                })?;
+            if !credentials.is_empty() {
+                return Ok(credentials);
+            }
+        }
+        Err(Error::Internal(
+            "Failed to generate non-empty fake passkey credentials".to_string(),
+        ))
     }
 
     fn apply_authentication_result(
@@ -516,7 +580,14 @@ impl PasskeyService {
         let passkey = self
             .webauthn
             .finish_passkey_registration(&credential, &state)
-            .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
+            .map_err(|error| {
+                tracing::warn!(
+                    user_id = %user_id,
+                    reason = %error,
+                    "Passkey registration response verification failed"
+                );
+                Error::Authentication("Authentication failed".to_string())
+            })?;
 
         if self
             .repository
@@ -687,18 +758,11 @@ impl PasskeyService {
         }
     }
 
-    pub async fn start_login(
+    pub async fn start_discoverable_login(
         &self,
-        identifier: Option<&str>,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&synctv_common::ExecutionControl>,
     ) -> Result<StartPasskeyLogin> {
-        if let Some(identifier) = identifier {
-            return self
-                .start_username_login(identifier, client_ip, control)
-                .await;
-        }
-
         self.user_service
             .check_passkey_discoverable_login_allowed_with_control(client_ip, control)
             .await?;
@@ -722,34 +786,50 @@ impl PasskeyService {
         })
     }
 
-    async fn start_username_login(
+    pub async fn start_identified_login(
         &self,
-        identifier: &str,
+        user_id: Option<UserId>,
+        brute_force_key: &str,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&synctv_common::ExecutionControl>,
     ) -> Result<StartPasskeyLogin> {
-        let brute_force_key =
-            crate::service::UserService::normalize_external_login_identifier(identifier);
-        let Some(user) = self
-            .user_service
-            .start_verified_external_login_with_control(identifier, client_ip, control)
-            .await?
-        else {
-            self.user_service
-                .record_external_login_failure_with_control(
-                    &brute_force_key,
-                    false,
-                    client_ip,
-                    control,
+        self.user_service
+            .check_external_login_allowed_with_control(brute_force_key, client_ip, control)
+            .await?;
+        let Some(user_id) = user_id else {
+            let (mut challenge, _) = self
+                .webauthn
+                .start_discoverable_authentication()
+                .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
+            challenge.public_key.allow_credentials = self
+                .fake_credential_ids(brute_force_key)?
+                .into_iter()
+                .map(|id| AllowCredentials {
+                    type_: "public-key".to_string(),
+                    id,
+                    transports: None,
+                })
+                .collect();
+            let session_id = synctv_common::snanoid!(48);
+            self.session_store
+                .store(
+                    &session_id,
+                    &PasskeySession::DecoyLogin {
+                        brute_force_key: brute_force_key.to_string(),
+                    },
+                    Duration::from_secs(PASSKEY_SESSION_TTL_SECS),
                 )
                 .await?;
-            return Err(Error::Authentication("Authentication failed".to_string()));
+            return Ok(StartPasskeyLogin {
+                session_id,
+                options: challenge,
+            });
         };
-        let credentials = self.repository.list_by_user(&user.id).await?;
+        let credentials = self.repository.list_by_user(&user_id).await?;
         if credentials.is_empty() {
             self.user_service
                 .record_external_login_failure_with_control(
-                    &brute_force_key,
+                    brute_force_key,
                     true,
                     client_ip,
                     control,
@@ -767,8 +847,8 @@ impl PasskeyService {
             .store(
                 &session_id,
                 &PasskeySession::Login {
-                    user_id: user.id,
-                    brute_force_key,
+                    user_id,
+                    brute_force_key: brute_force_key.to_string(),
                     state,
                 },
                 Duration::from_secs(PASSKEY_SESSION_TTL_SECS),
@@ -839,6 +919,17 @@ impl PasskeyService {
             PasskeySession::DiscoverableLogin { state } => {
                 self.finish_discoverable_login(state, credential, client_ip, control)
                     .await
+            }
+            PasskeySession::DecoyLogin { brute_force_key } => {
+                self.user_service
+                    .record_external_login_failure_with_control(
+                        &brute_force_key,
+                        false,
+                        client_ip,
+                        control,
+                    )
+                    .await?;
+                Err(Error::Authentication("Authentication failed".to_string()))
             }
             _ => Err(Error::Authentication("Authentication failed".to_string())),
         }

@@ -38,6 +38,17 @@ impl UserService {
             .await
     }
 
+    pub(crate) async fn check_external_login_allowed_with_control(
+        &self,
+        brute_force_key: &str,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        self.brute_force
+            .check_allowed_with_control(brute_force_key, client_ip, control)
+            .await
+    }
+
     pub(crate) async fn record_passkey_discoverable_login_failure_with_control(
         &self,
         client_ip: Option<IpAddr>,

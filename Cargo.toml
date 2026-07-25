@@ -367,6 +367,14 @@ synctv-proxy = { path = "synctv-proxy", default-features = false }
 synctv-livestream = { path = "synctv-livestream", default-features = false }
 synctv-common = { path = "synctv-common", default-features = false }
 
+# Redis 1.4.1 expands combine 4.6.7's `opaque!` macro and triggers Rust's
+# `semicolon_in_expressions_from_macros` future-incompatibility report. Redis
+# #2217/#2218 only suppress the lint; combine #372/#373 removes the offending
+# semicolon. Remove this patch after crates.io publishes that combine fix.
+# https://github.com/Marwes/combine/pull/373
+[patch.crates-io]
+combine = { git = "https://github.com/Marwes/combine.git", rev = "140f091afbb0e68c44b758ea96de6bc321b5e99d" }
+
 [profile.dev]
 debug = 0
 strip = "symbols"

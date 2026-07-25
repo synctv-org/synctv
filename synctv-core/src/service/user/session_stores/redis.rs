@@ -5,12 +5,12 @@ use serde::{de::DeserializeOwned, Serialize};
 use crate::{service::session_store::RedisJsonSessionStore, RedisConnectionRuntime, Result};
 
 use super::{
-    MfaSession, MfaSessionStore, OpaqueLoginSession, OpaqueLoginSessionStore,
-    OpaqueRegistrationSession, OpaqueRegistrationSessionStore, SensitiveVerificationSession,
+    LoginSession, LoginSessionStore, MfaSession, MfaSessionStore, OpaqueRegistrationSession,
+    OpaqueRegistrationSessionStore, SensitiveVerificationSession,
     SensitiveVerificationSessionStore,
 };
 
-const OPAQUE_LOGIN_SESSION_REDIS_NAMESPACE: &str = "auth:opaque:login";
+const LOGIN_SESSION_REDIS_NAMESPACE: &str = "auth:login";
 const OPAQUE_REGISTRATION_SESSION_REDIS_NAMESPACE: &str = "auth:opaque:registration";
 const MFA_SESSION_REDIS_NAMESPACE: &str = "auth:mfa";
 const SENSITIVE_VERIFICATION_SESSION_REDIS_NAMESPACE: &str = "auth:sensitive:verification";
@@ -85,8 +85,8 @@ where
     }
 }
 
-pub(super) struct RedisOpaqueLoginSessionStore {
-    store: RedisTypedSessionStore<OpaqueLoginSession>,
+pub(super) struct RedisLoginSessionStore {
+    store: RedisTypedSessionStore<LoginSession>,
 }
 
 pub(super) struct RedisOpaqueRegistrationSessionStore {
@@ -101,7 +101,7 @@ pub(super) struct RedisSensitiveVerificationSessionStore {
     store: RedisTypedSessionStore<SensitiveVerificationSession>,
 }
 
-impl RedisOpaqueLoginSessionStore {
+impl RedisLoginSessionStore {
     #[must_use]
     pub(super) fn from_runtime(
         runtime: Arc<dyn RedisConnectionRuntime>,
@@ -112,12 +112,12 @@ impl RedisOpaqueLoginSessionStore {
                 runtime,
                 key_prefix,
                 RedisSessionSpec {
-                    namespace: OPAQUE_LOGIN_SESSION_REDIS_NAMESPACE,
-                    serialize_context: "Failed to serialize OPAQUE login session",
-                    deserialize_context: "Failed to deserialize OPAQUE login session",
-                    store_operation: "store OPAQUE login session in Redis",
-                    get_operation: "get OPAQUE login session from Redis",
-                    consume_operation: "consume OPAQUE login session from Redis",
+                    namespace: LOGIN_SESSION_REDIS_NAMESPACE,
+                    serialize_context: "Failed to serialize login session",
+                    deserialize_context: "Failed to deserialize login session",
+                    store_operation: "store login session in Redis",
+                    get_operation: "get login session from Redis",
+                    consume_operation: "consume login session from Redis",
                 },
             ),
         }
@@ -194,17 +194,16 @@ impl RedisSensitiveVerificationSessionStore {
 }
 
 #[async_trait::async_trait]
-impl OpaqueLoginSessionStore for RedisOpaqueLoginSessionStore {
-    async fn store(
-        &self,
-        session_id: &str,
-        session: &OpaqueLoginSession,
-        ttl: Duration,
-    ) -> Result<()> {
+impl LoginSessionStore for RedisLoginSessionStore {
+    async fn store(&self, session_id: &str, session: &LoginSession, ttl: Duration) -> Result<()> {
         self.store.store(session_id, session, ttl).await
     }
 
-    async fn consume(&self, session_id: &str) -> Result<Option<OpaqueLoginSession>> {
+    async fn get(&self, session_id: &str) -> Result<Option<LoginSession>> {
+        self.store.get(session_id).await
+    }
+
+    async fn consume(&self, session_id: &str) -> Result<Option<LoginSession>> {
         self.store.consume(session_id).await
     }
 

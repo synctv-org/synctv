@@ -13,6 +13,49 @@ fn validate_project_url(project_url: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn valid_apple_application_identifier(value: &str) -> bool {
+    if value != value.trim() {
+        return false;
+    }
+    let Some((team_id, bundle_id)) = value.split_once('.') else {
+        return false;
+    };
+    team_id.len() == 10
+        && team_id
+            .chars()
+            .all(|character| character.is_ascii_uppercase() || character.is_ascii_digit())
+        && valid_reverse_dns_identifier(bundle_id, true)
+}
+
+fn valid_android_package_name(value: &str) -> bool {
+    if value != value.trim() {
+        return false;
+    }
+    value.split('.').count() >= 2 && valid_reverse_dns_identifier(value, false)
+}
+
+fn valid_reverse_dns_identifier(value: &str, allow_hyphen: bool) -> bool {
+    value.split('.').all(|segment| {
+        let mut characters = segment.chars();
+        characters
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic())
+            && characters.all(|character| {
+                character.is_ascii_alphanumeric()
+                    || character == '_'
+                    || (allow_hyphen && character == '-')
+            })
+    })
+}
+
+fn valid_sha256_certificate_fingerprint(value: &str) -> bool {
+    let compact = value.trim().replace(':', "");
+    compact.len() == 64
+        && compact
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+}
+
 impl AppConfig {
     fn database_split_config_present(&self) -> bool {
         !self.database.host.trim().is_empty()
@@ -1103,6 +1146,44 @@ impl AppConfig {
             }
         }
 
+        let mut apple_app_ids = std::collections::HashSet::new();
+        for (index, app_id) in self.webauthn.apple_app_ids.iter().enumerate() {
+            if !valid_apple_application_identifier(app_id) {
+                errors.push(format!(
+                    "webauthn.apple_app_ids[{index}] must be an Apple application identifier such as TEAMID.org.example.app"
+                ));
+            } else if !apple_app_ids.insert(app_id.as_str()) {
+                errors.push(format!(
+                    "webauthn.apple_app_ids[{index}] duplicates another application identifier"
+                ));
+            }
+        }
+        let mut android_packages = std::collections::HashSet::new();
+        for (app_index, app) in self.webauthn.android_apps.iter().enumerate() {
+            if !valid_android_package_name(&app.package_name) {
+                errors.push(format!(
+                    "webauthn.android_apps[{app_index}].package_name must be a valid Android package name"
+                ));
+            } else if !android_packages.insert(app.package_name.as_str()) {
+                errors.push(format!(
+                    "webauthn.android_apps[{app_index}].package_name duplicates another Android app"
+                ));
+            }
+            if app.sha256_cert_fingerprints.is_empty() {
+                errors.push(format!(
+                    "webauthn.android_apps[{app_index}].sha256_cert_fingerprints must contain at least one certificate fingerprint"
+                ));
+            }
+            for (fingerprint_index, fingerprint) in app.sha256_cert_fingerprints.iter().enumerate()
+            {
+                if !valid_sha256_certificate_fingerprint(fingerprint) {
+                    errors.push(format!(
+                        "webauthn.android_apps[{app_index}].sha256_cert_fingerprints[{fingerprint_index}] must contain exactly 32 SHA-256 bytes"
+                    ));
+                }
+            }
+        }
+
         if self.webauthn.enabled {
             if self.webauthn.rp_id.trim().is_empty() {
                 errors.push("webauthn.rp_id must be set when webauthn.enabled=true".to_string());
@@ -1166,7 +1247,10 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_project_url;
+    use super::{
+        valid_android_package_name, valid_apple_application_identifier,
+        valid_sha256_certificate_fingerprint, validate_project_url,
+    };
 
     #[test]
     fn project_url_accepts_http_urls_with_project_paths() {
@@ -1179,5 +1263,34 @@ mod tests {
         for value in ["", "synctv-org/synctv", "file:///tmp/synctv", "https://"] {
             assert!(validate_project_url(value).is_err(), "value: {value}");
         }
+    }
+
+    #[test]
+    fn native_app_association_identifiers_accept_platform_formats() {
+        assert!(valid_apple_application_identifier(
+            "85KBWFQ6F6.org.synctv.app"
+        ));
+        assert!(valid_android_package_name("org.synctv.app"));
+        assert!(valid_sha256_certificate_fingerprint(
+            "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+        ));
+        assert!(valid_sha256_certificate_fingerprint(
+            "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+        ));
+    }
+
+    #[test]
+    fn native_app_association_identifiers_reject_ambiguous_values() {
+        assert!(!valid_apple_application_identifier("org.synctv.app"));
+        assert!(!valid_apple_application_identifier(
+            "85kbwfq6f6.org.synctv.app"
+        ));
+        assert!(!valid_android_package_name("synctv"));
+        assert!(!valid_android_package_name("org.-synctv.app"));
+        assert!(!valid_apple_application_identifier(
+            " 85KBWFQ6F6.org.synctv.app"
+        ));
+        assert!(!valid_android_package_name("org.synctv.app "));
+        assert!(!valid_sha256_certificate_fingerprint("AA:BB"));
     }
 }

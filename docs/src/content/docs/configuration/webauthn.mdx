@@ -132,6 +132,79 @@ webauthn:
 
 保持最小集合，不要随便添加不使用的域名。
 
+## 原生 App 关联
+
+Apple 平台通过 `webauthn.apple_app_ids` 配置允许使用该 RP ID 的原生 App。每一项使用 Apple application identifier，格式为 `TeamID.BundleID`：
+
+```yaml
+webauthn:
+  apple_app_ids:
+    - "ABCDE12345.org.synctv.app"
+```
+
+服务器会在 `/.well-known/apple-app-site-association` 返回 `webcredentials.apps`。App 的 Associated Domains entitlement 需要包含 `webcredentials:example.com`。
+
+Android 平台通过包名和发布证书 SHA-256 指纹配置：
+
+```yaml
+webauthn:
+  android_apps:
+    - package_name: "org.synctv.app"
+      sha256_cert_fingerprints:
+        - "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+```
+
+服务器会在 `/.well-known/assetlinks.json` 返回 `delegate_permission/common.get_login_creds` 关联声明。证书轮换期间可以同时配置多个指纹。
+
+对应环境变量接受 JSON：
+
+```text
+SYNCTV_WEBAUTHN_APPLE_APP_IDS=["ABCDE12345.org.synctv.app"]
+SYNCTV_WEBAUTHN_ANDROID_APPS=[{"package_name":"org.synctv.app","sha256_cert_fingerprints":["AA:BB:..."]}]
+```
+
+### 官方 App 与自托管服务器
+
+Android 官方 App 可以动态支持任意自托管 SyncTV 域名。每个正式签名的 GitHub Release 都会附带 `SyncTV-<version>-android-passkey-server-config.yaml`，其中包含公开的官方包名和发布证书 SHA-256 指纹。将文件中的 `android_apps` 合并到服务器的 `webauthn` 配置，并为服务器自己的域名设置 `rp_id` 和 `rp_origin`：
+
+```yaml
+webauthn:
+  enabled: true
+  rp_id: "tv.example.com"
+  rp_origin: "https://tv.example.com"
+  android_apps:
+    - package_name: "org.synctv.app"
+      sha256_cert_fingerprints:
+        - "<官方 Release 配置文件中的 SHA-256 指纹>"
+```
+
+包名和证书指纹属于公开身份信息。Android 使用它们验证当前 App 是否获得域名授权；keystore、签名私钥和密码继续保密。development 或 fork 构建拥有各自的签名身份，需要配置对应安装包的实际证书指纹。
+
+证书指纹由签名密钥决定，应用版本升级不会改变指纹。官方 Release 持续使用固定发布密钥；fork 可以创建自己的固定 release keystore，并将签名配置保存为 fork 仓库的 GitHub Secrets。该 fork 的 Release workflow 会自动发布对应的服务器配置文件。CI development 签名属于临时身份，可能随着 runner 和构建环境变化，因此只适合临时测试。
+
+同一服务端可以同时授权官方 App 和 fork App。相同包名使用一个 `android_apps` 条目并列出多个指纹：
+
+```yaml
+webauthn:
+  android_apps:
+    - package_name: "org.synctv.app"
+      sha256_cert_fingerprints:
+        - "<官方 App 证书 SHA-256>"
+        - "<fork App 证书 SHA-256>"
+```
+
+使用自定义包名的 fork 增加独立的 `android_apps` 条目。官方签名私钥仅由官方发布流程持有；fork 使用自己的签名密钥即可与同一自托管服务器稳定共存。
+
+GitHub APK 使用 Release 配置文件中公布的证书。未来通过 Google Play 分发时，Google Play App Signing 可能使用另一份安装包签名证书，服务端需要将 Play Console 中的 App signing certificate SHA-256 一并加入 `sha256_cert_fingerprints`。
+
+Apple 将允许的 RP ID 固定在签名 App 的 Associated Domains entitlement 中。SyncTV 官方预构建的 iOS/macOS App 只能对构建时列入 `SYNCTV_PASSKEY_RP_IDS` 的域名使用原生 Passkey，因此任意独立域名的自托管服务器无法动态加入官方 Apple App。自托管部署可以选择以下路径：
+
+- 自行构建并使用 Apple Developer Team 签名 App，将服务器 RP ID 加入 `SYNCTV_PASSKEY_RP_IDS`，同时将 `<TeamID>.org.synctv.app` 加入服务端 `apple_app_ids`。
+- 使用系统浏览器承载 WebAuthn，让浏览器按自托管域名管理 Passkey；当前官方 App 仅提供原生 Passkey，采用此路径需要后续实现浏览器认证流程。
+- 使用已由官方 Apple App entitlement 覆盖的 RP 域名。
+
+Android 的授权方向由每个自托管服务器控制，因此官方预构建 App 可以在运行时扩展到新域名。Apple 的原生授权同时受构建签名和服务器 AASA 约束，因此域名集合需要在构建时确定。
+
 ## `webauthn.allow_subdomains`
 
 默认值：`false`。

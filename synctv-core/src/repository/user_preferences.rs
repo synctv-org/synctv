@@ -234,6 +234,16 @@ impl UserPreferencesRepository {
                 ) AS "webauthn!",
                 EXISTS (
                     SELECT 1
+                    FROM auth_totp_credentials
+                    WHERE user_id = $1 AND confirmed_at IS NOT NULL
+                ) AS "totp!",
+                COALESCE((
+                    SELECT cardinality(recovery_code_hashes)
+                    FROM auth_totp_credentials
+                    WHERE user_id = $1 AND confirmed_at IS NOT NULL
+                ), 0)::int4 AS "totp_recovery_codes_remaining!",
+                EXISTS (
+                    SELECT 1
                     FROM auth_email_identities
                     WHERE user_id = $1
                 ) AS "email!"
@@ -247,6 +257,11 @@ impl UserPreferencesRepository {
         Ok(UserAuthFactors {
             password: row.password,
             webauthn: row.webauthn,
+            totp: row.totp,
+            totp_recovery_codes_remaining: row
+                .totp_recovery_codes_remaining
+                .try_into()
+                .map_err(|_| Error::Internal("Invalid TOTP recovery code count".to_string()))?,
             email: row.email,
         })
     }
@@ -278,7 +293,7 @@ impl UserPreferencesRepository {
         let factors = self.auth_factors(user_id).await?;
         if !factors.supports_two_factor() {
             return Err(Error::InvalidInput(
-                "Two-factor authentication requires at least two usable verification methods: password, passkey, or verified email".to_string(),
+                "Two-factor authentication requires at least two usable verification methods: password, passkey, authenticator app, or verified email".to_string(),
             ));
         }
         Ok(factors)

@@ -258,6 +258,7 @@ fn passkey_options(config: &AppConfig) -> PasskeyServiceOptions {
         allow_subdomains: config.webauthn.allow_subdomains,
         allow_any_port: config.webauthn.allow_any_port,
         timeout_seconds: config.webauthn.timeout_seconds,
+        enumeration_protection_secret: config.security.opaque_server_setup_secret.clone(),
     }
 }
 
@@ -506,6 +507,16 @@ pub fn api_runtime_settings(config: &AppConfig) -> ApiRuntimeSettings {
         server: ApiServerSettings {
             bind_address: config.api_address(),
             project_url: config.server.project_url.clone(),
+            apple_app_ids: config.webauthn.apple_app_ids.clone(),
+            android_apps: config
+                .webauthn
+                .android_apps
+                .iter()
+                .map(|app| synctv_api::AndroidAppAssociationSettings {
+                    package_name: app.package_name.clone(),
+                    sha256_cert_fingerprints: app.sha256_cert_fingerprints.clone(),
+                })
+                .collect(),
             trusted_proxies: config.server.trusted_proxies.clone(),
             cors_allowed_origins: config.server.cors_allowed_origins.clone(),
             grpc_max_message_size_bytes: config.server.grpc_max_message_size_bytes,

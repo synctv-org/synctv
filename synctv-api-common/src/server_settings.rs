@@ -1,9 +1,17 @@
 pub const DEFAULT_PROJECT_URL: &str = "https://github.com/synctv-org/synctv";
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AndroidAppAssociationSettings {
+    pub package_name: String,
+    pub sha256_cert_fingerprints: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ApiServerSettings {
     pub bind_address: String,
     pub project_url: String,
+    pub apple_app_ids: Vec<String>,
+    pub android_apps: Vec<AndroidAppAssociationSettings>,
     pub trusted_proxies: Vec<String>,
     pub cors_allowed_origins: Vec<String>,
     pub grpc_max_message_size_bytes: usize,
@@ -16,6 +24,8 @@ impl Default for ApiServerSettings {
         Self {
             bind_address: "0.0.0.0:8080".to_string(),
             project_url: DEFAULT_PROJECT_URL.to_string(),
+            apple_app_ids: Vec::new(),
+            android_apps: Vec::new(),
             trusted_proxies: Vec::new(),
             cors_allowed_origins: Vec::new(),
             grpc_max_message_size_bytes: 16 * 1024 * 1024,

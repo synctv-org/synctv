@@ -91,6 +91,9 @@ impl UserService {
                 pool.clone(),
             ),
             user_preferences_repository: UserPreferencesRepository::new(pool.clone()),
+            totp_credential_repository: crate::repository::TotpCredentialRepository::new(
+                pool.clone(),
+            ),
             jwt_service,
             username_cache,
             cache_invalidation: runtime.cache_invalidation,
@@ -104,12 +107,14 @@ impl UserService {
             password_registration_policy_override: runtime.password_registration_policy_override,
             password_complexity,
             opaque_password_service: runtime.opaque_password_service,
-            opaque_login_session_store: runtime.opaque_login_session_store,
+            login_discovery_key: runtime.login_discovery_key,
+            login_session_store: runtime.login_session_store,
             opaque_registration_session_store: runtime.opaque_registration_session_store,
             mfa_session_store: runtime.mfa_session_store,
             sensitive_verification_session_store: runtime.sensitive_verification_session_store,
             permission_service: runtime.permission_service,
             file_storage_service: runtime.file_storage_service,
+            credential_encryption: runtime.credential_encryption,
             consistency: ConsistencyCoordinator::new(runtime.version_fence),
         }
     }

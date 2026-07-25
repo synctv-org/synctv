@@ -187,6 +187,8 @@ fn test_sign_in_method_count_includes_active_oauth2() {
     let factors = UserAuthFactors {
         password: false,
         webauthn: false,
+        totp: false,
+        totp_recovery_codes_remaining: 0,
         email: false,
     };
     assert_eq!(UserService::sign_in_method_count(&factors, 1), 1);
@@ -194,6 +196,8 @@ fn test_sign_in_method_count_includes_active_oauth2() {
     let factors = UserAuthFactors {
         password: true,
         webauthn: true,
+        totp: true,
+        totp_recovery_codes_remaining: 10,
         email: true,
     };
     assert_eq!(UserService::sign_in_method_count(&factors, 2), 5);

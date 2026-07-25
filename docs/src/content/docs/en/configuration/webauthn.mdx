@@ -83,6 +83,79 @@ webauthn:
 
 Keep this list minimal.
 
+## Native App Associations
+
+Apple platforms use `webauthn.apple_app_ids` to declare native apps that may use this RP ID. Each value is an Apple application identifier in `TeamID.BundleID` form:
+
+```yaml
+webauthn:
+  apple_app_ids:
+    - "ABCDE12345.org.synctv.app"
+```
+
+The server exposes these values as `webcredentials.apps` at `/.well-known/apple-app-site-association`. Add `webcredentials:example.com` to the app's Associated Domains entitlement.
+
+Android uses the app package and SHA-256 fingerprints of its signing certificates:
+
+```yaml
+webauthn:
+  android_apps:
+    - package_name: "org.synctv.app"
+      sha256_cert_fingerprints:
+        - "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+```
+
+The server publishes `delegate_permission/common.get_login_creds` statements at `/.well-known/assetlinks.json`. Multiple fingerprints support signing-certificate rotation.
+
+The matching environment variables accept JSON:
+
+```text
+SYNCTV_WEBAUTHN_APPLE_APP_IDS=["ABCDE12345.org.synctv.app"]
+SYNCTV_WEBAUTHN_ANDROID_APPS=[{"package_name":"org.synctv.app","sha256_cert_fingerprints":["AA:BB:..."]}]
+```
+
+### Official App and Self-Hosted Servers
+
+The official Android app can dynamically support any self-hosted SyncTV domain. Every officially signed GitHub Release includes `SyncTV-<version>-android-passkey-server-config.yaml`, containing the public package name and release-certificate SHA-256 fingerprint. Merge its `android_apps` value into the server's `webauthn` configuration and set `rp_id` and `rp_origin` to the server's own domain:
+
+```yaml
+webauthn:
+  enabled: true
+  rp_id: "tv.example.com"
+  rp_origin: "https://tv.example.com"
+  android_apps:
+    - package_name: "org.synctv.app"
+      sha256_cert_fingerprints:
+        - "<SHA-256 fingerprint from the official Release configuration file>"
+```
+
+Package names and certificate fingerprints are public identity material. Android uses them to verify that the domain authorizes the installed app. Keep the keystore, signing private key, and passwords secret. Development and fork builds have separate signing identities and require the fingerprint of the installed artifact.
+
+The signing key determines the certificate fingerprint, and application version upgrades preserve it. Official Releases use a fixed release key. A fork can create its own fixed release keystore and store the signing configuration in the fork repository's GitHub Secrets; its Release workflow will publish the matching server configuration file automatically. CI development signing is an ephemeral identity that may change with the runner and build environment, so it is intended for temporary testing.
+
+One server can authorize both the official app and a fork. Apps with the same package name share one `android_apps` entry containing multiple fingerprints:
+
+```yaml
+webauthn:
+  android_apps:
+    - package_name: "org.synctv.app"
+      sha256_cert_fingerprints:
+        - "<official app certificate SHA-256>"
+        - "<fork app certificate SHA-256>"
+```
+
+Add a separate `android_apps` entry for a fork with a custom package name. The official signing private key remains under the official release process, while each fork uses its own key and can coexist with the official app on the same self-hosted server.
+
+GitHub APKs use the certificate published in the Release configuration file. A future Google Play distribution may use a separate Google Play App Signing certificate; add the App signing certificate SHA-256 from Play Console to `sha256_cert_fingerprints` as well.
+
+Apple fixes the allowed RP IDs in the signed app's Associated Domains entitlement. The official prebuilt iOS and macOS apps can use native passkeys only with domains included in `SYNCTV_PASSKEY_RP_IDS` at build time, so a self-hosted server on an arbitrary independent domain cannot dynamically join the official Apple app. Self-hosted deployments can use one of these paths:
+
+- Build and sign the app with an Apple Developer Team, add the server RP ID to `SYNCTV_PASSKEY_RP_IDS`, and add `<TeamID>.org.synctv.app` to the server's `apple_app_ids`.
+- Use a system-browser WebAuthn flow, where the browser manages the passkey for the self-hosted domain; the current official app exposes native passkeys only, so this path requires a future browser authentication flow.
+- Use an RP domain already covered by the official Apple app entitlement.
+
+Each self-hosted server controls Android authorization, allowing the official prebuilt app to add domains at runtime. Native Apple authorization is constrained by both the build signature and the server AASA document, so the domain set is determined at build time.
+
 ## `webauthn.allow_subdomains`
 
 Default: `false`.

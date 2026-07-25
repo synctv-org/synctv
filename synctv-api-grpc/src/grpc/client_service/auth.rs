@@ -10,10 +10,11 @@ use synctv_proto::client::{
     RefreshTokenRequest, RefreshTokenResponse, RegisterResponse, RegisterWithDirectPasswordRequest,
     RequestEmailLoginRequest, RequestEmailLoginResponse, RequestEmailRegistrationRequest,
     RequestEmailRegistrationResponse, RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse,
-    StartMfaPasskeyRequest, StartMfaPasskeyResponse, StartOpaqueLoginRequest,
-    StartOpaqueLoginResponse, StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse,
-    StartPasskeyLoginRequest, StartPasskeyLoginResponse, StartPasskeyRegistrationRequest,
-    StartPasskeyRegistrationResponse, VerifyMfaEmailCodeRequest,
+    StartLoginRequest, StartLoginResponse, StartMfaPasskeyRequest, StartMfaPasskeyResponse,
+    StartOpaqueLoginRequest, StartOpaqueLoginResponse, StartOpaqueRegistrationRequest,
+    StartOpaqueRegistrationResponse, StartPasskeyLoginRequest, StartPasskeyLoginResponse,
+    StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse, VerifyMfaEmailCodeRequest,
+    VerifyMfaRecoveryCodeRequest, VerifyMfaTotpRequest,
 };
 
 #[tonic::async_trait]
@@ -70,6 +71,30 @@ impl AuthService for ClientServiceImpl {
                             client_ip,
                             Some(&request_control),
                         )
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn start_login(
+        &self,
+        request: Request<StartLoginRequest>,
+    ) -> Result<Response<StartLoginResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    client_api
+                        .start_login_with_control(req, client_ip, Some(&request_control))
                         .await
                 },
             )
@@ -405,25 +430,22 @@ impl AuthService for ClientServiceImpl {
     ) -> Result<Response<RequestEmailLoginResponse>, Status> {
         let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
-        let email_api = self.email_api().map_err(map_api_error)?;
-        let email_api = email_api.clone();
         let executor = self.client_api.clone();
-        let result = executor
+        let client_api = self.client_api.clone();
+        let response = executor
             .execute_public_endpoint_with_control(
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |request_control| async move {
-                    email_api
-                        .request_email_login_with_control(&req.email, Some(&request_control))
+                    client_api
+                        .request_email_login_with_control(req, Some(&request_control))
                         .await
                 },
             )
             .await
             .map_err(map_api_error)?;
 
-        Ok(Response::new(RequestEmailLoginResponse {
-            message: result.message,
-        }))
+        Ok(Response::new(response))
     }
 
     async fn request_mfa_email_code(
@@ -523,6 +545,58 @@ impl AuthService for ClientServiceImpl {
                 move |request_control| async move {
                     client_api
                         .finish_mfa_passkey_with_control(req, client_ip, Some(&request_control))
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn verify_mfa_totp(
+        &self,
+        request: Request<VerifyMfaTotpRequest>,
+    ) -> Result<Response<LoginResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    client_api
+                        .verify_mfa_totp_with_control(req, client_ip, Some(&request_control))
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn verify_mfa_recovery_code(
+        &self,
+        request: Request<VerifyMfaRecoveryCodeRequest>,
+    ) -> Result<Response<LoginResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    client_api
+                        .verify_mfa_recovery_code_with_control(
+                            req,
+                            client_ip,
+                            Some(&request_control),
+                        )
                         .await
                 },
             )

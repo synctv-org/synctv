@@ -8,23 +8,25 @@ use synctv_proto::client::{
     CompleteUserAvatarUploadSessionRequest, CompleteUserAvatarUploadSessionResponse,
     ConfirmEmailBindRequest, CreateRoomRequest, CreateUserAvatarUploadSessionRequest,
     CreateUserAvatarUploadSessionResponse, DeletePasskeyRequest, DeletePasskeyResponse,
-    DiscoverRoomsRequest, DiscoverRoomsResponse, FavoriteRoomRequest, FavoriteRoomResponse,
-    FinishOpaquePasswordUpdateRequest, FinishPasskeyBindRequest, FinishRoomPasswordLoginRequest,
-    FinishSensitiveOperationVerificationRequest, FinishSensitiveOperationVerificationResponse,
-    GetProfileRequest, GetRoomDiscoveryRequest, GetRoomRequest, GetRoomResponse,
-    GetUserAvatarObjectRequest, GetUserPreferencesRequest, GetUserPreferencesResponse,
-    JoinRoomRequest, JoinRoomResponse, ListFavoriteRoomsRequest, ListFavoriteRoomsResponse,
-    ListMyRoomsRequest, ListMyRoomsResponse, ListPasskeysRequest, ListPasskeysResponse,
-    LogoutRequest, LogoutResponse, PasskeyCredential, RequestSensitiveOperationEmailCodeRequest,
-    RequestSensitiveOperationEmailCodeResponse, Room, RoomDiscoveryItem, SetUsernameRequest,
+    DeleteTotpRequest, DeleteTotpResponse, DiscoverRoomsRequest, DiscoverRoomsResponse,
+    FavoriteRoomRequest, FavoriteRoomResponse, FinishOpaquePasswordUpdateRequest,
+    FinishPasskeyBindRequest, FinishRoomPasswordLoginRequest,
+    FinishSensitiveOperationVerificationRequest, FinishTotpSetupRequest, GetProfileRequest,
+    GetRoomDiscoveryRequest, GetRoomRequest, GetRoomResponse, GetUserAvatarObjectRequest,
+    GetUserPreferencesRequest, GetUserPreferencesResponse, JoinRoomRequest, JoinRoomResponse,
+    ListFavoriteRoomsRequest, ListFavoriteRoomsResponse, ListMyRoomsRequest, ListMyRoomsResponse,
+    ListPasskeysRequest, ListPasskeysResponse, LogoutRequest, LogoutResponse, PasskeyCredential,
+    RegenerateTotpRecoveryCodesRequest, RequestSensitiveOperationEmailCodeRequest,
+    RequestSensitiveOperationEmailCodeResponse, Room, RoomDiscoveryItem,
+    SensitiveOperationVerificationOutcome, SetTwoFactorEnabledRequest, SetUsernameRequest,
     StartEmailBindRequest, StartEmailBindResponse, StartOpaquePasswordUpdateRequest,
     StartOpaquePasswordUpdateResponse, StartPasskeyBindRequest, StartPasskeyBindResponse,
     StartRoomPasswordLoginRequest, StartRoomPasswordLoginResponse,
     StartSensitiveOperationPasskeyRequest, StartSensitiveOperationPasskeyResponse,
-    StartSensitiveOperationVerificationRequest, StartSensitiveOperationVerificationResponse,
-    UnbindEmailRequest, UnfavoriteRoomRequest, UnfavoriteRoomResponse, UpdateUserAvatarRequest,
-    UpdateUserPreferencesRequest, UpdateUserPreferencesResponse, UploadUserAvatarObjectRequest,
-    UploadUserAvatarObjectResponse, User, UserAvatarObjectResponse,
+    StartSensitiveOperationVerificationRequest, StartTotpSetupRequest, StartTotpSetupResponse,
+    TotpRecoveryCodesResponse, UnbindEmailRequest, UnfavoriteRoomRequest, UnfavoriteRoomResponse,
+    UpdateUserAvatarRequest, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
+    UploadUserAvatarObjectRequest, UploadUserAvatarObjectResponse, User, UserAvatarObjectResponse,
 };
 
 type UserAvatarObjectStream = super::GrpcStatusStream<UserAvatarObjectResponse>;
@@ -304,7 +306,7 @@ impl UserService for ClientServiceImpl {
     async fn start_sensitive_operation_verification(
         &self,
         request: Request<StartSensitiveOperationVerificationRequest>,
-    ) -> Result<Response<StartSensitiveOperationVerificationResponse>, Status> {
+    ) -> Result<Response<SensitiveOperationVerificationOutcome>, Status> {
         let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -379,7 +381,7 @@ impl UserService for ClientServiceImpl {
     async fn finish_sensitive_operation_verification(
         &self,
         request: Request<FinishSensitiveOperationVerificationRequest>,
-    ) -> Result<Response<FinishSensitiveOperationVerificationResponse>, Status> {
+    ) -> Result<Response<SensitiveOperationVerificationOutcome>, Status> {
         let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
@@ -538,6 +540,86 @@ impl UserService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
+    async fn start_totp_setup(
+        &self,
+        request: Request<StartTotpSetupRequest>,
+    ) -> Result<Response<StartTotpSetupResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |auth| async move { client_api.start_totp_setup(&auth.user_id, req).await },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn finish_totp_setup(
+        &self,
+        request: Request<FinishTotpSetupRequest>,
+    ) -> Result<Response<TotpRecoveryCodesResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |auth| async move { client_api.finish_totp_setup(&auth.user_id, req).await },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn regenerate_totp_recovery_codes(
+        &self,
+        request: Request<RegenerateTotpRecoveryCodesRequest>,
+    ) -> Result<Response<TotpRecoveryCodesResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |auth| async move {
+                    client_api
+                        .regenerate_totp_recovery_codes(&auth.user_id, req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn delete_totp(
+        &self,
+        request: Request<DeleteTotpRequest>,
+    ) -> Result<Response<DeleteTotpResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |auth| async move { client_api.delete_totp(&auth.user_id, req).await },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
     async fn get_user_preferences(
         &self,
         request: Request<GetUserPreferencesRequest>,
@@ -575,6 +657,29 @@ impl UserService for ClientServiceImpl {
                 move |authenticated| async move {
                     client_api
                         .update_user_preferences(&authenticated.user_id, req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn set_two_factor_enabled(
+        &self,
+        request: Request<SetTwoFactorEnabledRequest>,
+    ) -> Result<Response<GetUserPreferencesResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .set_two_factor_enabled(&authenticated.user_id, req)
                         .await
                 },
             )

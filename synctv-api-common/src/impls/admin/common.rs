@@ -60,6 +60,8 @@ pub(in crate::impls::admin) fn auth_factors_to_proto(
     Ok(synctv_proto::client::UserAuthFactors {
         password: factors.password,
         webauthn: factors.webauthn,
+        totp: factors.totp,
+        totp_recovery_codes_remaining: factors.totp_recovery_codes_remaining,
         email: factors.email,
         eligible_count: usize_to_i32_api(factors.eligible_count(), "auth factor count")?,
     })

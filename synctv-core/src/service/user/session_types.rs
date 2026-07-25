@@ -5,8 +5,9 @@ use crate::{
     service::{TokenAuthContext, TokenCredentialBinding},
 };
 
-pub(super) const OPAQUE_LOGIN_SESSION_TTL_SECS: u64 = 300;
-pub(super) const OPAQUE_LOGIN_SESSION_CAPACITY: u64 = 10_000;
+pub(super) const LOGIN_SESSION_TTL_SECS: u64 = 300;
+pub(super) const LOGIN_SESSION_TTL_SECS_I64: i64 = 300;
+pub(super) const LOGIN_SESSION_CAPACITY: u64 = 10_000;
 pub(super) const OPAQUE_REGISTRATION_SESSION_TTL_SECS: u64 = 300;
 pub(super) const OPAQUE_REGISTRATION_SESSION_CAPACITY: u64 = 10_000;
 pub(super) const MFA_SESSION_TTL_SECS: u64 = 300;
@@ -21,11 +22,55 @@ pub(super) const TWO_FACTOR_REQUIRED_MESSAGE: &str =
     "Two-factor authentication is required before tokens can be issued";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OpaqueLoginSession {
+pub struct LoginSession {
     pub(crate) user_id: Option<UserId>,
     pub(crate) brute_force_key: String,
     pub(crate) user_existed: bool,
-    pub(crate) server_login_state: Vec<u8>,
+    pub(crate) email: Option<String>,
+    pub(crate) state: LoginSessionState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LoginSessionState {
+    Identified {
+        available_methods: Vec<AuthFactorMethod>,
+    },
+    OpaqueChallenge {
+        server_login_state: Vec<u8>,
+    },
+}
+
+impl LoginSession {
+    #[must_use]
+    pub fn supports(&self, method: AuthFactorMethod) -> bool {
+        matches!(
+            &self.state,
+            LoginSessionState::Identified { available_methods }
+                if available_methods.contains(&method)
+        )
+    }
+
+    #[must_use]
+    pub fn user_id(&self) -> Option<UserId> {
+        self.user_id
+    }
+
+    #[must_use]
+    pub fn brute_force_key(&self) -> &str {
+        &self.brute_force_key
+    }
+
+    #[must_use]
+    pub fn email(&self) -> Option<&str> {
+        self.email.as_deref()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LoginStartChallenge {
+    pub session_id: String,
+    pub available_methods: Vec<AuthFactorMethod>,
+    pub expires_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +84,8 @@ pub struct OpaqueLoginStartChallenge {
 pub enum AuthFactorMethod {
     Password,
     WebAuthn,
+    Totp,
+    RecoveryCode,
     Email,
 }
 

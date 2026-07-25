@@ -300,6 +300,8 @@ file_storage:
 | `webauthn.rp_origin` | origin | `""` | Primary WebAuthn origin |
 | `webauthn.rp_name` | string | `SyncTV` | Authenticator display name |
 | `webauthn.allowed_origins` | origin array | `[]` | Additional accepted origins |
+| `webauthn.apple_app_ids` | Apple application identifier array | `[]` | Web Credentials associations for native Apple apps |
+| `webauthn.android_apps` | Android app association array | `[]` | Package names and signing-certificate SHA-256 fingerprints |
 | `webauthn.allow_subdomains` | boolean | `false` | Allow subdomains of configured origins |
 | `webauthn.allow_any_port` | boolean | `false` | Ignore origin ports |
 | `webauthn.timeout_seconds` | seconds | `300` | Challenge timeout |

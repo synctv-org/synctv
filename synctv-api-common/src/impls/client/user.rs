@@ -34,6 +34,8 @@ fn sensitive_method_to_proto(method: AuthFactorMethod) -> i32 {
     match method {
         AuthFactorMethod::Password => SensitiveOperationVerificationMethod::Password as i32,
         AuthFactorMethod::WebAuthn => SensitiveOperationVerificationMethod::Webauthn as i32,
+        AuthFactorMethod::Totp => SensitiveOperationVerificationMethod::Totp as i32,
+        AuthFactorMethod::RecoveryCode => SensitiveOperationVerificationMethod::RecoveryCode as i32,
         AuthFactorMethod::Email => SensitiveOperationVerificationMethod::Email as i32,
     }
 }
@@ -42,6 +44,10 @@ fn sensitive_method_from_proto(value: i32) -> Result<AuthFactorMethod, ApiError>
     match SensitiveOperationVerificationMethod::try_from(value) {
         Ok(SensitiveOperationVerificationMethod::Password) => Ok(AuthFactorMethod::Password),
         Ok(SensitiveOperationVerificationMethod::Webauthn) => Ok(AuthFactorMethod::WebAuthn),
+        Ok(SensitiveOperationVerificationMethod::Totp) => Ok(AuthFactorMethod::Totp),
+        Ok(SensitiveOperationVerificationMethod::RecoveryCode) => {
+            Ok(AuthFactorMethod::RecoveryCode)
+        }
         Ok(SensitiveOperationVerificationMethod::Email) => Ok(AuthFactorMethod::Email),
         _ => Err(ApiError::InvalidInput(
             "Invalid verification method".to_string(),
@@ -108,37 +114,18 @@ fn sensitive_challenge_to_proto(
 
 fn sensitive_outcome_to_proto(
     outcome: SensitiveVerificationOutcome,
-) -> Result<synctv_proto::client::FinishSensitiveOperationVerificationResponse, ApiError> {
-    match outcome {
-        SensitiveVerificationOutcome::Pending(challenge) => Ok(
-            synctv_proto::client::FinishSensitiveOperationVerificationResponse {
-                verification_id: String::new(),
-                challenge: Some(sensitive_challenge_to_proto(challenge)?),
-            },
-        ),
-        SensitiveVerificationOutcome::Complete { verification_id } => Ok(
-            synctv_proto::client::FinishSensitiveOperationVerificationResponse {
-                verification_id,
-                challenge: None,
-            },
-        ),
-    }
-}
+) -> Result<synctv_proto::client::SensitiveOperationVerificationOutcome, ApiError> {
+    use synctv_proto::client::sensitive_operation_verification_outcome::Outcome;
 
-fn sensitive_start_outcome_to_proto(
-    outcome: SensitiveVerificationOutcome,
-) -> Result<synctv_proto::client::StartSensitiveOperationVerificationResponse, ApiError> {
     match outcome {
         SensitiveVerificationOutcome::Pending(challenge) => Ok(
-            synctv_proto::client::StartSensitiveOperationVerificationResponse {
-                challenge: Some(sensitive_challenge_to_proto(challenge)?),
-                verification_id: String::new(),
+            synctv_proto::client::SensitiveOperationVerificationOutcome {
+                outcome: Some(Outcome::Challenge(sensitive_challenge_to_proto(challenge)?)),
             },
         ),
         SensitiveVerificationOutcome::Complete { verification_id } => Ok(
-            synctv_proto::client::StartSensitiveOperationVerificationResponse {
-                challenge: None,
-                verification_id,
+            synctv_proto::client::SensitiveOperationVerificationOutcome {
+                outcome: Some(Outcome::VerificationId(verification_id)),
             },
         ),
     }
@@ -232,6 +219,8 @@ fn auth_factors_to_proto(
     Ok(synctv_proto::client::UserAuthFactors {
         password: factors.password,
         webauthn: factors.webauthn,
+        totp: factors.totp,
+        totp_recovery_codes_remaining: factors.totp_recovery_codes_remaining,
         email: factors.email,
         eligible_count: i32::try_from(factors.eligible_count()).map_err(|_| {
             ApiError::Internal("eligible auth factor count exceeds i32::MAX".to_string())
@@ -268,7 +257,7 @@ pub fn user_preferences_update_from_proto(
     req: synctv_proto::client::UpdateUserPreferencesRequest,
 ) -> synctv_core::models::UserPreferencesUpdate {
     synctv_core::models::UserPreferencesUpdate {
-        two_factor_enabled: req.two_factor_enabled,
+        two_factor_enabled: None,
         notifications: req.notifications.map(|value| {
             synctv_core::models::UserNotificationPreferences {
                 room_invitation_in_app: value.room_invitation_in_app,
@@ -471,6 +460,24 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         Ok(synctv_proto::client::UpdateUserPreferencesResponse {
+            preferences: Some(user_preferences_to_proto(&preferences)?),
+            auth_factors: Some(auth_factors_to_proto(&auth_factors)?),
+        })
+    }
+
+    pub async fn set_two_factor_enabled(
+        &self,
+        user_id: &UserId,
+        req: synctv_proto::client::SetTwoFactorEnabledRequest,
+    ) -> Result<synctv_proto::client::GetUserPreferencesResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let (preferences, auth_factors) = self
+            .user_service
+            .set_two_factor_enabled_with_verification(user_id, req.enabled, &req.verification_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(synctv_proto::client::GetUserPreferencesResponse {
             preferences: Some(user_preferences_to_proto(&preferences)?),
             auth_factors: Some(auth_factors_to_proto(&auth_factors)?),
         })
@@ -693,14 +700,14 @@ impl ClientApiImpl {
         user_id: &UserId,
         auth_context: Option<TokenAuthContext>,
         req: synctv_proto::client::StartSensitiveOperationVerificationRequest,
-    ) -> Result<synctv_proto::client::StartSensitiveOperationVerificationResponse, ApiError> {
+    ) -> Result<synctv_proto::client::SensitiveOperationVerificationOutcome, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let outcome = self
             .user_service
             .start_sensitive_operation_verification(user_id, auth_context)
             .await
             .map_err(ApiError::from)?;
-        sensitive_start_outcome_to_proto(outcome)
+        sensitive_outcome_to_proto(outcome)
     }
 
     pub async fn start_sensitive_operation_passkey(
@@ -785,7 +792,7 @@ impl ClientApiImpl {
         req: synctv_proto::client::FinishSensitiveOperationVerificationRequest,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&synctv_core::provider::ExecutionControl>,
-    ) -> Result<synctv_proto::client::FinishSensitiveOperationVerificationResponse, ApiError> {
+    ) -> Result<synctv_proto::client::SensitiveOperationVerificationOutcome, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let method = sensitive_method_from_proto(req.method)?;
         let session_user = self
@@ -855,9 +862,94 @@ impl ClientApiImpl {
                     .await
                     .map_err(ApiError::from)?
             }
+            AuthFactorMethod::Totp => self
+                .user_service
+                .finish_sensitive_operation_totp_verification(
+                    &req.session_id,
+                    &req.totp_code,
+                    client_ip,
+                    control,
+                )
+                .await
+                .map_err(ApiError::from)?,
+            AuthFactorMethod::RecoveryCode => self
+                .user_service
+                .finish_sensitive_operation_recovery_code_verification(
+                    &req.session_id,
+                    &req.recovery_code,
+                    client_ip,
+                    control,
+                )
+                .await
+                .map_err(ApiError::from)?,
         };
 
         sensitive_outcome_to_proto(outcome)
+    }
+
+    pub async fn start_totp_setup(
+        &self,
+        user_id: &UserId,
+        req: synctv_proto::client::StartTotpSetupRequest,
+    ) -> Result<synctv_proto::client::StartTotpSetupResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let setup = self
+            .user_service
+            .start_totp_setup(user_id, &req.verification_id)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(synctv_proto::client::StartTotpSetupResponse {
+            setup_id: setup.setup_id,
+            secret: setup.secret,
+            otpauth_uri: setup.otpauth_uri,
+            expires_at: setup.expires_at,
+        })
+    }
+
+    pub async fn finish_totp_setup(
+        &self,
+        user_id: &UserId,
+        req: synctv_proto::client::FinishTotpSetupRequest,
+    ) -> Result<synctv_proto::client::TotpRecoveryCodesResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let result = self
+            .user_service
+            .finish_totp_setup(user_id, &req.setup_id, &req.code)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(synctv_proto::client::TotpRecoveryCodesResponse {
+            recovery_codes: result.recovery_codes,
+        })
+    }
+
+    pub async fn regenerate_totp_recovery_codes(
+        &self,
+        user_id: &UserId,
+        req: synctv_proto::client::RegenerateTotpRecoveryCodesRequest,
+    ) -> Result<synctv_proto::client::TotpRecoveryCodesResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let result = self
+            .user_service
+            .regenerate_totp_recovery_codes(user_id, &req.verification_id)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(synctv_proto::client::TotpRecoveryCodesResponse {
+            recovery_codes: result.recovery_codes,
+        })
+    }
+
+    pub async fn delete_totp(
+        &self,
+        user_id: &UserId,
+        req: synctv_proto::client::DeleteTotpRequest,
+    ) -> Result<synctv_proto::client::DeleteTotpResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let deleted = self
+            .user_service
+            .delete_totp(user_id, &req.verification_id)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(synctv_proto::client::DeleteTotpResponse { deleted })
     }
 
     pub async fn start_opaque_password_update(
@@ -997,9 +1089,12 @@ impl ClientApiImpl {
 
 #[cfg(test)]
 mod tests {
-    use super::masked_email_for_sensitive_challenge;
+    use super::{masked_email_for_sensitive_challenge, sensitive_outcome_to_proto};
     use crate::impls::ApiError;
-    use synctv_core::service::AuthFactorMethod;
+    use synctv_core::service::{
+        AuthFactorMethod, SensitiveVerificationChallenge, SensitiveVerificationOutcome,
+    };
+    use synctv_proto::client::sensitive_operation_verification_outcome::Outcome;
 
     #[test]
     fn masked_email_for_sensitive_challenge_requires_email_when_method_available() {
@@ -1015,5 +1110,40 @@ mod tests {
             .expect("password-only sensitive challenge should not require masked email");
 
         assert_eq!(masked, "");
+    }
+
+    #[test]
+    fn sensitive_pending_outcome_maps_to_challenge_branch() {
+        let outcome = sensitive_outcome_to_proto(SensitiveVerificationOutcome::Pending(
+            SensitiveVerificationChallenge {
+                session_id: "sensitive-session".to_string(),
+                required_count: 1,
+                required_methods: vec![AuthFactorMethod::Password],
+                completed_methods: Vec::new(),
+                available_methods: vec![AuthFactorMethod::Password],
+                masked_email: None,
+                expires_at: 1_900_000_000,
+            },
+        ))
+        .expect("pending sensitive outcome should map");
+
+        let Some(Outcome::Challenge(challenge)) = outcome.outcome else {
+            panic!("pending sensitive outcome should select the challenge branch");
+        };
+        assert_eq!(challenge.session_id, "sensitive-session");
+        assert_eq!(challenge.required_count, 1);
+    }
+
+    #[test]
+    fn sensitive_complete_outcome_maps_to_verification_id_branch() {
+        let outcome = sensitive_outcome_to_proto(SensitiveVerificationOutcome::Complete {
+            verification_id: "verification-id".to_string(),
+        })
+        .expect("complete sensitive outcome should map");
+
+        assert_eq!(
+            outcome.outcome,
+            Some(Outcome::VerificationId("verification-id".to_string()))
+        );
     }
 }

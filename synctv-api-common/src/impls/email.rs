@@ -26,6 +26,7 @@ const GENERIC_EMAIL_REGISTRATION_MESSAGE: &str =
     "If registration is available for this email, a registration code will be sent.";
 const EMAIL_ADDR_MAX_REQUESTS: u32 = 3;
 const EMAIL_ADDR_WINDOW_SECONDS: u64 = 3600;
+const EMAIL_LOGIN_MIN_RESPONSE_TIME: std::time::Duration = std::time::Duration::from_millis(500);
 
 fn map_email_user_lookup_error(err: synctv_core::Error) -> ApiError {
     ApiError::from(err)
@@ -108,6 +109,7 @@ impl EmailDeliveryService for EmailService {
 }
 
 /// Shared email operations implementation.
+#[derive(Clone)]
 pub struct EmailApiImpl {
     pub user_service: Arc<UserService>,
     pub email_service: Arc<dyn EmailDeliveryService>,
@@ -153,6 +155,39 @@ pub struct RequestMfaEmailCodeResult {
 }
 
 impl EmailApiImpl {
+    pub(crate) async fn complete_email_login_timing_with_control(
+        started_at: std::time::Instant,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(), ApiError> {
+        Self::sleep_with_control(
+            EMAIL_LOGIN_MIN_RESPONSE_TIME.saturating_sub(started_at.elapsed()),
+            control,
+        )
+        .await
+    }
+
+    pub async fn request_decoy_email_login_with_control(
+        &self,
+        rate_limit_key: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<RequestEmailLoginResult, ApiError> {
+        let started_at = std::time::Instant::now();
+        let result = self
+            .check_email_rate_limit_key(rate_limit_key, control)
+            .await
+            .map(|()| RequestEmailLoginResult {
+                message: GENERIC_EMAIL_LOGIN_MESSAGE.to_string(),
+            });
+        Self::complete_email_login_timing_with_control(started_at, control).await?;
+        result
+    }
+
+    pub fn reject_decoy_email_login(&self) -> Result<(), ApiError> {
+        Err(ApiError::Authentication(
+            "Invalid or expired login code".to_string(),
+        ))
+    }
+
     async fn sleep_with_control(
         delay: std::time::Duration,
         control: Option<&ExecutionControl>,
@@ -179,10 +214,18 @@ impl EmailApiImpl {
     ) -> Result<(), ApiError> {
         let normalized = Self::normalize_rate_limited_email(email);
         let key = format!("email:addr:{normalized}");
+        self.check_email_rate_limit_key(&key, control).await
+    }
+
+    async fn check_email_rate_limit_key(
+        &self,
+        key: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(), ApiError> {
         match self
             .rate_limiter
             .check_rate_limit_with_control(
-                &key,
+                key,
                 EMAIL_ADDR_MAX_REQUESTS,
                 EMAIL_ADDR_WINDOW_SECONDS,
                 control,
@@ -356,52 +399,81 @@ impl EmailApiImpl {
     /// Request an email login code.
     pub async fn request_email_login(
         &self,
+        user_id: &synctv_core::models::UserId,
         email: &str,
+        rate_limit_key: &str,
     ) -> Result<RequestEmailLoginResult, ApiError> {
-        self.request_email_login_with_control(email, None).await
+        self.request_email_login_with_control(user_id, email, rate_limit_key, None)
+            .await
     }
 
     pub async fn request_email_login_with_control(
         &self,
+        user_id: &synctv_core::models::UserId,
         email: &str,
+        rate_limit_key: &str,
         control: Option<&ExecutionControl>,
     ) -> Result<RequestEmailLoginResult, ApiError> {
-        self.check_email_rate_limit(email, control).await?;
-
-        let user = self
-            .user_service
-            .get_by_email(email)
-            .await
-            .map_err(map_email_user_lookup_error)?;
-
-        let Some(user) = user else {
-            let delay_ms = rand::random_range(100u64..500u64);
-            Self::sleep_with_control(std::time::Duration::from_millis(delay_ms), control).await?;
-            return Ok(RequestEmailLoginResult {
-                message: GENERIC_EMAIL_LOGIN_MESSAGE.to_string(),
-            });
-        };
-
-        if user.is_deleted() || matches!(user.status, synctv_core::models::UserStatus::Banned) {
-            let delay_ms = rand::random_range(100u64..500u64);
-            Self::sleep_with_control(std::time::Duration::from_millis(delay_ms), control).await?;
-            return Ok(RequestEmailLoginResult {
-                message: GENERIC_EMAIL_LOGIN_MESSAGE.to_string(),
-            });
+        let started_at = std::time::Instant::now();
+        let result = self
+            .check_email_rate_limit_key(rate_limit_key, control)
+            .await;
+        if result.is_ok() {
+            self.dispatch_email_login(*user_id, email.to_string());
         }
-
-        let _token = self
-            .send_tokenized_email_with_control(email, &user.id, EmailTokenType::EmailLogin, control)
-            .await?;
-
-        tracing::info!(
-            "Sent email login code to {}",
-            synctv_core::service::mask_email(email)
-        );
-
-        Ok(RequestEmailLoginResult {
+        Self::complete_email_login_timing_with_control(started_at, control).await?;
+        result.map(|()| RequestEmailLoginResult {
             message: GENERIC_EMAIL_LOGIN_MESSAGE.to_string(),
         })
+    }
+
+    fn dispatch_email_login(&self, user_id: synctv_core::models::UserId, email: String) {
+        let api = self.clone();
+        tokio::spawn(async move {
+            let current = match api.user_service.get_user_with_email(&user_id).await {
+                Ok(current) => Some(current),
+                Err(synctv_core::Error::NotFound(_)) => None,
+                Err(error) => {
+                    tracing::error!(
+                        user_id = %user_id,
+                        error = %error,
+                        "Failed to validate the account before email login delivery"
+                    );
+                    return;
+                }
+            };
+            let active_binding = current.is_some_and(|current| {
+                !current.user.is_deleted()
+                    && !matches!(current.user.status, synctv_core::models::UserStatus::Banned)
+                    && current
+                        .email
+                        .as_deref()
+                        .is_some_and(|current| current.eq_ignore_ascii_case(&email))
+            });
+            if !active_binding {
+                return;
+            }
+
+            match api
+                .send_tokenized_email_with_control(
+                    &email,
+                    &user_id,
+                    EmailTokenType::EmailLogin,
+                    None,
+                )
+                .await
+            {
+                Ok(_) => tracing::info!(
+                    email = %synctv_core::service::mask_email(&email),
+                    "Sent email login code"
+                ),
+                Err(error) => tracing::error!(
+                    email = %synctv_core::service::mask_email(&email),
+                    error = ?error,
+                    "Email login delivery failed after the public request completed"
+                ),
+            }
+        });
     }
 
     pub async fn request_email_registration_with_control(
@@ -590,60 +662,71 @@ impl EmailApiImpl {
     /// Confirm an email login token and issue an authenticated session.
     pub async fn confirm_email_login(
         &self,
+        user_id: &synctv_core::models::UserId,
         email: &str,
         token: &str,
         client_ip: Option<std::net::IpAddr>,
     ) -> Result<ConfirmEmailLoginResult, ApiError> {
-        self.confirm_email_login_with_control(email, token, client_ip, None)
+        self.confirm_email_login_with_control(user_id, email, token, client_ip, None)
             .await
     }
 
     pub async fn confirm_email_login_with_control(
         &self,
+        user_id: &synctv_core::models::UserId,
         email: &str,
         token: &str,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<ConfirmEmailLoginResult, ApiError> {
-        let user = self
-            .user_service
-            .get_by_email(email)
+        self.validate_email_login_token_with_control(user_id, token, control)
+            .await?;
+        self.complete_verified_email_login_with_control(user_id, email, client_ip, control)
             .await
-            .map_err(map_email_user_lookup_error)?
-            .ok_or_else(|| ApiError::Authentication("Invalid or expired login code".to_string()))?;
+    }
 
+    pub async fn validate_email_login_token_with_control(
+        &self,
+        user_id: &synctv_core::models::UserId,
+        token: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(), ApiError> {
         let validated_user_id = self
             .email_token_service
             .validate_token_for_user_with_control(
                 token,
                 EmailTokenType::EmailLogin,
-                &user.id,
+                user_id,
                 control,
             )
             .await
             .map_err(|_| ApiError::Authentication("Invalid or expired login code".to_string()))?;
 
-        if validated_user_id != user.id {
+        if validated_user_id != *user_id {
             return Err(ApiError::Authentication(
                 "Invalid or expired login code".to_string(),
             ));
         }
 
-        if user.is_deleted() || matches!(user.status, synctv_core::models::UserStatus::Banned) {
-            return Err(ApiError::Authentication(
-                "Authentication failed".to_string(),
-            ));
-        }
+        Ok(())
+    }
 
+    pub async fn complete_verified_email_login_with_control(
+        &self,
+        user_id: &synctv_core::models::UserId,
+        email: &str,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<ConfirmEmailLoginResult, ApiError> {
         let login_key = format!("email:{}", Self::normalize_rate_limited_email(email));
         let login = self
             .user_service
-            .login_with_verified_email_with_control(&user.id, &login_key, client_ip, control)
+            .login_with_verified_email_with_control(user_id, email, &login_key, client_ip, control)
             .await
             .map_err(ApiError::from)?;
 
         Ok(ConfirmEmailLoginResult {
-            user_id: self.public_user_id(user.id)?,
+            user_id: self.public_user_id(*user_id)?,
             login,
         })
     }
@@ -746,7 +829,10 @@ mod tests {
         map_email_mutation_error, map_email_user_lookup_error, EmailApiImpl, EmailDeliveryService,
         GENERIC_EMAIL_LOGIN_MESSAGE, GENERIC_PASSWORD_RESET_MESSAGE,
     };
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
     use synctv_core::cache::{KeyBuilder, UsernameCache};
     use synctv_core::models::{SignupMethod, User, UserId, UserRole, UserStatus};
     use synctv_core::service::AuthenticatedLogin;
@@ -771,6 +857,12 @@ mod tests {
 
     #[derive(Clone)]
     struct TestEmailDeliveryService;
+
+    struct BlockingFailingEmailDeliveryService {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        completed: Arc<AtomicBool>,
+    }
 
     #[async_trait::async_trait]
     impl EmailDeliveryService for TestEmailDeliveryService {
@@ -811,6 +903,50 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
+    impl EmailDeliveryService for BlockingFailingEmailDeliveryService {
+        async fn send_email_bind_token_email_with_control(
+            &self,
+            _email: &str,
+            _token: &str,
+            _control: Option<&synctv_core::provider::ExecutionControl>,
+        ) -> synctv_core::Result<()> {
+            Ok(())
+        }
+
+        async fn send_password_reset_token_email_with_control(
+            &self,
+            _email: &str,
+            _token: &str,
+            _control: Option<&synctv_core::provider::ExecutionControl>,
+        ) -> synctv_core::Result<()> {
+            Ok(())
+        }
+
+        async fn send_email_login_token_email_with_control(
+            &self,
+            _email: &str,
+            _token: &str,
+            _control: Option<&synctv_core::provider::ExecutionControl>,
+        ) -> synctv_core::Result<()> {
+            self.started.notify_one();
+            self.release.notified().await;
+            self.completed.store(true, Ordering::SeqCst);
+            Err(synctv_core::Error::ServiceUnavailable(
+                "test SMTP failure".to_string(),
+            ))
+        }
+
+        async fn send_email_registration_token_email_with_control(
+            &self,
+            _email: &str,
+            _token: &str,
+            _control: Option<&synctv_core::provider::ExecutionControl>,
+        ) -> synctv_core::Result<()> {
+            Ok(())
+        }
+    }
+
     fn make_user(username: &str) -> User {
         let now = synctv_core::SystemClock.now();
         User {
@@ -832,6 +968,13 @@ mod tests {
     }
 
     fn build_test_email_api(pool: sqlx::PgPool) -> TestResult<EmailApiImpl> {
+        build_test_email_api_with_delivery(pool, Arc::new(TestEmailDeliveryService))
+    }
+
+    fn build_test_email_api_with_delivery(
+        pool: sqlx::PgPool,
+        email_service: Arc<dyn EmailDeliveryService>,
+    ) -> TestResult<EmailApiImpl> {
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
         let jwt_service = JwtService::new("test-secret-key-for-email-api-tests-minimum-32-chars")?;
         let user_service = UserService::new_with_runtime(
@@ -855,7 +998,7 @@ mod tests {
 
         Ok(EmailApiImpl::new(
             user_service,
-            Arc::new(TestEmailDeliveryService),
+            email_service,
             Arc::new(EmailTokenService::new(pool)),
             Arc::new(RateLimiter::local_only("email-api-tests:".to_string())),
             Arc::new(synctv_adapter::PublicIdCodec::plain()),
@@ -918,7 +1061,10 @@ mod tests {
                 .await,
         )?;
 
-        let first_login = api_ok(api.confirm_email_login(&email, &first, None).await)?;
+        let first_login = api_ok(
+            api.confirm_email_login(&created.id, &email, &first, None)
+                .await,
+        )?;
         assert_eq!(
             first_login.user_id,
             api_ok(api.public_user_id(created.id))?,
@@ -936,7 +1082,10 @@ mod tests {
             "first login code should issue tokens"
         );
 
-        let second_login = api_ok(api.confirm_email_login(&email, &second, None).await)?;
+        let second_login = api_ok(
+            api.confirm_email_login(&created.id, &email, &second, None)
+                .await,
+        )?;
         assert_eq!(
             second_login.user_id,
             api_ok(api.public_user_id(created.id))?,
@@ -953,6 +1102,53 @@ mod tests {
             ),
             "second login code should issue tokens"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn confirm_email_login_rejects_email_transferred_after_session_start() -> TestResult {
+        let (_container, pool) = synctv_core_testing::create_test_pool().await;
+        let api = build_test_email_api(pool.clone())?;
+        let repo = synctv_core::repository::UserRepository::new(pool.clone());
+        let email_repo = synctv_core::repository::UserEmailRepository::new(pool.clone());
+        let email = "email_login_transferred@example.com";
+        let original_owner = repo
+            .create(&make_user("email_login_original_owner"))
+            .await?;
+        let new_owner = repo.create(&make_user("email_login_new_owner")).await?;
+        email_repo
+            .create_for_user_with_executor(&original_owner, Some(email), repo.pool())
+            .await?;
+        let token = api
+            .email_token_service
+            .generate_token(
+                &original_owner.id,
+                synctv_core::models::EmailTokenType::EmailLogin,
+            )
+            .await?;
+
+        let mut tx = pool.begin().await?;
+        email_repo
+            .delete_with_executor(&original_owner.id, synctv_core::SystemClock.now(), &mut *tx)
+            .await?;
+        email_repo
+            .upsert_with_executor(
+                &new_owner.id,
+                email,
+                synctv_core::SystemClock.now(),
+                &mut *tx,
+            )
+            .await?;
+        tx.commit().await?;
+
+        let result = api
+            .confirm_email_login(&original_owner.id, email, &token, None)
+            .await;
+        assert!(matches!(
+            result,
+            Err(crate::impls::ApiError::Authentication(_))
+        ));
         Ok(())
     }
 
@@ -1041,11 +1237,115 @@ mod tests {
                 .await,
         )?;
 
-        let existing = api_ok(api.request_email_login(&existing_email).await)?;
-        let missing = api_ok(api.request_email_login("missing-login@example.com").await)?;
+        let existing = api_ok(
+            api.request_email_login(&created.id, &existing_email, "test:existing-email-login")
+                .await,
+        )?;
+        let missing = api_ok(
+            api.request_decoy_email_login_with_control("test:missing-email-login", None)
+                .await,
+        )?;
 
         assert_eq!(existing.message, GENERIC_EMAIL_LOGIN_MESSAGE);
         assert_eq!(missing.message, GENERIC_EMAIL_LOGIN_MESSAGE);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn email_login_delivery_latency_and_failure_do_not_change_public_response() -> TestResult
+    {
+        let (_container, pool) = synctv_core_testing::create_test_pool().await;
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let completed = Arc::new(AtomicBool::new(false));
+        let api = build_test_email_api_with_delivery(
+            pool.clone(),
+            Arc::new(BlockingFailingEmailDeliveryService {
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+                completed: Arc::clone(&completed),
+            }),
+        )?;
+        let repo = synctv_core::repository::UserRepository::new(pool.clone());
+        let email_repo = synctv_core::repository::UserEmailRepository::new(pool);
+        let email = "email_login_delivery_failure@example.com";
+        let user = repo
+            .create(&make_user("email_login_delivery_failure"))
+            .await?;
+        email_repo
+            .create_for_user_with_executor(&user, Some(email), repo.pool())
+            .await?;
+
+        let real = api_ok(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                api.request_email_login(&user.id, email, "test:delivery-failure"),
+            )
+            .await
+            .map_err(|_| test_error("public email login response waited for SMTP delivery"))?,
+        )?;
+        tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+            .await
+            .map_err(|_| test_error("background email delivery did not start"))?;
+        assert!(!completed.load(Ordering::SeqCst));
+
+        let decoy = api_ok(
+            api.request_decoy_email_login_with_control("test:delivery-failure-decoy", None)
+                .await,
+        )?;
+        assert_eq!(real.message, GENERIC_EMAIL_LOGIN_MESSAGE);
+        assert_eq!(decoy.message, GENERIC_EMAIL_LOGIN_MESSAGE);
+
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !completed.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| test_error("background email failure did not complete"))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn real_and_decoy_email_login_requests_share_the_same_limit_shape() -> TestResult {
+        let (_container, pool) = synctv_core_testing::create_test_pool().await;
+        let api = build_test_email_api(pool.clone())?;
+        let repo = synctv_core::repository::UserRepository::new(pool.clone());
+        let email_repo = synctv_core::repository::UserEmailRepository::new(pool);
+        let user = repo.create(&make_user("email_login_rate_limit")).await?;
+        let email = "email_login_rate_limit@example.com";
+        email_repo
+            .create_for_user_with_executor(&user, Some(email), repo.pool())
+            .await?;
+
+        for _ in 0..3 {
+            api_ok(
+                api.request_email_login(&user.id, email, "test:real-email-login-limit")
+                    .await,
+            )?;
+            api_ok(
+                api.request_decoy_email_login_with_control("test:decoy-email-login-limit", None)
+                    .await,
+            )?;
+        }
+
+        let real = api
+            .request_email_login(&user.id, email, "test:real-email-login-limit")
+            .await;
+        let decoy = api
+            .request_decoy_email_login_with_control("test:decoy-email-login-limit", None)
+            .await;
+        assert!(matches!(
+            real,
+            Err(crate::impls::ApiError::RateLimitedWithRetry { .. })
+        ));
+        assert!(matches!(
+            decoy,
+            Err(crate::impls::ApiError::RateLimitedWithRetry { .. })
+        ));
         Ok(())
     }
 

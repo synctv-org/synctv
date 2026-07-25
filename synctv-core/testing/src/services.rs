@@ -198,13 +198,16 @@ pub async fn opaque_login_user_with_challenge(
     identifier: impl Into<String>,
     password: impl AsRef<str>,
 ) -> synctv_core::Result<synctv_core::service::AuthenticatedLogin> {
+    let login_session = service
+        .start_login_with_control(identifier.into(), true, true, None, None)
+        .await?;
     let mut rng = OsRng;
     let client_start =
         ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_ref().as_bytes())
             .map_err(|error| synctv_core::Error::Internal(error.to_string()))?;
     let start = service
         .start_opaque_login_with_control(
-            identifier.into(),
+            &login_session.session_id,
             client_start.message.serialize().to_vec().into(),
             None,
             None,

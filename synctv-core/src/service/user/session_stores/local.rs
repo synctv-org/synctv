@@ -3,12 +3,12 @@ use std::time::Duration;
 use crate::Result;
 
 use super::super::session_types::{
-    MFA_SESSION_CAPACITY, OPAQUE_LOGIN_SESSION_CAPACITY, OPAQUE_REGISTRATION_SESSION_CAPACITY,
+    LOGIN_SESSION_CAPACITY, MFA_SESSION_CAPACITY, OPAQUE_REGISTRATION_SESSION_CAPACITY,
     SENSITIVE_VERIFICATION_SESSION_CAPACITY,
 };
 use super::{
-    MfaSession, MfaSessionStore, OpaqueLoginSession, OpaqueLoginSessionStore,
-    OpaqueRegistrationSession, OpaqueRegistrationSessionStore, SensitiveVerificationSession,
+    LoginSession, LoginSessionStore, MfaSession, MfaSessionStore, OpaqueRegistrationSession,
+    OpaqueRegistrationSessionStore, SensitiveVerificationSession,
     SensitiveVerificationSessionStore,
 };
 
@@ -68,8 +68,8 @@ where
     }
 }
 
-pub struct InMemoryOpaqueLoginSessionStore {
-    store: InMemorySessionStore<OpaqueLoginSession>,
+pub struct InMemoryLoginSessionStore {
+    store: InMemorySessionStore<LoginSession>,
 }
 
 pub struct InMemoryOpaqueRegistrationSessionStore {
@@ -84,11 +84,11 @@ pub struct InMemorySensitiveVerificationSessionStore {
     store: InMemorySessionStore<SensitiveVerificationSession>,
 }
 
-impl InMemoryOpaqueLoginSessionStore {
+impl InMemoryLoginSessionStore {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            store: InMemorySessionStore::new(OPAQUE_LOGIN_SESSION_CAPACITY),
+            store: InMemorySessionStore::new(LOGIN_SESSION_CAPACITY),
         }
     }
 }
@@ -120,7 +120,7 @@ impl InMemorySensitiveVerificationSessionStore {
     }
 }
 
-impl Default for InMemoryOpaqueLoginSessionStore {
+impl Default for InMemoryLoginSessionStore {
     fn default() -> Self {
         Self::new()
     }
@@ -145,18 +145,17 @@ impl Default for InMemorySensitiveVerificationSessionStore {
 }
 
 #[async_trait::async_trait]
-impl OpaqueLoginSessionStore for InMemoryOpaqueLoginSessionStore {
-    async fn store(
-        &self,
-        session_id: &str,
-        session: &OpaqueLoginSession,
-        ttl: Duration,
-    ) -> Result<()> {
+impl LoginSessionStore for InMemoryLoginSessionStore {
+    async fn store(&self, session_id: &str, session: &LoginSession, ttl: Duration) -> Result<()> {
         self.store.store(session_id, session, ttl);
         Ok(())
     }
 
-    async fn consume(&self, session_id: &str) -> Result<Option<OpaqueLoginSession>> {
+    async fn get(&self, session_id: &str) -> Result<Option<LoginSession>> {
+        Ok(self.store.get(session_id))
+    }
+
+    async fn consume(&self, session_id: &str) -> Result<Option<LoginSession>> {
         Ok(self.store.consume(session_id))
     }
 

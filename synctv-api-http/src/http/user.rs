@@ -13,15 +13,16 @@ use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::client::User;
 use synctv_proto::client::{
     CloseAccountRequest, CloseAccountResponse, DeletePasskeyRequest, DeletePasskeyResponse,
-    DiscoverRoomsRequest, DiscoverRoomsResponse, FavoriteRoomRequest, FavoriteRoomResponse,
-    FinishPasskeyBindRequest, FinishSensitiveOperationVerificationRequest,
-    FinishSensitiveOperationVerificationResponse, GetRoomDiscoveryRequest,
+    DeleteTotpRequest, DeleteTotpResponse, DiscoverRoomsRequest, DiscoverRoomsResponse,
+    FavoriteRoomRequest, FavoriteRoomResponse, FinishPasskeyBindRequest,
+    FinishSensitiveOperationVerificationRequest, FinishTotpSetupRequest, GetRoomDiscoveryRequest,
     ListFavoriteRoomsRequest, ListFavoriteRoomsResponse, ListMyRoomsResponse, ListPasskeysResponse,
     PasskeyCredential, RequestSensitiveOperationEmailCodeRequest,
     RequestSensitiveOperationEmailCodeResponse, RoomDiscoveryItem, RoomPathRequest,
-    StartPasskeyBindRequest, StartPasskeyBindResponse, StartSensitiveOperationPasskeyRequest,
-    StartSensitiveOperationPasskeyResponse, StartSensitiveOperationVerificationRequest,
-    StartSensitiveOperationVerificationResponse, UnfavoriteRoomRequest, UnfavoriteRoomResponse,
+    SensitiveOperationVerificationOutcome, StartPasskeyBindRequest, StartPasskeyBindResponse,
+    StartSensitiveOperationPasskeyRequest, StartSensitiveOperationPasskeyResponse,
+    StartSensitiveOperationVerificationRequest, StartTotpSetupRequest, StartTotpSetupResponse,
+    TotpRecoveryCodesResponse, UnfavoriteRoomRequest, UnfavoriteRoomResponse,
 };
 use synctv_proto::client::{
     CompleteUserAvatarUploadSessionRequest, CompleteUserAvatarUploadSessionResponse,
@@ -29,8 +30,9 @@ use synctv_proto::client::{
     UpdateUserAvatarRequest, User as UserAvatarUpdateResponse,
 };
 use synctv_proto::client::{
-    ConfirmEmailBindRequest, GetUserPreferencesResponse, UnbindEmailRequest,
-    UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
+    ConfirmEmailBindRequest, GetUserPreferencesResponse, RegenerateTotpRecoveryCodesRequest,
+    SetTwoFactorEnabledRequest, UnbindEmailRequest, UpdateUserPreferencesRequest,
+    UpdateUserPreferencesResponse,
 };
 use synctv_proto::client::{
     FinishOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateRequest,
@@ -197,6 +199,45 @@ pub async fn update_user_preferences(
             &request_meta,
             EndpointRateLimitCategory::Write,
             |auth| async move { client_api.update_user_preferences(&auth.user_id, req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        put,
+        path = "/api/user/two-factor",
+        tag = "User",
+        request_body = SetTwoFactorEnabledRequest,
+        responses(
+            (status = 200, description = "Two-factor authentication setting updated", body = GetUserPreferencesResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication or sensitive operation verification required", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn set_two_factor_enabled(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<SetTwoFactorEnabledRequest>,
+) -> AppResult<Json<GetUserPreferencesResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move { client_api.set_two_factor_enabled(&auth.user_id, req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -535,7 +576,7 @@ pub async fn unbind_email(
         tag = "User",
         request_body = StartSensitiveOperationVerificationRequest,
         responses(
-            (status = 200, description = "Sensitive operation verification started", body = StartSensitiveOperationVerificationResponse),
+            (status = 200, description = "Sensitive operation verification started", body = SensitiveOperationVerificationOutcome),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -548,7 +589,7 @@ pub async fn start_sensitive_operation_verification(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<StartSensitiveOperationVerificationRequest>,
-) -> AppResult<Json<StartSensitiveOperationVerificationResponse>> {
+) -> AppResult<Json<SensitiveOperationVerificationOutcome>> {
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
@@ -670,7 +711,7 @@ pub async fn request_sensitive_operation_email_code(
         tag = "User",
         request_body = FinishSensitiveOperationVerificationRequest,
         responses(
-            (status = 200, description = "Sensitive operation verification progressed", body = FinishSensitiveOperationVerificationResponse),
+            (status = 200, description = "Sensitive operation verification progressed", body = SensitiveOperationVerificationOutcome),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -683,7 +724,7 @@ pub async fn finish_sensitive_operation_verification(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<FinishSensitiveOperationVerificationRequest>,
-) -> AppResult<Json<FinishSensitiveOperationVerificationResponse>> {
+) -> AppResult<Json<SensitiveOperationVerificationOutcome>> {
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
@@ -956,6 +997,154 @@ pub async fn delete_passkey(
         .await
         .map_err(super::error::map_api_error)?;
 
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/user/totp/setup/start",
+        tag = "User",
+        request_body = StartTotpSetupRequest,
+        responses(
+            (status = 200, description = "Authenticator setup created", body = StartTotpSetupResponse),
+            (status = 401, description = "Authentication or sensitive verification required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 409, description = "Authenticator app already configured", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Credential encryption unavailable", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub async fn start_totp_setup(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<StartTotpSetupRequest>,
+) -> AppResult<Json<StartTotpSetupResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move { client_api.start_totp_setup(&auth.user_id, req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/user/totp/setup/finish",
+        tag = "User",
+        request_body = FinishTotpSetupRequest,
+        responses(
+            (status = 200, description = "Authenticator setup confirmed", body = TotpRecoveryCodesResponse),
+            (status = 401, description = "Authentication or authenticator code invalid", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub async fn finish_totp_setup(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<FinishTotpSetupRequest>,
+) -> AppResult<Json<TotpRecoveryCodesResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move { client_api.finish_totp_setup(&auth.user_id, req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/user/totp/recovery-codes/regenerate",
+        tag = "User",
+        request_body = RegenerateTotpRecoveryCodesRequest,
+        responses(
+            (status = 200, description = "Recovery codes regenerated", body = TotpRecoveryCodesResponse),
+            (status = 401, description = "Authentication or sensitive verification required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Authenticator app not configured", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub async fn regenerate_totp_recovery_codes(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<RegenerateTotpRecoveryCodesRequest>,
+) -> AppResult<Json<TotpRecoveryCodesResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move {
+                client_api
+                    .regenerate_totp_recovery_codes(&auth.user_id, req)
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/user/totp",
+        tag = "User",
+        request_body = DeleteTotpRequest,
+        responses(
+            (status = 200, description = "Authenticator app removed", body = DeleteTotpResponse),
+            (status = 400, description = "Authenticator app is required by two-factor settings", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication or sensitive verification required", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub async fn delete_totp(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<DeleteTotpRequest>,
+) -> AppResult<Json<DeleteTotpResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move { client_api.delete_totp(&auth.user_id, req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
     Ok(Json(response))
 }
 

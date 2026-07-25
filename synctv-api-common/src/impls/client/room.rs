@@ -1954,6 +1954,10 @@ impl ClientApiImpl {
             email_signup_need_review: s.email_signup_need_review,
             enable_email: s.enable_email && self.email_api.is_some(),
             enable_webauthn: self.passkey_service.is_some(),
+            webauthn_rp_id: self
+                .passkey_service
+                .as_ref()
+                .map_or_else(String::new, |service| service.rp_id().to_string()),
             enable_webauthn_signup: s.enable_webauthn_signup,
             webauthn_signup_need_review: s.webauthn_signup_need_review,
             enable_guest: s.enable_guest,

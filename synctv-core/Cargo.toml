@@ -27,6 +27,7 @@ opaque-ke.workspace = true
 jsonwebtoken.workspace = true
 oauth2.workspace = true
 webauthn-rs.workspace = true
+webauthn-rs-proto.workspace = true
 aes-gcm.workspace = true
 ammonia.workspace = true
 zxcvbn.workspace = true

@@ -97,6 +97,9 @@ async fn opaque_login(
     identifier: String,
     password: &str,
 ) -> synctv_core::Result<(synctv_core::models::User, String, String)> {
+    let login_session = service
+        .start_login_with_control(identifier, true, true, None, None)
+        .await?;
     let mut rng = OsRng;
     let client_start = ok(
         ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes()),
@@ -104,7 +107,7 @@ async fn opaque_login(
     );
     let challenge = service
         .start_opaque_login_with_control(
-            identifier,
+            &login_session.session_id,
             client_start.message.serialize().to_vec().into(),
             None,
             None,

@@ -6,6 +6,8 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use hmac::{Hmac, KeyInit, Mac};
+use sha1::Sha1;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{CacheDomain, KeyBuilder, LocalVersionFenceStore, UsernameCache, VersionFenceStore},
@@ -364,6 +366,87 @@ async fn password_verification_id(
     }
 }
 
+fn decode_totp_secret(secret: &str) -> Vec<u8> {
+    let mut output = Vec::with_capacity(secret.len() * 5 / 8);
+    let mut buffer = 0_u32;
+    let mut bits = 0_u8;
+    for byte in secret.bytes() {
+        let value = match byte.to_ascii_uppercase() {
+            b'A'..=b'Z' => byte.to_ascii_uppercase() - b'A',
+            b'2'..=b'7' => byte - b'2' + 26,
+            _ => std::panic::panic_any("test TOTP secret should be valid base32"),
+        };
+        buffer = (buffer << 5) | u32::from(value);
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            output.push(((buffer >> bits) & 0xff) as u8);
+        }
+    }
+    assert!(!output.is_empty());
+    output
+}
+
+fn totp_code_with_step_offset(secret: &str, step_offset: i64) -> String {
+    let key = decode_totp_secret(secret);
+    let step = Utc::now().timestamp() / 30 + step_offset;
+    let mut mac = Hmac::<Sha1>::new_from_slice(&key).checked("test TOTP key should be valid");
+    mac.update(
+        &u64::try_from(step)
+            .checked("test TOTP step should be nonnegative")
+            .to_be_bytes(),
+    );
+    let digest = mac.finalize().into_bytes();
+    let offset = usize::from(digest[digest.len() - 1] & 0x0f);
+    let binary = ((u32::from(digest[offset]) & 0x7f) << 24)
+        | (u32::from(digest[offset + 1]) << 16)
+        | (u32::from(digest[offset + 2]) << 8)
+        | u32::from(digest[offset + 3]);
+    format!("{:06}", binary % 1_000_000)
+}
+
+async fn two_factor_verification_id_with_recovery_code(
+    service: &UserService,
+    user_id: &UserId,
+    password: &str,
+    recovery_code: &str,
+) -> String {
+    let outcome = service
+        .start_sensitive_operation_verification(user_id, None)
+        .await
+        .checked("start two-factor sensitive verification");
+    let SensitiveVerificationOutcome::Pending(challenge) = outcome else {
+        std::panic::panic_any("two-factor sensitive verification should be pending");
+    };
+    let pending = service
+        .finish_sensitive_operation_password_verification(
+            &challenge.session_id,
+            password,
+            None,
+            None,
+        )
+        .await
+        .checked("verify password factor");
+    let SensitiveVerificationOutcome::Pending(challenge) = pending else {
+        std::panic::panic_any("sensitive verification should require a second factor");
+    };
+    match service
+        .finish_sensitive_operation_recovery_code_verification(
+            &challenge.session_id,
+            recovery_code,
+            None,
+            None,
+        )
+        .await
+        .checked("verify recovery-code factor")
+    {
+        SensitiveVerificationOutcome::Complete { verification_id } => verification_id,
+        SensitiveVerificationOutcome::Pending(_) => {
+            std::panic::panic_any("two verified factors should complete sensitive verification")
+        }
+    }
+}
+
 async fn insert_trusted_email_identity(pool: &PgPool, user_id: &UserId, email: &str) {
     sqlx::query!(
         r"
@@ -424,6 +507,7 @@ fn make_passkey_service(pool: PgPool, user_service: Arc<UserService>) -> Passkey
     config.enabled = true;
     config.rp_id = "localhost".to_string();
     config.rp_origin = "http://localhost".to_string();
+    config.enumeration_protection_secret = "test-webauthn-enumeration-secret".to_string();
     match PasskeyService::new(
         &config,
         WebAuthnCredentialRepository::new(pool),
@@ -433,6 +517,46 @@ fn make_passkey_service(pool: PgPool, user_service: Arc<UserService>) -> Passkey
         Ok(service) => service,
         Err(error) => std::panic::panic_any(format!("passkey service should build: {error:?}")),
     }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_unknown_identified_passkey_login_returns_stable_decoy_challenge() {
+    let (_container, pool) = create_test_pool().await;
+    let user_service = Arc::new(create_user_service(&pool));
+    let passkey_service = make_passkey_service(pool, user_service);
+    let brute_force_key = "missing-passkey-user@example.com";
+
+    let first = passkey_service
+        .start_identified_login(None, brute_force_key, None, None)
+        .await
+        .checked("unknown account should receive a decoy Passkey challenge");
+    let second = passkey_service
+        .start_identified_login(None, brute_force_key, None, None)
+        .await
+        .checked("decoy Passkey challenge should be reusable until authentication");
+
+    let first_ids = first
+        .options
+        .public_key
+        .allow_credentials
+        .iter()
+        .map(|credential| credential.id.as_slice())
+        .collect::<Vec<_>>();
+    let second_ids = second
+        .options
+        .public_key
+        .allow_credentials
+        .iter()
+        .map(|credential| credential.id.as_slice())
+        .collect::<Vec<_>>();
+    assert!(!first_ids.is_empty());
+    assert_eq!(first_ids, second_ids);
+    assert_ne!(first.session_id, second.session_id);
+    assert_ne!(
+        first.options.public_key.challenge,
+        second.options.public_key.challenge
+    );
 }
 
 fn make_room(name: &str, owner_id: &UserId) -> Room {
@@ -1413,6 +1537,53 @@ async fn assert_sensitive_verification_is_one_time(pool: PgPool) {
     );
 }
 
+async fn assert_two_factor_changes_require_fresh_sensitive_verification(pool: PgPool) {
+    let service = create_user_service(&pool);
+    let (user, _, _) = opaque_register_user(
+        &service,
+        "two_factor_verified_change",
+        Some("two_factor_verified_change@example.com".to_string()),
+        "StrongPass1",
+    )
+    .await
+    .checked("create email and password user");
+
+    let rejected = service
+        .set_two_factor_enabled_with_verification(&user.id, true, "invalid-verification")
+        .await
+        .failed("enabling two-factor authentication requires verification");
+    assert!(matches!(rejected, Error::Authentication(_)));
+    assert!(
+        !service
+            .get_user_preferences(&user.id)
+            .await
+            .checked("load preferences after rejected update")
+            .0
+            .two_factor_enabled
+    );
+
+    let enable_verification = password_verification_id(&service, &user.id, "StrongPass1").await;
+    let (preferences, _) = service
+        .set_two_factor_enabled_with_verification(&user.id, true, &enable_verification)
+        .await
+        .checked("fresh verification enables two-factor authentication");
+    assert!(preferences.two_factor_enabled);
+
+    let reused = service
+        .set_two_factor_enabled_with_verification(&user.id, false, &enable_verification)
+        .await
+        .failed("verification cannot be reused to disable two-factor authentication");
+    assert!(matches!(reused, Error::Authentication(_)));
+    assert!(
+        service
+            .get_user_preferences(&user.id)
+            .await
+            .checked("load preferences after reused verification")
+            .0
+            .two_factor_enabled
+    );
+}
+
 async fn assert_sensitive_password_verification_is_rate_limited(pool: PgPool) {
     let service = create_user_service(&pool);
     let (user, _, _) = opaque_register_user(
@@ -1933,7 +2104,12 @@ async fn assert_refresh_token_rejects_unbound_email_identity(pool: PgPool) {
     .await
     .checked("create user with password");
     let refresh_token = match service
-        .login_with_verified_email(&user.id, "email-refresh-binding", None)
+        .login_with_verified_email(
+            &user.id,
+            "email_refresh_binding@example.com",
+            "email-refresh-binding",
+            None,
+        )
         .await
         .checked("verified email login should issue tokens")
     {
@@ -2004,6 +2180,277 @@ async fn assert_refresh_token_rejects_deleted_passkey_binding(pool: PgPool) {
     );
 }
 
+async fn assert_totp_lifecycle_and_replay_protection(pool: PgPool) {
+    let service = create_user_service(&pool);
+    let (user, _, _) = opaque_register_user(&service, "totp_lifecycle_user", None, "StrongPass1")
+        .await
+        .checked("create TOTP lifecycle user");
+
+    let setup = service
+        .start_totp_setup(
+            &user.id,
+            &password_verification_id(&service, &user.id, "StrongPass1").await,
+        )
+        .await
+        .checked("start TOTP setup");
+    assert!(setup.otpauth_uri.starts_with("otpauth://totp/"));
+    assert!(setup.otpauth_uri.contains("issuer=SyncTV"));
+    assert!(setup
+        .otpauth_uri
+        .contains(&format!("secret={}", setup.secret)));
+    assert!(setup.expires_at > Utc::now().timestamp());
+
+    let encrypted_secret: serde_json::Value = sqlx::query_scalar!(
+        "SELECT encrypted_secret FROM auth_totp_credentials WHERE user_id = $1",
+        user.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("load encrypted TOTP secret");
+    assert!(!encrypted_secret.to_string().contains(&setup.secret));
+
+    let setup_code = totp_code_with_step_offset(&setup.secret, 0);
+    let initial_codes = service
+        .finish_totp_setup(&user.id, &setup.setup_id, &setup_code)
+        .await
+        .checked("finish TOTP setup")
+        .recovery_codes;
+    assert_eq!(initial_codes.len(), 10);
+    let unique_initial_codes = initial_codes
+        .iter()
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(unique_initial_codes.len(), initial_codes.len());
+
+    let factors = service
+        .get_user_preferences(&user.id)
+        .await
+        .checked("load TOTP authentication factors")
+        .1;
+    assert!(factors.password);
+    assert!(factors.totp);
+    assert_eq!(factors.totp_recovery_codes_remaining, 10);
+    service
+        .set_two_factor_enabled(&user.id, true)
+        .await
+        .checked("enable password and TOTP two-factor authentication");
+
+    let replay_login =
+        opaque_login_user_with_challenge(&service, "totp_lifecycle_user", "StrongPass1")
+            .await
+            .checked("start replay-protection MFA challenge");
+    let AuthenticatedLogin::MfaRequired { challenge, .. } = replay_login else {
+        std::panic::panic_any("TOTP lifecycle login should require MFA");
+    };
+    assert!(challenge
+        .available_methods
+        .contains(&AuthFactorMethod::Totp));
+    assert!(challenge
+        .available_methods
+        .contains(&AuthFactorMethod::RecoveryCode));
+    let replayed_setup_code = service
+        .complete_mfa_totp_with_control(&challenge.session_id, &setup_code, None, None)
+        .await
+        .failed("the setup TOTP step must not be accepted twice");
+    assert!(matches!(replayed_setup_code, Error::Authentication(_)));
+    service
+        .complete_mfa_recovery_code_with_control(
+            &challenge.session_id,
+            &initial_codes[0],
+            None,
+            None,
+        )
+        .await
+        .checked("recovery code should complete the existing MFA challenge");
+
+    let verification_id = two_factor_verification_id_with_recovery_code(
+        &service,
+        &user.id,
+        "StrongPass1",
+        &initial_codes[1],
+    )
+    .await;
+    let regenerated_codes = service
+        .regenerate_totp_recovery_codes(&user.id, &verification_id)
+        .await
+        .checked("regenerate TOTP recovery codes")
+        .recovery_codes;
+    assert_eq!(regenerated_codes.len(), 10);
+
+    for (index, recovery_code) in regenerated_codes[..regenerated_codes.len() - 1]
+        .iter()
+        .enumerate()
+    {
+        let login =
+            opaque_login_user_with_challenge(&service, "totp_lifecycle_user", "StrongPass1")
+                .await
+                .checked("start recovery-code MFA challenge");
+        let AuthenticatedLogin::MfaRequired { challenge, .. } = login else {
+            std::panic::panic_any("recovery-code login should require MFA");
+        };
+        if index == 0 {
+            let invalidated = service
+                .complete_mfa_recovery_code_with_control(
+                    &challenge.session_id,
+                    &initial_codes[2],
+                    None,
+                    None,
+                )
+                .await
+                .failed("regeneration must invalidate previous recovery codes");
+            assert!(matches!(invalidated, Error::Authentication(_)));
+        }
+        let completed = service
+            .complete_mfa_recovery_code_with_control(
+                &challenge.session_id,
+                recovery_code,
+                None,
+                None,
+            )
+            .await
+            .checked("each recovery code, including the final code, should complete MFA");
+        assert!(matches!(completed, AuthenticatedLogin::Complete { .. }));
+    }
+
+    let final_verification_id = two_factor_verification_id_with_recovery_code(
+        &service,
+        &user.id,
+        "StrongPass1",
+        regenerated_codes
+            .last()
+            .checked("generated recovery codes should contain a final code"),
+    )
+    .await;
+    service
+        .consume_sensitive_operation_verification(&user.id, &final_verification_id)
+        .await
+        .checked("the final recovery code should complete sensitive verification");
+
+    let factors = service
+        .get_user_preferences(&user.id)
+        .await
+        .checked("load depleted recovery-code state")
+        .1;
+    assert!(factors.totp);
+    assert_eq!(factors.totp_recovery_codes_remaining, 0);
+
+    let totp_login =
+        opaque_login_user_with_challenge(&service, "totp_lifecycle_user", "StrongPass1")
+            .await
+            .checked("start TOTP MFA challenge after recovery-code depletion");
+    let AuthenticatedLogin::MfaRequired { challenge, .. } = totp_login else {
+        std::panic::panic_any("TOTP login should require MFA");
+    };
+    assert!(!challenge
+        .available_methods
+        .contains(&AuthFactorMethod::RecoveryCode));
+    let next_totp_code = totp_code_with_step_offset(&setup.secret, 1);
+    let completed = service
+        .complete_mfa_totp_with_control(&challenge.session_id, &next_totp_code, None, None)
+        .await
+        .checked("a fresh TOTP step should complete MFA");
+    assert!(matches!(completed, AuthenticatedLogin::Complete { .. }));
+
+    let replay_login =
+        opaque_login_user_with_challenge(&service, "totp_lifecycle_user", "StrongPass1")
+            .await
+            .checked("start second TOTP replay challenge");
+    let AuthenticatedLogin::MfaRequired { challenge, .. } = replay_login else {
+        std::panic::panic_any("TOTP replay login should require MFA");
+    };
+    let replayed = service
+        .complete_mfa_totp_with_control(&challenge.session_id, &next_totp_code, None, None)
+        .await
+        .failed("a TOTP step must be single-use");
+    assert!(matches!(replayed, Error::Authentication(_)));
+
+    let sensitive = service
+        .start_sensitive_operation_verification(&user.id, None)
+        .await
+        .checked("start protected TOTP deletion verification");
+    let SensitiveVerificationOutcome::Pending(challenge) = sensitive else {
+        std::panic::panic_any("TOTP deletion verification should require factors");
+    };
+    let pending = service
+        .finish_sensitive_operation_password_verification(
+            &challenge.session_id,
+            "StrongPass1",
+            None,
+            None,
+        )
+        .await
+        .checked("verify password before protected TOTP deletion");
+    let SensitiveVerificationOutcome::Pending(challenge) = pending else {
+        std::panic::panic_any("protected TOTP deletion should require a second factor");
+    };
+    let verification_id = match service
+        .finish_sensitive_operation_verified_method(&challenge.session_id, AuthFactorMethod::Totp)
+        .await
+        .checked("complete protected TOTP deletion verification")
+    {
+        SensitiveVerificationOutcome::Complete { verification_id } => verification_id,
+        SensitiveVerificationOutcome::Pending(_) => {
+            std::panic::panic_any("two factors should authorize protected TOTP deletion")
+        }
+    };
+    let protected = service
+        .delete_totp(&user.id, &verification_id)
+        .await
+        .failed("active two-factor settings must retain the required TOTP factor");
+    assert!(matches!(protected, Error::InvalidInput(_)));
+    service
+        .set_two_factor_enabled(&user.id, false)
+        .await
+        .checked("disable two-factor authentication before TOTP removal");
+    assert!(service
+        .delete_totp(&user.id, &verification_id)
+        .await
+        .checked("remove TOTP after disabling two-factor authentication"));
+
+    let expired_setup = service
+        .start_totp_setup(
+            &user.id,
+            &password_verification_id(&service, &user.id, "StrongPass1").await,
+        )
+        .await
+        .checked("start setup used for expiry test");
+    sqlx::query!(
+        "UPDATE auth_totp_credentials SET setup_expires_at = NOW() - INTERVAL '1 second' WHERE user_id = $1",
+        user.id.as_i64()
+    )
+    .execute(&pool)
+    .await
+    .checked("expire pending TOTP setup");
+    let expired = service
+        .finish_totp_setup(
+            &user.id,
+            &expired_setup.setup_id,
+            &totp_code_with_step_offset(&expired_setup.secret, 0),
+        )
+        .await
+        .failed("expired TOTP setup must be rejected");
+    assert!(matches!(expired, Error::Authentication(_)));
+}
+
+async fn assert_totp_missing_encryption_preserves_verification(pool: PgPool) {
+    let mut runtime = UserServiceRuntimeOptions::test_defaults();
+    runtime.credential_encryption = None;
+    let service = create_user_service_with_runtime(&pool, runtime);
+    let (user, _, _) =
+        opaque_register_user(&service, "totp_missing_encryption", None, "StrongPass1")
+            .await
+            .checked("create TOTP encryption configuration test user");
+    let verification_id = password_verification_id(&service, &user.id, "StrongPass1").await;
+    let unavailable = service
+        .start_totp_setup(&user.id, &verification_id)
+        .await
+        .failed("TOTP setup requires credential encryption");
+    assert!(matches!(unavailable, Error::ServiceUnavailable(_)));
+    service
+        .consume_sensitive_operation_verification(&user.id, &verification_id)
+        .await
+        .checked("configuration failure should preserve sensitive verification");
+}
+
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_user_service_registration_login_and_delete_flows() {
@@ -2029,6 +2476,7 @@ async fn test_user_service_registration_login_and_delete_flows() {
 
     assert_two_factor_requires_two_usable_methods(pool.clone()).await;
     assert_sensitive_verification_is_one_time(pool.clone()).await;
+    assert_two_factor_changes_require_fresh_sensitive_verification(pool.clone()).await;
     assert_sensitive_password_verification_is_rate_limited(pool.clone()).await;
     assert_sensitive_verification_requires_two_local_factors_when_2fa_enabled(pool.clone()).await;
     assert_oauth2_session_sensitive_verification_requires_one_local_factor(pool.clone()).await;
@@ -2040,6 +2488,8 @@ async fn test_user_service_registration_login_and_delete_flows() {
     assert_refresh_token_rejects_unbound_oauth2_identity(pool.clone()).await;
     assert_refresh_token_rejects_unbound_email_identity(pool.clone()).await;
     assert_refresh_token_rejects_deleted_passkey_binding(pool.clone()).await;
+    assert_totp_lifecycle_and_replay_protection(pool.clone()).await;
+    assert_totp_missing_encryption_preserves_verification(pool.clone()).await;
 
     assert_delete_user_concurrent_deletion_atomicity(pool).await;
 }

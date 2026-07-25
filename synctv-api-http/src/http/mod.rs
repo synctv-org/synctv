@@ -16,6 +16,7 @@ pub(crate) mod error;
 pub(crate) mod health;
 pub(crate) mod metrics_middleware;
 pub(crate) mod middleware;
+pub(crate) mod native_app_association;
 pub(crate) mod notifications;
 pub(crate) mod oauth2;
 pub(crate) mod public;
@@ -342,6 +343,7 @@ fn register_extracted_auth_routes() -> Router<AppState> {
             "/api/auth/direct-password/login",
             post(auth::login_with_direct_password),
         )
+        .route("/api/auth/login/start", post(auth::start_login))
         .route(
             "/api/auth/email/registration/request",
             post(auth::request_email_registration),
@@ -398,6 +400,11 @@ fn register_extracted_auth_routes() -> Router<AppState> {
         .route(
             "/api/auth/mfa/passkeys/finish",
             post(auth::finish_mfa_passkey),
+        )
+        .route("/api/auth/mfa/totp/verify", post(auth::verify_mfa_totp))
+        .route(
+            "/api/auth/mfa/recovery-code/verify",
+            post(auth::verify_mfa_recovery_code),
         )
         .route("/api/auth/refresh", post(auth::refresh_token))
         // Tighter body limit for authentication endpoints (64 KB)
@@ -811,6 +818,10 @@ fn register_extracted_user_routes() -> Router<AppState> {
             "/api/user/preferences",
             get(user::get_user_preferences).patch(user::update_user_preferences),
         )
+        .route(
+            "/api/user/two-factor",
+            axum::routing::put(user::set_two_factor_enabled),
+        )
         .route("/api/user/passkeys", get(user::list_passkeys))
         .route(
             "/api/user/passkeys/bind/start",
@@ -832,6 +843,13 @@ fn register_extracted_user_routes() -> Router<AppState> {
             "/api/user/passkeys/{credentialId}",
             axum::routing::delete(user::delete_passkey),
         )
+        .route("/api/user/totp/setup/start", post(user::start_totp_setup))
+        .route("/api/user/totp/setup/finish", post(user::finish_totp_setup))
+        .route(
+            "/api/user/totp/recovery-codes/regenerate",
+            post(user::regenerate_totp_recovery_codes),
+        )
+        .route("/api/user/totp", axum::routing::delete(user::delete_totp))
         .route("/api/user/account-closure", post(user::close_account))
         .route("/api/user/logout", post(auth::logout))
 }
@@ -862,6 +880,14 @@ fn register_websocket_routes() -> Router<AppState> {
 fn register_all_routes() -> Router<AppState> {
     let mut router = Router::new()
         .route("/", get(redirect_to_project))
+        .route(
+            "/.well-known/apple-app-site-association",
+            get(native_app_association::apple_app_site_association),
+        )
+        .route(
+            "/.well-known/assetlinks.json",
+            get(native_app_association::android_asset_links),
+        )
         .merge(health::create_health_router())
         .merge(openapi_router())
         .merge(public::create_public_router())

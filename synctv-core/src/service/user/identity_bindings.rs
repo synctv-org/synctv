@@ -177,8 +177,9 @@ impl UserService {
             ));
         }
 
-        let remaining_two_factor_method_count =
-            usize::from(auth_factors.password) + usize::from(auth_factors.webauthn);
+        let remaining_two_factor_method_count = usize::from(auth_factors.password)
+            + usize::from(auth_factors.webauthn)
+            + usize::from(auth_factors.totp);
         let two_factor_enabled = self
             .user_preferences_repository
             .two_factor_enabled_with_executor(user_id, &mut *tx)

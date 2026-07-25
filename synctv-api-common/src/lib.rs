@@ -52,5 +52,7 @@ pub use proxy_signature::*;
 pub use realtime_fanout::*;
 pub use runtime::RealtimeAdmissionError;
 pub use runtime_adapters::proxy_slice_cache_options_from_runtime_settings;
-pub use server_settings::{validate_cors_origin, ApiServerSettings, DEFAULT_PROJECT_URL};
+pub use server_settings::{
+    validate_cors_origin, AndroidAppAssociationSettings, ApiServerSettings, DEFAULT_PROJECT_URL,
+};
 pub use synctv_adapter::{PublicIdCodec, PublicIdConfig, PublicIdKind, PublicIdType};

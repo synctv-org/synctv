@@ -1116,9 +1116,17 @@ pub struct WebAuthnConfig {
     pub rp_origin: String,
     pub rp_name: String,
     pub allowed_origins: Vec<String>,
+    pub apple_app_ids: Vec<String>,
+    pub android_apps: Vec<AndroidAppAssociationConfig>,
     pub allow_subdomains: bool,
     pub allow_any_port: bool,
     pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AndroidAppAssociationConfig {
+    pub package_name: String,
+    pub sha256_cert_fingerprints: Vec<String>,
 }
 
 impl Default for WebAuthnConfig {
@@ -1129,6 +1137,8 @@ impl Default for WebAuthnConfig {
             rp_origin: String::new(),
             rp_name: "SyncTV".to_string(),
             allowed_origins: Vec::new(),
+            apple_app_ids: Vec::new(),
+            android_apps: Vec::new(),
             allow_subdomains: false,
             allow_any_port: false,
             timeout_seconds: 300,

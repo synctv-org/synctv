@@ -667,6 +667,8 @@ webauthn:
   #   SYNCTV_WEBAUTHN_RP_ORIGIN
   #   SYNCTV_WEBAUTHN_RP_NAME
   #   SYNCTV_WEBAUTHN_ALLOWED_ORIGINS
+  #   SYNCTV_WEBAUTHN_APPLE_APP_IDS
+  #   SYNCTV_WEBAUTHN_ANDROID_APPS
   #   SYNCTV_WEBAUTHN_ALLOW_SUBDOMAINS
   #   SYNCTV_WEBAUTHN_ALLOW_ANY_PORT
   #   SYNCTV_WEBAUTHN_TIMEOUT_SECONDS
@@ -675,6 +677,15 @@ webauthn:
   rp_origin: ""
   rp_name: "SyncTV"
   allowed_origins: []
+  # Apple application identifiers served from
+  # /.well-known/apple-app-site-association for native passkeys.
+  apple_app_ids: []
+  # Android app identities served from /.well-known/assetlinks.json.
+  android_apps: []
+  # android_apps:
+  #   - package_name: "org.synctv.app"
+  #     sha256_cert_fingerprints:
+  #       - "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
   allow_subdomains: false
   allow_any_port: false
   timeout_seconds: 300

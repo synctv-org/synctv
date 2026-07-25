@@ -21,6 +21,7 @@ service AuthService {
   // credential record after confirmation.
   rpc RequestEmailLogin(RequestEmailLoginRequest) returns (RequestEmailLoginResponse);
   rpc ConfirmEmailLogin(ConfirmEmailLoginRequest) returns (LoginResponse);
+  rpc StartLogin(StartLoginRequest) returns (StartLoginResponse);
   rpc CreateGuestToken(CreateGuestTokenRequest) returns (CreateGuestTokenResponse);
   rpc RegisterWithDirectPassword(RegisterWithDirectPasswordRequest) returns (RegisterResponse);
   rpc LoginWithDirectPassword(LoginWithDirectPasswordRequest) returns (LoginResponse);
@@ -38,6 +39,8 @@ service AuthService {
   rpc VerifyMfaEmailCode(VerifyMfaEmailCodeRequest) returns (LoginResponse);
   rpc StartMfaPasskey(StartMfaPasskeyRequest) returns (StartMfaPasskeyResponse);
   rpc FinishMfaPasskey(FinishMfaPasskeyRequest) returns (LoginResponse);
+  rpc VerifyMfaTotp(VerifyMfaTotpRequest) returns (LoginResponse);
+  rpc VerifyMfaRecoveryCode(VerifyMfaRecoveryCodeRequest) returns (LoginResponse);
   rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
 }
 
@@ -55,10 +58,10 @@ service UserService {
   rpc GetUserAvatarObject(GetUserAvatarObjectRequest) returns (stream UserAvatarObjectResponse);
   rpc UpdateUserAvatar(UpdateUserAvatarRequest) returns (User);
   rpc ClearUserAvatar(ClearUserAvatarRequest) returns (User);
-  rpc StartSensitiveOperationVerification(StartSensitiveOperationVerificationRequest) returns (StartSensitiveOperationVerificationResponse);
+  rpc StartSensitiveOperationVerification(StartSensitiveOperationVerificationRequest) returns (SensitiveOperationVerificationOutcome);
   rpc StartSensitiveOperationPasskey(StartSensitiveOperationPasskeyRequest) returns (StartSensitiveOperationPasskeyResponse);
   rpc RequestSensitiveOperationEmailCode(RequestSensitiveOperationEmailCodeRequest) returns (RequestSensitiveOperationEmailCodeResponse);
-  rpc FinishSensitiveOperationVerification(FinishSensitiveOperationVerificationRequest) returns (FinishSensitiveOperationVerificationResponse);
+  rpc FinishSensitiveOperationVerification(FinishSensitiveOperationVerificationRequest) returns (SensitiveOperationVerificationOutcome);
   rpc StartEmailBind(StartEmailBindRequest) returns (StartEmailBindResponse);
   rpc ConfirmEmailBind(ConfirmEmailBindRequest) returns (User);
   rpc UnbindEmail(UnbindEmailRequest) returns (User);
@@ -68,8 +71,13 @@ service UserService {
   rpc FinishPasskeyBind(FinishPasskeyBindRequest) returns (PasskeyCredential);
   rpc ListPasskeys(ListPasskeysRequest) returns (ListPasskeysResponse);
   rpc DeletePasskey(DeletePasskeyRequest) returns (DeletePasskeyResponse);
+  rpc StartTotpSetup(StartTotpSetupRequest) returns (StartTotpSetupResponse);
+  rpc FinishTotpSetup(FinishTotpSetupRequest) returns (TotpRecoveryCodesResponse);
+  rpc RegenerateTotpRecoveryCodes(RegenerateTotpRecoveryCodesRequest) returns (TotpRecoveryCodesResponse);
+  rpc DeleteTotp(DeleteTotpRequest) returns (DeleteTotpResponse);
   rpc GetUserPreferences(GetUserPreferencesRequest) returns (GetUserPreferencesResponse);
   rpc UpdateUserPreferences(UpdateUserPreferencesRequest) returns (UpdateUserPreferencesResponse);
+  rpc SetTwoFactorEnabled(SetTwoFactorEnabledRequest) returns (GetUserPreferencesResponse);
   rpc CloseAccount(CloseAccountRequest) returns (CloseAccountResponse);
 
   // User-initiated room lifecycle operations outside room-scoped context
@@ -739,12 +747,11 @@ message RegisterWithDirectPasswordRequest {
 message LoginWithDirectPasswordRequest {
   // Login with direct password transport over TLS.
   // Verification uses the stored OPAQUE credential record.
-  oneof identifier {
-    option (buf.validate.oneof).required = true;
-    string username = 1 [(buf.validate.field).string = {max_len: 50}];
-    string email = 2 [(buf.validate.field).string = {max_len: 254}];
-  }
-  string password = 3 [(buf.validate.field).string = {
+  string login_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  string password = 2 [(buf.validate.field).string = {
     min_len: 1
     max_len: 1024
   }];
@@ -782,14 +789,41 @@ message ConfirmEmailRegistrationRequest {
 
 // Confirm a passwordless email login token.
 message ConfirmEmailLoginRequest {
-  string email = 3 [(buf.validate.field).string = {
+  string login_session_id = 1 [(buf.validate.field).string = {
     min_len: 1
-    max_len: 254
+    max_len: 128
   }];
-  string email_token = 4 [(buf.validate.field).string = {
+  string email_token = 2 [(buf.validate.field).string = {
     min_len: 1
     max_len: 255
   }];
+}
+
+enum LoginMethod {
+  LOGIN_METHOD_UNSPECIFIED = 0;
+  LOGIN_METHOD_PASSWORD = 1;
+  LOGIN_METHOD_PASSKEY = 2;
+  LOGIN_METHOD_EMAIL_CODE = 3;
+}
+
+// Identify the account and create a short-lived server-side authentication
+// context. The returned methods describe the primary credentials currently
+// usable by this account and server.
+message StartLoginRequest {
+  oneof identifier {
+    option (buf.validate.oneof).required = true;
+    string username = 1 [(buf.validate.field).string = {max_len: 50}];
+    string email = 2 [(buf.validate.field).string = {max_len: 254}];
+  }
+}
+
+message StartLoginResponse {
+  string login_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  repeated LoginMethod available_methods = 2;
+  int64 expires_at = 3;
 }
 
 message LoginResponse {
@@ -804,6 +838,8 @@ enum MfaMethod {
   MFA_METHOD_PASSWORD = 1;
   MFA_METHOD_WEBAUTHN = 2;
   MFA_METHOD_EMAIL = 3;
+  MFA_METHOD_TOTP = 4;
+  MFA_METHOD_RECOVERY_CODE = 5;
 }
 
 message MfaChallenge {
@@ -822,6 +858,8 @@ enum SensitiveOperationVerificationMethod {
   SENSITIVE_OPERATION_VERIFICATION_METHOD_PASSWORD = 1;
   SENSITIVE_OPERATION_VERIFICATION_METHOD_WEBAUTHN = 2;
   SENSITIVE_OPERATION_VERIFICATION_METHOD_EMAIL = 3;
+  SENSITIVE_OPERATION_VERIFICATION_METHOD_TOTP = 4;
+  SENSITIVE_OPERATION_VERIFICATION_METHOD_RECOVERY_CODE = 5;
 }
 
 message SensitiveOperationVerificationChallenge {
@@ -839,9 +877,14 @@ message SensitiveOperationVerificationChallenge {
 
 message StartSensitiveOperationVerificationRequest {}
 
-message StartSensitiveOperationVerificationResponse {
-  SensitiveOperationVerificationChallenge challenge = 1;
-  string verification_id = 2;
+message SensitiveOperationVerificationOutcome {
+  oneof outcome {
+    SensitiveOperationVerificationChallenge challenge = 1;
+    string verification_id = 2 [(buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+    }];
+  }
 }
 
 message StartSensitiveOperationPasskeyRequest {
@@ -881,23 +924,19 @@ message FinishSensitiveOperationVerificationRequest {
   string email_token = 4 [(buf.validate.field).string = {max_len: 255}];
   string passkey_session_id = 5 [(buf.validate.field).string = {max_len: 128}];
   PasskeyAuthenticationCredential passkey_credential = 6;
-}
-
-message FinishSensitiveOperationVerificationResponse {
-  string verification_id = 1;
-  SensitiveOperationVerificationChallenge challenge = 2;
+  string totp_code = 7 [(buf.validate.field).string = {max_len: 6}];
+  string recovery_code = 8 [(buf.validate.field).string = {max_len: 32}];
 }
 
 // Start an OPAQUE password login. Public clients should prefer this flow because
 // the server receives an OPAQUE credential request instead of the plaintext
-// password. Provide exactly one login identifier: `username` or `email`.
+// password. StartLogin binds this request to the selected account.
 message StartOpaqueLoginRequest {
-  oneof identifier {
-    option (buf.validate.oneof).required = true;
-    string username = 1 [(buf.validate.field).string = {max_len: 50}];
-    string email = 2 [(buf.validate.field).string = {max_len: 254}];
-  }
-  bytes credential_request = 3 [(buf.validate.field).bytes = {
+  string login_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  bytes credential_request = 2 [(buf.validate.field).bytes = {
     min_len: 1
     max_len: 4096
   }];
@@ -922,14 +961,13 @@ message FinishOpaqueLoginRequest {
   }];
 }
 
-// Start a passkey login. If username or email is provided, the challenge is
-// bound to that account's passkeys. If both are empty, the challenge uses
-// discoverable credentials with conditional mediation.
+// Start a passkey login. A login session binds the challenge to the selected
+// account. Omitting it starts account-independent discoverable authentication.
 message StartPasskeyLoginRequest {
-  oneof identifier {
-    string username = 1 [(buf.validate.field).string = {max_len: 50}];
-    string email = 2 [(buf.validate.field).string = {max_len: 254}];
-  }
+  optional string login_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
 }
 
 message StartPasskeyLoginResponse {
@@ -1034,11 +1072,60 @@ message DeletePasskeyResponse {
   bool deleted = 1;
 }
 
+message StartTotpSetupRequest {
+  string verification_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message StartTotpSetupResponse {
+  string setup_id = 1;
+  string secret = 2;
+  string otpauth_uri = 3;
+  int64 expires_at = 4;
+}
+
+message FinishTotpSetupRequest {
+  string setup_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  string code = 2 [(buf.validate.field).string = {
+    len: 6
+    pattern: "^[0-9]{6}$"
+  }];
+}
+
+message TotpRecoveryCodesResponse {
+  repeated string recovery_codes = 1;
+}
+
+message RegenerateTotpRecoveryCodesRequest {
+  string verification_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message DeleteTotpRequest {
+  string verification_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message DeleteTotpResponse {
+  bool deleted = 1;
+}
+
 message UserAuthFactors {
   bool password = 1;
   bool webauthn = 2;
   bool email = 3;
   int32 eligible_count = 4;
+  bool totp = 5;
+  uint32 totp_recovery_codes_remaining = 6;
 }
 
 message UserPreferences {
@@ -1065,7 +1152,6 @@ message GetUserPreferencesResponse {
 }
 
 message UpdateUserPreferencesRequest {
-  optional bool two_factor_enabled = 1;
   UserNotificationPreferences notifications = 3;
 }
 
@@ -1074,8 +1160,19 @@ message UpdateUserPreferencesResponse {
   UserAuthFactors auth_factors = 2;
 }
 
+message SetTwoFactorEnabledRequest {
+  bool enabled = 1;
+  string verification_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
 message RequestEmailLoginRequest {
-  string email = 1;
+  string login_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
 }
 
 message RequestEmailLoginResponse {
@@ -1130,6 +1227,28 @@ message FinishMfaPasskeyRequest {
     max_len: 128
   }];
   PasskeyAuthenticationCredential credential = 3 [(buf.validate.field).required = true];
+}
+
+message VerifyMfaTotpRequest {
+  string mfa_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  string code = 2 [(buf.validate.field).string = {
+    len: 6
+    pattern: "^[0-9]{6}$"
+  }];
+}
+
+message VerifyMfaRecoveryCodeRequest {
+  string mfa_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  string recovery_code = 2 [(buf.validate.field).string = {
+    min_len: 12
+    max_len: 32
+  }];
 }
 
 message RefreshTokenRequest {
@@ -4756,6 +4875,7 @@ message GetPublicSettingsResponse {
   bool email_signup_need_review = 19;
   bool enable_email = 24;
   bool enable_webauthn = 25;
+  string webauthn_rp_id = 29;
   bool enable_webauthn_signup = 22;
   bool webauthn_signup_need_review = 23;
   uint64 max_pinned_chat_messages_per_room = 27;

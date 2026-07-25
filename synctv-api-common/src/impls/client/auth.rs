@@ -27,7 +27,18 @@ fn mfa_method_to_proto(method: AuthFactorMethod) -> synctv_proto::client::MfaMet
     match method {
         AuthFactorMethod::Password => synctv_proto::client::MfaMethod::Password,
         AuthFactorMethod::WebAuthn => synctv_proto::client::MfaMethod::Webauthn,
+        AuthFactorMethod::Totp => synctv_proto::client::MfaMethod::Totp,
+        AuthFactorMethod::RecoveryCode => synctv_proto::client::MfaMethod::RecoveryCode,
         AuthFactorMethod::Email => synctv_proto::client::MfaMethod::Email,
+    }
+}
+
+fn login_method_to_proto(method: AuthFactorMethod) -> Option<synctv_proto::client::LoginMethod> {
+    match method {
+        AuthFactorMethod::Password => Some(synctv_proto::client::LoginMethod::Password),
+        AuthFactorMethod::WebAuthn => Some(synctv_proto::client::LoginMethod::Passkey),
+        AuthFactorMethod::Email => Some(synctv_proto::client::LoginMethod::EmailCode),
+        AuthFactorMethod::Totp | AuthFactorMethod::RecoveryCode => None,
     }
 }
 
@@ -162,27 +173,6 @@ fn registration_outcome_to_proto(
     }
 }
 
-fn normalize_optional_identifier(username: &str, email: &str) -> Result<Option<String>, ApiError> {
-    let has_username = !username.trim().is_empty();
-    let has_email = !email.trim().is_empty();
-    if has_username && has_email {
-        return Err(ApiError::InvalidInput(
-            "Provide at most one of username or email".to_string(),
-        ));
-    }
-    if has_email {
-        crate::impls::validation::validate_email(email)
-            .map(Some)
-            .map_err(|error| ApiError::InvalidInput(error.to_string()))
-    } else if has_username {
-        crate::impls::validation::validate_username(username)
-            .map(Some)
-            .map_err(|error| ApiError::InvalidInput(error.to_string()))
-    } else {
-        Ok(None)
-    }
-}
-
 fn nonnegative_token_ttl_seconds(exp: i64, now: i64) -> Result<u64, ApiError> {
     u64::try_from(exp.saturating_sub(now)).map_err(|error: TryFromIntError| {
         ApiError::Internal(format!(
@@ -217,6 +207,52 @@ impl LogoutOutcome {
 }
 
 impl ClientApiImpl {
+    pub async fn start_login_with_control(
+        &self,
+        req: synctv_proto::client::StartLoginRequest,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<synctv_proto::client::StartLoginResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let identifier = match req.identifier {
+            Some(synctv_proto::client::start_login_request::Identifier::Email(email)) => {
+                crate::impls::validation::validate_email(&email)
+                    .map_err(|error| ApiError::InvalidInput(error.to_string()))?
+            }
+            Some(synctv_proto::client::start_login_request::Identifier::Username(username)) => {
+                crate::impls::validation::validate_login_username(&username)
+                    .map_err(|error| ApiError::InvalidInput(error.to_string()))?
+            }
+            None => {
+                return Err(ApiError::InvalidInput(
+                    "Login identifier is required".to_string(),
+                ));
+            }
+        };
+        let challenge = self
+            .user_service
+            .start_login_with_control(
+                identifier,
+                self.email_api.is_some(),
+                self.passkey_service.is_some(),
+                client_ip,
+                control,
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(synctv_proto::client::StartLoginResponse {
+            login_session_id: challenge.session_id,
+            available_methods: challenge
+                .available_methods
+                .into_iter()
+                .filter_map(login_method_to_proto)
+                .map(|method| method as i32)
+                .collect(),
+            expires_at: challenge.expires_at,
+        })
+    }
+
     pub async fn confirm_email_login_with_control(
         &self,
         email_api: Option<&crate::impls::EmailApiImpl>,
@@ -231,11 +267,89 @@ impl ClientApiImpl {
                 synctv_common::messages::EMAIL_SERVICE_UNAVAILABLE.to_string(),
             )
         })?;
-        let result = email_api
-            .confirm_email_login_with_control(&req.email, &req.email_token, client_ip, control)
+        // Read the account binding first so an invalid code leaves the discovery
+        // session available. A valid code is consumed before the atomic session
+        // claim, and credentials are issued only after that claim succeeds.
+        let session = self
+            .user_service
+            .get_login_session_for_method(&req.login_session_id, AuthFactorMethod::Email)
+            .await
+            .map_err(ApiError::from)?;
+        let started_at = std::time::Instant::now();
+        let result = async {
+            match (session.user_id(), session.email()) {
+                (Some(user_id), Some(email)) => {
+                    email_api
+                        .validate_email_login_token_with_control(
+                            &user_id,
+                            &req.email_token,
+                            control,
+                        )
+                        .await?;
+                    self.user_service
+                        .consume_login_session_for_method(
+                            &req.login_session_id,
+                            AuthFactorMethod::Email,
+                        )
+                        .await
+                        .map_err(ApiError::from)?;
+                    email_api
+                        .complete_verified_email_login_with_control(
+                            &user_id, email, client_ip, control,
+                        )
+                        .await
+                }
+                (None, None) => email_api
+                    .reject_decoy_email_login()
+                    .map(|()| unreachable!("decoy email confirmation always fails")),
+                _ => Err(ApiError::Internal(
+                    "Email login session has inconsistent account identity".to_string(),
+                )),
+            }
+        }
+        .await;
+        crate::impls::EmailApiImpl::complete_email_login_timing_with_control(started_at, control)
             .await?;
+        login_outcome_to_proto(result?.login, &self.public_id_codec)
+    }
 
-        login_outcome_to_proto(result.login, &self.public_id_codec)
+    pub async fn request_email_login_with_control(
+        &self,
+        req: synctv_proto::client::RequestEmailLoginRequest,
+        control: Option<&ExecutionControl>,
+    ) -> Result<synctv_proto::client::RequestEmailLoginResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let session = self
+            .user_service
+            .get_login_session_for_method(&req.login_session_id, AuthFactorMethod::Email)
+            .await
+            .map_err(ApiError::from)?;
+        let email_api = self.email_api.as_deref().ok_or_else(|| {
+            ApiError::ServiceUnavailable(
+                synctv_common::messages::EMAIL_SERVICE_UNAVAILABLE.to_string(),
+            )
+        })?;
+        let rate_limit_key = self.user_service.email_login_rate_limit_key(&session);
+        let result = match (session.user_id(), session.email()) {
+            (Some(user_id), Some(email)) => {
+                email_api
+                    .request_email_login_with_control(&user_id, email, &rate_limit_key, control)
+                    .await?
+            }
+            (None, None) => {
+                email_api
+                    .request_decoy_email_login_with_control(&rate_limit_key, control)
+                    .await?
+            }
+            _ => {
+                return Err(ApiError::Internal(
+                    "Email login session has inconsistent account identity".to_string(),
+                ));
+            }
+        };
+        Ok(synctv_proto::client::RequestEmailLoginResponse {
+            message: result.message,
+        })
     }
 
     pub async fn create_guest_token_with_control(
@@ -306,25 +420,14 @@ impl ClientApiImpl {
     ) -> Result<synctv_proto::client::StartOpaqueLoginResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let identifier = match req.identifier {
-            Some(synctv_proto::client::start_opaque_login_request::Identifier::Email(email)) => {
-                crate::impls::validation::validate_email(&email)
-                    .map_err(|e| ApiError::InvalidInput(e.to_string()))?
-            }
-            Some(synctv_proto::client::start_opaque_login_request::Identifier::Username(
-                username,
-            )) => crate::impls::validation::validate_login_username(&username)
-                .map_err(|e| ApiError::InvalidInput(e.to_string()))?,
-            None => {
-                return Err(ApiError::InvalidInput(
-                    "Login identifier is required".to_string(),
-                ));
-            }
-        };
-
         let challenge = self
             .user_service
-            .start_opaque_login_with_control(identifier, req.credential_request, client_ip, control)
+            .start_opaque_login_with_control(
+                &req.login_session_id,
+                req.credential_request,
+                client_ip,
+                control,
+            )
             .await
             .map_err(ApiError::from)?;
 
@@ -342,28 +445,10 @@ impl ClientApiImpl {
     ) -> Result<synctv_proto::client::LoginResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let identifier = match req.identifier {
-            Some(synctv_proto::client::login_with_direct_password_request::Identifier::Email(
-                email,
-            )) => crate::impls::validation::validate_email(&email)
-                .map_err(|e| ApiError::InvalidInput(e.to_string()))?,
-            Some(
-                synctv_proto::client::login_with_direct_password_request::Identifier::Username(
-                    username,
-                ),
-            ) => crate::impls::validation::validate_login_username(&username)
-                .map_err(|e| ApiError::InvalidInput(e.to_string()))?,
-            None => {
-                return Err(ApiError::InvalidInput(
-                    "Login identifier is required".to_string(),
-                ));
-            }
-        };
-
         let outcome = self
             .user_service
             .login_with_direct_password_transport_with_control(
-                identifier,
+                &req.login_session_id,
                 req.password,
                 client_ip,
                 control,
@@ -573,17 +658,31 @@ impl ClientApiImpl {
 
     pub async fn start_passkey_login_challenge_with_control(
         &self,
-        username: String,
-        email: String,
+        login_session_id: Option<&str>,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<PasskeyLoginChallenge, ApiError> {
-        let identifier = normalize_optional_identifier(&username, &email)?;
-        let challenge = self
-            .passkey_service()?
-            .start_login(identifier.as_deref(), client_ip, control)
-            .await
-            .map_err(ApiError::from)?;
+        let challenge = if let Some(login_session_id) = login_session_id {
+            let session = self
+                .user_service
+                .get_login_session_for_method(login_session_id, AuthFactorMethod::WebAuthn)
+                .await
+                .map_err(ApiError::from)?;
+            self.passkey_service()?
+                .start_identified_login(
+                    session.user_id(),
+                    session.brute_force_key(),
+                    client_ip,
+                    control,
+                )
+                .await
+                .map_err(ApiError::from)?
+        } else {
+            self.passkey_service()?
+                .start_discoverable_login(client_ip, control)
+                .await
+                .map_err(ApiError::from)?
+        };
         Ok(PasskeyLoginChallenge {
             session_id: challenge.session_id,
             options: challenge.options,
@@ -597,17 +696,12 @@ impl ClientApiImpl {
         control: Option<&ExecutionControl>,
     ) -> Result<synctv_proto::client::StartPasskeyLoginResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let (username, email) = match req.identifier {
-            Some(synctv_proto::client::start_passkey_login_request::Identifier::Username(
-                username,
-            )) => (username, String::new()),
-            Some(synctv_proto::client::start_passkey_login_request::Identifier::Email(email)) => {
-                (String::new(), email)
-            }
-            None => (String::new(), String::new()),
-        };
         let challenge = self
-            .start_passkey_login_challenge_with_control(username, email, client_ip, control)
+            .start_passkey_login_challenge_with_control(
+                req.login_session_id.as_deref(),
+                client_ip,
+                control,
+            )
             .await?;
         let options = super::passkey::passkey_request_options_to_proto(challenge.options)?;
         Ok(synctv_proto::client::StartPasskeyLoginResponse {
@@ -735,6 +829,41 @@ impl ClientApiImpl {
             control,
         )
         .await
+    }
+
+    pub async fn verify_mfa_totp_with_control(
+        &self,
+        req: synctv_proto::client::VerifyMfaTotpRequest,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<synctv_proto::client::LoginResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let outcome = self
+            .user_service
+            .complete_mfa_totp_with_control(&req.mfa_session_id, &req.code, client_ip, control)
+            .await
+            .map_err(ApiError::from)?;
+        login_outcome_to_proto(outcome, &self.public_id_codec)
+    }
+
+    pub async fn verify_mfa_recovery_code_with_control(
+        &self,
+        req: synctv_proto::client::VerifyMfaRecoveryCodeRequest,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<synctv_proto::client::LoginResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let outcome = self
+            .user_service
+            .complete_mfa_recovery_code_with_control(
+                &req.mfa_session_id,
+                &req.recovery_code,
+                client_ip,
+                control,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        login_outcome_to_proto(outcome, &self.public_id_codec)
     }
 
     pub async fn refresh_token(

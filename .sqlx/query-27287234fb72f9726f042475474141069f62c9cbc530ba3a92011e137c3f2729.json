@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT encrypted_secret, confirmed_at, last_used_step,\n                   recovery_code_hashes AS \"recovery_code_hashes!: Vec<Vec<u8>>\"\n            FROM auth_totp_credentials\n            WHERE user_id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "encrypted_secret",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "auth_totp_credentials",
+            "name": "encrypted_secret"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "confirmed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "auth_totp_credentials",
+            "name": "confirmed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "last_used_step",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "auth_totp_credentials",
+            "name": "last_used_step"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "recovery_code_hashes!: Vec<Vec<u8>>",
+        "type_info": "ByteaArray",
+        "origin": {
+          "Table": {
+            "table": "auth_totp_credentials",
+            "name": "recovery_code_hashes"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "27287234fb72f9726f042475474141069f62c9cbc530ba3a92011e137c3f2729"
+}

@@ -77,6 +77,22 @@ async fn create_user_with_password_fixture(
     Ok(created)
 }
 
+async fn insert_test_passkey(pool: &PgPool, user_id: &UserId, credential_id: &[u8]) {
+    sqlx::query!(
+        r"
+        INSERT INTO auth_webauthn_credentials (
+            user_id, credential_id, passkey, name
+        )
+        VALUES ($1, $2, '{}'::jsonb, 'test passkey')
+        ",
+        user_id.as_i64(),
+        credential_id
+    )
+    .execute(pool)
+    .await
+    .checked("test passkey should be inserted");
+}
+
 const JWT_SECRET: &str = "test-secret-key-for-user-auth-service-tests-long-enough-1234567890";
 
 fn create_jwt_service() -> JwtService {
@@ -696,6 +712,9 @@ async fn opaque_login_outcome(
     identifier: String,
     password: &str,
 ) -> synctv_core::Result<AuthenticatedLogin> {
+    let login_session = service
+        .start_login_with_control(identifier, true, true, None, None)
+        .await?;
     let mut rng = OsRng;
     let client_start = opaque_client_login_start(
         &mut rng,
@@ -704,7 +723,7 @@ async fn opaque_login_outcome(
     );
     let challenge = service
         .start_opaque_login_with_control(
-            identifier,
+            &login_session.session_id,
             client_start.message.serialize().to_vec().into(),
             None,
             None,
@@ -732,6 +751,180 @@ async fn opaque_login_outcome(
         )
         .await?;
     Ok(login)
+}
+
+#[tokio::test]
+async fn test_start_login_reports_account_primary_methods() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(&pool);
+    let suffix = synctv_common::snanoid!(8);
+    let username = format!("login_methods_{suffix}");
+    let email = format!("login_methods_{suffix}@test.com");
+    let user = create_user_with_password_fixture(
+        &pool,
+        username.clone(),
+        Some(email.clone()),
+        "StrongPass1",
+    )
+    .await
+    .checked("password user should be created");
+    insert_test_passkey(&pool, &user.id, format!("credential-{suffix}").as_bytes()).await;
+
+    let challenge = service
+        .start_login_with_control(username, true, true, None, None)
+        .await
+        .checked("login session should start");
+    assert_eq!(
+        challenge.available_methods,
+        vec![
+            AuthFactorMethod::WebAuthn,
+            AuthFactorMethod::Password,
+            AuthFactorMethod::Email,
+        ]
+    );
+    let session = service
+        .get_login_session_for_method(&challenge.session_id, AuthFactorMethod::Email)
+        .await
+        .checked("email method should be available");
+    assert_eq!(session.user_id(), Some(user.id));
+    assert_eq!(session.email(), Some(email.as_str()));
+
+    let password_only = service
+        .start_login_with_control(email, false, false, None, None)
+        .await
+        .checked("server capability filters should be applied");
+    assert_eq!(
+        password_only.available_methods,
+        vec![AuthFactorMethod::Password]
+    );
+
+    let passkey_only_username = format!("passkey_only_{suffix}");
+    let passkey_only_user = UserRepository::new(pool.clone())
+        .create(&User::new(
+            passkey_only_username.clone(),
+            SignupMethod::WebAuthn,
+        ))
+        .await
+        .checked("passkey-only user should be created");
+    insert_test_passkey(
+        &pool,
+        &passkey_only_user.id,
+        format!("passkey-only-credential-{suffix}").as_bytes(),
+    )
+    .await;
+    let passkey_only = service
+        .start_login_with_control(passkey_only_username, true, true, None, None)
+        .await
+        .checked("passkey-only login session should start");
+    assert_eq!(
+        passkey_only.available_methods,
+        vec![AuthFactorMethod::WebAuthn]
+    );
+
+    let email_only_username = format!("email_only_{suffix}");
+    let email_only_address = format!("email_only_{suffix}@test.com");
+    let email_only_user = UserRepository::new(pool.clone())
+        .create(&User::new(email_only_username.clone(), SignupMethod::Email))
+        .await
+        .checked("email-only user should be created");
+    UserEmailRepository::new(pool.clone())
+        .create_for_user_with_executor(&email_only_user, Some(&email_only_address), &pool)
+        .await
+        .checked("email-only identity should be created");
+    let email_only = service
+        .start_login_with_control(email_only_username, true, true, None, None)
+        .await
+        .checked("email-only login session should start");
+    assert_eq!(email_only.available_methods, vec![AuthFactorMethod::Email]);
+
+    let unknown_identifier = format!("missing_{suffix}@test.com");
+    let unknown = service
+        .start_login_with_control(unknown_identifier.clone(), true, true, None, None)
+        .await
+        .checked("unknown identifiers should receive a decoy login session");
+    let repeated_unknown = service
+        .start_login_with_control(unknown_identifier, true, true, None, None)
+        .await
+        .checked("unknown identifier profile should be repeatable");
+    assert_eq!(
+        unknown.available_methods,
+        repeated_unknown.available_methods
+    );
+    assert!(!unknown.available_methods.is_empty());
+    assert!(unknown.available_methods.iter().all(|method| matches!(
+        method,
+        AuthFactorMethod::Password | AuthFactorMethod::WebAuthn | AuthFactorMethod::Email
+    )));
+}
+
+#[tokio::test]
+async fn test_login_session_has_one_atomic_confirmation_claim() {
+    let (_container, pool) = create_test_pool().await;
+    let service = Arc::new(create_user_service(&pool));
+    let suffix = synctv_common::snanoid!(8);
+    let username = format!("email_claim_{suffix}");
+    let email = format!("email_claim_{suffix}@test.com");
+    let user = UserRepository::new(pool.clone())
+        .create(&User::new(username.clone(), SignupMethod::Email))
+        .await
+        .checked("email login user should be created");
+    UserEmailRepository::new(pool.clone())
+        .create_for_user_with_executor(&user, Some(&email), &pool)
+        .await
+        .checked("email identity should be created");
+    let login = service
+        .start_login_with_control(username, true, true, None, None)
+        .await
+        .checked("login session should start");
+
+    let first_service = Arc::clone(&service);
+    let first_session_id = login.session_id.clone();
+    let second_service = Arc::clone(&service);
+    let second_session_id = login.session_id;
+    let (first, second) = tokio::join!(
+        first_service.consume_login_session_for_method(&first_session_id, AuthFactorMethod::Email,),
+        second_service
+            .consume_login_session_for_method(&second_session_id, AuthFactorMethod::Email,),
+    );
+
+    assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+}
+
+#[tokio::test]
+async fn test_opaque_challenge_keeps_identified_login_session_reusable() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(&pool);
+    let suffix = synctv_common::snanoid!(8);
+    let username = format!("opaque_retry_{suffix}");
+    create_user_with_password_fixture(&pool, username.clone(), None, "StrongPass1")
+        .await
+        .checked("password user should be created");
+
+    let login = service
+        .start_login_with_control(username, true, true, None, None)
+        .await
+        .checked("login session should start");
+    let mut rng = OsRng;
+    let client_start = opaque_client_login_start(
+        &mut rng,
+        b"WrongPass1",
+        "client OPAQUE login start should succeed",
+    );
+    let challenge = service
+        .start_opaque_login_with_control(
+            &login.session_id,
+            client_start.message.serialize().to_vec().into(),
+            None,
+            None,
+        )
+        .await
+        .checked("OPAQUE challenge should start");
+
+    assert_ne!(challenge.session_id, login.session_id);
+    service
+        .get_login_session_for_method(&login.session_id, AuthFactorMethod::Password)
+        .await
+        .checked("identified session should remain available for another attempt");
 }
 
 fn expect_complete_login(login: AuthenticatedLogin) -> (synctv_core::models::User, String, String) {

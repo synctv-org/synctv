@@ -1042,41 +1042,38 @@ mod tests {
         let request =
             serde_json::from_str::<crate::client::StartPasskeyLoginRequest>("{}").unwrap();
 
-        assert!(request.identifier.is_none());
+        assert!(request.login_session_id.is_none());
         crate::validate(&request).unwrap();
     }
 
     #[test]
-    fn http_json_login_identifier_transports_accept_flat_fields() {
-        let opaque: crate::client::StartOpaqueLoginRequest =
-            serde_json::from_str(r#"{"email":"alice@example.com","credentialRequest":"AQID"}"#)
-                .expect("OPAQUE login request should deserialize flat email");
+    fn http_json_login_session_transports_accept_flat_fields() {
+        let login: crate::client::StartLoginRequest =
+            serde_json::from_str(r#"{"email":"alice@example.com"}"#)
+                .expect("login discovery request should deserialize flat email");
         assert!(matches!(
-            opaque.identifier,
-            Some(crate::client::start_opaque_login_request::Identifier::Email(ref email))
+            login.identifier,
+            Some(crate::client::start_login_request::Identifier::Email(ref email))
                 if email == "alice@example.com"
         ));
+
+        let opaque: crate::client::StartOpaqueLoginRequest = serde_json::from_str(
+            r#"{"loginSessionId":"login-session","credentialRequest":"AQID"}"#,
+        )
+        .expect("OPAQUE login request should deserialize login session");
+        assert_eq!(opaque.login_session_id, "login-session");
         assert_eq!(opaque.credential_request, vec![1, 2, 3]);
 
         let direct_password: crate::client::LoginWithDirectPasswordRequest =
-            serde_json::from_str(r#"{"username":"alice","password":"StrongPass1"}"#)
-                .expect("direct password login request should deserialize flat username");
-        assert!(matches!(
-            direct_password.identifier,
-            Some(crate::client::login_with_direct_password_request::Identifier::Username(
-                ref username
-            )) if username == "alice"
-        ));
+            serde_json::from_str(r#"{"loginSessionId":"login-session","password":"StrongPass1"}"#)
+                .expect("direct password login request should deserialize login session");
+        assert_eq!(direct_password.login_session_id, "login-session");
         assert_eq!(direct_password.password, "StrongPass1");
 
         let passkey: crate::client::StartPasskeyLoginRequest =
-            serde_json::from_str(r#"{"username":"alice"}"#)
-                .expect("passkey login request should deserialize flat username");
-        assert!(matches!(
-            passkey.identifier,
-            Some(crate::client::start_passkey_login_request::Identifier::Username(ref username))
-                if username == "alice"
-        ));
+            serde_json::from_str(r#"{"loginSessionId":"login-session"}"#)
+                .expect("passkey login request should deserialize login session");
+        assert_eq!(passkey.login_session_id.as_deref(), Some("login-session"));
     }
 
     #[test]
@@ -1094,29 +1091,12 @@ mod tests {
         assert_eq!(direct_registration.password, "StrongPass1");
         crate::validate(&direct_registration).expect("direct registration should validate");
 
-        let direct_username_login: crate::client::LoginWithDirectPasswordRequest =
-            serde_json::from_str(r#"{"username":"alice","password":"StrongPass1"}"#)
-                .expect("direct password username login should deserialize");
-        assert!(matches!(
-            direct_username_login.identifier,
-            Some(crate::client::login_with_direct_password_request::Identifier::Username(
-                ref username
-            )) if username == "alice"
-        ));
-        assert_eq!(direct_username_login.password, "StrongPass1");
-        crate::validate(&direct_username_login)
-            .expect("direct password username login should validate");
-
-        let direct_email_login: crate::client::LoginWithDirectPasswordRequest =
-            serde_json::from_str(r#"{"email":"alice@example.com","password":"StrongPass1"}"#)
-                .expect("direct password email login should deserialize");
-        assert!(matches!(
-            direct_email_login.identifier,
-            Some(crate::client::login_with_direct_password_request::Identifier::Email(ref email))
-                if email == "alice@example.com"
-        ));
-        assert_eq!(direct_email_login.password, "StrongPass1");
-        crate::validate(&direct_email_login).expect("direct password email login should validate");
+        let direct_login: crate::client::LoginWithDirectPasswordRequest =
+            serde_json::from_str(r#"{"loginSessionId":"login-session","password":"StrongPass1"}"#)
+                .expect("direct password login should deserialize");
+        assert_eq!(direct_login.login_session_id, "login-session");
+        assert_eq!(direct_login.password, "StrongPass1");
+        crate::validate(&direct_login).expect("direct password login should validate");
 
         let email_registration: crate::client::RequestEmailRegistrationRequest =
             serde_json::from_str(r#"{"username":"alice","email":"alice@example.com"}"#)
@@ -1879,9 +1859,11 @@ mod tests {
     fn opaque_binary_fields_use_base64_http_json() {
         use base64::{engine::general_purpose::STANDARD, Engine as _};
 
-        let decoded: crate::client::StartOpaqueLoginRequest =
-            serde_json::from_str(r#"{"username":"alice","credentialRequest":"AQID/w=="}"#)
-                .expect("OPAQUE login request should deserialize from base64 bytes");
+        let decoded: crate::client::StartOpaqueLoginRequest = serde_json::from_str(
+            r#"{"loginSessionId":"login-session","credentialRequest":"AQID/w=="}"#,
+        )
+        .expect("OPAQUE login request should deserialize from base64 bytes");
+        assert_eq!(decoded.login_session_id, "login-session");
         assert_eq!(decoded.credential_request, vec![1, 2, 3, 255]);
 
         let decoded: crate::client::StartOpaquePasswordUpdateRequest = serde_json::from_str(
@@ -2114,7 +2096,7 @@ mod tests {
     #[test]
     fn opaque_binary_fields_reject_http_byte_arrays() {
         let error = serde_json::from_str::<crate::client::StartOpaqueLoginRequest>(
-            r#"{"username":"alice","credentialRequest":[1,2,3,255]}"#,
+            r#"{"loginSessionId":"login-session","credentialRequest":[1,2,3,255]}"#,
         )
         .expect_err("OPAQUE binary fields should reject JSON byte arrays");
 

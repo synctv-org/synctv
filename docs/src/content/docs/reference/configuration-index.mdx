@@ -300,6 +300,8 @@ file_storage:
 | `webauthn.rp_origin` | origin | `""` | WebAuthn 主 origin |
 | `webauthn.rp_name` | 字符串 | `SyncTV` | 认证器显示名称 |
 | `webauthn.allowed_origins` | origin 数组 | `[]` | 额外允许 origin |
+| `webauthn.apple_app_ids` | Apple application identifier 数组 | `[]` | 原生 Apple App 的 Web Credentials 关联 |
+| `webauthn.android_apps` | Android App 关联数组 | `[]` | 包名与签名证书 SHA-256 指纹 |
 | `webauthn.allow_subdomains` | 布尔值 | `false` | 是否允许子域 |
 | `webauthn.allow_any_port` | 布尔值 | `false` | 是否忽略端口 |
 | `webauthn.timeout_seconds` | 秒数 | `300` | challenge 超时 |

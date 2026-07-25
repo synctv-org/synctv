@@ -224,6 +224,7 @@ pub(crate) fn apply_env_overrides_with(
         }
             parse_json_into!(HashMap<String, FileStorageBackendConfig>);
             parse_json_into!(HashMap<String, RateLimitScopeRule>);
+            parse_json_into!(Vec<AndroidAppAssociationConfig>);
             Err(ConfigError::Message(format!(
                 "Unsupported environment JSON override target type for {name}"
             )))
@@ -563,6 +564,14 @@ pub(crate) fn apply_env_overrides_with(
         "SYNCTV_WEBAUTHN_ALLOWED_ORIGINS",
         &mut config.webauthn.allowed_origins,
     );
+    env_override_json_or_csv(
+        "SYNCTV_WEBAUTHN_APPLE_APP_IDS",
+        &mut config.webauthn.apple_app_ids,
+    );
+    env_override_json(
+        "SYNCTV_WEBAUTHN_ANDROID_APPS",
+        &mut config.webauthn.android_apps,
+    )?;
     env_override_bool(
         "SYNCTV_WEBAUTHN_ALLOW_SUBDOMAINS",
         &mut config.webauthn.allow_subdomains,

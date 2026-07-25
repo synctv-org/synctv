@@ -258,29 +258,28 @@ pub use time_partition_manager::{
     ensure_time_partitions_on_startup, TimePartitionHealth, TimePartitionManager,
 };
 pub use user::{
-    local_mfa_session_store, local_opaque_login_session_store,
-    local_opaque_registration_session_store, local_sensitive_verification_session_store,
+    local_login_session_store, local_mfa_session_store, local_opaque_registration_session_store,
+    local_sensitive_verification_session_store,
 };
 pub use user::{
-    mfa_session_store_from_shared_state_profile,
-    opaque_login_session_store_from_shared_state_profile,
+    login_session_store_from_shared_state_profile, mfa_session_store_from_shared_state_profile,
     opaque_registration_session_store_from_shared_state_profile,
     sensitive_verification_session_store_from_shared_state_profile,
 };
 pub use user::{
     AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin,
-    CreateUserAvatarUploadSession, MfaChallenge, MfaSession, MfaSessionStore, OpaqueLoginSession,
-    OpaqueLoginSessionStore, OpaqueLoginStartChallenge, OpaquePasswordUpdateVerification,
-    OpaqueRegistrationPurpose, OpaqueRegistrationSession, OpaqueRegistrationSessionStore,
-    OpaqueRegistrationStartChallenge, PendingAccountRegistration, RefreshRateLimitConfig,
-    RegistrationMode, RegistrationPolicy, SensitiveVerificationChallenge,
+    CreateUserAvatarUploadSession, LoginSession, LoginSessionState, LoginSessionStore,
+    LoginStartChallenge, MfaChallenge, MfaSession, MfaSessionStore, OpaqueLoginStartChallenge,
+    OpaquePasswordUpdateVerification, OpaqueRegistrationPurpose, OpaqueRegistrationSession,
+    OpaqueRegistrationSessionStore, OpaqueRegistrationStartChallenge, PendingAccountRegistration,
+    RefreshRateLimitConfig, RegistrationMode, RegistrationPolicy, SensitiveVerificationChallenge,
     SensitiveVerificationOutcome, SensitiveVerificationSession, SensitiveVerificationSessionStore,
-    UserDeletedRoomImpact, UserDeletionSummary, UserService, UserServiceDependencies,
-    UserServiceRuntimeOptions,
+    TotpRecoveryCodes, TotpSetup, UserDeletedRoomImpact, UserDeletionSummary, UserService,
+    UserServiceDependencies, UserServiceRuntimeOptions,
 };
 pub use user::{
-    InMemoryMfaSessionStore, InMemoryOpaqueLoginSessionStore,
-    InMemoryOpaqueRegistrationSessionStore, InMemorySensitiveVerificationSessionStore,
+    InMemoryLoginSessionStore, InMemoryMfaSessionStore, InMemoryOpaqueRegistrationSessionStore,
+    InMemorySensitiveVerificationSessionStore,
 };
 pub use user_notification::{NotificationCreatedEvent, UserNotificationService};
 pub use ws_ticket::{

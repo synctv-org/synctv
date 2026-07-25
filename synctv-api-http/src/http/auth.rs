@@ -14,10 +14,11 @@ use synctv_proto::client::{
     RefreshTokenResponse, RegisterResponse, RegisterWithDirectPasswordRequest,
     RequestEmailLoginRequest, RequestEmailLoginResponse, RequestEmailRegistrationRequest,
     RequestEmailRegistrationResponse, RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse,
-    StartMfaPasskeyRequest, StartMfaPasskeyResponse, StartOpaqueLoginRequest,
-    StartOpaqueLoginResponse, StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse,
-    StartPasskeyLoginRequest, StartPasskeyLoginResponse, StartPasskeyRegistrationRequest,
-    StartPasskeyRegistrationResponse, VerifyMfaEmailCodeRequest,
+    StartLoginRequest, StartLoginResponse, StartMfaPasskeyRequest, StartMfaPasskeyResponse,
+    StartOpaqueLoginRequest, StartOpaqueLoginResponse, StartOpaqueRegistrationRequest,
+    StartOpaqueRegistrationResponse, StartPasskeyLoginRequest, StartPasskeyLoginResponse,
+    StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse, VerifyMfaEmailCodeRequest,
+    VerifyMfaRecoveryCodeRequest, VerifyMfaTotpRequest,
 };
 
 /// Extract the real client IP from a request.
@@ -225,6 +226,47 @@ pub async fn login_with_direct_password(
                 let req = parse_auth_json::<LoginWithDirectPasswordRequest>(request).await?;
                 client_api
                     .login_with_direct_password_with_control(req, client_ip, Some(&request_control))
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+/// Identify an account and return its currently usable primary login methods.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/login/start",
+        tag = "Auth",
+        request_body = StartLoginRequest,
+        responses(
+            (status = 200, description = "Login session created", body = StartLoginResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
+        )
+    )
+)]
+pub async fn start_login(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<StartLoginResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<StartLoginRequest>(request).await?;
+                client_api
+                    .start_login_with_control(req, client_ip, Some(&request_control))
                     .await
             },
         )
@@ -617,18 +659,18 @@ pub async fn request_email_login(
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
                 let req = parse_auth_json::<RequestEmailLoginRequest>(request).await?;
-                let email_api = require_email_api(&state_for_request)?;
-                email_api
-                    .request_email_login_with_control(&req.email, Some(&request_control))
+                require_email_api(&state_for_request)?;
+                state_for_request
+                    .shared_api_runtime
+                    .client_api
+                    .request_email_login_with_control(req, Some(&request_control))
                     .await
             },
         )
         .await
         .map_err(super::error::map_api_error)?;
 
-    Ok(Json(RequestEmailLoginResponse {
-        message: result.message,
-    }))
+    Ok(Json(result))
 }
 
 #[cfg_attr(
@@ -890,6 +932,88 @@ pub async fn finish_mfa_passkey(
         .await
         .map_err(super::error::map_api_error)?;
 
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/mfa/totp/verify",
+        tag = "Auth",
+        request_body = VerifyMfaTotpRequest,
+        responses(
+            (status = 200, description = "TOTP MFA verified", body = LoginResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Invalid MFA challenge or authenticator code", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
+        )
+    )
+)]
+pub async fn verify_mfa_totp(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<LoginResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = state
+        .shared_api_runtime
+        .client_api
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<VerifyMfaTotpRequest>(request).await?;
+                client_api
+                    .verify_mfa_totp_with_control(req, client_ip, Some(&request_control))
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/mfa/recovery-code/verify",
+        tag = "Auth",
+        request_body = VerifyMfaRecoveryCodeRequest,
+        responses(
+            (status = 200, description = "Recovery-code MFA verified", body = LoginResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Invalid MFA challenge or recovery code", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 413, description = "Request body exceeds the 64 KB limit", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
+        )
+    )
+)]
+pub async fn verify_mfa_recovery_code(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<LoginResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = state
+        .shared_api_runtime
+        .client_api
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<VerifyMfaRecoveryCodeRequest>(request).await?;
+                client_api
+                    .verify_mfa_recovery_code_with_control(req, client_ip, Some(&request_control))
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
     Ok(Json(response))
 }
 

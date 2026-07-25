@@ -1333,18 +1333,25 @@ async fn opaque_grpc_login(
     username: &str,
     password: &str,
 ) -> synctv_proto::client::LoginResponse {
-    use synctv_proto::client::{FinishOpaqueLoginRequest, StartOpaqueLoginRequest};
+    use synctv_proto::client::{
+        start_login_request, FinishOpaqueLoginRequest, StartLoginRequest, StartOpaqueLoginRequest,
+    };
 
+    let login_session = auth_client
+        .start_login(StartLoginRequest {
+            identifier: Some(start_login_request::Identifier::Username(
+                username.to_string(),
+            )),
+        })
+        .await
+        .expect("gRPC login session start should succeed")
+        .into_inner();
     let mut rng = OsRng;
     let client_start = ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
         .expect("client OPAQUE login start should succeed");
     let challenge = auth_client
         .start_opaque_login(StartOpaqueLoginRequest {
-            identifier: Some(
-                synctv_proto::client::start_opaque_login_request::Identifier::Username(
-                    username.to_string(),
-                ),
-            ),
+            login_session_id: login_session.login_session_id,
             credential_request: client_start.message.serialize().to_vec().into(),
         })
         .await
@@ -1597,10 +1604,32 @@ async fn opaque_http_login_token(
     password: &str,
 ) -> Result<String, String> {
     use synctv_proto::client::{
-        start_opaque_login_request::Identifier, FinishOpaqueLoginRequest, StartOpaqueLoginRequest,
+        start_login_request::Identifier, FinishOpaqueLoginRequest, StartLoginRequest,
+        StartOpaqueLoginRequest,
     };
 
     let client = test_http_client();
+    let login_session = post_json(
+        &client,
+        &format!("{}/api/auth/login/start", server.api_base_url),
+        StartLoginRequest {
+            identifier: Some(Identifier::Username(username.to_string())),
+        },
+        None,
+    )
+    .await;
+    let login_session_status = login_session.status();
+    if login_session_status != StatusCode::OK {
+        let body = response_json(login_session).await;
+        return Err(format!(
+            "login session start for {username} failed with {login_session_status}: {body}"
+        ));
+    }
+    let login_session = response_json(login_session).await;
+    let login_session_id = login_session["loginSessionId"]
+        .as_str()
+        .expect("login session start should return login_session_id")
+        .to_string();
     let mut rng = OsRng;
     let client_start = ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
         .expect("client OPAQUE login start should succeed");
@@ -1608,7 +1637,7 @@ async fn opaque_http_login_token(
         &client,
         &format!("{}/api/auth/opaque/login/start", server.api_base_url),
         StartOpaqueLoginRequest {
-            identifier: Some(Identifier::Username(username.to_string())),
+            login_session_id,
             credential_request: client_start.message.serialize().to_vec().into(),
         },
         None,

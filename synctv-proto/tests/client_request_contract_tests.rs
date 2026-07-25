@@ -108,15 +108,37 @@ fn test_upload_object_content_type_is_optional() {
 }
 
 #[test]
+fn two_factor_changes_use_the_verified_security_request() {
+    let preference_update = synctv_proto::DESCRIPTOR_POOL
+        .get_message_by_name("synctv.client.UpdateUserPreferencesRequest")
+        .expect("UpdateUserPreferencesRequest descriptor should exist");
+    assert!(
+        preference_update
+            .get_field_by_name("two_factor_enabled")
+            .is_none(),
+        "ordinary preference updates cannot change two-factor authentication"
+    );
+
+    let security_update = synctv_proto::DESCRIPTOR_POOL
+        .get_message_by_name("synctv.client.SetTwoFactorEnabledRequest")
+        .expect("SetTwoFactorEnabledRequest descriptor should exist");
+    assert!(security_update.get_field_by_name("enabled").is_some());
+    assert!(security_update
+        .get_field_by_name("verification_id")
+        .is_some());
+}
+
+#[test]
 fn test_protojson_deserialization_uses_lower_camel_case_fields() {
     let request: StartOpaqueLoginRequest =
-        serde_json::from_str(r#"{"username":"alice","credentialRequest":"AQID"}"#)
+        serde_json::from_str(r#"{"loginSessionId":"login-session","credentialRequest":"AQID"}"#)
             .expect("lowerCamelCase ProtoJSON request should deserialize");
 
+    assert_eq!(request.login_session_id, "login-session");
     assert_eq!(request.credential_request.as_ref(), b"\x01\x02\x03");
 
     let error = serde_json::from_str::<StartOpaqueLoginRequest>(
-        r#"{"username":"alice","credential_request":"AQID"}"#,
+        r#"{"loginSessionId":"login-session","credential_request":"AQID"}"#,
     )
     .expect_err("snake_case field names should be rejected");
     assert!(error.to_string().contains("credential_request"));

@@ -1676,6 +1676,72 @@ async fn test_api_root_redirects_to_configured_project_url() -> TestResult {
 }
 
 #[tokio::test]
+async fn test_native_passkey_association_documents_are_served_from_config() -> TestResult {
+    let mut state = test_app_state();
+    let server =
+        &mut Arc::make_mut(&mut Arc::make_mut(&mut state.router_options).runtime_settings).server;
+    server.apple_app_ids = vec!["85KBWFQ6F6.org.synctv.app".to_string()];
+    server.android_apps = vec![synctv_api_common::AndroidAppAssociationSettings {
+        package_name: "org.synctv.app".to_string(),
+        sha256_cert_fingerprints: vec![
+            "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899".to_string(),
+        ],
+    }];
+    let app = super::create_router_from_shared_state(&state)?;
+
+    let apple_response = test_response(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/apple-app-site-association")
+                    .body(Body::empty())?,
+            )
+            .await,
+    )?;
+    assert_eq!(apple_response.status(), StatusCode::OK);
+    assert_eq!(
+        apple_response.headers().get(header::CONTENT_TYPE),
+        Some(&HeaderValue::from_static("application/json"))
+    );
+    assert_eq!(
+        apple_response.headers().get(header::CACHE_CONTROL),
+        Some(&HeaderValue::from_static("public, max-age=300"))
+    );
+    let apple_body = apple_response.into_body().collect().await?.to_bytes();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&apple_body)?,
+        serde_json::json!({
+            "webcredentials": {"apps": ["85KBWFQ6F6.org.synctv.app"]}
+        })
+    );
+
+    let android_response = test_response(
+        app.oneshot(
+            Request::builder()
+                .uri("/.well-known/assetlinks.json")
+                .body(Body::empty())?,
+        )
+        .await,
+    )?;
+    assert_eq!(android_response.status(), StatusCode::OK);
+    let android_body = android_response.into_body().collect().await?.to_bytes();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&android_body)?,
+        serde_json::json!([{
+            "relation": ["delegate_permission/common.get_login_creds"],
+            "target": {
+                "namespace": "android_app",
+                "package_name": "org.synctv.app",
+                "sha256_cert_fingerprints": [
+                    "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+                ]
+            }
+        }])
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_playback_navigation_routes_are_reachable_via_project_router() -> TestResult {
     synctv_core::install_process_crypto_provider();
     for (method, uri, body) in [
@@ -2194,15 +2260,18 @@ async fn test_opaque_login_routes_are_registered() -> TestResult {
 }
 
 #[tokio::test]
-async fn test_direct_password_and_email_registration_routes_are_registered() -> TestResult {
+async fn test_password_email_and_totp_auth_routes_are_registered() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
 
     for uri in [
+        "/api/auth/login/start",
         "/api/auth/direct-password/register",
         "/api/auth/direct-password/login",
         "/api/auth/email/registration/request",
         "/api/auth/email/registration/confirm",
+        "/api/auth/mfa/totp/verify",
+        "/api/auth/mfa/recovery-code/verify",
     ] {
         let request = test_request(
             Request::builder()
@@ -2253,7 +2322,7 @@ async fn test_passkey_login_routes_fail_closed_when_service_missing() -> TestRes
 }
 
 #[tokio::test]
-async fn test_passkey_user_routes_are_registered_and_require_authentication() -> TestResult {
+async fn test_account_security_routes_are_registered_and_require_authentication() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
 
@@ -2262,7 +2331,12 @@ async fn test_passkey_user_routes_are_registered_and_require_authentication() ->
         (
             "PATCH",
             "/api/user/preferences",
-            Some(r#"{"twoFactorEnabled":true}"#),
+            Some(r#"{"notifications":{"roomEventInApp":true}}"#),
+        ),
+        (
+            "PUT",
+            "/api/user/two-factor",
+            Some(r#"{"enabled":true,"verificationId":"verification-id"}"#),
         ),
         ("GET", "/api/user/passkeys", None),
         (
@@ -2280,6 +2354,26 @@ async fn test_passkey_user_routes_are_registered_and_require_authentication() ->
         (
             "DELETE",
             "/api/user/passkeys/Y3JlZGVudGlhbA",
+            Some(r#"{"verificationId":"verification-id"}"#),
+        ),
+        (
+            "POST",
+            "/api/user/totp/setup/start",
+            Some(r#"{"verificationId":"verification-id"}"#),
+        ),
+        (
+            "POST",
+            "/api/user/totp/setup/finish",
+            Some(r#"{"setupId":"setup-id","code":"123456"}"#),
+        ),
+        (
+            "POST",
+            "/api/user/totp/recovery-codes/regenerate",
+            Some(r#"{"verificationId":"verification-id"}"#),
+        ),
+        (
+            "DELETE",
+            "/api/user/totp",
             Some(r#"{"verificationId":"verification-id"}"#),
         ),
         (
@@ -2930,10 +3024,17 @@ async fn test_openapi_json_route_is_available() -> TestResult {
     assert!(json["paths"]["/api/auth/email/confirm"].is_object());
     assert!(json["paths"]["/api/auth/direct-password/register"].is_object());
     assert!(json["paths"]["/api/auth/direct-password/login"].is_object());
+    assert!(json["paths"]["/api/auth/login/start"].is_object());
     assert!(json["paths"]["/api/auth/email/registration/request"].is_object());
     assert!(json["paths"]["/api/auth/email/registration/confirm"].is_object());
+    assert!(json["paths"]["/api/auth/mfa/totp/verify"].is_object());
+    assert!(json["paths"]["/api/auth/mfa/recovery-code/verify"].is_object());
     assert!(json["paths"]["/api/tickets"].is_object());
     assert!(json["paths"]["/api/user"].is_object());
+    assert!(json["paths"]["/api/user/totp/setup/start"].is_object());
+    assert!(json["paths"]["/api/user/totp/setup/finish"].is_object());
+    assert!(json["paths"]["/api/user/totp/recovery-codes/regenerate"].is_object());
+    assert!(json["paths"]["/api/user/totp"].is_object());
     assert!(json["paths"]["/api/rooms/{roomId}/media"].is_object());
     assert!(json["paths"]["/api/admin/users"].is_object());
     assert!(json["paths"]["/api/rooms/{roomId}/webrtc/ice-servers"].is_object());

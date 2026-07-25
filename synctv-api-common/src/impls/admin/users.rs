@@ -344,12 +344,12 @@ impl AdminApiImpl {
         crate::impls::validate_proto_request(&req)?;
         let uid =
             crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
-        let update = crate::impls::client::user_preferences_update_from_proto(
+        let mut update = crate::impls::client::user_preferences_update_from_proto(
             synctv_proto::client::UpdateUserPreferencesRequest {
-                two_factor_enabled: req.two_factor_enabled,
                 notifications: req.notifications,
             },
         );
+        update.two_factor_enabled = req.two_factor_enabled;
         if update.is_empty() {
             return Err(ApiError::InvalidInput(
                 "No valid user preference fields provided".to_string(),

@@ -42,13 +42,15 @@ impl UserPreferencesUpdate {
 pub struct UserAuthFactors {
     pub password: bool,
     pub webauthn: bool,
+    pub totp: bool,
+    pub totp_recovery_codes_remaining: u32,
     pub email: bool,
 }
 
 impl UserAuthFactors {
     #[must_use]
     pub const fn eligible_count(&self) -> usize {
-        self.password as usize + self.webauthn as usize + self.email as usize
+        self.password as usize + self.webauthn as usize + self.totp as usize + self.email as usize
     }
 
     #[must_use]
@@ -86,18 +88,24 @@ mod tests {
         assert!(!UserAuthFactors {
             password: true,
             webauthn: false,
+            totp: false,
+            totp_recovery_codes_remaining: 0,
             email: false,
         }
         .supports_two_factor());
         assert!(UserAuthFactors {
             password: true,
             webauthn: true,
+            totp: false,
+            totp_recovery_codes_remaining: 0,
             email: false,
         }
         .supports_two_factor());
         assert!(UserAuthFactors {
             password: false,
             webauthn: true,
+            totp: false,
+            totp_recovery_codes_remaining: 0,
             email: true,
         }
         .supports_two_factor());

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
 use crate::{
@@ -9,8 +10,8 @@ use crate::{
     },
     repository::{
         realtime_outbox::RealtimeOutboxRepository, EmailBindRepository,
-        EmailRegistrationTokenRepository, UserEmailRepository, UserPasswordRepository,
-        UserPreferencesRepository, UserRepository,
+        EmailRegistrationTokenRepository, TotpCredentialRepository, UserEmailRepository,
+        UserPasswordRepository, UserPreferencesRepository, UserRepository,
     },
     service::{file_storage::FileStorageService, PermissionService, RequestRateLimiterService},
     service::{
@@ -49,6 +50,7 @@ pub struct UserService {
     email_bind_repository: EmailBindRepository,
     email_registration_token_repository: EmailRegistrationTokenRepository,
     pub(crate) user_preferences_repository: UserPreferencesRepository,
+    pub(crate) totp_credential_repository: TotpCredentialRepository,
     jwt_service: JwtService,
     username_cache: UsernameCache,
     cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
@@ -62,13 +64,15 @@ pub struct UserService {
     password_registration_policy_override: Option<RegistrationPolicy>,
     password_complexity: PasswordComplexityOptions,
     opaque_password_service: Arc<OpaquePasswordService>,
-    opaque_login_session_store: Arc<dyn OpaqueLoginSessionStore>,
+    login_discovery_key: [u8; 32],
+    login_session_store: Arc<dyn LoginSessionStore>,
     opaque_registration_session_store: Arc<dyn OpaqueRegistrationSessionStore>,
     mfa_session_store: Arc<dyn MfaSessionStore>,
     sensitive_verification_session_store: Arc<dyn SensitiveVerificationSessionStore>,
     permission_service: Option<PermissionService>,
     consistency: ConsistencyCoordinator,
     file_storage_service: Option<Arc<dyn FileStorageService>>,
+    credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
 }
 
 pub struct UserServiceRuntimeOptions {
@@ -82,7 +86,8 @@ pub struct UserServiceRuntimeOptions {
     /// Composition roots for real deployments must inject a service derived from
     /// the configured `security.opaque_server_setup_secret`.
     pub opaque_password_service: Arc<OpaquePasswordService>,
-    pub opaque_login_session_store: Arc<dyn OpaqueLoginSessionStore>,
+    pub login_discovery_key: [u8; 32],
+    pub login_session_store: Arc<dyn LoginSessionStore>,
     pub opaque_registration_session_store: Arc<dyn OpaqueRegistrationSessionStore>,
     pub mfa_session_store: Arc<dyn MfaSessionStore>,
     pub sensitive_verification_session_store: Arc<dyn SensitiveVerificationSessionStore>,
@@ -91,9 +96,15 @@ pub struct UserServiceRuntimeOptions {
     pub version_fence: Arc<dyn VersionFenceStore>,
     pub file_storage_service: Option<Arc<dyn FileStorageService>>,
     pub read_pool: Option<PgPool>,
+    pub credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
 }
 
 impl UserServiceRuntimeOptions {
+    #[must_use]
+    pub fn derive_login_discovery_key(secret: &[u8]) -> [u8; 32] {
+        Sha256::digest([b"synctv:login-discovery-profile:v1:".as_slice(), secret].concat()).into()
+    }
+
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
     pub fn test_defaults() -> Self {
@@ -106,7 +117,10 @@ impl UserServiceRuntimeOptions {
             runtime_settings_store: None,
             password_registration_policy_override: None,
             opaque_password_service: Arc::new(OpaquePasswordService::new_ephemeral_for_process()),
-            opaque_login_session_store: crate::service::local_opaque_login_session_store(),
+            login_discovery_key: Self::derive_login_discovery_key(
+                b"synctv-test-login-discovery-secret",
+            ),
+            login_session_store: crate::service::local_login_session_store(),
             opaque_registration_session_store:
                 crate::service::local_opaque_registration_session_store(),
             mfa_session_store: crate::service::local_mfa_session_store(),
@@ -117,6 +131,10 @@ impl UserServiceRuntimeOptions {
             version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
             file_storage_service: None,
             read_pool: None,
+            credential_encryption: Some(
+                crate::credential_encryption::CredentialEncryption::new(&[0x42; 32])
+                    .expect("fixed test credential encryption key is valid"),
+            ),
         }
     }
 }
@@ -164,28 +182,28 @@ pub use registration_types::{
 };
 mod session_types;
 pub use session_types::{
-    AuthFactorMethod, AuthenticatedLogin, MfaChallenge, MfaSession, OpaqueLoginSession,
-    OpaqueLoginStartChallenge, OpaquePasswordUpdateVerification, OpaqueRegistrationPurpose,
-    OpaqueRegistrationSession, OpaqueRegistrationStartChallenge, SensitiveVerificationChallenge,
-    SensitiveVerificationOutcome, SensitiveVerificationSession,
+    AuthFactorMethod, AuthenticatedLogin, LoginSession, LoginSessionState, LoginStartChallenge,
+    MfaChallenge, MfaSession, OpaqueLoginStartChallenge, OpaquePasswordUpdateVerification,
+    OpaqueRegistrationPurpose, OpaqueRegistrationSession, OpaqueRegistrationStartChallenge,
+    SensitiveVerificationChallenge, SensitiveVerificationOutcome, SensitiveVerificationSession,
 };
 mod tokens;
+mod totp;
 pub use session_stores::{
-    local_mfa_session_store, local_opaque_login_session_store,
-    local_opaque_registration_session_store, local_sensitive_verification_session_store,
+    local_login_session_store, local_mfa_session_store, local_opaque_registration_session_store,
+    local_sensitive_verification_session_store,
 };
 pub use session_stores::{
-    mfa_session_store_from_shared_state_profile,
-    opaque_login_session_store_from_shared_state_profile,
+    login_session_store_from_shared_state_profile, mfa_session_store_from_shared_state_profile,
     opaque_registration_session_store_from_shared_state_profile,
     sensitive_verification_session_store_from_shared_state_profile,
 };
 pub use session_stores::{
-    InMemoryMfaSessionStore, InMemoryOpaqueLoginSessionStore,
-    InMemoryOpaqueRegistrationSessionStore, InMemorySensitiveVerificationSessionStore,
-    MfaSessionStore, OpaqueLoginSessionStore, OpaqueRegistrationSessionStore,
-    SensitiveVerificationSessionStore,
+    InMemoryLoginSessionStore, InMemoryMfaSessionStore, InMemoryOpaqueRegistrationSessionStore,
+    InMemorySensitiveVerificationSessionStore, LoginSessionStore, MfaSessionStore,
+    OpaqueRegistrationSessionStore, SensitiveVerificationSessionStore,
 };
+pub use totp::{TotpRecoveryCodes, TotpSetup};
 
 #[cfg(test)]
 mod tests;

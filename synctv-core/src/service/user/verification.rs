@@ -122,9 +122,15 @@ impl UserService {
         auth_factors: &UserAuthFactors,
         first_factor: AuthFactorMethod,
     ) -> Vec<AuthFactorMethod> {
-        let mut methods = Vec::with_capacity(3);
+        let mut methods = Vec::with_capacity(4);
         if auth_factors.webauthn && first_factor != AuthFactorMethod::WebAuthn {
             methods.push(AuthFactorMethod::WebAuthn);
+        }
+        if auth_factors.totp {
+            methods.push(AuthFactorMethod::Totp);
+            if auth_factors.totp_recovery_codes_remaining > 0 {
+                methods.push(AuthFactorMethod::RecoveryCode);
+            }
         }
         if auth_factors.email && first_factor != AuthFactorMethod::Email {
             methods.push(AuthFactorMethod::Email);
@@ -219,40 +225,55 @@ impl UserService {
     pub async fn login_with_verified_email(
         &self,
         user_id: &UserId,
+        expected_email: &str,
         brute_force_key: &str,
         client_ip: Option<IpAddr>,
     ) -> Result<AuthenticatedLogin> {
-        self.login_with_verified_email_with_control(user_id, brute_force_key, client_ip, None)
-            .await
+        self.login_with_verified_email_with_control(
+            user_id,
+            expected_email,
+            brute_force_key,
+            client_ip,
+            None,
+        )
+        .await
     }
 
     pub async fn login_with_verified_email_with_control(
         &self,
         user_id: &UserId,
+        expected_email: &str,
         brute_force_key: &str,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<AuthenticatedLogin> {
+        let mut tx = self.repository.pool().begin().await?;
         let user = self
             .repository
-            .get_by_id(user_id)
+            .get_by_id_for_update_with_executor(user_id, &mut *tx)
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
         let email = self
             .user_email_repository
-            .get_email(&user.id)
+            .get_email_with_executor(&user.id, &mut *tx)
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        if !email.eq_ignore_ascii_case(expected_email) {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
 
-        self.complete_authenticated_login_with_control(
-            user,
-            AuthFactorMethod::Email,
-            TokenCredentialBinding::Email { email },
-            brute_force_key,
-            client_ip,
-            control,
-        )
-        .await
+        let login = self
+            .complete_authenticated_login_with_control(
+                user,
+                AuthFactorMethod::Email,
+                TokenCredentialBinding::Email { email },
+                brute_force_key,
+                client_ip,
+                control,
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(login)
     }
 
     pub async fn get_mfa_challenge(&self, session_id: &str) -> Result<MfaChallenge> {

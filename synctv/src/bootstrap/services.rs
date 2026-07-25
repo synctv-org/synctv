@@ -727,6 +727,7 @@ pub async fn init_services_with_options(
         init_credential_encryption(runtime_options.credential_encryption_key.as_deref())?;
     // Keep a clone for provider credential resolution during media playback.
     let credential_encryption_for_services = credential_encryption.clone();
+    let credential_encryption_for_users = credential_encryption.clone();
 
     // Initialize ProviderInstanceRepository (with optional encryption for jwt_secret/custom_ca)
     let provider_instance_repo = match &credential_encryption {
@@ -1079,8 +1080,15 @@ pub async fn init_services_with_options(
             password_registration_policy_override: None,
             realtime_outbox: runtime_options.realtime_outbox.clone(),
             opaque_password_service: opaque_password_service.clone(),
-            opaque_login_session_store:
-                synctv_core::service::opaque_login_session_store_from_shared_state_profile(
+            login_discovery_key:
+                synctv_core::service::UserServiceRuntimeOptions::derive_login_discovery_key(
+                    service_options
+                        .security
+                        .opaque_server_setup_secret
+                        .as_bytes(),
+                ),
+            login_session_store:
+                synctv_core::service::login_session_store_from_shared_state_profile(
                     &shared_state_profile,
                 )?,
             opaque_registration_session_store:
@@ -1098,6 +1106,7 @@ pub async fn init_services_with_options(
             permission_service: Some(user_permission_service),
             file_storage_service: Some(user_avatar_file_storage),
             read_pool: Some(read_pool.clone()),
+            credential_encryption: credential_encryption_for_users,
         },
     ));
     info!("UserService initialized with construction-time dependencies");

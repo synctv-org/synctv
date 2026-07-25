@@ -292,6 +292,12 @@ webauthn:
   rp_name: "SyncTV"
   allowed_origins:
     - "https://admin.example.com"
+  apple_app_ids:
+    - "ABCDE12345.org.example.app"
+  android_apps:
+    - package_name: "org.example.app"
+      sha256_cert_fingerprints:
+        - "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
   allow_subdomains: false
   allow_any_port: false
   timeout_seconds: 300

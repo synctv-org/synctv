@@ -46,10 +46,37 @@ impl UserService {
         .await
     }
 
+    pub async fn set_two_factor_enabled_with_verification(
+        &self,
+        user_id: &UserId,
+        enabled: bool,
+        verification_id: &str,
+    ) -> Result<(UserPreferences, UserAuthFactors)> {
+        self.update_user_preferences_inner(
+            user_id,
+            crate::models::UserPreferencesUpdate {
+                two_factor_enabled: Some(enabled),
+                ..crate::models::UserPreferencesUpdate::default()
+            },
+            Some(verification_id),
+        )
+        .await
+    }
+
     pub async fn update_user_preferences(
         &self,
         user_id: &UserId,
         update: crate::models::UserPreferencesUpdate,
+    ) -> Result<(UserPreferences, UserAuthFactors)> {
+        self.update_user_preferences_inner(user_id, update, None)
+            .await
+    }
+
+    async fn update_user_preferences_inner(
+        &self,
+        user_id: &UserId,
+        update: crate::models::UserPreferencesUpdate,
+        verification_id: Option<&str>,
     ) -> Result<(UserPreferences, UserAuthFactors)> {
         let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
         self.repository
@@ -63,8 +90,13 @@ impl UserService {
             .await?;
         if update.two_factor_enabled == Some(true) && !auth_factors.supports_two_factor() {
             return Err(Error::InvalidInput(
-                "Two-factor authentication requires at least two usable verification methods: password, passkey, or verified email".to_string(),
+                "Two-factor authentication requires at least two usable verification methods: password, passkey, authenticator app, or verified email".to_string(),
             ));
+        }
+
+        if let Some(verification_id) = verification_id {
+            self.consume_sensitive_operation_verification(user_id, verification_id)
+                .await?;
         }
 
         let preferences = self

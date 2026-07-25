@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE auth_totp_credentials SET setup_expires_at = NOW() - INTERVAL '1 second' WHERE user_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b413c64d775aee9986ff5f2c2f234b46ee5f62d50feb6f23d2f946ad26f8ddae"
+}

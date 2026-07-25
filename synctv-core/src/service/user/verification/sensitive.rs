@@ -15,16 +15,42 @@ use super::super::session_types::{
 };
 
 impl UserService {
+    fn sensitive_verification_remaining_ttl(expires_at: i64, now: i64) -> Result<Duration> {
+        let remaining = expires_at.saturating_sub(now);
+        let remaining = u64::try_from(remaining)
+            .ok()
+            .filter(|remaining| *remaining > 0)
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        Ok(Duration::from_secs(remaining))
+    }
+
+    fn validate_sensitive_verification_session(
+        session: &SensitiveVerificationSession,
+    ) -> Result<Duration> {
+        Self::sensitive_verification_remaining_ttl(
+            session.expires_at,
+            crate::SystemClock.now().timestamp(),
+        )
+    }
+
     fn sensitive_available_methods(
         auth_factors: &UserAuthFactors,
         completed_methods: &[AuthFactorMethod],
     ) -> Vec<AuthFactorMethod> {
-        let mut methods = Vec::with_capacity(3);
+        let mut methods = Vec::with_capacity(5);
         if auth_factors.password && !completed_methods.contains(&AuthFactorMethod::Password) {
             methods.push(AuthFactorMethod::Password);
         }
         if auth_factors.webauthn && !completed_methods.contains(&AuthFactorMethod::WebAuthn) {
             methods.push(AuthFactorMethod::WebAuthn);
+        }
+        let totp_completed = completed_methods.contains(&AuthFactorMethod::Totp)
+            || completed_methods.contains(&AuthFactorMethod::RecoveryCode);
+        if auth_factors.totp && !totp_completed {
+            methods.push(AuthFactorMethod::Totp);
+            if auth_factors.totp_recovery_codes_remaining > 0 {
+                methods.push(AuthFactorMethod::RecoveryCode);
+            }
         }
         if auth_factors.email && !completed_methods.contains(&AuthFactorMethod::Email) {
             methods.push(AuthFactorMethod::Email);
@@ -33,12 +59,18 @@ impl UserService {
     }
 
     fn sensitive_required_methods(auth_factors: &UserAuthFactors) -> Vec<AuthFactorMethod> {
-        let mut methods = Vec::with_capacity(3);
+        let mut methods = Vec::with_capacity(5);
         if auth_factors.password {
             methods.push(AuthFactorMethod::Password);
         }
         if auth_factors.webauthn {
             methods.push(AuthFactorMethod::WebAuthn);
+        }
+        if auth_factors.totp {
+            methods.push(AuthFactorMethod::Totp);
+            if auth_factors.totp_recovery_codes_remaining > 0 {
+                methods.push(AuthFactorMethod::RecoveryCode);
+            }
         }
         if auth_factors.email {
             methods.push(AuthFactorMethod::Email);
@@ -158,6 +190,7 @@ impl UserService {
             .get(session_id)
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        Self::validate_sensitive_verification_session(&session)?;
         let user = self
             .repository
             .get_by_id(&session.user_id)
@@ -188,6 +221,7 @@ impl UserService {
             .get(session_id)
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        Self::validate_sensitive_verification_session(&session)?;
         if session
             .completed_methods
             .contains(&AuthFactorMethod::Password)
@@ -252,6 +286,7 @@ impl UserService {
             .consume(session_id)
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        let remaining_ttl = Self::validate_sensitive_verification_session(&session)?;
         let user = self
             .repository
             .get_by_id(&session.user_id)
@@ -271,20 +306,12 @@ impl UserService {
         if session.completed_methods.len() >= session.required_count {
             let verification_id = synctv_common::snanoid!(48);
             self.sensitive_verification_session_store
-                .store(
-                    &verification_id,
-                    &session,
-                    Duration::from_secs(SENSITIVE_VERIFICATION_SESSION_TTL_SECS),
-                )
+                .store(&verification_id, &session, remaining_ttl)
                 .await?;
             return Ok(SensitiveVerificationOutcome::Complete { verification_id });
         }
         self.sensitive_verification_session_store
-            .store(
-                session_id,
-                &session,
-                Duration::from_secs(SENSITIVE_VERIFICATION_SESSION_TTL_SECS),
-            )
+            .store(session_id, &session, remaining_ttl)
             .await?;
         let challenge = self
             .sensitive_challenge_from_session(session_id, &session)
@@ -302,6 +329,7 @@ impl UserService {
             .consume(verification_id)
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        Self::validate_sensitive_verification_session(&session)?;
         if session.user_id != *user_id || session.completed_methods.len() < session.required_count {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
@@ -312,6 +340,17 @@ impl UserService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sensitive_verification_ttl_uses_absolute_deadline() {
+        assert_eq!(
+            UserService::sensitive_verification_remaining_ttl(1_300, 1_250)
+                .expect("active session has remaining TTL"),
+            Duration::from_secs(50)
+        );
+        assert!(UserService::sensitive_verification_remaining_ttl(1_300, 1_300).is_err());
+        assert!(UserService::sensitive_verification_remaining_ttl(1_300, 1_301).is_err());
+    }
 
     #[test]
     fn masked_email_for_challenge_requires_email_when_method_available() {

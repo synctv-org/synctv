@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE auth_totp_credentials SET recovery_code_hashes = $2\n            WHERE user_id = $1 AND confirmed_at IS NOT NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "ByteaArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0e4bc669c7d3b13b886baaf5f7ba58b85f60201f4774fd3dacd5cbc9dad8e706"
+}

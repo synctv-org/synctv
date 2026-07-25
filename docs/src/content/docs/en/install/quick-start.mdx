@@ -5,12 +5,8 @@ description: Start a single-node SyncTV deployment with Docker Compose and verif
 
 import { Aside, Code, Steps } from '@astrojs/starlight/components';
 import {
-  composeInitScriptUrl,
-  composePostgresEnvExampleUrl,
-  composeRedisEnvExampleUrl,
-  composeSynctvEnvExampleUrl,
-  dockerComposeFileUrl,
   englishComposeDeploymentDocsUrl,
+  githubCloneUrl,
 } from '../../../../lib/project';
 
 This path is for single-node production: one SyncTV process, one PostgreSQL instance, and one Redis instance. For Kubernetes or multiple replicas, complete this path first, then read [Helm Deployment](../../install/helm/) and [Cluster Configuration](../../configuration/cluster/).
@@ -18,34 +14,24 @@ This path is for single-node production: one SyncTV process, one PostgreSQL inst
 ## Prerequisites
 
 - Docker and Docker Compose are available.
-- `openssl` and `python3` are available for the env initializer.
+- GNU Make and `openssl` are available for the env initializer.
 - The current directory can permanently store Compose files, `.env.postgres`, `.env.redis`, `.env.synctv`, and volumes.
 - You have an initial root password. Use a password manager in production.
 
 ## Start
 
 <Steps>
-1. Create a directory and download the Compose files:
+1. Get the production Compose configuration:
 
    <Code
-     code={[
-       'mkdir synctv-compose',
-       'cd synctv-compose',
-       `curl -fsSLO ${dockerComposeFileUrl}`,
-       `curl -fsSLO ${composePostgresEnvExampleUrl}`,
-       `curl -fsSLO ${composeRedisEnvExampleUrl}`,
-       `curl -fsSLO ${composeSynctvEnvExampleUrl}`,
-       'mkdir -p scripts',
-       `curl -fsSL ${composeInitScriptUrl} -o scripts/init-compose-env.sh`,
-       'chmod +x scripts/init-compose-env.sh',
-     ].join('\n')}
+     code={[`git clone --depth 1 ${githubCloneUrl} synctv`, 'cd synctv'].join('\n')}
      lang="bash"
    />
 
 2. Generate `.env.postgres`, `.env.redis`, and `.env.synctv`:
 
    ```bash
-   ./scripts/init-compose-env.sh
+   make compose-init
    ```
 
 3. Edit `.env.synctv` and set the root password:
@@ -57,20 +43,20 @@ This path is for single-node production: one SyncTV process, one PostgreSQL inst
 4. Check the rendered Compose config:
 
    ```bash
-   docker compose config
+   make compose-config
    ```
 
 5. Start the service:
 
    ```bash
-   docker compose up -d
+   make compose-up
    ```
 </Steps>
 
 ## Verify
 
 ```bash
-docker compose ps
+make compose-ps
 curl -fsS http://localhost:8080/health/ready
 ```
 
@@ -99,8 +85,8 @@ Do not delete or regenerate the long-lived secrets in `.env.synctv`. Changing `S
 
 | Symptom | Action |
 | --- | --- |
-| `docker compose config` reports missing variables | Run `./scripts/init-compose-env.sh` and keep `.env.postgres`, `.env.redis`, and `.env.synctv` in the current directory. |
-| `/health/ready` fails | Run `docker compose logs -f synctv` and inspect the first startup error. |
+| `make compose-config` reports missing variables | Run `make compose-init` and keep `.env.postgres`, `.env.redis`, and `.env.synctv` in the current directory. |
+| `/health/ready` fails | Run `make compose-logs SERVICE=synctv` and inspect the first startup error. |
 | Browser CORS errors | Set `SYNCTV_SERVER_CORS_ALLOWED_ORIGINS` in `.env.synctv`; use origins only. |
 | Root user cannot log in | Confirm `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` was set before first database startup and inspect bootstrap logs. |
 

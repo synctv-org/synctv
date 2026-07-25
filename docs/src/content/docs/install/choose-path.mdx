@@ -40,7 +40,7 @@ import deploymentPathLight from '../../../assets/diagrams/deployment-path-zh-lig
 成功标准：
 
 - `.env.postgres`、`.env.redis` 和 `.env.synctv` 已持久保存并备份。
-- `docker compose config` 通过。
+- `make compose-config` 通过。
 - `/health/ready` 返回 200。
 - root 用户可以登录。
 - PostgreSQL 有备份方案。

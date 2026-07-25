@@ -572,6 +572,8 @@ alerting:
 
 ## Support
 
+- Website: https://syncs.tv
+- Documentation: https://docs.syncs.tv
 - GitHub: https://github.com/synctv-org/synctv
 - Issues: https://github.com/synctv-org/synctv/issues
 

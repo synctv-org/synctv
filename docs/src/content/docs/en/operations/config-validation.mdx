@@ -101,16 +101,16 @@ First make sure you got the production Compose files from [Docker Compose Deploy
 Inspect final Compose config:
 
 ```bash
-docker compose config
+make compose-config
 ```
 
 Inspect logs:
 
 ```bash
-docker compose logs -f synctv
+make compose-logs SERVICE=synctv
 ```
 
-If Compose reports a required variable missing, production Compose expects explicit secrets. Return to the Compose file directory, run `./scripts/init-compose-env.sh`, and fill the root password in `.env.synctv`.
+If Compose reports a required variable missing, production Compose expects explicit secrets. Return to the repository directory, run `make compose-init`, and fill the root password in `.env.synctv`.
 
 ## Helm Debugging
 

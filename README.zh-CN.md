@@ -1,10 +1,12 @@
+<!-- markdownlint-disable MD013 MD033 MD041 -->
+
 <p align="center">
   <img src="./docs/public/logo.svg" alt="SyncTV" width="180">
 </p>
 
 # SyncTV
 
-[English](./README.md)
+[English](./README.md) · [官方网站](https://syncs.tv)
 
 ![Rust](https://img.shields.io/badge/Rust-2021-b7410e?logo=rust&logoColor=white)
 ![Tokio](https://img.shields.io/badge/runtime-Tokio-2f80ed)
@@ -21,6 +23,10 @@
 
 SyncTV 是使用 Rust 实现的实时同步观影平台，支持媒体 Provider 集成、直播、HTTP/gRPC API，以及面向 Kubernetes 的横向扩展部署。
 
+<p align="center">
+  <img src="./docs/public/screenshots/room-macos.png" alt="SyncTV 房间同步播放" width="860">
+</p>
+
 ## 核心能力
 
 - 房间内同步播放，实时同步播放状态。
@@ -31,6 +37,12 @@ SyncTV 是使用 Rust 实现的实时同步观影平台，支持媒体 Provider 
 - 提供 Docker Compose 和 Helm 部署模板。
 - 内置 management CLI，可选 OpenAPI/Swagger UI。
 - 使用 Astro Starlight 构建中英文文档站。
+
+## 讨论与贡献者
+
+加入 [SyncTV Telegram 讨论组](https://t.me/synctv)，与用户和贡献者交流部署、运维、媒体 Provider、客户端开发和产品路线。
+
+![SyncTV 贡献者](https://contrib.nn.ci/api?repo=synctv-org/synctv&repo=synctv-org/synctv-app)
 
 ## 快速开始
 
@@ -51,15 +63,14 @@ make dev-stack
 make dev-smoke
 ```
 
-生产 Compose 可以在仓库根目录执行，也可以在只包含 `docker-compose.yml`、`.env.postgres.example`、`.env.redis.example`、`.env.synctv.example` 和 `scripts/init-compose-env.sh` 的部署目录执行。它需要显式配置 PostgreSQL、Redis 和应用鉴权/加密 secret：
+生产 Compose 使用自动生成的 PostgreSQL、Redis 和应用 secret：
 
 ```bash
-# 需要 Docker Compose、openssl 和 python3。
-./scripts/init-compose-env.sh
+# 需要 Docker Compose 和 openssl。
+make compose-init
 
 # 启动前编辑 .env.synctv 中的 SYNCTV_BOOTSTRAP_ROOT_PASSWORD。
-docker compose config
-docker compose up -d
+make compose-up
 ```
 
 校验配置：
@@ -82,77 +93,9 @@ cargo +nightly run -p synctv --bin synctv -- serve
 
 ## 文档
 
-主文档站位于 [`docs/`](./docs)，包含完整配置参考、部署文档、运维手册、CLI 参考、开发文档和 OpenAPI 入口说明。
+完整文档见 [docs.syncs.tv](https://docs.syncs.tv)。
 
-```bash
-cd docs
-npm install
-npm run dev
-```
-
-构建静态文档站：
-
-```bash
-cd docs
-npm run build
-```
-
-如果生成站点部署在子路径下，构建时设置 `SYNCTV_DOCS_BASE`。`SYNCTV_DOCS_SITE` 用于 canonical URL 和 sitemap 的公开域名。
-
-```bash
-cd docs
-SYNCTV_DOCS_SITE=https://example.com SYNCTV_DOCS_BASE=/synctv npm run build
-```
-
-重要入口：
-
-- [快速开始](./docs/src/content/docs/install/quick-start.mdx)
-- [文档导览](./docs/src/content/docs/overview/documentation-map.mdx)
-- [架构总览](./docs/src/content/docs/overview/architecture.mdx)
-- [认证与安全模型](./docs/src/content/docs/admin/authentication-security.mdx)
-- [管理员操作手册](./docs/src/content/docs/admin/index.mdx)
-- [房间、权限与用户偏好](./docs/src/content/docs/use/rooms-permissions.mdx)
-- [Provider 使用手册](./docs/src/content/docs/use/provider-guide.mdx)
-- [Provider 开发指南](./docs/src/content/docs/develop/provider-development.mdx)
-- [客户端集成指南](./docs/src/content/docs/develop/client-integration.mdx)
-- [配置文件如何工作](./docs/src/content/docs/configuration/how-configuration-works.mdx)
-- [完整配置示例](./docs/src/content/docs/configuration/full-example.mdx)
-- [配置总索引](./docs/src/content/docs/reference/configuration-index.mdx)
-- [环境变量](./docs/src/content/docs/reference/environment-variables.mdx)
-- [Runtime settings 参考](./docs/src/content/docs/reference/runtime-settings.mdx)
-- [Docker Compose 部署](./docs/src/content/docs/install/docker-compose.mdx)
-- [Helm 部署](./docs/src/content/docs/install/helm.mdx)
-- [生产部署清单](./docs/src/content/docs/install/production-checklist.mdx)
-- [备份与恢复](./docs/src/content/docs/operations/backup-restore.mdx)
-- [升级与迁移](./docs/src/content/docs/operations/upgrades.mdx)
-- [数据、隐私与保留策略](./docs/src/content/docs/operations/data-retention.mdx)
-- [观测与运行手册](./docs/src/content/docs/operations/observability.mdx)
-- [排障入口](./docs/src/content/docs/operations/troubleshooting.mdx)
-- [CLI 参考](./docs/src/content/docs/reference/cli.mdx)
-- [OpenAPI 文档入口](./docs/src/content/docs/reference/openapi.mdx)
-- [gRPC 调试](./docs/src/content/docs/reference/grpc.mdx)
-- [开发指南](./docs/src/content/docs/develop/local-development.mdx)
-
-仓库流程文档：
-
-- [安全策略](./SECURITY.md)
-- [贡献指南](./CONTRIBUTING.md)
-
-## 工作区结构
-
-- `synctv`：应用二进制和 CLI。
-- `synctv-core`：核心业务逻辑、配置、服务和 repository。
-- `synctv-api`：HTTP/gRPC API 层。
-- `synctv-livestream`：RTMP/HLS/HTTP-FLV 直播能力。
-- `synctv-cluster`：集群协调。
-- `synctv-proxy`：媒体代理和 slice cache。
-- `synctv-proto`：protobuf 定义。
-- `synctv-media-providers`：Provider 集成支持。
-- `synctv-management`：management 客户端/控制面支持。
-- `synctv-common`：共享工具。
-- `synctv-xiu`：整合后的直播组件。
-- `helm/synctv`：Kubernetes Helm chart。
-- `docs`：Astro Starlight 文档站。
+从 [SyncTV App Releases](https://github.com/synctv-org/synctv-app/releases/latest) 下载原生客户端，或通过支持的应用商店安装。
 
 ## License
 

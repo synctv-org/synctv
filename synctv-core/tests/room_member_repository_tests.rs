@@ -121,6 +121,85 @@ async fn test_add_with_options_full_flow() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_my_room_queries_preserve_cover_reference() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("owner_room_cover"))
+        .await
+        .checked("owner should be created");
+    let viewer = user_repo
+        .create(&make_user("viewer_room_cover"))
+        .await
+        .checked("viewer should be created");
+    let mut room = room_repo
+        .create(&make_room("Covered Room", &owner.id))
+        .await
+        .checked("room should be created");
+    member_repo
+        .add(&make_member(room.id, viewer.id, RoomRole::Member))
+        .await
+        .checked("viewer should join room");
+
+    sqlx::query(
+        r#"INSERT INTO file_objects (
+               storage_backend, object_key, mime_type, size_bytes,
+               content_manifest_sha256, metadata, validated_at
+           ) VALUES ($1, $2, 'image/jpeg', 1, $3, '{}'::jsonb, CURRENT_TIMESTAMP)"#,
+    )
+    .bind("database")
+    .bind("tests/room-cover.jpg")
+    .bind("0".repeat(64))
+    .execute(&pool)
+    .await
+    .checked("cover object should be created");
+    let cover_reference_id: i64 = sqlx::query_scalar(
+        r#"INSERT INTO file_references (
+               storage_backend, object_key, reference_kind, reference_id, metadata
+           ) VALUES ($1, $2, 'room_cover', $3, '{}'::jsonb)
+           RETURNING id"#,
+    )
+    .bind("database")
+    .bind("tests/room-cover.jpg")
+    .bind(room.id.as_i64().to_string())
+    .fetch_one(&pool)
+    .await
+    .checked("cover reference should be created");
+    let old_version = room.version;
+    room.cover_file_reference_id = Some(cover_reference_id);
+    room_repo
+        .update(&room, old_version)
+        .await
+        .checked("room cover reference should be assigned");
+
+    let query = MyRoomListQuery {
+        pagination: PageParams::new(Some(1), Some(10)),
+        ..Default::default()
+    };
+    let (primary_rooms, _) = member_repo
+        .list_by_user_with_query(&viewer.id, &query)
+        .await
+        .checked("primary my-room query should succeed");
+    let (read_rooms, _) = member_repo
+        .list_accessible_by_user_with_query_eventually_consistent(&viewer.id, &query)
+        .await
+        .checked("read-pool my-room query should succeed");
+
+    assert_eq!(
+        primary_rooms[0].0.cover_file_reference_id,
+        Some(cover_reference_id)
+    );
+    assert_eq!(
+        read_rooms[0].0.cover_file_reference_id,
+        Some(cover_reference_id)
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_record_visit_deduplicates_and_drives_room_sorting() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

@@ -29,7 +29,7 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 7. 对比 [配置总索引](../../reference/configuration-index/) 和 [完整配置示例](../../configuration/full-example/)。
 8. 如果协议或 protobuf 变更，确认 [API 与 protobuf 演进策略](../../reference/api-versioning/) 和客户端示例已同步。
 9. 如果使用 Helm，执行 `helm lint` 和 `helm template`。
-10. 如果使用 Compose，执行 `docker compose config`。
+10. 如果使用 Compose，执行 `make compose-config`。
 </Steps>
 
 ## 数据库 Migration
@@ -65,7 +65,7 @@ docker compose run --rm synctv synctv db migrate
 <Steps>
 1. 拉取新镜像。
 2. 备份数据库和 secret。
-3. 运行 `docker compose config` 确认最终配置。
+3. 运行 `make compose-config` 确认最终配置。
 4. 可选执行 `synctv db migrate` 做发布前预检。
 5. 重启服务，启动阶段会自动完成 pending migrations。
 6. 检查 `/health/ready`、登录、WebSocket、Provider 和 metrics。
@@ -74,9 +74,9 @@ docker compose run --rm synctv synctv db migrate
 常用命令：
 
 ```bash
-docker compose pull
-docker compose up -d
-docker compose logs -f synctv
+make compose-pull
+make compose-up
+make compose-logs SERVICE=synctv
 ```
 
 ## Helm 升级

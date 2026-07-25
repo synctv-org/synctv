@@ -74,10 +74,10 @@ curl -fsS http://localhost:8080/health/ready
 ### Docker Compose
 
 ```bash
-docker compose config
-docker compose up -d
-docker compose ps
-docker compose logs --tail=100 synctv
+make compose-config
+make compose-up
+make compose-ps
+make compose-logs SERVICE=synctv
 ```
 
 ### Helm

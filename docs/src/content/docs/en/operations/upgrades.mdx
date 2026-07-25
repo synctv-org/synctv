@@ -29,7 +29,7 @@ An image rollback is not always a system rollback. If a migration changed the da
 7. Compare against the [Configuration Index](../../reference/configuration-index/) and [Full Configuration Example](../../configuration/full-example/).
 8. If protocol or protobuf behavior changes, confirm [API and Protobuf Evolution](../../reference/api-versioning/) and client examples are updated.
 9. For Helm, run `helm lint` and `helm template`.
-10. For Compose, run `docker compose config`.
+10. For Compose, run `make compose-config`.
 </Steps>
 
 ## Database Migration
@@ -65,7 +65,7 @@ Run these commands from the production Compose file directory. If you do not hav
 <Steps>
 1. Pull the new image.
 2. Back up database and secrets.
-3. Run `docker compose config`.
+3. Run `make compose-config`.
 4. Optionally run `synctv db migrate` as a release preflight.
 5. Restart the service. Startup applies pending migrations automatically.
 6. Check `/health/ready`, login, WebSocket, providers, and metrics.
@@ -74,9 +74,9 @@ Run these commands from the production Compose file directory. If you do not hav
 Common commands:
 
 ```bash
-docker compose pull
-docker compose up -d
-docker compose logs -f synctv
+make compose-pull
+make compose-up
+make compose-logs SERVICE=synctv
 ```
 
 ## Helm Upgrade

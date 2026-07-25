@@ -117,6 +117,7 @@ export default defineConfig({
           items: [
             { label: '项目介绍', translations: { en: 'Overview' }, link: '/' },
             { label: '文档导览', translations: { en: 'Documentation Map' }, slug: 'overview/documentation-map' },
+            { label: '讨论与贡献者', translations: { en: 'Discussion and Contributors' }, slug: 'overview/community' },
             { label: '常见任务流程', translations: { en: 'Common Workflows' }, slug: 'overview/common-workflows' },
             { label: '快速开始', translations: { en: 'Quick Start' }, slug: 'install/quick-start' },
             { label: '术语速查', translations: { en: 'Glossary' }, slug: 'reference/glossary' },

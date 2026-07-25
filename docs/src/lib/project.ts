@@ -36,7 +36,7 @@ function dockerHubImage(repository: string): string {
   return username ? `${username}/${repositoryName(repository)}` : 'synctvorg/synctv';
 }
 
-export const docsSite = readEnv('SYNCTV_DOCS_SITE') || 'https://synctv.wiki';
+export const docsSite = readEnv('SYNCTV_DOCS_SITE') || 'https://docs.syncs.tv';
 export const docsBase = normalizeBasePath(readEnv('SYNCTV_DOCS_BASE'));
 export const docsUrl = `${stripSuffix(docsSite, '/')}${docsBase === '/' ? '/' : docsBase}`;
 export const composeDeploymentDocsUrl = new URL('install/docker-compose/', docsUrl).toString();
@@ -55,7 +55,6 @@ export const githubBranch =
 export const githubUrl = `https://github.com/${githubRepository}`;
 export const githubCloneUrl = `${githubUrl}.git`;
 export const githubEditUrl = `${githubUrl}/edit/${githubBranch}/docs/`;
-export const githubTreeUrl = `${githubUrl}/tree/${githubBranch}`;
 export const githubRawBaseUrl =
   readEnv('SYNCTV_DOCS_GITHUB_RAW_BASE_URL') ||
   `https://raw.githubusercontent.com/${githubRepository}/${githubBranch}`;
@@ -64,12 +63,7 @@ export const projectRepositoryName = repositoryName(githubRepository);
 export const dockerImage = readEnv('SYNCTV_DOCS_DOCKER_IMAGE') || dockerHubImage(githubRepository);
 export const dockerImageTag = readEnv('SYNCTV_DOCS_IMAGE_TAG') || defaultAppVersion;
 export const dockerImageReference = `${dockerImage}:${dockerImageTag}`;
-export const dockerComposeFileUrl = `${githubRawBaseUrl}/docker-compose.yml`;
 export const dockerComposeDevFileUrl = `${githubRawBaseUrl}/docker-compose.dev.yml`;
-export const composePostgresEnvExampleUrl = `${githubRawBaseUrl}/.env.postgres.example`;
-export const composeRedisEnvExampleUrl = `${githubRawBaseUrl}/.env.redis.example`;
-export const composeSynctvEnvExampleUrl = `${githubRawBaseUrl}/.env.synctv.example`;
-export const composeInitScriptUrl = `${githubRawBaseUrl}/scripts/init-compose-env.sh`;
 
 export const helmChartName = readEnv('SYNCTV_DOCS_HELM_CHART_NAME') || 'synctv';
 export const helmChartVersion = readEnv('SYNCTV_DOCS_HELM_CHART_VERSION') || defaultAppVersion;

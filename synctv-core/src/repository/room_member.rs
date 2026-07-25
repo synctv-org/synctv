@@ -68,6 +68,7 @@ struct MyRoomListRow {
     id: RoomId,
     name: String,
     description: String,
+    cover_file_reference_id: Option<i64>,
     category_id: Option<RoomCategoryId>,
     category_key: Option<String>,
     category_name: Option<String>,
@@ -414,7 +415,7 @@ impl RoomMemberRepository {
             id: row.id,
             name: row.name,
             description: row.description,
-            cover_file_reference_id: None,
+            cover_file_reference_id: row.cover_file_reference_id,
             category: optional_room_category_from_parts(OptionalRoomCategoryRowParts {
                 id: row.category_id,
                 key: row.category_key,
@@ -2642,6 +2643,7 @@ impl RoomMemberRepository {
             r"
             SELECT
                 r.id, r.name, r.description,
+                r.cover_file_reference_id,
                 rc.id AS category_id,
                 rc.key AS category_key,
                 rc.name AS category_name,
@@ -2667,7 +2669,8 @@ impl RoomMemberRepository {
 	                         AND rmkc2.ends_at > CURRENT_TIMESTAMP
 	                   )
 		            WHERE rm.user_id = $1 AND {where_sql}
-	            GROUP BY r.id, r.name, r.description, r.category_id, r.created_by, r.closed_at,
+	            GROUP BY r.id, r.name, r.description, r.cover_file_reference_id, r.category_id,
+	                     r.created_by, r.closed_at,
 	                     r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
                          rc.id, rc.key, rc.name, rc.description, rc.sort_order, rc.is_enabled,
                          rc.created_at, rc.updated_at,
@@ -2736,6 +2739,7 @@ impl RoomMemberRepository {
             r"
             SELECT
                 r.id, r.name, r.description,
+                r.cover_file_reference_id,
                 rc.id AS category_id,
                 rc.key AS category_key,
                 rc.name AS category_name,
@@ -2761,7 +2765,8 @@ impl RoomMemberRepository {
 	                         AND rmkc2.ends_at > CURRENT_TIMESTAMP
 	                   )
 	            WHERE rm.user_id = $1 AND {where_sql} AND {ACCESSIBLE_ROOM_CREATOR_CONDITION}
-	            GROUP BY r.id, r.name, r.description, r.category_id, r.created_by, r.closed_at,
+	            GROUP BY r.id, r.name, r.description, r.cover_file_reference_id, r.category_id,
+	                     r.created_by, r.closed_at,
 	                     r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
                          rc.id, rc.key, rc.name, rc.description, rc.sort_order, rc.is_enabled,
                          rc.created_at, rc.updated_at,

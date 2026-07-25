@@ -1,10 +1,12 @@
+<!-- markdownlint-disable MD013 MD033 MD041 -->
+
 <p align="center">
   <img src="./docs/public/logo.svg" alt="SyncTV" width="180">
 </p>
 
 # SyncTV
 
-[简体中文](./README.zh-CN.md)
+[简体中文](./README.zh-CN.md) · [Website](https://syncs.tv)
 
 ![Rust](https://img.shields.io/badge/Rust-2021-b7410e?logo=rust&logoColor=white)
 ![Tokio](https://img.shields.io/badge/runtime-Tokio-2f80ed)
@@ -21,6 +23,10 @@
 
 SyncTV is a Rust implementation of a real-time synchronized video watching platform with media provider integration, livestreaming, HTTP/gRPC APIs, and Kubernetes-ready horizontal scaling.
 
+<p align="center">
+  <img src="./docs/public/screenshots/room-macos.png" alt="SyncTV synchronized room playback" width="860">
+</p>
+
 ## Highlights
 
 - Synchronized room playback with real-time state updates.
@@ -31,6 +37,12 @@ SyncTV is a Rust implementation of a real-time synchronized video watching platf
 - Docker Compose and Helm deployment templates.
 - Built-in management CLI and optional OpenAPI/Swagger UI.
 - Astro Starlight documentation site with English and Simplified Chinese content.
+
+## Discussion and Contributors
+
+Join the [SyncTV Telegram discussion](https://t.me/synctv) to talk with users and contributors about deployment, operations, media providers, client development, and the product roadmap.
+
+![SyncTV contributors](https://contrib.nn.ci/api?repo=synctv-org/synctv&repo=synctv-org/synctv-app)
 
 ## Quick Start
 
@@ -51,15 +63,14 @@ make dev-stack
 make dev-smoke
 ```
 
-Production Compose can run from the repository root or from a directory containing `docker-compose.yml`, `.env.postgres.example`, `.env.redis.example`, `.env.synctv.example`, and `scripts/init-compose-env.sh`. It requires explicit secrets for PostgreSQL, Redis, and application auth/encryption:
+Production Compose uses generated PostgreSQL, Redis, and application secrets:
 
 ```bash
-# Requires Docker Compose, openssl, and python3.
-./scripts/init-compose-env.sh
+# Requires Docker Compose and openssl.
+make compose-init
 
 # Edit SYNCTV_BOOTSTRAP_ROOT_PASSWORD in .env.synctv before starting.
-docker compose config
-docker compose up -d
+make compose-up
 ```
 
 Validate configuration:
@@ -82,78 +93,9 @@ cargo +nightly run -p synctv --bin synctv -- serve
 
 ## Documentation
 
-The main documentation site lives in [`docs/`](./docs). It contains detailed configuration reference, deployment guides, operations runbooks, CLI reference, development guide, and OpenAPI access instructions.
+Read the complete documentation at [docs.syncs.tv](https://docs.syncs.tv).
 
-```bash
-cd docs
-npm install
-npm run dev
-```
-
-Build the static docs site:
-
-```bash
-cd docs
-npm run build
-```
-
-If the generated site is deployed below a subpath, set `SYNCTV_DOCS_BASE` at build time. Set `SYNCTV_DOCS_SITE` to the public origin used for canonical URLs and sitemaps.
-
-```bash
-cd docs
-SYNCTV_DOCS_SITE=https://example.com SYNCTV_DOCS_BASE=/synctv npm run build
-```
-
-Important entry points:
-
-- [Quick Start](./docs/src/content/docs/en/install/quick-start.mdx)
-- [Documentation Map](./docs/src/content/docs/en/overview/documentation-map.mdx)
-- [Architecture Overview](./docs/src/content/docs/en/overview/architecture.mdx)
-- [Authentication and Security Model](./docs/src/content/docs/en/admin/authentication-security.mdx)
-- [Administration Runbook](./docs/src/content/docs/en/admin/index.mdx)
-- [Rooms, Permissions, and Preferences](./docs/src/content/docs/en/use/rooms-permissions.mdx)
-- [Provider User Guide](./docs/src/content/docs/en/use/provider-guide.mdx)
-- [Provider Development Guide](./docs/src/content/docs/en/develop/provider-development.mdx)
-- [Client Integration Guide](./docs/src/content/docs/en/develop/client-integration.mdx)
-- [How Configuration Works](./docs/src/content/docs/en/configuration/how-configuration-works.mdx)
-- [Full Configuration Example](./docs/src/content/docs/en/configuration/full-example.mdx)
-- [Configuration Index](./docs/src/content/docs/en/reference/configuration-index.mdx)
-- [Environment Variables](./docs/src/content/docs/en/reference/environment-variables.mdx)
-- [Runtime Settings Reference](./docs/src/content/docs/en/reference/runtime-settings.mdx)
-- [Docker Compose Deployment](./docs/src/content/docs/en/install/docker-compose.mdx)
-- [Helm Deployment](./docs/src/content/docs/en/install/helm.mdx)
-- [Production Checklist](./docs/src/content/docs/en/install/production-checklist.mdx)
-- [Backup and Restore](./docs/src/content/docs/en/operations/backup-restore.mdx)
-- [Upgrades and Migrations](./docs/src/content/docs/en/operations/upgrades.mdx)
-- [Data, Privacy, and Retention](./docs/src/content/docs/en/operations/data-retention.mdx)
-- [Observability Runbook](./docs/src/content/docs/en/operations/observability.mdx)
-- [Troubleshooting](./docs/src/content/docs/en/operations/troubleshooting.mdx)
-- [CLI Reference](./docs/src/content/docs/en/reference/cli.mdx)
-- [OpenAPI Access](./docs/src/content/docs/en/reference/openapi.mdx)
-- [gRPC Debugging](./docs/src/content/docs/en/reference/grpc.mdx)
-- [Development Guide](./docs/src/content/docs/en/develop/local-development.mdx)
-
-Repository process documents:
-
-- [Security Policy](./SECURITY.md)
-- [Contributing Guide](./CONTRIBUTING.md)
-
-## Workspace Layout
-
-- `synctv`: application binary and CLI.
-- `synctv-core`: core business logic, configuration, services, and repositories.
-- `synctv-core/testing`: reusable integration-test fixtures and service helpers.
-- `synctv-api`: HTTP/gRPC API layer.
-- `synctv-livestream`: RTMP/HLS/HTTP-FLV livestream support.
-- `synctv-cluster`: cluster coordination.
-- `synctv-proxy`: media proxy and slice cache.
-- `synctv-proto`: protobuf definitions.
-- `synctv-media-providers`: provider integration support.
-- `synctv-management`: management client/control-plane support.
-- `synctv-common`: shared utilities.
-- `synctv-xiu`: consolidated livestreaming components.
-- `helm/synctv`: Kubernetes Helm chart.
-- `docs`: Astro Starlight documentation site.
+Download the native client from [SyncTV App releases](https://github.com/synctv-org/synctv-app/releases/latest), or install it through the supported app stores.
 
 ## License
 

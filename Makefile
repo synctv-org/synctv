@@ -4,6 +4,9 @@ SHELL := bash
 .DEFAULT_GOAL := help
 
 COMPOSE ?= docker compose
+PROD_COMPOSE_FILE ?= docker-compose.yml
+COMPOSE_PROD := $(COMPOSE) -f $(PROD_COMPOSE_FILE)
+COMPOSE_ENV_FILES := .env.postgres .env.redis .env.synctv
 RUST_TOOLCHAIN ?= nightly
 CARGO ?= cargo +$(RUST_TOOLCHAIN)
 CROSS ?= cargo cross +$(RUST_TOOLCHAIN)
@@ -95,10 +98,61 @@ export SYNCTV_MANAGEMENT_TRANSPORT=unix; \
 export SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH="$(DEV_SOCKET)"
 endef
 
-.PHONY: help dev-check dev-env dev-up dev-stack dev-build release-build dev-serve dev-start dev-stop dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-dropdb dev-db dev-redis dev-open dev-smoke fmt fmt-check check check-all-targets build-workspace proto-freshness feature-check feature-check-key-crates-tls-ring-webpki sqlx-prepare nextest nextest-default nextest-ignored doc-test clippy clippy-check install-cargo-audit audit audit-advisories install-cargo-deny deny-check deny-advisories deny-licenses deny-bans deny-sources install-cargo-udeps udeps cargo-workspace-version set-release-version validate-helm require-cross install-cross cross-linux-check cross-windows-check cross-darwin-check cross-linux-clippy cross-windows-clippy cross-darwin-clippy
+.PHONY: help compose-init compose-config compose-pull compose-up compose-down compose-logs compose-ps dev-check dev-env dev-up dev-stack dev-build release-build dev-serve dev-start dev-stop dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-dropdb dev-db dev-redis dev-open dev-smoke fmt fmt-check check check-all-targets build-workspace proto-freshness feature-check feature-check-key-crates-tls-ring-webpki sqlx-prepare nextest nextest-default nextest-ignored doc-test clippy clippy-check install-cargo-audit audit audit-advisories install-cargo-deny deny-check deny-advisories deny-licenses deny-bans deny-sources install-cargo-udeps udeps cargo-workspace-version set-release-version validate-helm require-cross install-cross cross-linux-check cross-windows-check cross-darwin-check cross-linux-clippy cross-windows-clippy cross-darwin-clippy
 
-help: ## Show development targets.
-	@awk 'BEGIN {FS = ":.*##"; printf "SyncTV development targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+help: ## Show available targets.
+	@awk 'BEGIN {FS = ":.*##"; printf "SyncTV targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+compose-init: ## Create production Compose env files with generated secrets.
+	@command -v openssl >/dev/null || { printf "openssl is required.\n" >&2; exit 1; }
+	@for file in $(COMPOSE_ENV_FILES); do \
+		if [ -e "$$file" ]; then \
+			printf "%s already exists; refusing to overwrite it.\n" "$$file" >&2; \
+			exit 1; \
+		fi; \
+	done
+	@trap 'rm -f $(COMPOSE_ENV_FILES) .env.postgres.bak .env.redis.bak .env.synctv.bak' ERR; \
+	umask 077; \
+	cp .env.postgres.example .env.postgres; \
+	cp .env.redis.example .env.redis; \
+	cp .env.synctv.example .env.synctv; \
+	set_env() { \
+		local file="$$1" key="$$2" value="$$3"; \
+		sed -i.bak "s|^$${key}=.*|$${key}=$${value}|" "$$file"; \
+	}; \
+	postgres_password="$$(openssl rand -hex 32)"; \
+	redis_password="$$(openssl rand -hex 32)"; \
+	set_env .env.postgres POSTGRES_PASSWORD "$$postgres_password"; \
+	set_env .env.redis REDIS_PASSWORD "$$redis_password"; \
+	set_env .env.synctv SYNCTV_DATABASE_URL "postgresql://synctv:$${postgres_password}@postgres:5432/synctv"; \
+	set_env .env.synctv SYNCTV_REDIS_URL "redis://:$${redis_password}@redis:6379"; \
+	set_env .env.synctv SYNCTV_JWT_SECRET "$$(openssl rand -base64 32)"; \
+	set_env .env.synctv SYNCTV_CLUSTER_SECRET "$$(openssl rand -hex 32)"; \
+	set_env .env.synctv SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY "$$(openssl rand -hex 32)"; \
+	set_env .env.synctv SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET "$$(openssl rand -base64 48)"; \
+	rm -f .env.postgres.bak .env.redis.bak .env.synctv.bak; \
+	chmod 600 $(COMPOSE_ENV_FILES); \
+	trap - ERR
+	@printf "Created production Compose env files. Set SYNCTV_BOOTSTRAP_ROOT_PASSWORD in .env.synctv, then run 'make compose-up'.\n"
+
+compose-config: ## Render and validate the production Compose configuration.
+	$(COMPOSE_PROD) config
+
+compose-pull: ## Pull production Compose images.
+	$(COMPOSE_PROD) pull
+
+compose-up: ## Validate and start the production Compose stack.
+	$(COMPOSE_PROD) config --quiet
+	$(COMPOSE_PROD) up -d
+
+compose-down: ## Stop the production Compose stack and keep volumes.
+	$(COMPOSE_PROD) down --remove-orphans
+
+compose-logs: ## Follow production Compose logs. Set SERVICE=name to focus.
+	$(COMPOSE_PROD) logs -f --tail=100 $(SERVICE)
+
+compose-ps: ## Show production Compose service status.
+	$(COMPOSE_PROD) ps
 
 dev-check: ## Check required local tools.
 	@command -v docker >/dev/null

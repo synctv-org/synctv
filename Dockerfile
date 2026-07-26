@@ -43,7 +43,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     if [ -n "$SYNCTV_BUILD_FEATURES" ]; then \
         build_flags="$build_flags --features $SYNCTV_BUILD_FEATURES"; \
     fi; \
-    cargo build $build_flags && \
+    CARGO_PROFILE_RELEASE_LTO=off cargo build $build_flags && \
     cp /app/target/release/synctv /tmp/synctv
 
 # Stage 2: Runtime image

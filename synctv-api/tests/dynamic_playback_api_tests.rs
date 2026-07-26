@@ -1151,7 +1151,7 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_playback_returns_error_for_invalid_live_proxy_source_config() {
+async fn test_start_playback_returns_error_for_invalid_live_proxy_source_config() {
     let (_postgres, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let media_repo = MediaRepository::new(pool.clone());
@@ -1220,7 +1220,7 @@ async fn test_get_playback_returns_error_for_invalid_live_proxy_source_config() 
         support::client_api_runtime(),
     );
 
-    client_api
+    let error = client_api
         .start_playback(
             &owner.id,
             &room_public_id,
@@ -1232,18 +1232,7 @@ async fn test_get_playback_returns_error_for_invalid_live_proxy_source_config() 
             },
         )
         .await
-        .unwrap();
-
-    let error = client_api
-        .get_playback(
-            &owner.id,
-            &room_public_id,
-            synctv_proto::client::GetPlaybackRequest {
-                playback_client_profile: None,
-            },
-        )
-        .await
-        .expect_err("invalid provider config should be returned as an API error");
+        .expect_err("invalid provider config should reject the playback switch");
 
     assert!(matches!(
         error,

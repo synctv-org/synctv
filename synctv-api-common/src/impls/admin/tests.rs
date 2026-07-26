@@ -4465,8 +4465,8 @@ async fn test_get_playback_bypasses_room_membership_requirement_for_global_admin
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_playback_returns_error_for_invalid_provider_config_for_global_admin() -> TestResult
-{
+async fn test_start_playback_returns_error_for_invalid_provider_config_for_global_admin(
+) -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -4512,17 +4512,20 @@ async fn test_get_playback_returns_error_for_invalid_provider_config_for_global_
     });
     let media = core_ok(media_repo.create(&media).await)?;
 
-    core_ok(
-        admin_api
-            .room_service
-            .playback_service()
-            .switch(room.id, owner.id, Some(media.id), None, None)
-            .await,
-    )?;
-
     let error = api_err(
         admin_api
-            .get_playback(&public_room_id(&admin_api, room.id), &global_admin.id, None)
+            .start_playback(
+                &public_room_id(&admin_api, room.id),
+                synctv_proto::client::StartPlaybackRequest {
+                    media_id: public_media_id(&admin_api, media.id),
+                    playlist_id: String::new(),
+                    target: None,
+                    client_operation_id: None,
+                },
+                Some(global_admin.id),
+                &global_admin.id,
+                &RequestContext::default(),
+            )
             .await,
     )?;
 

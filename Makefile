@@ -102,7 +102,7 @@ export SYNCTV_MANAGEMENT_TRANSPORT=unix; \
 export SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH="$(DEV_SOCKET)"
 endef
 
-.PHONY: help compose-init compose-config compose-pull compose-up compose-down compose-logs compose-ps dev-check dev-env dev-up dev-stack dev-build release-build dev-serve dev-start dev-stop dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-dropdb dev-db dev-redis dev-open dev-smoke fmt fmt-check check check-all-targets build-workspace proto-freshness feature-check feature-check-key-crates-tls-ring-webpki sqlx-prepare nextest nextest-default nextest-ignored doc-test clippy clippy-check install-cargo-audit audit audit-advisories install-cargo-deny deny-check deny-advisories deny-licenses deny-bans deny-sources install-cargo-udeps udeps cargo-workspace-version set-release-version validate-helm require-cross install-cross cross-linux-check cross-windows-check cross-darwin-check cross-linux-clippy cross-windows-clippy cross-darwin-clippy
+.PHONY: help clean compose-init compose-config compose-pull compose-up compose-down compose-logs compose-ps dev-check dev-env dev-up dev-stack dev-build release-build dev-serve dev-start dev-stop dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-dropdb dev-db dev-redis dev-open dev-smoke fmt fmt-check check check-all-targets build-workspace proto-freshness feature-check feature-check-key-crates-tls-ring-webpki sqlx-prepare nextest nextest-default nextest-ignored doc-test clippy clippy-check install-cargo-audit audit audit-advisories install-cargo-deny deny-check deny-advisories deny-licenses deny-bans deny-sources install-cargo-udeps udeps cargo-workspace-version set-release-version validate-helm require-cross install-cross cross-linux-check cross-windows-check cross-darwin-check cross-linux-clippy cross-windows-clippy cross-darwin-clippy
 
 help: ## Show available targets.
 	@awk 'BEGIN {FS = ":.*##"; printf "SyncTV targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -330,6 +330,9 @@ dev-migrate: dev-up ## Run database migrations against the local PostgreSQL cont
 
 dev-dropdb: dev-up ## Drop and recreate the local development PostgreSQL database.
 	$(COMPOSE_DEV) exec -T postgres sh -lc 'dropdb -U synctv --if-exists synctv && createdb -U synctv synctv'
+
+clean: ## Remove Rust workspace build artifacts.
+	$(CARGO) clean
 
 sqlx-prepare: dev-migrate ## Refresh SQLx offline metadata in .sqlx.
 	DATABASE_URL="$(DEV_DATABASE_URL)" $(CARGO) sqlx prepare --workspace -- --all-targets

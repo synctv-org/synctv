@@ -641,6 +641,43 @@ impl ProvidersManager {
             .await
     }
 
+    /// Register the default provider instances for synchronous test fixtures.
+    ///
+    /// Provider factories are synchronous; production startup uses the async
+    /// path below so the instance registry can coordinate with concurrent
+    /// initialization. Test constructors run before any provider task exists,
+    /// so a non-blocking write keeps them deterministic without entering a
+    /// nested async runtime.
+    #[cfg(feature = "test-support")]
+    pub fn create_builtin_defaults_for_tests(&self) -> Result<usize> {
+        let mut instances = self
+            .instances
+            .try_write()
+            .map_err(|_| crate::Error::Internal("provider registry is busy".to_string()))?;
+        let mut provider_types = self.list_types();
+        provider_types.sort();
+        let mut created = 0;
+
+        for provider_type in provider_types {
+            let instance_id = Self::default_instance_id(&provider_type);
+            if instances.contains_key(&instance_id) {
+                continue;
+            }
+            let factory = self.factories.get(&provider_type).ok_or_else(|| {
+                crate::Error::NotFound(format!("Unknown provider type: {provider_type}"))
+            })?;
+            let provider = factory(
+                &instance_id,
+                &LocalProviderConfig::default(),
+                self.instance_manager.clone(),
+            )?;
+            instances.insert(instance_id, provider);
+            created += 1;
+        }
+
+        Ok(created)
+    }
+
     /// Create missing built-in default provider instances using explicit local
     /// provider construction options.
     pub async fn create_builtin_defaults_with_options(

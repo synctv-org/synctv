@@ -115,11 +115,16 @@ impl RoomServiceOptions {
 impl RoomService {
     #[cfg(any(test, feature = "test-support"))]
     pub fn new_for_tests(pool: PgPool, user_service: UserService) -> Result<Self> {
-        Self::new_with_options(
+        let service = Self::new_with_options(
             pool.clone(),
             user_service,
             RoomServiceOptions::test_defaults_with_settings(pool),
-        )
+        )?;
+        service
+            .media_service()
+            .providers_manager()
+            .create_builtin_defaults_for_tests()?;
+        Ok(service)
     }
 
     pub fn new_with_options(

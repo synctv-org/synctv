@@ -126,6 +126,15 @@ struct PlaybackSourceNames {
     playlist_name: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct PreflightMetadata {
+    identity: PlaybackSourceIdentity,
+    is_live: bool,
+    duration_seconds: Option<f64>,
+    media_name: Option<String>,
+    playlist_name: Option<String>,
+}
+
 fn live_status_for_target(target: &ProviderTarget) -> Option<bool> {
     match target {
         ProviderTarget::Bilibili(crate::models::BilibiliTarget::Live { .. })
@@ -152,6 +161,20 @@ fn live_status_for_target(target: &ProviderTarget) -> Option<bool> {
         | ProviderTarget::Seafile(_)
         | ProviderTarget::TrueNas(_) => Some(false),
         ProviderTarget::Youtube(_) | ProviderTarget::Douyin(_) | ProviderTarget::TikTok(_) => None,
+    }
+}
+
+fn normalized_provider_duration(is_live: bool, duration_seconds: Option<f64>) -> Option<f64> {
+    (!is_live)
+        .then_some(duration_seconds)
+        .flatten()
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+}
+
+fn preflight_can_defer_generation(error: &Error) -> bool {
+    match error {
+        Error::ServiceUnavailable(_) | Error::Timeout(_) | Error::RateLimited(_) => true,
+        _ => false,
     }
 }
 
@@ -1275,6 +1298,9 @@ impl PlaybackService {
                         .await?
                     {
                         self.ensure_history_entry_available(&next).await?;
+                        let preflight_metadata = self
+                            .preflight_history_entry(actor_user_id.as_ref(), room_id, &next)
+                            .await?;
                         let previous = state.clone();
                         let mut updated = state;
                         updated.playing_media_id = next.media_id;
@@ -1283,6 +1309,8 @@ impl PlaybackService {
                         updated.position = next.position_seconds;
                         updated.is_playing = true;
                         updated.updated_at = self.clock.now();
+                        self.persist_preflight_metadata(preflight_metadata.as_ref())
+                            .await?;
                         let saved = self
                             .persist_source_transition(
                                 &updated,
@@ -1350,6 +1378,7 @@ impl PlaybackService {
                                 Ok(NextTarget::Dynamic {
                                     playlist_id: playlist.id,
                                     media_name: item.name,
+                                    source_config: item.source_config,
                                     target: item.target,
                                 })
                             })
@@ -1514,7 +1543,7 @@ impl PlaybackService {
                         })
                     }
                 };
-                match &next_target {
+                let preflight_metadata = match &next_target {
                     NextTarget::Static(next) => {
                         match self
                             .ensure_creator_is_active(next.creator_id.as_ref(), "Media")
@@ -1528,13 +1557,21 @@ impl PlaybackService {
                             }
                             Err(error) => return Err(error),
                         }
+                        let metadata = self
+                            .preflight_static_media(
+                                next.creator_id.as_ref().or(actor_user_id.as_ref()),
+                                next,
+                            )
+                            .await?;
                         updated_state.playing_media_id = Some(next.id);
                         updated_state.playing_playlist_id = next.playlist_id;
                         updated_state.target = None;
+                        metadata
                     }
                     NextTarget::Dynamic {
                         playlist_id,
-                        media_name: _,
+                        source_config,
+                        media_name,
                         target,
                     } => {
                         let playlist = self
@@ -1554,14 +1591,25 @@ impl PlaybackService {
                             }
                             Err(error) => return Err(error),
                         }
+                        let metadata = self.preflight_dynamic_playlist_item(
+                            playlist.creator_id.as_ref().or(actor_user_id.as_ref()),
+                            &playlist,
+                            media_name,
+                            source_config,
+                            target,
+                        )
+                        .await?;
                         updated_state.playing_media_id = None;
                         updated_state.playing_playlist_id = Some(*playlist_id);
                         updated_state.target = Some(target.clone());
+                        metadata
                     }
-                }
+                };
                 updated_state.position = 0.0;
                 updated_state.is_playing = true;
                 updated_state.updated_at = self.clock.now();
+                self.persist_preflight_metadata(preflight_metadata.as_ref())
+                    .await?;
                 let saved_state = self
                     .persist_source_transition(
                         &updated_state,
@@ -1623,6 +1671,9 @@ impl PlaybackService {
                         .await?;
                     drop(conn);
                     self.ensure_history_entry_available(&entry).await?;
+                    let preflight_metadata = self
+                        .preflight_history_entry(Some(&user_id), room_id, &entry)
+                        .await?;
                     let previous = match self.playback_repo.get(room_id).await? {
                         Some(state) => state,
                         None => self.playback_repo.create_or_get(room_id).await?,
@@ -1634,6 +1685,8 @@ impl PlaybackService {
                     state.position = entry.position_seconds;
                     state.is_playing = true;
                     state.updated_at = self.clock.now();
+                    self.persist_preflight_metadata(preflight_metadata.as_ref())
+                        .await?;
                     let saved = self
                         .persist_source_transition(
                             &state,
@@ -1700,6 +1753,9 @@ impl PlaybackService {
                         previous
                     };
                     self.ensure_history_entry_available(&entry).await?;
+                    let preflight_metadata = self
+                        .preflight_history_entry(Some(&user_id), room_id, &entry)
+                        .await?;
                     let previous = state.clone();
                     let mut updated = state;
                     updated.playing_media_id = entry.media_id;
@@ -1708,6 +1764,8 @@ impl PlaybackService {
                     updated.position = 0.0;
                     updated.is_playing = true;
                     updated.updated_at = self.clock.now();
+                    self.persist_preflight_metadata(preflight_metadata.as_ref())
+                        .await?;
                     let saved = self
                         .persist_source_transition(
                             &updated,
@@ -2182,6 +2240,7 @@ impl PlaybackService {
             None
         };
 
+        let mut preflight_metadata = None;
         let mut dynamic_media_name = None;
         let mut dynamic_playlist_name = None;
         if let Some(ref playlist_id) = target.playlist_id {
@@ -2213,25 +2272,46 @@ impl PlaybackService {
                     ));
                 }
 
+                let requested_target = target.target.as_ref().ok_or_else(|| {
+                    Error::InvalidInput(
+                        "target is required for dynamic playlist playback".to_string(),
+                    )
+                })?;
+                let resolver_user_id = playlist
+                    .creator_id
+                    .as_ref()
+                    .copied()
+                    .unwrap_or(actor_user_id);
                 let resolved = self
                     .media_service
                     .resolve_dynamic_playlist_item(
                         room_id,
-                        actor_user_id,
+                        resolver_user_id,
                         playlist_id,
-                        target.target.as_ref().ok_or_else(|| {
-                            Error::InvalidInput(
-                                "target is required for dynamic playlist playback".to_string(),
-                            )
-                        })?,
+                        requested_target,
                     )
                     .await?;
                 let resolved = resolved.ok_or_else(|| {
                     Error::NotFound("Dynamic playlist item not found".to_string())
                 })?;
+                preflight_metadata = self
+                    .preflight_dynamic_playlist_item(
+                        playlist.creator_id.as_ref().or(Some(&resolver_user_id)),
+                        &playlist,
+                        &resolved.name,
+                        &resolved.source_config,
+                        requested_target,
+                    )
+                    .await?;
                 dynamic_media_name = Some(resolved.name);
                 dynamic_playlist_name = Some(playlist.name.clone());
             }
+        }
+
+        if let Some(media) = media.as_ref() {
+            preflight_metadata = self
+                .preflight_static_media(media.creator_id.as_ref(), media)
+                .await?;
         }
 
         let state = crate::service::optimistic_retry::retry_with_optimistic_lock(
@@ -2243,6 +2323,7 @@ impl PlaybackService {
                 let outbox_event_factory = outbox_event_factory.clone();
                 let dynamic_media_name = dynamic_media_name.clone();
                 let dynamic_playlist_name = dynamic_playlist_name.clone();
+                let preflight_metadata = preflight_metadata.clone();
                 async move {
                     let previous = match self.playback_repo.get(&room_id).await? {
                         Some(state) => state,
@@ -2255,6 +2336,8 @@ impl PlaybackService {
                     state.position = 0.0;
                     state.is_playing = true;
                     state.updated_at = self.clock.now();
+                    self.persist_preflight_metadata(preflight_metadata.as_ref())
+                        .await?;
                     let state = self
                         .persist_source_transition(
                             &state,
@@ -2283,6 +2366,187 @@ impl PlaybackService {
         .await?;
 
         Ok(state)
+    }
+
+    /// Generate the provider playback result before committing a source change.
+    ///
+    /// Playback state is shared by the room, while generated URLs and headers
+    /// are user-specific. The preflight validates the source with the resource
+    /// creator's provider credentials and prevents an invalid source from being
+    /// announced to every room member. The actual per-viewer playback response
+    /// is still generated by the API after the state commit.
+    async fn preflight_static_media(
+        &self,
+        viewer_user_id: Option<&UserId>,
+        media: &crate::models::Media,
+    ) -> Result<Option<PreflightMetadata>> {
+        let provider = match self
+            .media_service
+            .providers_manager()
+            .resolve_provider(
+                media.source_provider,
+                media.provider_instance_name.as_deref(),
+            )
+            .await
+        {
+            Ok(provider) => provider,
+            Err(error) if preflight_can_defer_generation(&error) => {
+                tracing::debug!(error = %error, media_id = %media.id, "Deferring playback preflight until data-plane generation");
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        let mut ctx = self.media_service.build_provider_context(
+            provider.name(),
+            media.creator_id.as_ref().or(viewer_user_id),
+            &media.room_id,
+            media.creator_id.as_ref(),
+            media.provider_instance_name.as_deref(),
+        );
+        ctx = ctx.with_media_id(media.id);
+        let result = match provider.generate_playback(&ctx, &media.source_config).await {
+            Ok(result) => result,
+            Err(error) => {
+                let error = Error::from(error);
+                if preflight_can_defer_generation(&error) {
+                    tracing::debug!(error = %error, media_id = %media.id, "Deferring playback preflight until data-plane generation");
+                    return Ok(None);
+                }
+                return Err(error);
+            }
+        };
+        let is_live = result.is_live.unwrap_or(false);
+        Ok(Some(PreflightMetadata {
+            identity: PlaybackSourceIdentity::static_media(media.room_id, media.id),
+            is_live,
+            duration_seconds: normalized_provider_duration(is_live, result.duration_seconds),
+            media_name: Some(media.name.clone()),
+            playlist_name: None,
+        }))
+    }
+
+    async fn preflight_dynamic_playlist_item(
+        &self,
+        viewer_user_id: Option<&UserId>,
+        playlist: &crate::models::Playlist,
+        item_name: &str,
+        source_config: &crate::models::MediaSourceConfig,
+        target: &ProviderTarget,
+    ) -> Result<Option<PreflightMetadata>> {
+        let source_provider = playlist.source_provider.ok_or_else(|| {
+            Error::InvalidInput("Dynamic playlist provider is missing".to_string())
+        })?;
+        if playlist.source_config.is_none() {
+            return Err(Error::InvalidInput(
+                "Dynamic playlist source config is missing".to_string(),
+            ));
+        }
+        let provider = match self
+            .media_service
+            .providers_manager()
+            .resolve_provider(source_provider, playlist.provider_instance_name.as_deref())
+            .await
+        {
+            Ok(provider) => provider,
+            Err(error) if preflight_can_defer_generation(&error) => {
+                tracing::debug!(error = %error, playlist_id = %playlist.id, "Deferring playback preflight until data-plane generation");
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        let ctx = self.media_service.build_provider_context(
+            provider.name(),
+            playlist.creator_id.as_ref().or(viewer_user_id),
+            &playlist.room_id,
+            playlist.creator_id.as_ref(),
+            playlist.provider_instance_name.as_deref(),
+        );
+        let result = match provider.generate_playback(&ctx, source_config).await {
+            Ok(result) => result,
+            Err(error) => {
+                let error = Error::from(error);
+                if preflight_can_defer_generation(&error) {
+                    tracing::debug!(error = %error, playlist_id = %playlist.id, "Deferring playback preflight until data-plane generation");
+                    return Ok(None);
+                }
+                return Err(error);
+            }
+        };
+        let identity =
+            PlaybackSourceIdentity::dynamic_playlist(playlist.room_id, playlist.id, target)?;
+        let is_live = result.is_live.unwrap_or(false);
+        Ok(Some(PreflightMetadata {
+            identity,
+            is_live,
+            duration_seconds: normalized_provider_duration(is_live, result.duration_seconds),
+            media_name: Some(item_name.to_string()),
+            playlist_name: Some(playlist.name.clone()),
+        }))
+    }
+
+    async fn preflight_history_entry(
+        &self,
+        viewer_user_id: Option<&UserId>,
+        room_id: &RoomId,
+        entry: &PlaybackHistoryEntry,
+    ) -> Result<Option<PreflightMetadata>> {
+        if let Some(media_id) = entry.media_id {
+            let media = self
+                .media_service
+                .get_room_media(room_id, &media_id)
+                .await?
+                .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
+            return self
+                .preflight_static_media(media.creator_id.as_ref().or(viewer_user_id), &media)
+                .await;
+        }
+        let (Some(playlist_id), Some(target)) = (entry.playlist_id.as_ref(), entry.target.as_ref())
+        else {
+            return Err(Error::InvalidInput(
+                "Playback history entry has no playable source".to_string(),
+            ));
+        };
+        let playlist = self
+            .media_service
+            .get_room_playlist(room_id, playlist_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+        let credential_owner = playlist.creator_id.as_ref().ok_or_else(|| {
+            Error::Authorization("Dynamic playlist has no active credential owner".to_string())
+        })?;
+        let resolver_user = playlist
+            .creator_id
+            .as_ref()
+            .unwrap_or(viewer_user_id.unwrap_or(credential_owner));
+        let item = self
+            .media_service
+            .resolve_dynamic_playlist_item(*room_id, *resolver_user, playlist_id, target)
+            .await?
+            .ok_or_else(|| Error::NotFound("Dynamic playlist item not found".to_string()))?;
+        self.preflight_dynamic_playlist_item(
+            Some(resolver_user),
+            &playlist,
+            &item.name,
+            &item.source_config,
+            target,
+        )
+        .await
+    }
+
+    async fn persist_preflight_metadata(&self, metadata: Option<&PreflightMetadata>) -> Result<()> {
+        let Some(metadata) = metadata else {
+            return Ok(());
+        };
+        self.source_metadata_repo
+            .upsert_provider_source_metadata(
+                &metadata.identity,
+                metadata.is_live,
+                metadata.duration_seconds,
+                metadata.media_name.as_deref(),
+                metadata.playlist_name.as_deref(),
+            )
+            .await?;
+        Ok(())
     }
 
     async fn reset_internal(

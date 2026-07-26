@@ -62,6 +62,57 @@ fn make_room_service(pool: &PgPool) -> RoomService {
     RoomService::new_for_tests(pool.clone(), user_service).checked("room service should build")
 }
 
+fn make_room_service_without_builtin_providers(pool: &PgPool) -> RoomService {
+    let user_service = make_user_service(pool);
+    let instance_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
+    let instance_manager = Arc::new(RemoteProviderManager::new(instance_repo));
+    let providers_manager =
+        Arc::new(ProvidersManager::new(instance_manager).checked("providers manager should build"));
+
+    RoomService::new_with_providers_for_tests(pool.clone(), user_service, providers_manager)
+        .checked("room service should build")
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_switch_rejects_missing_provider_before_state_change() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service_without_builtin_providers(&pool);
+    let owner = user_repo
+        .create(&make_user("missing_provider_owner"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "Missing Provider".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    let media = insert_root_media(&pool, &room.id, "missing_provider_media", 0).await;
+    let playback = room_service.playback_service();
+
+    let error = playback
+        .switch(room.id, owner.id, Some(media.id), None, None)
+        .await
+        .expect_err("missing provider should reject source selection");
+    assert!(
+        matches!(error, synctv_core::Error::NotFound(message) if message.starts_with("Provider not found:"))
+    );
+
+    let state = playback
+        .get_state(&room.id)
+        .await
+        .checked("playback state should remain readable");
+    assert!(state.playing_media_id.is_none());
+    assert!(state.playing_playlist_id.is_none());
+    assert!(!state.is_playing);
+}
+
 fn make_room_service_with_providers(
     pool: &PgPool,
     providers_manager: Arc<ProvidersManager>,

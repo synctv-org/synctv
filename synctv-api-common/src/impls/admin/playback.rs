@@ -1,5 +1,5 @@
 use synctv_core::{
-    models::{PlaybackSourceIdentity, PlaylistId, ProviderTarget, RoomId, UserId, UserStatus},
+    models::{PlaylistId, ProviderTarget, RoomId, UserId, UserStatus},
     service::{PlaybackStatePatch, PlaybackStateUpdateRequest},
 };
 
@@ -11,7 +11,7 @@ use super::{
     LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
 use crate::impls::client::convert::{dynamic_playlist_source_fields, PlaybackHttpSigningContext};
-use crate::impls::playback::resolve_playback_source_metadata;
+use crate::impls::playback::normalized_provider_duration;
 
 struct DynamicPlaylistPlaybackRequest<'a> {
     room_id_model: &'a RoomId,
@@ -83,26 +83,9 @@ impl AdminApiImpl {
             .generate_playback(&ctx, &media.source_config)
             .await
             .map_err(ApiError::from)?;
-        let playlist_name = match media.playlist_id {
-            Some(playlist_id) => self
-                .room_service
-                .playlist_service()
-                .get_room_playlist(&media.room_id, &playlist_id)
-                .await
-                .map_err(ApiError::from)?
-                .map(|playlist| playlist.name),
-            None => None,
-        };
-        let source_metadata = resolve_playback_source_metadata(
-            &self.room_service,
-            self.provider_stores.as_ref(),
-            PlaybackSourceIdentity::static_media(media.room_id, media.id),
-            provider_result.is_live,
-            provider_result.duration_seconds,
-            Some(&media.name),
-            playlist_name.as_deref(),
-        )
-        .await?;
+        let duration_seconds =
+            normalized_provider_duration(provider_result.is_live, provider_result.duration_seconds);
+        let is_live = provider_result.is_live.unwrap_or(false);
 
         let mut builder = synctv_core::models::media::PlaybackResult::builder(
             media.playlist_id,
@@ -114,8 +97,8 @@ impl AdminApiImpl {
         .provider(provider_result.provider.clone())
         .provider_instance_name(provider_result.provider_instance_name.clone())
         .default_mode(provider_result.default_mode.clone())
-        .duration_seconds(source_metadata.duration_seconds)
-        .is_live(source_metadata.is_live);
+        .duration_seconds(duration_seconds)
+        .is_live(is_live);
 
         for (mode_name, provider_info) in provider_result.playback_infos {
             let info = provider_playback_info_to_model(&provider_info);
@@ -208,16 +191,9 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let source_metadata = resolve_playback_source_metadata(
-            &self.room_service,
-            self.provider_stores.as_ref(),
-            PlaybackSourceIdentity::dynamic_playlist(*room_id_model, *playlist_id, target)?,
-            provider_result.is_live,
-            provider_result.duration_seconds,
-            Some(&item.name),
-            Some(&playlist.name),
-        )
-        .await?;
+        let duration_seconds =
+            normalized_provider_duration(provider_result.is_live, provider_result.duration_seconds);
+        let is_live = provider_result.is_live.unwrap_or(false);
 
         let mut builder = synctv_core::models::media::PlaybackResult::builder(
             Some(*playlist_id),
@@ -228,8 +204,8 @@ impl AdminApiImpl {
         .provider(provider_result.provider.clone())
         .provider_instance_name(provider_result.provider_instance_name.clone())
         .default_mode(provider_result.default_mode.clone())
-        .duration_seconds(source_metadata.duration_seconds)
-        .is_live(source_metadata.is_live);
+        .duration_seconds(duration_seconds)
+        .is_live(is_live);
 
         for (mode_name, provider_info) in provider_result.playback_infos {
             let info = provider_playback_info_to_model(&provider_info);

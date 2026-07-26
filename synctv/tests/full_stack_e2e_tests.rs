@@ -8206,7 +8206,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
             event.message.as_ref().is_some_and(|chat| {
                 chat.message_type
                     == synctv_proto::client::ChatMessageType::SystemPlaybackChanged as i32
-                    && chat.content == "Playback changed"
+                    && chat.content == "Playback changed to WS Room Media One"
             })
         });
     }

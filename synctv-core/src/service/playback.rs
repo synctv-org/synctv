@@ -172,10 +172,10 @@ fn normalized_provider_duration(is_live: bool, duration_seconds: Option<f64>) ->
 }
 
 fn preflight_can_defer_generation(error: &Error) -> bool {
-    match error {
-        Error::ServiceUnavailable(_) | Error::Timeout(_) | Error::RateLimited(_) => true,
-        _ => false,
-    }
+    matches!(
+        error,
+        Error::ServiceUnavailable(_) | Error::Timeout(_) | Error::RateLimited(_)
+    )
 }
 
 fn live_status_for_media_source(

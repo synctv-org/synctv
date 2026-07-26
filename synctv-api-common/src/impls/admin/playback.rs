@@ -83,12 +83,24 @@ impl AdminApiImpl {
             .generate_playback(&ctx, &media.source_config)
             .await
             .map_err(ApiError::from)?;
+        let playlist_name = match media.playlist_id {
+            Some(playlist_id) => self
+                .room_service
+                .playlist_service()
+                .get_room_playlist(&media.room_id, &playlist_id)
+                .await
+                .map_err(ApiError::from)?
+                .map(|playlist| playlist.name),
+            None => None,
+        };
         let source_metadata = resolve_playback_source_metadata(
             &self.room_service,
             self.provider_stores.as_ref(),
             PlaybackSourceIdentity::static_media(media.room_id, media.id),
             provider_result.is_live,
             provider_result.duration_seconds,
+            Some(&media.name),
+            playlist_name.as_deref(),
         )
         .await?;
 
@@ -202,6 +214,8 @@ impl AdminApiImpl {
             PlaybackSourceIdentity::dynamic_playlist(*room_id_model, *playlist_id, target)?,
             provider_result.is_live,
             provider_result.duration_seconds,
+            Some(&item.name),
+            Some(&playlist.name),
         )
         .await?;
 

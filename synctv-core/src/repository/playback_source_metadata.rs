@@ -21,6 +21,8 @@ struct PlaybackSourceWithStateRow {
     metadata_media_id: Option<MediaId>,
     metadata_playlist_id: Option<PlaylistId>,
     metadata_target_hash: String,
+    metadata_media_name: Option<String>,
+    metadata_playlist_name: Option<String>,
     metadata_is_live: Option<bool>,
     duration_seconds: Option<f64>,
     metadata_duration_status: PlaybackDurationStatus,
@@ -51,6 +53,8 @@ impl PlaybackSourceWithStateRow {
             media_id: self.metadata_media_id,
             playlist_id: self.metadata_playlist_id,
             target_hash: self.metadata_target_hash,
+            media_name: self.metadata_media_name,
+            playlist_name: self.metadata_playlist_name,
             is_live: self.metadata_is_live,
             duration_seconds: self.duration_seconds,
             duration_status: self.metadata_duration_status,
@@ -96,6 +100,8 @@ impl PlaybackSourceMetadataRepository {
                    media_id AS "media_id?: MediaId",
                    playlist_id AS "playlist_id?: PlaylistId",
                    target_hash,
+                   media_name,
+                   playlist_name,
                    is_live,
                    duration_seconds,
                    duration_status AS "duration_status!: PlaybackDurationStatus",
@@ -127,6 +133,8 @@ impl PlaybackSourceMetadataRepository {
         identity: &PlaybackSourceIdentity,
         is_live: bool,
         duration_seconds: Option<f64>,
+        media_name: Option<&str>,
+        playlist_name: Option<&str>,
     ) -> Result<PlaybackSourceMetadata> {
         let (duration_status, duration_source) = if duration_seconds.is_some() {
             (
@@ -145,6 +153,8 @@ impl PlaybackSourceMetadataRepository {
                 media_id,
                 playlist_id,
                 target_hash,
+                media_name,
+                playlist_name,
                 is_live,
                 duration_seconds,
                 duration_status,
@@ -152,14 +162,16 @@ impl PlaybackSourceMetadataRepository {
                 duration_error,
                 next_retry_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, NULL)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, NULL)
             ON CONFLICT (
                 room_id,
                 COALESCE(media_id, 0),
                 COALESCE(playlist_id, 0),
                 target_hash
             )
-            DO UPDATE SET is_live = EXCLUDED.is_live,
+            DO UPDATE SET media_name = COALESCE(EXCLUDED.media_name, playback_source_metadata.media_name),
+                          playlist_name = COALESCE(EXCLUDED.playlist_name, playback_source_metadata.playlist_name),
+                          is_live = EXCLUDED.is_live,
                           duration_seconds = EXCLUDED.duration_seconds,
                           duration_status = EXCLUDED.duration_status,
                           duration_source = EXCLUDED.duration_source,
@@ -191,11 +203,15 @@ impl PlaybackSourceMetadataRepository {
                OR playback_source_metadata.duration_seconds IS DISTINCT FROM EXCLUDED.duration_seconds
                OR playback_source_metadata.duration_status IS DISTINCT FROM EXCLUDED.duration_status
                OR playback_source_metadata.duration_source IS DISTINCT FROM EXCLUDED.duration_source
+               OR playback_source_metadata.media_name IS DISTINCT FROM EXCLUDED.media_name
+               OR playback_source_metadata.playlist_name IS DISTINCT FROM EXCLUDED.playlist_name
                OR playback_source_metadata.updated_at <= NOW() - INTERVAL '60 seconds'
             RETURNING room_id AS "room_id!: RoomId",
                       media_id AS "media_id?: MediaId",
                       playlist_id AS "playlist_id?: PlaylistId",
                       target_hash,
+                      media_name,
+                      playlist_name,
                       is_live,
                       duration_seconds,
                       duration_status AS "duration_status!: PlaybackDurationStatus",
@@ -210,6 +226,8 @@ impl PlaybackSourceMetadataRepository {
             identity.media_id.map(i64::from),
             identity.playlist_id.map(i64::from),
             &identity.target_hash,
+            media_name,
+            playlist_name,
             is_live,
             duration_seconds,
             i16::from(duration_status),
@@ -265,6 +283,8 @@ impl PlaybackSourceMetadataRepository {
                       media_id AS "media_id?: MediaId",
                       playlist_id AS "playlist_id?: PlaylistId",
                       target_hash,
+                      media_name,
+                      playlist_name,
                       is_live,
                       duration_seconds,
                       duration_status AS "duration_status!: PlaybackDurationStatus",
@@ -285,6 +305,36 @@ impl PlaybackSourceMetadataRepository {
         .await?;
 
         Ok(metadata)
+    }
+
+    pub async fn update_names_if_present(
+        &self,
+        identity: &PlaybackSourceIdentity,
+        media_name: Option<&str>,
+        playlist_name: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            r"UPDATE playback_source_metadata
+               SET media_name = COALESCE($5, media_name),
+                   playlist_name = COALESCE($6, playlist_name),
+                   updated_at = CURRENT_TIMESTAMP,
+                   version = version + 1
+               WHERE room_id = $1
+                 AND media_id IS NOT DISTINCT FROM $2
+                 AND playlist_id IS NOT DISTINCT FROM $3
+                 AND target_hash = $4
+                 AND (media_name IS DISTINCT FROM COALESCE($5, media_name)
+                   OR playlist_name IS DISTINCT FROM COALESCE($6, playlist_name))",
+        )
+        .bind(identity.room_id.as_i64())
+        .bind(identity.media_id.map(i64::from))
+        .bind(identity.playlist_id.map(i64::from))
+        .bind(&identity.target_hash)
+        .bind(media_name)
+        .bind(playlist_name)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn list_active_finite_sources_for_rooms(
@@ -309,6 +359,8 @@ impl PlaybackSourceMetadataRepository {
                    metadata.media_id AS "metadata_media_id?: MediaId",
                    metadata.playlist_id AS "metadata_playlist_id?: PlaylistId",
                    metadata.target_hash AS "metadata_target_hash!",
+                   metadata.media_name AS metadata_media_name,
+                   metadata.playlist_name AS metadata_playlist_name,
                    metadata.is_live AS metadata_is_live,
                    metadata.duration_seconds,
                    metadata.duration_status AS "metadata_duration_status!: PlaybackDurationStatus",
@@ -425,6 +477,8 @@ impl PlaybackSourceMetadataRepository {
                           metadata.media_id,
                           metadata.playlist_id,
                           metadata.target_hash,
+                          metadata.media_name,
+                          metadata.playlist_name,
                           metadata.is_live,
                           metadata.duration_seconds,
                           metadata.duration_status,
@@ -439,6 +493,8 @@ impl PlaybackSourceMetadataRepository {
                    updated.media_id AS "metadata_media_id?: MediaId",
                    updated.playlist_id AS "metadata_playlist_id?: PlaylistId",
                    updated.target_hash AS "metadata_target_hash!",
+                   updated.media_name AS metadata_media_name,
+                   updated.playlist_name AS metadata_playlist_name,
                    updated.is_live AS metadata_is_live,
                    updated.duration_seconds,
                    updated.duration_status AS "metadata_duration_status!: PlaybackDurationStatus",
@@ -543,6 +599,8 @@ impl PlaybackSourceMetadataRepository {
                           metadata.media_id,
                           metadata.playlist_id,
                           metadata.target_hash,
+                          metadata.media_name,
+                          metadata.playlist_name,
                           metadata.is_live,
                           metadata.duration_seconds,
                           metadata.duration_status,
@@ -557,6 +615,8 @@ impl PlaybackSourceMetadataRepository {
                    updated.media_id AS "metadata_media_id?: MediaId",
                    updated.playlist_id AS "metadata_playlist_id?: PlaylistId",
                    updated.target_hash AS "metadata_target_hash!",
+                   updated.media_name AS metadata_media_name,
+                   updated.playlist_name AS metadata_playlist_name,
                    updated.is_live AS metadata_is_live,
                    updated.duration_seconds,
                    updated.duration_status AS "metadata_duration_status!: PlaybackDurationStatus",

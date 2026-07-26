@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO playback_source_metadata (\n                room_id,\n                media_id,\n                playlist_id,\n                target_hash,\n                is_live,\n                duration_status\n            )\n            VALUES ($1, $2, $3, $4, FALSE, $5)\n            ON CONFLICT (\n                room_id,\n                COALESCE(media_id, 0),\n                COALESCE(playlist_id, 0),\n                target_hash\n            )\n            DO UPDATE SET is_live = COALESCE(playback_source_metadata.is_live, FALSE),\n                          duration_status = CASE\n                              WHEN playback_source_metadata.is_live IS NULL\n                              THEN EXCLUDED.duration_status\n                              ELSE playback_source_metadata.duration_status\n                          END,\n                          version = CASE\n                              WHEN playback_source_metadata.is_live IS NULL\n                              THEN playback_source_metadata.version + 1\n                              ELSE playback_source_metadata.version\n                          END\n            RETURNING room_id AS \"room_id!: RoomId\",\n                      media_id AS \"media_id?: MediaId\",\n                      playlist_id AS \"playlist_id?: PlaylistId\",\n                      target_hash,\n                      is_live,\n                      duration_seconds,\n                      duration_status AS \"duration_status!: PlaybackDurationStatus\",\n                      duration_source AS \"duration_source?: PlaybackDurationSource\",\n                      duration_error,\n                      next_retry_at,\n                      created_at,\n                      updated_at,\n                      version\n            ",
+  "query": "\n            INSERT INTO playback_source_metadata (\n                room_id,\n                media_id,\n                playlist_id,\n                target_hash,\n                is_live,\n                duration_status\n            )\n            VALUES ($1, $2, $3, $4, FALSE, $5)\n            ON CONFLICT (\n                room_id,\n                COALESCE(media_id, 0),\n                COALESCE(playlist_id, 0),\n                target_hash\n            )\n            DO UPDATE SET is_live = COALESCE(playback_source_metadata.is_live, FALSE),\n                          duration_status = CASE\n                              WHEN playback_source_metadata.is_live IS NULL\n                              THEN EXCLUDED.duration_status\n                              ELSE playback_source_metadata.duration_status\n                          END,\n                          version = CASE\n                              WHEN playback_source_metadata.is_live IS NULL\n                              THEN playback_source_metadata.version + 1\n                              ELSE playback_source_metadata.version\n                          END\n            RETURNING room_id AS \"room_id!: RoomId\",\n                      media_id AS \"media_id?: MediaId\",\n                      playlist_id AS \"playlist_id?: PlaylistId\",\n                      target_hash,\n                      media_name,\n                      playlist_name,\n                      is_live,\n                      duration_seconds,\n                      duration_status AS \"duration_status!: PlaybackDurationStatus\",\n                      duration_source AS \"duration_source?: PlaybackDurationSource\",\n                      duration_error,\n                      next_retry_at,\n                      created_at,\n                      updated_at,\n                      version\n            ",
   "describe": {
     "columns": [
       {
@@ -49,6 +49,28 @@
       },
       {
         "ordinal": 4,
+        "name": "media_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "media_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "playlist_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "playlist_name"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "is_live",
         "type_info": "Bool",
         "origin": {
@@ -59,7 +81,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 7,
         "name": "duration_seconds",
         "type_info": "Float8",
         "origin": {
@@ -70,7 +92,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 8,
         "name": "duration_status!: PlaybackDurationStatus",
         "type_info": "Int2",
         "origin": {
@@ -81,7 +103,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 9,
         "name": "duration_source?: PlaybackDurationSource",
         "type_info": "Int2",
         "origin": {
@@ -92,7 +114,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 10,
         "name": "duration_error",
         "type_info": "Text",
         "origin": {
@@ -103,7 +125,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 11,
         "name": "next_retry_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -114,7 +136,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -125,7 +147,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -136,7 +158,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 14,
         "name": "version",
         "type_info": "Int8",
         "origin": {
@@ -163,6 +185,8 @@
       false,
       true,
       true,
+      true,
+      true,
       false,
       true,
       true,
@@ -172,5 +196,5 @@
       false
     ]
   },
-  "hash": "7e0ebe786336c2bfc6a528fe9fb5391f7c5200dc898af0f18d65accded3334f4"
+  "hash": "bdc37ca790d8514b6f8d71ec66d55da590005631032e817e9c26ee86a08b1806"
 }

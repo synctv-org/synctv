@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS room_playback_history (
     playlist_id BIGINT NULL,
     target JSONB NULL,
     target_hash TEXT NOT NULL,
+    media_name TEXT NULL,
+    playlist_name TEXT NULL,
     position_seconds DOUBLE PRECISION NOT NULL DEFAULT 0.0,
     selected_by_user_id BIGINT NULL REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,

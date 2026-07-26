@@ -648,6 +648,17 @@ async fn test_sequential_advance_preserves_static_playlist_context() {
         .entries
         .iter()
         .all(|entry| entry.playlist_id == Some(playlist.id)));
+    let latest_entry = history
+        .entries
+        .first()
+        .checked("latest history entry should exist");
+    assert_eq!(latest_entry.media_id, Some(media2.id));
+    assert_eq!(latest_entry.media_name.as_deref(), Some("context_2"));
+    assert_eq!(
+        latest_entry.source_provider,
+        Some(SourceProvider::DirectUrl)
+    );
+    assert_eq!(latest_entry.provider_instance_name, None);
 }
 
 #[tokio::test]

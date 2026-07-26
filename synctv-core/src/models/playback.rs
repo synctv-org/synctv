@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     id::{MediaId, PlaylistId, RoomId},
+    media::SourceProvider,
     provider_target::{hash_empty_provider_target, hash_optional_provider_target, ProviderTarget},
 };
 
@@ -46,6 +47,13 @@ pub struct PlaybackHistoryEntry {
     pub target: Option<ProviderTarget>,
     pub position_seconds: f64,
     pub selected_by_user_id: Option<super::id::UserId>,
+    #[serde(default)]
+    pub media_name: Option<String>,
+    pub playlist_name: Option<String>,
+    #[serde(default)]
+    pub source_provider: Option<SourceProvider>,
+    #[serde(default)]
+    pub provider_instance_name: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -102,6 +110,8 @@ pub struct PlaybackSourceMetadata {
     pub media_id: Option<MediaId>,
     pub playlist_id: Option<PlaylistId>,
     pub target_hash: String,
+    pub media_name: Option<String>,
+    pub playlist_name: Option<String>,
     pub is_live: Option<bool>,
     pub duration_seconds: Option<f64>,
     pub duration_status: PlaybackDurationStatus,

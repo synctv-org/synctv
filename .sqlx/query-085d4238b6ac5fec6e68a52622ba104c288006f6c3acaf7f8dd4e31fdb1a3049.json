@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT room_id AS \"room_id!: RoomId\",\n                   media_id AS \"media_id?: MediaId\",\n                   playlist_id AS \"playlist_id?: PlaylistId\",\n                   target_hash,\n                   is_live,\n                   duration_seconds,\n                   duration_status AS \"duration_status!: PlaybackDurationStatus\",\n                   duration_source AS \"duration_source?: PlaybackDurationSource\",\n                   duration_error,\n                   next_retry_at,\n                   created_at,\n                   updated_at,\n                   version\n            FROM playback_source_metadata\n            WHERE room_id = $1\n              AND media_id IS NOT DISTINCT FROM $2\n              AND playlist_id IS NOT DISTINCT FROM $3\n              AND target_hash = $4\n            ",
+  "query": "\n            SELECT room_id AS \"room_id!: RoomId\",\n                   media_id AS \"media_id?: MediaId\",\n                   playlist_id AS \"playlist_id?: PlaylistId\",\n                   target_hash,\n                   media_name,\n                   playlist_name,\n                   is_live,\n                   duration_seconds,\n                   duration_status AS \"duration_status!: PlaybackDurationStatus\",\n                   duration_source AS \"duration_source?: PlaybackDurationSource\",\n                   duration_error,\n                   next_retry_at,\n                   created_at,\n                   updated_at,\n                   version\n            FROM playback_source_metadata\n            WHERE room_id = $1\n              AND media_id IS NOT DISTINCT FROM $2\n              AND playlist_id IS NOT DISTINCT FROM $3\n              AND target_hash = $4\n            ",
   "describe": {
     "columns": [
       {
@@ -49,6 +49,28 @@
       },
       {
         "ordinal": 4,
+        "name": "media_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "media_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "playlist_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "playlist_name"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "is_live",
         "type_info": "Bool",
         "origin": {
@@ -59,7 +81,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 7,
         "name": "duration_seconds",
         "type_info": "Float8",
         "origin": {
@@ -70,7 +92,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 8,
         "name": "duration_status!: PlaybackDurationStatus",
         "type_info": "Int2",
         "origin": {
@@ -81,7 +103,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 9,
         "name": "duration_source?: PlaybackDurationSource",
         "type_info": "Int2",
         "origin": {
@@ -92,7 +114,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 10,
         "name": "duration_error",
         "type_info": "Text",
         "origin": {
@@ -103,7 +125,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 11,
         "name": "next_retry_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -114,7 +136,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -125,7 +147,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -136,7 +158,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 14,
         "name": "version",
         "type_info": "Int8",
         "origin": {
@@ -162,6 +184,8 @@
       false,
       true,
       true,
+      true,
+      true,
       false,
       true,
       true,
@@ -171,5 +195,5 @@
       false
     ]
   },
-  "hash": "c489b39e41882c53b43e6c17687b13c1d3e1cb4e260208c3eb172a29a2d40639"
+  "hash": "085d4238b6ac5fec6e68a52622ba104c288006f6c3acaf7f8dd4e31fdb1a3049"
 }

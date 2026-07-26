@@ -113,8 +113,17 @@ struct PlaybackSwitchCommand {
 }
 
 enum PlaybackHistoryTransition {
-    AppendEntry { selected_by_user_id: Option<UserId> },
+    AppendEntry {
+        selected_by_user_id: Option<UserId>,
+        names: Option<PlaybackSourceNames>,
+    },
     SelectEntry(PlaybackHistoryEntry),
+}
+
+#[derive(Debug, Clone, Default)]
+struct PlaybackSourceNames {
+    media_name: Option<String>,
+    playlist_name: Option<String>,
 }
 
 fn live_status_for_target(target: &ProviderTarget) -> Option<bool> {
@@ -409,9 +418,17 @@ impl PlaybackService {
         identity: &PlaybackSourceIdentity,
         is_live: bool,
         duration_seconds: Option<f64>,
+        media_name: Option<&str>,
+        playlist_name: Option<&str>,
     ) -> Result<PlaybackSourceMetadata> {
         self.source_metadata_repo
-            .upsert_provider_source_metadata(identity, is_live, duration_seconds)
+            .upsert_provider_source_metadata(
+                identity,
+                is_live,
+                duration_seconds,
+                media_name,
+                playlist_name,
+            )
             .await
     }
 
@@ -421,6 +438,17 @@ impl PlaybackService {
     ) -> Result<PlaybackSourceMetadata> {
         self.source_metadata_repo
             .mark_probeable_unknown_if_absent(identity)
+            .await
+    }
+
+    pub async fn update_playback_source_metadata_names(
+        &self,
+        identity: &PlaybackSourceIdentity,
+        media_name: Option<&str>,
+        playlist_name: Option<&str>,
+    ) -> Result<()> {
+        self.source_metadata_repo
+            .update_names_if_present(identity, media_name, playlist_name)
             .await
     }
 
@@ -665,7 +693,15 @@ impl PlaybackService {
             Some(is_live) => Some(is_live),
             None => self.source_live_status_for_state(state).await?,
         };
-        let duration_seconds = source_metadata.and_then(|metadata| metadata.duration_seconds);
+        let duration_seconds = source_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.duration_seconds);
+        let names = source_metadata
+            .as_ref()
+            .map(|metadata| PlaybackSourceNames {
+                media_name: metadata.media_name.clone(),
+                playlist_name: metadata.playlist_name.clone(),
+            });
 
         Ok(Some(ChatPlaybackMetadata {
             media_id: state.playing_media_id,
@@ -677,6 +713,8 @@ impl PlaybackService {
                 is_live,
                 duration_seconds,
             ),
+            media_name: names.as_ref().and_then(|names| names.media_name.clone()),
+            playlist_name: names.and_then(|names| names.playlist_name),
         }))
     }
 
@@ -709,7 +747,17 @@ impl PlaybackService {
                 .fetch_one(&mut **tx)
                 .await?
         };
-        let mut message = ChatMessage::new(current.room_id, event_actor, "Playback changed".into());
+        let destination_name = metadata
+            .to
+            .media_name
+            .as_deref()
+            .or(metadata.to.playlist_name.as_deref())
+            .unwrap_or("Unknown media");
+        let mut message = ChatMessage::new(
+            current.room_id,
+            event_actor,
+            format!("Playback changed to {destination_name}"),
+        );
         message.user_id = None;
         message.message_type = ChatMessageType::SystemPlaybackChanged;
         message.metadata = Some(ChatMetadata::PlaybackChanged(metadata));
@@ -757,6 +805,45 @@ impl PlaybackService {
         Ok(Some(event))
     }
 
+    async fn resolve_playback_source_names(
+        &self,
+        state: &RoomPlaybackState,
+    ) -> Result<PlaybackSourceNames> {
+        if let Some(media_id) = state.playing_media_id {
+            let Some(media) = self
+                .media_service
+                .get_room_media(&state.room_id, &media_id)
+                .await?
+            else {
+                return Ok(PlaybackSourceNames::default());
+            };
+            let playlist_name = match media.playlist_id {
+                Some(playlist_id) => self
+                    .media_service
+                    .get_room_playlist(&state.room_id, &playlist_id)
+                    .await?
+                    .map(|playlist| playlist.name),
+                None => None,
+            };
+            return Ok(PlaybackSourceNames {
+                media_name: Some(media.name),
+                playlist_name,
+            });
+        }
+        if let Some(playlist_id) = state.playing_playlist_id {
+            let playlist_name = self
+                .media_service
+                .get_room_playlist(&state.room_id, &playlist_id)
+                .await?
+                .map(|playlist| playlist.name);
+            return Ok(PlaybackSourceNames {
+                media_name: None,
+                playlist_name,
+            });
+        }
+        Ok(PlaybackSourceNames::default())
+    }
+
     async fn persist_source_transition(
         &self,
         state: &RoomPlaybackState,
@@ -766,15 +853,30 @@ impl PlaybackService {
         actor_user_id: Option<UserId>,
         outbox_event_factory: Option<&RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<RoomPlaybackState> {
+        let names = match &history_transition {
+            PlaybackHistoryTransition::SelectEntry(entry) => PlaybackSourceNames {
+                media_name: entry.media_name.clone(),
+                playlist_name: entry.playlist_name.clone(),
+            },
+            PlaybackHistoryTransition::AppendEntry { names, .. } => {
+                if let Some(names) = names.clone() {
+                    names
+                } else {
+                    self.resolve_playback_source_names(state).await?
+                }
+            }
+        };
         let from_chat_metadata = self
             .chat_playback_metadata_for_state(previous, previous.computed_position())
             .await?;
-        let to_chat_metadata = self
+        let mut to_chat_metadata = self
             .chat_playback_metadata_for_state(state, state.position)
             .await?
             .ok_or_else(|| {
                 Error::Internal("playback transition has no target source".to_string())
             })?;
+        to_chat_metadata.media_name = names.media_name.clone();
+        to_chat_metadata.playlist_name = names.playlist_name.clone();
         let reservation = self
             .begin_playback_write_from_db_version(&state.room_id, previous.version)
             .await?;
@@ -800,6 +902,7 @@ impl PlaybackService {
             match history_transition {
                 PlaybackHistoryTransition::AppendEntry {
                     selected_by_user_id,
+                    ..
                 } => {
                     let entry = self
                         .history_repo
@@ -811,6 +914,8 @@ impl PlaybackService {
                                 target: updated.target.as_ref(),
                                 position_seconds: updated.position,
                                 selected_by_user_id,
+                                media_name: names.media_name.as_deref(),
+                                playlist_name: names.playlist_name.as_deref(),
                             },
                             &mut tx,
                         )
@@ -1244,6 +1349,7 @@ impl PlaybackService {
                             item.map(|item| {
                                 Ok(NextTarget::Dynamic {
                                     playlist_id: playlist.id,
+                                    media_name: item.name,
                                     target: item.target,
                                 })
                             })
@@ -1393,6 +1499,21 @@ impl PlaybackService {
                 // Apply update to the fetched state and try to save with optimistic locking
                 let mut updated_state = state;
                 let previous_state = updated_state.clone();
+                let transition_names = match &next_target {
+                    NextTarget::Static(_) => None,
+                    NextTarget::Dynamic { media_name, .. } => {
+                        let playlist_id = match &next_target {
+                            NextTarget::Dynamic { playlist_id, .. } => playlist_id,
+                            NextTarget::Static(_) => unreachable!(),
+                        };
+                        let playlist = self.media_service.get_room_playlist(room_id, playlist_id).await?
+                            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+                        Some(PlaybackSourceNames {
+                            media_name: Some(media_name.clone()),
+                            playlist_name: Some(playlist.name),
+                        })
+                    }
+                };
                 match &next_target {
                     NextTarget::Static(next) => {
                         match self
@@ -1413,6 +1534,7 @@ impl PlaybackService {
                     }
                     NextTarget::Dynamic {
                         playlist_id,
+                        media_name: _,
                         target,
                     } => {
                         let playlist = self
@@ -1446,6 +1568,7 @@ impl PlaybackService {
                         &previous_state,
                         PlaybackHistoryTransition::AppendEntry {
                             selected_by_user_id: actor_user_id,
+                            names: transition_names,
                         },
                         reason,
                         actor_user_id,
@@ -2059,6 +2182,8 @@ impl PlaybackService {
             None
         };
 
+        let mut dynamic_media_name = None;
+        let mut dynamic_playlist_name = None;
         if let Some(ref playlist_id) = target.playlist_id {
             let playlist = self
                 .media_service
@@ -2101,11 +2226,11 @@ impl PlaybackService {
                         })?,
                     )
                     .await?;
-                if resolved.is_none() {
-                    return Err(Error::NotFound(
-                        "Dynamic playlist item not found".to_string(),
-                    ));
-                }
+                let resolved = resolved.ok_or_else(|| {
+                    Error::NotFound("Dynamic playlist item not found".to_string())
+                })?;
+                dynamic_media_name = Some(resolved.name);
+                dynamic_playlist_name = Some(playlist.name.clone());
             }
         }
 
@@ -2116,6 +2241,8 @@ impl PlaybackService {
             || {
                 let target = target.clone();
                 let outbox_event_factory = outbox_event_factory.clone();
+                let dynamic_media_name = dynamic_media_name.clone();
+                let dynamic_playlist_name = dynamic_playlist_name.clone();
                 async move {
                     let previous = match self.playback_repo.get(&room_id).await? {
                         Some(state) => state,
@@ -2134,6 +2261,12 @@ impl PlaybackService {
                             &previous,
                             PlaybackHistoryTransition::AppendEntry {
                                 selected_by_user_id: recorded_actor_user_id,
+                                names: dynamic_media_name.clone().map(|media_name| {
+                                    PlaybackSourceNames {
+                                        media_name: Some(media_name),
+                                        playlist_name: dynamic_playlist_name.clone(),
+                                    }
+                                }),
                             },
                             PlaybackChangeReason::Selected,
                             recorded_actor_user_id,

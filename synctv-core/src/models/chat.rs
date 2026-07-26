@@ -301,6 +301,10 @@ pub struct ChatPlaybackMetadata {
     pub target_hash: Option<String>,
     #[serde(default)]
     pub position_seconds: Option<f64>,
+    #[serde(default)]
+    pub media_name: Option<String>,
+    #[serde(default)]
+    pub playlist_name: Option<String>,
 }
 
 impl ChatPlaybackMetadata {
@@ -907,6 +911,8 @@ mod tests {
                 target: Some(target.clone()),
                 target_hash: None,
                 position_seconds: Some(12.5),
+                media_name: None,
+                playlist_name: None,
             }),
             ..Default::default()
         });

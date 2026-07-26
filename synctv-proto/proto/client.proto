@@ -491,6 +491,8 @@ message ChatPlaybackMetadata {
   string playlist_id = 2;
   ProviderTarget target = 3;
   optional double position_seconds = 4;
+  string media_name = 5;
+  string playlist_name = 6;
 }
 
 message ChatUserMetadata {
@@ -2085,6 +2087,10 @@ message PlaybackHistoryEntry {
   string selected_by_user_id = 6;
   int64 created_at = 7;
   int64 updated_at = 8;
+  string media_name = 9;
+  string playlist_name = 10;
+  synctv.source_config.SourceProvider source_provider = 11;
+  string provider_instance_name = 12;
 }
 
 message ListPlaybackHistoryRequest {

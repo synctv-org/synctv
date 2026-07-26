@@ -106,19 +106,26 @@ impl ProviderSourceMetadataObservation {
         })
     }
 
-    fn gate_key(self, identity: &PlaybackSourceIdentity) -> String {
+    fn gate_key(
+        self,
+        identity: &PlaybackSourceIdentity,
+        media_name: Option<&str>,
+        playlist_name: Option<&str>,
+    ) -> String {
         let duration_bucket = self.duration_seconds.map_or_else(
             || "none".to_string(),
             |duration| duration.to_bits().to_string(),
         );
         format!(
-            "metadata:{}:{}:{}:{}:{}:{}",
+            "metadata:{}:{}:{}:{}:{}:{}:{}:{}",
             identity.room_id.as_i64(),
             identity.media_id.map_or(0, |id| id.as_i64()),
             identity.playlist_id.map_or(0, |id| id.as_i64()),
             identity.target_hash,
             self.is_live,
-            duration_bucket
+            duration_bucket,
+            media_name.unwrap_or_default(),
+            playlist_name.unwrap_or_default()
         )
     }
 }
@@ -127,15 +134,29 @@ async fn persist_provider_source_metadata(
     playback_service: &synctv_core::service::PlaybackService,
     identity: &PlaybackSourceIdentity,
     observation: ProviderSourceMetadataObservation,
+    media_name: Option<&str>,
+    playlist_name: Option<&str>,
 ) -> Result<(), ApiError> {
     if observation.is_live {
         playback_service
-            .upsert_provider_playback_source_metadata(identity, true, None)
+            .upsert_provider_playback_source_metadata(
+                identity,
+                true,
+                None,
+                media_name,
+                playlist_name,
+            )
             .await
             .map_err(ApiError::from)?;
     } else if let Some(duration_seconds) = observation.duration_seconds {
         playback_service
-            .upsert_provider_playback_source_metadata(identity, false, Some(duration_seconds))
+            .upsert_provider_playback_source_metadata(
+                identity,
+                false,
+                Some(duration_seconds),
+                media_name,
+                playlist_name,
+            )
             .await
             .map_err(ApiError::from)?;
     } else {
@@ -143,6 +164,12 @@ async fn persist_provider_source_metadata(
             .mark_probeable_playback_source_metadata_unknown_if_absent(identity)
             .await
             .map_err(ApiError::from)?;
+        if media_name.is_some() || playlist_name.is_some() {
+            playback_service
+                .update_playback_source_metadata_names(identity, media_name, playlist_name)
+                .await
+                .map_err(ApiError::from)?;
+        }
     }
     Ok(())
 }
@@ -152,8 +179,10 @@ async fn persist_provider_source_metadata_with_gate(
     provider_stores: &dyn ProviderStoreResolver,
     identity: &PlaybackSourceIdentity,
     observation: ProviderSourceMetadataObservation,
+    media_name: Option<&str>,
+    playlist_name: Option<&str>,
 ) -> Result<(), ApiError> {
-    let gate_key = observation.gate_key(identity);
+    let gate_key = observation.gate_key(identity, media_name, playlist_name);
     if SOURCE_METADATA_WRITE_L1_GATE.get(&gate_key).await.is_some() {
         return Ok(());
     }
@@ -171,7 +200,14 @@ async fn persist_provider_source_metadata_with_gate(
                 error = %error,
                 "Playback source metadata L2 gate read unavailable; using database throttle"
             );
-            persist_provider_source_metadata(playback_service, identity, observation).await?;
+            persist_provider_source_metadata(
+                playback_service,
+                identity,
+                observation,
+                media_name,
+                playlist_name,
+            )
+            .await?;
             SOURCE_METADATA_WRITE_L1_GATE.insert(gate_key, ()).await;
             return Ok(());
         }
@@ -180,7 +216,14 @@ async fn persist_provider_source_metadata_with_gate(
     let lock_key = format!("lock:{gate_key}");
     match store.lock(&lock_key, SOURCE_METADATA_WRITE_GATE_TTL).await {
         Ok(_guard) => {
-            persist_provider_source_metadata(playback_service, identity, observation).await?;
+            persist_provider_source_metadata(
+                playback_service,
+                identity,
+                observation,
+                media_name,
+                playlist_name,
+            )
+            .await?;
             if let Err(error) = store
                 .set_raw(&gate_key, b"1", SOURCE_METADATA_WRITE_GATE_TTL)
                 .await
@@ -200,7 +243,14 @@ async fn persist_provider_source_metadata_with_gate(
                 error = %error,
                 "Playback source metadata L2 gate unavailable; using database throttle"
             );
-            persist_provider_source_metadata(playback_service, identity, observation).await?;
+            persist_provider_source_metadata(
+                playback_service,
+                identity,
+                observation,
+                media_name,
+                playlist_name,
+            )
+            .await?;
             SOURCE_METADATA_WRITE_L1_GATE.insert(gate_key, ()).await;
         }
     }
@@ -214,6 +264,8 @@ pub async fn resolve_playback_source_metadata(
     identity: PlaybackSourceIdentity,
     provider_is_live: Option<bool>,
     provider_duration_seconds: Option<f64>,
+    media_name: Option<&str>,
+    playlist_name: Option<&str>,
 ) -> Result<ResolvedPlaybackSourceMetadata, ApiError> {
     let playback_service = room_service.playback_service();
     let observation =
@@ -224,6 +276,8 @@ pub async fn resolve_playback_source_metadata(
             provider_stores,
             &identity,
             observation,
+            media_name,
+            playlist_name,
         )
         .await?;
     }

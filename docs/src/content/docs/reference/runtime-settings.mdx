@@ -187,19 +187,10 @@ SOCKS5 代理 URL 只包含 scheme、host 和 port。代理认证信息位于 `s
 
 | Key | 类型 | 默认值 | 校验 | 说明 |
 | --- | --- | --- | --- | --- |
-| `webrtc.externalIceServers` | JSON/字符串结构 | Google STUN 两项 | 有效 ICE server 数组 | 返回给原生客户端的外部 ICE servers |
+| `webrtc.externalIceServers` | JSON/字符串结构 | `[]` | 有效 ICE server 数组 | 返回给原生客户端的外部 ICE servers |
 | `webrtc.maxVoiceParticipantsPerRoom` | u32 | `8` | `2..=32` | 每个房间同时加入语音通话的 Mesh 参与者上限 |
 
-默认值是：
-
-```json
-[
-  { "urls": ["stun:stun.l.google.com:19302"] },
-  { "urls": ["stun:stun1.l.google.com:19302"] }
-]
-```
-
-内置 STUN 监听端口、host、candidate 过滤等启动配置见 [WebRTC 配置](../../configuration/webrtc/)。
+外部列表默认值为空。内置 STUN 启用且具有客户端可达的公布地址时，服务端会将它加入返回给客户端的 ICE servers。内置 STUN 监听端口、host、candidate 过滤等启动配置见 [WebRTC 配置](../../configuration/webrtc/)。
 
 语音人数上限在每次加入时动态读取。降低上限会阻止后续参与者加入，当前通话连接保持；离开或断开连接会立即释放席位。多副本部署通过 Redis 原子协调房间席位。
 

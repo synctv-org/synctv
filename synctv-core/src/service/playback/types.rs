@@ -107,6 +107,7 @@ pub(super) enum NextTarget {
     Static(crate::models::Media),
     Dynamic {
         playlist_id: PlaylistId,
+        media_name: String,
         target: ProviderTarget,
     },
 }

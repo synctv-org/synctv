@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS playback_source_metadata (
     media_id BIGINT REFERENCES media(id) ON DELETE CASCADE,
     playlist_id BIGINT REFERENCES playlists(id) ON DELETE CASCADE,
     target_hash TEXT NOT NULL,
+    media_name TEXT,
+    playlist_name TEXT,
     is_live BOOLEAN,
     duration_seconds DOUBLE PRECISION,
     duration_status SMALLINT NOT NULL DEFAULT 0,

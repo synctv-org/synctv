@@ -27,6 +27,8 @@ pub struct AppendPlaybackHistoryEntry<'a> {
     pub target: Option<&'a ProviderTarget>,
     pub position_seconds: f64,
     pub selected_by_user_id: Option<UserId>,
+    pub media_name: Option<&'a str>,
+    pub playlist_name: Option<&'a str>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -39,6 +41,13 @@ struct PlaybackHistoryRow {
     target: Option<sqlx::types::Json<ProviderTarget>>,
     position_seconds: f64,
     selected_by_user_id: Option<UserId>,
+    #[sqlx(default)]
+    media_name: Option<String>,
+    playlist_name: Option<String>,
+    #[sqlx(default)]
+    source_provider: Option<crate::models::SourceProvider>,
+    #[sqlx(default)]
+    provider_instance_name: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -54,6 +63,10 @@ impl From<PlaybackHistoryRow> for PlaybackHistoryEntry {
             target: row.target.map(|target| target.0),
             position_seconds: row.position_seconds,
             selected_by_user_id: row.selected_by_user_id,
+            media_name: row.media_name,
+            playlist_name: row.playlist_name,
+            source_provider: row.source_provider,
+            provider_instance_name: row.provider_instance_name,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -74,11 +87,23 @@ impl PlaybackHistoryRepository {
     ) -> Result<PlaybackHistoryPage> {
         let limit = limit.clamp(1, 100);
         let rows = sqlx::query_as::<_, PlaybackHistoryRow>(
-            r"SELECT id, room_id, sequence, media_id, playlist_id, target,
-                      position_seconds, selected_by_user_id, created_at, updated_at
-               FROM room_playback_history
-               WHERE room_id = $1 AND ($2::bigint IS NULL OR id < $2)
-               ORDER BY sequence DESC
+            r"SELECT history.id, history.room_id, history.sequence,
+                      history.media_id, history.playlist_id, history.target,
+                      history.position_seconds, history.selected_by_user_id,
+                      history.media_name,
+                      history.playlist_name,
+                      COALESCE(media.source_provider, playlist.source_provider) AS source_provider,
+                      COALESCE(media.provider_instance_name, playlist.provider_instance_name)
+                          AS provider_instance_name,
+                      history.created_at, history.updated_at
+               FROM room_playback_history history
+               LEFT JOIN media
+                 ON media.id = history.media_id AND media.room_id = history.room_id
+               LEFT JOIN playlists playlist
+                 ON playlist.id = history.playlist_id AND playlist.room_id = history.room_id
+               WHERE history.room_id = $1
+                 AND ($2::bigint IS NULL OR history.id < $2)
+               ORDER BY history.sequence DESC
                LIMIT $3",
         )
         .bind(room_id.as_i64())
@@ -135,7 +160,8 @@ impl PlaybackHistoryRepository {
     ) -> Result<Option<PlaybackHistoryEntry>> {
         let row = sqlx::query_as::<_, PlaybackHistoryRow>(
             r"SELECT h.id, h.room_id, h.sequence, h.media_id, h.playlist_id,
-                      h.target, h.position_seconds, h.selected_by_user_id, h.created_at, h.updated_at
+                      h.target, h.media_name, h.playlist_name, h.position_seconds,
+                      h.selected_by_user_id, h.created_at, h.updated_at
                FROM room_playback_state c
                JOIN room_playback_history h
                  ON h.room_id = c.room_id
@@ -161,7 +187,8 @@ impl PlaybackHistoryRepository {
             PlaybackHistoryDirection::Next => {
                 r"SELECT candidate.id, candidate.room_id, candidate.sequence,
                       candidate.media_id, candidate.playlist_id, candidate.target,
-                      candidate.position_seconds, candidate.selected_by_user_id, candidate.created_at,
+                      candidate.media_name, candidate.playlist_name, candidate.position_seconds,
+                      candidate.selected_by_user_id, candidate.created_at,
                       candidate.updated_at
                FROM room_playback_history current
                JOIN LATERAL (
@@ -174,7 +201,8 @@ impl PlaybackHistoryRepository {
             PlaybackHistoryDirection::Previous => {
                 r"SELECT candidate.id, candidate.room_id, candidate.sequence,
                       candidate.media_id, candidate.playlist_id, candidate.target,
-                      candidate.position_seconds, candidate.selected_by_user_id, candidate.created_at,
+                      candidate.media_name, candidate.playlist_name, candidate.position_seconds,
+                      candidate.selected_by_user_id, candidate.created_at,
                       candidate.updated_at
                FROM room_playback_history current
                JOIN LATERAL (
@@ -201,7 +229,7 @@ impl PlaybackHistoryRepository {
     ) -> Result<PlaybackHistoryEntry> {
         sqlx::query_as::<_, PlaybackHistoryRow>(
             r"SELECT id, room_id, sequence, media_id, playlist_id, target,
-                      position_seconds, selected_by_user_id, created_at, updated_at
+                      media_name, playlist_name, position_seconds, selected_by_user_id, created_at, updated_at
                FROM room_playback_history WHERE room_id = $1 AND id = $2",
         )
         .bind(room_id.as_i64())
@@ -245,6 +273,8 @@ impl PlaybackHistoryRepository {
             target,
             position_seconds,
             selected_by_user_id,
+            media_name,
+            playlist_name,
         } = request;
         let cursor_entry = self.cursor_entry_on_conn(room_id, conn).await?;
         if let Some(cursor_entry) = &cursor_entry {
@@ -269,10 +299,10 @@ impl PlaybackHistoryRepository {
         let row = sqlx::query_as::<_, PlaybackHistoryRow>(
             r"INSERT INTO room_playback_history (
                    room_id, sequence, media_id, playlist_id, target, target_hash,
-                   position_seconds, selected_by_user_id
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                   media_name, playlist_name, position_seconds, selected_by_user_id
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                RETURNING id, room_id, sequence, media_id, playlist_id, target,
-                         position_seconds, selected_by_user_id, created_at, updated_at",
+                         media_name, playlist_name, position_seconds, selected_by_user_id, created_at, updated_at",
         )
         .bind(room_id.as_i64())
         .bind(next_sequence)
@@ -280,6 +310,8 @@ impl PlaybackHistoryRepository {
         .bind(playlist_id.map(|id| id.as_i64()))
         .bind(target.map(sqlx::types::Json))
         .bind(target_hash)
+        .bind(media_name)
+        .bind(playlist_name)
         .bind(position_seconds.max(0.0))
         .bind(selected_by_user_id.map(|id| id.as_i64()))
         .fetch_one(&mut *conn)

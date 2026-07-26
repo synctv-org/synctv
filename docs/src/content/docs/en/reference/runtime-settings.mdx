@@ -187,19 +187,10 @@ Optional configuration is updated through its FieldMask path, for example `{"set
 
 | Key | Type | Default | Validation | Meaning |
 | --- | --- | --- | --- | --- |
-| `webrtc.externalIceServers` | JSON/string structure | two Google STUN entries | Valid ICE server array | External ICE servers returned to native clients |
+| `webrtc.externalIceServers` | JSON/string structure | `[]` | Valid ICE server array | External ICE servers returned to native clients |
 | `webrtc.maxVoiceParticipantsPerRoom` | u32 | `8` | `2..=32` | Maximum simultaneous voice Mesh participants per room |
 
-Default value:
-
-```json
-[
-  { "urls": ["stun:stun.l.google.com:19302"] },
-  { "urls": ["stun:stun1.l.google.com:19302"] }
-]
-```
-
-Built-in STUN listener configuration is startup configuration. See [WebRTC Configuration](../../configuration/webrtc/).
+The external list is empty by default. When built-in STUN is enabled and has a client-reachable advertised address, the server adds it to the ICE servers returned to clients. Built-in STUN listener configuration is startup configuration. See [WebRTC Configuration](../../configuration/webrtc/).
 
 The voice limit is read dynamically for every join. Lowering it blocks subsequent joins while preserving existing calls; leaving or disconnecting releases a slot immediately. Multi-replica deployments coordinate room slots atomically through Redis.
 

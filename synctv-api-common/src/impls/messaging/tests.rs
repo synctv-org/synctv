@@ -392,6 +392,8 @@ fn chat_playback_metadata_encodes_public_ids() {
                 target: None,
                 target_hash: None,
                 position_seconds: None,
+                media_name: None,
+                playlist_name: None,
             }),
             ..Default::default()
         },
@@ -450,6 +452,8 @@ fn chat_playback_metadata_decodes_structured_target() {
                 )),
                 target_hash: None,
                 position_seconds: None,
+                media_name: None,
+                playlist_name: None,
             }),
             ..Default::default()
         },
@@ -475,6 +479,8 @@ fn chat_playback_metadata_derives_target_hash_from_target() {
                 )),
                 target_hash: None,
                 position_seconds: None,
+                media_name: None,
+                playlist_name: None,
             }),
             ..Default::default()
         },
@@ -505,6 +511,8 @@ fn chat_playback_metadata_rejects_invalid_position_seconds() {
                 target: None,
                 target_hash: None,
                 position_seconds: Some(-1.0),
+                media_name: None,
+                playlist_name: None,
             }),
             ..Default::default()
         },

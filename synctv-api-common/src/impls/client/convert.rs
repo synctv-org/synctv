@@ -2756,6 +2756,13 @@ pub fn playback_history_page_to_proto(
                     .unwrap_or_default(),
                 created_at: entry.created_at.timestamp(),
                 updated_at: entry.updated_at.timestamp(),
+                media_name: entry.media_name.unwrap_or_default(),
+                playlist_name: entry.playlist_name.unwrap_or_default(),
+                source_provider: entry
+                    .source_provider
+                    .map(core_source_provider_to_proto)
+                    .unwrap_or_default(),
+                provider_instance_name: entry.provider_instance_name.unwrap_or_default(),
             })
         })
         .collect::<Result<Vec<_>, crate::impls::ApiError>>()?;

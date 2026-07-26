@@ -170,7 +170,7 @@ impl PlaybackDurationProbeService {
                 Some(true) => {
                     self.playback_service
                         .source_metadata_repository()
-                        .upsert_provider_source_metadata(&identity, true, None)
+                        .upsert_provider_source_metadata(&identity, true, None, None, None)
                         .await?;
                 }
                 Some(false) => {
@@ -259,7 +259,7 @@ impl PlaybackDurationProbeService {
         if playback.is_live == Some(true) {
             self.playback_service
                 .source_metadata_repository()
-                .upsert_provider_source_metadata(&identity, true, None)
+                .upsert_provider_source_metadata(&identity, true, None, None, None)
                 .await?;
             return Ok(());
         }

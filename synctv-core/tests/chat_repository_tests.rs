@@ -200,6 +200,8 @@ async fn test_list_playback_messages_filters_by_context_and_time_window() {
                     )),
                     target_hash: None,
                     position_seconds: Some(position_seconds),
+                    media_name: None,
+                    playlist_name: None,
                 }),
                 ..Default::default()
             },
@@ -333,6 +335,8 @@ async fn test_list_playback_messages_handles_nullable_metadata_and_missing_targe
                 target,
                 target_hash: None,
                 position_seconds: Some(42.0),
+                media_name: None,
+                playlist_name: None,
             }),
             ..Default::default()
         }));

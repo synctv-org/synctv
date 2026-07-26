@@ -359,6 +359,8 @@ sqlx_from_row!(PlaybackSourceMetadata, {
     media_id,
     playlist_id,
     target_hash,
+    media_name,
+    playlist_name,
     is_live,
     duration_seconds,
     duration_status,

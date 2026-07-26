@@ -426,7 +426,7 @@ async fn room_scoped_duration_probe_skips_live_sources() {
         .checked("live source identity should exist");
 
     metadata_repo
-        .upsert_provider_source_metadata(&live_identity, true, None)
+        .upsert_provider_source_metadata(&live_identity, true, None, None, None)
         .await
         .checked("live metadata should be inserted");
 
@@ -650,11 +650,11 @@ async fn room_scoped_auto_advance_candidates_only_include_active_rooms() {
         .checked("source identity hash should compute")
         .checked("inactive source identity should exist");
     metadata_repo
-        .upsert_provider_source_metadata(&active_identity, false, Some(30.0))
+        .upsert_provider_source_metadata(&active_identity, false, Some(30.0), None, None)
         .await
         .checked("active duration should be inserted");
     metadata_repo
-        .upsert_provider_source_metadata(&inactive_identity, false, Some(30.0))
+        .upsert_provider_source_metadata(&inactive_identity, false, Some(30.0), None, None)
         .await
         .checked("inactive duration should be inserted");
 
@@ -712,7 +712,7 @@ async fn room_scoped_auto_advance_candidates_skip_paused_sources() {
         .checked("source identity hash should compute")
         .checked("source identity should exist");
     metadata_repo
-        .upsert_provider_source_metadata(&identity, false, Some(30.0))
+        .upsert_provider_source_metadata(&identity, false, Some(30.0), None, None)
         .await
         .checked("duration should be inserted");
 
@@ -785,15 +785,15 @@ async fn room_scoped_auto_advance_candidates_include_dynamic_playlist_current_ta
     .checked("stale dynamic source identity hash should compute");
 
     metadata_repo
-        .upsert_provider_source_metadata(&active_identity, false, Some(30.0))
+        .upsert_provider_source_metadata(&active_identity, false, Some(30.0), None, None)
         .await
         .checked("active dynamic duration should be inserted");
     metadata_repo
-        .upsert_provider_source_metadata(&inactive_identity, false, Some(30.0))
+        .upsert_provider_source_metadata(&inactive_identity, false, Some(30.0), None, None)
         .await
         .checked("inactive dynamic duration should be inserted");
     metadata_repo
-        .upsert_provider_source_metadata(&stale_identity, false, Some(30.0))
+        .upsert_provider_source_metadata(&stale_identity, false, Some(30.0), None, None)
         .await
         .checked("stale dynamic duration should be inserted");
 

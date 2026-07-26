@@ -178,6 +178,8 @@ pub struct ChatPlaybackMetadata {
     pub target: Option<client_proto::ProviderTarget>,
     pub target_hash: String,
     pub position_seconds: Option<f64>,
+    pub media_name: String,
+    pub playlist_name: String,
 }
 
 pub fn chat_playback_metadata_from_metadata(
@@ -197,6 +199,8 @@ pub fn chat_playback_metadata_from_metadata(
         target: target.as_ref().map(provider_target_to_proto),
         target_hash,
         position_seconds: chat_playback_position_seconds_from_metadata(metadata)?,
+        media_name: String::new(),
+        playlist_name: String::new(),
     })
 }
 
@@ -491,6 +495,8 @@ pub fn chat_metadata_to_proto(
                                 playlist_id,
                                 target: playback.target.as_ref().map(provider_target_to_proto),
                                 position_seconds: playback.position_seconds,
+                                media_name: playback.media_name.clone().unwrap_or_default(),
+                                playlist_name: playback.playlist_name.clone().unwrap_or_default(),
                             })
                         })
                         .transpose()?,
@@ -527,6 +533,8 @@ pub fn chat_metadata_to_proto(
                         .unwrap_or_default(),
                     target: playback.target.as_ref().map(provider_target_to_proto),
                     position_seconds: playback.position_seconds,
+                    media_name: playback.media_name.clone().unwrap_or_default(),
+                    playlist_name: playback.playlist_name.clone().unwrap_or_default(),
                 })
             };
             let reason = match payload.reason {

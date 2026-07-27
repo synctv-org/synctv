@@ -1502,7 +1502,10 @@ mod tests {
 
         assert_eq!(
             normalized,
-            format!("unix://{}", current_dir.join("run/synctv.sock").display())
+            format!(
+                "unix://{}",
+                current_dir.join("run").join("synctv.sock").display()
+            )
         );
     }
 
@@ -1542,7 +1545,10 @@ mod tests {
 
         assert_eq!(
             normalized,
-            format!("unix://{}", current_dir.join("run/synctv.sock").display())
+            format!(
+                "unix://{}",
+                current_dir.join("run").join("synctv.sock").display()
+            )
         );
     }
 

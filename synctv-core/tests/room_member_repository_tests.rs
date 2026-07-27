@@ -145,10 +145,10 @@ async fn test_my_room_queries_preserve_cover_reference() {
         .checked("viewer should join room");
 
     sqlx::query(
-        r#"INSERT INTO file_objects (
+        r"INSERT INTO file_objects (
                storage_backend, object_key, mime_type, size_bytes,
                content_manifest_sha256, metadata, validated_at
-           ) VALUES ($1, $2, 'image/jpeg', 1, $3, '{}'::jsonb, CURRENT_TIMESTAMP)"#,
+           ) VALUES ($1, $2, 'image/jpeg', 1, $3, '{}'::jsonb, CURRENT_TIMESTAMP)",
     )
     .bind("database")
     .bind("tests/room-cover.jpg")
@@ -157,10 +157,10 @@ async fn test_my_room_queries_preserve_cover_reference() {
     .await
     .checked("cover object should be created");
     let cover_reference_id: i64 = sqlx::query_scalar(
-        r#"INSERT INTO file_references (
+        r"INSERT INTO file_references (
                storage_backend, object_key, reference_kind, reference_id, metadata
            ) VALUES ($1, $2, 'room_cover', $3, '{}'::jsonb)
-           RETURNING id"#,
+           RETURNING id",
     )
     .bind("database")
     .bind("tests/room-cover.jpg")

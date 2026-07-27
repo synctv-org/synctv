@@ -10,11 +10,9 @@ import {
   githubCloneUrl,
 } from '../../../lib/project';
 
-## 生产 Compose
-
 单机部署优先使用 `docker-compose.yml`。它使用预构建镜像、显式生产 secret、持久化 env 文件和数据卷，适合一台服务器或本机长期运行。
 
-开发 Compose 只用于改代码或临时本地试用。它会从本地 Dockerfile 构建镜像，并内置仅供本地使用的开发配置；不要复用于生产。
+开发 Compose 面向代码修改和本地测试，从本地 Dockerfile 构建镜像并加载开发配置。生产环境使用 `docker-compose.yml`。
 
 还没有确定部署方式时，先读 [部署路径选择](../choose-path/)。
 
@@ -147,15 +145,15 @@ make compose-logs SERVICE=synctv
 
 ## 故障与边界
 
-### 生产 Compose 为什么要求显式 secret？
+### 生产 Secret
 
-因为这些值如果自动用默认弱值，服务可能看起来能跑，但安全性不可接受。
+`docker-compose.yml` 要求显式设置 secret，避免生产实例使用已知默认值启动。
 
-### 我改了 `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` 后用户不能登录？
+### OPAQUE Secret 变更
 
-这是预期风险。这个 secret 必须长期稳定。不要在每次部署时重新生成。
+`SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` 关联已有密码记录。跨重启和升级保留同一个值；变更后已有用户密码可能无法验证。
 
-### 需要备份什么？
+### 备份范围
 
 至少备份：
 

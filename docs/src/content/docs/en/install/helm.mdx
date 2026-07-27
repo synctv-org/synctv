@@ -13,26 +13,26 @@ import {
   helmRepositoryUrl,
 } from '../../../../lib/project';
 
-## When To Use Helm
+Helm fits platforms that already run Kubernetes, Ingress, and centralized secret management. Servers, NAS devices, and virtual machines use [Docker Compose](../docker-compose/); compare the infrastructure requirements in [Choose a Deployment](../choose-path/).
 
-Helm is the Kubernetes multi-replica and platform-operations path. It is not the default entrypoint for first-time SyncTV users. Start here only when you are ready to manage Kubernetes Secrets, PVCs, Ingresses, ServiceMonitor/VMServiceScrape resources, rolling updates, and database/Redis operations.
+## Before You Begin
 
-If you only need long-running service on one machine, use [single-node production Compose](../docker-compose/) first. If you have not chosen a path yet, read [Choose a Deployment Path](../choose-path/).
+Prepare PostgreSQL, Redis, long-lived secrets, Ingress, and persistent storage. Multi-replica deployments also need a shared Redis instance, cluster secret, and HLS storage model.
 
 <Aside type="caution">
-A successful Helm render does not prove the business configuration is production-safe. Before production, verify long-lived secrets, PostgreSQL backups, Redis, Ingress behavior, metrics authentication, and the HLS storage model.
+Before production, verify long-lived secrets, PostgreSQL backups, Redis, Ingress behavior, metrics authentication, and the HLS storage model.
 </Aside>
 
-## Decisions Before Production
+## Deployment Decisions
 
-| Decision | Recommended default | Risk to avoid |
+| Item | Recommended choice | Check |
 | --- | --- | --- |
-| PostgreSQL | Managed database, platform database Operator, or chart standard mode | It must be persistent and restorable |
-| Redis | Recommended in production, required for multi-replica mode | Replicas must not use different Redis instances or conflicting key prefixes |
-| Secrets | Existing Secret or controlled secret management | OPAQUE and credential keys must not change randomly per release |
+| PostgreSQL | Managed database, platform database Operator, or chart standard mode | Persistence and a tested restore procedure |
+| Redis | Production configuration; required for multiple replicas | Every replica uses the same Redis instance and a unique key prefix |
+| Secrets | Existing Secret or controlled secret management | OPAQUE and credential keys remain stable across releases |
 | HTTP/gRPC Ingress | Separate HTTP and gRPC Ingresses | gRPC Ingress needs its own backend protocol |
-| HLS storage | Publisher-node proxy for small scale, RWX/OSS for high traffic | Do not treat `emptyDir` as shared HLS storage |
-| metrics | Private scraping with authentication | Do not expose `/metrics` directly to the public internet |
+| HLS storage | Publisher-node proxy for small scale, RWX/OSS for high traffic | All replicas share the same storage view |
+| metrics | Private scraping with authentication | `/metrics` stays on a controlled network |
 
 Minimal production values skeleton:
 

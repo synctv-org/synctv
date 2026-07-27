@@ -13,26 +13,26 @@ import {
   helmRepositoryUrl,
 } from '../../../lib/project';
 
-## 什么时候使用 Helm？
+Helm 面向已有 Kubernetes、Ingress 和集中式 Secret 管理的平台。单机服务器、NAS 和虚拟机使用 [Docker Compose](../docker-compose/)；部署条件对照见[选择部署方式](../choose-path/)。
 
-Helm 是 Kubernetes 多副本和平台化运维路径，不是第一次接触 SyncTV 的默认入口。开始前应明确 Secret、PVC、Ingress、ServiceMonitor/VMServiceScrape、滚动更新和数据库/Redis 运维边界。
+## 开始之前
 
-如果你只是想在一台机器上长期运行 SyncTV，先使用 [单机生产 Compose](../docker-compose/)。如果还没决定路径，先读 [部署路径选择](../choose-path/)。
+准备 PostgreSQL、Redis、长期 Secret、Ingress 和持久化存储。多副本部署还需要统一的 Redis、集群 Secret 和 HLS 存储模型。
 
 <Aside type="caution">
-Helm 模板能渲染成功，不代表业务配置已经安全。生产前仍必须确认长期 secret、PostgreSQL 备份、Redis、Ingress、metrics 鉴权和 HLS 存储模型。
+上线前确认长期 Secret、PostgreSQL 备份、Redis、Ingress、metrics 鉴权和 HLS 存储模型。
 </Aside>
 
-## 生产前必须先决定
+## 部署决策
 
-| 决策 | 默认选择 | 不要忽略的风险 |
+| 项目 | 推荐选择 | 检查 |
 | --- | --- | --- |
-| PostgreSQL | 托管数据库、平台数据库 Operator，或 chart standard 模式 | 必须持久化并可恢复 |
-| Redis | 生产配置，多副本必需 | 多副本不能使用不同 Redis 或冲突 key prefix |
-| Secret | 使用外部 Secret 或受控 Secret 管理 | OPAQUE 和 credential key 不能随发布随机变化 |
+| PostgreSQL | 托管数据库、平台数据库 Operator，或 chart standard 模式 | 持久化和恢复演练 |
+| Redis | 生产配置，多副本必需 | 所有副本连接同一 Redis，key prefix 保持唯一 |
+| Secret | 外部 Secret 或受控 Secret 管理 | OPAQUE 和 credential key 跨发布保持稳定 |
 | HTTP/gRPC Ingress | HTTP 和 gRPC 分开 | gRPC Ingress 需要独立 backend protocol |
-| HLS 存储 | 小规模用 publisher-node proxy，高流量用 RWX/OSS | 不要把 `emptyDir` 当共享 HLS 存储 |
-| metrics | 私网抓取并启用鉴权 | 不要把 `/metrics` 直接暴露公网 |
+| HLS 存储 | 小规模用 publisher-node proxy，高流量用 RWX/OSS | 多副本共享同一存储视图 |
+| metrics | 私网抓取并启用鉴权 | `/metrics` 保持在受控网络 |
 
 最小生产 values 骨架：
 

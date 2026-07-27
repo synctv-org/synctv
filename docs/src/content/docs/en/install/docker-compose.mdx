@@ -10,11 +10,9 @@ import {
   githubCloneUrl,
 } from '../../../../lib/project';
 
-## Production Compose
-
 Single-node deployments should start with `docker-compose.yml`. It uses the prebuilt image, explicit production secrets, persistent env files, and volumes, so it is suitable for one-server or long-running local deployments.
 
-Development Compose is only for code work or short local previews. It builds from the local Dockerfile and includes local-only development settings, so do not reuse it for production.
+Development Compose serves code work and local testing. It builds from the local Dockerfile and loads development settings. Production deployments use `docker-compose.yml`.
 
 If you have not chosen a deployment model yet, start with [Choose a Deployment Path](../choose-path/).
 
@@ -147,15 +145,15 @@ make compose-logs SERVICE=synctv
 
 ## Failure Cases and Boundaries
 
-### Why does production Compose require explicit secrets?
+### Production Secrets
 
-Because weak automatic defaults are unsafe. The service should not accidentally start in production with known secrets.
+`docker-compose.yml` requires explicit secrets so a production instance cannot start with known default values.
 
-### Users cannot log in after changing `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET`
+### OPAQUE Secret Changes
 
-That secret must remain stable. Changing it can make existing OPAQUE password records unverifiable.
+`SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` is tied to existing password records. Preserve it across restarts and upgrades; changing it can make existing passwords unverifiable.
 
-### What should be backed up?
+### Backup Set
 
 At minimum:
 

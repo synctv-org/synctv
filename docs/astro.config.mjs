@@ -64,7 +64,16 @@ export default defineConfig({
           tag: 'meta',
           attrs: {
             name: 'theme-color',
-            content: '#8788fe',
+            content: '#ffffff',
+            media: '(prefers-color-scheme: light)',
+          },
+        },
+        {
+          tag: 'meta',
+          attrs: {
+            name: 'theme-color',
+            content: '#111216',
+            media: '(prefers-color-scheme: dark)',
           },
         },
       ],
@@ -89,7 +98,7 @@ export default defineConfig({
         emitExternalStylesheet: true,
         removeUnusedThemes: true,
         styleOverrides: {
-          borderRadius: '0.85rem',
+          borderRadius: '6px',
         },
       },
       plugins: [

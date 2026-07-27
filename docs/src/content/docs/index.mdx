@@ -6,17 +6,26 @@ tableOfContents: false
 
 import LocaleRedirect from '../../components/LocaleRedirect.astro';
 import LocaleChoiceTracker from '../../components/LocaleChoiceTracker.astro';
+import { Icon } from '@astrojs/starlight/components';
+import { dockerImageTag } from '../../lib/project';
 
 <LocaleRedirect />
 <LocaleChoiceTracker />
+
+<div class="docs-home-kicker">Server {dockerImageTag}</div>
 
 <p class="docs-home-lead">
 在单台服务器上使用 Docker Compose；在现有 Kubernetes 集群中使用 Helm。安装完成后配置公网入口、长期密钥、备份和监控。
 </p>
 
+<nav class="docs-home-actions" aria-label="安装入口">
+  <a href="install/quick-start/"><Icon name="rocket" />Docker Compose 安装</a>
+  <a href="install/choose-path/"><Icon name="list-format" />选择部署方式</a>
+</nav>
+
 <div class="docs-directory">
   <section>
-    <h2>部署</h2>
+    <div class="docs-directory-heading"><Icon name="rocket" /><h2>部署</h2></div>
     <ul class="docs-link-list">
       <li><a href="install/quick-start/"><strong>Docker Compose 安装</strong><span>服务器、NAS 或虚拟机</span></a></li>
       <li><a href="install/helm/"><strong>Helm 安装</strong><span>Kubernetes、Ingress 与多副本</span></a></li>
@@ -26,7 +35,7 @@ import LocaleChoiceTracker from '../../components/LocaleChoiceTracker.astro';
   </section>
 
   <section>
-    <h2>配置</h2>
+    <div class="docs-directory-heading"><Icon name="setting" /><h2>配置</h2></div>
     <ul class="docs-link-list">
       <li><a href="configuration/how-configuration-works/"><strong>加载顺序</strong><span>YAML、环境变量与 secret 文件</span></a></li>
       <li><a href="configuration/full-example/"><strong>配置示例</strong><span>最小生产配置和完整字段模板</span></a></li>
@@ -36,7 +45,7 @@ import LocaleChoiceTracker from '../../components/LocaleChoiceTracker.astro';
   </section>
 
   <section>
-    <h2>管理与运维</h2>
+    <div class="docs-directory-heading"><Icon name="laptop" /><h2>管理与运维</h2></div>
     <ul class="docs-link-list">
       <li><a href="admin/"><strong>管理 SyncTV</strong><span>用户、房间、权限与 Provider</span></a></li>
       <li><a href="operations/observability/"><strong>监控与运行手册</strong><span>健康检查、metrics、日志与告警</span></a></li>
@@ -46,7 +55,7 @@ import LocaleChoiceTracker from '../../components/LocaleChoiceTracker.astro';
   </section>
 
   <section>
-    <h2>开发与参考</h2>
+    <div class="docs-directory-heading"><Icon name="puzzle" /><h2>开发与参考</h2></div>
     <ul class="docs-link-list">
       <li><a href="develop/local-development/"><strong>本地开发</strong><span>依赖、数据库、测试与代码生成</span></a></li>
       <li><a href="reference/cli/"><strong>CLI</strong><span>服务控制与管理命令</span></a></li>

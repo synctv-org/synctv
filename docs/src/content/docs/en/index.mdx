@@ -5,16 +5,25 @@ tableOfContents: false
 ---
 
 import LocaleChoiceTracker from '../../../components/LocaleChoiceTracker.astro';
+import { Icon } from '@astrojs/starlight/components';
+import { dockerImageTag } from '../../../lib/project';
 
 <LocaleChoiceTracker />
+
+<div class="docs-home-kicker">Server {dockerImageTag}</div>
 
 <p class="docs-home-lead">
 Use Docker Compose on a single host or Helm in an existing Kubernetes cluster. Then configure public access, durable secrets, backups, and monitoring.
 </p>
 
+<nav class="docs-home-actions" aria-label="Installation paths">
+  <a href="install/quick-start/"><Icon name="rocket" />Install with Docker Compose</a>
+  <a href="install/choose-path/"><Icon name="list-format" />Choose a deployment</a>
+</nav>
+
 <div class="docs-directory">
   <section>
-    <h2>Deploy</h2>
+    <div class="docs-directory-heading"><Icon name="rocket" /><h2>Deploy</h2></div>
     <ul class="docs-link-list">
       <li><a href="install/quick-start/"><strong>Install with Docker Compose</strong><span>Server, NAS, or virtual machine</span></a></li>
       <li><a href="install/helm/"><strong>Install with Helm</strong><span>Kubernetes, Ingress, and multiple replicas</span></a></li>
@@ -24,7 +33,7 @@ Use Docker Compose on a single host or Helm in an existing Kubernetes cluster. T
   </section>
 
   <section>
-    <h2>Configure</h2>
+    <div class="docs-directory-heading"><Icon name="setting" /><h2>Configure</h2></div>
     <ul class="docs-link-list">
       <li><a href="configuration/how-configuration-works/"><strong>Loading and precedence</strong><span>YAML, environment variables, and secret files</span></a></li>
       <li><a href="configuration/full-example/"><strong>Configuration examples</strong><span>Minimal production config and full field template</span></a></li>
@@ -34,7 +43,7 @@ Use Docker Compose on a single host or Helm in an existing Kubernetes cluster. T
   </section>
 
   <section>
-    <h2>Administer and operate</h2>
+    <div class="docs-directory-heading"><Icon name="laptop" /><h2>Administer and operate</h2></div>
     <ul class="docs-link-list">
       <li><a href="admin/"><strong>Administer SyncTV</strong><span>Users, rooms, permissions, and Providers</span></a></li>
       <li><a href="operations/observability/"><strong>Monitoring and runbooks</strong><span>Health, metrics, logs, and alerts</span></a></li>
@@ -44,7 +53,7 @@ Use Docker Compose on a single host or Helm in an existing Kubernetes cluster. T
   </section>
 
   <section>
-    <h2>Develop and reference</h2>
+    <div class="docs-directory-heading"><Icon name="puzzle" /><h2>Develop and reference</h2></div>
     <ul class="docs-link-list">
       <li><a href="develop/local-development/"><strong>Local development</strong><span>Dependencies, databases, tests, and code generation</span></a></li>
       <li><a href="reference/cli/"><strong>CLI</strong><span>Service control and administration commands</span></a></li>

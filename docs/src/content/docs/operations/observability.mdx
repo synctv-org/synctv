@@ -5,9 +5,9 @@ description: SyncTV 的健康检查、metrics、日志、关键监控项和事�
 
 import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
-## 目标
+## 观测范围
 
-生产环境的观测不是只看进程是否存活，而是要确认：
+生产监控需要覆盖请求处理、外部依赖、认证、实时连接和媒体链路：
 
 - HTTP/gRPC/API 能处理请求。
 - PostgreSQL 和 Redis 可用。

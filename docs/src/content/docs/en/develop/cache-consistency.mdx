@@ -3,7 +3,7 @@ title: Cache Consistency Development Guide
 description: Maintain the strong-consistency protocol for SyncTV server-side L1 caches, Redis L2 caches, and Redis version fences.
 ---
 
-This page is for developers maintaining server-side cache code. It defines which paths require strong consistency, how Redis version fences act as authoritative freshness boundaries, and what rules new caches must follow.
+Server-side caching combines in-process L1 caches, Redis L2 caches, and Redis version fences. The rules below define strongly consistent paths, freshness boundaries, and requirements for new caches.
 
 Core rule: **asynchronous invalidation is for convergence, not correctness**. Authorization, access control, room settings, playback state, membership, and resource-existence paths must remain correct even when a node has not received an invalidation event.
 

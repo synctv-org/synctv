@@ -3,7 +3,6 @@ title: Errors
 description: SyncTV HTTP, gRPC, Realtime, Provider, and operations error response shapes, codes, status mapping, and client handling guidance.
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
 
 ## HTTP Error Response
 
@@ -126,23 +125,7 @@ Resource observation errors do not necessarily close the connection.
 
 ## Client Rules
 
-<CardGrid>
-  <Card title="Classify by status" icon="document">
-    Use HTTP or gRPC status for login, permission, retry, and refresh decisions.
-  </Card>
-  <Card title="Use codes" icon="setting">
-    Read application codes from `google.rpc.ErrorInfo.metadata.errorCode`. Do not parse English text.
-  </Card>
-  <Card title="Keep request IDs" icon="magnifier">
-    Collect `requestId`, time, path, and status for support.
-  </Card>
-  <Card title="Protect secrets" icon="approve-check-circle">
-    Never log tokens, cookies, OAuth2 codes, Provider credentials, or passwords.
-  </Card>
-</CardGrid>
-
-## Continue Reading
-
-- [Client Integration Guide](../../develop/client-integration/)
-- [SDK and API Examples](../../develop/sdk-and-api-examples/)
-- [Troubleshooting](../../operations/troubleshooting/)
+- **Classify by status**: Use HTTP or gRPC status for login, permission, retry, and refresh decisions.
+- **Use codes**: Read application codes from `google.rpc.ErrorInfo.metadata.errorCode`. Do not parse English text.
+- **Keep request IDs**: Collect `requestId`, time, path, and status for support.
+- **Protect secrets**: Never log tokens, cookies, OAuth2 codes, Provider credentials, or passwords.

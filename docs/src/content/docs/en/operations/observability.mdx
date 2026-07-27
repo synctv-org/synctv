@@ -3,7 +3,7 @@ title: Observability Runbook
 description: SyncTV health checks, metrics, logs, key monitoring signals, and incident data collection.
 ---
 
-import { Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 ## Goals
 
@@ -84,20 +84,10 @@ Notes:
 
 ## Key Signals
 
-<CardGrid>
-  <Card title="Dependencies" icon="seti:db">
-    PostgreSQL connectivity, pool exhaustion, Redis connectivity, Redis latency, and Redis key-prefix collisions.
-  </Card>
-  <Card title="Authentication" icon="approve-check-circle">
-    Login failures, MFA failures, email send failures, OAuth2 state errors, and brute-force lockouts.
-  </Card>
-  <Card title="Realtime" icon="puzzle">
-    WebSocket connections, per-user/per-room limits, message rate limiting, and reconnect spikes.
-  </Card>
-  <Card title="Media" icon="youtube">
-    Provider error rate, upstream timeouts, proxy bypass, slice-cache hit rate, Range anomalies, and livestream retries.
-  </Card>
-</CardGrid>
+- **Dependencies**: PostgreSQL connectivity, pool exhaustion, Redis connectivity, Redis latency, and Redis key-prefix collisions.
+- **Authentication**: Login failures, MFA failures, email send failures, OAuth2 state errors, and brute-force lockouts.
+- **Realtime**: WebSocket connections, per-user/per-room limits, message rate limiting, and reconnect spikes.
+- **Media**: Provider error rate, upstream timeouts, proxy bypass, slice-cache hit rate, Range anomalies, and livestream retries.
 
 ## Alert Starting Points
 
@@ -154,13 +144,3 @@ kubectl -n synctv rollout history deploy/synctv
 
   </TabItem>
 </Tabs>
-
-## Continue Reading
-
-- Startup or configuration failures: [Troubleshooting](../troubleshooting/).
-- Capacity, connections, database, Redis, or media bandwidth planning: [Capacity Planning](../capacity-planning/).
-- Metric names and groups: [Metrics Catalog](../../reference/metrics-catalog/).
-- Launch checks: [Production Checklist](../../install/production-checklist/).
-- Data recovery: [Backup and Restore](../backup-restore/).
-- Releases: [Upgrades and Migrations](../upgrades/).
-- Metrics configuration: [Metrics Monitoring](../../configuration/metrics/).

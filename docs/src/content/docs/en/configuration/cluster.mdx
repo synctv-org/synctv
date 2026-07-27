@@ -6,7 +6,7 @@ description: Multi-replica coordination, Redis discovery, static peers, Kubernet
 import Diagram from '../../../../components/Diagram.astro';
 import clusterRuntimeDark from '../../../../assets/diagrams/cluster-runtime-dark.svg';
 import clusterRuntimeLight from '../../../../assets/diagrams/cluster-runtime-light.svg';
-import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
+import { Aside, Steps } from '@astrojs/starlight/components';
 
 ## When to Enable Cluster Mode
 
@@ -46,20 +46,10 @@ cluster:
 
 Cluster mode solves runtime consistency when multiple SyncTV processes serve the same instance. It is not just a load-balancing switch, and it does not replace PostgreSQL, Redis, Ingress, or a deliberate livestream storage/proxy model.
 
-<CardGrid>
-  <Card title="Single Source of Truth" icon="seti:db">
-    PostgreSQL stores durable state: users, rooms, permissions, providers, preferences, and audit data. Every node must use the same database.
-  </Card>
-  <Card title="Runtime Coordination" icon="setting">
-    Redis stores ephemeral shared state: node registration, pub/sub, Redis Stream catch-up, leader election, rate limits, and short-lived auth state.
-  </Card>
-  <Card title="Inter-Node Trust" icon="setting">
-    `cluster.secret` authenticates inter-node gRPC calls. It must be identical across replicas and must not be exposed to clients.
-  </Card>
-  <Card title="Livestream Reachability" icon="youtube">
-    RTMP publishers can land on any node, and viewers can hit any node; livestreaming therefore needs a publisher registry, HLS gRPC proxying, and an explicit HLS storage boundary.
-  </Card>
-</CardGrid>
+- **Single Source of Truth**: PostgreSQL stores durable state: users, rooms, permissions, providers, preferences, and audit data. Every node must use the same database.
+- **Runtime Coordination**: Redis stores ephemeral shared state: node registration, pub/sub, Redis Stream catch-up, leader election, rate limits, and short-lived auth state.
+- **Inter-Node Trust**: `cluster.secret` authenticates inter-node gRPC calls. It must be identical across replicas and must not be exposed to clients.
+- **Livestream Reachability**: RTMP publishers can land on any node, and viewers can hit any node; livestreaming therefore needs a publisher registry, HLS gRPC proxying, and an explicit HLS storage boundary.
 
 <Diagram
   light={clusterRuntimeLight}

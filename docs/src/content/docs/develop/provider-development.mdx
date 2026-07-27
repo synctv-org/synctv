@@ -5,7 +5,7 @@ description: 从独立上游客户端到 Core、公开 API、远程传输、CLI�
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 
-本指南用于新增 Provider 或扩展现有 Provider。目标是让每个 Provider 保持独立的协议模型、业务能力和产品流程，同时共享稳定的 SyncTV 核心契约。
+Provider 实现覆盖上游协议、Core 模型、公开 API、远程传输、CLI、App 和测试。每个 Provider 保留独立的协议模型与能力，并复用稳定的 SyncTV 核心契约。
 
 ## 设计原则
 
@@ -281,5 +281,3 @@ flutter test
 - [ ] HTTP、gRPC、OpenAPI、management 和 CLI 完成注册。
 - [ ] App 完成绑定、能力控制、URL 解析、预览、部分选择和动态播放列表创建。
 - [ ] WireMock、Core、API、CLI、Testcontainers 和 Flutter 测试通过。
-
-继续阅读 [实现契约](../implementation-contracts/)、[客户端集成](../client-integration/) 和 [Provider 使用手册](../../use/provider-guide/)。

@@ -1,16 +1,17 @@
 :root {
-  --sl-color-accent-low: #d6f3eb;
-  --sl-color-accent: #0f8f78;
-  --sl-color-accent-high: #003c32;
-  --sl-content-width: 60rem;
-  --sl-font: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", sans-serif;
+  --sl-color-accent-low: #d9f3ed;
+  --sl-color-accent: #087f70;
+  --sl-color-accent-high: #053c35;
+  --sl-content-width: 54rem;
+  --sl-sidebar-width: 18rem;
+  --sl-font: Inter, "Noto Sans SC", "Source Han Sans SC", "PingFang SC", system-ui, sans-serif;
   --sl-font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
 }
 
 :root[data-theme='dark'] {
-  --sl-color-accent-low: #083b34;
-  --sl-color-accent: #46d6b7;
-  --sl-color-accent-high: #bdf7e8;
+  --sl-color-accent-low: #103a35;
+  --sl-color-accent: #64d9c0;
+  --sl-color-accent-high: #cff8ee;
 }
 
 .site-title img {
@@ -22,14 +23,92 @@
   box-shadow: 0 0 0 1px rgba(70, 214, 183, 0.24);
 }
 
-.hero {
-  border-radius: 1.5rem;
+.sl-markdown-content :is(h1, h2, h3, h4) {
+  letter-spacing: 0;
 }
 
-@media (min-width: 96rem) {
-  :root {
-    --sl-content-width: 72rem;
-  }
+.sl-markdown-content h1 {
+  font-size: 2.5rem;
+  line-height: 1.15;
+}
+
+.card,
+.starlight-aside,
+.expressive-code pre {
+  border-radius: 0.375rem;
+}
+
+.docs-home-lead {
+  max-width: 44rem;
+  color: var(--sl-color-gray-2);
+  font-size: 1.08rem;
+  line-height: 1.75;
+}
+
+.docs-directory {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2.5rem 3.5rem;
+  margin-top: 2.5rem;
+}
+
+.docs-directory section {
+  min-width: 0;
+}
+
+.docs-directory h2 {
+  margin: 0;
+  padding: 0 0 0.65rem;
+  font-size: 1.05rem;
+  line-height: 1.4;
+}
+
+.docs-link-list {
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--sl-color-gray-5);
+  list-style: none;
+}
+
+.docs-link-list li {
+  margin: 0;
+  border-bottom: 1px solid var(--sl-color-gray-5);
+}
+
+.docs-link-list a {
+  display: block;
+  padding: 0.85rem 0;
+  color: var(--sl-color-white);
+  text-decoration: none;
+}
+
+:root[data-theme='light'] .docs-link-list a {
+  color: var(--sl-color-black);
+}
+
+.docs-link-list a:hover strong {
+  color: var(--sl-color-accent-high);
+}
+
+.docs-link-list strong,
+.docs-link-list span {
+  display: block;
+}
+
+.docs-link-list strong {
+  font-size: 0.96rem;
+  font-weight: 650;
+}
+
+.docs-link-list span {
+  margin-top: 0.2rem;
+  color: var(--sl-color-gray-3);
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.deployment-matrix td:first-child {
+  white-space: nowrap;
 }
 
 @media (min-width: 72rem) {
@@ -56,11 +135,8 @@
   margin: 1.75rem 0;
   padding: 1rem;
   border: 1px solid var(--sl-color-gray-5);
-  border-radius: 1rem;
-  background:
-    radial-gradient(circle at top left, rgba(15, 143, 120, 0.1), transparent 18rem),
-    #fbfcf8;
-  box-shadow: 0 1rem 2.5rem rgba(17, 53, 47, 0.08);
+  border-radius: 0.375rem;
+  background: #fbfcf8;
   overflow-x: auto;
 }
 
@@ -80,10 +156,7 @@
 }
 
 :root[data-theme='dark'] .diagram-frame {
-  background:
-    radial-gradient(circle at top left, rgba(70, 214, 183, 0.12), transparent 18rem),
-    #061a17;
-  box-shadow: 0 1rem 2.5rem rgba(0, 0, 0, 0.32);
+  background: #111715;
 }
 
 :root[data-theme='dark'] .diagram-frame .diagram-image--light {
@@ -103,4 +176,15 @@
 
 :root[data-theme='dark'] .diagram-frame figcaption {
   color: #b6d8d0;
+}
+
+@media (max-width: 50rem) {
+  .sl-markdown-content h1 {
+    font-size: 2rem;
+  }
+
+  .docs-directory {
+    grid-template-columns: 1fr;
+    gap: 2rem;
+  }
 }

@@ -6,7 +6,7 @@ description: 多副本、Redis 协调、节点发现、leader election、静态�
 import Diagram from '../../../components/Diagram.astro';
 import clusterRuntimeDark from '../../../assets/diagrams/cluster-runtime-zh-dark.svg';
 import clusterRuntimeLight from '../../../assets/diagrams/cluster-runtime-zh-light.svg';
-import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
+import { Aside, Steps } from '@astrojs/starlight/components';
 
 ## 启用条件
 
@@ -44,20 +44,10 @@ openssl rand -hex 32
 
 集群模式解决的是“多个 SyncTV 进程共同服务同一个实例”时的运行时一致性问题。它不是简单的负载均衡开关，也不替代 PostgreSQL、Redis、Ingress 或直播存储/代理策略。
 
-<CardGrid>
-  <Card title="状态单一来源" icon="seti:db">
-    PostgreSQL 保存 durable state：用户、房间、权限、Provider、偏好设置和审计数据。所有节点必须连接同一个数据库。
-  </Card>
-  <Card title="运行时协调" icon="setting">
-    Redis 保存 ephemeral/shared state：节点注册、pub/sub、Redis Stream catch-up、leader election、限流和短期认证状态。
-  </Card>
-  <Card title="节点间信任" icon="setting">
-    `cluster.secret` 用于节点间 gRPC 调用认证。所有节点必须一致，且不能暴露给客户端。
-  </Card>
-  <Card title="直播可达性" icon="youtube">
-    RTMP publisher 可能在任意节点上，观众请求也可能落到任意节点；因此直播需要 publisher registry、HLS gRPC proxy 和明确的 HLS 存储边界。
-  </Card>
-</CardGrid>
+- **状态单一来源**： PostgreSQL 保存 durable state：用户、房间、权限、Provider、偏好设置和审计数据。所有节点必须连接同一个数据库。
+- **运行时协调**： Redis 保存 ephemeral/shared state：节点注册、pub/sub、Redis Stream catch-up、leader election、限流和短期认证状态。
+- **节点间信任**： `cluster.secret` 用于节点间 gRPC 调用认证。所有节点必须一致，且不能暴露给客户端。
+- **直播可达性**： RTMP publisher 可能在任意节点上，观众请求也可能落到任意节点；因此直播需要 publisher registry、HLS gRPC proxy 和明确的 HLS 存储边界。
 
 <Diagram
   light={clusterRuntimeLight}

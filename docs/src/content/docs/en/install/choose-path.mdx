@@ -1,75 +1,32 @@
 ---
-title: Choose a Deployment Path
-description: Choose between single-node production Compose, local evaluation, source runs, and Helm/Kubernetes.
+title: Choose a Deployment
+description: Compare the infrastructure and operating requirements of Docker Compose and Helm.
 ---
 
-import { Aside, Steps } from '@astrojs/starlight/components';
-import Diagram from '../../../../components/Diagram.astro';
-import deploymentPathDark from '../../../../assets/diagrams/deployment-path-dark.svg';
-import deploymentPathLight from '../../../../assets/diagrams/deployment-path-light.svg';
+Docker Compose covers most self-hosted installations. Helm is for platforms that already run Kubernetes, Ingress, and centralized secret management.
 
-## Paths
+<table class="deployment-matrix">
+  <thead><tr><th>Requirement</th><th>Docker Compose</th><th>Helm</th></tr></thead>
+  <tbody>
+    <tr><td>Environment</td><td>One Linux server, NAS, or virtual machine</td><td>Existing Kubernetes cluster</td></tr>
+    <tr><td>SyncTV replicas</td><td>One</td><td>One or more</td></tr>
+    <tr><td>PostgreSQL / Redis</td><td>Started by Compose</td><td>In-cluster or managed services</td></tr>
+    <tr><td>TLS entry point</td><td>Existing reverse proxy</td><td>Ingress Controller</td></tr>
+    <tr><td>Secrets</td><td>Local env files</td><td>Kubernetes Secret or an external secret system</td></tr>
+    <tr><td>Installation</td><td><a href="../quick-start/">Docker Compose</a></td><td><a href="../helm/">Helm</a></td></tr>
+  </tbody>
+</table>
 
-Use **single-node production Compose** for a long-running instance on one machine. Switch paths only for source changes, temporary local evaluation, or an existing Kubernetes platform.
+Use the [local development environment](../../develop/local-development/) for source changes. Its Compose file starts development dependencies only.
 
-<Diagram
-  light={deploymentPathLight}
-  dark={deploymentPathDark}
-  alt="SyncTV deployment path decision diagram choosing single-node production Compose, local evaluation, source run, or Helm based on long-running service, source work, and Kubernetes multi-replica needs."
-  caption="Decide the operating goal first, then open the matching deployment guide."
-/>
+## Production Requirements
 
-## Decision Table
+Complete these items before serving production traffic:
 
-| Path | Best for | Startup style | Production fit | Next page |
-| --- | --- | --- | --- | --- |
-| Single-node production Compose | Self-hosters, small teams, one server | Prebuilt image + `.env.postgres` + `.env.redis` + `.env.synctv` | Default production path | [Quick Start](../../install/quick-start/) |
-| Local evaluation | Temporary UI or feature preview | `docker-compose.dev.yml` | Not for public or long-running use | [Development Environment](../../develop/local-development/) |
-| Source run | Developers, API debugging, code changes | Container dependencies + local `cargo +nightly run` | Not a deployment path | [Development Guide](../../develop/local-development/) |
-| Helm/Kubernetes | Multi-replica or platform teams | Helm values + Kubernetes Secret/PVC/Ingress | Production capable, higher complexity | [Helm Deployment](../helm/) |
+- Persistent PostgreSQL data and tested backups.
+- Durable JWT, OPAQUE, and credential-encryption secrets.
+- HTTPS on public entry points.
+- Shared PostgreSQL, Redis, and cluster secrets for multiple replicas.
+- A backup and migration check before upgrades.
 
-## Single-Node Production Compose
-
-Choose it if any of these are true:
-
-- You have one server, NAS, or VM.
-- You want the shortest path to a long-running SyncTV instance.
-- You do not want to start with Kubernetes, Ingress controllers, PVCs, or Secret operators.
-- You can manage PostgreSQL backups and a few long-lived secrets.
-
-Success signals:
-
-- `.env.postgres`, `.env.redis`, and `.env.synctv` are persisted and backed up.
-- `make compose-config` passes.
-- `/health/ready` returns 200.
-- The root user can log in.
-- PostgreSQL has a backup plan.
-
-Execution path:
-
-1. [Quick Start](../../install/quick-start/): download Compose files, generate env files, set the root password, and start the service.
-2. [Docker Compose Deployment](../docker-compose/): review production Compose, development Compose, volumes, and ports.
-3. [Production Checklist](../production-checklist/): verify TLS, secrets, backups, metrics, alerts, and upgrade strategy.
-
-## Exception Paths
-
-| Scenario | Path | Boundary |
-| --- | --- | --- |
-| Temporary evaluation | Local evaluation | Fast startup with generated local env files; keep it off the public internet and do not run it long term. |
-| Source changes | Source run | PostgreSQL and Redis can come from development Compose while SyncTV runs from the local Rust toolchain. |
-| Existing Kubernetes platform | Helm | Decide HTTP/gRPC Ingress, Secret, PVC, metrics, Redis, HLS storage, and rolling updates first. |
-| Multi-replica realtime | Helm or self-managed multi-replica | All replicas must share PostgreSQL, Redis, `redis.key_prefix`, and `cluster.secret`. |
-
-## Decision Rules
-
-<Steps>
-1. If it faces users, do not use development Compose.
-2. If it runs long term, back up PostgreSQL and production secrets.
-3. If it runs multiple replicas, share PostgreSQL, Redis, `redis.key_prefix`, and `cluster.secret`.
-4. If HLS runs across replicas, choose publisher-node proxying, `shared_file`, or OSS explicitly.
-5. If the management plane uses TCP, configure a token and keep it away from normal public entrypoints.
-</Steps>
-
-<Aside type="tip">
-When unsure, choose single-node production Compose. It is the smallest production loop and can still be migrated to Helm or another orchestrator later.
-</Aside>
+The [Production Checklist](../production-checklist/) contains the full set of checks. Follow [Upgrades and Migrations](../../operations/upgrades/) for an existing installation.

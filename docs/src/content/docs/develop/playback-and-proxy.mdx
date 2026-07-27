@@ -1,5 +1,5 @@
 ---
-title: 播放与代理模型
+title: 播放与代理协议
 description: SyncTV 播放信息、播放 URL、Provider header、代理模式、Range、slice cache、WebRTC 和直播播放边界。
 ---
 
@@ -115,10 +115,3 @@ WebRTC 配置见 [WebRTC 配置](../../configuration/webrtc/)，直播见 [直�
 | 只有代理失败 | SyncTV 到上游网络或 header | 服务端网络、DNS、proxy header |
 | 多副本直播偶发失败 | HLS 存储模型 | publisher 节点、共享存储、OSS 或 gRPC proxy |
 | 播放 URL 一段时间后失效 | `expires_at` | 订阅或重新拉取播放信息 |
-
-## 继续阅读
-
-- [添加媒体](../media-sources/)
-- [客户端集成指南](../../develop/client-integration/)
-- [Realtime API](../../develop/realtime-api/)
-- [容量规划](../../operations/capacity-planning/)

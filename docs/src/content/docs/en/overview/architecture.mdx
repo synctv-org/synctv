@@ -10,7 +10,7 @@ import kubernetesTopologyDark from '../../../../assets/diagrams/kubernetes-topol
 import kubernetesTopologyLight from '../../../../assets/diagrams/kubernetes-topology-light.svg';
 import productionMinimalDark from '../../../../assets/diagrams/production-minimal-dark.svg';
 import productionMinimalLight from '../../../../assets/diagrams/production-minimal-light.svg';
-import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 ## Start With the Model
 
@@ -44,20 +44,10 @@ PostgreSQL is durable business state. Redis is shared short-lived state and coor
 
 ## Major Components
 
-<CardGrid>
-  <Card title="API and realtime" icon="document">
-    HTTP REST, public gRPC, WebSocket, and room realtime events share the same business services and permission model.
-  </Card>
-  <Card title="Authentication" icon="approve-check-circle">
-    Password, OPAQUE, passkey/WebAuthn, email codes, OAuth2, user-level 2FA, and JWT tokens make up the login layer.
-  </Card>
-  <Card title="Media" icon="puzzle">
-    Providers resolve external media, the proxy performs controlled forwarding, and slice cache stores Range slices only.
-  </Card>
-  <Card title="Horizontal scaling" icon="cloud-download">
-    Multi-node deployments use Redis, discovery, leader election, and transactional outbox delivery boundaries.
-  </Card>
-</CardGrid>
+- **API and realtime**: HTTP REST, public gRPC, WebSocket, and room realtime events share the same business services and permission model.
+- **Authentication**: Password, OPAQUE, passkey/WebAuthn, email codes, OAuth2, user-level 2FA, and JWT tokens make up the login layer.
+- **Media**: Providers resolve external media, the proxy performs controlled forwarding, and slice cache stores Range slices only.
+- **Horizontal scaling**: Multi-node deployments use Redis, discovery, leader election, and transactional outbox delivery boundaries.
 
 ## Runtime Surfaces
 
@@ -167,12 +157,3 @@ Kubernetes multi-replica topology:
   alt="Kubernetes multi-replica topology showing HTTP Ingress, gRPC Ingress, separate Services, multiple SyncTV pods, PostgreSQL, Redis, HLS backend or publisher-node proxy, and external media providers."
   caption="Kubernetes multi-replica deployments should split HTTP and gRPC Services/Ingresses and connect every pod to the same PostgreSQL and Redis backends. Local HLS backends use publisher-node proxying; shared_file lets the current node read TS segments from a shared path, and OSS provides object-storage-backed segments."
 />
-
-## Continue Reading
-
-- [Quick Start](../../install/quick-start/)
-- [Configuration Index](../../reference/configuration-index/)
-- [Production Checklist](../../install/production-checklist/)
-- [Backup and Restore](../../operations/backup-restore/)
-- [Upgrades and Migrations](../../operations/upgrades/)
-- [Observability Runbook](../../operations/observability/)

@@ -30,7 +30,7 @@ Most fields can keep their defaults. Production launch should prioritize secrets
 | `livestream.*` | RTMP/FLV/HLS livestreaming | HLS storage model differs between replicas | Restart required | Use shared filesystem or OSS for high traffic |
 | `proxy_slice_cache.*` | Proxy Range slice cache is needed | Expecting full-file cache | Restart required | Mount enough storage; only Range slices are cached |
 
-Shortest verification loop:
+Run these checks after changing configuration:
 
 ```bash
 synctv config validate
@@ -71,7 +71,7 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `jwt` | object | see below | [Security and Secrets](../../configuration/security/) |
 | `logging` | object | see below | [Server Listener and Runtime Paths](../../configuration/server-and-runtime/) |
 | `livestream` | object | see below | [Livestream Configuration](../../configuration/livestream/) |
-| `chat` | object | see below | [Chat](../../use/chat/) |
+| `chat` | object | see below | `chat` field table on this page |
 | `webauthn` | object | see below | [WebAuthn and Passkeys](../../configuration/webauthn/) |
 | `email` | object | see below | [Email and OAuth2](../../configuration/email-oauth2/) |
 | `media_providers` | object | see below | [Media Providers](../../configuration/media-providers/) |

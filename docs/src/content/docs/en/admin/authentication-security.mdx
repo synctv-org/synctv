@@ -6,7 +6,7 @@ description: SyncTV login methods, 2FA semantics, token context, management perm
 import Diagram from '../../../../components/Diagram.astro';
 import securityAuthBoundaryDiagramDark from '../../../../assets/diagrams/security-auth-boundary-dark.svg';
 import securityAuthBoundaryDiagramLight from '../../../../assets/diagrams/security-auth-boundary-light.svg';
-import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
+import { Aside, Steps } from '@astrojs/starlight/components';
 
 ## Security Boundaries
 
@@ -102,32 +102,11 @@ Consequences:
 - If a direct URL is bound to `User-Agent`, client-facing headers and proxy upstream headers should match.
 - If a client cannot set required headers, use proxy mode.
 
-For Provider credentials, direct/proxy selection, and playback info details, see [Add Media](../../use/media-sources/) and [Playback and Proxy Model](../../use/playback-and-proxy/).
+See [Media Providers](../../configuration/media-providers/) for credential configuration and [Playback and Proxy Protocol](../../develop/playback-and-proxy/) for direct, proxy, and playback-info selection.
 
 ## Required Reading
 
-<CardGrid>
-  <Card title="Security and Secrets" icon="approve-check-circle">
-    Configure JWT, OPAQUE, provider credential encryption, password policy, CORS, and trusted proxies.
-  </Card>
-  <Card title="Email and OAuth2" icon="document">
-    Configure email codes, SMTP, and runtime OAuth2 provider settings.
-  </Card>
-  <Card title="WebAuthn" icon="puzzle">
-    Configure passkey RP ID, origins, allowed origins, and challenge timeout.
-  </Card>
-  <Card title="Rate Limits" icon="setting">
-    Configure HTTP, gRPC, chat, WebSocket, and authentication rate limits.
-  </Card>
-</CardGrid>
-
-## Continue Reading
-
-- [Client Integration Guide](../../develop/client-integration/)
-- [Errors](../../reference/errors/)
-- [Security Hardening and Rotation](../../operations/security-hardening-and-rotation/)
-- [Data, Privacy, and Retention](../../operations/data-retention/)
-- [Security and Secrets](../../configuration/security/)
-- [Email and OAuth2](../../configuration/email-oauth2/)
-- [WebAuthn and Passkeys](../../configuration/webauthn/)
-- [Rate Limits and Connection Limits](../../configuration/rate-limits/)
+- **Security and Secrets**: Configure JWT, OPAQUE, provider credential encryption, password policy, CORS, and trusted proxies.
+- **Email and OAuth2**: Configure email codes, SMTP, and runtime OAuth2 provider settings.
+- **WebAuthn**: Configure passkey RP ID, origins, allowed origins, and challenge timeout.
+- **Rate Limits**: Configure HTTP, gRPC, chat, WebSocket, and authentication rate limits.

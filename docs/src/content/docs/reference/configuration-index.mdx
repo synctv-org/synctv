@@ -30,7 +30,7 @@ OAuth2 provider 实例属于 [Runtime settings](../runtime-settings/#oauth2)。�
 | `livestream.*` | RTMP/FLV/HLS 直播 | 多副本 HLS 存储模型不一致 | 需要重启 | 高流量使用共享文件系统或 OSS |
 | `proxy_slice_cache.*` | 需要代理 Range slice 缓存 | 误以为会缓存完整文件 | 需要重启 | 挂载容量足够的目录，只缓存 Range slice |
 
-最短验证闭环：
+修改配置后运行：
 
 ```bash
 synctv config validate
@@ -71,7 +71,7 @@ curl -fsS http://localhost:8080/health/ready
 | `jwt` | 对象 | 见下方 | [安全与密钥](../../configuration/security/) |
 | `logging` | 对象 | 见下方 | [服务监听与运行时路径](../../configuration/server-and-runtime/) |
 | `livestream` | 对象 | 见下方 | [直播配置](../../configuration/livestream/) |
-| `chat` | 对象 | 见下方 | [聊天](../../use/chat/) |
+| `chat` | 对象 | 见下方 | 本页 `chat` 字段表 |
 | `webauthn` | 对象 | 见下方 | [WebAuthn 配置](../../configuration/webauthn/) |
 | `email` | 对象 | 见下方 | [邮件与 OAuth2](../../configuration/email-oauth2/) |
 | `media_providers` | 对象 | 见下方 | [媒体 Provider](../../configuration/media-providers/) |

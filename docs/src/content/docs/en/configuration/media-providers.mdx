@@ -30,9 +30,7 @@ media_providers:
 
 Remote provider instances are not configured in this YAML object. They are persisted through the management API/CLI and only store connection details that SyncTV needs to reach the remote provider, such as `endpoint`, `tls`, `jwt_secret`, `custom_ca`, `timeout`, `insecure_tls`, and `providers`. The remote provider's own Alist, Emby, or Bilibili configuration belongs in the remote provider deployment.
 
-For scenario-based setup guidance for Alist, Emby/Jellyfin, Bilibili, direct URLs, RTMP, or remote Providers, start with [Add Media](../../use/media-sources/).
-
-See the [Provider User Guide](../../use/provider-guide/) for binding, resource, and dynamic-playlist capabilities. See the [Provider Development Guide](../../develop/provider-development/) for implementation and extension workflows.
+Create remote Provider instances through the management API or CLI, and keep Alist, Emby/Jellyfin, Bilibili, and other upstream configuration in the matching Provider service. See [Provider Management](../../admin/providers/) for enable, reconnect, and credential maintenance tasks. See [Provider Development](../../develop/provider-development/) to implement or extend a Provider.
 
 ## Provider Instances
 
@@ -127,11 +125,3 @@ security:
 ```
 
 Without a stable credential encryption key, creating or updating encrypted provider credentials may fail, and previously encrypted credentials may become unreadable if the key is lost.
-
-## Continue Reading
-
-- [Add Media](../../use/media-sources/)
-- [Provider User Guide](../../use/provider-guide/)
-- [Provider Development Guide](../../develop/provider-development/)
-- [Playback and Proxy Model](../../use/playback-and-proxy/)
-- [Security Hardening and Rotation](../../operations/security-hardening-and-rotation/)

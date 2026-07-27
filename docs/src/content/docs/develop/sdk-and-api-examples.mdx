@@ -1,13 +1,13 @@
 ---
 title: SDK 与 API 示例
-description: HTTP/OpenAPI、gRPC、WebSocket Realtime 和 Provider API 的最小可运行集成示例。
+description: HTTP/OpenAPI、gRPC、WebSocket Realtime 和 Provider API 的可运行示例。
 ---
 
 import { TabItem, Tabs } from '@astrojs/starlight/components';
 
-## 目标
+## 请求顺序
 
-下面是一组可串联执行的 API 示例：登录、刷新 token、创建房间、创建 WebSocket ticket、连接 Realtime、读取播放状态、处理错误和调用 Provider。字段完整定义以 OpenAPI JSON 和 protobuf 为准。
+示例依次完成登录、刷新 token、创建房间、创建 WebSocket ticket、连接 Realtime、读取播放状态、处理错误和调用 Provider。字段定义以 OpenAPI JSON 和 protobuf 为准。
 
 先读 [客户端集成指南](../client-integration/) 理解总体约定，再按示例落地代码。
 
@@ -43,7 +43,7 @@ npx openapi-typescript openapi.json -o synctv-api.d.ts
 
 完整入口见 [OpenAPI 文档入口](../../reference/openapi/)。
 
-## HTTP 最小闭环
+## HTTP 登录与建房
 
 <Tabs syncKey="http-api-examples">
   <TabItem label="OPAQUE 登录" icon="approve-check-circle">
@@ -100,7 +100,7 @@ ticket 是短期、一次性、房间绑定凭据。浏览器 WebSocket 使用 t
   </TabItem>
 </Tabs>
 
-## Realtime 最小闭环
+## Realtime 连接与订阅
 
 浏览器示例使用 protobufjs 生成的类型名作为说明，实际导入路径取决于你的构建。
 
@@ -215,10 +215,3 @@ HTTP 错误响应：
 | 创建房间、添加媒体、修改设置 | 请求超时后先重新读取资源，避免重复创建 |
 | WebSocket 断线 | 重新申请 ticket，重建观察，带上缓存版本 |
 | Provider 请求 | 对上游超时做退避，区分凭据失效和上游不可用 |
-
-## 继续阅读
-
-- [客户端集成指南](../client-integration/)
-- [Realtime API](../realtime-api/)
-- [错误参考](../../reference/errors/)
-- [API 与 protobuf 演进策略](../../reference/api-versioning/)

@@ -5,7 +5,7 @@ description: Add a Provider from its upstream client through Core, public APIs, 
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 
-Use this guide when adding a Provider or extending an existing one. Each Provider keeps its own protocol model, capabilities, and product workflow while sharing stable SyncTV core contracts.
+A Provider implementation spans the upstream protocol, Core model, public APIs, remote transport, CLI, App, and tests. Each Provider keeps its own protocol model and capabilities while sharing stable SyncTV core contracts.
 
 ## Design Principles
 
@@ -281,5 +281,3 @@ flutter test
 - [ ] HTTP, gRPC, OpenAPI, management, and CLI registrations are complete.
 - [ ] The App supports binding, capability gating, URL parsing, preview, partial selection, and dynamic-playlist creation.
 - [ ] WireMock, Core, API, CLI, Testcontainers, and Flutter tests pass.
-
-Continue with [Implementation Contracts](../implementation-contracts/), [Client Integration](../client-integration/), and the [Provider User Guide](../../use/provider-guide/).

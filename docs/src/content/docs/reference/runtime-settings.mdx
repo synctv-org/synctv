@@ -3,7 +3,7 @@ title: Runtime settings 参考
 description: 数据库热更新设置的语义、默认值、校验规则、适用范围和 CLI 示例。
 ---
 
-import { Aside, Card, CardGrid, TabItem, Tabs } from '@astrojs/starlight/components';
+import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
 
 ## Runtime settings 是什么
 
@@ -82,7 +82,7 @@ runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通�
 ["view_members", "view_chat_history", "use_voice_chat", "use_p2p_media"]
 ```
 
-完整权限名称、角色默认集合和房间覆盖规则见 [房间、权限与用户偏好](../../use/rooms-permissions/)。
+完整权限名称、角色默认集合和房间覆盖规则见 [角色、权限与用户偏好](../../admin/permissions/)。
 
 ### Room
 
@@ -142,7 +142,7 @@ runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通�
 
 缺失 provider 实例表示该登录入口不可用。缺失或为 `false` 的 `enableSignup` 会阻止首次 OAuth2 登录自动创建本地账号，但已绑定的 OAuth2 登录不受影响。`signupNeedReview=true` 会把首次 OAuth2 注册写入用户注册审核队列，审核通过后才创建本地账号和 OAuth2 绑定。
 
-注意：用户级 2FA、通知偏好和 Provider 默认实例不在这里，属于 user preferences。见 [房间、权限与用户偏好](../../use/rooms-permissions/)。
+用户级 2FA、通知偏好和 Provider 默认实例属于 user preferences，见 [角色、权限与用户偏好](../../admin/permissions/)。
 
 ### Proxy
 
@@ -254,17 +254,7 @@ synctv settings update --set 'oauth2.providers=[{"name":"github","enableSignup":
 
 ## 修改前检查
 
-<CardGrid>
-  <Card title="先确认是否应热更新" icon="setting">
-    如果是端口、secret、数据库、Redis、TLS 或 cache 启用，应该改启动配置而不是 runtime settings。
-  </Card>
-  <Card title="先查当前值" icon="magnifier">
-    修改前运行 `synctv settings get <key>`，记录当前值，方便回滚。
-  </Card>
-  <Card title="关注多副本同步" icon="cloud-download">
-    多副本依赖 PostgreSQL 通知同步，修改后观察所有副本日志和行为。
-  </Card>
-  <Card title="保留变更原因" icon="document">
-    对注册、房间创建、代理和权限默认值这类策略变更记录 reason。
-  </Card>
-</CardGrid>
+- **先确认是否应热更新**： 如果是端口、secret、数据库、Redis、TLS 或 cache 启用，应该改启动配置而不是 runtime settings。
+- **先查当前值**： 修改前运行 `synctv settings get <key>`，记录当前值，方便回滚。
+- **关注多副本同步**： 多副本依赖 PostgreSQL 通知同步，修改后观察所有副本日志和行为。
+- **保留变更原因**： 对注册、房间创建、代理和权限默认值这类策略变更记录 reason。

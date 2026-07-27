@@ -1,75 +1,32 @@
 ---
-title: 部署路径选择
-description: 在单机生产 Compose、本地试用、源码运行和 Helm/Kubernetes 之间选择正确路径。
+title: 选择部署方式
+description: 比较 Docker Compose 与 Helm 的基础设施要求和运维成本。
 ---
 
-import { Aside, Steps } from '@astrojs/starlight/components';
-import Diagram from '../../../components/Diagram.astro';
-import deploymentPathDark from '../../../assets/diagrams/deployment-path-zh-dark.svg';
-import deploymentPathLight from '../../../assets/diagrams/deployment-path-zh-light.svg';
+Docker Compose 覆盖大多数自托管环境。Helm 面向已经运行 Kubernetes、Ingress 和集中式 Secret 管理的平台。
 
-## 路径
+<table class="deployment-matrix">
+  <thead><tr><th>条件</th><th>Docker Compose</th><th>Helm</th></tr></thead>
+  <tbody>
+    <tr><td>运行环境</td><td>一台 Linux 服务器、NAS 或虚拟机</td><td>现有 Kubernetes 集群</td></tr>
+    <tr><td>SyncTV 副本</td><td>单副本</td><td>单副本或多副本</td></tr>
+    <tr><td>PostgreSQL / Redis</td><td>Compose 同时启动</td><td>使用集群内或托管服务</td></tr>
+    <tr><td>TLS 入口</td><td>现有反向代理</td><td>Ingress Controller</td></tr>
+    <tr><td>Secret</td><td>本地 env 文件</td><td>Kubernetes Secret 或外部 Secret 系统</td></tr>
+    <tr><td>开始安装</td><td><a href="../quick-start/">Docker Compose 安装</a></td><td><a href="../helm/">Helm 安装</a></td></tr>
+  </tbody>
+</table>
 
-长期运行的单机实例使用 **单机生产 Compose**。只有改代码、临时本地试用，或已经有 Kubernetes 平台时才切换路径。
+源码开发使用[本地开发环境](../../develop/local-development/)，其中的 Compose 文件只启动开发依赖。
 
-<Diagram
-  light={deploymentPathLight}
-  dark={deploymentPathDark}
-  alt="SyncTV 部署路径选择图，按照是否长期运行、是否改代码、是否需要 Kubernetes 多副本选择单机生产 Compose、本地试用、源码运行或 Helm。"
-  caption="先判断运行目标，再进入对应部署文档。"
-/>
+## 生产要求
 
-## 选择表
+上线前完成以下项目：
 
-| 路径 | 适合谁 | 启动方式 | 生产可用性 | 下一页 |
-| --- | --- | --- | --- | --- |
-| 单机生产 Compose | 自托管用户、小团队、一台服务器 | 预构建镜像 + `.env.postgres` + `.env.redis` + `.env.synctv` | 默认生产路径 | [快速开始](../../install/quick-start/) |
-| 本地试用 | 临时看界面或功能 | `docker-compose.dev.yml` | 不可用于公网或长期运行 | [开发环境](../../develop/local-development/) |
-| 源码运行 | 开发者、调试 API、改代码 | 容器依赖 + 本机 `cargo +nightly run` | 不作为部署方式 | [开发指南](../../develop/local-development/) |
-| Helm/Kubernetes | 多副本、平台团队、统一 Ingress/监控 | Helm values + Kubernetes Secret/PVC/Ingress | 可用于生产，但复杂度更高 | [Helm 部署](../helm/) |
+- 持久化并备份 PostgreSQL。
+- 长期保存 JWT、OPAQUE 和凭据加密 secret。
+- 公网入口启用 HTTPS。
+- 多副本共享 PostgreSQL、Redis 和集群 secret。
+- 升级前备份并验证数据库 migration。
 
-## 单机生产 Compose
-
-满足任一条件时使用：
-
-- 只有一台服务器或一台 NAS/VM。
-- 想尽快得到一个长期可用的 SyncTV 实例。
-- 不想先理解 Kubernetes、Ingress controller、PVC、Secret operator。
-- 可以自己管理 PostgreSQL 备份和几个长期 secret。
-
-成功标准：
-
-- `.env.postgres`、`.env.redis` 和 `.env.synctv` 已持久保存并备份。
-- `make compose-config` 通过。
-- `/health/ready` 返回 200。
-- root 用户可以登录。
-- PostgreSQL 有备份方案。
-
-执行路径：
-
-1. [快速开始](../../install/quick-start/)：下载 Compose 文件、生成 env、设置 root 密码、启动服务。
-2. [Docker Compose 部署](../docker-compose/)：确认生产 Compose、开发 Compose、数据卷和端口边界。
-3. [生产部署清单](../production-checklist/)：上线前检查 TLS、secret、备份、metrics、告警和升级策略。
-
-## 例外路径
-
-| 场景 | 使用路径 | 边界 |
-| --- | --- | --- |
-| 只想临时体验 | 本地试用 | 使用生成的本地 env 文件，启动快；不要暴露公网或长期运行。 |
-| 要改代码 | 源码运行 | PostgreSQL 和 Redis 可由开发 Compose 提供，SyncTV 本体由本机 Rust 工具链启动。 |
-| 已有 Kubernetes 平台 | Helm | 先确定 HTTP/gRPC Ingress、Secret、PVC、metrics、Redis、HLS 存储和滚动更新策略。 |
-| 需要多副本实时协作 | Helm 或自管多副本 | 所有副本必须共享 PostgreSQL、Redis、`redis.key_prefix` 和 `cluster.secret`。 |
-
-## 决策底线
-
-<Steps>
-1. 只要对外提供服务，就不要使用开发 Compose。
-2. 只要长期运行，就必须备份 PostgreSQL 和生产 secret。
-3. 只要多副本运行，就必须共享 PostgreSQL、Redis、`redis.key_prefix` 和 `cluster.secret`。
-4. 只要启用 HLS 多副本，就必须选择 publisher-node proxy、`shared_file` 或 OSS 之一。
-5. 只要管理控制面使用 TCP，就必须配置 token，并避免暴露给普通公网入口。
-</Steps>
-
-<Aside type="tip">
-如果还不确定，选单机生产 Compose。它是最小的生产闭环，后续仍可以迁移到 Helm 或其他编排系统。
-</Aside>
+完整检查项见[生产部署清单](../production-checklist/)。已有实例按[升级与迁移](../../operations/upgrades/)操作。

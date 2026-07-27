@@ -3,7 +3,7 @@ title: 观测与运行手册
 description: SyncTV 的健康检查、metrics、日志、关键监控项和事故排查信息收集。
 ---
 
-import { Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 ## 目标
 
@@ -84,20 +84,10 @@ logging:
 
 ## 关键监控项
 
-<CardGrid>
-  <Card title="依赖健康" icon="seti:db">
-    PostgreSQL 连接、连接池耗尽、Redis 连接、Redis 延迟和 Redis key 前缀是否混用。
-  </Card>
-  <Card title="认证安全" icon="approve-check-circle">
-    登录失败率、MFA 失败率、邮箱验证码发送失败、OAuth2 state 错误和 brute-force 锁定。
-  </Card>
-  <Card title="实时连接" icon="puzzle">
-    WebSocket 连接数、每用户/房间连接限制、消息限流和断开重连峰值。
-  </Card>
-  <Card title="媒体路径" icon="youtube">
-    Provider 错误率、上游超时、proxy bypass、slice cache 命中率、Range 异常和直播拉流重试。
-  </Card>
-</CardGrid>
+- **依赖健康**： PostgreSQL 连接、连接池耗尽、Redis 连接、Redis 延迟和 Redis key 前缀是否混用。
+- **认证安全**： 登录失败率、MFA 失败率、邮箱验证码发送失败、OAuth2 state 错误和 brute-force 锁定。
+- **实时连接**： WebSocket 连接数、每用户/房间连接限制、消息限流和断开重连峰值。
+- **媒体路径**： Provider 错误率、上游超时、proxy bypass、slice cache 命中率、Range 异常和直播拉流重试。
 
 ## 告警起点
 
@@ -154,13 +144,3 @@ kubectl -n synctv rollout history deploy/synctv
 
   </TabItem>
 </Tabs>
-
-## 继续阅读
-
-- 启动或配置错误：先看 [排障入口](../troubleshooting/)。
-- 容量、连接数、数据库、Redis 或媒体带宽规划：看 [容量规划](../capacity-planning/)。
-- 指标名称和分组：看 [Metrics Catalog](../../reference/metrics-catalog/)。
-- 上线前检查：看 [生产部署清单](../../install/production-checklist/)。
-- 数据恢复：看 [备份与恢复](../backup-restore/)。
-- 版本发布：看 [升级与迁移](../upgrades/)。
-- metrics 配置：看 [Metrics 监控](../../configuration/metrics/)。

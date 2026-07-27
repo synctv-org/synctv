@@ -17,9 +17,9 @@ OpenAPI 和 protobuf 定义请求、响应和消息结构；客户端还需要�
 | --- | --- | --- |
 | 登录并保持会话 | 登录、处理 MFA、保存 access/refresh token、刷新会话、处理 401 | 本页“Token 使用”和“本地登录和 MFA” |
 | 进入房间实时状态 | 获取房间、创建 WebSocket ticket、连接 `/ws/rooms/{roomId}`、解码 protobuf | [Realtime API](../realtime-api/) |
-| 展示同步播放 | 读取当前播放状态、获取播放信息、订阅 `playbackState` 和 `playback` | [播放模型](../../concepts/playback-model/) |
-| 添加媒体 | 选择 Provider、浏览或搜索媒体、提交播放列表项、处理 Provider 错误 | [媒体源](../../concepts/media-providers/) |
-| 处理 URL 过期 | 读取 `expires_at`、到期前刷新播放信息、切换媒体后丢弃旧 URL | [播放与代理模型](../../use/playback-and-proxy/) |
+| 展示同步播放 | 读取当前播放状态、获取播放信息、订阅 `playbackState` 和 `playback` | [播放与代理协议](../playback-and-proxy/) |
+| 添加媒体 | 选择 Provider、浏览或搜索媒体、提交播放列表项、处理 Provider 错误 | [媒体 Provider 配置](../../configuration/media-providers/) |
+| 处理 URL 过期 | 读取 `expires_at`、到期前刷新播放信息、切换媒体后丢弃旧 URL | [播放与代理协议](../playback-and-proxy/) |
 | 实现重连 | WebSocket 断开后重新申请 ticket、重连、用本地版本重新观察资源 | [Realtime API](../realtime-api/) |
 | 统一错误体验 | 按 HTTP status、业务 code、`requestId`、`Retry-After` 分类处理 | [错误参考](../../reference/errors/) |
 
@@ -424,5 +424,5 @@ HTTP API 的错误体形状：
 - [Realtime API](../realtime-api/)：WebSocket protobuf、资源观察、版本同步和重连处理。
 - [错误参考](../../reference/errors/)：HTTP/gRPC/Realtime/Provider 错误结构和错误码。
 - [认证与安全模型](../../admin/authentication-security/)：2FA、OAuth2、token 上下文和 Provider header 边界。
-- [房间、权限与用户偏好](../../use/rooms-permissions/)：角色、权限名称、room settings 和用户偏好。
+- [角色、权限与用户偏好](../../admin/permissions/)：角色、权限名称、room settings 和用户偏好。
 - [排障入口](../../operations/troubleshooting/)：按现象定位 CORS、WebSocket、登录、Provider 和 Range 问题。

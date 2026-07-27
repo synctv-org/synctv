@@ -3,7 +3,7 @@ title: 实现契约
 description: 维护 HTTP/gRPC、Provider 播放、读库、文件存储和播放后台任务时必须遵守的实现规则。
 ---
 
-这页记录跨模块正确性依赖的实现契约。修改 HTTP/gRPC handler、Provider 播放生成、播放 worker、读库路由、文件存储或 SQLx 查询前，先看这里。
+下列契约约束 HTTP/gRPC handler、Provider 播放生成、播放 worker、读库路由、文件存储和 SQLx 查询之间的跨模块行为。
 
 ## 传输层和 Impl 层
 

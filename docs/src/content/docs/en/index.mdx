@@ -1,106 +1,55 @@
 ---
-title: SyncTV Documentation
-description: Usage, administration, installation, configuration, operations, and client integration documentation for SyncTV.
-template: splash
-hero:
-  tagline: A self-hosted synchronized watching app organized around rooms, playback, chat, media sources, and members.
-  actions:
-    - text: Use SyncTV
-      link: use/
-      icon: rocket
-      variant: primary
-    - text: Install SyncTV
-      link: install/choose-path/
-      icon: approve-check-circle
-    - text: Build a Client
-      link: develop/client-integration/
-      icon: document
+title: SyncTV Server
+description: Deploy, configure, and operate SyncTV Server.
+tableOfContents: false
 ---
 
-import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 import LocaleChoiceTracker from '../../../components/LocaleChoiceTracker.astro';
 
 <LocaleChoiceTracker />
 
-<img src="/screenshots/room-macos.png" alt="SyncTV synchronized room playback" />
+<p class="docs-home-lead">
+Use Docker Compose on a single host or Helm in an existing Kubernetes cluster. Then configure public access, durable secrets, backups, and monitoring.
+</p>
 
-Rooms are the daily entry point in SyncTV. Users watch, chat, and switch playlists in rooms. Room administrators manage members and permissions. Platform administrators maintain accounts, reviews, Providers, livestreaming, and runtime policy.
+<div class="docs-directory">
+  <section>
+    <h2>Deploy</h2>
+    <ul class="docs-link-list">
+      <li><a href="install/quick-start/"><strong>Install with Docker Compose</strong><span>Server, NAS, or virtual machine</span></a></li>
+      <li><a href="install/helm/"><strong>Install with Helm</strong><span>Kubernetes, Ingress, and multiple replicas</span></a></li>
+      <li><a href="operations/upgrades/"><strong>Upgrade an installation</strong><span>Backup, migrate, and roll back</span></a></li>
+      <li><a href="install/production-checklist/"><strong>Production checklist</strong><span>TLS, secrets, data, and monitoring</span></a></li>
+    </ul>
+  </section>
 
-These docs are organized by task. Start with “Use SyncTV” for the product experience, “Administer SyncTV” for instance management, “Install and Upgrade” for deployment, and “Develop with SyncTV” for client integration.
+  <section>
+    <h2>Configure</h2>
+    <ul class="docs-link-list">
+      <li><a href="configuration/how-configuration-works/"><strong>Loading and precedence</strong><span>YAML, environment variables, and secret files</span></a></li>
+      <li><a href="configuration/full-example/"><strong>Configuration examples</strong><span>Minimal production config and full field template</span></a></li>
+      <li><a href="configuration/security/"><strong>Security and secrets</strong><span>JWT, OPAQUE, CORS, and credential encryption</span></a></li>
+      <li><a href="reference/configuration-index/"><strong>Configuration fields</strong><span>Types, defaults, and restart requirements</span></a></li>
+    </ul>
+  </section>
 
-Download the native client from [SyncTV App releases](https://github.com/synctv-org/synctv-app/releases/latest).
+  <section>
+    <h2>Administer and operate</h2>
+    <ul class="docs-link-list">
+      <li><a href="admin/"><strong>Administer SyncTV</strong><span>Users, rooms, permissions, and Providers</span></a></li>
+      <li><a href="operations/observability/"><strong>Monitoring and runbooks</strong><span>Health, metrics, logs, and alerts</span></a></li>
+      <li><a href="operations/backup-restore/"><strong>Backup and restore</strong><span>PostgreSQL, secrets, and recovery drills</span></a></li>
+      <li><a href="operations/troubleshooting/"><strong>Troubleshoot</strong><span>Errors, status codes, and runtime signals</span></a></li>
+    </ul>
+  </section>
 
-## Choose a Path
-
-<CardGrid>
-  <LinkCard
-    title="Use SyncTV"
-    href="use/"
-    description="Sign in, join rooms, synchronize playback, chat, add media, and manage personal settings."
-  />
-  <LinkCard
-    title="Administer an Instance"
-    href="admin/"
-    description="Manage users, rooms, reviews, providers, livestreaming, runtime settings, and maintenance tasks."
-  />
-  <LinkCard
-    title="Install or Upgrade"
-    href="install/choose-path/"
-    description="Choose Compose, source runs, or Helm/Kubernetes and complete production checks."
-  />
-  <LinkCard
-    title="Build a Client"
-    href="develop/client-integration/"
-    description="Use OpenAPI, gRPC, WebSocket Realtime, tickets, playback info, and errors."
-  />
-</CardGrid>
-
-## Common Tasks
-
-| Goal | Page |
-| --- | --- |
-| Sign in and protect an account | [Sign In and Account Security](use/accounts-security/) |
-| Create or join a room | [Create and Join Rooms](use/rooms/) |
-| Fix playback drift or failure | [Synchronized Playback](use/synchronized-playback/) and [User Troubleshooting](use/troubleshooting/) |
-| Add media | [Add Media](use/media-sources/) |
-| Manage users, rooms, and reviews | [Administer SyncTV](admin/) |
-| Start a self-hosted instance | [Quick Start](install/quick-start/) |
-| Build a client | [Client Integration Guide](develop/client-integration/) |
-| Join the discussion or see contributors | [Discussion and Contributors](overview/community/) |
-
-## Understand SyncTV
-
-<CardGrid>
-  <Card title="Rooms" icon="puzzle">
-    Members, playlists, chat, permissions, and current playback state are organized around rooms. See [Rooms](concepts/rooms/).
-  </Card>
-  <Card title="Synchronized Playback" icon="youtube">
-    The server owns room playback state. Clients follow play, pause, seek, and media changes through Realtime. See [Playback Model](concepts/playback-model/).
-  </Card>
-  <Card title="Media Sources" icon="cloud-download">
-    Providers turn Alist, Emby/Jellyfin, Bilibili, direct URLs, remote services, or live inputs into playable results. See [Media Sources](concepts/media-providers/).
-  </Card>
-  <Card title="Permissions" icon="seti:lock">
-    Global roles, room roles, member overrides, and room settings decide what each person can do. See [Permissions Model](concepts/permissions/).
-  </Card>
-</CardGrid>
-
-## Before Production
-
-<CardGrid>
-  <Card title="Production Checklist" icon="approve-check-circle">
-    Confirm TLS, secrets, PostgreSQL, Redis, backups, metrics, management access, and restore practice.
-  </Card>
-  <Card title="Runtime Boundaries" icon="setting">
-    Understand PostgreSQL, Redis, secrets, management endpoints, media proxying, and non-goals.
-  </Card>
-  <Card title="Configuration Entry" icon="document">
-    Configuration files, environment variables, runtime settings, and CLI overrides have different scopes.
-  </Card>
-</CardGrid>
-
-For deployment paths, see [Choose a Deployment Path](install/choose-path/). For runtime dependencies and non-goals, see [Runtime Boundaries](concepts/runtime-boundaries/). For all configuration fields, see [Configuration Index](reference/configuration-index/).
-
-## License
-
-SyncTV is licensed under the MIT License. See the repository `LICENSE` file for the full terms.
+  <section>
+    <h2>Develop and reference</h2>
+    <ul class="docs-link-list">
+      <li><a href="develop/local-development/"><strong>Local development</strong><span>Dependencies, databases, tests, and code generation</span></a></li>
+      <li><a href="reference/cli/"><strong>CLI</strong><span>Service control and administration commands</span></a></li>
+      <li><a href="reference/openapi/"><strong>OpenAPI</strong><span>HTTP API specification and client generation</span></a></li>
+      <li><a href="reference/grpc/"><strong>gRPC</strong><span>Public API, management API, and reflection</span></a></li>
+    </ul>
+  </section>
+</div>

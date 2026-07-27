@@ -1,11 +1,9 @@
 ---
-title: Limitations and Non-goals
-description: Current SyncTV boundaries, design tradeoffs, and capabilities that should not be assumed.
+title: Known Limitations
+description: Current release limits for deployment, media, clustering, authentication, and API stability.
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
-
-Current design boundaries are not long-term roadmap commitments.
+These limits apply to the current release.
 
 ## Deployment Boundaries
 
@@ -55,26 +53,9 @@ SyncTV is in a new-project phase. Its own protobuf, HTTP fields, and Realtime me
 
 See [API and Protobuf Evolution](../api-versioning/).
 
-## Non-goals
+## System Responsibilities
 
-<CardGrid>
-  <Card title="Not media storage" icon="document">
-    SyncTV aggregates and proxies external media; it does not replace object storage or media libraries.
-  </Card>
-  <Card title="Not a CDN" icon="cloud-download">
-    Proxy and slice cache do not replace CDN capacity planning.
-  </Card>
-  <Card title="Not a universal transcoder" icon="puzzle">
-    Transcoding depends on the Provider or upstream media system.
-  </Card>
-  <Card title="Not a public management plane" icon="setting">
-    management gRPC and metrics need controlled access.
-  </Card>
-</CardGrid>
-
-## Continue Reading
-
-- [Architecture Overview](../../overview/architecture/)
-- [Playback and Proxy Model](../../use/playback-and-proxy/)
-- [Capacity Planning](../../operations/capacity-planning/)
-- [Security Hardening and Rotation](../../operations/security-hardening-and-rotation/)
+- **Media storage**: External object storage, network drives, or media libraries retain media; SyncTV aggregates and proxies it.
+- **Content delivery**: A CDN handles large-scale distribution; proxy and slice cache optimize controlled forwarding and Range requests.
+- **Transcoding**: The Provider or upstream media system supplies transcoding.
+- **Management access**: management gRPC and metrics are accessed through a Unix socket, private network, VPN, or controlled cluster entry point.

@@ -3,7 +3,7 @@ title: 错误参考
 description: SyncTV HTTP、gRPC、Realtime、Provider 和运维错误的响应结构、错误码、状态映射和客户端处理建议。
 ---
 
-import { Aside, Card, CardGrid } from '@astrojs/starlight/components';
+import { Aside } from '@astrojs/starlight/components';
 
 ## HTTP 错误响应
 
@@ -132,23 +132,7 @@ Provider 错误需要区分 SyncTV 与上游：
 
 ## 客户端处理准则
 
-<CardGrid>
-  <Card title="按状态分类" icon="document">
-    先按 HTTP/gRPC 状态决定登录、权限、重试或刷新本地状态。
-  </Card>
-  <Card title="使用错误码" icon="setting">
-    从 `google.rpc.ErrorInfo.metadata.errorCode` 读取应用错误码，不解析英文错误文本。
-  </Card>
-  <Card title="记录 requestId" icon="magnifier">
-    用户提交问题时收集 `requestId`、时间、路径和状态码。
-  </Card>
-  <Card title="保护敏感信息" icon="approve-check-circle">
-    不要记录 token、Cookie、OAuth2 code、Provider 凭据或密码。
-  </Card>
-</CardGrid>
-
-## 继续阅读
-
-- [客户端集成指南](../../develop/client-integration/)
-- [SDK 与 API 示例](../../develop/sdk-and-api-examples/)
-- [排障入口](../../operations/troubleshooting/)
+- **按状态分类**： 先按 HTTP/gRPC 状态决定登录、权限、重试或刷新本地状态。
+- **使用错误码**： 从 `google.rpc.ErrorInfo.metadata.errorCode` 读取应用错误码，不解析英文错误文本。
+- **记录 requestId**： 用户提交问题时收集 `requestId`、时间、路径和状态码。
+- **保护敏感信息**： 不要记录 token、Cookie、OAuth2 code、Provider 凭据或密码。

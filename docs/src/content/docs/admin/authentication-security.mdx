@@ -6,7 +6,7 @@ description: SyncTV 的登录方式、2FA 语义、token 上下文、管理权�
 import Diagram from '../../../components/Diagram.astro';
 import securityAuthBoundaryDiagramDark from '../../../assets/diagrams/security-auth-boundary-zh-dark.svg';
 import securityAuthBoundaryDiagramLight from '../../../assets/diagrams/security-auth-boundary-zh-light.svg';
-import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
+import { Aside, Steps } from '@astrojs/starlight/components';
 
 ## 安全边界
 
@@ -102,32 +102,11 @@ Provider 负责决定上游请求 header。proxy 层只执行 Provider 给出的
 - 如果直连 URL 绑定了 `User-Agent`，Provider 返回给客户端的 header 应与服务端代理 header 保持一致。
 - 客户端无法设置所需 header 时，应使用代理模式。
 
-Provider 凭据、直连/代理选择和播放信息细节见 [添加媒体](../../use/media-sources/) 和 [播放与代理模型](../../use/playback-and-proxy/)。
+Provider 凭据配置见 [媒体 Provider](../../configuration/media-providers/)；客户端如何选择直连、代理和播放信息见 [播放与代理协议](../../develop/playback-and-proxy/)。
 
 ## 必读配置
 
-<CardGrid>
-  <Card title="安全与密钥" icon="approve-check-circle">
-    配置 JWT、OPAQUE、Provider 凭据加密、密码复杂度、CORS 和可信代理。
-  </Card>
-  <Card title="邮件与 OAuth2" icon="document">
-    配置邮箱验证码、SMTP 和运行时 OAuth2 provider 配置。
-  </Card>
-  <Card title="WebAuthn" icon="puzzle">
-    配置 passkey 的 RP ID、origin、允许 origin 和 challenge 超时。
-  </Card>
-  <Card title="限流" icon="setting">
-    配置 HTTP、gRPC、聊天、WebSocket 和认证相关限流。
-  </Card>
-</CardGrid>
-
-## 继续阅读
-
-- [客户端集成指南](../../develop/client-integration/)
-- [错误参考](../../reference/errors/)
-- [安全加固与密钥轮换](../../operations/security-hardening-and-rotation/)
-- [数据、隐私与保留策略](../../operations/data-retention/)
-- [安全与密钥](../../configuration/security/)
-- [邮件与 OAuth2](../../configuration/email-oauth2/)
-- [WebAuthn 配置](../../configuration/webauthn/)
-- [限流与连接限制](../../configuration/rate-limits/)
+- **安全与密钥**： 配置 JWT、OPAQUE、Provider 凭据加密、密码复杂度、CORS 和可信代理。
+- **邮件与 OAuth2**： 配置邮箱验证码、SMTP 和运行时 OAuth2 provider 配置。
+- **WebAuthn**： 配置 passkey 的 RP ID、origin、允许 origin 和 challenge 超时。
+- **限流**： 配置 HTTP、gRPC、聊天、WebSocket 和认证相关限流。

@@ -1,9 +1,8 @@
 ---
-title: Rooms, Permissions, and Preferences
+title: Roles, Permissions, and Preferences
 description: SyncTV global user roles, room roles, permission names, room settings, member overrides, and user preferences.
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
 import Diagram from '../../../../components/Diagram.astro';
 import permissionEvaluationDark from '../../../../assets/diagrams/permission-evaluation-dark.svg';
 import permissionEvaluationLight from '../../../../assets/diagrams/permission-evaluation-light.svg';
@@ -178,25 +177,7 @@ Provider instance bindings are not user preferences. They are stored on provider
 
 ## Administration Strategy
 
-<CardGrid>
-  <Card title="Use Permission Names" icon="setting">
-    Permission configuration should use stable permission-name sets so changes are readable, reviewable, and easy to roll back.
-  </Card>
-  <Card title="Separate Scopes" icon="puzzle">
-    Platform admin and room admin are separate concepts. Diagnose permission issues by layer first.
-  </Card>
-  <Card title="Preferences Are Runtime Data" icon="document">
-    User preferences are changed through API/CLI and should not live in YAML or Helm values.
-  </Card>
-  <Card title="Verify Behavior" icon="rocket">
-    After changing join rules, permissions, or 2FA, test real login, room join, and playback flows.
-  </Card>
-</CardGrid>
-
-## Continue Reading
-
-- [Administer SyncTV](../../admin/)
-- [Authentication and Security Model](../../admin/authentication-security/)
-- [Data, Privacy, and Retention](../../operations/data-retention/)
-- [Runtime Settings Reference](../../reference/runtime-settings/)
-- [CLI Reference](../../reference/cli/)
+- **Use Permission Names**: Permission configuration should use stable permission-name sets so changes are readable, reviewable, and easy to roll back.
+- **Separate Scopes**: Platform admin and room admin are separate concepts. Diagnose permission issues by layer first.
+- **Preferences Are Runtime Data**: User preferences are changed through API/CLI and should not live in YAML or Helm values.
+- **Verify Behavior**: After changing join rules, permissions, or 2FA, test real login, room join, and playback flows.

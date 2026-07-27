@@ -6,7 +6,7 @@ description: RTMP、HLS、HTTP-FLV、拉流重试、GOP 缓存和直播存储配
 import Diagram from '../../../components/Diagram.astro';
 import livestreamPipelineDark from '../../../assets/diagrams/livestream-pipeline-zh-dark.svg';
 import livestreamPipelineLight from '../../../assets/diagrams/livestream-pipeline-zh-light.svg';
-import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 ## 直播配置控制什么？
 
@@ -25,20 +25,10 @@ import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/
   caption="直播数据先进入 RTMP/StreamHub，再按播放协议分流：HTTP-FLV 直接面向低延迟播放，HLS remuxer 生成 playlist/segment 并写入选择的 HLS backend。"
 />
 
-<CardGrid>
-  <Card title="RTMP ingest" icon="youtube">
-    推流端通过 RTMP 连接进入，认证阶段会把 publisher 注册到本节点或共享 registry。
-  </Card>
-  <Card title="StreamHub" icon="cloud-download">
-    直播包在进程内分发给 FLV session、HLS remuxer 和内部拉流/代理逻辑。
-  </Card>
-  <Card title="HTTP-FLV" icon="rocket">
-    适合低延迟观看。客户端保持长连接，服务端持续写 FLV chunk，并通过写超时保护慢客户端。
-  </Card>
-  <Card title="HLS" icon="seti:folder">
-    适合通用播放器和 CDN/对象存储形态。延迟更高，但对客户端兼容性和多副本扩展更友好。
-  </Card>
-</CardGrid>
+- **RTMP ingest**： 推流端通过 RTMP 连接进入，认证阶段会把 publisher 注册到本节点或共享 registry。
+- **StreamHub**： 直播包在进程内分发给 FLV session、HLS remuxer 和内部拉流/代理逻辑。
+- **HTTP-FLV**： 适合低延迟观看。客户端保持长连接，服务端持续写 FLV chunk，并通过写超时保护慢客户端。
+- **HLS**： 适合通用播放器和 CDN/对象存储形态。延迟更高，但对客户端兼容性和多副本扩展更友好。
 
 ## 播放协议怎么选？
 

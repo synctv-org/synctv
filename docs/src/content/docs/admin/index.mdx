@@ -1,64 +1,31 @@
 ---
 title: 管理 SyncTV
-description: 平台管理员管理用户、房间、成员、审核、Provider、直播、运行设置和维护任务。
+description: 管理用户、房间、权限、Provider、运行设置和维护任务。
 ---
 
-import { LinkCard, CardGrid, Aside } from '@astrojs/starlight/components';
+import { Aside } from '@astrojs/starlight/components';
 
-管理员文档按管理对象组织。先选择要处理的对象，再进入对应页面查看影响范围、操作顺序和验证方式。
+管理命令通过 `synctv admin` 调用 management gRPC。先确认管理入口和认证方式，再执行变更。
 
 <Aside type="caution">
-management gRPC、metrics 和内部调试入口不是公网管理面。生产环境优先使用 Unix socket、内网、VPN、堡垒机或 Kubernetes exec；TCP management 必须配置 `management.auth_token`。
+management gRPC、metrics 和内部调试入口只应通过 Unix socket、内网、VPN、堡垒机或 Kubernetes exec 访问。TCP management 必须配置 `management.auth_token`。
 </Aside>
 
-<CardGrid>
-  <LinkCard
-    title="用户管理"
-    href="./users/"
-    description="创建用户、封禁和解封、修改全局角色、检查账号安全状态。"
-  />
-  <LinkCard
-    title="房间与成员管理"
-    href="./rooms-members/"
-    description="管理房间生命周期、成员、房间设置、播放控制和直播入口。"
-  />
-  <LinkCard
-    title="审核与治理"
-    href="./reviews-moderation/"
-    description="处理注册、建房、加房审核，以及用户和房间封禁。"
-  />
-  <LinkCard
-    title="Provider 管理"
-    href="./providers/"
-    description="创建、启停、更新、重连、删除 Provider instance，并保护上游凭据。"
-  />
-  <LinkCard
-    title="运行设置"
-    href="./runtime-settings/"
-    description="热更新注册、房间创建、代理策略、CORS、聊天保留等产品策略。"
-  />
-  <LinkCard
-    title="维护任务"
-    href="./maintenance/"
-    description="检查系统状态、清理 stream、驱逐 slice cache、保留操作记录。"
-  />
-  <LinkCard
-    title="认证与安全模型"
-    href="./authentication-security/"
-    description="理解登录方式、2FA、token 上下文、Provider header 和管理面边界。"
-  />
-</CardGrid>
+## 账号与访问
 
-## 管理对象
+- [用户](./users/)：创建用户、封禁、全局角色和账号安全状态。
+- [角色与权限](./permissions/)：全局角色、房间角色、权限计算和成员覆盖。
+- [认证与安全](./authentication-security/)：登录方式、2FA、token 和认证边界。
 
-| 对象 | 常见动作 | 先确认 |
-| --- | --- | --- |
-| 用户 | 创建、封禁、解封、改角色、查看偏好 | 全局角色、有效状态、2FA 状态 |
-| 房间 | 创建、删除、转让、封禁、更新设置 | 创建者、加入规则、成员上限、默认权限 |
-| 成员 | 添加、踢出、封禁、改角色、改权限 | 房间角色和成员覆盖是否已经足够 |
-| 审核 | 批准或拒绝注册、建房、加房申请 | 申请人、目标房间、拒绝原因 |
-| Provider | 创建、启停、更新、重连、删除 | 凭据归属、代理策略、是否仍被引用 |
-| 运行设置 | 修改注册、CORS、代理策略等 | 是否属于热更新策略，而不是启动配置 |
-| 系统与缓存 | 查看状态、清理 stream、驱逐 slice cache | 是否影响在线播放或缓存命中率 |
+## 房间与内容
 
-命令参数见 [CLI 参考](../reference/cli/)；完整运行边界见 [运行边界](../concepts/runtime-boundaries/)。
+- [房间与成员](./rooms-members/)：房间生命周期、成员、播放控制和直播入口。
+- [审核与治理](./reviews-moderation/)：注册、建房、加房审核和封禁。
+- [Provider](./providers/)：创建、启停、更新、重连和删除 Provider instance。
+
+## 服务策略与维护
+
+- [运行设置](./runtime-settings/)：热更新注册、代理、CORS、聊天和房间策略。
+- [维护任务](./maintenance/)：检查状态、清理 stream、驱逐缓存并验证结果。
+
+[CLI 参考](../reference/cli/)列出完整参数；[部署与运行边界](../operations/deployment-boundaries/)说明生产依赖和管理面要求。

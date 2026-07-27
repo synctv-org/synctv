@@ -10,7 +10,7 @@ import kubernetesTopologyDark from '../../../assets/diagrams/kubernetes-topology
 import kubernetesTopologyLight from '../../../assets/diagrams/kubernetes-topology-zh-light.svg';
 import productionMinimalDark from '../../../assets/diagrams/production-minimal-zh-dark.svg';
 import productionMinimalLight from '../../../assets/diagrams/production-minimal-zh-light.svg';
-import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 ## 先建立模型
 
@@ -44,20 +44,10 @@ PostgreSQL 是持久业务数据源。Redis 是共享短期状态和集群协调
 
 ## 主要组件
 
-<CardGrid>
-  <Card title="API 与实时协作" icon="document">
-    HTTP REST、公开 gRPC、WebSocket 和房间实时事件共享同一套业务服务与权限模型。
-  </Card>
-  <Card title="身份认证" icon="approve-check-circle">
-    本地密码、OPAQUE、passkey/WebAuthn、邮箱验证码、OAuth2、用户级 2FA 和 JWT token 共同构成登录层。
-  </Card>
-  <Card title="媒体能力" icon="puzzle">
-    Provider 负责解析外部媒体，proxy 负责可控转发，slice cache 只缓存 Range slice，不做 full-body cache。
-  </Card>
-  <Card title="横向扩展" icon="cloud-download">
-    多节点通过 Redis、节点发现、leader election 和事务型 outbox 同步实时事件与后台任务边界。
-  </Card>
-</CardGrid>
+- **API 与实时协作**： HTTP REST、公开 gRPC、WebSocket 和房间实时事件共享同一套业务服务与权限模型。
+- **身份认证**： 本地密码、OPAQUE、passkey/WebAuthn、邮箱验证码、OAuth2、用户级 2FA 和 JWT token 共同构成登录层。
+- **媒体能力**： Provider 负责解析外部媒体，proxy 负责可控转发，slice cache 只缓存 Range slice，不做 full-body cache。
+- **横向扩展**： 多节点通过 Redis、节点发现、leader election 和事务型 outbox 同步实时事件与后台任务边界。
 
 ## 运行时入口
 
@@ -167,12 +157,3 @@ Kubernetes 多副本拓扑：
   alt="Kubernetes 多副本拓扑图，展示 HTTP Ingress、gRPC Ingress、两个独立 Service、多个 SyncTV Pod、PostgreSQL、Redis、HLS backend 或 publisher-node proxy，以及外部媒体 Provider。"
   caption="Kubernetes 多副本部署应拆分 HTTP 与 gRPC 的 Service/Ingress，同时让所有 Pod 共享 PostgreSQL、Redis。本地 HLS backend 使用 publisher-node proxy；shared_file 会让当前节点从共享挂载读取 TS 分片，OSS 则提供对象存储边界。"
 />
-
-## 继续阅读
-
-- [快速开始](../../install/quick-start/)
-- [配置总索引](../../reference/configuration-index/)
-- [生产部署清单](../../install/production-checklist/)
-- [备份与恢复](../../operations/backup-restore/)
-- [升级与迁移](../../operations/upgrades/)
-- [观测与运行手册](../../operations/observability/)

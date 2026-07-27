@@ -30,9 +30,7 @@ media_providers:
 
 远程 Provider instance 不是这个 YAML 对象。它通过管理 API/CLI 持久化到数据库，只保存 SyncTV 连接远程 Provider 所需的连接信息，例如 `endpoint`、`tls`、`jwt_secret`、`custom_ca`、`timeout`、`insecure_tls` 和 `providers`。远程 Provider 自己访问 Alist、Emby 或 Bilibili 所需的配置，应放在远程 Provider 服务自己的部署配置中。
 
-按场景接入 Alist、Emby/Jellyfin、Bilibili、直链、RTMP 或远程 Provider 时，先读 [添加媒体](../../use/media-sources/)。
-
-各 Provider 的绑定方式、资源类型和动态播放列表能力见 [Provider 使用手册](../../use/provider-guide/)。实现与扩展流程见 [Provider 开发指南](../../develop/provider-development/)。
+通过管理 API 或 CLI 创建远程 Provider instance，并把 Alist、Emby/Jellyfin、Bilibili 等上游配置保留在对应 Provider 服务中。日常启停、重连和凭据维护见 [Provider 管理](../../admin/providers/)，实现与扩展流程见 [Provider 开发指南](../../develop/provider-development/)。
 
 ## Provider instance
 
@@ -135,11 +133,3 @@ security:
 ```
 
 否则，创建或更新某些 Provider 凭据可能会被拒绝，或者已有加密凭据无法读取。
-
-## 继续阅读
-
-- [添加媒体](../../use/media-sources/)
-- [Provider 使用手册](../../use/provider-guide/)
-- [Provider 开发指南](../../develop/provider-development/)
-- [播放与代理模型](../../use/playback-and-proxy/)
-- [安全加固与密钥轮换](../../operations/security-hardening-and-rotation/)

@@ -17,9 +17,9 @@ For a minimal runnable call chain, see [SDK and API Examples](../sdk-and-api-exa
 | --- | --- | --- |
 | Sign in and keep a session | Login, handle MFA, store access/refresh tokens, refresh sessions, handle 401 | This page: “Token Usage” and “Local Login and MFA” |
 | Enter room realtime state | Fetch the room, create a WebSocket ticket, connect `/ws/rooms/{roomId}`, decode protobuf | [Realtime API](../realtime-api/) |
-| Show synchronized playback | Read current playback state, fetch playback, observe `playbackState` and `playback` | [Playback Model](../../concepts/playback-model/) |
-| Add media | Choose Provider, browse or search media, submit playlist item, handle Provider errors | [Media Sources](../../concepts/media-providers/) |
-| Handle URL expiry | Read `expires_at`, refresh playback before expiry, discard old URLs after media switch | [Playback and Proxy Model](../../use/playback-and-proxy/) |
+| Show synchronized playback | Read current playback state, fetch playback, observe `playbackState` and `playback` | [Playback and Proxy Protocol](../playback-and-proxy/) |
+| Add media | Choose Provider, browse or search media, submit playlist item, handle Provider errors | [Media Provider Configuration](../../configuration/media-providers/) |
+| Handle URL expiry | Read `expires_at`, refresh playback before expiry, discard old URLs after media switch | [Playback and Proxy Protocol](../playback-and-proxy/) |
 | Reconnect | Request a new ticket, reconnect, observe resources with local versions | [Realtime API](../realtime-api/) |
 | Build unified errors | Classify by HTTP status, business code, `requestId`, and `Retry-After` | [Errors](../../reference/errors/) |
 
@@ -418,5 +418,5 @@ Handle errors by category, not by exact text:
 - [Realtime API](../realtime-api/): WebSocket protobuf, resource observation, version synchronization, and reconnect handling.
 - [Errors](../../reference/errors/): HTTP/gRPC/Realtime/Provider error structures and codes.
 - [Authentication and Security Model](../../admin/authentication-security/): 2FA, OAuth2, token context, and provider header boundaries.
-- [Rooms, Permissions, and Preferences](../../use/rooms-permissions/): roles, permission bits, room settings, and user preferences.
+- [Roles, Permissions, and Preferences](../../admin/permissions/): roles, permission bits, room settings, and user preferences.
 - [Troubleshooting](../../operations/troubleshooting/): CORS, WebSocket, login, provider, and Range diagnostics.

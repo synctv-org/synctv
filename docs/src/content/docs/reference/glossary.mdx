@@ -36,11 +36,3 @@ description: SyncTV 文档中常见安全、部署、媒体、实时协作和集
 | publisher-node proxy | HLS 分片在推流节点本地时，其他节点通过 gRPC 向 publisher 节点读取 | 多副本直播 |
 | fail-closed | 关键依赖或事件写入失败时拒绝业务请求，避免数据库状态和实时缓存状态分叉 | 写操作、集群事件、事务型 outbox |
 | fanout | 一次业务变更向多个本地连接、节点或订阅者分发事件的过程 | WebSocket、集群实时事件 |
-
-## 继续阅读
-
-- [架构总览](../../overview/architecture/)
-- [快速开始](../../install/quick-start/)
-- [配置总索引](../configuration-index/)
-- [客户端集成指南](../../develop/client-integration/)
-- [排障入口](../../operations/troubleshooting/)

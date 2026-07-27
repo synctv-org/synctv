@@ -1,13 +1,13 @@
 ---
 title: SDK and API Examples
-description: Minimal HTTP/OpenAPI, gRPC, WebSocket Realtime, and Provider API examples for SyncTV clients.
+description: Working HTTP/OpenAPI, gRPC, WebSocket Realtime, and Provider API examples for SyncTV clients.
 ---
 
 import { TabItem, Tabs } from '@astrojs/starlight/components';
 
-## Goal
+## Request Sequence
 
-These examples form one runnable chain: login, refresh token, create room, create WebSocket ticket, connect Realtime, read playback state, handle errors, and call Providers. Complete fields are defined by OpenAPI JSON and protobuf.
+The examples sign in, refresh tokens, create a room, create a WebSocket ticket, connect Realtime, read playback state, handle errors, and call Providers in sequence. OpenAPI JSON and protobuf define the complete fields.
 
 Read [Client Integration Guide](../client-integration/) first for the protocol boundaries.
 
@@ -43,7 +43,7 @@ npx openapi-typescript openapi.json -o synctv-api.d.ts
 
 See [OpenAPI Access](../../reference/openapi/) for details.
 
-## Minimal HTTP Flow
+## HTTP Sign-in and Room Creation
 
 <Tabs syncKey="http-api-examples-en">
   <TabItem label="OPAQUE login" icon="approve-check-circle">
@@ -100,7 +100,7 @@ The ticket is short-lived, one-time, and room-bound.
   </TabItem>
 </Tabs>
 
-## Minimal Realtime Flow
+## Realtime Connection and Subscription
 
 ```ts
 const ws = new WebSocket(`wss://app.example.com/ws/rooms/${roomId}?ticket=${ticket}`);
@@ -211,10 +211,3 @@ See [Errors](../../reference/errors/).
 | Create room, add media, update settings | On timeout, read back state before repeating |
 | WebSocket reconnect | Create a new ticket and rebuild observations |
 | Provider request | Back off upstream failures and distinguish credential expiry |
-
-## Continue Reading
-
-- [Client Integration Guide](../client-integration/)
-- [Realtime API](../realtime-api/)
-- [Errors](../../reference/errors/)
-- [API and Protobuf Evolution](../../reference/api-versioning/)

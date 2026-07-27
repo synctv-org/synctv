@@ -1,9 +1,8 @@
 ---
-title: 房间、权限与用户偏好
+title: 角色、权限与用户偏好
 description: SyncTV 的全局用户角色、房间角色、权限名称、房间设置、成员权限覆盖和用户偏好语义。
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
 import Diagram from '../../../components/Diagram.astro';
 import permissionEvaluationDark from '../../../assets/diagrams/permission-evaluation-zh-dark.svg';
 import permissionEvaluationLight from '../../../assets/diagrams/permission-evaluation-zh-light.svg';
@@ -178,25 +177,7 @@ Provider instance 绑定不是用户偏好；用户通过某个 instance 登录 
 
 ## 管理策略
 
-<CardGrid>
-  <Card title="使用权限名称" icon="setting">
-    权限配置应使用稳定的权限名称集合，便于审查、复制和回滚。
-  </Card>
-  <Card title="区分全局和房间" icon="puzzle">
-    平台 admin 和房间 admin 是两套概念，排查权限问题时先确认操作发生在哪一层。
-  </Card>
-  <Card title="偏好不是启动配置" icon="document">
-    用户偏好可以通过 API/CLI 修改，不应该写进 YAML 或 Helm values。
-  </Card>
-  <Card title="变更后验证路径" icon="rocket">
-    修改加入规则、权限或 2FA 后，用真实登录、加入房间和播放操作验证。
-  </Card>
-</CardGrid>
-
-## 继续阅读
-
-- [管理 SyncTV](../../admin/)
-- [认证与安全模型](../../admin/authentication-security/)
-- [数据、隐私与保留策略](../../operations/data-retention/)
-- [Runtime settings 参考](../../reference/runtime-settings/)
-- [CLI 参考](../../reference/cli/)
+- **使用权限名称**： 权限配置应使用稳定的权限名称集合，便于审查、复制和回滚。
+- **区分全局和房间**： 平台 admin 和房间 admin 是两套概念，排查权限问题时先确认操作发生在哪一层。
+- **偏好不是启动配置**： 用户偏好可以通过 API/CLI 修改，不应该写进 YAML 或 Helm values。
+- **变更后验证路径**： 修改加入规则、权限或 2FA 后，用真实登录、加入房间和播放操作验证。

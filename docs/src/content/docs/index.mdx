@@ -1,108 +1,57 @@
 ---
-title: SyncTV 文档
-description: SyncTV 的使用、管理、安装、配置、运维和客户端集成文档。
-template: splash
-hero:
-  tagline: 自托管同步观影应用，用房间组织播放、聊天、媒体源和成员协作。
-  actions:
-    - text: 开始使用
-      link: use/
-      icon: rocket
-      variant: primary
-    - text: 安装部署
-      link: install/choose-path/
-      icon: approve-check-circle
-    - text: 开发集成
-      link: develop/client-integration/
-      icon: document
+title: SyncTV Server
+description: 部署、配置和运营 SyncTV Server。
+tableOfContents: false
 ---
 
-import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 import LocaleRedirect from '../../components/LocaleRedirect.astro';
 import LocaleChoiceTracker from '../../components/LocaleChoiceTracker.astro';
 
 <LocaleRedirect />
 <LocaleChoiceTracker />
 
-<img src="/screenshots/room-macos.png" alt="SyncTV 房间同步播放" />
+<p class="docs-home-lead">
+在单台服务器上使用 Docker Compose；在现有 Kubernetes 集群中使用 Helm。安装完成后配置公网入口、长期密钥、备份和监控。
+</p>
 
-SyncTV 的日常入口是房间。用户在房间里同步观看视频、聊天、切换播放列表；房间管理员控制成员和权限；平台管理员维护账号、审核、Provider、直播和运行策略。
+<div class="docs-directory">
+  <section>
+    <h2>部署</h2>
+    <ul class="docs-link-list">
+      <li><a href="install/quick-start/"><strong>Docker Compose 安装</strong><span>服务器、NAS 或虚拟机</span></a></li>
+      <li><a href="install/helm/"><strong>Helm 安装</strong><span>Kubernetes、Ingress 与多副本</span></a></li>
+      <li><a href="operations/upgrades/"><strong>升级现有实例</strong><span>备份、迁移与回滚</span></a></li>
+      <li><a href="install/production-checklist/"><strong>生产部署清单</strong><span>TLS、密钥、数据与监控</span></a></li>
+    </ul>
+  </section>
 
-这份文档按真实任务组织。第一次使用先进入“使用 SyncTV”，接管实例先进入“管理 SyncTV”，上线部署先进入“安装与升级”，客户端接入先进入“开发与集成”。
+  <section>
+    <h2>配置</h2>
+    <ul class="docs-link-list">
+      <li><a href="configuration/how-configuration-works/"><strong>加载顺序</strong><span>YAML、环境变量与 secret 文件</span></a></li>
+      <li><a href="configuration/full-example/"><strong>配置示例</strong><span>最小生产配置和完整字段模板</span></a></li>
+      <li><a href="configuration/security/"><strong>安全与密钥</strong><span>JWT、OPAQUE、CORS 与凭据加密</span></a></li>
+      <li><a href="reference/configuration-index/"><strong>配置字段</strong><span>类型、默认值与重启要求</span></a></li>
+    </ul>
+  </section>
 
-原生客户端可从 [SyncTV App Releases](https://github.com/synctv-org/synctv-app/releases/latest) 下载。
+  <section>
+    <h2>管理与运维</h2>
+    <ul class="docs-link-list">
+      <li><a href="admin/"><strong>管理 SyncTV</strong><span>用户、房间、权限与 Provider</span></a></li>
+      <li><a href="operations/observability/"><strong>监控与运行手册</strong><span>健康检查、metrics、日志与告警</span></a></li>
+      <li><a href="operations/backup-restore/"><strong>备份与恢复</strong><span>PostgreSQL、密钥与恢复演练</span></a></li>
+      <li><a href="operations/troubleshooting/"><strong>排障</strong><span>按错误、状态码和运行信号定位问题</span></a></li>
+    </ul>
+  </section>
 
-## 选择入口
-
-<CardGrid>
-  <LinkCard
-    title="使用 SyncTV"
-    href="use/"
-    description="登录、加入房间、同步观看、聊天、添加媒体和管理个人设置。"
-  />
-  <LinkCard
-    title="管理实例"
-    href="admin/"
-    description="管理用户、房间、审核、Provider、直播、运行时设置和维护任务。"
-  />
-  <LinkCard
-    title="安装或升级"
-    href="install/choose-path/"
-    description="选择 Compose、源码运行或 Helm/Kubernetes 路径，并完成生产上线检查。"
-  />
-  <LinkCard
-    title="开发客户端"
-    href="develop/client-integration/"
-    description="使用 OpenAPI、gRPC、WebSocket Realtime、ticket、播放信息和错误码。"
-  />
-</CardGrid>
-
-## 常用任务
-
-| 目标 | 页面 |
-| --- | --- |
-| 登录并保护账号 | [登录与账号安全](use/accounts-security/) |
-| 创建或加入房间 | [创建和加入房间](use/rooms/) |
-| 处理播放不同步或失败 | [同步观看](use/synchronized-playback/) 和 [用户排障](use/troubleshooting/) |
-| 添加媒体源 | [添加媒体](use/media-sources/) |
-| 管理用户、房间和审核 | [管理 SyncTV](admin/) |
-| 启动自托管实例 | [快速开始](install/quick-start/) |
-| 接入客户端 | [客户端集成指南](develop/client-integration/) |
-| 参与讨论或查看贡献者 | [讨论与贡献者](overview/community/) |
-
-## 理解 SyncTV
-
-<CardGrid>
-  <Card title="房间" icon="puzzle">
-    成员、播放列表、聊天、权限和当前播放状态都围绕房间组织。见 [房间概念](concepts/rooms/)。
-  </Card>
-  <Card title="同步观看" icon="youtube">
-    服务端保存房间播放状态，客户端通过 Realtime 跟随播放、暂停、seek 和媒体切换。见 [播放模型](concepts/playback-model/)。
-  </Card>
-  <Card title="媒体源" icon="cloud-download">
-    Provider 把 Alist、Emby/Jellyfin、Bilibili、直链、远程服务或直播入口变成可播放结果。见 [媒体源概念](concepts/media-providers/)。
-  </Card>
-  <Card title="权限" icon="seti:lock">
-    全局角色、房间角色、成员覆盖和房间设置共同决定用户能做什么。见 [权限模型](concepts/permissions/)。
-  </Card>
-</CardGrid>
-
-## 上线前再看
-
-<CardGrid>
-  <Card title="生产部署清单" icon="approve-check-circle">
-    上线前确认 TLS、secret、PostgreSQL、Redis、备份、metrics、管理面和恢复流程。
-  </Card>
-  <Card title="运行边界" icon="setting">
-    了解 PostgreSQL、Redis、secret、管理面、媒体代理和非目标，避免用错系统边界。
-  </Card>
-  <Card title="配置入口" icon="document">
-    配置文件、环境变量、runtime settings 和 CLI 覆盖的优先级不同，修改前先确认来源。
-  </Card>
-</CardGrid>
-
-从本地试用到生产上线见 [部署路径选择](install/choose-path/)；运行依赖和非目标见 [运行边界](concepts/runtime-boundaries/)；完整字段见 [配置总索引](reference/configuration-index/)。
-
-## 许可证
-
-SyncTV 使用 MIT 许可证。完整条款见仓库根目录的 `LICENSE` 文件。
+  <section>
+    <h2>开发与参考</h2>
+    <ul class="docs-link-list">
+      <li><a href="develop/local-development/"><strong>本地开发</strong><span>依赖、数据库、测试与代码生成</span></a></li>
+      <li><a href="reference/cli/"><strong>CLI</strong><span>服务控制与管理命令</span></a></li>
+      <li><a href="reference/openapi/"><strong>OpenAPI</strong><span>HTTP API 规范与客户端生成</span></a></li>
+      <li><a href="reference/grpc/"><strong>gRPC</strong><span>公开 API、management API 与 reflection</span></a></li>
+    </ul>
+  </section>
+</div>

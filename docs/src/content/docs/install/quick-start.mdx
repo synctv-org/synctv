@@ -1,6 +1,6 @@
 ---
-title: 快速开始
-description: 用 Docker Compose 启动单机 SyncTV，并验证服务可用。
+title: 使用 Docker Compose 安装
+description: 在一台主机上启动 SyncTV、PostgreSQL 和 Redis，并验证服务状态。
 ---
 
 import { Aside, Code, Steps } from '@astrojs/starlight/components';
@@ -9,16 +9,16 @@ import {
   githubCloneUrl,
 } from '../../../lib/project';
 
-单机生产部署包含一个 SyncTV 进程、一个 PostgreSQL 和一个 Redis。Kubernetes 或多副本部署先完成单机闭环，再进入 [Helm 部署](../../install/helm/) 和 [集群配置](../../configuration/cluster/)。
+此安装在一台主机上运行 SyncTV、PostgreSQL 和 Redis。Kubernetes 环境直接使用 [Helm 安装](../../install/helm/)。
 
 ## 前置条件
 
 - Docker 和 Docker Compose 可用。
 - GNU Make 和 `openssl` 可用于生成环境文件。
-- 当前目录可以长期保存 Compose 文件、`.env.postgres`、`.env.redis`、`.env.synctv` 和数据卷。
-- 已准备 root 用户密码。生产环境使用密码管理器生成。
+- 为 SyncTV 准备一个长期保留的工作目录。该目录保存 Compose 文件、三个 env 文件和数据卷。
+- 使用密码管理器生成初始 root 密码。
 
-## 启动
+## 安装
 
 <Steps>
 1. 获取生产 Compose 配置：
@@ -34,19 +34,19 @@ import {
    make compose-init
    ```
 
-3. 编辑 `.env.synctv`，至少设置 root 密码：
+3. 编辑 `.env.synctv`，设置初始 root 密码：
 
    ```dotenv
    SYNCTV_BOOTSTRAP_ROOT_PASSWORD=replace-with-a-strong-password
    ```
 
-4. 检查 Compose 渲染结果：
+4. 验证 Compose 配置：
 
    ```bash
    make compose-config
    ```
 
-5. 启动服务：
+5. 在后台启动服务：
 
    ```bash
    make compose-up
@@ -55,20 +55,24 @@ import {
 
 ## 验证
 
+查看容器状态并请求 readiness endpoint：
+
 ```bash
 make compose-ps
 curl -fsS http://localhost:8080/health/ready
 ```
 
-成功后打开：
+readiness 请求成功后，在浏览器打开：
 
 ```text
 http://localhost:8080
 ```
 
-默认 root 用户名是 `root`。密码来自 `.env.synctv` 中的 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`。
+使用用户名 `root` 和 `.env.synctv` 中的 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` 登录。
 
-## 必须保存的值
+## 备份数据与密钥
+
+备份 PostgreSQL，并将以下值保存在密码管理器或 Secret 管理系统中：
 
 | 环境变量 | 用途 |
 | --- | --- |
@@ -78,7 +82,7 @@ http://localhost:8080
 | `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` | 首次创建 root 用户 |
 
 <Aside type="caution">
-不要删除或重新生成 `.env.synctv` 中的长期 secret。`SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` 和 `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` 变化后，已有密码记录或 Provider 凭据可能不可用。
+长期保留 `.env.synctv` 中的 secret。OPAQUE secret 关联现有密码记录，凭据加密密钥关联现有 Provider 凭据。
 </Aside>
 
 ## 常见失败
@@ -90,8 +94,8 @@ http://localhost:8080
 | 浏览器跨域错误 | 在 `.env.synctv` 中设置 `SYNCTV_SERVER_CORS_ALLOWED_ORIGINS`，只填写 origin。 |
 | root 用户无法登录 | 确认数据库首次启动时已设置 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`，并查看启动日志中的 bootstrap 结果。 |
 
-## 继续阅读
+## 上线前
 
-- 按 [生产部署清单](../../install/production-checklist/) 补齐 TLS、备份、metrics 和告警。
-- 需要解释 Compose 文件、端口和数据卷时，读 <a href={composeDeploymentDocsUrl}>Docker Compose 部署</a>。
-- 本地源码开发见 [开发指南](../../develop/local-development/)。
+- 按[生产部署清单](../../install/production-checklist/)配置 TLS、备份、metrics 和告警。
+- <a href={composeDeploymentDocsUrl}>Docker Compose 参考</a>列出端口、数据卷和维护命令。
+- [升级与迁移](../../operations/upgrades/)说明发布升级流程。

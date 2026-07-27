@@ -1,11 +1,9 @@
 ---
-title: 能力限制与非目标
-description: SyncTV 当前功能边界、设计取舍和不应误解为已支持的能力。
+title: 已知限制
+description: 当前版本在部署、媒体、集群、认证和 API 稳定性方面的限制。
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
-
-当前设计边界不代表长期路线图承诺。
+以下限制适用于当前版本。
 
 ## 部署边界
 
@@ -55,26 +53,9 @@ SyncTV 作为全新项目，当前自有 protobuf、HTTP 字段和 Realtime 消�
 
 详见 [API 与 protobuf 演进策略](../api-versioning/)。
 
-## 非目标
+## 系统职责
 
-<CardGrid>
-  <Card title="不是媒体存储系统" icon="document">
-    SyncTV 聚合和代理外部媒体，不替代对象存储、网盘或媒体库。
-  </Card>
-  <Card title="不是 CDN" icon="cloud-download">
-    proxy 和 slice cache 不能替代 CDN 容量规划。
-  </Card>
-  <Card title="不是万能转码器" icon="puzzle">
-    转码能力取决于 Provider 或上游媒体系统。
-  </Card>
-  <Card title="不是公网管理面" icon="setting">
-    management gRPC 和 metrics 需要受控访问。
-  </Card>
-</CardGrid>
-
-## 继续阅读
-
-- [架构总览](../../overview/architecture/)
-- [播放与代理模型](../../use/playback-and-proxy/)
-- [容量规划](../../operations/capacity-planning/)
-- [安全加固与密钥轮换](../../operations/security-hardening-and-rotation/)
+- **媒体存储**：外部对象存储、网盘或媒体库保存媒体；SyncTV 负责聚合和代理。
+- **内容分发**：CDN 承担大规模分发；proxy 和 slice cache 优化受控转发与 Range 请求。
+- **转码**：Provider 或上游媒体系统提供转码能力。
+- **管理入口**：management gRPC 和 metrics 通过 Unix socket、私网、VPN 或受控集群入口访问。

@@ -6,7 +6,7 @@ description: RTMP, HLS, HTTP-FLV, pull retry behavior, GOP cache, and livestream
 import Diagram from '../../../../components/Diagram.astro';
 import livestreamPipelineDark from '../../../../assets/diagrams/livestream-pipeline-dark.svg';
 import livestreamPipelineLight from '../../../../assets/diagrams/livestream-pipeline-light.svg';
-import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 ## What This Config Controls
 
@@ -25,20 +25,10 @@ Livestreaming includes ingest, realtime packet distribution, FLV playback, HLS r
   caption="Livestream data enters through RTMP and StreamHub, then splits by playback protocol: HTTP-FLV streams low-latency chunks, while HLS remuxing writes playlist and segment state to the selected HLS backend."
 />
 
-<CardGrid>
-  <Card title="RTMP ingest" icon="youtube">
-    Publishers connect through RTMP. During authentication, the publisher is registered on the local node or shared registry.
-  </Card>
-  <Card title="StreamHub" icon="cloud-download">
-    Live packets are distributed in-process to FLV sessions, the HLS remuxer, and internal relay/pull logic.
-  </Card>
-  <Card title="HTTP-FLV" icon="rocket">
-    Best for low latency. Clients hold long-lived responses, and write timeouts protect the server from slow readers.
-  </Card>
-  <Card title="HLS" icon="seti:folder">
-    Best for broad player compatibility and shared storage/CDN-like deployments. It has higher latency but scales well across replicas.
-  </Card>
-</CardGrid>
+- **RTMP ingest**: Publishers connect through RTMP. During authentication, the publisher is registered on the local node or shared registry.
+- **StreamHub**: Live packets are distributed in-process to FLV sessions, the HLS remuxer, and internal relay/pull logic.
+- **HTTP-FLV**: Best for low latency. Clients hold long-lived responses, and write timeouts protect the server from slow readers.
+- **HLS**: Best for broad player compatibility and shared storage/CDN-like deployments. It has higher latency but scales well across replicas.
 
 ## Choosing a Playback Protocol
 

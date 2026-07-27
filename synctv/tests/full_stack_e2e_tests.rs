@@ -87,14 +87,6 @@ impl CipherSuite for TestOpaqueCipherSuite {
     type Ksf = OpaqueArgon2Ksf<'static>;
 }
 
-fn reserve_local_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("bind ephemeral port")
-        .local_addr()
-        .expect("ephemeral local_addr")
-        .port()
-}
-
 fn reserve_local_ports() -> (u16, u16, u16) {
     let listeners: [_; 3] =
         std::array::from_fn(|_| TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port"));

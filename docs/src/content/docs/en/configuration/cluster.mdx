@@ -42,7 +42,7 @@ cluster:
   secret_file: "/run/secrets/cluster_secret"
 ```
 
-## Design Goal
+## State and Coordination Boundaries
 
 Cluster mode solves runtime consistency when multiple SyncTV processes serve the same instance. It is not just a load-balancing switch, and it does not replace PostgreSQL, Redis, Ingress, or a deliberate livestream storage/proxy model.
 
@@ -58,7 +58,7 @@ Cluster mode solves runtime consistency when multiple SyncTV processes serve the
   caption="In cluster mode, durable business state goes to PostgreSQL and cross-node runtime state goes to Redis. Local HLS backends use publisher-node proxying; shared_file serves TS segments from the current node's shared mount, and OSS defines an object-storage boundary."
 />
 
-## How It Works
+## Node Coordination Flow
 
 <Steps>
 1. Each node starts with the same PostgreSQL and Redis backends and derives or reads its node identity.

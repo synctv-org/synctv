@@ -1,5 +1,5 @@
 ---
-title: SDK 与 API 示例
+title: API 调用示例
 description: HTTP/OpenAPI、gRPC、WebSocket Realtime 和 Provider API 的可运行示例。
 ---
 
@@ -23,13 +23,7 @@ import { TabItem, Tabs } from '@astrojs/starlight/components';
 
 ## 准备 OpenAPI SDK
 
-启动带 OpenAPI 的服务：
-
-```bash
-cargo +nightly run -p synctv --features openapi --bin synctv -- serve
-```
-
-导出 schema：
+从已经运行的实例导出 schema：
 
 ```bash
 curl -fsSL http://localhost:8080/api-docs/openapi.json -o openapi.json

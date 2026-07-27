@@ -1,5 +1,5 @@
 ---
-title: 播放与代理协议
+title: 播放与代理
 description: SyncTV 播放信息、播放 URL、Provider header、代理模式、Range、slice cache、WebRTC 和直播播放边界。
 ---
 
@@ -31,6 +31,8 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 <Aside type="note">
 SyncTV proxy 只使用 Provider 明确给出的 header。它不会把浏览器请求里的 Cookie、Authorization 或任意 header 自动转发给上游。
 </Aside>
+
+Alist 播放 URL 可能绑定特定 `User-Agent`。Bilibili 常依赖 `User-Agent`、`Referer`、Cookie 和 Range。直连与代理表现不一致时，对比 Provider 返回给客户端的 header 与代理发往上游的 header；客户端受浏览器限制时选择代理 URL。
 
 ## 客户端选择策略
 
@@ -71,7 +73,7 @@ SyncTV proxy slice cache 的边界：
 
 断线重连时，重新获取 `playbackState`，并用当前 `playbackClientProfile` 观察 `playback`。播放信息是当前播放源可直接交给播放器使用的数据，生命周期跟随其中的 URL。
 
-完整协议见 [Realtime API](../../develop/realtime-api/)。
+完整协议见 [Realtime 协议](../realtime-api/)。
 
 ## P2P 媒体分发
 

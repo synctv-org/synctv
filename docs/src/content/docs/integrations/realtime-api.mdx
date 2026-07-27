@@ -1,5 +1,5 @@
 ---
-title: Realtime API
+title: Realtime 协议
 description: SyncTV 房间 WebSocket 实时协议、连接认证、基础消息、重连和错误处理。
 ---
 
@@ -128,7 +128,7 @@ WebRTC 客户端在发送信令前调用 `GET /api/rooms/<roomId>/webrtc/ice-ser
 | `resourceChanged.webrtcEvent.mediaSwarmPeers` | 当前 swarm 的有界 Peer 候选响应 |
 | `resourceObserved` / `resourceChanged` / `resourceObserveError` | 实时资源观察结果 |
 
-字段的完整结构以 `synctv-proto/proto/client.proto` 为准。端到端示例见 [SDK 与 API 示例](../sdk-and-api-examples/)。
+字段的完整结构以 `synctv-proto/proto/client.proto` 为准。端到端示例见 [API 调用示例](../api-examples/)。
 
 ## 媒体 swarm 信令
 
@@ -183,7 +183,7 @@ function handleServerMessage(message) {
 }
 ```
 
-连接建立后，先订阅当前页面需要的资源。资源观察见 [Realtime 资源观察](../realtime-resource-observation/)。
+连接建立后，先订阅当前页面需要的资源。具体方法见 [订阅 Realtime 资源](../realtime-subscriptions/)。
 
 聊天消息事件使用独立游标：双向流中发送 `observeResource.chatEvents.afterEventSequence` 可以补发指定事件之后的事件；HTTP SSE `GET /api/rooms/<roomId>/watch/chat-events` 支持 `afterEventSequence` 查询参数，并在重连时读取浏览器发送的 `Last-Event-ID`。服务端会在 SSE 事件上设置 `id:`，客户端保存该值即可恢复。
 

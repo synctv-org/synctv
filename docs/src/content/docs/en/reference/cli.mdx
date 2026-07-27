@@ -90,7 +90,7 @@ Do not load `.env`:
 synctv --no-dotenv config validate
 ```
 
-Useful in CI and production scripts where configuration should come only from explicit files and environment variables.
+Useful for deployment automation, production scripts, and environments controlled entirely through explicit files and environment variables.
 
 ### `-v` / `--verbose`
 
@@ -212,7 +212,7 @@ synctv config show --output json
 
 ## Database Commands
 
-Run embedded SQLx migrations without starting the service. Startup runs the same migrations automatically, so this command is mainly for preflight, CI, test environments, and troubleshooting:
+Run embedded SQLx migrations without starting the service. Startup runs the same migrations automatically, so this command is mainly for deployment preflight, staging, and troubleshooting:
 
 ```bash
 synctv db migrate

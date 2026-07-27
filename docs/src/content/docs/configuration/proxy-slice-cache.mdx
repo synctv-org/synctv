@@ -11,7 +11,7 @@ import proxySliceCacheLight from '../../../assets/diagrams/proxy-slice-cache-zh-
 
 它不是业务缓存，不放在 `cache` 下面；业务 L1/L2 缓存见 [业务缓存](../cache/)。
 
-## 工作模型
+## Range 分片流程
 
 客户端常见请求：
 
@@ -95,7 +95,7 @@ Kubernetes 多副本可以使用共享存储让文件跨副本可见，但当前
 - 上游不支持 Range 时直接 bypass；如果客户端请求完整内容，SyncTV 可以流式透传完整上游响应，但不会把它写成完整文件缓存。
 - 是否启用只在进程启动时读取，不支持 CLI 或 runtime settings 动态启停。
 
-## 常见问题
+## 缓存行为
 
 ### 客户端不带 Range 时会缓存吗？
 

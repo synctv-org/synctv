@@ -3,7 +3,7 @@ title: WebAuthn 与 Passkey
 description: passkey 登录、WebAuthn RP ID、Origin、安全域名和集群依赖配置。
 ---
 
-## WebAuthn 是什么？
+## 支持的认证方式
 
 WebAuthn 是浏览器、操作系统和硬件安全密钥支持的无密码/多因素认证标准。用户看到的产品形态通常叫：
 
@@ -14,7 +14,7 @@ WebAuthn 是浏览器、操作系统和硬件安全密钥支持的无密码/多�
 
 SyncTV 的配置字段使用标准名 `webauthn`，产品文案可以叫 passkey。
 
-## 开启前需要什么？
+## 生产环境要求
 
 生产环境必须满足：
 
@@ -178,9 +178,9 @@ webauthn:
         - "<官方 Release 配置文件中的 SHA-256 指纹>"
 ```
 
-包名和证书指纹属于公开身份信息。Android 使用它们验证当前 App 是否获得域名授权；keystore、签名私钥和密码继续保密。development 或 fork 构建拥有各自的签名身份，需要配置对应安装包的实际证书指纹。
+包名和证书指纹属于公开身份信息。Android 使用它们验证当前 App 是否获得域名授权；keystore、签名私钥和密码继续保密。每个签名身份都需要配置对应安装包的实际证书指纹。
 
-证书指纹由签名密钥决定，应用版本升级不会改变指纹。官方 Release 持续使用固定发布密钥；fork 可以创建自己的固定 release keystore，并将签名配置保存为 fork 仓库的 GitHub Secrets。该 fork 的 Release workflow 会自动发布对应的服务器配置文件。CI development 签名属于临时身份，可能随着 runner 和构建环境变化，因此只适合临时测试。
+证书指纹由签名密钥决定。自行构建 App 时，读取实际安装包的签名证书 SHA-256 指纹并写入服务端配置；后续版本继续使用同一签名密钥，服务端授权即可保持稳定。临时测试包可能使用不同证书，每个安装包都要配置对应指纹。
 
 同一服务端可以同时授权官方 App 和 fork App。相同包名使用一个 `android_apps` 条目并列出多个指纹：
 
@@ -193,7 +193,7 @@ webauthn:
         - "<fork App 证书 SHA-256>"
 ```
 
-使用自定义包名的 fork 增加独立的 `android_apps` 条目。官方签名私钥仅由官方发布流程持有；fork 使用自己的签名密钥即可与同一自托管服务器稳定共存。
+使用自定义包名的 App 增加独立的 `android_apps` 条目。每个 App 使用自己的签名密钥和证书指纹，可以同时连接同一台自托管服务器。
 
 GitHub APK 使用 Release 配置文件中公布的证书。未来通过 Google Play 分发时，Google Play App Signing 可能使用另一份安装包签名证书，服务端需要将 Play Console 中的 App signing certificate SHA-256 一并加入 `sha256_cert_fingerprints`。
 

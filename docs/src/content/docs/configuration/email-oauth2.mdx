@@ -5,7 +5,7 @@ description: 邮件登录与 OAuth2 provider runtime 配置说明
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-## 范围
+## 配置存储位置
 
 邮件登录和 OAuth2 provider 都通过 runtime settings 配置。邮件使用 `email` 分组，OAuth2 provider 使用 `oauth2.providers`。
 
@@ -117,7 +117,7 @@ synctv settings update \
 - `enableSignup=false` 只影响首次 OAuth2 建号，不影响已绑定账号登录。
 - `signupNeedReview=true` 会把首次 OAuth2 注册送入审核流程。
 
-## 常见问题
+## 回调地址与密钥
 
 ### Redirect URL
 

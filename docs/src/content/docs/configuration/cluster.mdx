@@ -40,7 +40,7 @@ cluster:
 openssl rand -hex 32
 ```
 
-## 设计目标
+## 状态与协调边界
 
 集群模式解决的是“多个 SyncTV 进程共同服务同一个实例”时的运行时一致性问题。它不是简单的负载均衡开关，也不替代 PostgreSQL、Redis、Ingress 或直播存储/代理策略。
 
@@ -56,7 +56,7 @@ openssl rand -hex 32
   caption="集群模式下，业务持久状态进入 PostgreSQL，跨节点运行时状态进入 Redis。本地 HLS backend 使用 publisher-node proxy；shared_file 会让当前节点从共享挂载读取 TS 分片，OSS 则提供对象存储边界。"
 />
 
-## 工作流
+## 节点协同流程
 
 <Steps>
 1. 每个节点启动后使用相同配置连接 PostgreSQL 和 Redis，并生成或读取自己的节点 ID。

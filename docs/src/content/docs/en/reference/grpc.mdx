@@ -1,6 +1,6 @@
 ---
-title: gRPC Debugging
-description: Debug SyncTV gRPC APIs with reflection or checked-in protobuf definitions.
+title: gRPC API
+description: Access and debug SyncTV gRPC APIs with reflection or protobuf definitions.
 ---
 
 import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
@@ -9,7 +9,7 @@ import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
 
 SyncTV public gRPC and HTTP REST share `server.port`, default `8080`.
 
-`server.enable_reflection=false` by default. Development environments can enable it explicitly to explore services with `grpcurl`; production should usually keep reflection disabled and use checked-in protobuf files.
+`server.enable_reflection=false` by default. Enable reflection temporarily in a test or trusted internal environment to explore services with `grpcurl`. Use the protobuf files when calling a public instance.
 
 <Aside type="caution">
 gRPC reflection exposes service and message structure. It is useful for development, internal debugging, and staging, but should not be left enabled on public production endpoints.
@@ -20,11 +20,10 @@ gRPC reflection exposes service and message structure. It is useful for developm
 <Tabs>
   <TabItem label="Reflection" icon="magnifier">
 
-Start with reflection:
+Enable reflection in the deployment configuration, then restart SyncTV:
 
 ```bash
-SYNCTV_SERVER_ENABLE_REFLECTION=true \
-cargo +nightly run -p synctv --bin synctv -- serve
+SYNCTV_SERVER_ENABLE_REFLECTION=true
 ```
 
 List services:

@@ -1,6 +1,6 @@
 ---
 title: Administer SyncTV
-description: Manage users, rooms, permissions, Providers, runtime settings, and maintenance tasks.
+description: Manage users, rooms, permissions, Providers, and runtime settings.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -23,9 +23,8 @@ Expose management gRPC, metrics, and internal debugging endpoints only through U
 - [Reviews and Moderation](./reviews-moderation/): registration, room creation, join reviews, and bans.
 - [Providers](./providers/): create, enable, disable, update, reconnect, and delete Provider instances.
 
-## Service Policy and Maintenance
+## Service Policy
 
 - [Runtime Settings](./runtime-settings/): hot-update registration, proxy, CORS, chat, and room policies.
-- [Maintenance Tasks](./maintenance/): inspect state, clear streams, evict caches, and verify results.
 
-The [CLI Reference](../reference/cli/) lists every flag. [Deployment and Runtime Boundaries](../operations/deployment-boundaries/) covers production dependencies and management-plane requirements.
+The [CLI Reference](../reference/cli/) lists every flag. [Maintenance Tasks](../operations/maintenance/) and [Deployment and Runtime Boundaries](../operations/deployment-boundaries/) are part of the operations documentation.

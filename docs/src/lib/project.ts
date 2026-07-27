@@ -55,15 +55,10 @@ export const githubBranch =
 export const githubUrl = `https://github.com/${githubRepository}`;
 export const githubCloneUrl = `${githubUrl}.git`;
 export const githubEditUrl = `${githubUrl}/edit/${githubBranch}/docs/`;
-export const githubRawBaseUrl =
-  readEnv('SYNCTV_DOCS_GITHUB_RAW_BASE_URL') ||
-  `https://raw.githubusercontent.com/${githubRepository}/${githubBranch}`;
 
-export const projectRepositoryName = repositoryName(githubRepository);
 export const dockerImage = readEnv('SYNCTV_DOCS_DOCKER_IMAGE') || dockerHubImage(githubRepository);
 export const dockerImageTag = readEnv('SYNCTV_DOCS_IMAGE_TAG') || defaultAppVersion;
 export const dockerImageReference = `${dockerImage}:${dockerImageTag}`;
-export const dockerComposeDevFileUrl = `${githubRawBaseUrl}/docker-compose.dev.yml`;
 
 export const helmChartName = readEnv('SYNCTV_DOCS_HELM_CHART_NAME') || 'synctv';
 export const helmChartVersion = readEnv('SYNCTV_DOCS_HELM_CHART_VERSION') || defaultAppVersion;

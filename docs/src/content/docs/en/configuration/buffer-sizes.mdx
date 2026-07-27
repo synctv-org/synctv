@@ -3,7 +3,7 @@ title: Internal Buffers
 description: buffer_sizes controls WebSocket outbound queues and audit event buffer capacity.
 ---
 
-## Scope
+## When to Tune Buffers
 
 `buffer_sizes` controls internal queue sizes. Most deployments do not need to change these values. They matter when handling high concurrency, slow clients, audit spikes, or tight memory limits.
 

@@ -1,29 +1,9 @@
 ---
-title: OpenAPI 文档入口
-description: 开发者如何启用、访问、导出 SyncTV 内置 OpenAPI JSON 和 Swagger UI。
+title: OpenAPI
+description: 访问、导出和保护 SyncTV 内置的 OpenAPI JSON 与 Swagger UI。
 ---
 
-SyncTV 内置 OpenAPI JSON 和 Swagger UI。二进制必须启用 `openapi` feature 才会暴露这些入口。
-
-## 启用 OpenAPI
-
-本地启动带 OpenAPI 的服务：
-
-```bash
-cargo +nightly run -p synctv --features openapi --bin synctv -- serve
-```
-
-如果还要指定配置文件：
-
-```bash
-cargo +nightly run -p synctv --features openapi --bin synctv -- serve --config synctv.yaml
-```
-
-编译检查：
-
-```bash
-cargo +nightly check --workspace --all-targets --features openapi
-```
+SyncTV 官方容器镜像提供 OpenAPI JSON 和 Swagger UI，可用于浏览接口、导出 schema 和生成客户端。自行构建的二进制需要包含 OpenAPI 功能；入口返回 `404` 时先确认安装包的构建选项。
 
 ## Swagger UI 地址
 
@@ -76,21 +56,11 @@ openapi-generator-cli generate \
   -o ./generated/synctv-client
 ```
 
-## 部署环境注意事项
+## 访问控制
 
 生产环境暴露 Swagger UI 前确认：
 
-- 二进制构建时启用了 `openapi` feature。
+- 当前安装包包含 OpenAPI 功能。
 - 反向代理允许访问 `/swagger-ui/`。
 - 反向代理允许访问 `/api-docs/openapi.json`。
 - 只允许内网开发者访问时，在 Ingress、Nginx、网关或防火墙层限制来源。
-
-Cargo 默认构建不启用 OpenAPI，Dockerfile 默认启用。Docker 生产构建可传入不含
-`openapi` 的显式 feature 组合：
-
-```bash
-docker build \
-  --build-arg SYNCTV_BUILD_NO_DEFAULT_FEATURES=true \
-  --build-arg SYNCTV_BUILD_FEATURES="k8s,mimalloc,tls-aws-lc,tls-webpki-roots,tls-native-roots" \
-  -t synctv:production-no-openapi .
-```

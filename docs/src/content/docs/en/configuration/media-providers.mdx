@@ -3,7 +3,7 @@ title: Media Providers
 description: Configure built-in and remote media Providers, request timeouts, credential encryption, and Provider instances.
 ---
 
-## What Providers Are
+## Provider Types and Configuration
 
 Media providers are SyncTV's integration points for external media sources, including:
 
@@ -30,7 +30,7 @@ media_providers:
 
 Remote provider instances are not configured in this YAML object. They are persisted through the management API/CLI and only store connection details that SyncTV needs to reach the remote provider, such as `endpoint`, `tls`, `jwt_secret`, `custom_ca`, `timeout`, `insecure_tls`, and `providers`. The remote provider's own Alist, Emby, or Bilibili configuration belongs in the remote provider deployment.
 
-Create remote Provider instances through the management API or CLI, and keep Alist, Emby/Jellyfin, Bilibili, and other upstream configuration in the matching Provider service. See [Provider Management](../../admin/providers/) for enable, reconnect, and credential maintenance tasks. See [Provider Development](../../develop/provider-development/) to implement or extend a Provider.
+Create remote Provider instances through the management API or CLI, and keep Alist, Emby/Jellyfin, Bilibili, and other upstream configuration in the matching Provider service. See [Provider Management](../../admin/providers/) for enable, reconnect, and credential maintenance tasks.
 
 ## Provider Instances
 
@@ -76,44 +76,6 @@ media_providers:
 ```
 
 Other built-in Providers use the same timeout contract. Upstream endpoints, Cookies, tokens, account passwords, and API keys are persisted through user binding APIs.
-
-## Page and Cursor Capabilities
-
-Provider list APIs report page or cursor mode through a protobuf oneof. Cloudreve reports the mode supported by the current server. Bilibili history, Twitch, and YouTube use native upstream cursors. Traditional folders and indexes usually use page or offset semantics.
-
-Clients treat cursors as opaque tokens. Deployers do not configure cursor generation.
-
-## Header Ownership
-
-The low-level proxy layer should not guess which raw client headers to forward. Providers decide which upstream request headers are required, for example:
-
-- `User-Agent`
-- `Referer`
-- `Range`
-- Provider-specific authentication headers
-
-This keeps behavior predictable, avoids leaking arbitrary client headers upstream, and lets each provider match direct-play and proxy-play semantics.
-
-## Alist Notes
-
-Alist may return URLs that are bound to a specific User-Agent. SyncTV should keep these aligned:
-
-- Headers used by provider-originated requests.
-- Headers returned to clients for direct playback.
-- Headers used by proxy mode when requesting the upstream URL.
-
-If a client cannot set required headers, use proxy mode instead of direct mode.
-
-## Bilibili Notes
-
-Bilibili is sensitive to request headers, especially:
-
-- `User-Agent`
-- `Referer`
-- Cookie or authentication headers
-- Range requests
-
-If direct mode works but proxy mode fails, or the reverse, first compare the headers returned to clients with the headers used by proxy upstream requests.
 
 ## Credential Encryption
 

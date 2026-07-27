@@ -1,5 +1,5 @@
 ---
-title: Architecture Overview
+title: System Architecture
 description: Understand SyncTV process boundaries, network surfaces, state layers, and media capabilities from single-node to production cluster.
 ---
 
@@ -39,7 +39,6 @@ PostgreSQL is durable business state. Redis is shared short-lived state and coor
 | Level | Use case | Required components | Extra attention |
 | --- | --- | --- | --- |
 | Single-node production | Small team or one server | SyncTV, PostgreSQL, production secrets | Redis is recommended, backups are required |
-| Temporary local evaluation | UI preview or development preflight | SyncTV, PostgreSQL | Development Compose secrets are acceptable only locally; do not use publicly or long term |
 | Multi-replica production | Horizontal scaling, rolling updates, highly available entrypoints | Multiple SyncTV instances, PostgreSQL, Redis, cluster secret | Split HTTP/gRPC Ingresses and choose an HLS model |
 
 ## Major Components

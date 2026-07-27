@@ -1,27 +1,17 @@
 ---
 title: Docker Compose 部署
-description: 使用生产 docker-compose.yml 部署单机 SyncTV，并了解开发 Compose 的边界。
+description: 使用生产 docker-compose.yml 部署和运行单机 SyncTV。
 ---
 
-import { Aside, Code, TabItem, Tabs } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
 import {
-  dockerComposeDevFileUrl,
   dockerImageReference,
   githubCloneUrl,
 } from '../../../lib/project';
 
 单机部署优先使用 `docker-compose.yml`。它使用预构建镜像、显式生产 secret、持久化 env 文件和数据卷，适合一台服务器或本机长期运行。
 
-开发 Compose 面向代码修改和本地测试，从本地 Dockerfile 构建镜像并加载开发配置。生产环境使用 `docker-compose.yml`。
-
 还没有确定部署方式时，先读 [部署路径选择](../choose-path/)。
-
-## Compose 文件区别
-
-| 文件 | 用途 | 特点 |
-| --- | --- | --- |
-| `docker-compose.yml` | 预构建镜像部署 | 使用 <code>{dockerImageReference}</code>，需要显式提供生产 secret |
-| `docker-compose.dev.yml` | 本地开发 | 从本地 Dockerfile 构建，内置仅供本地使用的开发配置 |
 
 ## 获取生产 Compose 配置
 
@@ -30,7 +20,7 @@ import {
 <Code code={`git clone --depth 1 ${githubCloneUrl} synctv
 cd synctv`} lang="bash" />
 
-确认主机已安装 Docker Compose、GNU Make 和 `openssl`。`make compose-init` 使用 `openssl` 生成 PostgreSQL、Redis、JWT、cluster、credential-encryption 和 OPAQUE secret。PostgreSQL 与 Redis 密码使用 URL 安全的十六进制格式。开发 Compose 文件地址是 <a href={dockerComposeDevFileUrl}>docker-compose.dev.yml</a>。
+确认主机已安装 Docker Compose、GNU Make 和 `openssl`。`make compose-init` 使用 `openssl` 生成 PostgreSQL、Redis、JWT、cluster、credential-encryption 和 OPAQUE secret。PostgreSQL 与 Redis 密码使用 URL 安全的十六进制格式。Compose 默认使用镜像 <code>{dockerImageReference}</code>。
 
 ## 生产 Compose 启动
 
@@ -67,34 +57,6 @@ curl -fsS http://localhost:8080/health/ready
 Docker Compose 会通过 `env_file` 分别加载必需的 `.env.postgres`、`.env.redis` 和 `.env.synctv`：PostgreSQL 只读取数据库变量，Redis 只读取 `REDIS_PASSWORD`，`synctv` 只读取 `SYNCTV_*` 应用配置。`make compose-init` 会把同一个 Redis 密码写入 `.env.redis` 的 `REDIS_PASSWORD`，并写入 `.env.synctv` 中带认证信息的 `SYNCTV_REDIS_URL`。请备份这三个文件；重启、换 shell、服务器重启或升级时都应复用同一组环境文件。缺少任一文件时，`make compose-config` 会直接失败。
 
 升级镜像时，在运行 Compose 前将 `SYNCTV_IMAGE_TAG` 设置为目标发布版本，或在自己的 Compose 覆盖文件中指定镜像版本。示例 Compose 文件默认使用文档对应的应用版本而不是 `latest`，以保证部署可复现。
-
-## 开发 Compose
-
-开发 Compose 依赖当前仓库中的 Dockerfile 和源码。
-
-<Tabs syncKey="compose-mode">
-  <TabItem label="开发 Compose" icon="rocket">
-
-启动：
-
-```bash
-docker compose -f docker-compose.dev.yml up -d
-```
-
-这个文件会启动：
-
-- PostgreSQL 18
-- Redis 8
-- SyncTV 本地构建镜像
-
-它内置仅供本地开发使用的凭据和配置，完整源码仓库可以直接启动，不需要先生成 env 文件。
-
-  </TabItem>
-</Tabs>
-
-<Aside type="caution">
-不要把开发 Compose 的本地配置复制到生产环境。生产 Compose 要求显式 secret 是刻意设计，用来避免默认弱密钥上线。
-</Aside>
 
 ## 数据卷
 

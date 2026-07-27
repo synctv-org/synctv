@@ -1,5 +1,5 @@
 ---
-title: Playback and Proxy Protocol
+title: Playback and Proxy
 description: SyncTV playbacks, playback URLs, Provider headers, proxy modes, Range, slice cache, WebRTC, and livestream boundaries.
 ---
 
@@ -31,6 +31,8 @@ Playback issues often sit between the client, SyncTV, Provider, and upstream med
 <Aside type="note">
 SyncTV proxy uses only headers explicitly provided by the Provider. It does not automatically forward browser cookies, Authorization, or arbitrary request headers upstream.
 </Aside>
+
+Alist playback URLs may be bound to a specific `User-Agent`. Bilibili commonly depends on `User-Agent`, `Referer`, cookies, and Range. When direct and proxy playback behave differently, compare the headers returned to the client with those sent upstream by the proxy. Browser clients that cannot set the required headers should select the proxy URL.
 
 ## Client Selection Strategy
 
@@ -69,7 +71,7 @@ New clients observe playback resources over Realtime:
 
 On reconnect, fetch `playbackState` and observe `playback` with the current `playbackClientProfile`. Playback info is player-ready data for the current source and expires with its URLs.
 
-See [Realtime API](../../develop/realtime-api/).
+See [Realtime Protocol](../realtime-api/).
 
 ## P2P Media Delivery
 

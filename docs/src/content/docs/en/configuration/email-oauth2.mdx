@@ -5,7 +5,7 @@ description: Email login and OAuth2 provider runtime configuration
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-## Scope
+## Where Settings Are Stored
 
 Email login and OAuth2 providers use runtime settings. Email uses the `email` group, and OAuth2 providers use `oauth2.providers`.
 
@@ -117,7 +117,7 @@ By default, SyncTV uses the `issuer` for OIDC discovery. Only configure `authUrl
 - `enableSignup=false` only blocks first-time account creation through that provider. Existing linked OAuth2 logins still work.
 - `signupNeedReview=true` sends first-time OAuth2 signup into the review flow.
 
-## FAQ
+## Redirect URLs and Secrets
 
 ### Redirect URL
 

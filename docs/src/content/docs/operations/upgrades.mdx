@@ -17,7 +17,7 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 不要把“镜像可以回滚”理解成“系统一定可以回滚”。如果 migration 修改了数据库结构，回滚前必须确认旧版本是否还能读取新结构。
 </Aside>
 
-## 发布前检查
+## 升级前检查
 
 <Steps>
 1. 阅读新版本 release notes 或变更记录。
@@ -27,16 +27,15 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 5. 运行 `synctv config validate --strict`。
 6. 运行 `synctv config show --output yaml` 保存当前有效配置快照。
 7. 对比 [配置总索引](../../reference/configuration-index/) 和 [完整配置示例](../../configuration/full-example/)。
-8. 如果协议或 protobuf 变更，确认 [API 与 protobuf 演进策略](../../reference/api-versioning/) 和客户端示例已同步。
-9. 如果使用 Helm，执行 `helm lint` 和 `helm template`。
-10. 如果使用 Compose，执行 `make compose-config`。
+8. 如果使用 Helm，执行 `helm lint` 和 `helm template`。
+9. 如果使用 Compose，执行 `make compose-config`。
 </Steps>
 
 ## 数据库 Migration
 
 SyncTV 服务启动阶段会自动执行 embedded SQLx migrations。migration 状态记录在 `_sqlx_migrations`，并由 SQLx 在数据库侧加锁保证同一套 migration 不会被多个副本并发执行。多副本同时启动时，不需要额外用 Job 来人工串行化 migration，也不需要管理员判断“这次是否需要迁移”。
 
-`synctv db migrate` 仍然保留为显式运维命令，适合发布前预检、CI、测试环境和排障。它执行的 migration 与服务启动时自动执行的是同一套 embedded migrations。
+`synctv db migrate` 仍然保留为显式运维命令，适合升级前预检、测试环境和排障。它执行的 migration 与服务启动时自动执行的是同一套 embedded migrations。
 
 查询状态：
 
@@ -56,7 +55,7 @@ synctv db migrate
 docker compose run --rm synctv synctv db migrate
 ```
 
-生产环境是否单独运行 `synctv db migrate` 是发布流程选择，不是正确性要求。单独运行的价值是可观测性和失败边界更清晰：可以在新版本接流量前看到 dirty migration、checksum drift 或数据库权限问题。即使不单独运行，服务启动也会自动迁移。
+生产环境可以单独运行 `synctv db migrate`，提前发现 dirty migration、checksum drift 或数据库权限问题。服务启动时也会自动执行尚未应用的 migration。
 
 ## Docker Compose 升级
 

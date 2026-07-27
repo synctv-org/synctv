@@ -1,7 +1,10 @@
 ---
-title: 配置校验与排错
+title: 验证配置
 description: 使用 config validate、日志和渲染结果定位配置问题。
 ---
+
+import { Code } from '@astrojs/starlight/components';
+import { helmChartName, helmChartVersion, helmOciChartReference } from '../../../lib/project';
 
 ## 首选命令
 
@@ -11,17 +14,11 @@ description: 使用 config validate、日志和渲染结果定位配置问题。
 synctv config --config synctv.yaml validate --strict
 ```
 
-开发环境使用 cargo：
-
-```bash
-cargo +nightly run -p synctv --bin synctv -- config --config synctv.yaml validate --strict
-```
-
 `config validate` 默认会把未知配置项和不支持的 `SYNCTV_` 环境变量作为 warning 输出。部署前预检建议使用 `--strict`，因为 `synctv serve` 启动时也会使用同一套严格未知输入策略。
 
 ## 常见错误
 
-服务已经启动但访问、认证、媒体播放或 Ingress 行为异常时，先看 [排障入口](../troubleshooting/)。
+服务已经启动但访问、认证、媒体播放或 Ingress 行为异常时，先看 [排障入口](../../operations/troubleshooting/)。
 
 ### OPAQUE secret 为空
 
@@ -114,17 +111,12 @@ make compose-logs SERVICE=synctv
 
 ## Helm 排错
 
-渲染：
+从 OCI Chart 渲染最终清单：
 
-```bash
-helm template synctv ./helm/synctv --values my-values.yaml
-```
-
-检查：
-
-```bash
-helm lint ./helm/synctv
-```
+<Code code={`helm template ${helmChartName} ${helmOciChartReference} \\
+  --version ${helmChartVersion} \\
+  --namespace synctv \\
+  --values my-values.yaml`} lang="bash" />
 
 查看运行时配置：
 

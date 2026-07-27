@@ -45,9 +45,19 @@ import { dockerImageTag } from '../../lib/project';
   </section>
 
   <section>
-    <div class="docs-directory-heading"><Icon name="laptop" /><h2>管理与运维</h2></div>
+    <div class="docs-directory-heading"><Icon name="laptop" /><h2>管理</h2></div>
     <ul class="docs-link-list">
       <li><a href="admin/"><strong>管理 SyncTV</strong><span>用户、房间、权限与 Provider</span></a></li>
+      <li><a href="admin/users/"><strong>用户管理</strong><span>角色、封禁与账号安全状态</span></a></li>
+      <li><a href="admin/rooms-members/"><strong>房间与成员</strong><span>房间生命周期、成员角色与播放控制</span></a></li>
+      <li><a href="admin/runtime-settings/"><strong>运行设置</strong><span>查看和修改数据库中的动态设置</span></a></li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="docs-directory-heading"><Icon name="laptop" /><h2>运维</h2></div>
+    <ul class="docs-link-list">
+      <li><a href="operations/upgrades/"><strong>升级与迁移</strong><span>备份、数据库迁移与回滚</span></a></li>
       <li><a href="operations/observability/"><strong>监控与运行手册</strong><span>健康检查、metrics、日志与告警</span></a></li>
       <li><a href="operations/backup-restore/"><strong>备份与恢复</strong><span>PostgreSQL、密钥与恢复演练</span></a></li>
       <li><a href="operations/troubleshooting/"><strong>排障</strong><span>按错误、状态码和运行信号定位问题</span></a></li>
@@ -55,12 +65,12 @@ import { dockerImageTag } from '../../lib/project';
   </section>
 
   <section>
-    <div class="docs-directory-heading"><Icon name="puzzle" /><h2>开发与参考</h2></div>
+    <div class="docs-directory-heading"><Icon name="puzzle" /><h2>API 与参考</h2></div>
     <ul class="docs-link-list">
-      <li><a href="develop/local-development/"><strong>本地开发</strong><span>依赖、数据库、测试与代码生成</span></a></li>
+      <li><a href="integrations/client-integration/"><strong>客户端集成</strong><span>认证、HTTP、gRPC 与 Realtime</span></a></li>
       <li><a href="reference/cli/"><strong>CLI</strong><span>服务控制与管理命令</span></a></li>
       <li><a href="reference/openapi/"><strong>OpenAPI</strong><span>HTTP API 规范与客户端生成</span></a></li>
-      <li><a href="reference/grpc/"><strong>gRPC</strong><span>公开 API、management API 与 reflection</span></a></li>
+      <li><a href="reference/environment-variables/"><strong>环境变量</strong><span>容器和服务配置覆盖项</span></a></li>
     </ul>
   </section>
 </div>

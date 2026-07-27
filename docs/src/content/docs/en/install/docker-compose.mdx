@@ -1,27 +1,17 @@
 ---
 title: Docker Compose Deployment
-description: Deploy single-node SyncTV with the production docker-compose.yml and understand the development Compose boundary.
+description: Deploy and operate a single-node SyncTV installation with the production docker-compose.yml.
 ---
 
-import { Aside, Code, TabItem, Tabs } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
 import {
-  dockerComposeDevFileUrl,
   dockerImageReference,
   githubCloneUrl,
 } from '../../../../lib/project';
 
 Single-node deployments should start with `docker-compose.yml`. It uses the prebuilt image, explicit production secrets, persistent env files, and volumes, so it is suitable for one-server or long-running local deployments.
 
-Development Compose serves code work and local testing. It builds from the local Dockerfile and loads development settings. Production deployments use `docker-compose.yml`.
-
 If you have not chosen a deployment model yet, start with [Choose a Deployment Path](../choose-path/).
-
-## Compose Files
-
-| File | Purpose | Behavior |
-| --- | --- | --- |
-| `docker-compose.yml` | Image-based deployment | Uses <code>{dockerImageReference}</code> and requires explicit production secrets |
-| `docker-compose.dev.yml` | Local development | Builds from the local Dockerfile and includes local-only development settings |
 
 ## Get the Production Compose Configuration
 
@@ -30,7 +20,7 @@ The repository Makefile owns the production Compose configuration and lifecycle.
 <Code code={`git clone --depth 1 ${githubCloneUrl} synctv
 cd synctv`} lang="bash" />
 
-Install Docker Compose, GNU Make, and `openssl` on the host. `make compose-init` uses `openssl` to generate PostgreSQL, Redis, JWT, cluster, credential-encryption, and OPAQUE secrets. PostgreSQL and Redis passwords use a URL-safe hexadecimal format. The development Compose file is <a href={dockerComposeDevFileUrl}>docker-compose.dev.yml</a>.
+Install Docker Compose, GNU Make, and `openssl` on the host. `make compose-init` uses `openssl` to generate PostgreSQL, Redis, JWT, cluster, credential-encryption, and OPAQUE secrets. PostgreSQL and Redis passwords use a URL-safe hexadecimal format. Compose uses <code>{dockerImageReference}</code> by default.
 
 ## Production Compose Startup
 
@@ -67,34 +57,6 @@ Open `http://localhost:8080` in a browser. The default root username is `root`; 
 Docker Compose loads required `.env.postgres`, `.env.redis`, and `.env.synctv` files through `env_file`: PostgreSQL reads only database variables, Redis reads only `REDIS_PASSWORD`, and `synctv` reads only `SYNCTV_*` application settings. `make compose-init` writes the same generated Redis password into `.env.redis` as `REDIS_PASSWORD` and into `.env.synctv` inside the authenticated `SYNCTV_REDIS_URL`. Back up all three files and reuse them across restarts, new shells, host reboots, and upgrades. A missing file causes `make compose-config` to fail immediately.
 
 When upgrading, set `SYNCTV_IMAGE_TAG` to the desired release before running Compose, or pin the desired image in your own Compose override file. The sample Compose file defaults to the documented app version instead of `latest` so deployments are reproducible. Treat PostgreSQL and Redis image tag changes as separate data-service upgrades: back up the volumes first, review upstream release notes, and keep rollback tags available.
-
-## Development Compose
-
-Development Compose depends on the current checkout's Dockerfile and source tree.
-
-<Tabs syncKey="compose-mode">
-  <TabItem label="Development Compose" icon="rocket">
-
-Start:
-
-```bash
-docker compose -f docker-compose.dev.yml up -d
-```
-
-This starts:
-
-- PostgreSQL 18.
-- Redis 8.
-- SyncTV built from the local Dockerfile.
-
-It includes local-only development credentials and settings so a full checkout can start without generating env files.
-
-  </TabItem>
-</Tabs>
-
-<Aside type="caution">
-Do not copy development Compose settings into production. Production Compose requires explicit secrets by design.
-</Aside>
 
 ## Volumes
 

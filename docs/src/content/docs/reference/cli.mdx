@@ -92,7 +92,7 @@ synctv --data-dir /var/lib/synctv serve
 synctv --no-dotenv config validate
 ```
 
-适合 CI、生产脚本或你希望完全由环境变量/配置文件控制时使用。
+适合部署自动化、生产脚本，以及完全由环境变量和配置文件控制的运行环境。
 
 ### `-v` / `--verbose`
 
@@ -226,7 +226,7 @@ synctv config show --output json
 
 ### `db migrate`
 
-显式运行 embedded SQLx migrations 但不启动服务。服务启动阶段也会自动执行同一套 migrations，因此这个命令主要用于预检、CI、测试环境和排障。
+显式运行 embedded SQLx migrations 但不启动服务。服务启动阶段也会自动执行同一套 migrations，因此这个命令主要用于部署预检、预发布环境和排障。
 
 ```bash
 synctv db migrate

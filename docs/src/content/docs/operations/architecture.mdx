@@ -1,5 +1,5 @@
 ---
-title: 架构总览
+title: 系统架构
 description: 从最小单机模型到生产集群模型理解 SyncTV 的进程边界、网络入口、状态层和媒体能力。
 ---
 
@@ -39,7 +39,6 @@ PostgreSQL 是持久业务数据源。Redis 是共享短期状态和集群协调
 | 层级 | 适合场景 | 必需组件 | 额外注意 |
 | --- | --- | --- | --- |
 | 生产单机 | 小团队或单服务器 | SyncTV、PostgreSQL、生产 secret | 配置 Redis，必须有备份 |
-| 本地临时试用 | 只看界面或开发前预览 | SyncTV、PostgreSQL | 可使用开发 Compose 内置 secret，不能公网或长期运行 |
 | 多副本生产 | 横向扩展、滚动更新、高可用入口 | 多个 SyncTV、PostgreSQL、Redis、cluster secret | HTTP/gRPC Ingress 分开，HLS 模型要明确 |
 
 ## 主要组件

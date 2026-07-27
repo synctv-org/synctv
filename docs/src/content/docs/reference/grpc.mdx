@@ -1,6 +1,6 @@
 ---
-title: gRPC 调试
-description: 使用 reflection 或 checked-in protobuf 定义调试 SyncTV gRPC API。
+title: gRPC API
+description: 使用 reflection 或 protobuf 定义访问和调试 SyncTV gRPC API。
 ---
 
 import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
@@ -9,7 +9,7 @@ import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
 
 SyncTV 的公开 gRPC 和 HTTP REST 共用 `server.port`，默认是 `8080`。
 
-默认配置中 `server.enable_reflection=false`。开发环境可以显式开启后用 `grpcurl` 探索服务；生产环境建议保持关闭，改用仓库内 protobuf 文件调试。
+默认配置中 `server.enable_reflection=false`。在测试或可信内网环境中可以临时启用 reflection，再用 `grpcurl` 探索服务。公网实例使用 protobuf 文件调用接口。
 
 <Aside type="caution">
 gRPC reflection 会暴露服务和消息结构。它适合开发、内网调试和预发布环境，不建议在公网生产环境长期开启。
@@ -20,11 +20,10 @@ gRPC reflection 会暴露服务和消息结构。它适合开发、内网调试�
 <Tabs>
   <TabItem label="Reflection" icon="magnifier">
 
-启动服务：
+在部署配置中启用 reflection，然后重启 SyncTV：
 
 ```bash
-SYNCTV_SERVER_ENABLE_REFLECTION=true \
-cargo +nightly run -p synctv --bin synctv -- serve
+SYNCTV_SERVER_ENABLE_REFLECTION=true
 ```
 
 列出服务：

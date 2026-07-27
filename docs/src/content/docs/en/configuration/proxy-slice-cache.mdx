@@ -11,7 +11,7 @@ import proxySliceCacheLight from '../../../../assets/diagrams/proxy-slice-cache-
 
 It is not a business cache and does not live under `cache`. Business L1/L2 caches are covered in [Business Cache](../cache/).
 
-## Model
+## Range Slice Flow
 
 Media clients often request byte ranges:
 
@@ -95,7 +95,7 @@ In Kubernetes, shared storage can make files visible across replicas, but the cu
 - If an upstream does not support Range, SyncTV bypasses slice caching. If the client request itself needs full content, SyncTV may stream the full upstream response, but it does not store that response as a full-file cache.
 - Enablement is read at process startup. CLI and runtime settings do not dynamically enable or disable it.
 
-## Common Questions
+## Cache Behavior
 
 ### Are non-Range client GETs cached?
 

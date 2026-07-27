@@ -3,7 +3,7 @@ title: 媒体 Provider
 description: 内置与远程媒体 Provider、请求超时、凭据加密和 Provider instance 的配置方式。
 ---
 
-## Provider 配置是什么？
+## Provider 类型与配置位置
 
 Media Provider 是 SyncTV 访问外部媒体来源的方式，例如：
 
@@ -30,7 +30,7 @@ media_providers:
 
 远程 Provider instance 不是这个 YAML 对象。它通过管理 API/CLI 持久化到数据库，只保存 SyncTV 连接远程 Provider 所需的连接信息，例如 `endpoint`、`tls`、`jwt_secret`、`custom_ca`、`timeout`、`insecure_tls` 和 `providers`。远程 Provider 自己访问 Alist、Emby 或 Bilibili 所需的配置，应放在远程 Provider 服务自己的部署配置中。
 
-通过管理 API 或 CLI 创建远程 Provider instance，并把 Alist、Emby/Jellyfin、Bilibili 等上游配置保留在对应 Provider 服务中。日常启停、重连和凭据维护见 [Provider 管理](../../admin/providers/)，实现与扩展流程见 [Provider 开发指南](../../develop/provider-development/)。
+通过管理 API 或 CLI 创建远程 Provider instance，并把 Alist、Emby/Jellyfin、Bilibili 等上游配置保留在对应 Provider 服务中。日常启停、重连和凭据维护见 [Provider 管理](../../admin/providers/)。
 
 ## Provider instance
 
@@ -78,50 +78,6 @@ media_providers:
 ```
 
 其余内置 Provider 使用相同的 timeout contract。仅启用该 Provider 支持的配置项；协议端点、Cookie、token、账号密码和 API key 通过用户绑定接口持久化。
-
-## Page 与 Cursor 能力
-
-Provider 列表 API 通过 protobuf oneof 返回 page 或 cursor 模式。Cloudreve 会根据服务器能力返回当前模式；Bilibili 历史、Twitch 和 YouTube 使用上游原生 cursor；传统目录和索引通常使用 page/offset。
-
-客户端将 cursor 视为 opaque token。部署者无需配置 cursor 生成规则。
-
-## Provider 请求头原则
-
-SyncTV 的底层 proxy 不应该自己猜测和转发客户端原始请求头。Provider 应该明确决定上游请求需要哪些 header，例如：
-
-- `User-Agent`
-- `Referer`
-- `Range`
-- Provider 特定认证 header
-
-这样做的好处：
-
-- 行为可预测。
-- 不会把客户端不该转发的 header 泄露给上游。
-- 不同 Provider 可以按自己的要求设置直连和代理 header。
-
-## Alist 提示
-
-Alist 可能返回对 User-Agent 有要求的 URL。SyncTV 会尽量保证：
-
-- Provider 自己发起的请求使用的 UA。
-- 返回给客户端直连时要求客户端使用的 UA。
-- 代理模式转发到上游时使用的 UA。
-
-三者在语义上保持一致。
-
-如果客户端无法设置某些 header，就应该选择代理模式，而不是直连。
-
-## Bilibili 提示
-
-Bilibili 对请求头更敏感，尤其是：
-
-- `User-Agent`
-- `Referer`
-- Cookie 或鉴权相关 header
-- Range 请求
-
-如果你发现直连可用但代理不可用，或代理可用但直连不可用，优先检查 Provider 返回给客户端的 header 与代理上游请求 header 是否一致。
 
 ## 凭据加密
 

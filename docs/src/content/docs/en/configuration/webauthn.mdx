@@ -3,7 +3,7 @@ title: WebAuthn and Passkeys
 description: Passkey login, WebAuthn RP ID, origins, secure domains, and cluster dependencies.
 ---
 
-## What WebAuthn Is
+## Supported Authentication Methods
 
 WebAuthn is the standard behind passkeys, security keys, and platform biometric unlock flows. SyncTV uses the configuration section name `webauthn`; product UI may call the feature passkeys.
 
@@ -129,9 +129,9 @@ webauthn:
         - "<SHA-256 fingerprint from the official Release configuration file>"
 ```
 
-Package names and certificate fingerprints are public identity material. Android uses them to verify that the domain authorizes the installed app. Keep the keystore, signing private key, and passwords secret. Development and fork builds have separate signing identities and require the fingerprint of the installed artifact.
+Package names and certificate fingerprints are public identity material. Android uses them to verify that the domain authorizes the installed app. Keep the keystore, signing private key, and passwords secret. Each signing identity requires the fingerprint of its installed artifact.
 
-The signing key determines the certificate fingerprint, and application version upgrades preserve it. Official Releases use a fixed release key. A fork can create its own fixed release keystore and store the signing configuration in the fork repository's GitHub Secrets; its Release workflow will publish the matching server configuration file automatically. CI development signing is an ephemeral identity that may change with the runner and build environment, so it is intended for temporary testing.
+The signing key determines the certificate fingerprint. For a self-built app, read the SHA-256 fingerprint from the installed artifact and add it to the server configuration. Keep the same signing key across app upgrades to preserve authorization. Temporary test artifacts may use different certificates, so configure the fingerprint of each installed artifact.
 
 One server can authorize both the official app and a fork. Apps with the same package name share one `android_apps` entry containing multiple fingerprints:
 
@@ -144,7 +144,7 @@ webauthn:
         - "<fork app certificate SHA-256>"
 ```
 
-Add a separate `android_apps` entry for a fork with a custom package name. The official signing private key remains under the official release process, while each fork uses its own key and can coexist with the official app on the same self-hosted server.
+Add a separate `android_apps` entry for an app with a custom package name. Apps with their own signing keys and certificate fingerprints can connect to the same self-hosted server.
 
 GitHub APKs use the certificate published in the Release configuration file. A future Google Play distribution may use a separate Google Play App Signing certificate; add the App signing certificate SHA-256 from Play Console to `sha256_cert_fingerprints` as well.
 

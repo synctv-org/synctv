@@ -1,5 +1,5 @@
 ---
-title: SDK and API Examples
+title: API Examples
 description: Working HTTP/OpenAPI, gRPC, WebSocket Realtime, and Provider API examples for SyncTV clients.
 ---
 
@@ -23,13 +23,7 @@ Read [Client Integration Guide](../client-integration/) first for the protocol b
 
 ## Prepare an OpenAPI SDK
 
-Start with OpenAPI enabled:
-
-```bash
-cargo +nightly run -p synctv --features openapi --bin synctv -- serve
-```
-
-Export the schema:
+Export the schema from a running instance:
 
 ```bash
 curl -fsSL http://localhost:8080/api-docs/openapi.json -o openapi.json

@@ -17,7 +17,7 @@ Treat three things separately:
 An image rollback is not always a system rollback. If a migration changed the database schema, verify that the old version can still read it.
 </Aside>
 
-## Release Preflight
+## Upgrade Preflight
 
 <Steps>
 1. Read release notes or change logs for the target version.
@@ -27,16 +27,15 @@ An image rollback is not always a system rollback. If a migration changed the da
 5. Run `synctv config validate --strict`.
 6. Save `synctv config show --output yaml` as the current effective config snapshot.
 7. Compare against the [Configuration Index](../../reference/configuration-index/) and [Full Configuration Example](../../configuration/full-example/).
-8. If protocol or protobuf behavior changes, confirm [API and Protobuf Evolution](../../reference/api-versioning/) and client examples are updated.
-9. For Helm, run `helm lint` and `helm template`.
-10. For Compose, run `make compose-config`.
+8. For Helm, run `helm lint` and `helm template`.
+9. For Compose, run `make compose-config`.
 </Steps>
 
 ## Database Migration
 
 SyncTV runs embedded SQLx migrations automatically during service startup. Migration state is stored in `_sqlx_migrations`, and SQLx uses database-side locking so the same migration set is not executed concurrently by multiple replicas. Multi-replica startup does not require a Job to manually serialize migrations, and administrators do not need to decide whether an upgrade needs migrations.
 
-`synctv db migrate` remains available as an explicit operations command for release preflight, CI, test environments, and troubleshooting. It runs the same embedded migrations that service startup runs automatically.
+`synctv db migrate` remains available as an explicit operations command for upgrade preflight, test environments, and troubleshooting. It runs the same embedded migrations that service startup runs automatically.
 
 Check status:
 
@@ -56,7 +55,7 @@ Compose example:
 docker compose run --rm synctv synctv db migrate
 ```
 
-Running `synctv db migrate` separately in production is a release-process choice, not a correctness requirement. Its value is observability and failure isolation: it can surface dirty migrations, checksum drift, or database privilege issues before the new version receives traffic. If it is not run separately, service startup still applies pending migrations automatically.
+Run `synctv db migrate` separately to surface dirty migrations, checksum drift, or database privilege issues before the new version receives traffic. Service startup also applies pending migrations automatically.
 
 ## Docker Compose Upgrade
 

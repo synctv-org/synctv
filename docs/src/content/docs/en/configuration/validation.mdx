@@ -1,7 +1,10 @@
 ---
-title: Configuration Validation
+title: Validate Configuration
 description: Use config validate, logs, and rendered manifests to locate configuration problems.
 ---
+
+import { Code } from '@astrojs/starlight/components';
+import { helmChartName, helmChartVersion, helmOciChartReference } from '../../../../lib/project';
 
 ## Primary Commands
 
@@ -11,13 +14,7 @@ Local binary:
 synctv config --config synctv.yaml validate --strict
 ```
 
-Development via Cargo:
-
-```bash
-cargo +nightly run -p synctv --bin synctv -- config --config synctv.yaml validate --strict
-```
-
-If the service starts but access, authentication, media playback, or Ingress behavior is wrong, start from [Troubleshooting](../troubleshooting/).
+If the service starts but access, authentication, media playback, or Ingress behavior is wrong, start from [Troubleshooting](../../operations/troubleshooting/).
 
 `config validate` reports unknown config-file keys and unsupported `SYNCTV_` environment variables as warnings by default. Use `--strict` for deployment preflight because `synctv serve` uses the same strict unknown-input policy at startup.
 
@@ -114,17 +111,12 @@ If Compose reports a required variable missing, production Compose expects expli
 
 ## Helm Debugging
 
-Render manifests:
+Render the final manifests from the OCI chart:
 
-```bash
-helm template synctv ./helm/synctv --values my-values.yaml
-```
-
-Lint:
-
-```bash
-helm lint ./helm/synctv
-```
+<Code code={`helm template ${helmChartName} ${helmOciChartReference} \\
+  --version ${helmChartVersion} \\
+  --namespace synctv \\
+  --values my-values.yaml`} lang="bash" />
 
 Inspect runtime ConfigMap:
 

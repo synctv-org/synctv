@@ -43,9 +43,19 @@ Use Docker Compose on a single host or Helm in an existing Kubernetes cluster. T
   </section>
 
   <section>
-    <div class="docs-directory-heading"><Icon name="laptop" /><h2>Administer and operate</h2></div>
+    <div class="docs-directory-heading"><Icon name="laptop" /><h2>Administer</h2></div>
     <ul class="docs-link-list">
       <li><a href="admin/"><strong>Administer SyncTV</strong><span>Users, rooms, permissions, and Providers</span></a></li>
+      <li><a href="admin/users/"><strong>Manage users</strong><span>Roles, bans, and account security status</span></a></li>
+      <li><a href="admin/rooms-members/"><strong>Rooms and members</strong><span>Room lifecycle, member roles, and playback control</span></a></li>
+      <li><a href="admin/runtime-settings/"><strong>Runtime settings</strong><span>Inspect and change database-backed settings</span></a></li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="docs-directory-heading"><Icon name="laptop" /><h2>Operate</h2></div>
+    <ul class="docs-link-list">
+      <li><a href="operations/upgrades/"><strong>Upgrade and migrate</strong><span>Backups, database migrations, and rollback</span></a></li>
       <li><a href="operations/observability/"><strong>Monitoring and runbooks</strong><span>Health, metrics, logs, and alerts</span></a></li>
       <li><a href="operations/backup-restore/"><strong>Backup and restore</strong><span>PostgreSQL, secrets, and recovery drills</span></a></li>
       <li><a href="operations/troubleshooting/"><strong>Troubleshoot</strong><span>Errors, status codes, and runtime signals</span></a></li>
@@ -53,12 +63,12 @@ Use Docker Compose on a single host or Helm in an existing Kubernetes cluster. T
   </section>
 
   <section>
-    <div class="docs-directory-heading"><Icon name="puzzle" /><h2>Develop and reference</h2></div>
+    <div class="docs-directory-heading"><Icon name="puzzle" /><h2>API and reference</h2></div>
     <ul class="docs-link-list">
-      <li><a href="develop/local-development/"><strong>Local development</strong><span>Dependencies, databases, tests, and code generation</span></a></li>
+      <li><a href="integrations/client-integration/"><strong>Client integration</strong><span>Authentication, HTTP, gRPC, and Realtime</span></a></li>
       <li><a href="reference/cli/"><strong>CLI</strong><span>Service control and administration commands</span></a></li>
       <li><a href="reference/openapi/"><strong>OpenAPI</strong><span>HTTP API specification and client generation</span></a></li>
-      <li><a href="reference/grpc/"><strong>gRPC</strong><span>Public API, management API, and reflection</span></a></li>
+      <li><a href="reference/environment-variables/"><strong>Environment variables</strong><span>Container and service configuration overrides</span></a></li>
     </ul>
   </section>
 </div>

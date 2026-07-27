@@ -1,29 +1,9 @@
 ---
-title: OpenAPI Access
-description: How to enable, access, and export the built-in OpenAPI JSON and Swagger UI.
+title: OpenAPI
+description: Access, export, and protect SyncTV's built-in OpenAPI JSON and Swagger UI.
 ---
 
-SyncTV includes built-in OpenAPI JSON and Swagger UI. The binary must be built with the `openapi` feature to expose these endpoints.
-
-## Enable OpenAPI
-
-Run locally with OpenAPI:
-
-```bash
-cargo +nightly run -p synctv --features openapi --bin synctv -- serve
-```
-
-With an explicit config file:
-
-```bash
-cargo +nightly run -p synctv --features openapi --bin synctv -- serve --config synctv.yaml
-```
-
-Build check:
-
-```bash
-cargo +nightly check --workspace --all-targets --features openapi
-```
+The official SyncTV container image provides OpenAPI JSON and Swagger UI for browsing endpoints, exporting the schema, and generating clients. Self-built binaries need the OpenAPI capability included; check the artifact's build options if these paths return `404`.
 
 ## Swagger UI
 
@@ -76,21 +56,11 @@ openapi-generator-cli generate \
 
 Other compatible tools include orval and Kiota.
 
-## Deployment Notes
+## Access Control
 
 Before exposing Swagger UI in production:
 
-- Build the binary with the `openapi` feature.
+- Confirm that the installed artifact includes OpenAPI.
 - Allow `/swagger-ui/` through the reverse proxy.
 - Allow `/api-docs/openapi.json` through the reverse proxy.
 - Restrict access at Ingress, Nginx, gateway, or firewall level if only internal developers should access it.
-
-Cargo builds leave OpenAPI disabled by default, while the Dockerfile enables it by default.
-For a production Docker build without OpenAPI, pass an explicit feature set:
-
-```bash
-docker build \
-  --build-arg SYNCTV_BUILD_NO_DEFAULT_FEATURES=true \
-  --build-arg SYNCTV_BUILD_FEATURES="k8s,mimalloc,tls-aws-lc,tls-webpki-roots,tls-native-roots" \
-  -t synctv:production-no-openapi .
-```

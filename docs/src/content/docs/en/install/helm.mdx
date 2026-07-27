@@ -49,15 +49,9 @@ ingress:
     - host: synctv.example.com
 ```
 
-## Chart Location
+## Installed Resources
 
-The Helm chart lives at:
-
-```text
-helm/synctv
-```
-
-By default, it can create:
+The default installation can create:
 
 - SyncTV Deployment.
 - HTTP/API Service.
@@ -70,7 +64,7 @@ By default, it can create:
 - ServiceAccount, Role, and RoleBinding.
 - Optional metrics, ServiceMonitor, VMServiceScrape, PrometheusRule, NetworkPolicy, HPA, and PDB.
 
-## Install Released Chart
+## Install
 
 OCI registry install:
 
@@ -79,26 +73,13 @@ OCI registry install:
   --namespace synctv \
   --create-namespace`} lang="bash" />
 
-The default parent OCI repository is <code>{helmOciRepository}</code>. Helm appends the chart name, so the install reference ends with <code>/{helmChartName}</code>. Maintainers can override the publishing target with <code>HELM_OCI_REPOSITORY</code>.
+The chart is available at <code>{helmOciRepository}/{helmChartName}</code>. Production deployments should use a values file:
 
-The release workflow packages `helm/synctv` and publishes it as an OCI artifact. Public installs require the GHCR chart package to be public.
-
-## Install From Source
-
-```bash
-helm install synctv ./helm/synctv \
-  --namespace synctv \
-  --create-namespace
-```
-
-Production deployments should use a values file:
-
-```bash
-helm install synctv ./helm/synctv \
-  --namespace synctv \
-  --create-namespace \
-  --values my-values.yaml
-```
+<Code code={`helm install ${helmChartName} ${helmOciChartReference} \\
+  --version ${helmChartVersion} \\
+  --namespace synctv \\
+  --create-namespace \\
+  --values my-values.yaml`} lang="bash" />
 
 ## HTTP and gRPC Services
 

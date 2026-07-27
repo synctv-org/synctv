@@ -1,5 +1,5 @@
 ---
-title: Realtime API
+title: Realtime Protocol
 description: SyncTV room WebSocket realtime protocol, connection authentication, base messages, reconnects, and errors.
 ---
 
@@ -128,7 +128,7 @@ Common server messages:
 | `resourceChanged.webrtcEvent.mediaSwarmPeers` | Bounded peer candidates for the current swarm |
 | `resourceObserved` / `resourceChanged` / `resourceObserveError` | Resource observation result |
 
-Use `synctv-proto/proto/client.proto` as the source of truth for complete fields. End-to-end examples are in [SDK and API Examples](../sdk-and-api-examples/).
+Use `synctv-proto/proto/client.proto` as the source of truth for complete fields. End-to-end examples are in [API Examples](../api-examples/).
 
 ## Media Swarm Signaling
 
@@ -183,7 +183,7 @@ function handleServerMessage(message) {
 }
 ```
 
-After connecting, subscribe to the resources needed by the current view. See [Realtime Resource Observation](../realtime-resource-observation/).
+After connecting, subscribe to the resources needed by the current view. See [Subscribe to Realtime Resources](../realtime-subscriptions/).
 
 Chat message events use their own cursor: in bidirectional streams, send `observeResource.chatEvents.afterEventSequence` to replay events after a known event; HTTP SSE `GET /api/rooms/<roomId>/watch/chat-events` accepts the `afterEventSequence` query parameter and reads the browser's `Last-Event-ID` header on reconnect. The server sets the SSE `id:` field, so clients can persist that value for recovery.
 

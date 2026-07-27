@@ -1,6 +1,6 @@
 ---
 title: 管理 SyncTV
-description: 管理用户、房间、权限、Provider、运行设置和维护任务。
+description: 管理用户、房间、权限、Provider 和运行设置。
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -23,9 +23,8 @@ management gRPC、metrics 和内部调试入口只应通过 Unix socket、内网
 - [审核与治理](./reviews-moderation/)：注册、建房、加房审核和封禁。
 - [Provider](./providers/)：创建、启停、更新、重连和删除 Provider instance。
 
-## 服务策略与维护
+## 服务策略
 
 - [运行设置](./runtime-settings/)：热更新注册、代理、CORS、聊天和房间策略。
-- [维护任务](./maintenance/)：检查状态、清理 stream、驱逐缓存并验证结果。
 
-[CLI 参考](../reference/cli/)列出完整参数；[部署与运行边界](../operations/deployment-boundaries/)说明生产依赖和管理面要求。
+[CLI 参考](../reference/cli/)列出完整参数。[维护任务](../operations/maintenance/)和[部署与运行边界](../operations/deployment-boundaries/)位于运维文档。

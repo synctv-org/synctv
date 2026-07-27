@@ -49,15 +49,9 @@ ingress:
     - host: synctv.example.com
 ```
 
-## Chart 结构
+## 安装内容
 
-Helm chart 位于：
-
-```text
-helm/synctv
-```
-
-默认会创建：
+默认安装会创建：
 
 - SyncTV Deployment。
 - HTTP/API Service。
@@ -70,7 +64,7 @@ helm/synctv
 - ServiceAccount、Role、RoleBinding。
 - 可选 metrics、ServiceMonitor、VMServiceScrape、PrometheusRule、NetworkPolicy、HPA、PDB。
 
-## 安装发布版 Chart
+## 安装
 
 通过 OCI registry 安装：
 
@@ -79,26 +73,13 @@ helm/synctv
   --namespace synctv \
   --create-namespace`} lang="bash" />
 
-默认父级 OCI repository 是 <code>{helmOciRepository}</code>。Helm 会追加 chart 名，因此安装引用最后仍是 <code>/{helmChartName}</code>。维护者可以通过 <code>HELM_OCI_REPOSITORY</code> 覆盖发布目标。
+Chart 位于 <code>{helmOciRepository}/{helmChartName}</code>。生产环境使用自己的 values 文件：
 
-release workflow 会将 `helm/synctv` 打包并发布为 OCI artifact。公开安装需要将 GHCR chart package 设为 public。
-
-## 从源码安装
-
-```bash
-helm install synctv ./helm/synctv \
-  --namespace synctv \
-  --create-namespace
-```
-
-生产环境使用自己的 values 文件：
-
-```bash
-helm install synctv ./helm/synctv \
-  --namespace synctv \
-  --create-namespace \
-  --values my-values.yaml
-```
+<Code code={`helm install ${helmChartName} ${helmOciChartReference} \\
+  --version ${helmChartVersion} \\
+  --namespace synctv \\
+  --create-namespace \\
+  --values my-values.yaml`} lang="bash" />
 
 ## HTTP 和 gRPC Service
 

@@ -42,7 +42,7 @@ services:
     restart: unless-stopped
 
   synctv:
-    image: synctvorg/synctv:${SYNCTV_IMAGE_TAG:-1.0.0}
+    image: synctvorg/synctv:${SYNCTV_IMAGE_TAG:-1.0.1-rc.1}
     container_name: synctv-app
     env_file:
       - path: .env.synctv

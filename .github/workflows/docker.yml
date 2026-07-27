@@ -67,7 +67,7 @@ jobs:
       platforms: linux/amd64,linux/arm64
       output: ${{ github.event_name == 'push' && 'image' || 'local' }}
       push: ${{ github.event_name == 'push' }}
-      artifact-upload: ${{ github.event_name != 'push' }}
+      artifact-upload: false
       sign: ${{ github.event_name == 'push' && 'auto' || 'false' }}
       cache: true
       cache-mode: max

@@ -429,7 +429,7 @@ fn named_postgres_request(
         .with_reuse(ReuseDirective::Always)
         .with_mount(Mount::volume_mount(
             postgres_data_volume_name(container_name),
-            "/var/lib/postgresql/data",
+            "/var/lib/postgresql",
         ))
         .with_cmd(postgres_ephemeral_tuning_args())
         .with_ready_conditions(postgres_ready_conditions())

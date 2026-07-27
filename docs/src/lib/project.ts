@@ -72,8 +72,3 @@ export const helmOciRepository =
   readEnv('HELM_OCI_REPOSITORY') ||
   `ghcr.io/${githubRepository}/charts`;
 export const helmOciChartReference = `oci://${helmOciRepository}/${helmChartName}`;
-export const helmRepositoryName = readEnv('SYNCTV_DOCS_HELM_REPOSITORY_NAME') || helmChartName;
-export const helmRepositoryUrl =
-  readEnv('SYNCTV_DOCS_HELM_REPOSITORY_URL') ||
-  readEnv('HELM_REPOSITORY_URL') ||
-  `https://${githubRepository.split('/')[0]}.github.io/${projectRepositoryName}`;

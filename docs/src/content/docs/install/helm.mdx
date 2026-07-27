@@ -9,8 +9,6 @@ import {
   helmChartVersion,
   helmOciChartReference,
   helmOciRepository,
-  helmRepositoryName,
-  helmRepositoryUrl,
 } from '../../../lib/project';
 
 Helm 面向已有 Kubernetes、Ingress 和集中式 Secret 管理的平台。单机服务器、NAS 和虚拟机使用 [Docker Compose](../docker-compose/)；部署条件对照见[选择部署方式](../choose-path/)。
@@ -83,16 +81,7 @@ helm/synctv
 
 默认父级 OCI repository 是 <code>{helmOciRepository}</code>。Helm 会追加 chart 名，因此安装引用最后仍是 <code>/{helmChartName}</code>。维护者可以通过 <code>HELM_OCI_REPOSITORY</code> 覆盖发布目标。
 
-通过传统 Helm repository 安装：
-
-<Code code={`helm repo add ${helmRepositoryName} ${helmRepositoryUrl}
-helm repo update
-helm install ${helmChartName} ${helmRepositoryName}/${helmChartName} \\
-  --version ${helmChartVersion} \\
-  --namespace synctv \
-  --create-namespace`} lang="bash" />
-
-发布版 Chart 由 release workflow 自动生成。源码仓库只维护 `helm/synctv` 下的 chart 源码；打包后的 `.tgz` 和 Helm repository 的 `index.yaml` 在发布时生成。公开安装要求 GHCR chart package 设为 public，并且 GitHub Pages 使用 `helm-charts` 分支提供内容。
+release workflow 会将 `helm/synctv` 打包并发布为 OCI artifact。公开安装需要将 GHCR chart package 设为 public。
 
 ## 从源码安装
 

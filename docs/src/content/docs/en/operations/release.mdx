@@ -43,9 +43,8 @@ The workflow publishes:
 
 - A GitHub release.
 - The Helm chart as an OCI artifact. The default parent repository is <code>{helmOciRepository}</code>, derived from the current repository and docs build environment.
-- A PR into the `helm-charts` branch containing the packaged chart and updated `index.yaml`.
 
-The traditional Helm repository becomes available after the `helm-charts` PR is merged and GitHub Pages serves that branch.
+Each version is written directly to the OCI registry, while the Git repository keeps its regular source branch structure.
 
 ## Helm Publishing Targets
 
@@ -56,5 +55,3 @@ Helm OCI target selection follows the Docker workflow style: default to a GHCR p
 | `HELM_OCI_REPOSITORY` | Derived automatically | Explicit Helm OCI parent repository override. When set, only this repository is used. Helm appends the chart name when installing. |
 | `DOCKERHUB_USERNAME` | Empty | Same as the Docker workflow; when set, also publish to `docker.io/<username>/<repo>/charts`. |
 | `DOCKERHUB_REPOSITORY` | Empty | Same as the Docker workflow; overrides the DockerHub repository name. |
-| `HELM_REPOSITORY_BRANCH` | `helm-charts` | Traditional Helm repository branch. The workflow initializes it automatically if it does not exist. |
-| `HELM_REPOSITORY_URL` | `https://<owner>.github.io/<repo>` | Public URL passed to `helm repo index --url`. |

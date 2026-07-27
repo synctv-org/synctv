@@ -18,7 +18,6 @@ concurrency:
 permissions:
   contents: write
   packages: write
-  pull-requests: write
 
 jobs:
   helm:
@@ -29,7 +28,6 @@ jobs:
     secrets:
       token: ${{ secrets.GITHUB_TOKEN }}
       HELM_OCI_REPOSITORY: ${{ secrets.HELM_OCI_REPOSITORY }}
-      HELM_REPOSITORY_URL: ${{ secrets.HELM_REPOSITORY_URL }}
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_REPOSITORY: ${{ secrets.DOCKERHUB_REPOSITORY }}
       DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}

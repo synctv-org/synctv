@@ -43,9 +43,8 @@ workflow 会发布：
 
 - GitHub release。
 - OCI Helm chart。默认位置为 <code>{helmOciRepository}</code>，由当前仓库和文档构建环境推导。
-- 一个指向 `helm-charts` 分支的 PR，包含打包后的 chart 和更新后的 `index.yaml`。
 
-传统 Helm repository 要在 `helm-charts` PR 合并，并且 GitHub Pages 使用该分支提供内容后才会更新。
+每个版本直接写入 OCI registry，Git 仓库继续使用正常的源码分支结构。
 
 ## Helm 发布目标
 
@@ -56,5 +55,3 @@ Helm OCI 发布目标参考 Docker workflow 的变量风格：默认使用当前
 | `HELM_OCI_REPOSITORY` | 自动推导 | 显式 Helm OCI 父级 repository 覆盖值。设置后只发布到这里；安装时 Helm 会继续追加 chart 名。 |
 | `DOCKERHUB_USERNAME` | 空 | 与 Docker workflow 相同；设置后额外发布到 `docker.io/<username>/<repo>/charts`。 |
 | `DOCKERHUB_REPOSITORY` | 空 | 与 Docker workflow 相同；可覆盖 DockerHub repository 名。 |
-| `HELM_REPOSITORY_BRANCH` | `helm-charts` | 传统 Helm repository 分支。不存在时 workflow 会自动初始化。 |
-| `HELM_REPOSITORY_URL` | `https://<owner>.github.io/<repo>` | `helm repo index --url` 使用的公开地址。 |

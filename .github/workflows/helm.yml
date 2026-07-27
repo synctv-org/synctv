@@ -12,8 +12,6 @@ on:
         required: true
       HELM_OCI_REPOSITORY:
         required: false
-      HELM_REPOSITORY_URL:
-        required: false
       DOCKERHUB_USERNAME:
         required: false
       DOCKERHUB_REPOSITORY:
@@ -22,9 +20,8 @@ on:
         required: false
 
 permissions:
-  contents: write
+  contents: read
   packages: write
-  pull-requests: write
 
 jobs:
   publish:
@@ -45,11 +42,6 @@ jobs:
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      - name: Configure Git
-        run: |
-          git config --global user.name "$GITHUB_ACTOR"
-          git config --global user.email "$GITHUB_ACTOR@users.noreply.github.com"
-
       - name: Read chart metadata
         id: chart
         shell: bash
@@ -57,8 +49,6 @@ jobs:
           RELEASE_TAG: ${{ inputs.release-tag }}
           GHCR_REPOSITORY: ${{ github.repository }}
           HELM_OCI_REPOSITORY: ${{ vars.HELM_OCI_REPOSITORY || secrets.HELM_OCI_REPOSITORY }}
-          HELM_REPOSITORY_BRANCH: ${{ vars.HELM_REPOSITORY_BRANCH || 'helm-charts' }}
-          HELM_REPOSITORY_URL: ${{ vars.HELM_REPOSITORY_URL || secrets.HELM_REPOSITORY_URL }}
           DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY || secrets.DOCKERHUB_REPOSITORY }}
         run: |
@@ -86,7 +76,6 @@ jobs:
             exit 1
           fi
 
-          owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
           repo="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
 
           if [ -n "$DOCKERHUB_REPOSITORY" ]; then
@@ -102,18 +91,10 @@ jobs:
             dockerhub_repository="$DOCKERHUB_USERNAME/$repo"
           fi
 
-          if [ -n "$HELM_REPOSITORY_URL" ]; then
-            pages_url="$HELM_REPOSITORY_URL"
-          else
-            pages_url="https://$owner.github.io/$repo"
-          fi
-
           {
             echo "name=$chart_name"
             echo "version=$chart_version"
             echo "app_version=$app_version"
-            echo "pages_url=$pages_url"
-            echo "chart_branch=$HELM_REPOSITORY_BRANCH"
             echo "dockerhub_username=$DOCKERHUB_USERNAME"
             echo 'oci_repos<<EOF'
             if [ -n "$HELM_OCI_REPOSITORY" ]; then
@@ -166,65 +147,3 @@ jobs:
           done <<'EOF'
           ${{ steps.chart.outputs.oci_repos }}
           EOF
-
-      - name: Open chart repository update PR
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.token }}
-        run: |
-          chart_branch="${{ steps.chart.outputs.chart_branch }}"
-          update_branch="automation/helm-charts-${{ steps.chart.outputs.version }}"
-          chart_repo_dir="$(mktemp -d)"
-          changed_file="$RUNNER_TEMP/helm-chart-repo-changed"
-
-          if ! git ls-remote --exit-code origin "refs/heads/$chart_branch" >/dev/null 2>&1; then
-            echo "Branch '$chart_branch' does not exist; creating it."
-            init_dir="$(mktemp -d)"
-            git clone --no-checkout "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$init_dir"
-            (
-              cd "$init_dir"
-              git switch --orphan "$chart_branch"
-              git rm -rf . >/dev/null 2>&1 || true
-              printf "# SyncTV Helm Charts\n\nThis branch is maintained by the release workflow.\n" > README.md
-              git add README.md
-              git commit -m "helm: initialize chart repository"
-              git push origin "$chart_branch"
-            )
-          fi
-
-          git clone --branch "$chart_branch" --single-branch "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$chart_repo_dir"
-          cp "dist/${{ steps.chart.outputs.name }}-${{ steps.chart.outputs.version }}.tgz" "$chart_repo_dir/"
-
-          (
-            cd "$chart_repo_dir"
-            helm repo index . --url "${{ steps.chart.outputs.pages_url }}"
-
-            if [ -z "$(git status --porcelain)" ]; then
-              echo "Chart repository is already up to date."
-              exit 0
-            fi
-
-            touch "$changed_file"
-            git checkout -B "$update_branch"
-            git add .
-            git commit -m "helm: publish ${{ steps.chart.outputs.name }} ${{ steps.chart.outputs.version }}"
-            git push --force-with-lease "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$update_branch"
-          )
-
-          if [ ! -f "$changed_file" ]; then
-            exit 0
-          fi
-
-          if gh pr view "$update_branch" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh pr edit "$update_branch" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "helm: publish ${{ steps.chart.outputs.name }} ${{ steps.chart.outputs.version }}" \
-              --body "Publishes Helm chart ${{ steps.chart.outputs.name }} version ${{ steps.chart.outputs.version }} to the chart repository branch."
-          else
-            gh pr create \
-              --repo "$GITHUB_REPOSITORY" \
-              --base "$chart_branch" \
-              --head "$update_branch" \
-              --title "helm: publish ${{ steps.chart.outputs.name }} ${{ steps.chart.outputs.version }}" \
-              --body "Publishes Helm chart ${{ steps.chart.outputs.name }} version ${{ steps.chart.outputs.version }} to the chart repository branch."
-          fi

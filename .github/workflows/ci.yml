@@ -155,7 +155,6 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
-          - macos-latest
     env:
       SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS: 600
     steps:

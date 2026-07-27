@@ -95,6 +95,19 @@ fn reserve_local_port() -> u16 {
         .port()
 }
 
+fn reserve_local_ports() -> (u16, u16, u16) {
+    let listeners: [_; 3] =
+        std::array::from_fn(|_| TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port"));
+    let mut ports = listeners
+        .iter()
+        .map(|listener| listener.local_addr().expect("ephemeral local_addr").port());
+    (
+        ports.next().expect("API port"),
+        ports.next().expect("management port"),
+        ports.next().expect("RTMP port"),
+    )
+}
+
 fn unique_test_suffix() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -548,9 +561,7 @@ async fn start_test_server() -> TestServer {
     );
 
     for attempt in 1..=3 {
-        let api_port = reserve_local_port();
-        let management_port = reserve_local_port();
-        let rtmp_port = reserve_local_port();
+        let (api_port, management_port, rtmp_port) = reserve_local_ports();
         let config = test_config(
             database_url.clone(),
             redis_url.clone(),
@@ -5385,9 +5396,7 @@ async fn full_stack_cli_system_stats_uses_management_unix_socket_via_env_without
     let (postgres, database_url) =
         create_test_database_url_with_label("synctv_e2e_unix", "full-stack-management-unix").await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-management-unix").await;
-    let api_port = reserve_local_port();
-    let management_port = reserve_local_port();
-    let rtmp_port = reserve_local_port();
+    let (api_port, management_port, rtmp_port) = reserve_local_ports();
     let socket_dir = tempfile::tempdir().expect("temp dir should be created");
     let socket_path = socket_dir.path().join("management.sock");
 
@@ -5473,9 +5482,7 @@ async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without
     let (postgres, database_url) =
         create_test_database_url_with_label(&database_name, &container_label).await;
     let (redis, redis_url) = start_redis_url_with_label(&container_label).await;
-    let api_port = reserve_local_port();
-    let management_port = reserve_local_port();
-    let rtmp_port = reserve_local_port();
+    let (api_port, management_port, rtmp_port) = reserve_local_ports();
 
     let mut config = test_config(
         database_url,
@@ -5556,9 +5563,7 @@ async fn full_stack_cli_system_stats_reads_management_unix_socket_auth_token_fro
     )
     .await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-management-unix-auth").await;
-    let api_port = reserve_local_port();
-    let management_port = reserve_local_port();
-    let rtmp_port = reserve_local_port();
+    let (api_port, management_port, rtmp_port) = reserve_local_ports();
     let socket_dir = tempfile::tempdir().expect("temp dir should be created");
     let socket_path = socket_dir.path().join("management.sock");
     let config_path = socket_dir.path().join("synctv.yaml");
@@ -5652,9 +5657,7 @@ async fn full_stack_cli_explicit_management_endpoint_does_not_implicitly_use_con
     .await;
     let (redis, redis_url) =
         start_redis_url_with_label("full-stack-management-unix-auth-explicit").await;
-    let api_port = reserve_local_port();
-    let management_port = reserve_local_port();
-    let rtmp_port = reserve_local_port();
+    let (api_port, management_port, rtmp_port) = reserve_local_ports();
     let socket_dir = tempfile::tempdir().expect("temp dir should be created");
     let socket_path = socket_dir.path().join("management.sock");
     let config_path = socket_dir.path().join("synctv.yaml");
@@ -5747,9 +5750,7 @@ async fn full_stack_cli_stop_gracefully_shuts_down_server_via_management_api() {
         create_test_database_url_with_label("synctv_e2e_stop_graceful", "full-stack-stop-graceful")
             .await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-stop-graceful").await;
-    let api_port = reserve_local_port();
-    let management_port = reserve_local_port();
-    let rtmp_port = reserve_local_port();
+    let (api_port, management_port, rtmp_port) = reserve_local_ports();
     let socket_dir = tempfile::tempdir().expect("temp dir should be created");
     let socket_path = socket_dir.path().join("management.sock");
 
@@ -5819,9 +5820,7 @@ async fn full_stack_cli_stop_gracefully_shuts_down_server_via_management_api() {
 
 #[tokio::test]
 async fn full_stack_cli_config_validate_and_show_use_explicit_config_file() {
-    let api_port = reserve_local_port();
-    let management_port = reserve_local_port();
-    let rtmp_port = reserve_local_port();
+    let (api_port, management_port, rtmp_port) = reserve_local_ports();
     let temp_dir = tempfile::tempdir().expect("temp dir should be created");
     let config_path = temp_dir.path().join("synctv.yaml");
 
@@ -5935,9 +5934,7 @@ async fn full_stack_cli_db_status_reports_migration_readiness_and_db_migrate_is_
     let (postgres, database_url) =
         create_test_database_url_with_label("synctv_e2e_db_cli", "full-stack-cli-db").await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-cli-db").await;
-    let api_port = reserve_local_port();
-    let management_port = reserve_local_port();
-    let rtmp_port = reserve_local_port();
+    let (api_port, management_port, rtmp_port) = reserve_local_ports();
     let temp_dir = tempfile::tempdir().expect("temp dir should be created");
     let config_path = temp_dir.path().join("synctv-db-cli.yaml");
 
@@ -6104,9 +6101,7 @@ async fn full_stack_cli_db_status_fails_when_migration_metadata_is_unreadable() 
     let (postgres, database_url) =
         create_test_database_url_with_label("synctv_e2e_db_cli_acl", "full-stack-cli-db-acl").await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-cli-db-acl").await;
-    let api_port = reserve_local_port();
-    let management_port = reserve_local_port();
-    let rtmp_port = reserve_local_port();
+    let (api_port, management_port, rtmp_port) = reserve_local_ports();
     let temp_dir = tempfile::tempdir().expect("temp dir should be created");
     let config_path = temp_dir.path().join("synctv-db-cli-acl.yaml");
 
@@ -6170,12 +6165,13 @@ async fn full_stack_cli_db_status_fails_when_migration_metadata_is_unreadable() 
         &limited_role,
         limited_password,
     );
+    let (api_port, management_port, rtmp_port) = reserve_local_ports();
     let limited_config = test_config(
         limited_database_url,
         redis_url,
-        reserve_local_port(),
-        reserve_local_port(),
-        reserve_local_port(),
+        api_port,
+        management_port,
+        rtmp_port,
     );
     let limited_config_path = temp_dir.path().join("synctv-db-cli-acl-limited.yaml");
     write_cli_test_config(&limited_config_path, &limited_config);
@@ -6211,9 +6207,7 @@ async fn full_stack_cli_db_status_fails_when_migration_metadata_is_unreadable() 
 
 #[tokio::test]
 async fn full_stack_cli_serve_dry_run_validates_config_without_starting_listeners() {
-    let api_port = reserve_local_port();
-    let management_port = reserve_local_port();
-    let rtmp_port = reserve_local_port();
+    let (api_port, management_port, rtmp_port) = reserve_local_ports();
     let temp_dir = tempfile::tempdir().expect("temp dir should be created");
     let config_path = temp_dir.path().join("synctv-dry-run.yaml");
 
@@ -6264,9 +6258,7 @@ async fn full_stack_cli_server_binary_starts_and_handles_management_commands() {
     )
     .await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-server-binary-cli").await;
-    let api_port = reserve_local_port();
-    let management_port = reserve_local_port();
-    let rtmp_port = reserve_local_port();
+    let (api_port, management_port, rtmp_port) = reserve_local_ports();
     let temp_dir = tempfile::tempdir().expect("temp dir should be created");
     let config_path = temp_dir.path().join("synctv-server-binary.yaml");
 
@@ -6469,9 +6461,7 @@ async fn full_stack_cli_force_stop_shuts_down_server_via_management_api() {
     let (postgres, database_url) =
         create_test_database_url_with_label("synctv_e2e_stop_force", "full-stack-stop-force").await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-stop-force").await;
-    let api_port = reserve_local_port();
-    let management_port = reserve_local_port();
-    let rtmp_port = reserve_local_port();
+    let (api_port, management_port, rtmp_port) = reserve_local_ports();
     let socket_dir = tempfile::tempdir().expect("temp dir should be created");
     let socket_path = socket_dir.path().join("management.sock");
 

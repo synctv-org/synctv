@@ -63,6 +63,17 @@ impl UserService {
             .await
     }
 
+    pub async fn is_email_bind_token_active(
+        &self,
+        user_id: &UserId,
+        email: &str,
+        token: &str,
+    ) -> Result<bool> {
+        self.email_bind_repository
+            .is_unused_and_valid(token, user_id, email, crate::SystemClock.now())
+            .await
+    }
+
     pub async fn confirm_email_bind(
         &self,
         user_id: &UserId,

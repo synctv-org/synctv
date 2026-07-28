@@ -111,6 +111,16 @@ security:
   #   SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY_FILE
   # credential_encryption_key_file: "/run/secrets/credential_encryption_key"
   credential_encryption_key: ""
+  # Dedicated AES-256-GCM key for TOTP secrets.
+  # totp_encryption_key_file: "/run/secrets/totp_encryption_key"
+  totp_encryption_key: ""
+  # AES-256-GCM key used only for durable email outbox payloads.
+  # Generate with: openssl rand -hex 32
+  # Environment variables:
+  #   SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY
+  #   SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY_FILE
+  # email_outbox_encryption_key_file: "/run/secrets/email_outbox_encryption_key"
+  email_outbox_encryption_key: ""
   # Stable secret used to derive the OPAQUE server setup for password authentication.
   # Keep this independent from jwt.secret so JWT rotation does not invalidate OPAQUE password records.
   # Generate with: openssl rand -base64 48
@@ -119,6 +129,13 @@ security:
   #   SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET_FILE
   # opaque_server_setup_secret_file: "/run/secrets/opaque_server_setup_secret"
   opaque_server_setup_secret: ""
+  # Independent random keys for separate authentication and signing domains.
+  # Generate every value separately with: openssl rand -base64 48
+  proxy_signing_key: ""
+  media_swarm_signing_key: ""
+  provider_session_encryption_key: ""
+  login_discovery_key: ""
+  webauthn_enumeration_key: ""
   # Global SSRF policy for server-side outbound requests.
   # Disabled by default for self-hosted private media providers. Enable it for public deployments.
   # Prefer allowed_hosts / allowed_ip_ranges for known internal media endpoints.
@@ -384,8 +401,7 @@ file_storage:
   media_covers_backend: ""
   room_covers_backend: ""
   playlist_covers_backend: ""
-  # Optional signing secret for upload/read tokens. When empty, startup derives
-  # a stable secret from jwt.secret.
+  # Dedicated signing secret for upload/read tokens. This value is required.
   # Environment variables:
   #   SYNCTV_FILE_UPLOAD_TOKEN_SECRET
   #   SYNCTV_FILE_UPLOAD_TOKEN_SECRET_FILE

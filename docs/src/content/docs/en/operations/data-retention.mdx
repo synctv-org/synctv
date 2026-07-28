@@ -101,7 +101,7 @@ Room deletion also starts with soft delete and cleans room playlists, media, mem
 Backups usually contain the most complete and sensitive data set. Protect:
 
 - PostgreSQL backups.
-- `jwt.secret`, `security.opaque_server_setup_secret`, and `security.credential_encryption_key`.
+- The complete production secret set, including authentication, encryption, signing, cluster, and management keys.
 - Provider tokens, SMTP passwords, OAuth2 client secrets, and management tokens.
 - Helm Secrets, Compose `.env`, Kubernetes Secrets, and external secret-manager snapshots.
 

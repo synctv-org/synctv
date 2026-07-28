@@ -114,6 +114,7 @@ pub struct ClientApiRuntime {
     pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     pub signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
+    pub media_swarm_signing_key: Arc<crate::proxy_signature::MediaSwarmSigningKey>,
     pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     pub jwt_validator: Arc<synctv_core::service::JwtValidator>,
     pub request_executor: Arc<RequestExecutor>,
@@ -130,6 +131,7 @@ pub struct ClientApiRuntimeServices {
     pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     pub signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
+    pub media_swarm_signing_key: Arc<crate::proxy_signature::MediaSwarmSigningKey>,
     pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     pub jwt_validator: Arc<synctv_core::service::JwtValidator>,
     pub request_executor: Arc<RequestExecutor>,
@@ -152,6 +154,7 @@ impl ClientApiRuntime {
             webrtc_status: services.webrtc_status,
             provider_access_service: services.provider_access_service,
             signing_key: services.signing_key,
+            media_swarm_signing_key: services.media_swarm_signing_key,
             presence_service: services.presence_service,
             jwt_validator: services.jwt_validator,
             request_executor: services.request_executor,
@@ -164,6 +167,7 @@ impl ClientApiRuntime {
     pub fn local_disabled(
         request_executor: Arc<RequestExecutor>,
         signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
+        media_swarm_signing_key: Arc<crate::proxy_signature::MediaSwarmSigningKey>,
     ) -> Self {
         let realtime_event_service = Arc::new(LocalNoopRealtimeEventService::new());
         Self {
@@ -178,6 +182,7 @@ impl ClientApiRuntime {
             webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             provider_access_service: crate::impls::disabled_provider_access_service(),
             signing_key,
+            media_swarm_signing_key,
             presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
             jwt_validator: request_executor.jwt_validator().clone(),
             request_executor,
@@ -271,6 +276,7 @@ pub struct ClientApiImpl {
     pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     /// Proxy signing key for generating HMAC-signed proxy URLs
     pub signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
+    pub media_swarm_signing_key: Arc<crate::proxy_signature::MediaSwarmSigningKey>,
     /// Per-provider stores for signed playback version mappings
     pub provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     /// JWT validator for token validation (e.g. live streaming tokens)
@@ -1149,6 +1155,7 @@ impl ClientApiImpl {
             webrtc_status: runtime.webrtc_status,
             provider_access_service: runtime.provider_access_service,
             signing_key: runtime.signing_key,
+            media_swarm_signing_key: runtime.media_swarm_signing_key,
             provider_stores: options.provider_stores,
             jwt_validator: runtime.jwt_validator,
             public_id_codec: options.public_id_codec,

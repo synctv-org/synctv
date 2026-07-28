@@ -134,7 +134,9 @@ fn ssrf_options(config: &AppConfig) -> SsrfOptions {
 
 fn security_options(config: &AppConfig) -> SecurityOptions {
     SecurityOptions {
+        email_outbox_encryption_key: config.security.email_outbox_encryption_key.clone(),
         opaque_server_setup_secret: config.security.opaque_server_setup_secret.clone(),
+        login_discovery_key: config.security.login_discovery_key.clone(),
         ssrf: ssrf_options(config),
     }
 }
@@ -258,7 +260,7 @@ fn passkey_options(config: &AppConfig) -> PasskeyServiceOptions {
         allow_subdomains: config.webauthn.allow_subdomains,
         allow_any_port: config.webauthn.allow_any_port,
         timeout_seconds: config.webauthn.timeout_seconds,
-        enumeration_protection_secret: config.security.opaque_server_setup_secret.clone(),
+        enumeration_protection_secret: config.security.webauthn_enumeration_key.clone(),
     }
 }
 

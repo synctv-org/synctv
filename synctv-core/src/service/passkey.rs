@@ -255,7 +255,7 @@ pub struct PasskeyService {
     fake_credential_generator: Arc<WebauthnFakeCredentialGenerator<FakePasskeyDistribution>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PasskeyServiceOptions {
     pub enabled: bool,
     pub rp_id: String,
@@ -266,6 +266,22 @@ pub struct PasskeyServiceOptions {
     pub allow_any_port: bool,
     pub timeout_seconds: u64,
     pub enumeration_protection_secret: String,
+}
+
+impl std::fmt::Debug for PasskeyServiceOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PasskeyServiceOptions")
+            .field("enabled", &self.enabled)
+            .field("rp_id", &self.rp_id)
+            .field("rp_origin", &self.rp_origin)
+            .field("rp_name", &self.rp_name)
+            .field("allowed_origins", &self.allowed_origins)
+            .field("allow_subdomains", &self.allow_subdomains)
+            .field("allow_any_port", &self.allow_any_port)
+            .field("timeout_seconds", &self.timeout_seconds)
+            .field("enumeration_protection_secret", &"<redacted>")
+            .finish()
+    }
 }
 
 impl Default for PasskeyServiceOptions {
@@ -1149,6 +1165,18 @@ impl PasskeyService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn passkey_options_debug_redacts_enumeration_secret() {
+        let options = PasskeyServiceOptions {
+            enumeration_protection_secret: "enumeration-secret-value".to_string(),
+            ..PasskeyServiceOptions::default()
+        };
+
+        let debug = format!("{options:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("enumeration-secret-value"));
+    }
 
     fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
         match result {

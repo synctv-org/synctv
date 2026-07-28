@@ -1,5 +1,6 @@
 use super::*;
 use crate::app_config::default_management_unix_socket_path;
+use crate::cli::output::redact_config_value;
 use clap::{CommandFactory, Parser};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -154,6 +155,18 @@ fn sample_config() -> crate::app_config::AppConfig {
     config.jwt.secret = "jwt-secret-123456789012345678901234".into();
     config.security.opaque_server_setup_secret =
         "opaque-server-setup-secret-123456789012345678901234".into();
+    config.security.email_outbox_encryption_key =
+        "5555555555555555555555555555555555555555555555555555555555555555".into();
+    config.security.totp_encryption_key =
+        "6666666666666666666666666666666666666666666666666666666666666666".into();
+    config.security.proxy_signing_key = "proxy-signing-secret-value-1234567890".into();
+    config.security.media_swarm_signing_key = "media-swarm-signing-secret-value-1234567890".into();
+    config.security.provider_session_encryption_key =
+        "provider-session-secret-value-1234567890".into();
+    config.security.login_discovery_key = "login-discovery-secret-value-1234567890".into();
+    config.security.webauthn_enumeration_key =
+        "webauthn-enumeration-secret-value-1234567890".into();
+    config.file_storage.upload_token_secret = "file-upload-token-secret-value-1234567890".into();
     config.cluster.secret = "cluster-secret-value".into();
     config.management.auth_token = "management-auth-token".into();
     config.metrics.auth.bearer_token = "metrics-bearer-token".into();
@@ -5120,6 +5133,14 @@ fn rendered_config_redacts_secrets_and_masks_connection_urls() {
         "super-secret-db",
         "redis-secret",
         "jwt-secret-123456789012345678901234",
+        "5555555555555555555555555555555555555555555555555555555555555555",
+        "6666666666666666666666666666666666666666666666666666666666666666",
+        "proxy-signing-secret-value-1234567890",
+        "media-swarm-signing-secret-value-1234567890",
+        "provider-session-secret-value-1234567890",
+        "login-discovery-secret-value-1234567890",
+        "webauthn-enumeration-secret-value-1234567890",
+        "file-upload-token-secret-value-1234567890",
         "opaque-server-setup-secret-123456789012345678901234",
         "cluster-secret-value",
         "management-auth-token",
@@ -5145,6 +5166,21 @@ fn rendered_config_redacts_secrets_and_masks_connection_urls() {
 }
 
 #[test]
+fn config_redaction_covers_object_storage_credentials() {
+    let mut value = serde_json::json!({
+        "backend": {
+            "access_key_id": "storage-access-key",
+            "secret_access_key": "storage-secret-key"
+        }
+    });
+
+    redact_config_value(&mut value);
+
+    assert_eq!(value["backend"]["access_key_id"], "<redacted>");
+    assert_eq!(value["backend"]["secret_access_key"], "<redacted>");
+}
+
+#[test]
 fn config_json_output_uses_lower_camel_case_keys() {
     let rendered =
         config_json_for_display(&sample_config()).expect("sample config should render as JSON");
@@ -5153,9 +5189,14 @@ fn config_json_output_uses_lower_camel_case_keys() {
     assert_eq!(rendered["management"]["authToken"], "<redacted>");
     assert_eq!(rendered["metrics"]["auth"]["bearerToken"], "<redacted>");
     assert_eq!(
+        rendered["security"]["emailOutboxEncryptionKey"],
+        "<redacted>"
+    );
+    assert_eq!(
         rendered["security"]["opaqueServerSetupSecret"],
         "<redacted>"
     );
+    assert_eq!(rendered["security"]["mediaSwarmSigningKey"], "<redacted>");
     let database_url = rendered["database"]["url"]
         .as_str()
         .expect("database url should render as a string");

@@ -11,7 +11,7 @@ Production deployments should have:
 
 - HTTPS for all user traffic.
 - PostgreSQL, Redis, management gRPC, and metrics not exposed publicly.
-- Root password, JWT secret, OPAQUE setup secret, credential encryption key, and cluster secret managed in a Secret Manager or Kubernetes Secret.
+- Root password, every security-domain key, and the cluster secret managed in a Secret Manager or Kubernetes Secret.
 - No default weak secrets.
 - Database and secrets backed up and restored together.
 - Metrics restricted by source or authentication.
@@ -23,6 +23,10 @@ Production deployments should have:
 | `jwt.secret` | Existing tokens become invalid | Medium | Plan rotation and expect re-login |
 | `security.opaque_server_setup_secret` | OPAQUE password records may fail | High | Do not routinely rotate; back it up |
 | `security.credential_encryption_key` | Encrypted Provider credentials cannot be decrypted | High | Migrate credentials before replacement |
+| `security.totp_encryption_key` | Existing TOTP enrollment cannot be verified | High | Migrate ciphertext or schedule user re-enrollment |
+| `security.email_outbox_encryption_key` | Queued email payloads cannot be decrypted | High | Drain the queue, then replace it on every replica together |
+| Proxy, media-swarm, provider-session, and file-token keys | Issued URLs, announcements, sessions, or tokens expire | Medium | Replace on every replica and accept the short-lived expiry |
+| Login-discovery and WebAuthn-enumeration keys | Temporary decoys change | Low | Replace on every replica together |
 | `cluster.secret` | Node-to-node auth fails | Medium | Coordinate all replicas |
 | `management.auth_token` | CLI/management TCP auth | Low | Rotate regularly if TCP is used |
 | `metrics.auth.bearer_token` | Metrics scrape auth | Low | Sync monitoring config |
@@ -73,6 +77,31 @@ Do not treat the OPAQUE setup secret or credential encryption key as ordinary to
     4. Watch heartbeat, Redis pub/sub, and cross-node WebSocket events.
   </TabItem>
 </Tabs>
+
+## Applying Kubernetes Secret Changes
+
+Helm injects Secrets through environment variables. Change the version marker in values to trigger a rollout after updating the Secret:
+
+```yaml
+existingSecret: "synctv-production-secret"
+secretRolloutChecksum: "2026-07-28-jwt-rotation"
+```
+
+```bash
+helm upgrade --install synctv ./helm/synctv \
+  -n synctv \
+  -f values.production.yaml
+kubectl -n synctv rollout status deploy/synctv
+```
+
+When a Secret controller updates the object without a Reloader, restart the Deployment explicitly and wait for every replica:
+
+```bash
+kubectl -n synctv rollout restart deploy/synctv
+kubectl -n synctv rollout status deploy/synctv
+```
+
+Cluster, signing, and encryption key rotations must converge every replica on the same version. Watch node authentication, login, and decryption errors throughout the rollout.
 
 ## Credential Encryption Key Migration
 

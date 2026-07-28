@@ -287,7 +287,14 @@ fn supports_secret_file_reference(current_path: &str, base_key: &str) -> bool {
         key_path.as_str(),
         "cluster.secret"
             | "security.credential_encryption_key"
+            | "security.totp_encryption_key"
+            | "security.email_outbox_encryption_key"
             | "security.opaque_server_setup_secret"
+            | "security.proxy_signing_key"
+            | "security.media_swarm_signing_key"
+            | "security.provider_session_encryption_key"
+            | "security.login_discovery_key"
+            | "security.webauthn_enumeration_key"
             | "management.auth_token"
             | "metrics.auth.basic_password"
             | "metrics.auth.bearer_token"
@@ -993,6 +1000,65 @@ mod tests {
             EnvVarGuard::remove("SYNCTV_JWT_SECRET_FILE"),
             EnvVarGuard::remove("SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET"),
             EnvVarGuard::remove("SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET_FILE"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY_FILE"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY_FILE"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY_FILE"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_PROXY_SIGNING_KEY"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_PROXY_SIGNING_KEY_FILE"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY_FILE"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY_FILE"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY_FILE"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY_FILE"),
+            EnvVarGuard::remove("SYNCTV_FILE_UPLOAD_TOKEN_SECRET"),
+            EnvVarGuard::remove("SYNCTV_FILE_UPLOAD_TOKEN_SECRET_FILE"),
+        ]
+    }
+
+    fn required_secret_env_guards() -> Vec<EnvVarGuard> {
+        vec![
+            EnvVarGuard::set(
+                "SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY",
+                "8181818181818181818181818181818181818181818181818181818181818181",
+            ),
+            EnvVarGuard::set(
+                "SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY",
+                "8282828282828282828282828282828282828282828282828282828282828282",
+            ),
+            EnvVarGuard::set(
+                "SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY",
+                "8383838383838383838383838383838383838383838383838383838383838383",
+            ),
+            EnvVarGuard::set(
+                "SYNCTV_SECURITY_PROXY_SIGNING_KEY",
+                "test-proxy-signing-key-for-config-loader",
+            ),
+            EnvVarGuard::set(
+                "SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY",
+                "test-media-swarm-signing-key-for-config-loader",
+            ),
+            EnvVarGuard::set(
+                "SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY",
+                "test-provider-session-key-for-config-loader",
+            ),
+            EnvVarGuard::set(
+                "SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY",
+                "test-login-discovery-key-for-config-loader",
+            ),
+            EnvVarGuard::set(
+                "SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY",
+                "test-webauthn-enumeration-key-for-config-loader",
+            ),
+            EnvVarGuard::set(
+                "SYNCTV_FILE_UPLOAD_TOKEN_SECRET",
+                "test-file-upload-token-secret-for-config-loader",
+            ),
         ]
     }
 
@@ -1027,15 +1093,16 @@ mod tests {
         let _cwd = CurrentDirGuard::change_to(dir.path());
         let _env = EnvVarGuard::remove("SYNCTV_CONFIG_PATH");
         let _management_auth = management_auth_token_guard();
+        let _required_secrets = required_secret_env_guards();
 
         std::fs::write(
             dir.path().join("synctv.yml"),
-            "server:\n  port: 58082\njwt:\n  secret: \"12345678901234567890123456789012\"\nsecurity:\n  opaque_server_setup_secret: \"opaque-server-setup-secret-123456789012\"\n",
+            "server:\n  port: 58082\njwt:\n  secret: \"12345678901234567890123456789012\"\nsecurity:\n  email_outbox_encryption_key: \"5757575757575757575757575757575757575757575757575757575757575757\"\n  opaque_server_setup_secret: \"opaque-server-setup-secret-123456789012\"\n",
         )
         .checked("yml config should be written");
         std::fs::write(
             dir.path().join("synctv.json"),
-            "{\"server\":{\"port\":58083},\"jwt\":{\"secret\":\"12345678901234567890123456789012\"},\"security\":{\"opaque_server_setup_secret\":\"opaque-server-setup-secret-123456789012\"}}",
+            "{\"server\":{\"port\":58083},\"jwt\":{\"secret\":\"12345678901234567890123456789012\"},\"security\":{\"email_outbox_encryption_key\":\"5757575757575757575757575757575757575757575757575757575757575757\",\"opaque_server_setup_secret\":\"opaque-server-setup-secret-123456789012\"}}",
         )
         .checked("json config should be written");
 
@@ -1074,6 +1141,7 @@ mod tests {
         let _cwd = CurrentDirGuard::change_to(dir.path());
         let _management_auth = management_auth_token_guard();
         let _secret_env = clear_secret_env_overrides();
+        let _required_secrets = required_secret_env_guards();
         let config_path = dir.path().join("explicit-synctv.yaml");
         std::fs::write(
             &config_path,
@@ -1081,6 +1149,7 @@ mod tests {
 jwt:
   secret: "12345678901234567890123456789012"
 security:
+  email_outbox_encryption_key: "5757575757575757575757575757575757575757575757575757575757575757"
   opaque_server_setup_secret: "opaque-server-setup-secret-123456789012"
 "#,
         )
@@ -1102,12 +1171,14 @@ security:
         let _cwd = CurrentDirGuard::change_to(dir.path());
         let _config_path = EnvVarGuard::remove("SYNCTV_CONFIG_PATH");
         let _management_auth = management_auth_token_guard();
+        let _required_secrets = required_secret_env_guards();
         let _jwt = EnvVarGuard::remove("SYNCTV_JWT_SECRET");
+        let _email_outbox_key = EnvVarGuard::remove("SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY");
         let _opaque_secret = EnvVarGuard::remove("SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET");
         let _port = EnvVarGuard::remove("SYNCTV_SERVER_PORT");
         std::fs::write(
             dir.path().join(".env"),
-            "SYNCTV_JWT_SECRET=12345678901234567890123456789012\nSYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=opaque-server-setup-secret-123456789012\nSYNCTV_SERVER_PORT=50061\n",
+            "SYNCTV_JWT_SECRET=12345678901234567890123456789012\nSYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY=5757575757575757575757575757575757575757575757575757575757575757\nSYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=opaque-server-setup-secret-123456789012\nSYNCTV_SERVER_PORT=50061\n",
         )
         .checked(".env should be written");
 
@@ -1122,6 +1193,7 @@ security:
         let _lock = acquire_process_config_test_lock();
         let dir = tempdir().checked("temp dir should be created");
         let _management_auth = management_auth_token_guard();
+        let _required_secrets = required_secret_env_guards();
         let config_path = dir.path().join("cli-synctv.yaml");
         std::fs::write(
             &config_path,
@@ -1129,6 +1201,7 @@ security:
 jwt:
   secret: "12345678901234567890123456789012"
 security:
+  email_outbox_encryption_key: "5757575757575757575757575757575757575757575757575757575757575757"
   opaque_server_setup_secret: "opaque-server-setup-secret-123456789012"
 server:
   port: 58080

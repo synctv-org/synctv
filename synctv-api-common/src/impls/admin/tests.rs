@@ -713,6 +713,9 @@ async fn make_admin_api_for_delete_user_test(
                     )
                     .expect("test signing key should derive"),
                 ),
+                media_swarm_signing_key: crate::test_support::media_swarm_signing_key(
+                    b"test-admin-api-media-swarm-signing-key-32-bytes",
+                ),
                 presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
                 request_executor: Arc::new(crate::test_support::local_request_executor()),
             },
@@ -826,6 +829,9 @@ async fn make_admin_api_with_livestream_for_test(
                         b"test-admin-api-signing-key-32-bytes!!",
                     )
                     .expect("test signing key should derive"),
+                ),
+                media_swarm_signing_key: crate::test_support::media_swarm_signing_key(
+                    b"test-admin-api-media-swarm-signing-key-32-bytes",
                 ),
                 presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
                 request_executor: Arc::new(crate::test_support::local_request_executor()),
@@ -2839,6 +2845,7 @@ async fn test_update_settings_persists_when_global_cache_invalidation_fanout_fai
             provider_stores: admin_api.provider_stores.clone(),
             provider_access_service: admin_api.provider_access_service.clone(),
             signing_key: admin_api.signing_key.clone(),
+            media_swarm_signing_key: admin_api.media_swarm_signing_key.clone(),
             presence_service: admin_api.presence_service.clone(),
             request_executor: admin_api.request_executor.clone(),
         },

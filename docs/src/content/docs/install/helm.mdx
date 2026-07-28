@@ -160,40 +160,55 @@ ingress:
 
 ## Secret
 
-Chart 默认会生成并保存 Secret。生产环境显式配置：
+默认安装通过 `pre-install` / `pre-upgrade` bootstrap Job 创建 `<release>-synctv-secrets`。Job 只在 Secret 缺失时生成随机值，升级会保留已有 Secret。随机值在集群内生成，因此 `helm template` 和 GitOps diff 保持稳定。卸载 release 会保留这个 Secret；删除前先确认 PostgreSQL 和所有加密数据已经废弃。
 
-```yaml
-secrets:
-  jwt:
-    secret: "replace-with-strong-secret"
-  cluster:
-    grpcSecret: "replace-with-cluster-secret"
-  security:
-    credentialEncryptionKey: "64-hex-character-key"
-    opaqueServerSetupSecret: "stable-random-secret"
-  bootstrap:
-    rootPassword: "StrongRootPass12345"
-```
-
-如果使用外部 Secret：
+生产集群通常由 External Secrets、Sealed Secrets 或平台 Secret Manager 提供 Secret：
 
 ```yaml
 existingSecret: "my-external-synctv-secret"
 ```
 
-需要提供这些 key：
+外部 Secret 始终包含：
 
 - `SYNCTV_DATABASE_PASSWORD`，用于 PostgreSQL standard 模式、external 模式和 KubeBlocks 应用账号。
-- `SYNCTV_REDIS_PASSWORD`，Redis 使用 standard 模式时必需；external 模式只在外部 Redis 需要密码时提供；KubeBlocks 模式不需要提供。
 - `SYNCTV_JWT_SECRET`
 - `SYNCTV_CLUSTER_SECRET`
 - `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY`
+- `SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY`
+- `SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY`
 - `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET`
+- `SYNCTV_SECURITY_PROXY_SIGNING_KEY`
+- `SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY`
+- `SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY`
+- `SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY`
+- `SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY`
+- `SYNCTV_FILE_UPLOAD_TOKEN_SECRET`
+
+按启用功能增加：
+
+- `SYNCTV_REDIS_PASSWORD`：Redis standard 模式必需；external 模式按外部 Redis 鉴权配置；KubeBlocks 模式省略。
+- `SYNCTV_DATABASE_READ_URL`：`config.database.useSecretReadUrl=true` 时必需。
 - `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`，如果 `config.bootstrap.createRootUser=true`。
 - `SYNCTV_MANAGEMENT_AUTH_TOKEN`，如果 management 使用 TCP。
 - `SYNCTV_METRICS_AUTH_BEARER_TOKEN`，如果 `metrics.enabled=true` 且 `metrics.auth.mode=bearer_token`。
 - `SYNCTV_METRICS_AUTH_BASIC_USERNAME` 和 `SYNCTV_METRICS_AUTH_BASIC_PASSWORD`，如果 `metrics.enabled=true` 且 `metrics.auth.mode=basic`。
 - `SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID` 和 `SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY`，如果 `config.livestream.hlsStorage.type=oss`。
+
+Secret 以环境变量注入，运行中的 Pod 会保留启动时读取的值。更新外部 Secret 时同步修改 checksum：
+
+```yaml
+existingSecret: "my-external-synctv-secret"
+secretRolloutChecksum: "2026-07-28-rotation-1"
+```
+
+使用 Reloader 的集群可以通过 Pod annotation 自动监听：
+
+```yaml
+podAnnotations:
+  secret.reloader.stakater.com/reload: "my-external-synctv-secret"
+```
+
+GitOps controller 需要执行 Helm hooks 才能使用默认 bootstrap Job。禁用 hooks 的平台使用 `existingSecret`。
 
 ## 安全
 

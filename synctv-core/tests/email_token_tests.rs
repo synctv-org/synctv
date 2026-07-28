@@ -559,6 +559,11 @@ async fn test_generate_token_invalidates_previous_tokens_same_type() {
         .await
         .checked("test operation should succeed");
 
+    assert!(token_service
+        .is_token_active(&first_token, &user.id, EmailTokenType::PasswordReset)
+        .await
+        .checked("first token active state should load"));
+
     // First token should be valid
     let result = token_service
         .validate_token(&first_token, EmailTokenType::PasswordReset)
@@ -573,6 +578,15 @@ async fn test_generate_token_invalidates_previous_tokens_same_type() {
         .generate_token(&user.id, EmailTokenType::PasswordReset)
         .await
         .checked("test operation should succeed");
+
+    assert!(!token_service
+        .is_token_active(&first_token, &user.id, EmailTokenType::PasswordReset)
+        .await
+        .checked("superseded token active state should load"));
+    assert!(token_service
+        .is_token_active(&second_token, &user.id, EmailTokenType::PasswordReset)
+        .await
+        .checked("replacement token active state should load"));
 
     // Second token should be valid
     let result = token_service

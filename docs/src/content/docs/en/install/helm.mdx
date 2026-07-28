@@ -162,40 +162,55 @@ ingress:
 
 ## Secrets
 
-The chart can generate and store a Secret, but production should explicitly provide strong values:
+The default installation creates `<release>-synctv-secrets` through a `pre-install` / `pre-upgrade` bootstrap Job. The Job generates random values only when the Secret is absent and preserves it on upgrades. Randomness stays inside the cluster, so `helm template` and GitOps diffs remain deterministic. Uninstalling the release preserves this Secret; delete it only after discarding PostgreSQL and all encrypted data.
 
-```yaml
-secrets:
-  jwt:
-    secret: "replace-with-strong-secret"
-  cluster:
-    grpcSecret: "replace-with-cluster-secret"
-  security:
-    credentialEncryptionKey: "64-hex-character-key"
-    opaqueServerSetupSecret: "stable-random-secret"
-  bootstrap:
-    rootPassword: "StrongRootPass12345"
-```
-
-With an external Secret:
+Production clusters commonly supply the Secret through External Secrets, Sealed Secrets, or a platform Secret Manager:
 
 ```yaml
 existingSecret: "my-external-synctv-secret"
 ```
 
-Required keys include:
+Always include:
 
 - `SYNCTV_DATABASE_PASSWORD` for PostgreSQL standard mode, external mode, and the KubeBlocks application role.
-- `SYNCTV_REDIS_PASSWORD`, required for Redis standard mode; provide it in external mode only when the external Redis requires password authentication; not needed for KubeBlocks mode.
 - `SYNCTV_JWT_SECRET`
 - `SYNCTV_CLUSTER_SECRET`
 - `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY`
+- `SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY`
+- `SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY`
 - `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET`
+- `SYNCTV_SECURITY_PROXY_SIGNING_KEY`
+- `SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY`
+- `SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY`
+- `SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY`
+- `SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY`
+- `SYNCTV_FILE_UPLOAD_TOKEN_SECRET`
+
+Add these keys for enabled features:
+
+- `SYNCTV_REDIS_PASSWORD`: required in Redis standard mode, supplied according to external Redis authentication, and omitted in KubeBlocks mode.
+- `SYNCTV_DATABASE_READ_URL` when `config.database.useSecretReadUrl=true`.
 - `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` when `config.bootstrap.createRootUser=true`
 - `SYNCTV_MANAGEMENT_AUTH_TOKEN` when management uses TCP
 - `SYNCTV_METRICS_AUTH_BEARER_TOKEN` when `metrics.enabled=true` and `metrics.auth.mode=bearer_token`
 - `SYNCTV_METRICS_AUTH_BASIC_USERNAME` and `SYNCTV_METRICS_AUTH_BASIC_PASSWORD` when `metrics.enabled=true` and `metrics.auth.mode=basic`
 - `SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID` and `SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY` when `config.livestream.hlsStorage.type=oss`
+
+Secrets are injected as environment variables, and running Pods retain the values read at startup. Change the checksum together with an external Secret update:
+
+```yaml
+existingSecret: "my-external-synctv-secret"
+secretRolloutChecksum: "2026-07-28-rotation-1"
+```
+
+Clusters running Reloader can watch the Secret through a Pod annotation:
+
+```yaml
+podAnnotations:
+  secret.reloader.stakater.com/reload: "my-external-synctv-secret"
+```
+
+GitOps controllers must execute Helm hooks to use the default bootstrap Job. Platforms that disable hooks should use `existingSecret`.
 
 ## Security
 

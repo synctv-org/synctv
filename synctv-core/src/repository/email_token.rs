@@ -165,6 +165,35 @@ impl EmailTokenRepository {
         Ok(t)
     }
 
+    pub async fn is_unused_and_valid(
+        &self,
+        token: &str,
+        user_id: &UserId,
+        token_type: EmailTokenType,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<bool> {
+        let exists = sqlx::query_scalar::<_, bool>(
+            r"
+            SELECT EXISTS (
+                SELECT 1
+                FROM auth_email_tokens
+                WHERE token = $1
+                  AND user_id = $2
+                  AND token_type = $3
+                  AND used_at IS NULL
+                  AND expires_at > $4
+            )
+            ",
+        )
+        .bind(Self::hash_token(token))
+        .bind(user_id)
+        .bind(i16::from(token_type))
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
+    }
+
     /// Mark token as used
     ///
     /// Returns `Err(InvalidInput)` if the token does not exist or has already

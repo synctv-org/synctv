@@ -11,6 +11,7 @@ pub use crate::impls::source_provider::{
 
 pub struct PlaybackHttpSigningContext<'a> {
     pub signing_key: &'a crate::proxy_signature::ProxySigningKey,
+    pub media_swarm_signing_key: &'a crate::proxy_signature::MediaSwarmSigningKey,
     pub room_id: &'a str,
     pub user_id: &'a str,
 }
@@ -3546,7 +3547,7 @@ fn playback_media_to_proto(
                         "P2P media delivery requires playback signing context".to_string(),
                     )
                 })?;
-                let swarm_ticket = signing.signing_key.sign_media_swarm_ticket(
+                let swarm_ticket = signing.media_swarm_signing_key.sign_media_swarm_ticket(
                     signing.room_id,
                     signing.user_id,
                     &delivery.swarm_id,
@@ -4582,7 +4583,7 @@ mod playback_conversion_tests {
 
     fn signing_key() -> crate::proxy_signature::ProxySigningKey {
         crate::proxy_signature::ProxySigningKey::try_derive_from(
-            b"test-jwt-secret-that-is-long-enough",
+            b"test-proxy-signing-secret-that-is-long-enough",
         )
         .expect("test signing key should derive")
     }
@@ -4590,8 +4591,16 @@ mod playback_conversion_tests {
     fn signing_context(
         key: &crate::proxy_signature::ProxySigningKey,
     ) -> PlaybackHttpSigningContext<'_> {
+        static SWARM_KEY: std::sync::OnceLock<crate::proxy_signature::MediaSwarmSigningKey> =
+            std::sync::OnceLock::new();
         PlaybackHttpSigningContext {
             signing_key: key,
+            media_swarm_signing_key: SWARM_KEY.get_or_init(|| {
+                crate::proxy_signature::MediaSwarmSigningKey::try_derive_from(
+                    b"test-media-swarm-signing-key-for-playback-convert",
+                )
+                .expect("test media swarm signing key should derive")
+            }),
             room_id: "room-1",
             user_id: "user-1",
         }

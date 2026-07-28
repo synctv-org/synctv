@@ -3,15 +3,23 @@ title: Security and Secrets
 description: JWT, OPAQUE, provider credential encryption, password policy, CORS, trusted proxies, and 2FA behavior.
 ---
 
-## Three Important Secrets
+## Important Secrets
 
-SyncTV has three high-impact secrets. They have different purposes and should not be reused.
+Each security domain has its own key. Every replica in one deployment uses the same set of values.
 
 | Setting | Purpose | Must remain stable | Impact if lost or leaked |
 | --- | --- | --- | --- |
 | `jwt.secret` | Signs access, refresh, and guest tokens | Can be rotated, but affects sessions | A leaked value may allow forged tokens |
 | `security.opaque_server_setup_secret` | Server setup secret for OPAQUE password auth | Yes | Changing it can make OPAQUE password records unverifiable |
 | `security.credential_encryption_key` | Encrypts provider credentials | Yes | Losing it can make encrypted provider credentials unreadable |
+| `security.totp_encryption_key` | Encrypts TOTP secrets | Yes | Users must enroll TOTP again if it is lost |
+| `security.email_outbox_encryption_key` | Encrypts verification codes awaiting email delivery | Yes | Losing it makes queued email payloads unrecoverable |
+| `security.proxy_signing_key` | Signs media proxy URLs | Same on every replica | Existing proxy URLs expire after rotation |
+| `security.media_swarm_signing_key` | Signs WebRTC media swarm announcements | Same on every replica | Existing swarm announcements expire after rotation |
+| `security.provider_session_encryption_key` | Encrypts provider login sessions | Same on every replica | In-progress provider logins expire after rotation |
+| `security.login_discovery_key` | Protects login discovery from enumeration | Same on every replica | Temporary discovery results change after rotation |
+| `security.webauthn_enumeration_key` | Creates WebAuthn enumeration decoys | Same on every replica | Temporary decoys change after rotation |
+| `file_storage.upload_token_secret` | Signs file upload and read tokens | Same on every replica | Existing file tokens expire after rotation |
 
 Use environment variables or secret files in production. Do not commit these values.
 
@@ -88,6 +96,62 @@ SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY_FILE=/run/secrets/credential_encryptio
 ```
 
 Back it up securely before storing encrypted provider credentials. Do not rotate it casually without a migration plan.
+
+Provider ciphertext uses HKDF domain derivation and business-key AAD. Provider instances, user credentials, and cache records have separate authenticated contexts under the configured provider key.
+
+## `security.totp_encryption_key`
+
+TOTP uses a dedicated 32-byte AES-256-GCM key with the same format as the provider credential key:
+
+```bash
+openssl rand -hex 32
+```
+
+```yaml
+security:
+  totp_encryption_key_file: "/run/secrets/totp_encryption_key"
+```
+
+## `security.email_outbox_encryption_key`
+
+Purpose: encrypts verification codes and recipient context in the PostgreSQL email outbox. Every replica must use the same key.
+
+```bash
+openssl rand -hex 32
+```
+
+Recommended YAML:
+
+```yaml
+security:
+  email_outbox_encryption_key_file: "/run/secrets/email_outbox_encryption_key"
+```
+
+Environment variables:
+
+```bash
+SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY=...
+SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY_FILE=/run/secrets/email_outbox_encryption_key
+```
+
+Compose and Helm generate and preserve this key on first installation. Back it up together with PostgreSQL.
+
+## Short-lived Signing and Enumeration Keys
+
+Generate a separate random value of at least 32 characters for each field:
+
+```yaml
+security:
+  proxy_signing_key_file: "/run/secrets/proxy_signing_key"
+  media_swarm_signing_key_file: "/run/secrets/media_swarm_signing_key"
+  provider_session_encryption_key_file: "/run/secrets/provider_session_encryption_key"
+  login_discovery_key_file: "/run/secrets/login_discovery_key"
+  webauthn_enumeration_key_file: "/run/secrets/webauthn_enumeration_key"
+file_storage:
+  upload_token_secret_file: "/run/secrets/file_upload_token_secret"
+```
+
+Compose and Helm generate and preserve each value independently. Startup validation rejects reused values across security domains.
 
 ## `security.opaque_server_setup_secret`
 

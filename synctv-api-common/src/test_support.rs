@@ -62,6 +62,15 @@ pub fn proxy_signing_key(seed: &'static [u8]) -> Arc<crate::proxy_signature::Pro
     )
 }
 
+pub fn media_swarm_signing_key(
+    seed: &'static [u8],
+) -> Arc<crate::proxy_signature::MediaSwarmSigningKey> {
+    Arc::new(
+        crate::proxy_signature::MediaSwarmSigningKey::try_derive_from(seed)
+            .expect("test media swarm signing key should derive"),
+    )
+}
+
 pub fn admin_read_services(user_service: &UserService) -> AdminReadServices {
     let write_pool = user_service.pool().clone();
     let read_pool = user_service.eventually_consistent_pool().clone();
@@ -87,6 +96,7 @@ pub fn client_api_runtime() -> ClientApiRuntime {
     ClientApiRuntime::local_disabled(
         Arc::new(local_request_executor()),
         proxy_signing_key(b"test-client-api-runtime-signing-key-32-bytes"),
+        media_swarm_signing_key(b"test-client-api-media-swarm-signing-key-32-bytes"),
     )
 }
 
@@ -95,6 +105,7 @@ pub fn admin_api_runtime() -> AdminApiRuntime {
     AdminApiRuntime::local_disabled(
         Arc::new(local_request_executor()),
         proxy_signing_key(b"test-admin-api-runtime-signing-key-32-bytes!"),
+        media_swarm_signing_key(b"test-admin-api-media-swarm-signing-key-32-bytes!"),
         Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
             "test:admin:",
         )),

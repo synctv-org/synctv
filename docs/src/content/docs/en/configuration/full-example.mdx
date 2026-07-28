@@ -34,6 +34,14 @@ SYNCTV_SERVER_CORS_ALLOWED_ORIGINS=["https://app.example.com"]
 SYNCTV_JWT_SECRET=...
 SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=...
 SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY=...
+SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY=...
+SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY=...
+SYNCTV_SECURITY_PROXY_SIGNING_KEY=...
+SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY=...
+SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY=...
+SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY=...
+SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY=...
+SYNCTV_FILE_UPLOAD_TOKEN_SECRET=...
 ```
 
 Start and verify:
@@ -104,7 +112,14 @@ file_storage:
 
 security:
   credential_encryption_key_file: "/run/secrets/credential_encryption_key"
+  totp_encryption_key_file: "/run/secrets/totp_encryption_key"
+  email_outbox_encryption_key_file: "/run/secrets/email_outbox_encryption_key"
   opaque_server_setup_secret_file: "/run/secrets/opaque_server_setup_secret"
+  proxy_signing_key_file: "/run/secrets/proxy_signing_key"
+  media_swarm_signing_key_file: "/run/secrets/media_swarm_signing_key"
+  provider_session_encryption_key_file: "/run/secrets/provider_session_encryption_key"
+  login_discovery_key_file: "/run/secrets/login_discovery_key"
+  webauthn_enumeration_key_file: "/run/secrets/webauthn_enumeration_key"
   ssrf:
     enabled: false
     allow_private_network_targets: false
@@ -169,8 +184,22 @@ public_ids:
 security:
   credential_encryption_key: ""
   credential_encryption_key_file: "/run/secrets/credential_encryption_key"
+  totp_encryption_key: ""
+  totp_encryption_key_file: "/run/secrets/totp_encryption_key"
+  email_outbox_encryption_key: ""
+  email_outbox_encryption_key_file: "/run/secrets/email_outbox_encryption_key"
   opaque_server_setup_secret: ""
   opaque_server_setup_secret_file: "/run/secrets/opaque_server_setup_secret"
+  proxy_signing_key: ""
+  proxy_signing_key_file: "/run/secrets/proxy_signing_key"
+  media_swarm_signing_key: ""
+  media_swarm_signing_key_file: "/run/secrets/media_swarm_signing_key"
+  provider_session_encryption_key: ""
+  provider_session_encryption_key_file: "/run/secrets/provider_session_encryption_key"
+  login_discovery_key: ""
+  login_discovery_key_file: "/run/secrets/login_discovery_key"
+  webauthn_enumeration_key: ""
+  webauthn_enumeration_key_file: "/run/secrets/webauthn_enumeration_key"
   ssrf:
     enabled: false
     allow_private_network_targets: false

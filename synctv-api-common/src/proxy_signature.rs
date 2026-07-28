@@ -9,8 +9,9 @@ use urlencoding::encode as url_encode;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Domain separator for deriving the proxy signing key from the JWT secret.
+/// Domain separator for deriving the proxy URL signing key.
 const DOMAIN_SEPARATOR: &[u8] = b"synctv-proxy-sign";
+const MEDIA_SWARM_KEY_DOMAIN_SEPARATOR: &[u8] = b"synctv-media-swarm-signing-key-v1";
 
 /// Default proxy URL lifetime (30 minutes).
 const DEFAULT_EXPIRY_SECS: i64 = 30 * 60;
@@ -20,9 +21,12 @@ const MEDIA_SWARM_TICKET_DOMAIN: &str = "synctv-media-swarm-v1";
 
 /// HMAC-SHA256 signing key for proxy URLs.
 ///
-/// Derived from the application's JWT secret with a domain separator,
-/// ensuring proxy signatures and JWT tokens use independent key material.
 pub struct ProxySigningKey {
+    key: HmacSha256,
+}
+
+/// HMAC-SHA256 signing key for WebRTC media swarm capability tickets.
+pub struct MediaSwarmSigningKey {
     key: HmacSha256,
 }
 
@@ -69,13 +73,31 @@ impl fmt::Display for ProxySignatureError {
 
 impl std::error::Error for ProxySignatureError {}
 
+#[derive(Debug)]
+pub enum MediaSwarmTicketError {
+    InvalidSigningKey,
+    InvalidSignature,
+    Expired,
+    InvalidLifetime,
+}
+
+impl fmt::Display for MediaSwarmTicketError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidSigningKey => write!(f, "invalid media swarm signing key"),
+            Self::InvalidSignature => write!(f, "invalid media swarm ticket signature"),
+            Self::Expired => write!(f, "media swarm ticket expired"),
+            Self::InvalidLifetime => write!(f, "invalid media swarm ticket lifetime"),
+        }
+    }
+}
+
+impl std::error::Error for MediaSwarmTicketError {}
+
 impl ProxySigningKey {
-    /// Derive a proxy signing key from the JWT secret.
-    ///
-    /// Uses HMAC(jwt_secret, domain_separator) as the derived key material,
-    /// ensuring proxy signatures are cryptographically independent from JWT tokens.
-    pub fn try_derive_from(jwt_secret: &[u8]) -> Result<Self, ProxySignatureError> {
-        let mut derivation_mac = HmacSha256::new_from_slice(jwt_secret)
+    /// Derive a proxy signing key from its dedicated security-domain secret.
+    pub fn try_derive_from(signing_secret: &[u8]) -> Result<Self, ProxySignatureError> {
+        let mut derivation_mac = HmacSha256::new_from_slice(signing_secret)
             .map_err(|_| ProxySignatureError::InvalidSigningKey)?;
         derivation_mac.update(DOMAIN_SEPARATOR);
         let derived = derivation_mac.finalize().into_bytes();
@@ -195,6 +217,18 @@ impl ProxySigningKey {
     pub const fn default_expiry_secs() -> i64 {
         DEFAULT_EXPIRY_SECS
     }
+}
+
+impl MediaSwarmSigningKey {
+    pub fn try_derive_from(signing_secret: &[u8]) -> Result<Self, MediaSwarmTicketError> {
+        let mut derivation_mac = HmacSha256::new_from_slice(signing_secret)
+            .map_err(|_| MediaSwarmTicketError::InvalidSigningKey)?;
+        derivation_mac.update(MEDIA_SWARM_KEY_DOMAIN_SEPARATOR);
+        let derived = derivation_mac.finalize().into_bytes();
+        let key = HmacSha256::new_from_slice(&derived)
+            .map_err(|_| MediaSwarmTicketError::InvalidSigningKey)?;
+        Ok(Self { key })
+    }
 
     /// Create a room- and actor-bound capability for joining one media swarm.
     #[must_use]
@@ -217,29 +251,29 @@ impl ProxySigningKey {
         actor_id: &str,
         swarm_id: &str,
         ticket: &str,
-    ) -> Result<(), ProxySignatureError> {
+    ) -> Result<(), MediaSwarmTicketError> {
         let (expires_at, signature) = ticket
             .split_once('.')
-            .ok_or(ProxySignatureError::InvalidSignature)?;
+            .ok_or(MediaSwarmTicketError::InvalidSignature)?;
         let expires_at = expires_at
             .parse::<i64>()
-            .map_err(|_| ProxySignatureError::InvalidSignature)?;
+            .map_err(|_| MediaSwarmTicketError::InvalidSignature)?;
         let now = synctv_core::SystemClock.now().timestamp();
         if now > expires_at {
-            return Err(ProxySignatureError::Expired);
+            return Err(MediaSwarmTicketError::Expired);
         }
         let lifetime = expires_at.saturating_sub(now);
         if !(1..=MEDIA_SWARM_TICKET_EXPIRY_SECS).contains(&lifetime) {
-            return Err(ProxySignatureError::InvalidLifetime);
+            return Err(MediaSwarmTicketError::InvalidLifetime);
         }
         let signature =
-            hex::decode(signature).map_err(|_| ProxySignatureError::InvalidSignature)?;
+            hex::decode(signature).map_err(|_| MediaSwarmTicketError::InvalidSignature)?;
         let mut mac = self.key.clone();
         mac.update(
             Self::media_swarm_ticket_message(room_id, actor_id, swarm_id, expires_at).as_bytes(),
         );
         mac.verify_slice(&signature)
-            .map_err(|_| ProxySignatureError::InvalidSignature)
+            .map_err(|_| MediaSwarmTicketError::InvalidSignature)
     }
 
     fn media_swarm_ticket_message(
@@ -435,8 +469,17 @@ mod tests {
 
     fn test_key() -> ProxySigningKey {
         ok(
-            ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough"),
+            ProxySigningKey::try_derive_from(b"test-proxy-signing-secret-that-is-long-enough"),
             "test proxy signing key should derive",
+        )
+    }
+
+    fn test_swarm_key() -> MediaSwarmSigningKey {
+        ok(
+            MediaSwarmSigningKey::try_derive_from(
+                b"test-media-swarm-signing-secret-that-is-long-enough",
+            ),
+            "test media swarm signing key should derive",
         )
     }
 
@@ -454,7 +497,7 @@ mod tests {
 
     #[test]
     fn media_swarm_ticket_roundtrip() {
-        let key = test_key();
+        let key = test_swarm_key();
         let ticket = key.sign_media_swarm_ticket("room_1", "usr_1", "sm1_resource");
 
         assert!(key
@@ -464,7 +507,7 @@ mod tests {
 
     #[test]
     fn media_swarm_ticket_binds_room_actor_and_swarm() {
-        let key = test_key();
+        let key = test_swarm_key();
         let ticket = key.sign_media_swarm_ticket("room_1", "usr_1", "sm1_resource");
 
         for (room_id, actor_id, swarm_id) in [
@@ -474,7 +517,7 @@ mod tests {
         ] {
             assert!(matches!(
                 key.verify_media_swarm_ticket(room_id, actor_id, swarm_id, &ticket),
-                Err(ProxySignatureError::InvalidSignature)
+                Err(MediaSwarmTicketError::InvalidSignature)
             ));
         }
     }

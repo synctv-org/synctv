@@ -4,9 +4,11 @@
 //! Uses AES-256-GCM authenticated encryption to protect sensitive credential data at rest.
 
 use aes_gcm::{
-    aead::{Aead, AeadCore, Generate, KeyInit},
+    aead::{Aead, AeadCore, Generate, KeyInit, Payload},
     Aes256Gcm, Key, Nonce,
 };
+use hkdf::Hkdf;
+use sha2_010::Sha256;
 use std::sync::Arc;
 
 use crate::{Error, InternalExt, Result};
@@ -15,7 +17,9 @@ use crate::{Error, InternalExt, Result};
 const NONCE_SIZE: usize = 12;
 
 /// Prefix for encrypted data to distinguish from plaintext
-const ENCRYPTED_PREFIX: &str = "enc:";
+const ENCRYPTED_PREFIX: &str = "enc:v1:";
+const KEY_DERIVATION_SALT: &[u8] = b"synctv:data-encryption:v1";
+const AAD_PREFIX: &[u8] = b"synctv:encrypted-value:v1";
 
 /// Credential encryption service
 ///
@@ -27,12 +31,14 @@ const ENCRYPTED_PREFIX: &str = "enc:";
 #[derive(Clone)]
 pub struct CredentialEncryption {
     cipher: Arc<Aes256Gcm>,
+    domain: Arc<str>,
 }
 
 impl std::fmt::Debug for CredentialEncryption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CredentialEncryption")
             .field("cipher", &"[REDACTED]")
+            .field("domain", &self.domain)
             .finish()
     }
 }
@@ -46,16 +52,32 @@ impl CredentialEncryption {
     /// # Errors
     /// Returns error if the key length is not exactly 32 bytes.
     pub fn new(key_bytes: &[u8]) -> Result<Self> {
+        Self::new_with_domain(key_bytes, "default")
+    }
+
+    pub fn new_with_domain(key_bytes: &[u8], domain: impl Into<Arc<str>>) -> Result<Self> {
         if key_bytes.len() != 32 {
             return Err(Error::Internal(format!(
                 "Credential encryption key must be exactly 32 bytes, got {}",
                 key_bytes.len()
             )));
         }
-        let key = Key::<Aes256Gcm>::try_from(key_bytes).expect("key length already validated");
+        let domain = domain.into();
+        if domain.is_empty() {
+            return Err(Error::Internal(
+                "Credential encryption domain must not be empty".to_string(),
+            ));
+        }
+        let mut derived_key = [0_u8; 32];
+        Hkdf::<Sha256>::new(Some(KEY_DERIVATION_SALT), key_bytes)
+            .expand(domain.as_bytes(), &mut derived_key)
+            .map_err(|_| Error::Internal("Credential key derivation failed".to_string()))?;
+        let key = Key::<Aes256Gcm>::from(derived_key);
         let cipher = Aes256Gcm::new(&key);
+        derived_key.fill(0);
         Ok(Self {
             cipher: Arc::new(cipher),
+            domain,
         })
     }
 
@@ -68,10 +90,33 @@ impl CredentialEncryption {
         Self::new(&key_bytes)
     }
 
+    pub fn from_hex_key_with_domain(hex_key: &str, domain: impl Into<Arc<str>>) -> Result<Self> {
+        let key_bytes = hex::decode(hex_key).internal_with_err("Invalid hex key")?;
+        Self::new_with_domain(&key_bytes, domain)
+    }
+
+    fn aad(&self, context: &[u8]) -> Vec<u8> {
+        let mut aad = Vec::with_capacity(AAD_PREFIX.len() + self.domain.len() + context.len() + 2);
+        aad.extend_from_slice(AAD_PREFIX);
+        aad.push(0);
+        aad.extend_from_slice(self.domain.as_bytes());
+        aad.push(0);
+        aad.extend_from_slice(context);
+        aad
+    }
+
     /// Encrypt JSON credential data
     ///
     /// Returns a string in the format "enc:<base64(nonce + ciphertext)>"
     pub fn encrypt(&self, plaintext: &serde_json::Value) -> Result<String> {
+        self.encrypt_with_context(plaintext, b"")
+    }
+
+    pub fn encrypt_with_context(
+        &self,
+        plaintext: &serde_json::Value,
+        context: &[u8],
+    ) -> Result<String> {
         let plaintext_bytes = serde_json::to_vec(plaintext)
             .internal_with_err("Failed to serialize credential data")?;
 
@@ -80,7 +125,13 @@ impl CredentialEncryption {
         // Encrypt
         let ciphertext = self
             .cipher
-            .encrypt(&nonce, plaintext_bytes.as_ref())
+            .encrypt(
+                &nonce,
+                Payload {
+                    msg: plaintext_bytes.as_ref(),
+                    aad: &self.aad(context),
+                },
+            )
             .internal_with_err("Credential encryption failed")?;
 
         let mut combined = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
@@ -92,6 +143,10 @@ impl CredentialEncryption {
     }
 
     pub fn decrypt(&self, stored: &str) -> Result<serde_json::Value> {
+        self.decrypt_with_context(stored, b"")
+    }
+
+    pub fn decrypt_with_context(&self, stored: &str, context: &[u8]) -> Result<serde_json::Value> {
         let encoded = stored.strip_prefix(ENCRYPTED_PREFIX).ok_or_else(|| {
             Error::Internal(
                 "Credential data must be an encrypted string with 'enc:' prefix.".to_string(),
@@ -111,19 +166,37 @@ impl CredentialEncryption {
         let nonce = Nonce::<<Aes256Gcm as AeadCore>::NonceSize>::try_from(nonce_bytes)
             .internal_with_err("Invalid nonce length in encrypted credential")?;
 
-        let plaintext = self.cipher.decrypt(&nonce, ciphertext).map_err(|_| {
-            Error::Internal(
-                "Credential decryption failed (wrong key or corrupted data)".to_string(),
+        let plaintext = self
+            .cipher
+            .decrypt(
+                &nonce,
+                Payload {
+                    msg: ciphertext,
+                    aad: &self.aad(context),
+                },
             )
-        })?;
+            .map_err(|_| {
+                Error::Internal(
+                    "Credential decryption failed (wrong key, context, or corrupted data)"
+                        .to_string(),
+                )
+            })?;
 
         serde_json::from_slice(&plaintext)
             .internal_with_err("Decrypted credential is not valid JSON")
     }
 
     pub fn decrypt_value(&self, value: &serde_json::Value) -> Result<serde_json::Value> {
+        self.decrypt_value_with_context(value, b"")
+    }
+
+    pub fn decrypt_value_with_context(
+        &self,
+        value: &serde_json::Value,
+        context: &[u8],
+    ) -> Result<serde_json::Value> {
         match value {
-            serde_json::Value::String(s) => self.decrypt(s),
+            serde_json::Value::String(s) => self.decrypt_with_context(s, context),
             other => Err(Error::Internal(format!(
                 "Credential value must be an encrypted string with 'enc:' prefix, got {other}."
             ))),
@@ -132,7 +205,15 @@ impl CredentialEncryption {
 
     /// Encrypt a JSON Value and return as a string Value for DB storage
     pub fn encrypt_to_value(&self, plaintext: &serde_json::Value) -> Result<serde_json::Value> {
-        let encrypted = self.encrypt(plaintext)?;
+        self.encrypt_to_value_with_context(plaintext, b"")
+    }
+
+    pub fn encrypt_to_value_with_context(
+        &self,
+        plaintext: &serde_json::Value,
+        context: &[u8],
+    ) -> Result<serde_json::Value> {
+        let encrypted = self.encrypt_with_context(plaintext, context)?;
         Ok(serde_json::Value::String(encrypted))
     }
 }
@@ -284,5 +365,27 @@ mod tests {
             ok(enc.decrypt(&encrypted2), "second credential should decrypt"),
             original
         );
+    }
+
+    #[test]
+    fn context_and_domain_are_authenticated() {
+        let original = json!({"secret": "bound"});
+        let first = ok(
+            CredentialEncryption::new_with_domain(&test_key(), "provider-data"),
+            "first domain should initialize",
+        );
+        let second = ok(
+            CredentialEncryption::new_with_domain(&test_key(), "totp-secret"),
+            "second domain should initialize",
+        );
+        let encrypted = ok(
+            first.encrypt_with_context(&original, b"record-a"),
+            "context-bound value should encrypt",
+        );
+
+        assert!(first.decrypt_with_context(&encrypted, b"record-b").is_err());
+        assert!(second
+            .decrypt_with_context(&encrypted, b"record-a")
+            .is_err());
     }
 }

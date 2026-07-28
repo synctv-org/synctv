@@ -290,10 +290,26 @@ async fn test_email_registration_confirmation_stores_opaque_credential() {
     let email = format!("{username}@example.com");
     let password = "StrongPass1";
 
-    let token = service
+    let first_token = service
         .create_email_registration_token_with_control(username.clone(), email.clone(), None, None)
         .await
         .checked("email registration token should be created");
+    assert!(service
+        .is_email_registration_token_active(&first_token)
+        .await
+        .checked("first registration token active state should load"));
+    let token = service
+        .create_email_registration_token_with_control(username.clone(), email.clone(), None, None)
+        .await
+        .checked("replacement email registration token should be created");
+    assert!(!service
+        .is_email_registration_token_active(&first_token)
+        .await
+        .checked("superseded registration token active state should load"));
+    assert!(service
+        .is_email_registration_token_active(&token)
+        .await
+        .checked("replacement registration token active state should load"));
     let outcome = service
         .complete_email_registration_with_direct_password_transport_with_control(
             &token,
@@ -1386,10 +1402,26 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
     .checked("create email bind flow user");
     let new_email = "email_bind_flow_new@example.com";
 
-    let token = service
+    let first_token = service
         .start_email_bind(&created.id, new_email)
         .await
         .checked("start email bind");
+    assert!(service
+        .is_email_bind_token_active(&created.id, new_email, &first_token)
+        .await
+        .checked("first email bind token active state should load"));
+    let token = service
+        .start_email_bind(&created.id, new_email)
+        .await
+        .checked("replace email bind token");
+    assert!(!service
+        .is_email_bind_token_active(&created.id, new_email, &first_token)
+        .await
+        .checked("superseded email bind token active state should load"));
+    assert!(service
+        .is_email_bind_token_active(&created.id, new_email, &token)
+        .await
+        .checked("replacement email bind token active state should load"));
 
     let after_start = email_repo
         .get_email(&created.id)
@@ -1446,6 +1478,13 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
         matches!(consumed_result, Error::InvalidInput(_)),
         "expected InvalidInput for consumed token"
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_email_bind_supersession_and_confirmation() {
+    let (_container, pool) = create_test_pool().await;
+    assert_email_bind_writes_email_only_after_confirm(pool).await;
 }
 
 async fn assert_email_bind_rejects_taken_email(pool: PgPool) {

@@ -173,12 +173,36 @@ pub fn default_management_unix_socket_path() -> PathBuf {
     default_management_runtime_dir().join("synctv.sock")
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct SecurityConfig {
     pub credential_encryption_key: String,
+    pub totp_encryption_key: String,
+    pub email_outbox_encryption_key: String,
     pub opaque_server_setup_secret: String,
+    pub proxy_signing_key: String,
+    pub media_swarm_signing_key: String,
+    pub provider_session_encryption_key: String,
+    pub login_discovery_key: String,
+    pub webauthn_enumeration_key: String,
     pub ssrf: SsrfConfig,
+}
+
+impl std::fmt::Debug for SecurityConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecurityConfig")
+            .field("credential_encryption_key", &"<redacted>")
+            .field("totp_encryption_key", &"<redacted>")
+            .field("email_outbox_encryption_key", &"<redacted>")
+            .field("opaque_server_setup_secret", &"<redacted>")
+            .field("proxy_signing_key", &"<redacted>")
+            .field("media_swarm_signing_key", &"<redacted>")
+            .field("provider_session_encryption_key", &"<redacted>")
+            .field("login_discovery_key", &"<redacted>")
+            .field("webauthn_enumeration_key", &"<redacted>")
+            .field("ssrf", &self.ssrf)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1063,7 +1087,7 @@ impl std::fmt::Debug for FileStorageConfig {
                 "unreferenced_object_retention_seconds",
                 &self.unreferenced_object_retention_seconds,
             )
-            .field("backends", &self.backends)
+            .field("backends", &"<redacted>")
             .finish()
     }
 }
@@ -1345,7 +1369,7 @@ impl std::str::FromStr for ClusterLeaderElectionMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClusterChannelConfig {
     pub enabled: bool,
@@ -1357,6 +1381,22 @@ pub struct ClusterChannelConfig {
     pub peers: Vec<String>,
     pub catchup_window_secs: u64,
     pub stream_max_length: usize,
+}
+
+impl std::fmt::Debug for ClusterChannelConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClusterChannelConfig")
+            .field("enabled", &self.enabled)
+            .field("secret", &"<redacted>")
+            .field("critical_channel_capacity", &self.critical_channel_capacity)
+            .field("publish_channel_capacity", &self.publish_channel_capacity)
+            .field("discovery_mode", &self.discovery_mode)
+            .field("leader_election_mode", &self.leader_election_mode)
+            .field("peers", &self.peers)
+            .field("catchup_window_secs", &self.catchup_window_secs)
+            .field("stream_max_length", &self.stream_max_length)
+            .finish()
+    }
 }
 
 impl Default for ClusterChannelConfig {

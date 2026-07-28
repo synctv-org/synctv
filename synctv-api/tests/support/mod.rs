@@ -39,10 +39,18 @@ pub fn proxy_signing_key(seed: &'static [u8]) -> Arc<ProxySigningKey> {
     Arc::new(ProxySigningKey::try_derive_from(seed).expect("test signing key should derive"))
 }
 
+pub fn media_swarm_signing_key(seed: &'static [u8]) -> Arc<synctv_api::MediaSwarmSigningKey> {
+    Arc::new(
+        synctv_api::MediaSwarmSigningKey::try_derive_from(seed)
+            .expect("test media swarm signing key should derive"),
+    )
+}
+
 pub fn client_api_runtime() -> ClientApiRuntime {
     ClientApiRuntime::local_disabled(
         Arc::new(local_request_executor()),
         proxy_signing_key(b"test-client-api-runtime-signing-key-32-bytes"),
+        media_swarm_signing_key(b"test-client-api-media-swarm-signing-key-32-bytes"),
     )
 }
 
@@ -51,6 +59,7 @@ pub fn admin_api_runtime() -> AdminApiRuntime {
     AdminApiRuntime::local_disabled(
         Arc::new(local_request_executor()),
         proxy_signing_key(b"test-admin-api-runtime-signing-key-32-bytes!"),
+        media_swarm_signing_key(b"test-admin-api-media-swarm-signing-key-32-bytes!"),
         Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
             "test:admin:",
         )),

@@ -767,6 +767,7 @@ pub struct GrpcServerOptions<'a> {
     /// Shared runtime for playback caching and other shared-state lookups.
     pub redis_runtime: Option<Arc<dyn synctv_core::RedisConnectionRuntime>>,
     pub proxy_signing_key: Arc<synctv_api_common::proxy_signature::ProxySigningKey>,
+    pub media_swarm_signing_key: Arc<synctv_api_common::proxy_signature::MediaSwarmSigningKey>,
     pub provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     pub playback_transport_services: Arc<synctv_core::provider::PlaybackTransportServices>,
     pub alist_playback_provider_service: Arc<synctv_core::service::AlistPlaybackProviderService>,
@@ -876,6 +877,7 @@ struct FallbackHttpAppStateDeps {
     credential_encryption: Option<synctv_core::credential_encryption::CredentialEncryption>,
     provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     proxy_signing_key: Arc<synctv_api_common::proxy_signature::ProxySigningKey>,
+    media_swarm_signing_key: Arc<synctv_api_common::proxy_signature::MediaSwarmSigningKey>,
     provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     playback_transport_services: Arc<synctv_core::provider::PlaybackTransportServices>,
     alist_playback_provider_service: Arc<synctv_core::service::AlistPlaybackProviderService>,
@@ -1007,6 +1009,7 @@ fn build_fallback_http_app_state(
             seafile_api: deps.seafile_api,
             truenas_api: deps.truenas_api,
             shared_proxy_signing_key: deps.proxy_signing_key,
+            media_swarm_signing_key: deps.media_swarm_signing_key,
             builtin_stun_url: deps.builtin_stun_url,
             webrtc_status: deps.webrtc_status,
             credential_encryption: deps.credential_encryption,
@@ -1066,6 +1069,7 @@ async fn build_axum_router_with_health(
         node_registry,
         redis_runtime,
         proxy_signing_key,
+        media_swarm_signing_key,
         provider_stores,
         playback_transport_services,
         alist_playback_provider_service,
@@ -1161,6 +1165,7 @@ async fn build_axum_router_with_health(
             credential_encryption: credential_encryption.clone(),
             provider_access_service: provider_access_service.clone(),
             proxy_signing_key: proxy_signing_key.clone(),
+            media_swarm_signing_key: media_swarm_signing_key.clone(),
             provider_stores: provider_stores.clone(),
             playback_transport_services: playback_transport_services.clone(),
             alist_playback_provider_service: alist_playback_provider_service.clone(),
@@ -2450,7 +2455,7 @@ mod tests {
         let (postgres, pool) = synctv_core_testing::create_test_pool().await;
         let config = Arc::new(synctv_api_common::ApiRuntimeSettings::default());
         let jwt_service =
-            JwtService::new("test-secret-key-for-grpc-router-tests-minimum-32-chars")?;
+            JwtService::new("test-jwt-secret-for-grpc-router-tests-minimum-32-chars")?;
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
         let user_service = Arc::new(UserService::new_with_brute_force_service_and_runtime(
             &pool,
@@ -2764,7 +2769,13 @@ mod tests {
             Arc::new(synctv_core::service::WsTicketService::local_only(None));
         let proxy_signing_key = Arc::new(
             synctv_api_common::proxy_signature::ProxySigningKey::try_derive_from(
-                b"test-secret-key-for-grpc-router-tests-minimum-32-chars",
+                b"test-proxy-signing-key-for-grpc-router-tests-minimum-32-chars",
+            )
+            .map_err(|error| test_error(error.to_string()))?,
+        );
+        let media_swarm_signing_key = Arc::new(
+            synctv_api_common::proxy_signature::MediaSwarmSigningKey::try_derive_from(
+                b"test-media-swarm-signing-key-for-grpc-router-tests-minimum-32-chars",
             )
             .map_err(|error| test_error(error.to_string()))?,
         );
@@ -2850,7 +2861,7 @@ mod tests {
         let bilibili_api = Arc::new(
             BilibiliApiImpl::new_with_runtime(
                 credential_backed_providers.bilibili.clone(),
-                b"test-secret-key-for-grpc-router-tests-minimum-32-chars",
+                b"test-provider-session-key-for-grpc-router-tests-minimum-32-chars",
                 provider_api_runtime.clone(),
             )
             .map_err(|error| test_error(error.to_string()))?,
@@ -2936,6 +2947,7 @@ mod tests {
                     synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
                 provider_access_service: provider_access_service.clone(),
                 signing_key: proxy_signing_key.clone(),
+                media_swarm_signing_key: media_swarm_signing_key.clone(),
                 presence_service: presence_service.clone(),
                 jwt_validator: jwt_validator.clone(),
                 request_executor: request_executor.clone(),
@@ -2969,6 +2981,7 @@ mod tests {
                 provider_stores: provider_stores.clone(),
                 provider_access_service: provider_access_service.clone(),
                 signing_key: proxy_signing_key.clone(),
+                media_swarm_signing_key: media_swarm_signing_key.clone(),
                 presence_service: presence_service.clone(),
                 request_executor: request_executor.clone(),
             },
@@ -3016,6 +3029,7 @@ mod tests {
             credential_encryption: None,
             provider_access_service: provider_access_service.clone(),
             proxy_signing_key: proxy_signing_key.clone(),
+            media_swarm_signing_key,
             provider_stores: provider_stores.clone(),
             playback_transport_services: playback_transport_services.clone(),
             alist_playback_provider_service: alist_playback_provider_service.clone(),

@@ -808,6 +808,43 @@ async fn test_update_credential() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_update_credential_rejects_aad_binding_mismatch() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
+
+    let user = user_repo
+        .create(&make_user("update_binding_user"))
+        .await
+        .checked("test user should be created");
+    let server_id = bilibili_server_id();
+    let stored = cred_repo
+        .create(&make_credential(user.id, "bilibili", &server_id))
+        .await
+        .checked("credential should be created");
+
+    let mut mismatched = stored;
+    mismatched.server_id = "different-server".to_string();
+    let error = cred_repo
+        .update(&mismatched)
+        .await
+        .expect_err("binding mismatch should reject the update");
+    assert!(matches!(error, synctv_core::Error::NotFound(_)));
+
+    let unchanged = cred_repo
+        .get_by_provider_and_server(user.id, "bilibili", &server_id)
+        .await
+        .checked("credential lookup should succeed")
+        .checked("original credential should remain readable");
+    assert!(matches!(
+        unchanged.credential_data,
+        ProviderCredential::Bilibili { ref cookies }
+            if cookies.get("SESSDATA").map(String::as_str) == Some("test_session")
+    ));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_update_credential_with_expiration() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

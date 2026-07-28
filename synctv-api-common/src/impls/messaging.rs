@@ -190,7 +190,7 @@ pub struct StreamMessageHandler {
     rate_limit_config: Arc<RateLimitConfig>,
     content_filter: Arc<ContentFilter>,
     public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
-    swarm_signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
+    swarm_signing_key: Arc<crate::proxy_signature::MediaSwarmSigningKey>,
     media_swarm_tracker: Arc<MediaSwarmTracker>,
     runtime_settings_store: Option<Arc<synctv_core::service::RuntimeSettingsStore>>,
     sender: Arc<dyn MessageSender>,
@@ -269,7 +269,7 @@ pub struct StreamMessageHandlerRuntime {
     pub ws_message_rate_limit: u32,
     pub heartbeat_schedule: HeartbeatSchedule,
     pub filter_private_ice_candidates: bool,
-    pub swarm_signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
+    pub swarm_signing_key: Arc<crate::proxy_signature::MediaSwarmSigningKey>,
     pub media_swarm_tracker: Arc<MediaSwarmTracker>,
     pub runtime_settings_store: Option<Arc<synctv_core::service::RuntimeSettingsStore>>,
 }
@@ -300,7 +300,7 @@ impl StreamMessageHandlerRuntime {
             heartbeat_schedule: HeartbeatSchedule::production(),
             filter_private_ice_candidates: false,
             swarm_signing_key: Arc::new(
-                crate::proxy_signature::ProxySigningKey::try_derive_from(
+                crate::proxy_signature::MediaSwarmSigningKey::try_derive_from(
                     b"test-swarm-signing-key-with-at-least-32-bytes",
                 )
                 .expect("test swarm signing key"),

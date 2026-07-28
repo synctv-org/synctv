@@ -3,6 +3,34 @@ use crate::credential_encryption::CredentialEncryption;
 use crate::models::{ProviderCredential, SortDirection};
 use crate::test_helpers::{err, ok};
 
+fn encrypt_test_credential(
+    encryption: Option<&CredentialEncryption>,
+    provider: &str,
+    credential: &ProviderCredential,
+) -> Result<super::StoredProviderCredential> {
+    UserProviderCredentialRepository::encrypt_credential_with(
+        encryption,
+        UserId::expect_positive(1),
+        provider,
+        "test-server",
+        credential,
+    )
+}
+
+fn decrypt_test_credential(
+    encryption: Option<&CredentialEncryption>,
+    provider: &str,
+    credential: &super::StoredProviderCredential,
+) -> Result<ProviderCredential> {
+    UserProviderCredentialRepository::decrypt_credential_with(
+        encryption,
+        UserId::expect_positive(1),
+        provider,
+        "test-server",
+        credential,
+    )
+}
+
 fn order_by_sql(query: &ProviderInstanceListQuery) -> String {
     let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new("");
     ProviderInstanceRepository::push_list_order_by(&mut builder, query);
@@ -47,7 +75,12 @@ async fn test_provider_instance_repo_rejects_plaintext_sensitive_fields_when_enc
     let encryption = ok(CredentialEncryption::new(&[7u8; 32]), "encryption key");
 
     let err = err(
-        ProviderInstanceRepository::decrypt_field_with(Some(&encryption), Some("plaintext-secret")),
+        ProviderInstanceRepository::decrypt_field_with(
+            Some(&encryption),
+            "test-instance",
+            "jwt_secret",
+            Some("plaintext-secret"),
+        ),
         "plaintext secret should fail",
     );
     assert!(
@@ -61,8 +94,9 @@ async fn test_user_provider_credential_repo_rejects_plaintext_json_when_encrypti
     let encryption = ok(CredentialEncryption::new(&[9u8; 32]), "encryption key");
 
     let err = err(
-        UserProviderCredentialRepository::decrypt_credential_with(
+        decrypt_test_credential(
             Some(&encryption),
+            "bilibili",
             &super::StoredProviderCredential::Bilibili {
                 cookies: super::EncryptedCredentialValue::from_string_for_test(
                     r#"{"SESSDATA":"plaintext"}"#,
@@ -89,7 +123,7 @@ async fn test_user_provider_credential_storage_keeps_alist_metadata_plaintext() 
     };
 
     let stored = ok(
-        UserProviderCredentialRepository::encrypt_credential_with(Some(&encryption), &credential),
+        encrypt_test_credential(Some(&encryption), "alist", &credential),
         "credential should encrypt",
     );
     let stored_json = ok(
@@ -108,7 +142,7 @@ async fn test_user_provider_credential_storage_keeps_alist_metadata_plaintext() 
         .is_some_and(|value| value.starts_with("enc:")));
 
     let decrypted = ok(
-        UserProviderCredentialRepository::decrypt_credential_with(Some(&encryption), &stored),
+        decrypt_test_credential(Some(&encryption), "alist", &stored),
         "stored credential should decrypt",
     );
     let ProviderCredential::Alist {
@@ -126,6 +160,30 @@ async fn test_user_provider_credential_storage_keeps_alist_metadata_plaintext() 
     assert_eq!(otp_secret.as_deref(), Some("otp-secret"));
 }
 
+#[test]
+fn test_user_provider_credential_ciphertext_is_bound_to_binding() {
+    let encryption = ok(CredentialEncryption::new(&[12u8; 32]), "encryption key");
+    let credential = ProviderCredential::Alist {
+        host: "https://alist.example.com".to_string(),
+        username: "alice".to_string(),
+        password: "secret-password".to_string(),
+        otp_secret: None,
+    };
+    let stored = ok(
+        encrypt_test_credential(Some(&encryption), "alist", &credential),
+        "credential should encrypt",
+    );
+
+    let transplanted = UserProviderCredentialRepository::decrypt_credential_with(
+        Some(&encryption),
+        UserId::expect_positive(1),
+        "alist",
+        "different-server",
+        &stored,
+    );
+    assert!(transplanted.is_err());
+}
+
 #[tokio::test]
 async fn test_user_provider_credential_storage_encrypts_cloudreve_password() {
     let encryption = ok(CredentialEncryption::new(&[13u8; 32]), "encryption key");
@@ -136,7 +194,7 @@ async fn test_user_provider_credential_storage_encrypts_cloudreve_password() {
     };
 
     let stored = ok(
-        UserProviderCredentialRepository::encrypt_credential_with(Some(&encryption), &credential),
+        encrypt_test_credential(Some(&encryption), "cloudreve", &credential),
         "credential should encrypt",
     );
     let stored_json = ok(
@@ -153,7 +211,7 @@ async fn test_user_provider_credential_storage_encrypts_cloudreve_password() {
     assert_ne!(stored_json["password"], "secret-password");
 
     let decrypted = ok(
-        UserProviderCredentialRepository::decrypt_credential_with(Some(&encryption), &stored),
+        decrypt_test_credential(Some(&encryption), "cloudreve", &stored),
         "stored credential should decrypt",
     );
     let ProviderCredential::Cloudreve {
@@ -183,7 +241,7 @@ async fn test_user_provider_credential_storage_encrypts_twitch_session() {
     };
 
     let stored = ok(
-        UserProviderCredentialRepository::encrypt_credential_with(Some(&encryption), &credential),
+        encrypt_test_credential(Some(&encryption), "twitch", &credential),
         "credential should encrypt",
     );
     let stored_json = ok(
@@ -199,7 +257,7 @@ async fn test_user_provider_credential_storage_encrypts_twitch_session() {
     }
 
     let decrypted = ok(
-        UserProviderCredentialRepository::decrypt_credential_with(Some(&encryption), &stored),
+        decrypt_test_credential(Some(&encryption), "twitch", &stored),
         "stored credential should decrypt",
     );
     let ProviderCredential::Twitch {
@@ -236,7 +294,7 @@ async fn test_user_provider_credential_storage_encrypts_qnap_secrets() {
         support_rtt: true,
     };
     let stored = ok(
-        UserProviderCredentialRepository::encrypt_credential_with(Some(&encryption), &credential),
+        encrypt_test_credential(Some(&encryption), "qnap", &credential),
         "credential should encrypt",
     );
     let json = ok(
@@ -250,7 +308,7 @@ async fn test_user_provider_credential_storage_encrypts_qnap_secrets() {
             .is_some_and(|value| value.starts_with("enc:")));
     }
     let decrypted = ok(
-        UserProviderCredentialRepository::decrypt_credential_with(Some(&encryption), &stored),
+        decrypt_test_credential(Some(&encryption), "qnap", &stored),
         "stored credential should decrypt",
     );
     assert!(matches!(
@@ -304,7 +362,12 @@ async fn test_provider_instance_repo_requires_encryption_when_sensitive_fields_p
 #[tokio::test]
 async fn test_provider_instance_repo_requires_encryption_for_sensitive_reads() {
     let err = err(
-        ProviderInstanceRepository::decrypt_field_with(None, Some("enc:placeholder")),
+        ProviderInstanceRepository::decrypt_field_with(
+            None,
+            "test-instance",
+            "jwt_secret",
+            Some("enc:v1:placeholder"),
+        ),
         "encrypted field should require encryption",
     );
     assert!(
@@ -314,14 +377,24 @@ async fn test_provider_instance_repo_requires_encryption_for_sensitive_reads() {
     );
     assert_eq!(
         ok(
-            ProviderInstanceRepository::decrypt_field_with(None, None),
+            ProviderInstanceRepository::decrypt_field_with(
+                None,
+                "test-instance",
+                "jwt_secret",
+                None,
+            ),
             "empty field should decrypt",
         ),
         None
     );
     assert_eq!(
         ok(
-            ProviderInstanceRepository::decrypt_field_with(None, Some("")),
+            ProviderInstanceRepository::decrypt_field_with(
+                None,
+                "test-instance",
+                "jwt_secret",
+                Some(""),
+            ),
             "blank field should decrypt",
         ),
         None
@@ -331,8 +404,9 @@ async fn test_provider_instance_repo_requires_encryption_for_sensitive_reads() {
 #[tokio::test]
 async fn test_user_provider_credential_repo_requires_encryption_for_storage() {
     let err = err(
-        UserProviderCredentialRepository::encrypt_credential_with(
+        encrypt_test_credential(
             None,
+            "alist",
             &ProviderCredential::Alist {
                 host: "https://alist.example.com".to_string(),
                 username: "user".to_string(),
@@ -352,10 +426,13 @@ async fn test_user_provider_credential_repo_requires_encryption_for_storage() {
 #[tokio::test]
 async fn test_user_provider_credential_repo_requires_encryption_for_reads() {
     let err = err(
-        UserProviderCredentialRepository::decrypt_credential_with(
+        decrypt_test_credential(
             None,
+            "bilibili",
             &super::StoredProviderCredential::Bilibili {
-                cookies: super::EncryptedCredentialValue::from_string_for_test("enc:placeholder"),
+                cookies: super::EncryptedCredentialValue::from_string_for_test(
+                    "enc:v1:placeholder",
+                ),
             },
         ),
         "encrypted credential should require encryption",

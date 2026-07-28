@@ -56,6 +56,28 @@ fn valid_sha256_certificate_fingerprint(value: &str) -> bool {
             .all(|character| character.is_ascii_hexdigit())
 }
 
+fn validate_hex_encryption_key(path: &str, value: &str, errors: &mut Vec<String>) {
+    let key = value.trim();
+    if key.len() != 64 {
+        errors.push(format!(
+            "{path} must be a 64-character hex string (32 bytes for AES-256-GCM)"
+        ));
+    } else if !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        errors.push(format!("{path} must contain only hexadecimal characters"));
+    }
+}
+
+fn validate_random_secret(path: &str, value: &str, errors: &mut Vec<String>) {
+    let secret = value.trim();
+    if secret.len() < 32 {
+        errors.push(format!(
+            "{path} must contain at least 32 characters of random key material"
+        ));
+    } else if secret == "change-me-in-production" || secret.starts_with("CHANGE_ME_") {
+        errors.push(format!("{path} appears to be a placeholder"));
+    }
+}
+
 impl AppConfig {
     fn database_split_config_present(&self) -> bool {
         !self.database.host.trim().is_empty()
@@ -248,22 +270,27 @@ impl AppConfig {
             errors.push("password_complexity.zxcvbn_min_score must be between 0 and 4".to_string());
         }
 
-        if !self.security.credential_encryption_key.is_empty() {
-            let key = self.security.credential_encryption_key.trim();
-            if key.len() != 64 {
-                errors.push(
-                    "security.credential_encryption_key must be a 64-character hex string (32 bytes for AES-256-GCM)"
-                        .to_string(),
-                );
-            } else if !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                errors.push(
-                    "security.credential_encryption_key must contain only hexadecimal characters"
-                        .to_string(),
-                );
-            } else if is_known_dev_hex_secret(key, KNOWN_DEV_CREDENTIAL_ENCRYPTION_KEYS) {
-                errors.push("security.credential_encryption_key uses a known development value. Generate a unique key with `openssl rand -hex 32`".to_string());
-            }
+        validate_hex_encryption_key(
+            "security.credential_encryption_key",
+            &self.security.credential_encryption_key,
+            &mut errors,
+        );
+        if is_known_dev_hex_secret(
+            self.security.credential_encryption_key.trim(),
+            KNOWN_DEV_CREDENTIAL_ENCRYPTION_KEYS,
+        ) {
+            errors.push("security.credential_encryption_key uses a known development value. Generate a unique key with `openssl rand -hex 32`".to_string());
         }
+        validate_hex_encryption_key(
+            "security.totp_encryption_key",
+            &self.security.totp_encryption_key,
+            &mut errors,
+        );
+        validate_hex_encryption_key(
+            "security.email_outbox_encryption_key",
+            &self.security.email_outbox_encryption_key,
+            &mut errors,
+        );
 
         let opaque_secret = self.security.opaque_server_setup_secret.trim();
         if opaque_secret.is_empty() {
@@ -278,6 +305,98 @@ impl AppConfig {
                 "security.opaque_server_setup_secret is too short ({} chars). Minimum 32 characters required for OPAQUE setup stability.",
                 opaque_secret.len()
             ));
+        }
+        validate_random_secret(
+            "security.proxy_signing_key",
+            &self.security.proxy_signing_key,
+            &mut errors,
+        );
+        validate_random_secret(
+            "security.media_swarm_signing_key",
+            &self.security.media_swarm_signing_key,
+            &mut errors,
+        );
+        validate_random_secret(
+            "security.provider_session_encryption_key",
+            &self.security.provider_session_encryption_key,
+            &mut errors,
+        );
+        validate_random_secret(
+            "security.login_discovery_key",
+            &self.security.login_discovery_key,
+            &mut errors,
+        );
+        validate_random_secret(
+            "security.webauthn_enumeration_key",
+            &self.security.webauthn_enumeration_key,
+            &mut errors,
+        );
+        validate_random_secret(
+            "file_storage.upload_token_secret",
+            &self.file_storage.upload_token_secret,
+            &mut errors,
+        );
+
+        let secrets = [
+            ("jwt.secret", self.jwt.secret.trim()),
+            ("cluster.secret", self.cluster.secret.trim()),
+            (
+                "security.credential_encryption_key",
+                self.security.credential_encryption_key.trim(),
+            ),
+            (
+                "security.totp_encryption_key",
+                self.security.totp_encryption_key.trim(),
+            ),
+            (
+                "security.email_outbox_encryption_key",
+                self.security.email_outbox_encryption_key.trim(),
+            ),
+            (
+                "security.opaque_server_setup_secret",
+                self.security.opaque_server_setup_secret.trim(),
+            ),
+            (
+                "security.proxy_signing_key",
+                self.security.proxy_signing_key.trim(),
+            ),
+            (
+                "security.media_swarm_signing_key",
+                self.security.media_swarm_signing_key.trim(),
+            ),
+            (
+                "security.provider_session_encryption_key",
+                self.security.provider_session_encryption_key.trim(),
+            ),
+            (
+                "security.login_discovery_key",
+                self.security.login_discovery_key.trim(),
+            ),
+            (
+                "security.webauthn_enumeration_key",
+                self.security.webauthn_enumeration_key.trim(),
+            ),
+            (
+                "file_storage.upload_token_secret",
+                self.file_storage.upload_token_secret.trim(),
+            ),
+        ];
+        for (index, (left_path, left_value)) in secrets.iter().enumerate() {
+            if left_value.is_empty() {
+                continue;
+            }
+            for (right_path, right_value) in &secrets[index + 1..] {
+                let same_hex_key = left_value.len() == 64
+                    && right_value.len() == 64
+                    && left_value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && right_value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && left_value.eq_ignore_ascii_case(right_value);
+                if left_value == right_value || same_hex_key {
+                    errors.push(format!(
+                        "{left_path} and {right_path} must use different secret values"
+                    ));
+                }
+            }
         }
         for range in &self.security.ssrf.allowed_ip_ranges {
             if range.parse::<ipnet::IpNet>().is_err() {
@@ -1251,6 +1370,7 @@ mod tests {
         valid_android_package_name, valid_apple_application_identifier,
         valid_sha256_certificate_fingerprint, validate_project_url,
     };
+    use crate::app_config::{AppConfig, ClusterChannelConfig, SecurityConfig, SsrfConfig};
 
     #[test]
     fn project_url_accepts_http_urls_with_project_paths() {
@@ -1292,5 +1412,94 @@ mod tests {
         ));
         assert!(!valid_android_package_name("org.synctv.app "));
         assert!(!valid_sha256_certificate_fingerprint("AA:BB"));
+    }
+
+    #[test]
+    fn security_secrets_must_be_distinct() {
+        let mut config = AppConfig::default();
+        config.jwt.secret = "jwt-secret-value-with-at-least-32-characters".to_string();
+        config.security.credential_encryption_key =
+            "9191919191919191919191919191919191919191919191919191919191919191".to_string();
+        config.security.totp_encryption_key =
+            "9292929292929292929292929292929292929292929292929292929292929292".to_string();
+        config.security.email_outbox_encryption_key =
+            "9393939393939393939393939393939393939393939393939393939393939393".to_string();
+        config.security.opaque_server_setup_secret =
+            "opaque-secret-value-with-at-least-32-characters".to_string();
+        config.security.proxy_signing_key = config.jwt.secret.clone();
+        config.security.media_swarm_signing_key =
+            "media-swarm-signing-secret-with-at-least-32-characters".to_string();
+        config.security.provider_session_encryption_key =
+            "provider-session-secret-with-at-least-32-characters".to_string();
+        config.security.login_discovery_key =
+            "login-discovery-secret-with-at-least-32-characters".to_string();
+        config.security.webauthn_enumeration_key =
+            "webauthn-enumeration-secret-with-at-least-32-characters".to_string();
+        config.file_storage.upload_token_secret =
+            "file-upload-secret-with-at-least-32-characters".to_string();
+
+        let errors = config.validate().expect_err("duplicate secrets must fail");
+        assert!(errors.iter().any(|error| {
+            error.contains("jwt.secret and security.proxy_signing_key must use different")
+        }));
+    }
+
+    #[test]
+    fn media_swarm_signing_key_cannot_reuse_proxy_signing_key() {
+        let mut config = AppConfig::default();
+        config.security.proxy_signing_key =
+            "shared-proxy-and-swarm-key-with-at-least-32-characters".to_string();
+        config.security.media_swarm_signing_key = config.security.proxy_signing_key.clone();
+
+        let errors = config.validate().expect_err("duplicate secrets must fail");
+        assert!(errors.iter().any(|error| {
+            error.contains(
+                "security.proxy_signing_key and security.media_swarm_signing_key must use different",
+            )
+        }));
+    }
+
+    #[test]
+    fn security_config_debug_redacts_every_key() {
+        let config = SecurityConfig {
+            credential_encryption_key: "credential-key".to_string(),
+            totp_encryption_key: "totp-key".to_string(),
+            email_outbox_encryption_key: "outbox-key".to_string(),
+            opaque_server_setup_secret: "opaque-key".to_string(),
+            proxy_signing_key: "proxy-key".to_string(),
+            media_swarm_signing_key: "swarm-key".to_string(),
+            provider_session_encryption_key: "provider-session-key".to_string(),
+            login_discovery_key: "login-discovery-key".to_string(),
+            webauthn_enumeration_key: "webauthn-enumeration-key".to_string(),
+            ssrf: SsrfConfig::default(),
+        };
+
+        let debug = format!("{config:?}");
+        assert!(debug.contains("<redacted>"));
+        for key in [
+            "credential-key",
+            "totp-key",
+            "outbox-key",
+            "opaque-key",
+            "proxy-key",
+            "swarm-key",
+            "provider-session-key",
+            "login-discovery-key",
+            "webauthn-enumeration-key",
+        ] {
+            assert!(!debug.contains(key), "debug output leaked {key}");
+        }
+    }
+
+    #[test]
+    fn cluster_config_debug_redacts_secret() {
+        let config = ClusterChannelConfig {
+            secret: "cluster-debug-secret".to_string(),
+            ..ClusterChannelConfig::default()
+        };
+
+        let debug = format!("{config:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("cluster-debug-secret"));
     }
 }

@@ -18,6 +18,7 @@ Most fields can keep their defaults. Production launch should prioritize secrets
 | `jwt.secret` | Any production deployment | Keeping `change-me-in-production` or committing it | Restart required; old tokens may become invalid | Inject through Secret Manager or secret file |
 | `security.opaque_server_setup_secret` | Local password/OPAQUE login | Regenerating it on every deployment | Restart required; casual changes can break password records | Generate once and back it up |
 | `security.credential_encryption_key` | Storing encrypted provider credentials | Not 64 hex chars, or losing the key | Restart required; losing it breaks encrypted credential reads | Use `openssl rand -hex 32` and back it up |
+| `security.email_outbox_encryption_key` | Every production deployment | Different replicas use different keys | Restart required; queued email depends on this key | Generate once and back it up with the database |
 | `database.url` / split fields | Production PostgreSQL | Pointing at local dev DB or oversizing the pool | Restart required | PostgreSQL must be persistent and backed up |
 | `redis.url` / split fields | Production, OAuth2, multi-replica, rate limits, L2 cache | Different replicas use different Redis or key prefixes collide | Restart required | Recommended in production, required for multi-replica mode |
 | `server.cors_allowed_origins` | Web frontend and API use different origins | Using `*` or adding a path | Restart required | Use exact origins such as `https://app.example.com` |
@@ -48,6 +49,7 @@ Production Compose uses `.env.postgres`, `.env.redis`, and `.env.synctv`; it doe
 | Token signing | `SYNCTV_JWT_SECRET` | `jwt.secret` |
 | OPAQUE password login | `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` | `security.opaque_server_setup_secret` |
 | Provider credential encryption | `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` | `security.credential_encryption_key` |
+| Email queue encryption | `SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY` | `security.email_outbox_encryption_key` |
 | Web frontend CORS | `SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'` | `server.cors_allowed_origins` |
 | PostgreSQL | `.env.postgres` and Compose volume | `database.*` |
 | Redis | `.env.redis`, Compose Redis service, and key prefix | `redis.*` |
@@ -110,7 +112,14 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `public_ids.sqids.alphabet` | string or null | `null` | sqids alphabet |
 | `public_ids.sqids.min_length` | integer | `12` | Minimum sqids length |
 | `security.credential_encryption_key` | 64-character hex secret | `""` | Provider credential encryption key |
+| `security.totp_encryption_key` | 64-character hex secret | `""` | Dedicated TOTP encryption key; required |
+| `security.email_outbox_encryption_key` | 64-character hex secret | `""` | Dedicated email outbox encryption key; required in production |
 | `security.opaque_server_setup_secret` | secret string | `""` | Stable OPAQUE server setup secret |
+| `security.proxy_signing_key` | at least 32 characters | `""` | Dedicated media proxy URL signing key; required |
+| `security.media_swarm_signing_key` | at least 32 characters | `""` | Dedicated WebRTC media swarm announcement signing key; required |
+| `security.provider_session_encryption_key` | at least 32 characters | `""` | Dedicated provider login session key; required |
+| `security.login_discovery_key` | at least 32 characters | `""` | Login discovery enumeration-protection key; required |
+| `security.webauthn_enumeration_key` | at least 32 characters | `""` | WebAuthn enumeration-protection key; required |
 | `security.ssrf.enabled` | boolean | `false` | Enable global SSRF protection for server-side outbound requests |
 | `security.ssrf.allow_private_network_targets` | boolean | `false` | Allow server-side outbound requests to private/loopback/link-local/reserved/metadata targets |
 | `security.ssrf.allowed_hosts` | string array | `[]` | Additional hostnames allowed by the global SSRF policy |
@@ -230,7 +239,7 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `file_storage.media_covers_backend` | backend name or empty | `""` | Backend for media covers; empty inherits `default_backend` |
 | `file_storage.room_covers_backend` | backend name or empty | `""` | Backend for room covers; empty inherits `default_backend` |
 | `file_storage.playlist_covers_backend` | backend name or empty | `""` | Backend for playlist covers; empty inherits `default_backend` |
-| `file_storage.upload_token_secret` | secret string | `""` | Signing secret for file upload/read tokens; empty value derives from `jwt.secret` at startup |
+| `file_storage.upload_token_secret` | at least 32 characters | `""` | Dedicated signing key for file upload/read tokens; required |
 | `file_storage.unreferenced_object_retention_seconds` | seconds | `86400` | Grace period before uploaded objects with no active product reference are cleaned; `0` disables orphan cleanup |
 | `file_storage.backends.<name>.type` | `disabled`, `database`, or `s3` | `disabled` | Registered backend implementation type |
 | `file_storage.backends.<name>.compression` | `none`, `lz4`, or `zstd` | `zstd` | Compression algorithm used by `type: "database"` backends for persisted `file_blob_parts` segments |

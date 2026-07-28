@@ -777,7 +777,7 @@ mod tests {
         let user_service = Arc::new(user_service);
         let outbox = Arc::new(EmailOutboxService::new(
             pool.clone(),
-            b"email-api-test-outbox-secret",
+            "5151515151515151515151515151515151515151515151515151515151515151",
         )?);
 
         Ok(EmailApiImpl::new(

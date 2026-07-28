@@ -422,6 +422,17 @@ impl EmailTokenService {
         Ok(())
     }
 
+    pub async fn is_token_active(
+        &self,
+        token: &str,
+        user_id: &UserId,
+        token_type: EmailTokenType,
+    ) -> Result<bool> {
+        self.repository
+            .is_unused_and_valid(token, user_id, token_type, self.clock.now())
+            .await
+    }
+
     /// Cleanup expired tokens
     pub async fn cleanup_expired(&self) -> Result<usize> {
         self.cleanup_expired_with_control(None).await

@@ -10,6 +10,14 @@ description: JWT、OPAQUE、Provider 凭据加密、密码策略、CORS、可信
 | `jwt.secret` | 签发 access、refresh 和 guest token | 可轮换，但会影响登录状态 | 泄露后可能伪造 token |
 | `security.opaque_server_setup_secret` | OPAQUE 密码认证服务端 setup secret | 是 | 改错会导致 OPAQUE 密码记录无法验证 |
 | `security.credential_encryption_key` | 加密 Provider 凭据 | 是 | 丢失后已加密 Provider 凭据可能无法读取 |
+| `security.totp_encryption_key` | 加密 TOTP secret | 是 | 丢失后用户需要重新配置 TOTP |
+| `security.email_outbox_encryption_key` | 加密待发送邮件中的验证码 | 是 | 丢失后队列中的待发邮件无法恢复 |
+| `security.proxy_signing_key` | 签名媒体代理 URL | 所有副本一致 | 轮换后已有代理 URL 失效 |
+| `security.media_swarm_signing_key` | 签名 WebRTC 媒体 swarm 声明 | 所有副本一致 | 轮换后已有 swarm 声明失效 |
+| `security.provider_session_encryption_key` | 加密 Provider 登录会话 | 所有副本一致 | 轮换后进行中的登录会话失效 |
+| `security.login_discovery_key` | 登录发现防枚举 | 所有副本一致 | 轮换后临时发现结果变化 |
+| `security.webauthn_enumeration_key` | WebAuthn 防枚举假凭据 | 所有副本一致 | 轮换后临时假凭据变化 |
+| `file_storage.upload_token_secret` | 签名文件上传和读取 token | 所有副本一致 | 轮换后已有文件 token 失效 |
 
 生产环境使用环境变量或 secret file 注入，不提交到仓库。
 
@@ -86,6 +94,62 @@ SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY_FILE=/run/secrets/credential_encryptio
 ```
 
 保存加密 Provider 凭据前备份这个 key。没有迁移方案时不要随意轮换。
+
+Provider 数据密文使用 HKDF 数据域派生和业务主键 AAD。Provider 实例、用户凭据和缓存记录都有独立的密文上下文。
+
+## `security.totp_encryption_key`
+
+TOTP 使用独立的 32 字节 AES-256-GCM key，格式与 Provider 凭据 key 相同：
+
+```bash
+openssl rand -hex 32
+```
+
+```yaml
+security:
+  totp_encryption_key_file: "/run/secrets/totp_encryption_key"
+```
+
+## `security.email_outbox_encryption_key`
+
+用途：加密 PostgreSQL email outbox 中的验证码和收件上下文。每个副本必须使用同一个 key。
+
+```bash
+openssl rand -hex 32
+```
+
+推荐 YAML：
+
+```yaml
+security:
+  email_outbox_encryption_key_file: "/run/secrets/email_outbox_encryption_key"
+```
+
+环境变量：
+
+```bash
+SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY=...
+SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY_FILE=/run/secrets/email_outbox_encryption_key
+```
+
+Compose 和 Helm 首次安装会自动生成并长期保存这个 key。备份时将它与 PostgreSQL 一起保存。
+
+## 短期签名与防枚举 key
+
+下面六个字段各自使用独立随机值，最低 32 个字符：
+
+```yaml
+security:
+  proxy_signing_key_file: "/run/secrets/proxy_signing_key"
+  media_swarm_signing_key_file: "/run/secrets/media_swarm_signing_key"
+  provider_session_encryption_key_file: "/run/secrets/provider_session_encryption_key"
+  login_discovery_key_file: "/run/secrets/login_discovery_key"
+  webauthn_enumeration_key_file: "/run/secrets/webauthn_enumeration_key"
+file_storage:
+  upload_token_secret_file: "/run/secrets/file_upload_token_secret"
+```
+
+Compose 和 Helm 会分别生成并保存这些值。配置校验会拒绝不同安全域使用相同值。
 
 ## `security.opaque_server_setup_secret`
 

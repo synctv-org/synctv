@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::api_runtime::SharedApiRuntime;
-use crate::proxy_signature::ProxySigningKey;
+use crate::proxy_signature::{MediaSwarmSigningKey, ProxySigningKey};
 
 /// Options for creating the API transports.
 #[derive(Clone)]
@@ -104,6 +104,8 @@ pub struct RouterOptions {
     pub truenas_api: Arc<crate::providers::TrueNasApiImpl>,
     /// Shared proxy signing key reused across transports.
     pub shared_proxy_signing_key: Arc<ProxySigningKey>,
+    /// Signing key for WebRTC media swarm announcements.
+    pub media_swarm_signing_key: Arc<MediaSwarmSigningKey>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
     /// STUN server. When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
@@ -230,6 +232,7 @@ pub fn build_app_state(options: RouterOptions) -> anyhow::Result<AppState> {
 pub fn build_shared_api_runtime(options: &RouterOptions) -> anyhow::Result<SharedApiRuntime> {
     let redis_runtime = options.redis_runtime.clone();
     let proxy_signing_key = options.shared_proxy_signing_key.clone();
+    let media_swarm_signing_key = options.media_swarm_signing_key.clone();
     let provider_stores = options.shared_provider_stores.clone();
     let provider_access_service = options.provider_access_service.clone();
     let security_pipeline = options.security_pipeline.clone();
@@ -298,6 +301,7 @@ pub fn build_shared_api_runtime(options: &RouterOptions) -> anyhow::Result<Share
         seafile_playback_provider_service: options.seafile_playback_provider_service.clone(),
         truenas_playback_provider_service: options.truenas_playback_provider_service.clone(),
         proxy_signing_key,
+        media_swarm_signing_key,
         webrtc_status: options.webrtc_status.clone(),
         server_state_runtime: Arc::new(crate::status::server_state_runtime_from_router_options(
             options,

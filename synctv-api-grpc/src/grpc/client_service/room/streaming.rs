@@ -178,7 +178,7 @@ pub(super) async fn message_stream(
                 .runtime_settings
                 .webrtc
                 .filter_private_ice_candidates,
-            swarm_signing_key: service.client_api.signing_key.clone(),
+            swarm_signing_key: service.client_api.media_swarm_signing_key.clone(),
             media_swarm_tracker: service.client_api.media_swarm_tracker.clone(),
             runtime_settings_store: service.client_api.runtime_settings_store.clone(),
         },

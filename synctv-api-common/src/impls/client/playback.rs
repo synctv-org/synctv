@@ -461,6 +461,7 @@ impl ClientApiImpl {
 
         let signing = PlaybackHttpSigningContext {
             signing_key: &self.signing_key,
+            media_swarm_signing_key: &self.media_swarm_signing_key,
             room_id: &public_room_id,
             user_id: &public_user_id,
         };

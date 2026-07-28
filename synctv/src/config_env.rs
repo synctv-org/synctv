@@ -266,6 +266,24 @@ pub(crate) fn apply_env_overrides_with(
         &mut config.security.credential_encryption_key,
     )?;
     env_override_str(
+        "SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY",
+        &mut config.security.totp_encryption_key,
+    );
+    env_override_str_file(
+        "SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY_FILE",
+        "security.totp_encryption_key",
+        &mut config.security.totp_encryption_key,
+    )?;
+    env_override_str(
+        "SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY",
+        &mut config.security.email_outbox_encryption_key,
+    );
+    env_override_str_file(
+        "SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY_FILE",
+        "security.email_outbox_encryption_key",
+        &mut config.security.email_outbox_encryption_key,
+    )?;
+    env_override_str(
         "SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET",
         &mut config.security.opaque_server_setup_secret,
     );
@@ -273,6 +291,51 @@ pub(crate) fn apply_env_overrides_with(
         "SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET_FILE",
         "security.opaque_server_setup_secret",
         &mut config.security.opaque_server_setup_secret,
+    )?;
+    env_override_str(
+        "SYNCTV_SECURITY_PROXY_SIGNING_KEY",
+        &mut config.security.proxy_signing_key,
+    );
+    env_override_str_file(
+        "SYNCTV_SECURITY_PROXY_SIGNING_KEY_FILE",
+        "security.proxy_signing_key",
+        &mut config.security.proxy_signing_key,
+    )?;
+    env_override_str(
+        "SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY",
+        &mut config.security.media_swarm_signing_key,
+    );
+    env_override_str_file(
+        "SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY_FILE",
+        "security.media_swarm_signing_key",
+        &mut config.security.media_swarm_signing_key,
+    )?;
+    env_override_str(
+        "SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY",
+        &mut config.security.provider_session_encryption_key,
+    );
+    env_override_str_file(
+        "SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY_FILE",
+        "security.provider_session_encryption_key",
+        &mut config.security.provider_session_encryption_key,
+    )?;
+    env_override_str(
+        "SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY",
+        &mut config.security.login_discovery_key,
+    );
+    env_override_str_file(
+        "SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY_FILE",
+        "security.login_discovery_key",
+        &mut config.security.login_discovery_key,
+    )?;
+    env_override_str(
+        "SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY",
+        &mut config.security.webauthn_enumeration_key,
+    );
+    env_override_str_file(
+        "SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY_FILE",
+        "security.webauthn_enumeration_key",
+        &mut config.security.webauthn_enumeration_key,
     )?;
     env_override_bool(
         "SYNCTV_SECURITY_SSRF_ENABLED",
@@ -1185,4 +1248,121 @@ pub(crate) fn resolve_time_defaults_with(
     .map_err(|error| ConfigError::Message(error.to_string()))?;
     config.time.timezone = resolved;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    const EMAIL_OUTBOX_KEY: &str =
+        "5757575757575757575757575757575757575757575757575757575757575757";
+
+    #[test]
+    fn email_outbox_key_accepts_direct_environment_override() {
+        let mut config = Config::default();
+        let env = HashMap::from([(
+            "SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY",
+            EMAIL_OUTBOX_KEY.to_string(),
+        )]);
+
+        apply_env_overrides_with(&mut config, &|name| env.get(name).cloned())
+            .expect("environment override should apply");
+
+        assert_eq!(
+            config.security.email_outbox_encryption_key,
+            EMAIL_OUTBOX_KEY
+        );
+    }
+
+    #[test]
+    fn email_outbox_key_accepts_file_environment_override() {
+        let dir = tempdir().expect("temp dir should be created");
+        let key_path = dir.path().join("email-outbox-key");
+        std::fs::write(&key_path, format!("{EMAIL_OUTBOX_KEY}\n"))
+            .expect("key file should be written");
+        let env = HashMap::from([(
+            "SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY_FILE",
+            key_path.display().to_string(),
+        )]);
+        let mut config = Config::default();
+
+        apply_env_overrides_with(&mut config, &|name| env.get(name).cloned())
+            .expect("file environment override should apply");
+
+        assert_eq!(
+            config.security.email_outbox_encryption_key,
+            EMAIL_OUTBOX_KEY
+        );
+    }
+
+    #[test]
+    fn separated_security_domains_accept_environment_overrides() {
+        let mut config = Config::default();
+        let env = HashMap::from([
+            (
+                "SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY",
+                "6767676767676767676767676767676767676767676767676767676767676767".to_string(),
+            ),
+            (
+                "SYNCTV_SECURITY_PROXY_SIGNING_KEY",
+                "proxy-signing-key-from-environment-123456".to_string(),
+            ),
+            (
+                "SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY",
+                "media-swarm-signing-key-from-environment-123456".to_string(),
+            ),
+            (
+                "SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY",
+                "provider-session-key-from-environment-123456".to_string(),
+            ),
+            (
+                "SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY",
+                "login-discovery-key-from-environment-123456".to_string(),
+            ),
+            (
+                "SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY",
+                "webauthn-enumeration-key-from-environment-123456".to_string(),
+            ),
+            (
+                "SYNCTV_FILE_UPLOAD_TOKEN_SECRET",
+                "file-upload-token-key-from-environment-123456".to_string(),
+            ),
+        ]);
+
+        apply_env_overrides_with(&mut config, &|name| env.get(name).cloned())
+            .expect("environment overrides should apply");
+
+        assert_eq!(
+            config.security.totp_encryption_key,
+            env["SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY"]
+        );
+        assert_eq!(
+            config.security.proxy_signing_key,
+            env["SYNCTV_SECURITY_PROXY_SIGNING_KEY"]
+        );
+        assert_eq!(
+            config.security.media_swarm_signing_key,
+            env["SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY"]
+        );
+        assert_eq!(
+            config.security.provider_session_encryption_key,
+            env["SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY"]
+        );
+        assert_eq!(
+            config.security.login_discovery_key,
+            env["SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY"]
+        );
+        assert_eq!(
+            config.security.webauthn_enumeration_key,
+            env["SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY"]
+        );
+        assert_eq!(
+            config.file_storage.upload_token_secret,
+            env["SYNCTV_FILE_UPLOAD_TOKEN_SECRET"]
+        );
+    }
 }

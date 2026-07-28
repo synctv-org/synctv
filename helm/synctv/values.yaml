@@ -626,11 +626,11 @@ config:
 ## ============================================================================
 ## Secrets (sensitive values injected as env vars with SYNCTV_ prefix)
 ##
-## AUTOMATIC PASSWORD GENERATION: Passwords and secrets below are auto-generated
-## on first install when left empty.
+## AUTOMATIC PASSWORD GENERATION: The in-cluster bootstrap Job creates the Secret
+## once on first install. Helm template output remains deterministic.
 ##
-## On first install: Random secure passwords are generated and stored in the Secret
-## On upgrades: Existing passwords are automatically preserved
+## On first install: Random secure passwords are generated through the Kubernetes API
+## On upgrades: The bootstrap Job preserves existing values and initializes missing keys
 ##
 ## To view generated passwords:
 ##   kubectl get secret synctv-secrets -n <namespace> -o jsonpath='{.data}' | jq 'map_values(@base64d)'
@@ -641,6 +641,19 @@ config:
 ## Raw SyncTV config files also support *_file secret references, but this chart's default
 ## path is to inject sensitive values via Kubernetes Secrets and environment variables.
 ## ============================================================================
+secretBootstrap:
+  enabled: true
+  image:
+    repository: alpine/k8s
+    tag: "1.34.1"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
+
 secrets:
   ## Database credentials injected via SYNCTV_DATABASE_USER / SYNCTV_DATABASE_PASSWORD
   database:
@@ -677,9 +690,21 @@ secrets:
     ## Credential encryption key (64-char hex string for AES-256-GCM).
     ## Leave empty to auto-generate a 64-digit hex-compatible key.
     credentialEncryptionKey: ""
+    ## Dedicated TOTP encryption key (64-char hex string for AES-256-GCM).
+    totpEncryptionKey: ""
+    ## Dedicated email outbox encryption key (64-char hex string for AES-256-GCM).
+    ## Leave empty to auto-generate and preserve a random key in the release Secret.
+    emailOutboxEncryptionKey: ""
     ## Stable OPAQUE setup derivation secret.
     ## Leave empty to auto-generate a secure random string.
     opaqueServerSetupSecret: ""
+    ## Independent random keys for separate security domains.
+    proxySigningKey: ""
+    mediaSwarmSigningKey: ""
+    providerSessionEncryptionKey: ""
+    loginDiscoveryKey: ""
+    webauthnEnumerationKey: ""
+    fileUploadTokenSecret: ""
 
   ## Bootstrap root password (only used when bootstrap.createRootUser is true)
   bootstrap:
@@ -863,6 +888,9 @@ extraVolumeMounts: []
 
 ## Existing Secret/ConfigMap (if you manage secrets externally)
 existingSecret: ""
+## Change this value whenever the referenced Secret changes to trigger a Deployment rollout.
+## External Secret controllers can alternatively set a reloader annotation through podAnnotations.
+secretRolloutChecksum: ""
 existingConfigMap: ""
 
 ## Image Pull Secrets

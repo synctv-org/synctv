@@ -29,6 +29,33 @@ fn relaxed_request_rate_limits() -> RequestRateLimitConfig {
     }
 }
 
+fn test_security_config() -> SecurityConfig {
+    SecurityConfig {
+        credential_encryption_key:
+            "7171717171717171717171717171717171717171717171717171717171717171".to_string(),
+        totp_encryption_key: "7272727272727272727272727272727272727272727272727272727272727272"
+            .to_string(),
+        email_outbox_encryption_key:
+            "7373737373737373737373737373737373737373737373737373737373737373".to_string(),
+        opaque_server_setup_secret: "test-opaque-server-setup-secret-for-cluster-startup"
+            .to_string(),
+        proxy_signing_key: "test-proxy-signing-key-for-cluster-startup".to_string(),
+        media_swarm_signing_key: "test-media-swarm-signing-key-for-cluster-startup".to_string(),
+        provider_session_encryption_key: "test-provider-session-key-for-cluster-startup"
+            .to_string(),
+        login_discovery_key: "test-login-discovery-key-for-cluster-startup".to_string(),
+        webauthn_enumeration_key: "test-webauthn-enumeration-key-for-cluster-startup".to_string(),
+        ..SecurityConfig::default()
+    }
+}
+
+fn test_file_storage_config() -> FileStorageConfig {
+    FileStorageConfig {
+        upload_token_secret: "test-file-upload-token-secret-for-cluster-startup".to_string(),
+        ..FileStorageConfig::default()
+    }
+}
+
 /// Create a minimal standalone config for testing (no Redis, no distributed mode)
 fn standalone_test_config() -> Config {
     Config {
@@ -59,7 +86,7 @@ fn standalone_test_config() -> Config {
         },
         logging: LoggingConfig::default(),
         livestream: LivestreamConfig::default(),
-        file_storage: FileStorageConfig::default(),
+        file_storage: test_file_storage_config(),
         chat: ChatConfig::default(),
         webauthn: WebAuthnConfig::default(),
         media_providers: MediaProvidersConfig::default(),
@@ -78,11 +105,7 @@ fn standalone_test_config() -> Config {
         messaging_rate_limits: MessagingRateLimitConfig::default(),
         // Raise rate limits to avoid cross-test interference when running in parallel
         request_rate_limits: relaxed_request_rate_limits(),
-        security: SecurityConfig {
-            opaque_server_setup_secret: "test-opaque-server-setup-secret-for-cluster-startup"
-                .to_string(),
-            ..SecurityConfig::default()
-        },
+        security: test_security_config(),
     }
 }
 
@@ -124,7 +147,7 @@ fn cluster_test_config() -> Config {
             }),
             ..LivestreamConfig::default()
         },
-        file_storage: FileStorageConfig::default(),
+        file_storage: test_file_storage_config(),
         chat: ChatConfig::default(),
         webauthn: WebAuthnConfig::default(),
         media_providers: MediaProvidersConfig::default(),
@@ -150,11 +173,7 @@ fn cluster_test_config() -> Config {
         messaging_rate_limits: MessagingRateLimitConfig::default(),
         // Raise rate limits to avoid cross-test interference when running in parallel
         request_rate_limits: relaxed_request_rate_limits(),
-        security: SecurityConfig {
-            opaque_server_setup_secret: "test-opaque-server-setup-secret-for-cluster-startup"
-                .to_string(),
-            ..SecurityConfig::default()
-        },
+        security: test_security_config(),
     }
 }
 

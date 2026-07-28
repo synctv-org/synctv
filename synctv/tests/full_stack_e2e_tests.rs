@@ -386,6 +386,22 @@ fn test_config(
     config.jwt.secret = "test-jwt-secret-key-for-full-stack-e2e-123456".to_string();
     config.security.opaque_server_setup_secret =
         "test-opaque-server-setup-secret-for-full-stack-e2e".to_string();
+    config.security.credential_encryption_key =
+        "6161616161616161616161616161616161616161616161616161616161616161".to_string();
+    config.security.totp_encryption_key =
+        "6262626262626262626262626262626262626262626262626262626262626262".to_string();
+    config.security.email_outbox_encryption_key =
+        "6363636363636363636363636363636363636363636363636363636363636363".to_string();
+    config.security.proxy_signing_key = "test-proxy-signing-key-for-full-stack-e2e".to_string();
+    config.security.media_swarm_signing_key =
+        "test-media-swarm-signing-key-for-full-stack-e2e".to_string();
+    config.security.provider_session_encryption_key =
+        "test-provider-session-key-for-full-stack-e2e".to_string();
+    config.security.login_discovery_key = "test-login-discovery-key-for-full-stack-e2e".to_string();
+    config.security.webauthn_enumeration_key =
+        "test-webauthn-enumeration-key-for-full-stack-e2e".to_string();
+    config.file_storage.upload_token_secret =
+        "test-file-upload-token-secret-for-full-stack-e2e".to_string();
     config.bootstrap.create_root_user = true;
     config.bootstrap.root_username = BOOTSTRAP_ROOT_USERNAME.to_string();
     config.bootstrap.root_password = "StrongPwd12345!".to_string();

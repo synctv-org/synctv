@@ -101,7 +101,7 @@ security:
 备份通常包含最完整、最敏感的数据集合。必须保护：
 
 - PostgreSQL 备份。
-- `jwt.secret`、`security.opaque_server_setup_secret`、`security.credential_encryption_key`。
+- 完整的生产 secret 集合，包括认证、加密、签名、集群和管理密钥。
 - Provider token、SMTP 密码、OAuth2 client secret、management token。
 - Helm Secret、Compose `.env`、Kubernetes Secret、外部 Secret Manager 快照。
 

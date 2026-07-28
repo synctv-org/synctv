@@ -15,6 +15,9 @@ Use this checklist before launch. For field definitions, see [Configuration Inde
 | JWT secret | `jwt.secret` comes from a secret or environment variable and is not an example value. |
 | OPAQUE setup secret | `security.opaque_server_setup_secret` is generated, backed up, and stable across restarts. |
 | Credential encryption key | `security.credential_encryption_key` is 64 hex characters and backed up. |
+| TOTP encryption key | `security.totp_encryption_key` is an independent 64-character hex key and is backed up. |
+| Email outbox encryption key | `security.email_outbox_encryption_key` is 64 hex characters, shared by all replicas, and backed up. |
+| Short-lived security-domain keys | Proxy signing, media swarm, provider sessions, login discovery, WebAuthn enumeration, and file tokens use six distinct values. |
 | Root password | `bootstrap.root_password` or `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` is not committed to Git. |
 | PostgreSQL | Uses persistent storage. |
 | Database backup | At least one restorable backup exists. |
@@ -24,7 +27,7 @@ Use this checklist before launch. For field definitions, see [Configuration Inde
 | Management | management gRPC is not exposed to normal public clients. |
 
 <Aside type="caution">
-`security.opaque_server_setup_secret` and `security.credential_encryption_key` are long-lived keys. Losing or replacing them can make existing password records or Provider credentials unusable.
+OPAQUE, Provider credentials, and the email outbox use separate long-lived secrets. Back up every secret together with PostgreSQL.
 </Aside>
 
 ## Network And Entry Points

@@ -258,6 +258,7 @@ impl CachedProviderAccessService {
     fn encode_sensitive<T: Serialize>(
         &self,
         value: &T,
+        cache_key: &str,
     ) -> Result<SensitiveCacheEnvelope, ProviderError> {
         let value = serde_json::to_value(value).map_err(|error| {
             ProviderError::Internal(format!(
@@ -274,17 +275,20 @@ impl CachedProviderAccessService {
 
         Ok(SensitiveCacheEnvelope {
             encrypted: true,
-            data: encryption.encrypt_to_value(&value).map_err(|error| {
-                ProviderError::Internal(format!(
-                    "Failed to encrypt credential cache value: {error}"
-                ))
-            })?,
+            data: encryption
+                .encrypt_to_value_with_context(&value, cache_key.as_bytes())
+                .map_err(|error| {
+                    ProviderError::Internal(format!(
+                        "Failed to encrypt credential cache value: {error}"
+                    ))
+                })?,
         })
     }
 
     fn decode_sensitive<T: DeserializeOwned>(
         &self,
         envelope: &SensitiveCacheEnvelope,
+        cache_key: &str,
     ) -> Result<T, ProviderError> {
         let value = if envelope.encrypted {
             let encryption = self.credential_encryption.as_ref().ok_or_else(|| {
@@ -293,11 +297,13 @@ impl CachedProviderAccessService {
                         .to_string(),
                 )
             })?;
-            encryption.decrypt_value(&envelope.data).map_err(|error| {
-                ProviderError::Internal(format!(
-                    "Failed to decrypt credential cache value: {error}"
-                ))
-            })?
+            encryption
+                .decrypt_value_with_context(&envelope.data, cache_key.as_bytes())
+                .map_err(|error| {
+                    ProviderError::Internal(format!(
+                        "Failed to decrypt credential cache value: {error}"
+                    ))
+                })?
         } else {
             return Err(ProviderError::Internal(
                 "Credential cache entry is not encrypted".to_string(),
@@ -333,7 +339,7 @@ impl CachedProviderAccessService {
                 return None;
             }
         };
-        match self.decode_sensitive::<UserProviderCredential>(&envelope) {
+        match self.decode_sensitive::<UserProviderCredential>(&envelope, &key) {
             Ok(record) if !record.is_expired() => Some(record),
             Ok(_) => {
                 Self::delete_cache_entry_best_effort(store, &key, "expired_credential").await;
@@ -427,13 +433,10 @@ impl CachedProviderAccessService {
                 .await?;
             match &record {
                 Some(record) if !record.is_expired() => {
-                    let envelope = self.encode_sensitive(record)?;
+                    let key = Self::binding_key(provider, user_id, server_id);
+                    let envelope = self.encode_sensitive(record, &key)?;
                     if let Err(error) = store
-                        .set(
-                            &Self::binding_key(provider, user_id, server_id),
-                            &envelope,
-                            Self::credential_ttl(record),
-                        )
+                        .set(&key, &envelope, Self::credential_ttl(record))
                         .await
                     {
                         tracing::warn!(
@@ -531,7 +534,7 @@ impl CachedProviderAccessService {
                 return None;
             }
         };
-        match self.decode_sensitive::<CachedAlistSession>(&envelope) {
+        match self.decode_sensitive::<CachedAlistSession>(&envelope, key) {
             Ok(session) => Some(session),
             Err(error) => {
                 tracing::warn!(error = %error, "Discarding unreadable Alist session cache entry");
@@ -547,7 +550,7 @@ impl CachedProviderAccessService {
         session: &CachedAlistSession,
     ) -> Result<(), ProviderError> {
         if let Some(store) = &self.store {
-            let envelope = self.encode_sensitive(session)?;
+            let envelope = self.encode_sensitive(session, key)?;
             Self::set_cache_entry_best_effort(
                 store,
                 key,
@@ -872,19 +875,16 @@ mod tests {
         store: &dyn ProviderStore,
         record: &UserProviderCredential,
     ) {
+        let key = CachedProviderAccessService::binding_key(
+            &record.provider,
+            record.user_id,
+            &record.server_id,
+        );
         let envelope = service
-            .encode_sensitive(record)
+            .encode_sensitive(record, &key)
             .checked("credential cache entry encodes");
         store
-            .set(
-                &CachedProviderAccessService::binding_key(
-                    &record.provider,
-                    record.user_id,
-                    &record.server_id,
-                ),
-                &envelope,
-                Duration::from_mins(1),
-            )
+            .set(&key, &envelope, Duration::from_mins(1))
             .await
             .checked("credential cache write succeeds");
     }
@@ -899,10 +899,13 @@ mod tests {
                 .with_store(store);
 
         let error = service
-            .encode_sensitive(&CachedAlistSession {
-                host: "https://alist.example.test".to_string(),
-                token: "token".to_string(),
-            })
+            .encode_sensitive(
+                &CachedAlistSession {
+                    host: "https://alist.example.test".to_string(),
+                    token: "token".to_string(),
+                },
+                "test-cache-key",
+            )
             .failed("sensitive cache writes require encryption");
 
         assert!(error
@@ -971,42 +974,42 @@ mod tests {
         cache_record(&service, store.as_ref(), &record).await;
 
         let revision = credential_revision(record.id, record.updated_at);
+        let stale_key = CachedProviderAccessService::alist_session_key(
+            user_id,
+            server_id,
+            &revision,
+            Some("credential-instance"),
+        );
         let stale_session = service
-            .encode_sensitive(&CachedAlistSession {
-                host: "https://stale.example.test".to_string(),
-                token: "stale-token".to_string(),
-            })
+            .encode_sensitive(
+                &CachedAlistSession {
+                    host: "https://stale.example.test".to_string(),
+                    token: "stale-token".to_string(),
+                },
+                &stale_key,
+            )
             .checked("stale session encodes");
         store
-            .set(
-                &CachedProviderAccessService::alist_session_key(
-                    user_id,
-                    server_id,
-                    &revision,
-                    Some("credential-instance"),
-                ),
-                &stale_session,
-                Duration::from_mins(1),
-            )
+            .set(&stale_key, &stale_session, Duration::from_mins(1))
             .await
             .checked("stale session cache write succeeds");
+        let bound_key = CachedProviderAccessService::alist_session_key(
+            user_id,
+            server_id,
+            &revision,
+            Some("bound-instance"),
+        );
         let bound_session = service
-            .encode_sensitive(&CachedAlistSession {
-                host: "https://bound.example.test".to_string(),
-                token: "bound-token".to_string(),
-            })
+            .encode_sensitive(
+                &CachedAlistSession {
+                    host: "https://bound.example.test".to_string(),
+                    token: "bound-token".to_string(),
+                },
+                &bound_key,
+            )
             .checked("bound session encodes");
         store
-            .set(
-                &CachedProviderAccessService::alist_session_key(
-                    user_id,
-                    server_id,
-                    &revision,
-                    Some("bound-instance"),
-                ),
-                &bound_session,
-                Duration::from_mins(1),
-            )
+            .set(&bound_key, &bound_session, Duration::from_mins(1))
             .await
             .checked("bound session cache write succeeds");
 

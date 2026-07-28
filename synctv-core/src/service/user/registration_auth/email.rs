@@ -193,6 +193,12 @@ impl UserService {
         Ok(())
     }
 
+    pub async fn is_email_registration_token_active(&self, token: &str) -> Result<bool> {
+        self.email_registration_token_repository
+            .is_unused_and_valid(token, crate::SystemClock.now())
+            .await
+    }
+
     pub async fn complete_email_registration_with_direct_password_transport_with_control(
         &self,
         email_token: &str,

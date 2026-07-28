@@ -5,18 +5,16 @@ CREATE TABLE IF NOT EXISTS email_outbox (
     encrypted_payload TEXT NOT NULL,
     dedupe_key TEXT NOT NULL UNIQUE,
     status SMALLINT NOT NULL,
-    attempts INTEGER NOT NULL DEFAULT 0,
-    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    attempts INTEGER NOT NULL,
+    next_attempt_at TIMESTAMPTZ NOT NULL,
     locked_by TEXT,
     locked_at TIMESTAMPTZ,
-    lock_version BIGINT NOT NULL DEFAULT 0,
+    lock_version BIGINT NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL,
     sent_at TIMESTAMPTZ,
     cleanup_completed_at TIMESTAMPTZ,
-    last_error TEXT,
-    CHECK (attempts >= 0),
-    CHECK (lock_version >= 0)
+    last_error TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_email_outbox_pending

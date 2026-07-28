@@ -18,6 +18,7 @@ OAuth2 provider 实例属于 [Runtime settings](../runtime-settings/#oauth2)。�
 | `jwt.secret` | 任何生产部署 | 使用 `change-me-in-production` 或提交到 Git | 需要重启；旧 token 可能失效 | 用 Secret Manager 或 secret file 注入 |
 | `security.opaque_server_setup_secret` | 启用本地密码/OPAQUE 登录 | 每次部署随机生成 | 需要重启；随意变更会影响密码记录 | 生成一次，长期备份 |
 | `security.credential_encryption_key` | 保存加密 Provider 凭据 | 不是 64 个十六进制字符，或丢失 key | 需要重启；丢失会影响已加密凭据读取 | `openssl rand -hex 32`，加密备份 |
+| `security.email_outbox_encryption_key` | 所有生产部署 | 各副本使用不同 key | 需要重启；待发邮件依赖该 key | 自动生成后与数据库一起备份 |
 | `database.url` / 拆分字段 | 连接生产 PostgreSQL | 指向本机开发库或连接数过大 | 需要重启 | PostgreSQL 必须持久化并备份 |
 | `redis.url` / 拆分字段 | 生产、OAuth2、多副本、限流、L2 缓存 | 多副本使用不同 Redis 或 key prefix 冲突 | 需要重启 | 生产推荐，多副本必需 |
 | `server.cors_allowed_origins` | Web 前端和 API 不同 origin | 填 `*` 或带 path | 需要重启 | 只填真实 origin，例如 `https://app.example.com` |
@@ -48,6 +49,7 @@ curl -fsS http://localhost:8080/health/ready
 | token 签名 | `SYNCTV_JWT_SECRET` | `jwt.secret` |
 | OPAQUE 密码登录 | `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` | `security.opaque_server_setup_secret` |
 | Provider 凭据加密 | `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` | `security.credential_encryption_key` |
+| 邮件队列加密 | `SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY` | `security.email_outbox_encryption_key` |
 | Web 前端跨域 | `SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'` | `server.cors_allowed_origins` |
 | PostgreSQL | `.env.postgres` 和 Compose 数据卷 | `database.*` |
 | Redis | `.env.redis`、Compose Redis 服务和 key prefix | `redis.*` |
@@ -110,7 +112,14 @@ curl -fsS http://localhost:8080/health/ready
 | `public_ids.sqids.alphabet` | 字符串或空 | `null` | sqids alphabet |
 | `public_ids.sqids.min_length` | 整数 | `12` | sqids 最小长度 |
 | `security.credential_encryption_key` | 64 个十六进制字符 | `""` | Provider 凭据加密 key |
+| `security.totp_encryption_key` | 64 个十六进制字符 | `""` | TOTP secret 独立加密 key；必填 |
+| `security.email_outbox_encryption_key` | 64 个十六进制字符 | `""` | email outbox 独立加密 key；生产必填 |
 | `security.opaque_server_setup_secret` | secret 字符串 | `""` | OPAQUE 密码认证服务端 setup secret |
+| `security.proxy_signing_key` | 至少 32 个字符 | `""` | 媒体代理 URL 独立签名 key；必填 |
+| `security.media_swarm_signing_key` | 至少 32 个字符 | `""` | WebRTC 媒体 swarm 声明独立签名 key；必填 |
+| `security.provider_session_encryption_key` | 至少 32 个字符 | `""` | Provider 登录会话独立加密 key；必填 |
+| `security.login_discovery_key` | 至少 32 个字符 | `""` | 登录发现防枚举 key；必填 |
+| `security.webauthn_enumeration_key` | 至少 32 个字符 | `""` | WebAuthn 防枚举 key；必填 |
 | `security.ssrf.enabled` | 布尔值 | `false` | 是否启用全局 SSRF 出站防护 |
 | `security.ssrf.allow_private_network_targets` | 布尔值 | `false` | 是否允许服务端出站访问 private/loopback/link-local/reserved/metadata 目标 |
 | `security.ssrf.allowed_hosts` | 字符串数组 | `[]` | 全局 SSRF 策略额外允许的主机名 |
@@ -230,7 +239,7 @@ curl -fsS http://localhost:8080/health/ready
 | `file_storage.media_covers_backend` | backend 名称或空 | `""` | 媒体封面后端；空值继承 `default_backend` |
 | `file_storage.room_covers_backend` | backend 名称或空 | `""` | 房间封面后端；空值继承 `default_backend` |
 | `file_storage.playlist_covers_backend` | backend 名称或空 | `""` | 播放列表封面后端；空值继承 `default_backend` |
-| `file_storage.upload_token_secret` | secret 字符串 | `""` | 文件上传/读取 token 签名密钥；空值在启动时由 `jwt.secret` 派生 |
+| `file_storage.upload_token_secret` | 至少 32 个字符 | `""` | 文件上传/读取 token 独立签名密钥；必填 |
 | `file_storage.unreferenced_object_retention_seconds` | 秒数 | `86400` | 未被业务引用的已上传对象清理宽限期；`0` 表示关闭孤儿对象清理 |
 | `file_storage.backends.<name>.type` | `disabled`、`database` 或 `s3` | `disabled` | 已注册后端实现类型 |
 | `file_storage.backends.<name>.compression` | `none`、`lz4` 或 `zstd` | `zstd` | `type: "database"` 后端写入 PostgreSQL 永久 `file_blob_parts` 分段的压缩算法 |

@@ -54,14 +54,6 @@ const WEAK_JWT_SECRETS: &[&str] = &[
     "default",
 ];
 
-fn file_upload_token_secret(configured: &str, jwt_secret: &str) -> String {
-    let configured = configured.trim();
-    if !configured.is_empty() {
-        return configured.to_string();
-    }
-    format!("synctv:file-upload:{jwt_secret}")
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct SsrfOptions {
     pub enabled: bool,
@@ -70,10 +62,23 @@ pub struct SsrfOptions {
     pub allowed_ip_ranges: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct SecurityOptions {
+    pub email_outbox_encryption_key: String,
     pub opaque_server_setup_secret: String,
+    pub login_discovery_key: String,
     pub ssrf: SsrfOptions,
+}
+
+impl std::fmt::Debug for SecurityOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecurityOptions")
+            .field("email_outbox_encryption_key", &"<redacted>")
+            .field("opaque_server_setup_secret", &"<redacted>")
+            .field("login_discovery_key", &"<redacted>")
+            .field("ssrf", &self.ssrf)
+            .finish()
+    }
 }
 
 impl SecurityOptions {
@@ -442,6 +447,7 @@ pub struct InitServicesOptions {
     pub provider_address_overrides: HashMap<String, SocketAddr>,
     pub ssrf_guard: synctv_common::ssrf::SsrfGuard,
     pub credential_encryption_key: Option<String>,
+    pub totp_encryption_key: Option<String>,
     pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     pub read_pool: Option<PgPool>,
 }
@@ -453,6 +459,7 @@ impl Default for InitServicesOptions {
             provider_address_overrides: HashMap::new(),
             ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
             credential_encryption_key: None,
+            totp_encryption_key: None,
             realtime_outbox: None,
             read_pool: None,
         }
@@ -474,6 +481,10 @@ impl std::fmt::Debug for InitServicesOptions {
                     .credential_encryption_key
                     .as_ref()
                     .map(|_| "<redacted>"),
+            )
+            .field(
+                "totp_encryption_key",
+                &self.totp_encryption_key.as_ref().map(|_| "<redacted>"),
             )
             .field(
                 "realtime_outbox",
@@ -726,11 +737,16 @@ pub async fn init_services_with_options(
     let refresh_rate_limiter = build_refresh_token_rate_limiter(&shared_state_profile)?;
 
     // Initialize credential encryption (shared by both repositories and media providers)
-    let credential_encryption =
-        init_credential_encryption(runtime_options.credential_encryption_key.as_deref())?;
+    let credential_encryption = init_credential_encryption(
+        runtime_options.credential_encryption_key.as_deref(),
+        "provider-data",
+    )?;
+    let totp_encryption = init_credential_encryption(
+        runtime_options.totp_encryption_key.as_deref(),
+        "totp-secret",
+    )?;
     // Keep a clone for provider credential resolution during media playback.
     let credential_encryption_for_services = credential_encryption.clone();
-    let credential_encryption_for_users = credential_encryption.clone();
 
     // Initialize ProviderInstanceRepository (with optional encryption for jwt_secret/custom_ca)
     let provider_instance_repo = match &credential_encryption {
@@ -925,7 +941,7 @@ pub async fn init_services_with_options(
     info!("Email token service initialized");
     let email_outbox_service = Arc::new(EmailOutboxService::new(
         pool.clone(),
-        service_options.jwt.secret.as_bytes(),
+        &service_options.security.email_outbox_encryption_key,
     )?);
     info!("Durable email outbox initialized");
 
@@ -957,10 +973,7 @@ pub async fn init_services_with_options(
     let notification_service = Arc::new(notification_service);
 
     let file_storage_repo = Arc::new(FileStorageRepository::new(pool.clone()));
-    let file_upload_token_secret = file_upload_token_secret(
-        &service_options.file_storage.upload_token_secret,
-        &service_options.jwt.secret,
-    );
+    let file_upload_token_secret = service_options.file_storage.upload_token_secret.clone();
     let mut file_storage_backends: HashMap<String, Arc<dyn FileStorageService>> = HashMap::new();
     file_storage_backends.insert("disabled".to_string(), Arc::new(DisabledFileStorageService));
     for (name, backend_config) in &service_options.file_storage.backends {
@@ -1090,10 +1103,7 @@ pub async fn init_services_with_options(
             opaque_password_service: opaque_password_service.clone(),
             login_discovery_key:
                 synctv_core::service::UserServiceRuntimeOptions::derive_login_discovery_key(
-                    service_options
-                        .security
-                        .opaque_server_setup_secret
-                        .as_bytes(),
+                    service_options.security.login_discovery_key.as_bytes(),
                 ),
             login_session_store:
                 synctv_core::service::login_session_store_from_shared_state_profile(
@@ -1114,7 +1124,7 @@ pub async fn init_services_with_options(
             permission_service: Some(user_permission_service),
             file_storage_service: Some(user_avatar_file_storage),
             read_pool: Some(read_pool.clone()),
-            credential_encryption: credential_encryption_for_users,
+            credential_encryption: totp_encryption,
         },
     ));
     info!("UserService initialized with construction-time dependencies");
@@ -1572,6 +1582,7 @@ fn build_publish_key_service(
 
 fn init_credential_encryption(
     hex_key: Option<&str>,
+    domain: &'static str,
 ) -> Result<Option<synctv_core::credential_encryption::CredentialEncryption>, anyhow::Error> {
     let Some(hex_key) = (match hex_key {
         Some(hex_key) if hex_key.trim().is_empty() => None,
@@ -1581,7 +1592,9 @@ fn init_credential_encryption(
         return Ok(None);
     };
 
-    match synctv_core::credential_encryption::CredentialEncryption::from_hex_key(&hex_key) {
+    match synctv_core::credential_encryption::CredentialEncryption::from_hex_key_with_domain(
+        &hex_key, domain,
+    ) {
         Ok(enc) => {
             info!("Credential encryption initialized (AES-256-GCM)");
             Ok(Some(enc))
@@ -1601,6 +1614,22 @@ mod tests {
     use synctv_core::models::{UserId, UserProviderCredential};
     use synctv_core::service::RateLimiter;
     use synctv_core_testing::{failing_redis_runtime, TestResultExt};
+
+    #[test]
+    fn security_options_debug_redacts_secrets() {
+        let options = SecurityOptions {
+            email_outbox_encryption_key: "outbox-secret-value".to_string(),
+            opaque_server_setup_secret: "opaque-secret-value".to_string(),
+            login_discovery_key: "discovery-secret-value".to_string(),
+            ssrf: SsrfOptions::default(),
+        };
+
+        let debug = format!("{options:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("outbox-secret-value"));
+        assert!(!debug.contains("opaque-secret-value"));
+        assert!(!debug.contains("discovery-secret-value"));
+    }
 
     fn test_user_service(pool: &PgPool) -> UserService {
         let jwt_service = JwtService::with_durations(
@@ -2283,7 +2312,7 @@ mod tests {
 
     #[test]
     fn test_init_credential_encryption_rejects_invalid_key() {
-        let error = init_credential_encryption(Some("not-a-64-character-hex-key"))
+        let error = init_credential_encryption(Some("not-a-64-character-hex-key"), "test")
             .failed("invalid explicit credential encryption key must fail closed");
 
         assert!(error

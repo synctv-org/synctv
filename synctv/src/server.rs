@@ -151,6 +151,7 @@ const FORCE_SHUTDOWN_COORDINATOR_BUDGET: Duration = Duration::from_secs(1);
 struct SharedProviderPlaybackRuntime {
     provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     signing_key: Arc<synctv_api::ProxySigningKey>,
+    media_swarm_signing_key: Arc<synctv_api::MediaSwarmSigningKey>,
 }
 
 #[derive(Clone)]
@@ -222,10 +223,18 @@ impl SharedProviderPlaybackRuntime {
         Ok(Self {
             provider_stores,
             signing_key: Arc::new(
-                synctv_api::ProxySigningKey::try_derive_from(config.jwt.secret.as_bytes())
-                    .map_err(|error| {
-                        anyhow::anyhow!("Failed to derive proxy signing key: {error}")
-                    })?,
+                synctv_api::ProxySigningKey::try_derive_from(
+                    config.security.proxy_signing_key.as_bytes(),
+                )
+                .map_err(|error| anyhow::anyhow!("Failed to derive proxy signing key: {error}"))?,
+            ),
+            media_swarm_signing_key: Arc::new(
+                synctv_api::MediaSwarmSigningKey::try_derive_from(
+                    config.security.media_swarm_signing_key.as_bytes(),
+                )
+                .map_err(|error| {
+                    anyhow::anyhow!("Failed to derive media swarm signing key: {error}")
+                })?,
             ),
         })
     }
@@ -280,6 +289,7 @@ fn build_core_api_impls(
     webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     signing_key: Arc<synctv_api::ProxySigningKey>,
+    media_swarm_signing_key: Arc<synctv_api::MediaSwarmSigningKey>,
     presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     jwt_validator: Arc<synctv_core::service::JwtValidator>,
     request_executor: Arc<synctv_api::RequestExecutor>,
@@ -336,6 +346,7 @@ fn build_core_api_impls(
             webrtc_status: webrtc_status.clone(),
             provider_access_service: provider_access_service.clone(),
             signing_key: signing_key.clone(),
+            media_swarm_signing_key: media_swarm_signing_key.clone(),
             presence_service: presence_service.clone(),
             jwt_validator,
             request_executor: request_executor.clone(),
@@ -370,6 +381,7 @@ fn build_core_api_impls(
                 provider_stores,
                 provider_access_service,
                 signing_key,
+                media_swarm_signing_key,
                 presence_service,
                 request_executor,
             },
@@ -412,7 +424,7 @@ fn build_provider_api_impls(
     credential_repo: Arc<UserProviderCredentialRepository>,
     provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     event_service: Arc<dyn RealtimeEventService>,
-    jwt_secret: &[u8],
+    provider_session_encryption_key: &[u8],
 ) -> anyhow::Result<SharedProviderApiImpls> {
     let provider_common = Arc::new(
         synctv_api::providers::ProviderCommonApiImpl::new_with_runtime(
@@ -433,7 +445,7 @@ fn build_provider_api_impls(
     let bilibili = Arc::new(
         synctv_api::providers::BilibiliApiImpl::new_with_runtime(
             credential_backed_providers.bilibili.clone(),
-            jwt_secret,
+            provider_session_encryption_key,
             provider_api_runtime.clone(),
         )
         .map_err(|error| anyhow::anyhow!("Failed to initialize Bilibili API: {error}"))?,
@@ -2130,6 +2142,7 @@ impl SyncTvServer {
             node_registry: self.services.node_registry.clone(),
             redis_runtime: self.services.redis_runtime.clone(),
             proxy_signing_key: shared_provider_runtime.signing_key.clone(),
+            media_swarm_signing_key: shared_provider_runtime.media_swarm_signing_key.clone(),
             provider_stores: shared_provider_runtime.provider_stores.clone(),
             playback_transport_services: shared_http_app_state
                 .shared_api_runtime
@@ -2299,7 +2312,10 @@ impl SyncTvServer {
             self.services.user_provider_credential_repository.clone(),
             provider_access_service.clone(),
             self.services.realtime_event_service.clone(),
-            self.config.jwt.secret.as_bytes(),
+            self.config
+                .security
+                .provider_session_encryption_key
+                .as_bytes(),
         )?;
         let core_api_impls = build_core_api_impls(
             config.clone(),
@@ -2325,6 +2341,7 @@ impl SyncTvServer {
             self.current_webrtc_status(),
             provider_access_service.clone(),
             shared_provider_runtime.signing_key.clone(),
+            shared_provider_runtime.media_swarm_signing_key.clone(),
             self.services.presence_service.clone(),
             api_execution_runtime.jwt_validator.clone(),
             api_execution_runtime.request_executor.clone(),
@@ -2434,6 +2451,7 @@ impl SyncTvServer {
                 seafile_api: provider_api_impls.seafile.clone(),
                 truenas_api: provider_api_impls.truenas.clone(),
                 shared_proxy_signing_key: shared_provider_runtime.signing_key.clone(),
+                media_swarm_signing_key: shared_provider_runtime.media_swarm_signing_key.clone(),
                 builtin_stun_url: self.builtin_stun_url(),
                 webrtc_status: self.current_webrtc_status(),
                 credential_encryption: self.services.credential_encryption.clone(),
@@ -2912,6 +2930,7 @@ mod tests {
             synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             provider_access_service.clone(),
             shared_runtime.signing_key.clone(),
+            shared_runtime.media_swarm_signing_key.clone(),
             presence_service.clone(),
             api_execution_runtime.jwt_validator.clone(),
             api_execution_runtime.request_executor.clone(),
@@ -2936,7 +2955,7 @@ mod tests {
             credential_repo.clone(),
             provider_access_service.clone(),
             Arc::new(synctv_realtime::fanout::LocalNoopRealtimeEventService::new()),
-            config.jwt.secret.as_bytes(),
+            config.security.provider_session_encryption_key.as_bytes(),
         )
         .expect("test provider API impls should build");
         let http_state = synctv_api::create_app_state_from_options(synctv_api::RouterOptions {
@@ -3017,6 +3036,7 @@ mod tests {
             seafile_api: provider_api_impls.seafile.clone(),
             truenas_api: provider_api_impls.truenas.clone(),
             shared_proxy_signing_key: shared_runtime.signing_key.clone(),
+            media_swarm_signing_key: shared_runtime.media_swarm_signing_key.clone(),
             builtin_stun_url: None,
             webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             credential_encryption: Some(credential_encryption),

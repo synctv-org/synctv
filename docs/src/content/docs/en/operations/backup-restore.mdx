@@ -12,14 +12,14 @@ Production deployments must back up two categories of data:
 | Data | Required | Reason |
 | --- | --- | --- |
 | PostgreSQL | Required | Users, rooms, permissions, provider instances, preferences, audit data, and business data live there |
-| Production secrets | Required | JWT, OPAQUE, credential encryption, cluster, and management secrets affect login and decryption |
+| Production secrets | Required | Authentication, decryption, signing, cluster communication, and management access depend on them |
 | Configuration files | Recommended | Restore requires exact listeners, domains, dependencies, paths, and feature flags |
 | Shared HLS storage | As needed | Required if you need to preserve HLS files or shared multi-replica segments |
 | Proxy slice cache | Usually no | It is reproducible cache; losing it only lowers hit rate |
 | Redis | Usually not long-term | Redis stores short-lived auth, rate-limit, and coordination state |
 
 <Aside type="caution">
-Do not lose `security.opaque_server_setup_secret` or `security.credential_encryption_key`. The first affects OPAQUE password verification, and the second affects encrypted provider credentials.
+`security.opaque_server_setup_secret`, the provider credential key, and the TOTP key are bound to durable PostgreSQL data. Restore the values that were active when the backup was taken.
 </Aside>
 
 ## Back Up PostgreSQL
@@ -86,6 +86,9 @@ Store at least these values:
 | `jwt.secret` | Secret Manager, Kubernetes Secret, password manager |
 | `security.opaque_server_setup_secret` | Secret Manager, offline encrypted backup |
 | `security.credential_encryption_key` | Secret Manager, offline encrypted backup |
+| `security.totp_encryption_key` | Secret Manager, offline encrypted backup |
+| `security.email_outbox_encryption_key` | Secret Manager, offline encrypted backup |
+| Proxy, media swarm, provider session, login discovery, WebAuthn, and file-token keys | Secret Manager |
 | `cluster.secret` | Kubernetes Secret or Secret Manager |
 | `management.auth_token` | Secret Manager |
 | `metrics.auth.*` | Monitoring system secret |

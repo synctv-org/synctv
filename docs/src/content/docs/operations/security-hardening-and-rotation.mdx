@@ -11,7 +11,7 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 - 所有用户流量走 HTTPS。
 - PostgreSQL、Redis、management gRPC、metrics 不直接暴露公网。
-- root 密码、JWT secret、OPAQUE setup secret、credential encryption key、cluster secret 都使用 Secret Manager 或 Kubernetes Secret 管理。
+- root 密码、全部安全域 key 和 cluster secret 都使用 Secret Manager 或 Kubernetes Secret 管理。
 - 禁用默认弱 secret；配置文件和 Helm values 不提交真实 secret。
 - 配置备份和恢复演练，确保 secret 与数据库一起恢复。
 - 开启 metrics 后限制抓取来源或使用鉴权。
@@ -23,6 +23,10 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 | `jwt.secret` | 旧 token 失效，用户需要重新登录 | 中 | 可计划轮换，低峰发布 |
 | `security.opaque_server_setup_secret` | OPAQUE 密码记录可能无法验证 | 高 | 不要常规轮换，必须备份 |
 | `security.credential_encryption_key` | 已加密 Provider 凭据无法解密 | 高 | 不要直接替换，先迁移凭据 |
+| `security.totp_encryption_key` | 已配置 TOTP 无法验证 | 高 | 迁移密文或安排用户重新绑定 |
+| `security.email_outbox_encryption_key` | 待发邮件无法解密 | 高 | 先排空队列，再同步替换所有副本 |
+| 代理、媒体 swarm、Provider 会话和文件 token key | 已签发 URL、声明、会话或 token 失效 | 中 | 同步替换所有副本并接受短期失效 |
+| 登录发现和 WebAuthn 枚举 key | 临时防枚举结果变化 | 低 | 同步替换所有副本 |
 | `cluster.secret` | 节点间认证失败 | 中 | 多副本需滚动协调 |
 | `management.auth_token` | CLI/management TCP 鉴权 | 低 | 可定期轮换 |
 | `metrics.auth.bearer_token` | metrics 抓取鉴权 | 低 | 同步监控系统配置 |
@@ -73,6 +77,31 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
     4. 观察集群 heartbeat、Redis pub/sub、WebSocket 跨节点事件。
   </TabItem>
 </Tabs>
+
+## Kubernetes Secret 生效
+
+Helm 通过环境变量注入 Secret。更新 Secret 后，用 values 中的版本标记触发滚动发布：
+
+```yaml
+existingSecret: "synctv-production-secret"
+secretRolloutChecksum: "2026-07-28-jwt-rotation"
+```
+
+```bash
+helm upgrade --install synctv ./helm/synctv \
+  -n synctv \
+  -f values.production.yaml
+kubectl -n synctv rollout status deploy/synctv
+```
+
+直接由 Secret controller 更新且没有配置 Reloader 时，显式重启并等待全部副本完成：
+
+```bash
+kubectl -n synctv rollout restart deploy/synctv
+kubectl -n synctv rollout status deploy/synctv
+```
+
+涉及 cluster、签名或加密 key 的轮换必须让所有副本收敛到同一版本。滚动期间观察节点认证、登录和解密错误。
 
 ## 凭据加密 key 迁移
 

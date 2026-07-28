@@ -42,6 +42,15 @@ Runtime environment variables use the `SYNCTV_` prefix and convert the configura
 | `redis.password` | `SYNCTV_REDIS_PASSWORD` |
 | `jwt.secret` | `SYNCTV_JWT_SECRET` |
 | `security.opaque_server_setup_secret` | `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` |
+| `security.credential_encryption_key` | `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` |
+| `security.totp_encryption_key` | `SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY` |
+| `security.email_outbox_encryption_key` | `SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY` |
+| `security.proxy_signing_key` | `SYNCTV_SECURITY_PROXY_SIGNING_KEY` |
+| `security.media_swarm_signing_key` | `SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY` |
+| `security.provider_session_encryption_key` | `SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY` |
+| `security.login_discovery_key` | `SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY` |
+| `security.webauthn_enumeration_key` | `SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY` |
+| `file_storage.upload_token_secret` | `SYNCTV_FILE_UPLOAD_TOKEN_SECRET` |
 | `proxy_slice_cache.enabled` | `SYNCTV_PROXY_SLICE_CACHE_ENABLED` |
 
 Boolean values accept:
@@ -79,7 +88,15 @@ Common fields that support file references include:
 
 - `cluster.secret`
 - `security.credential_encryption_key`
+- `security.totp_encryption_key`
+- `security.email_outbox_encryption_key`
 - `security.opaque_server_setup_secret`
+- `security.proxy_signing_key`
+- `security.media_swarm_signing_key`
+- `security.provider_session_encryption_key`
+- `security.login_discovery_key`
+- `security.webauthn_enumeration_key`
+- `file_storage.upload_token_secret`
 - `management.auth_token`
 - `database.url`
 - `database.password`

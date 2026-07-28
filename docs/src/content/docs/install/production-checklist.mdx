@@ -15,6 +15,9 @@ import { Aside } from '@astrojs/starlight/components';
 | JWT secret | `jwt.secret` 来自 secret 或环境变量，不是示例值。 |
 | OPAQUE setup secret | `security.opaque_server_setup_secret` 已生成、备份，并跨重启保持不变。 |
 | 凭据加密 key | `security.credential_encryption_key` 是 64 个十六进制字符，已备份。 |
+| TOTP 加密 key | `security.totp_encryption_key` 是独立的 64 个十六进制字符，已备份。 |
+| 邮件队列加密 key | `security.email_outbox_encryption_key` 是 64 个十六进制字符，所有副本一致并已备份。 |
+| 短期安全域 key | 代理签名、媒体 swarm、Provider 会话、登录发现、WebAuthn 枚举和文件 token 使用六个不同值。 |
 | Root 密码 | `bootstrap.root_password` 或 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` 没有提交到 Git。 |
 | PostgreSQL | 使用持久化存储。 |
 | 数据库备份 | 至少完成一次可恢复备份。 |
@@ -24,7 +27,7 @@ import { Aside } from '@astrojs/starlight/components';
 | Management | management gRPC 不暴露给普通公网用户。 |
 
 <Aside type="caution">
-`security.opaque_server_setup_secret` 和 `security.credential_encryption_key` 是长期密钥。丢失或替换后，已有密码记录或 Provider 凭据可能不可用。
+OPAQUE、Provider credential 和 email outbox 使用各自的长期 secret。备份需要覆盖全部 secret 与 PostgreSQL。
 </Aside>
 
 ## 网络和入口

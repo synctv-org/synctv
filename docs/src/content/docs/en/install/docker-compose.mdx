@@ -53,7 +53,7 @@ If you have not chosen a deployment model yet, start with [Choose a Deployment P
     ```
 </Steps>
 
-`make compose-init` uses `openssl` to generate PostgreSQL, Redis, JWT, cluster, credential-encryption, and OPAQUE secrets. PostgreSQL and Redis passwords use a URL-safe hexadecimal format. Compose uses <code>{dockerImageReference}</code> by default.
+`make compose-init` uses `openssl` to generate PostgreSQL, Redis, JWT, cluster, Provider credential, email outbox, and OPAQUE secrets. PostgreSQL and Redis passwords use a URL-safe hexadecimal format. Compose uses <code>{dockerImageReference}</code> by default.
 
 ## Verify
 
@@ -114,10 +114,11 @@ Back up the PostgreSQL volume, all three environment files, and `/data` when per
 | `SYNCTV_JWT_SECRET` | Signs access, refresh, and guest tokens |
 | `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` | Long-lived server secret for OPAQUE password authentication |
 | `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` | Encrypts Provider credentials |
+| `SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY` | Encrypts queued email payloads in PostgreSQL |
 | `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` | Creates the initial root user |
 
 <Aside type="caution">
-Reuse the secrets in `.env.synctv` for the lifetime of the installation. Existing password records depend on the OPAQUE secret, and Provider credentials depend on the credential encryption key.
+Reuse the secrets in `.env.synctv` for the lifetime of the installation. Existing password records depend on the OPAQUE secret; Provider credentials and queued email depend on their dedicated encryption keys.
 </Aside>
 
 Redis stores cache and shared state. Restoring or clearing Redis affects short-lived OAuth2 state, token blacklist entries, and rate-limit counters.

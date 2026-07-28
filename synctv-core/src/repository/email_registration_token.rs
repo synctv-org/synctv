@@ -137,6 +137,25 @@ impl EmailRegistrationTokenRepository {
         Ok(record)
     }
 
+    pub async fn is_unused_and_valid(&self, token: &str, now: DateTime<Utc>) -> Result<bool> {
+        let exists = sqlx::query_scalar::<_, bool>(
+            r"
+            SELECT EXISTS (
+                SELECT 1
+                FROM auth_email_registration_tokens
+                WHERE token_hash = $1
+                  AND used_at IS NULL
+                  AND expires_at > $2
+            )
+            ",
+        )
+        .bind(Self::hash_token(token))
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
+    }
+
     pub async fn mark_used_with_executor(
         token: &str,
         now: DateTime<Utc>,

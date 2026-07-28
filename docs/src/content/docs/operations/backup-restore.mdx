@@ -12,14 +12,14 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 | 数据 | 是否必须 | 原因 |
 | --- | --- | --- |
 | PostgreSQL | 必须 | 用户、房间、权限、Provider 实例、用户偏好、审计和业务数据都在数据库中 |
-| 生产 secret | 必须 | JWT、OPAQUE、Provider 凭据加密 key、cluster secret、management token 等影响登录和数据解密 |
+| 生产 secret | 必须 | 认证、数据解密、签名、集群通信和管理入口依赖这些值 |
 | 配置文件 | 建议 | 恢复时需要精确还原监听、域名、依赖、路径和功能开关 |
 | HLS 共享存储 | 按需 | 如果你需要保留直播 HLS 文件或多副本共享片段 |
 | proxy slice cache | 通常不必 | 这是可再生缓存，丢失后只会降低缓存命中率 |
 | Redis | 通常不必长期备份 | Redis 保存短期状态和协调状态，清空会影响正在进行的登录、验证码、限流窗口和集群短期状态 |
 
 <Aside type="caution">
-`security.opaque_server_setup_secret` 和 `security.credential_encryption_key` 不能丢。前者影响 OPAQUE 密码记录验证，后者影响已加密 Provider 凭据读取。
+`security.opaque_server_setup_secret`、Provider 凭据 key 和 TOTP key 与 PostgreSQL 中的持久数据绑定。恢复时必须使用备份时的值。
 </Aside>
 
 ## 备份 PostgreSQL
@@ -86,6 +86,9 @@ pg_dump --format=custom --file=synctv.dump "$DATABASE_URL"
 | `jwt.secret` | Secret Manager、Kubernetes Secret、密码管理器 |
 | `security.opaque_server_setup_secret` | Secret Manager、离线加密备份 |
 | `security.credential_encryption_key` | Secret Manager、离线加密备份 |
+| `security.totp_encryption_key` | Secret Manager、离线加密备份 |
+| `security.email_outbox_encryption_key` | Secret Manager、离线加密备份 |
+| 代理、媒体 swarm、Provider 会话、登录发现、WebAuthn、文件 token key | Secret Manager |
 | `cluster.secret` | Kubernetes Secret 或 Secret Manager |
 | `management.auth_token` | Secret Manager |
 | `metrics.auth.*` | 监控系统 secret |

@@ -1,5 +1,4 @@
 use chrono::{DateTime, Utc};
-use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2_010::{Digest, Sha256};
 use sqlx::PgPool;
@@ -7,11 +6,9 @@ use sqlx::PgPool;
 use crate::{
     credential_encryption::CredentialEncryption,
     models::{EmailTokenType, UserId},
-    repository::{EmailOutboxKind, EmailOutboxRepository, NewEmailOutboxJob},
+    repository::{EmailOutboxJob, EmailOutboxKind, EmailOutboxRepository, NewEmailOutboxJob},
     Error, Result,
 };
-
-const KEY_CONTEXT: &[u8] = b"synctv/email-outbox/v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -58,18 +55,9 @@ impl std::fmt::Debug for EmailOutboxService {
 }
 
 impl EmailOutboxService {
-    pub fn new(pool: PgPool, shared_secret: &[u8]) -> Result<Self> {
-        if shared_secret.is_empty() {
-            return Err(Error::Internal(
-                "Email outbox encryption requires a shared secret".to_string(),
-            ));
-        }
-        let mut key = [0_u8; 32];
-        Hkdf::<Sha256>::new(None, shared_secret)
-            .expand(KEY_CONTEXT, &mut key)
-            .map_err(|_| Error::Internal("Failed to derive email outbox key".to_string()))?;
-        let encryption = CredentialEncryption::new(&key)?;
-        key.fill(0);
+    pub fn new(pool: PgPool, encryption_key: &str) -> Result<Self> {
+        let encryption =
+            CredentialEncryption::from_hex_key_with_domain(encryption_key, "email-outbox-payload")?;
         Ok(Self {
             repository: EmailOutboxRepository::new(pool),
             encryption,
@@ -92,7 +80,11 @@ impl EmailOutboxService {
         let kind = match token_type {
             EmailTokenType::PasswordReset => EmailOutboxKind::PasswordReset,
             EmailTokenType::EmailLogin => EmailOutboxKind::EmailLogin,
-            EmailTokenType::EmailBind => EmailOutboxKind::EmailBind,
+            EmailTokenType::EmailBind => {
+                return Err(Error::Internal(
+                    "Email bind delivery must use the dedicated bind outbox payload".to_string(),
+                ));
+            }
         };
         self.prepare(
             kind,
@@ -151,30 +143,60 @@ impl EmailOutboxService {
         payload: &EmailOutboxPayload,
         expires_at: DateTime<Utc>,
     ) -> Result<NewEmailOutboxJob> {
+        let id = synctv_common::snanoid!(32);
+        let recipient = recipient.trim().to_ascii_lowercase();
+        let created_at = Utc::now();
+        let expires_at = DateTime::from_timestamp_micros(expires_at.timestamp_micros())
+            .ok_or_else(|| Error::Internal("Email outbox expiry is out of range".to_string()))?;
         let payload_value = serde_json::to_value(payload)
             .map_err(|error| Error::Internal(format!("Failed to encode email job: {error}")))?;
-        let encrypted_payload = self.encryption.encrypt(&payload_value)?;
+        let context = Self::payload_context(&id, kind, &recipient, expires_at);
+        let encrypted_payload = self
+            .encryption
+            .encrypt_with_context(&payload_value, &context)?;
         let mut digest = Sha256::new();
         digest.update(kind.as_str().as_bytes());
         digest.update([0]);
-        digest.update(recipient.trim().to_ascii_lowercase().as_bytes());
+        digest.update(recipient.as_bytes());
         digest.update([0]);
         digest.update(
             serde_json::to_vec(payload)
                 .map_err(|error| Error::Internal(format!("Failed to hash email job: {error}")))?,
         );
         Ok(NewEmailOutboxJob {
-            id: synctv_common::snanoid!(32),
+            id,
             kind,
-            recipient: recipient.trim().to_ascii_lowercase(),
+            recipient,
             encrypted_payload,
             dedupe_key: hex::encode(digest.finalize()),
+            attempts: 0,
+            next_attempt_at: created_at,
+            lock_version: 0,
             expires_at,
+            created_at,
         })
     }
 
-    pub fn decrypt_payload(&self, encrypted_payload: &str) -> Result<EmailOutboxPayload> {
-        let value = self.encryption.decrypt(encrypted_payload)?;
+    fn payload_context(
+        id: &str,
+        kind: EmailOutboxKind,
+        recipient: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Vec<u8> {
+        format!(
+            "email-outbox:v1\0{id}\0{}\0{}\0{}",
+            kind.as_str(),
+            recipient.trim().to_ascii_lowercase(),
+            expires_at.timestamp_micros()
+        )
+        .into_bytes()
+    }
+
+    pub fn decrypt_payload(&self, job: &EmailOutboxJob) -> Result<EmailOutboxPayload> {
+        let context = Self::payload_context(&job.id, job.kind, &job.recipient, job.expires_at);
+        let value = self
+            .encryption
+            .decrypt_with_context(&job.encrypted_payload, &context)?;
         let payload: EmailOutboxPayload = serde_json::from_value(value)
             .map_err(|error| Error::Internal(format!("Invalid email outbox payload: {error}")))?;
         if payload.version() != 1 {
@@ -198,11 +220,16 @@ mod tests {
 
     use super::*;
 
+    const TEST_OUTBOX_KEY: &str =
+        "4242424242424242424242424242424242424242424242424242424242424242";
+    const OTHER_OUTBOX_KEY: &str =
+        "4343434343434343434343434343434343434343434343434343434343434343";
+
     #[tokio::test]
     async fn payload_is_encrypted_and_key_scoped() {
         let pool = PgPool::connect_lazy("postgres://localhost/synctv")
             .expect("test pool URL should parse");
-        let service = EmailOutboxService::new(pool.clone(), b"shared-secret")
+        let service = EmailOutboxService::new(pool.clone(), TEST_OUTBOX_KEY)
             .expect("outbox service should initialize");
         let token = "raw-secret-token";
         let job = service
@@ -217,11 +244,26 @@ mod tests {
 
         assert!(!job.encrypted_payload.contains(token));
         assert_eq!(job.recipient, "user@example.com");
-        assert!(service.decrypt_payload(&job.encrypted_payload).is_ok());
+        let claimed = EmailOutboxJob {
+            id: job.id.clone(),
+            kind: job.kind,
+            recipient: job.recipient.clone(),
+            encrypted_payload: job.encrypted_payload.clone(),
+            status: crate::repository::EmailOutboxStatus::Processing,
+            attempts: 1,
+            lock_version: 1,
+            expires_at: job.expires_at,
+            created_at: Utc::now(),
+        };
+        assert!(service.decrypt_payload(&claimed).is_ok());
 
-        let other = EmailOutboxService::new(pool, b"other-secret")
+        let other = EmailOutboxService::new(pool, OTHER_OUTBOX_KEY)
             .expect("second outbox service should initialize");
-        assert!(other.decrypt_payload(&job.encrypted_payload).is_err());
+        assert!(other.decrypt_payload(&claimed).is_err());
+
+        let mut transplanted = claimed.clone();
+        transplanted.recipient = "attacker@example.com".to_string();
+        assert!(service.decrypt_payload(&transplanted).is_err());
     }
 
     #[test]
@@ -230,5 +272,25 @@ mod tests {
             EmailOutboxService::message_id("job-1"),
             "<email-outbox-job-1@synctv.local>"
         );
+    }
+
+    #[tokio::test]
+    async fn generic_token_payload_rejects_email_bind() {
+        let pool = PgPool::connect_lazy("postgres://localhost/synctv")
+            .expect("test pool URL should parse");
+        let service = EmailOutboxService::new(pool, TEST_OUTBOX_KEY)
+            .expect("outbox service should initialize");
+
+        let error = service
+            .prepare_token(
+                "user@example.com",
+                "bind-token",
+                &UserId::new(),
+                EmailTokenType::EmailBind,
+                Utc::now() + Duration::hours(24),
+            )
+            .expect_err("generic payload must reject email bind");
+
+        assert!(error.to_string().contains("dedicated bind outbox payload"));
     }
 }

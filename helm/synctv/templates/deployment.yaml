@@ -39,7 +39,9 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
-        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.secretRolloutChecksum }}
+        synctv.io/secret-rollout-checksum: {{ . | quote }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -284,11 +286,51 @@ spec:
                 secretKeyRef:
                   name: {{ include "synctv.secretName" . }}
                   key: SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY
+            - name: SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY
+            - name: SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY
             - name: SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ include "synctv.secretName" . }}
                   key: SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET
+            - name: SYNCTV_SECURITY_PROXY_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_SECURITY_PROXY_SIGNING_KEY
+            - name: SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY
+            - name: SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY
+            - name: SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY
+            - name: SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY
+            - name: SYNCTV_FILE_UPLOAD_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_FILE_UPLOAD_TOKEN_SECRET
             {{- if .Values.secrets.bootstrap }}
             {{- if .Values.config.bootstrap.createRootUser }}
             - name: SYNCTV_BOOTSTRAP_ROOT_PASSWORD

@@ -22,7 +22,7 @@ Docker Compose 覆盖大多数自托管环境。Helm 面向已经运行 Kubernet
 上线前完成以下项目：
 
 - 持久化并备份 PostgreSQL。
-- 长期保存 JWT、OPAQUE 和凭据加密 secret。
+- 长期保存完整的生产 secret 集合，并与数据库一起备份。
 - 公网入口启用 HTTPS。
 - 多副本共享 PostgreSQL、Redis 和集群 secret。
 - 升级前备份并验证数据库 migration。

@@ -50,18 +50,20 @@ impl UserService {
             ));
         }
         let encryption = self.credential_encryption.as_ref().ok_or_else(|| {
-            Error::ServiceUnavailable(
-                "TOTP requires security.credential_encryption_key".to_string(),
-            )
+            Error::ServiceUnavailable("TOTP requires security.totp_encryption_key".to_string())
         })?;
         let user = self.get_user(user_id).await?;
         let mut secret_bytes = [0_u8; 20];
         rand::rng().fill_bytes(&mut secret_bytes);
         let secret = base32_encode(&secret_bytes);
-        let encrypted_secret = encryption.encrypt_to_value(&serde_json::json!({
-            "secret": secret,
-        }))?;
         let setup_id = synctv_common::snanoid!(48);
+        let context = Self::totp_encryption_context(user_id);
+        let encrypted_secret = encryption.encrypt_to_value_with_context(
+            &serde_json::json!({
+                "secret": secret,
+            }),
+            &context,
+        )?;
         let now = crate::SystemClock.now();
         let expires_at = now
             + chrono::Duration::from_std(TOTP_SETUP_TTL)
@@ -111,7 +113,7 @@ impl UserService {
             .get_pending(user_id, setup_id, now)
             .await?
             .ok_or_else(authentication_failed)?;
-        let secret = self.decrypt_totp_secret(&credential.encrypted_secret)?;
+        let secret = self.decrypt_totp_secret(user_id, &credential.encrypted_secret)?;
         let accepted_step = verify_totp_at(&secret, code, now.timestamp(), None)
             .ok_or_else(authentication_failed)?;
         let recovery_codes = generate_recovery_codes();
@@ -230,7 +232,7 @@ impl UserService {
             .await?
             .filter(|credential| credential.confirmed_at.is_some())
             .ok_or_else(authentication_failed)?;
-        let secret = self.decrypt_totp_secret(&credential.encrypted_secret)?;
+        let secret = self.decrypt_totp_secret(user_id, &credential.encrypted_secret)?;
         let accepted_step = verify_totp_at(
             &secret,
             code,
@@ -311,12 +313,21 @@ impl UserService {
         Err(authentication_failed())
     }
 
-    fn decrypt_totp_secret(&self, encrypted: &serde_json::Value) -> Result<String> {
+    fn totp_encryption_context(user_id: &UserId) -> Vec<u8> {
+        format!("totp-secret:v1\0{user_id}").into_bytes()
+    }
+
+    fn decrypt_totp_secret(
+        &self,
+        user_id: &UserId,
+        encrypted: &serde_json::Value,
+    ) -> Result<String> {
+        let context = Self::totp_encryption_context(user_id);
         let value = self
             .credential_encryption
             .as_ref()
             .ok_or_else(|| Error::ServiceUnavailable("TOTP encryption is unavailable".to_string()))?
-            .decrypt_value(encrypted)?;
+            .decrypt_value_with_context(encrypted, &context)?;
         value
             .get("secret")
             .and_then(serde_json::Value::as_str)

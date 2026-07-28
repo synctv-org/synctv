@@ -101,6 +101,35 @@ impl EmailBindRepository {
         Ok(result.rows_affected())
     }
 
+    pub async fn is_unused_and_valid(
+        &self,
+        token: &str,
+        user_id: &UserId,
+        email: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<bool> {
+        let exists = sqlx::query_scalar::<_, bool>(
+            r"
+            SELECT EXISTS (
+                SELECT 1
+                FROM auth_email_bind_requests
+                WHERE token = $1
+                  AND user_id = $2
+                  AND LOWER(email) = LOWER($3)
+                  AND used_at IS NULL
+                  AND expires_at > $4
+            )
+            ",
+        )
+        .bind(Self::hash_token(token))
+        .bind(user_id)
+        .bind(email)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
+    }
+
     pub async fn consume(
         &self,
         user_id: &UserId,

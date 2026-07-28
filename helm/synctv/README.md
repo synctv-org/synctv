@@ -72,11 +72,15 @@ the internal Service:
 kubectl -n synctv port-forward svc/synctv 8080:8080
 ```
 
-When `existingSecret` is not set, the chart auto-generates the built-in Secret
-on first install and preserves existing values on upgrade. That is suitable for
-simple production installs as long as the release Secret is backed up and kept
-stable. Override values explicitly, or use `existingSecret`, when your
-production process requires externally managed or pre-provisioned secrets:
+When `existingSecret` is empty, a `pre-install` / `pre-upgrade` bootstrap Job
+creates the built-in Secret inside the cluster. The Job exits when the Secret
+already exists, preserving every value across upgrades and keeping
+`helm template` output deterministic. Helm uninstall preserves the generated
+Secret so a later reinstall can reuse the same database and encryption keys.
+Back it up with PostgreSQL.
+
+Values below supply initial values to the bootstrap Job. External Secrets and
+other pre-provisioned Secret workflows should set `existingSecret` instead:
 
 ```yaml
 secrets:
@@ -90,14 +94,32 @@ secrets:
     grpcSecret: "replace-me"
   security:
     credentialEncryptionKey: "64-hex-character-key"
+    totpEncryptionKey: "64-hex-character-key"
+    emailOutboxEncryptionKey: "64-hex-character-key"
     opaqueServerSetupSecret: "stable-random-secret"
+    proxySigningKey: "independent-random-secret"
+    mediaSwarmSigningKey: "independent-random-secret"
+    providerSessionEncryptionKey: "independent-random-secret"
+    loginDiscoveryKey: "independent-random-secret"
+    webauthnEnumerationKey: "independent-random-secret"
+    fileUploadTokenSecret: "independent-random-secret"
   bootstrap:
     rootPassword: "replace-me"
 ```
 
-Do not rotate `secrets.security.credentialEncryptionKey` or
-`secrets.security.opaqueServerSetupSecret` casually; changing them can break
-provider credential decryption or password authentication.
+Back up the release Secret with PostgreSQL. The credential, TOTP, email outbox,
+and OPAQUE values are bound to encrypted or authentication data. The remaining
+security-domain keys must stay identical across replicas and Helm upgrades.
+
+GitOps controllers must execute Helm hooks when `secretBootstrap.enabled=true`.
+Set `existingSecret` on platforms that disable hooks. After updating an external
+Secret, change `secretRolloutChecksum` to roll the Deployment, or configure a
+Secret reloader through `podAnnotations`:
+
+```yaml
+existingSecret: "my-external-synctv-secret"
+secretRolloutChecksum: "2026-07-28-rotation-1"
+```
 
 ## Security
 
@@ -296,7 +318,15 @@ When using `existingSecret`, provide these keys with current names:
 - `SYNCTV_JWT_SECRET`
 - `SYNCTV_CLUSTER_SECRET`
 - `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY`
+- `SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY`
+- `SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY`
 - `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET`
+- `SYNCTV_SECURITY_PROXY_SIGNING_KEY`
+- `SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY`
+- `SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY`
+- `SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY`
+- `SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY`
+- `SYNCTV_FILE_UPLOAD_TOKEN_SECRET`
 - `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` when `config.bootstrap.createRootUser=true`
 - `SYNCTV_MANAGEMENT_AUTH_TOKEN` when `config.management.transport=tcp`
 - `SYNCTV_METRICS_AUTH_BEARER_TOKEN` when `metrics.enabled=true` and `metrics.auth.mode=bearer_token`
@@ -348,7 +378,16 @@ openssl rand -hex 32
 # Credential encryption key, exactly 64 hex characters
 openssl rand -hex 32
 
+# TOTP encryption key, exactly 64 hex characters
+openssl rand -hex 32
+
+# Email outbox encryption key, exactly 64 hex characters
+openssl rand -hex 32
+
 # OPAQUE setup secret
+openssl rand -base64 48
+
+# Generate each remaining security-domain key independently
 openssl rand -base64 48
 ```
 

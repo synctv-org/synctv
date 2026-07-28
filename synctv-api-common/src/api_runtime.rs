@@ -11,7 +11,7 @@ use synctv_core::service::{
     TrueNasPlaybackProviderService, TwitchPlaybackProviderService, YoutubePlaybackProviderService,
 };
 
-use crate::proxy_signature::ProxySigningKey;
+use crate::proxy_signature::{MediaSwarmSigningKey, ProxySigningKey};
 use crate::server_settings::ApiServerSettings;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -183,9 +183,17 @@ impl Default for ProxySliceCacheRuntimeSettings {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ClusterRuntimeSettings {
     pub secret: String,
+}
+
+impl std::fmt::Debug for ClusterRuntimeSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClusterRuntimeSettings")
+            .field("secret", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -337,7 +345,24 @@ pub struct SharedApiRuntime {
     pub seafile_playback_provider_service: Arc<SeafilePlaybackProviderService>,
     pub truenas_playback_provider_service: Arc<TrueNasPlaybackProviderService>,
     pub proxy_signing_key: Arc<ProxySigningKey>,
+    pub media_swarm_signing_key: Arc<MediaSwarmSigningKey>,
     pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     pub server_state_runtime: Arc<crate::status::ServerStateRuntime>,
     pub slice_cache_management_runtime: Arc<crate::status::SliceCacheManagementRuntime>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ClusterRuntimeSettings;
+
+    #[test]
+    fn cluster_runtime_settings_debug_redacts_secret() {
+        let settings = ClusterRuntimeSettings {
+            secret: "cluster-runtime-debug-secret".to_string(),
+        };
+
+        let debug = format!("{settings:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("cluster-runtime-debug-secret"));
+    }
 }

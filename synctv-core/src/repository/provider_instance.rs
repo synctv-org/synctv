@@ -73,13 +73,19 @@ struct UserProviderCredentialRow {
 #[serde(transparent)]
 struct EncryptedCredentialValue(String);
 
+#[derive(Clone, Copy)]
+struct CredentialEncryptionContext<'a> {
+    encryption: Option<&'a CredentialEncryption>,
+    aad: &'a [u8],
+}
+
 impl EncryptedCredentialValue {
     fn encrypt_json(
-        encryption: Option<&CredentialEncryption>,
+        context: CredentialEncryptionContext<'_>,
         value: &serde_json::Value,
     ) -> Result<Self> {
-        let encrypted = match encryption {
-            Some(enc) => enc.encrypt(value),
+        let encrypted = match context.encryption {
+            Some(enc) => enc.encrypt_with_context(value, context.aad),
             None => Err(crate::Error::Internal(
                 "Credential encryption must be configured before storing provider credentials"
                     .to_string(),
@@ -93,13 +99,13 @@ impl EncryptedCredentialValue {
         Self(value.into())
     }
 
-    fn encrypt_string(encryption: Option<&CredentialEncryption>, value: &str) -> Result<Self> {
-        Self::encrypt_json(encryption, &serde_json::Value::String(value.to_string()))
+    fn encrypt_string(context: CredentialEncryptionContext<'_>, value: &str) -> Result<Self> {
+        Self::encrypt_json(context, &serde_json::Value::String(value.to_string()))
     }
 
-    fn decrypt_json(&self, encryption: Option<&CredentialEncryption>) -> Result<serde_json::Value> {
-        match encryption {
-            Some(enc) => enc.decrypt(&self.0),
+    fn decrypt_json(&self, context: CredentialEncryptionContext<'_>) -> Result<serde_json::Value> {
+        match context.encryption {
+            Some(enc) => enc.decrypt_with_context(&self.0, context.aad),
             None => Err(crate::Error::Internal(
                 "Credential encryption must be configured before reading provider credentials"
                     .to_string(),
@@ -107,8 +113,8 @@ impl EncryptedCredentialValue {
         }
     }
 
-    fn decrypt_string(&self, encryption: Option<&CredentialEncryption>) -> Result<String> {
-        let value = self.decrypt_json(encryption)?;
+    fn decrypt_string(&self, context: CredentialEncryptionContext<'_>) -> Result<String> {
+        let value = self.decrypt_json(context)?;
         match value {
             serde_json::Value::String(value) => Ok(value),
             other => Err(crate::Error::Internal(format!(
@@ -255,7 +261,9 @@ impl StoredProviderCredential {
     fn encrypt_from_domain(
         encryption: Option<&CredentialEncryption>,
         data: &ProviderCredential,
+        aad: &[u8],
     ) -> Result<Self> {
+        let encryption = CredentialEncryptionContext { encryption, aad };
         match data {
             ProviderCredential::Bilibili { cookies } => Ok(Self::Bilibili {
                 cookies: EncryptedCredentialValue::encrypt_json(
@@ -472,7 +480,9 @@ impl StoredProviderCredential {
     fn decrypt_to_domain(
         &self,
         encryption: Option<&CredentialEncryption>,
+        aad: &[u8],
     ) -> Result<ProviderCredential> {
+        let encryption = CredentialEncryptionContext { encryption, aad };
         match self {
             Self::Bilibili { cookies } => Ok(ProviderCredential::Bilibili {
                 cookies: serde_json::from_value(cookies.decrypt_json(encryption)?)?,
@@ -868,11 +878,14 @@ impl ProviderInstanceRepository {
 
     fn decrypt_field_with(
         encryption: Option<&CredentialEncryption>,
+        name: &str,
+        field: &str,
         stored: Option<&str>,
     ) -> Result<Option<String>> {
         match (encryption, stored) {
             (Some(enc), Some(value)) if value.starts_with("enc:") => {
-                let decrypted = enc.decrypt(value)?;
+                let context = format!("provider-instance:v1\0{name}\0{field}");
+                let decrypted = enc.decrypt_with_context(value, context.as_bytes())?;
                 match decrypted {
                     serde_json::Value::String(s) => Ok(Some(s)),
                     other => Ok(Some(other.to_string())),
@@ -938,11 +951,17 @@ impl ProviderInstanceRepository {
         self.pools.primary()
     }
 
-    fn encrypt_field(&self, plaintext: Option<&str>) -> Result<Option<String>> {
+    fn encrypt_field(
+        &self,
+        name: &str,
+        field: &str,
+        plaintext: Option<&str>,
+    ) -> Result<Option<String>> {
         match (&self.encryption, plaintext) {
             (Some(enc), Some(value)) if !value.is_empty() => {
                 let json_value = serde_json::Value::String(value.to_owned());
-                let encrypted = enc.encrypt(&json_value)?;
+                let context = format!("provider-instance:v1\0{name}\0{field}");
+                let encrypted = enc.encrypt_with_context(&json_value, context.as_bytes())?;
                 Ok(Some(encrypted))
             }
             (None, Some(value)) if !value.trim().is_empty() => Err(crate::Error::Internal(
@@ -957,14 +976,21 @@ impl ProviderInstanceRepository {
         Self::ensure_encryption_for_sensitive_fields_with(self.encryption.as_ref(), instance)
     }
 
-    fn decrypt_field(&self, stored: Option<&str>) -> Result<Option<String>> {
-        Self::decrypt_field_with(self.encryption.as_ref(), stored)
+    fn decrypt_field(
+        &self,
+        name: &str,
+        field: &str,
+        stored: Option<&str>,
+    ) -> Result<Option<String>> {
+        Self::decrypt_field_with(self.encryption.as_ref(), name, field, stored)
     }
 
     /// Decrypt sensitive fields on a `ProviderInstance` after reading from DB.
     fn decrypt_instance(&self, mut instance: ProviderInstance) -> Result<ProviderInstance> {
-        instance.jwt_secret = self.decrypt_field(instance.jwt_secret.as_deref())?;
-        instance.custom_ca = self.decrypt_field(instance.custom_ca.as_deref())?;
+        instance.jwt_secret =
+            self.decrypt_field(&instance.name, "jwt_secret", instance.jwt_secret.as_deref())?;
+        instance.custom_ca =
+            self.decrypt_field(&instance.name, "custom_ca", instance.custom_ca.as_deref())?;
         Ok(instance)
     }
 
@@ -1110,8 +1136,10 @@ impl ProviderInstanceRepository {
     /// Create a new provider instance (encrypts sensitive fields before storage)
     pub async fn create(&self, instance: &ProviderInstance) -> Result<()> {
         self.ensure_encryption_for_sensitive_fields(instance)?;
-        let encrypted_jwt_secret = self.encrypt_field(instance.jwt_secret.as_deref())?;
-        let encrypted_custom_ca = self.encrypt_field(instance.custom_ca.as_deref())?;
+        let encrypted_jwt_secret =
+            self.encrypt_field(&instance.name, "jwt_secret", instance.jwt_secret.as_deref())?;
+        let encrypted_custom_ca =
+            self.encrypt_field(&instance.name, "custom_ca", instance.custom_ca.as_deref())?;
         let provider_codes = provider_type_codes(&instance.providers);
         let result = sqlx::query!(
             r"
@@ -1148,8 +1176,10 @@ impl ProviderInstanceRepository {
     /// Update an existing provider instance (encrypts sensitive fields before storage)
     pub async fn update(&self, instance: &ProviderInstance) -> Result<()> {
         self.ensure_encryption_for_sensitive_fields(instance)?;
-        let encrypted_jwt_secret = self.encrypt_field(instance.jwt_secret.as_deref())?;
-        let encrypted_custom_ca = self.encrypt_field(instance.custom_ca.as_deref())?;
+        let encrypted_jwt_secret =
+            self.encrypt_field(&instance.name, "jwt_secret", instance.jwt_secret.as_deref())?;
+        let encrypted_custom_ca =
+            self.encrypt_field(&instance.name, "custom_ca", instance.custom_ca.as_deref())?;
         let provider_codes = provider_type_codes(&instance.providers);
 
         let result = sqlx::query!(
@@ -1273,16 +1303,32 @@ impl UserProviderCredentialRepository {
 
     fn encrypt_credential_with(
         encryption: Option<&CredentialEncryption>,
+        user_id: UserId,
+        provider: &str,
+        server_id: &str,
         data: &ProviderCredential,
     ) -> Result<StoredProviderCredential> {
-        StoredProviderCredential::encrypt_from_domain(encryption, data)
+        let context = Self::credential_context(user_id, provider, server_id)?;
+        StoredProviderCredential::encrypt_from_domain(encryption, data, &context)
     }
 
     fn decrypt_credential_with(
         encryption: Option<&CredentialEncryption>,
+        user_id: UserId,
+        provider: &str,
+        server_id: &str,
         data: &StoredProviderCredential,
     ) -> Result<ProviderCredential> {
-        data.decrypt_to_domain(encryption)
+        let context = Self::credential_context(user_id, provider, server_id)?;
+        data.decrypt_to_domain(encryption, &context)
+    }
+
+    fn credential_context(user_id: UserId, provider: &str, server_id: &str) -> Result<Vec<u8>> {
+        let provider_code = provider_type_code(provider)?;
+        Ok(
+            format!("user-provider-credential:v1\0{user_id}\0{provider_code}\0{server_id}")
+                .into_bytes(),
+        )
     }
 
     /// Create a new repository without encryption
@@ -1303,24 +1349,41 @@ impl UserProviderCredentialRepository {
         }
     }
 
-    fn encrypt_credential(&self, data: &ProviderCredential) -> Result<StoredProviderCredential> {
-        Self::encrypt_credential_with(self.encryption.as_ref(), data)
+    fn encrypt_credential(
+        &self,
+        credential: &UserProviderCredential,
+    ) -> Result<StoredProviderCredential> {
+        Self::encrypt_credential_with(
+            self.encryption.as_ref(),
+            credential.user_id,
+            &credential.provider,
+            &credential.server_id,
+            &credential.credential_data,
+        )
     }
 
-    fn decrypt_credential(&self, data: &StoredProviderCredential) -> Result<ProviderCredential> {
-        Self::decrypt_credential_with(self.encryption.as_ref(), data)
+    fn decrypt_credential(
+        &self,
+        user_id: UserId,
+        provider: &str,
+        server_id: &str,
+        data: &StoredProviderCredential,
+    ) -> Result<ProviderCredential> {
+        Self::decrypt_credential_with(self.encryption.as_ref(), user_id, provider, server_id, data)
     }
 
     fn decrypt_credential_row(
         &self,
         row: UserProviderCredentialRow,
     ) -> Result<UserProviderCredential> {
-        let credential_data = self.decrypt_credential(&row.credential_data)?;
+        let provider =
+            provider_type_name_from_code(row.provider).map_err(crate::Error::InvalidInput)?;
+        let credential_data =
+            self.decrypt_credential(row.user_id, &provider, &row.server_id, &row.credential_data)?;
         Ok(UserProviderCredential {
             id: row.id,
             user_id: row.user_id,
-            provider: provider_type_name_from_code(row.provider)
-                .map_err(crate::Error::InvalidInput)?,
+            provider,
             server_id: row.server_id,
             provider_instance_name: row.provider_instance_name,
             credential_data,
@@ -1498,7 +1561,7 @@ impl UserProviderCredentialRepository {
         &self,
         credential: &UserProviderCredential,
     ) -> Result<UserProviderCredential> {
-        let stored_data = self.encrypt_credential(&credential.credential_data)?;
+        let stored_data = self.encrypt_credential(credential)?;
         let stored_json = sqlx::types::Json(&stored_data);
         let provider_code = provider_type_code(&credential.provider)?;
 
@@ -1533,7 +1596,7 @@ impl UserProviderCredentialRepository {
         &self,
         credential: &UserProviderCredential,
     ) -> Result<UserProviderCredential> {
-        let stored_data = self.encrypt_credential(&credential.credential_data)?;
+        let stored_data = self.encrypt_credential(credential)?;
         let stored_json = sqlx::types::Json(&stored_data);
         let provider_code = provider_type_code(&credential.provider)?;
 
@@ -1568,7 +1631,8 @@ impl UserProviderCredentialRepository {
 
     /// Update an existing user credential (encrypts before storage)
     pub async fn update(&self, credential: &UserProviderCredential) -> Result<()> {
-        let stored_data = self.encrypt_credential(&credential.credential_data)?;
+        let provider_code = provider_type_code(&credential.provider)?;
+        let stored_data = self.encrypt_credential(credential)?;
         let stored_json = sqlx::types::Json(&stored_data);
 
         let result = sqlx::query!(
@@ -1576,18 +1640,24 @@ impl UserProviderCredentialRepository {
             UPDATE user_media_provider_credentials
             SET provider_instance_name = $2, credential_data = $3, expires_at = $4, updated_at = NOW()
             WHERE id = $1
+              AND user_id = $5
+              AND provider = $6
+              AND server_id = $7
             ",
             credential.id,
             normalize_provider_instance_name(credential.provider_instance_name.as_deref()),
             stored_json as _,
             credential.expires_at,
+            credential.user_id as UserId,
+            provider_code,
+            credential.server_id,
         )
         .execute(&self.pool)
         .await?;
 
         if result.rows_affected() == 0 {
             return Err(crate::Error::NotFound(format!(
-                "User provider credential '{}' not found",
+                "User provider credential '{}' not found for the supplied binding",
                 credential.id
             )));
         }

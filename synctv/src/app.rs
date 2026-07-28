@@ -971,6 +971,8 @@ impl Application {
                     (!infra.config.security.credential_encryption_key.is_empty())
                         .then(|| infra.config.security.credential_encryption_key.clone())
                 });
+        let totp_encryption_key = (!infra.config.security.totp_encryption_key.is_empty())
+            .then(|| infra.config.security.totp_encryption_key.clone());
         let synctv_services = init_services_with_options(
             infra.pool.clone(),
             &core_services_options(&infra.config),
@@ -982,6 +984,7 @@ impl Application {
                 provider_address_overrides: options.provider_address_overrides.clone(),
                 ssrf_guard: infra.config.security.ssrf_guard(),
                 credential_encryption_key,
+                totp_encryption_key,
                 realtime_outbox: runtime_plan.core_realtime_outbox(),
                 read_pool: Some(infra.database_pools.read_pool()),
             },
@@ -1866,7 +1869,11 @@ mod tests {
                 ),
                 ..LivestreamConfig::default()
             },
-            file_storage: crate::app_config::FileStorageConfig::default(),
+            file_storage: crate::app_config::FileStorageConfig {
+                upload_token_secret: "test-file-upload-token-secret-for-app-startup-tests"
+                    .to_string(),
+                ..crate::app_config::FileStorageConfig::default()
+            },
             chat: crate::app_config::ChatConfig::default(),
             webauthn: WebAuthnConfig::default(),
             media_providers: MediaProvidersConfig::default(),
@@ -1888,7 +1895,21 @@ mod tests {
             messaging_rate_limits: crate::app_config::MessagingRateLimitConfig::default(),
             request_rate_limits: RequestRateLimitConfig::default(),
             security: crate::app_config::SecurityConfig {
+                credential_encryption_key:
+                    "5151515151515151515151515151515151515151515151515151515151515151".to_string(),
+                totp_encryption_key:
+                    "5252525252525252525252525252525252525252525252525252525252525252".to_string(),
+                email_outbox_encryption_key:
+                    "5353535353535353535353535353535353535353535353535353535353535353".to_string(),
                 opaque_server_setup_secret: "test-opaque-server-setup-secret-for-app-startup-tests"
+                    .to_string(),
+                proxy_signing_key: "test-proxy-signing-key-for-app-startup-tests".to_string(),
+                media_swarm_signing_key: "test-media-swarm-signing-key-for-app-startup-tests"
+                    .to_string(),
+                provider_session_encryption_key: "test-provider-session-key-for-app-startup-tests"
+                    .to_string(),
+                login_discovery_key: "test-login-discovery-key-for-app-startup-tests".to_string(),
+                webauthn_enumeration_key: "test-webauthn-enumeration-key-for-app-startup-tests"
                     .to_string(),
                 ..crate::app_config::SecurityConfig::default()
             },

@@ -5,7 +5,7 @@ use sqlx::{PgPool, Postgres, Row, Transaction};
 use crate::{Error, Result};
 
 pub const EMAIL_OUTBOX_CHANNEL: &str = "email_outbox_new";
-pub const EMAIL_OUTBOX_MAX_ATTEMPTS: i32 = 8;
+const EMAIL_OUTBOX_KNOWN_KINDS: [i16; 4] = [1, 2, 3, 4];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -17,6 +17,11 @@ pub enum EmailOutboxKind {
 }
 
 impl EmailOutboxKind {
+    #[must_use]
+    pub const fn known_database_values() -> &'static [i16] {
+        &EMAIL_OUTBOX_KNOWN_KINDS
+    }
+
     #[must_use]
     pub const fn as_i16(self) -> i16 {
         match self {
@@ -97,7 +102,11 @@ pub struct NewEmailOutboxJob {
     pub recipient: String,
     pub encrypted_payload: String,
     pub dedupe_key: String,
+    pub attempts: i32,
+    pub next_attempt_at: DateTime<Utc>,
+    pub lock_version: i64,
     pub expires_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -145,9 +154,10 @@ impl EmailOutboxRepository {
             r"
             INSERT INTO email_outbox (
                 id, kind, recipient, encrypted_payload, dedupe_key,
-                status, expires_at
+                status, attempts, next_attempt_at, lock_version,
+                expires_at, created_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (dedupe_key) DO NOTHING
             RETURNING id
             ",
@@ -158,7 +168,11 @@ impl EmailOutboxRepository {
         .bind(&job.encrypted_payload)
         .bind(&job.dedupe_key)
         .bind(EmailOutboxStatus::Pending.as_i16())
+        .bind(job.attempts)
+        .bind(job.next_attempt_at)
+        .bind(job.lock_version)
         .bind(job.expires_at)
+        .bind(job.created_at)
         .fetch_optional(&mut **tx)
         .await?;
 
@@ -181,6 +195,7 @@ impl EmailOutboxRepository {
                 SELECT id
                 FROM email_outbox
                 WHERE status = $2
+                  AND kind = ANY($5)
                   AND next_attempt_at <= NOW()
                   AND expires_at > NOW()
                 ORDER BY next_attempt_at, created_at, id
@@ -203,6 +218,7 @@ impl EmailOutboxRepository {
         .bind(EmailOutboxStatus::Pending.as_i16())
         .bind(EmailOutboxStatus::Processing.as_i16())
         .bind(worker_id)
+        .bind(EmailOutboxKind::known_database_values())
         .fetch_all(&self.pool)
         .await?;
 
@@ -248,6 +264,26 @@ impl EmailOutboxRepository {
         Ok(result.rows_affected() == 1)
     }
 
+    pub async fn renew_lease(&self, id: &str, worker_id: &str, lock_version: i64) -> Result<bool> {
+        let result = sqlx::query(
+            r"
+            UPDATE email_outbox
+            SET locked_at = NOW()
+            WHERE id = $1
+              AND locked_by = $2
+              AND lock_version = $3
+              AND status = $4
+            ",
+        )
+        .bind(id)
+        .bind(worker_id)
+        .bind(lock_version)
+        .bind(EmailOutboxStatus::Processing.as_i16())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     pub async fn mark_failed(
         &self,
         job: &EmailOutboxJob,
@@ -256,7 +292,7 @@ impl EmailOutboxRepository {
         retryable: bool,
     ) -> Result<Option<EmailOutboxStatus>> {
         let next_attempt = job.attempts.saturating_add(1);
-        let terminal = !retryable || next_attempt >= EMAIL_OUTBOX_MAX_ATTEMPTS;
+        let terminal = !retryable;
         let status = if terminal {
             EmailOutboxStatus::Dead
         } else {
@@ -323,6 +359,10 @@ impl EmailOutboxRepository {
             r"
             UPDATE email_outbox
             SET status = $1,
+                cleanup_completed_at = CASE
+                    WHEN kind = ANY($3) THEN cleanup_completed_at
+                    ELSE NOW()
+                END,
                 last_error = 'delivery job expired before it could be sent'
             WHERE status = $2
               AND expires_at <= NOW()
@@ -330,6 +370,7 @@ impl EmailOutboxRepository {
         )
         .bind(EmailOutboxStatus::Dead.as_i16())
         .bind(EmailOutboxStatus::Pending.as_i16())
+        .bind(EmailOutboxKind::known_database_values())
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
@@ -343,15 +384,35 @@ impl EmailOutboxRepository {
             FROM email_outbox
             WHERE status = $1
               AND cleanup_completed_at IS NULL
+              AND kind = ANY($3)
             ORDER BY created_at, id
             LIMIT $2
             ",
         )
         .bind(EmailOutboxStatus::Dead.as_i16())
         .bind(limit)
+        .bind(EmailOutboxKind::known_database_values())
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(row_to_job).collect()
+    }
+
+    pub async fn close_unknown_dead_cleanup(&self) -> Result<u64> {
+        let result = sqlx::query(
+            r"
+            UPDATE email_outbox
+            SET cleanup_completed_at = NOW(),
+                last_error = COALESCE(last_error, 'unknown email outbox kind')
+            WHERE status = $1
+              AND cleanup_completed_at IS NULL
+              AND kind <> ALL($2)
+            ",
+        )
+        .bind(EmailOutboxStatus::Dead.as_i16())
+        .bind(EmailOutboxKind::known_database_values())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     pub async fn mark_cleanup_completed(&self, id: &str) -> Result<bool> {
@@ -413,7 +474,7 @@ fn row_to_job(row: &sqlx::postgres::PgRow) -> Result<EmailOutboxJob> {
 }
 
 fn retry_delay_seconds(attempt: i32, id: &str) -> i32 {
-    let exponent = u32::try_from(attempt.clamp(1, 8) - 1).unwrap_or_default();
+    let exponent = u32::try_from(attempt.clamp(1, 9) - 1).unwrap_or_default();
     let base = 5u64.saturating_mul(2u64.saturating_pow(exponent));
     let jitter = id
         .bytes()
@@ -435,7 +496,11 @@ mod tests {
             recipient: format!("{id}@example.com"),
             encrypted_payload: "enc:test".to_string(),
             dedupe_key: format!("dedupe-{id}"),
+            attempts: 0,
+            next_attempt_at: Utc::now(),
+            lock_version: 0,
             expires_at: Utc::now() + Duration::hours(1),
+            created_at: Utc::now(),
         }
     }
 
@@ -511,6 +576,38 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker (testcontainers)"]
+    async fn renewed_lease_is_not_requeued() {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let repository = EmailOutboxRepository::new(pool.clone());
+        repository
+            .insert(&job("renewed-lease"))
+            .await
+            .expect("insert job");
+        let claimed = repository
+            .claim_batch("worker-a", 1)
+            .await
+            .expect("claim job")
+            .remove(0);
+        sqlx::query("UPDATE email_outbox SET locked_at = NOW() - INTERVAL '3 minutes'")
+            .execute(&pool)
+            .await
+            .expect("age lease");
+
+        assert!(repository
+            .renew_lease(&claimed.id, "worker-a", claimed.lock_version)
+            .await
+            .expect("renew lease"));
+        assert_eq!(
+            repository
+                .requeue_stale_processing(120)
+                .await
+                .expect("requeue stale jobs"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn rollback_removes_outbox_insert_and_notification_source() {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let repository = EmailOutboxRepository::new(pool.clone());
@@ -531,7 +628,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker (testcontainers)"]
-    async fn retry_budget_moves_job_to_recoverable_dead_cleanup() {
+    async fn retryable_failure_remains_pending_until_job_expiry() {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let repository = EmailOutboxRepository::new(pool.clone());
         repository
@@ -539,7 +636,7 @@ mod tests {
             .await
             .expect("insert job");
 
-        for attempt in 1..=EMAIL_OUTBOX_MAX_ATTEMPTS {
+        for _attempt in 1..=10 {
             let claimed = repository
                 .claim_batch("retry-worker", 1)
                 .await
@@ -550,24 +647,85 @@ mod tests {
                 .await
                 .expect("record retry")
                 .expect("lease should remain valid");
-            if attempt < EMAIL_OUTBOX_MAX_ATTEMPTS {
-                assert_eq!(status, EmailOutboxStatus::Pending);
-                sqlx::query(
-                    "UPDATE email_outbox SET next_attempt_at = NOW() WHERE id = 'retry-budget'",
-                )
-                .execute(&pool)
-                .await
-                .expect("make retry due");
-            } else {
-                assert_eq!(status, EmailOutboxStatus::Dead);
-            }
+            assert_eq!(status, EmailOutboxStatus::Pending);
+            sqlx::query(
+                "UPDATE email_outbox SET next_attempt_at = NOW() WHERE id = 'retry-budget'",
+            )
+            .execute(&pool)
+            .await
+            .expect("make retry due");
         }
 
+        sqlx::query("UPDATE email_outbox SET expires_at = NOW() WHERE id = 'retry-budget'")
+            .execute(&pool)
+            .await
+            .expect("expire job");
+        assert_eq!(
+            repository
+                .expire_pending()
+                .await
+                .expect("expire pending job"),
+            1
+        );
         let cleanup = repository
             .load_cleanup_pending(10)
             .await
             .expect("load cleanup jobs");
         assert_eq!(cleanup.len(), 1);
         assert_eq!(cleanup[0].id, "retry-budget");
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
+    async fn unknown_kind_does_not_block_known_jobs_or_dead_cleanup() {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let repository = EmailOutboxRepository::new(pool.clone());
+        repository
+            .insert(&job("known-job"))
+            .await
+            .expect("insert known job");
+        sqlx::query(
+            r"
+            INSERT INTO email_outbox (
+                id, kind, recipient, encrypted_payload, dedupe_key,
+                status, attempts, next_attempt_at, lock_version,
+                expires_at, created_at
+            )
+            VALUES (
+                'future-job', 99, 'future@example.com', 'enc:future',
+                'future-dedupe', 1, 0, NOW(), 0,
+                NOW() + INTERVAL '15 minutes', NOW()
+            )
+            ",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert future job");
+
+        let claimed = repository
+            .claim_batch("current-worker", 10)
+            .await
+            .expect("claim known jobs");
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].id, "known-job");
+
+        sqlx::query(
+            "UPDATE email_outbox SET status = 4, cleanup_completed_at = NULL WHERE id = 'future-job'",
+        )
+        .execute(&pool)
+        .await
+        .expect("move future job to dead");
+        assert!(repository
+            .load_cleanup_pending(10)
+            .await
+            .expect("load known cleanup jobs")
+            .is_empty());
+        assert_eq!(
+            repository
+                .close_unknown_dead_cleanup()
+                .await
+                .expect("close unknown cleanup"),
+            1
+        );
     }
 }

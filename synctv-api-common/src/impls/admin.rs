@@ -115,6 +115,7 @@ pub struct AdminApiRuntime {
     pub provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     pub signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
+    pub media_swarm_signing_key: Arc<crate::proxy_signature::MediaSwarmSigningKey>,
     pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     pub request_executor: Arc<RequestExecutor>,
 }
@@ -124,6 +125,7 @@ impl AdminApiRuntime {
     pub fn local_disabled(
         request_executor: Arc<RequestExecutor>,
         signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
+        media_swarm_signing_key: Arc<crate::proxy_signature::MediaSwarmSigningKey>,
         provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     ) -> Self {
         let realtime_event_service = Arc::new(LocalNoopRealtimeEventService::new());
@@ -136,6 +138,7 @@ impl AdminApiRuntime {
             provider_stores,
             provider_access_service: crate::impls::disabled_provider_access_service(),
             signing_key,
+            media_swarm_signing_key,
             presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
             request_executor,
         }
@@ -175,6 +178,7 @@ pub struct AdminApiImpl {
     pub provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     pub signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
+    pub media_swarm_signing_key: Arc<crate::proxy_signature::MediaSwarmSigningKey>,
     pub public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     pub request_executor: Arc<RequestExecutor>,
 }
@@ -256,6 +260,7 @@ impl AdminApiImpl {
             provider_stores: runtime.provider_stores,
             provider_access_service: runtime.provider_access_service,
             signing_key: runtime.signing_key,
+            media_swarm_signing_key: runtime.media_swarm_signing_key,
             public_id_codec,
             request_executor: runtime.request_executor,
         }

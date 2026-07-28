@@ -1117,6 +1117,12 @@ mod websocket_e2e {
             )
             .expect("test proxy signing key should derive"),
         );
+        let media_swarm_signing_key = Arc::new(
+            synctv_api::MediaSwarmSigningKey::try_derive_from(
+                b"test-media-swarm-signing-key-minimum-32-bytes",
+            )
+            .expect("test media swarm signing key should derive"),
+        );
         let client_api = Arc::new(synctv_api::ClientApiImpl::new_with_runtime(
             synctv_api::ClientApiOptions {
                 user_service: user_service.clone(),
@@ -1144,6 +1150,7 @@ mod websocket_e2e {
                     synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
                 provider_access_service: provider_access_service.clone(),
                 signing_key: shared_proxy_signing_key.clone(),
+                media_swarm_signing_key: media_swarm_signing_key.clone(),
                 presence_service: presence_service.clone(),
                 jwt_validator: jwt_validator.clone(),
                 request_executor: request_executor.clone(),
@@ -1228,6 +1235,7 @@ mod websocket_e2e {
             seafile_api,
             truenas_api,
             shared_proxy_signing_key,
+            media_swarm_signing_key,
             builtin_stun_url: None,
             webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             credential_encryption: None,

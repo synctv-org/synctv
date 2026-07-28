@@ -53,7 +53,7 @@ import {
     ```
 </Steps>
 
-`make compose-init` 使用 `openssl` 生成 PostgreSQL、Redis、JWT、cluster、credential-encryption 和 OPAQUE secret。PostgreSQL 与 Redis 密码使用 URL 安全的十六进制格式。Compose 默认使用镜像 <code>{dockerImageReference}</code>。
+`make compose-init` 使用 `openssl` 生成 PostgreSQL、Redis、JWT、cluster、Provider credential、email outbox 和 OPAQUE secret。PostgreSQL 与 Redis 密码使用 URL 安全的十六进制格式。Compose 默认使用镜像 <code>{dockerImageReference}</code>。
 
 ## 验证
 
@@ -114,10 +114,11 @@ SYNCTV_DATA_DIR=/data
 | `SYNCTV_JWT_SECRET` | 签发 access token、refresh token 和 guest token |
 | `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` | OPAQUE 密码认证的服务端长期 secret |
 | `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` | 加密 Provider 凭据 |
+| `SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY` | 加密 PostgreSQL 中的待发邮件载荷 |
 | `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` | 首次创建 root 用户 |
 
 <Aside type="caution">
-长期复用 `.env.synctv` 中的 secret。OPAQUE secret 关联现有密码记录，凭据加密密钥关联现有 Provider 凭据。
+长期复用 `.env.synctv` 中的 secret。OPAQUE secret 关联现有密码记录，两个加密 key 分别关联 Provider 凭据和待发邮件。
 </Aside>
 
 Redis 保存缓存和共享状态。恢复或清空 Redis 会影响 OAuth2 state、token blacklist、限流计数器等短期状态。

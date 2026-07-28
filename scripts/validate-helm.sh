@@ -14,6 +14,18 @@ fail() {
   exit 1
 }
 
+assert_template_fails() {
+  local case_name="$1"
+  local message="$2"
+  shift 2
+  if helm template synctv "$chart_dir" \
+    --namespace "$namespace" \
+    "$@" \
+    >"$tmp_dir/$case_name.yaml" 2>"$tmp_dir/$case_name.err"; then
+    fail "$message"
+  fi
+}
+
 assert_max_service_name_len() {
   local file="$1"
   local max_len="${2:-63}"
@@ -110,16 +122,85 @@ assert_env_secret_key_ref() {
   ' "$file" "$env_name" "$secret_key"
 }
 
-assert_secret_string_data_key() {
+assert_secret_string_data_key_absent() {
   local file="$1"
   local key="$2"
   ruby -ryaml -e '
     file, key = ARGV
     docs = YAML.load_stream(File.read(file)).compact
-    secrets = docs.select { |doc| doc["kind"] == "Secret" }
-    found = secrets.any? { |secret| secret.fetch("stringData", {}).key?(key) }
-    abort("Secret stringData key #{key.inspect} was not rendered in #{file}") unless found
+    found = docs.any? { |doc| doc["kind"] == "Secret" && doc.fetch("stringData", {}).key?(key) }
+    abort("Secret stringData key #{key.inspect} was unexpectedly rendered in #{file}") if found
   ' "$file" "$key"
+}
+
+assert_env_secret_name() {
+  local file="$1"
+  local env_name="$2"
+  local secret_name="$3"
+  ruby -ryaml -e '
+    file, env_name, secret_name = ARGV
+    docs = YAML.load_stream(File.read(file)).compact
+    containers = docs.flat_map do |doc|
+      next [] unless ["Deployment", "StatefulSet"].include?(doc["kind"])
+      doc.dig("spec", "template", "spec", "containers") || []
+    end
+    entry = containers.flat_map { |container| container["env"] || [] }
+      .find { |item| item["name"] == env_name }
+    abort("env #{env_name.inspect} was not rendered in #{file}") unless entry
+    actual = entry.dig("valueFrom", "secretKeyRef", "name")
+    abort("env #{env_name.inspect} Secret expected #{secret_name.inspect}, got #{actual.inspect}") unless actual == secret_name
+  ' "$file" "$env_name" "$secret_name"
+}
+
+assert_bootstrap_env_value() {
+  local file="$1"
+  local env_name="$2"
+  local expected="$3"
+  ruby -ryaml -e '
+    file, env_name, expected = ARGV
+    docs = YAML.load_stream(File.read(file)).compact
+    job = docs.find do |doc|
+      doc["kind"] == "Job" && doc.dig("metadata", "labels", "app.kubernetes.io/component") == "secret-bootstrap"
+    end
+    abort("secret bootstrap Job was not rendered in #{file}") unless job
+    containers = job.dig("spec", "template", "spec", "containers") || []
+    container = containers.find { |item| item["name"] == "secret-bootstrap" }
+    abort("secret bootstrap container was not rendered in #{file}") unless container
+    entry = (container["env"] || []).find { |item| item["name"] == env_name }
+    abort("bootstrap env #{env_name.inspect} was not rendered in #{file}") unless entry
+    actual = entry["value"].to_s
+    abort("bootstrap env #{env_name.inspect} expected #{expected.inspect}, got #{actual.inspect}") unless actual == expected
+  ' "$file" "$env_name" "$expected"
+}
+
+assert_bootstrap_reconciles_key() {
+  local file="$1"
+  local key="$2"
+  ruby -ryaml -e '
+    file, key = ARGV
+    docs = YAML.load_stream(File.read(file)).compact
+    job = docs.find do |doc|
+      doc["kind"] == "Job" && doc.dig("metadata", "labels", "app.kubernetes.io/component") == "secret-bootstrap"
+    end
+    abort("secret bootstrap Job was not rendered in #{file}") unless job
+    containers = job.dig("spec", "template", "spec", "containers") || []
+    script = containers.find { |item| item["name"] == "secret-bootstrap" }&.dig("args", 0).to_s
+    abort("secret bootstrap does not reconcile #{key.inspect}") unless script.include?("ensure_key #{key} ")
+  ' "$file" "$key"
+}
+
+assert_deployment_annotation() {
+  local file="$1"
+  local annotation="$2"
+  local expected="$3"
+  ruby -ryaml -e '
+    file, annotation, expected = ARGV
+    docs = YAML.load_stream(File.read(file)).compact
+    deployment = docs.find { |doc| doc["kind"] == "Deployment" && doc.dig("metadata", "name") == "synctv" }
+    abort("synctv Deployment was not rendered in #{file}") unless deployment
+    actual = deployment.dig("spec", "template", "metadata", "annotations", annotation)
+    abort("Deployment annotation #{annotation.inspect} expected #{expected.inspect}, got #{actual.inspect}") unless actual == expected
+  ' "$file" "$annotation" "$expected"
 }
 
 assert_security_rendering() {
@@ -207,7 +288,16 @@ run_rendered_synctv_config_validation() {
     "HOME=${HOME:-$tmp_dir}"
     "TMPDIR=${TMPDIR:-/tmp}"
     "SYNCTV_JWT_SECRET=helm-validation-jwt-secret-12345678901234567890"
+    "SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY=5656565656565656565656565656565656565656565656565656565656565656"
+    "SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY=5757575757575757575757575757575757575757575757575757575757575757"
+    "SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY=5858585858585858585858585858585858585858585858585858585858585858"
     "SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=helm-validation-opaque-secret-123456789012345"
+    "SYNCTV_SECURITY_PROXY_SIGNING_KEY=helm-validation-proxy-signing-key-123456789012345"
+    "SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY=helm-validation-media-swarm-signing-key-123456789012345"
+    "SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY=helm-validation-provider-session-key-123456789012345"
+    "SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY=helm-validation-login-discovery-key-123456789012345"
+    "SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY=helm-validation-webauthn-enumeration-key-123456789012345"
+    "SYNCTV_FILE_UPLOAD_TOKEN_SECRET=helm-validation-file-upload-key-123456789012345"
     "SYNCTV_CLUSTER_SECRET=helm-validation-cluster-secret-12345678901234567890"
     "SYNCTV_SERVER_ADVERTISE_HOST=10.0.0.10"
     "SYNCTV_REDIS_HOST=synctv-redis"
@@ -275,6 +365,50 @@ helm lint "$chart_dir"
 helm template synctv "$chart_dir" \
   --namespace "$namespace" \
   >"$tmp_dir/default.yaml"
+
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  >"$tmp_dir/default-repeat.yaml"
+cmp -s "$tmp_dir/default.yaml" "$tmp_dir/default-repeat.yaml" ||
+  fail "default Helm rendering must be deterministic"
+
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set existingSecret=synctv-managed-secrets \
+  --set secretRolloutChecksum=rotation-2 \
+  >"$tmp_dir/existing-secret.yaml"
+
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set secrets.security.emailOutboxEncryptionKey=5959595959595959595959595959595959595959595959595959595959595959 \
+  >"$tmp_dir/explicit-email-outbox-key.yaml"
+
+assert_template_fails invalid-email-outbox-key \
+  "invalid secrets.security.emailOutboxEncryptionKey must fail validation" \
+  --set-string secrets.security.emailOutboxEncryptionKey=invalid
+assert_template_fails invalid-credential-key \
+  "invalid secrets.security.credentialEncryptionKey must fail validation" \
+  --set-string secrets.security.credentialEncryptionKey=invalid
+assert_template_fails short-opaque-secret \
+  "short secrets.security.opaqueServerSetupSecret must fail validation" \
+  --set-string secrets.security.opaqueServerSetupSecret=short
+assert_template_fails placeholder-proxy-key \
+  "placeholder secrets.security.proxySigningKey must fail validation" \
+  --set-string secrets.security.proxySigningKey=CHANGE_ME_proxy_signing_key_1234567890
+assert_template_fails duplicate-security-secret \
+  "duplicate security-domain secret values must fail validation" \
+  --set-string secrets.jwt.secret=duplicate-security-secret-value-1234567890 \
+  --set-string secrets.security.proxySigningKey=duplicate-security-secret-value-1234567890
+assert_template_fails duplicate-hex-security-secret \
+  "hexadecimal security-domain secret values must be compared case-insensitively" \
+  --set-string secrets.security.credentialEncryptionKey=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA \
+  --set-string secrets.security.totpEncryptionKey=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set existingSecret=synctv-managed-secrets \
+  --set-string secrets.security.credentialEncryptionKey=ignored-external-value \
+  >"$tmp_dir/existing-secret-ignores-values.yaml"
 
 helm template synctv "$chart_dir" \
   --namespace "$namespace" \
@@ -356,6 +490,13 @@ if helm template synctv "$chart_dir" \
   fail "config.database.useSecretReadUrl=true without existingSecret or secrets.database.readUrl must fail validation"
 fi
 
+if helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set secretBootstrap.enabled=false \
+  >"$tmp_dir/missing-secret-owner.yaml" 2>"$tmp_dir/missing-secret-owner.err"; then
+  fail "secretBootstrap.enabled=false without existingSecret must fail validation"
+fi
+
 helm template synctv "$chart_dir" \
   --namespace "$namespace" \
   --set replicaCount=2 \
@@ -399,13 +540,33 @@ helm template synctv "$chart_dir" \
 assert_service "$tmp_dir/loadbalancer-stun.yaml" synctv-stun LoadBalancer
 
 assert_security_rendering "$tmp_dir/security.yaml"
+for key in \
+  SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY \
+  SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY \
+  SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY \
+  SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET \
+  SYNCTV_SECURITY_PROXY_SIGNING_KEY \
+  SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY \
+  SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY \
+  SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY \
+  SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY \
+  SYNCTV_FILE_UPLOAD_TOKEN_SECRET; do
+  assert_env_secret_key_ref "$tmp_dir/default.yaml" "$key" "$key"
+  assert_bootstrap_reconciles_key "$tmp_dir/default.yaml" "$key"
+  assert_env_secret_key_ref "$tmp_dir/existing-secret.yaml" "$key" "$key"
+  assert_env_secret_name "$tmp_dir/existing-secret.yaml" "$key" synctv-managed-secrets
+  assert_secret_string_data_key_absent "$tmp_dir/existing-secret.yaml" "$key"
+done
+assert_no_resource_named "$tmp_dir/existing-secret.yaml" synctv-secret-bootstrap
+assert_deployment_annotation "$tmp_dir/existing-secret.yaml" synctv.io/secret-rollout-checksum rotation-2
+assert_bootstrap_env_value "$tmp_dir/explicit-email-outbox-key.yaml" EMAIL_OUTBOX_KEY 5959595959595959595959595959595959595959595959595959595959595959
 assert_file_storage_s3_file_credentials_rendering "$tmp_dir/file-storage-s3-files.yaml"
 validate_rendered_synctv_config "$tmp_dir/default.yaml"
 validate_rendered_synctv_config "$tmp_dir/security.yaml"
 validate_rendered_synctv_config "$tmp_dir/cluster-replicas.yaml"
 validate_rendered_synctv_config_with_file_storage_s3_secret_files "$tmp_dir/file-storage-s3-files.yaml"
 assert_env_secret_key_ref "$tmp_dir/secret-read-url.yaml" SYNCTV_DATABASE_READ_URL SYNCTV_DATABASE_READ_URL
-assert_secret_string_data_key "$tmp_dir/secret-read-url.yaml" SYNCTV_DATABASE_READ_URL
+assert_bootstrap_env_value "$tmp_dir/secret-read-url.yaml" DATABASE_READ_URL postgresql://reader:secret@postgres-read:5432/synctv
 assert_env_secret_key_ref "$tmp_dir/kubeblocks.yaml" SYNCTV_DATABASE_PASSWORD SYNCTV_DATABASE_PASSWORD
 assert_no_resource_named "$tmp_dir/kubeblocks-no-bootstrap.yaml" bootstrap-postgresql-app-db
 assert_max_service_name_len "$tmp_dir/long-release.yaml" 63

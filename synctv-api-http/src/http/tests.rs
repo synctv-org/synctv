@@ -117,6 +117,7 @@ fn test_core_api_impls(
     provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     signing_key: Arc<ProxySigningKey>,
+    media_swarm_signing_key: Arc<synctv_api_common::proxy_signature::MediaSwarmSigningKey>,
     rate_limiter: Arc<dyn synctv_core::service::RequestRateLimiterService>,
     settings_service: Option<Arc<synctv_core::service::SettingsService>>,
     runtime_settings_store: Option<Arc<synctv_core::service::RuntimeSettingsStore>>,
@@ -129,7 +130,7 @@ fn test_core_api_impls(
         (Some(_email_service), Some(email_token_service)) => {
             let email_outbox_service = Arc::new(synctv_core::service::EmailOutboxService::new(
                 user_service.pool().clone(),
-                b"http-test-email-outbox-secret",
+                "5252525252525252525252525252525252525252525252525252525252525252",
             )?);
             Some(Arc::new(synctv_api_common::impls::EmailApiImpl::new(
                 user_service.clone(),
@@ -172,6 +173,7 @@ fn test_core_api_impls(
                     synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
                 provider_access_service: provider_access_service.clone(),
                 signing_key: signing_key.clone(),
+                media_swarm_signing_key: media_swarm_signing_key.clone(),
                 presence_service: presence_service.clone(),
                 jwt_validator,
                 request_executor: request_executor.clone(),
@@ -212,6 +214,7 @@ fn test_core_api_impls(
                     provider_stores,
                     provider_access_service,
                     signing_key,
+                    media_swarm_signing_key,
                     presence_service,
                     request_executor,
                 },
@@ -894,6 +897,12 @@ fn test_app_state_with_rate_limits(
         )
         .expect("test proxy signing key should derive"),
     );
+    let media_swarm_signing_key = Arc::new(
+        synctv_api_common::proxy_signature::MediaSwarmSigningKey::try_derive_from(
+            b"test-media-swarm-signing-key-minimum-32-bytes",
+        )
+        .expect("test media swarm signing key should derive"),
+    );
     let core_api_impls = test_fixture(test_core_api_impls(
         config.clone(),
         user_service.clone(),
@@ -908,6 +917,7 @@ fn test_app_state_with_rate_limits(
         shared_provider_stores.clone(),
         provider_access_service.clone(),
         shared_proxy_signing_key.clone(),
+        media_swarm_signing_key.clone(),
         rate_limiter.clone(),
         None,
         None,
@@ -1007,6 +1017,7 @@ fn test_app_state_with_rate_limits(
         seafile_api: provider_api_impls.seafile.clone(),
         truenas_api: provider_api_impls.truenas.clone(),
         shared_proxy_signing_key,
+        media_swarm_signing_key,
         builtin_stun_url: None,
         webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
         credential_encryption: None,
@@ -1202,6 +1213,7 @@ async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::App
                 webrtc_status: router_options.webrtc_status.clone(),
                 provider_access_service: router_options.provider_access_service.clone(),
                 signing_key: router_options.shared_proxy_signing_key.clone(),
+                media_swarm_signing_key: router_options.media_swarm_signing_key.clone(),
                 presence_service: router_options.presence_service.clone(),
                 jwt_validator: api_execution_runtime.jwt_validator.clone(),
                 request_executor: api_execution_runtime.request_executor.clone(),
@@ -1398,6 +1410,12 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
         ProxySigningKey::try_derive_from(b"test-secret-key-for-http-router-tests-minimum-32-chars")
             .map_err(|error| test_error(error.to_string()))?,
     );
+    let injected_media_swarm_signing_key = Arc::new(
+        synctv_api_common::proxy_signature::MediaSwarmSigningKey::try_derive_from(
+            b"test-media-swarm-key-for-http-router-tests-minimum-32-chars",
+        )
+        .map_err(|error| test_error(error.to_string()))?,
+    );
     let connection_manager = Arc::new(synctv_realtime::sync::ConnectionManager::new(
         synctv_realtime::sync::ConnectionLimits::default(),
     ));
@@ -1416,6 +1434,7 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
         injected_provider_stores.clone(),
         injected_provider_access_service.clone(),
         injected_proxy_signing_key.clone(),
+        injected_media_swarm_signing_key.clone(),
         rate_limiter.clone(),
         None,
         None,
@@ -1513,6 +1532,7 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
         seafile_api: injected_provider_api_impls.seafile.clone(),
         truenas_api: injected_provider_api_impls.truenas.clone(),
         shared_proxy_signing_key: injected_proxy_signing_key.clone(),
+        media_swarm_signing_key: injected_media_swarm_signing_key.clone(),
         builtin_stun_url: None,
         webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
         credential_encryption: None,
@@ -1610,6 +1630,13 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
             &injected_proxy_signing_key
         ),
         "AppState must reuse the injected proxy signing key"
+    );
+    assert!(
+        Arc::ptr_eq(
+            &state.shared_api_runtime.media_swarm_signing_key,
+            &injected_media_swarm_signing_key
+        ),
+        "AppState must reuse the injected media swarm signing key"
     );
     assert!(
         state

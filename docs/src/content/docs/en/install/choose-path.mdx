@@ -22,7 +22,7 @@ Docker Compose covers most self-hosted installations. Helm is for platforms that
 Complete these items before serving production traffic:
 
 - Persistent PostgreSQL data and tested backups.
-- Durable JWT, OPAQUE, and credential-encryption secrets.
+- A durable production secret set backed up with the database.
 - HTTPS on public entry points.
 - Shared PostgreSQL, Redis, and cluster secrets for multiple replicas.
 - A backup and migration check before upgrades.

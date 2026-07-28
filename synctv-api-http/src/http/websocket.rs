@@ -1407,7 +1407,7 @@ async fn handle_socket(
                 .runtime_settings
                 .webrtc
                 .filter_private_ice_candidates,
-            swarm_signing_key: state.shared_api_runtime.client_api.signing_key.clone(),
+            swarm_signing_key: state.shared_api_runtime.media_swarm_signing_key.clone(),
             media_swarm_tracker: state
                 .shared_api_runtime
                 .client_api

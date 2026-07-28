@@ -26,6 +26,9 @@ const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30);
 const TERMINAL_RETENTION_SECS: i64 = 7 * 24 * 60 * 60;
 const CLEANUP_BATCH_SIZE: i64 = 100;
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(60);
+const JOB_PROCESSING_TIMEOUT: Duration = Duration::from_secs(90);
+const LEASE_RENEW_INTERVAL: Duration = Duration::from_secs(30);
+const LISTENER_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 
 pub fn start_email_outbox_dispatcher(
     outbox: Arc<EmailOutboxService>,
@@ -60,7 +63,7 @@ async fn run_dispatcher(
     cancel: CancellationToken,
 ) {
     let worker_id = format!("{}:{}", node_id, synctv_common::snanoid!(8));
-    let mut listener = connect_listener(outbox.repository()).await;
+    let mut listener = ListenerState::connect(outbox.repository(), &worker_id).await;
     let mut next_maintenance = Instant::now();
     info!(worker_id = %worker_id, "Email outbox dispatcher started");
 
@@ -90,7 +93,7 @@ async fn run_dispatcher(
         if jobs.is_empty() {
             tokio::select! {
                 () = cancel.cancelled() => break,
-                () = wait_for_signal(&mut listener) => {}
+                () = listener.wait_for_signal(outbox.repository()) => {}
             }
             continue;
         }
@@ -144,8 +147,44 @@ async fn connect_listener(
     }
 }
 
-async fn wait_for_signal(listener: &mut Option<sqlx::postgres::PgListener>) {
-    if let Some(pg_listener) = listener.as_mut() {
+struct ListenerState {
+    listener: Option<sqlx::postgres::PgListener>,
+    reconnect_delay: Duration,
+    jitter: Duration,
+}
+
+impl ListenerState {
+    async fn connect(
+        repository: &synctv_core::repository::EmailOutboxRepository,
+        worker_id: &str,
+    ) -> Self {
+        Self {
+            listener: connect_listener(repository).await,
+            reconnect_delay: IDLE_POLL_INTERVAL,
+            jitter: Duration::from_millis(
+                worker_id
+                    .bytes()
+                    .fold(0_u64, |sum, byte| sum + u64::from(byte))
+                    % 251,
+            ),
+        }
+    }
+
+    async fn wait_for_signal(
+        &mut self,
+        repository: &synctv_core::repository::EmailOutboxRepository,
+    ) {
+        let Some(pg_listener) = self.listener.as_mut() else {
+            tokio::time::sleep(self.reconnect_delay + self.jitter).await;
+            self.listener = connect_listener(repository).await;
+            if self.listener.is_some() {
+                self.reconnect_delay = IDLE_POLL_INTERVAL;
+            } else {
+                self.reconnect_delay = next_reconnect_delay(self.reconnect_delay);
+            }
+            return;
+        };
+
         match tokio::time::timeout(IDLE_POLL_INTERVAL, pg_listener.recv()).await {
             Ok(Ok(notification)) => {
                 debug!(
@@ -155,13 +194,15 @@ async fn wait_for_signal(listener: &mut Option<sqlx::postgres::PgListener>) {
             }
             Ok(Err(error)) => {
                 warn!(error = %error, "Email outbox listener failed; polling remains active");
-                *listener = None;
+                self.listener = None;
             }
             Err(_) => {}
         }
-    } else {
-        tokio::time::sleep(IDLE_POLL_INTERVAL).await;
     }
+}
+
+fn next_reconnect_delay(current: Duration) -> Duration {
+    current.saturating_mul(2).min(LISTENER_RECONNECT_MAX_DELAY)
 }
 
 fn observe_delivery_join(result: Option<Result<(), tokio::task::JoinError>>) {
@@ -181,46 +222,148 @@ async fn dispatch_job(
     let started = Instant::now();
     let kind = job.kind.as_str();
     EMAIL_DELIVERY_IN_FLIGHT.inc();
-    let failure_context = FailureContext {
-        outbox: &outbox,
-        email_token_service: &email_token_service,
-        user_service: &user_service,
-        worker_id: &worker_id,
+
+    let heartbeat = wait_until_lease_lost(
+        &outbox,
+        &job.id,
+        &worker_id,
+        job.lock_version,
+        LEASE_RENEW_INTERVAL,
+    );
+    tokio::pin!(heartbeat);
+
+    let status = tokio::select! {
+        biased;
+        () = &mut heartbeat => "fenced",
+        result = tokio::time::timeout(
+            JOB_PROCESSING_TIMEOUT,
+            dispatch_job_inner(
+                &outbox,
+                &email_service,
+                &email_token_service,
+                &user_service,
+                &worker_id,
+                &job,
+            ),
+        ) => if let Ok(status) = result {
+            status
+        } else {
+                warn!(job_id = %job.id, "Email outbox processing exceeded its deadline");
+                let context = FailureContext {
+                    outbox: &outbox,
+                    email_token_service: &email_token_service,
+                    user_service: &user_service,
+                    worker_id: &worker_id,
+                };
+                finish_failed(
+                    &context,
+                    &job,
+                    None,
+                    "delivery processing timed out",
+                    true,
+                )
+                .await
+                .metric_status()
+        },
     };
 
-    let payload = match outbox.decrypt_payload(&job.encrypted_payload) {
+    record_completion(kind, status, started);
+}
+
+async fn dispatch_job_inner(
+    outbox: &EmailOutboxService,
+    email_service: &EmailService,
+    email_token_service: &EmailTokenService,
+    user_service: &UserService,
+    worker_id: &str,
+    job: &EmailOutboxJob,
+) -> &'static str {
+    let failure_context = FailureContext {
+        outbox,
+        email_token_service,
+        user_service,
+        worker_id,
+    };
+
+    let payload = match outbox.decrypt_payload(job) {
         Ok(payload) => payload,
         Err(error) => {
             error!(job_id = %job.id, error = %error, "Email outbox payload could not be decrypted");
-            finish_failed(
+            let outcome = finish_failed(
                 &failure_context,
-                &job,
+                job,
                 None,
                 "invalid encrypted payload",
                 false,
             )
             .await;
-            record_completion(kind, "dead", started);
-            return;
+            return outcome.metric_status();
         }
     };
 
-    let token = match token_for_job(&job, &payload) {
+    let token = match token_for_job(job, &payload) {
         Ok(token) => token,
         Err(message) => {
             error!(job_id = %job.id, reason = message, "Email outbox payload does not match job kind");
-            finish_failed(
+            let outcome = finish_failed(
                 &failure_context,
-                &job,
+                job,
                 Some(&payload),
                 "payload kind mismatch",
                 false,
             )
             .await;
-            record_completion(kind, "dead", started);
-            return;
+            return outcome.metric_status();
         }
     };
+
+    match delivery_token_is_active(email_token_service, user_service, &payload).await {
+        Ok(true) => {}
+        Ok(false) => {
+            let outcome = finish_failed(
+                &failure_context,
+                job,
+                Some(&payload),
+                "delivery token was superseded or consumed",
+                false,
+            )
+            .await;
+            let status = if outcome == FailureOutcome::Dead {
+                "superseded"
+            } else {
+                outcome.metric_status()
+            };
+            return status;
+        }
+        Err(error) => {
+            warn!(job_id = %job.id, error = %error, "Failed to verify email delivery token state");
+            let outcome = finish_failed(
+                &failure_context,
+                job,
+                Some(&payload),
+                "delivery token state check failed",
+                true,
+            )
+            .await;
+            return outcome.metric_status();
+        }
+    }
+
+    match outbox
+        .repository()
+        .renew_lease(&job.id, worker_id, job.lock_version)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            warn!(job_id = %job.id, "Email outbox delivery lost its lease before SMTP");
+            return "fenced";
+        }
+        Err(error) => {
+            warn!(job_id = %job.id, error = %error, "Email outbox lease could not be refreshed before SMTP");
+            return "lease_refresh_failed";
+        }
+    }
 
     let message_id = EmailOutboxService::message_id(&job.id);
     let delivery = tokio::time::timeout(
@@ -238,17 +381,17 @@ async fn dispatch_job(
     match delivery {
         Ok(Ok(())) => match outbox
             .repository()
-            .mark_sent(&job.id, &worker_id, job.lock_version)
+            .mark_sent(&job.id, worker_id, job.lock_version)
             .await
         {
-            Ok(true) => record_completion(kind, "sent", started),
+            Ok(true) => "sent",
             Ok(false) => {
                 warn!(job_id = %job.id, "Email outbox acknowledgement lost its lease fence");
-                record_completion(kind, "fenced", started);
+                "fenced"
             }
             Err(error) => {
                 error!(job_id = %job.id, error = %error, "Email was accepted by SMTP but acknowledgement failed");
-                record_completion(kind, "ack_failed", started);
+                "ack_failed"
             }
         },
         Ok(Err(error)) => {
@@ -258,26 +401,90 @@ async fn dispatch_job(
                     | synctv_core::Error::Timeout(_)
                     | synctv_core::Error::Internal(_)
             );
-            finish_failed(
+            let outcome = finish_failed(
                 &failure_context,
-                &job,
+                job,
                 Some(&payload),
                 "smtp delivery failed",
                 retryable,
             )
             .await;
-            record_completion(kind, if retryable { "retry" } else { "dead" }, started);
+            outcome.metric_status()
         }
         Err(_) => {
-            finish_failed(
+            let outcome = finish_failed(
                 &failure_context,
-                &job,
+                job,
                 Some(&payload),
                 "smtp delivery timed out",
                 true,
             )
             .await;
-            record_completion(kind, "retry", started);
+            outcome.metric_status()
+        }
+    }
+}
+
+async fn wait_until_lease_lost(
+    outbox: &EmailOutboxService,
+    job_id: &str,
+    worker_id: &str,
+    lock_version: i64,
+    renew_interval: Duration,
+) {
+    let first_renewal = Instant::now() + renew_interval;
+    let mut interval = tokio::time::interval_at(first_renewal, renew_interval);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    loop {
+        interval.tick().await;
+        match outbox
+            .repository()
+            .renew_lease(job_id, worker_id, lock_version)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                warn!(job_id = %job_id, "Email outbox lease heartbeat was fenced");
+                return;
+            }
+            Err(error) => {
+                warn!(job_id = %job_id, error = %error, "Email outbox lease heartbeat failed");
+            }
+        }
+    }
+}
+
+async fn delivery_token_is_active(
+    email_token_service: &EmailTokenService,
+    user_service: &UserService,
+    payload: &EmailOutboxPayload,
+) -> synctv_core::Result<bool> {
+    match payload {
+        EmailOutboxPayload::Token {
+            token,
+            user_id,
+            token_type,
+            ..
+        } => {
+            let token_type =
+                EmailTokenType::try_from(*token_type).map_err(synctv_core::Error::Internal)?;
+            email_token_service
+                .is_token_active(token, user_id, token_type)
+                .await
+        }
+        EmailOutboxPayload::Registration { token, .. } => {
+            user_service.is_email_registration_token_active(token).await
+        }
+        EmailOutboxPayload::Bind {
+            token,
+            user_id,
+            email,
+            ..
+        } => {
+            user_service
+                .is_email_bind_token_active(user_id, email, token)
+                .await
         }
     }
 }
@@ -314,13 +521,32 @@ struct FailureContext<'a> {
     worker_id: &'a str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailureOutcome {
+    Retry,
+    Dead,
+    Fenced,
+    PersistFailed,
+}
+
+impl FailureOutcome {
+    const fn metric_status(self) -> &'static str {
+        match self {
+            Self::Retry => "retry",
+            Self::Dead => "dead",
+            Self::Fenced => "fenced",
+            Self::PersistFailed => "persist_failed",
+        }
+    }
+}
+
 async fn finish_failed(
     context: &FailureContext<'_>,
     job: &EmailOutboxJob,
     payload: Option<&EmailOutboxPayload>,
     safe_error: &str,
     retryable: bool,
-) {
+) -> FailureOutcome {
     match context
         .outbox
         .repository()
@@ -345,16 +571,20 @@ async fn finish_failed(
             {
                 warn!(job_id = %job.id, error = %error, "Failed to finish irrecoverable email cleanup state");
             }
+            FailureOutcome::Dead
         }
-        Ok(Some(EmailOutboxStatus::Pending)) => {}
+        Ok(Some(EmailOutboxStatus::Pending)) => FailureOutcome::Retry,
         Ok(Some(_)) => {
             error!(job_id = %job.id, "Email outbox failure produced an invalid status transition");
+            FailureOutcome::PersistFailed
         }
         Ok(None) => {
             warn!(job_id = %job.id, "Email outbox failure update lost its lease fence");
+            FailureOutcome::Fenced
         }
         Err(error) => {
             error!(job_id = %job.id, error = %error, "Failed to persist email delivery failure");
+            FailureOutcome::PersistFailed
         }
     }
 }
@@ -423,6 +653,13 @@ async fn run_maintenance(
     if let Err(error) = outbox.repository().expire_pending().await {
         warn!(error = %error, "Failed to expire email outbox jobs");
     }
+    match outbox.repository().close_unknown_dead_cleanup().await {
+        Ok(count) if count > 0 => {
+            warn!(count, "Closed cleanup for email jobs with unknown kinds");
+        }
+        Ok(_) => {}
+        Err(error) => warn!(error = %error, "Failed to close unknown email job cleanup"),
+    }
     match outbox
         .repository()
         .load_cleanup_pending(CLEANUP_BATCH_SIZE)
@@ -430,7 +667,7 @@ async fn run_maintenance(
     {
         Ok(jobs) => {
             for job in jobs {
-                match outbox.decrypt_payload(&job.encrypted_payload) {
+                match outbox.decrypt_payload(&job) {
                     Ok(payload) => {
                         cleanup_dead_job(outbox, email_token_service, user_service, &job, &payload)
                             .await;
@@ -477,7 +714,15 @@ fn record_completion(kind: &str, status: &str, started: Instant) {
 
 #[cfg(test)]
 mod tests {
-    use super::should_run_maintenance;
+    use super::{
+        next_reconnect_delay, should_run_maintenance, wait_until_lease_lost, FailureOutcome,
+    };
+    use chrono::{Duration as ChronoDuration, Utc};
+    use std::time::Duration;
+    use synctv_core::{
+        repository::{EmailOutboxKind, NewEmailOutboxJob},
+        service::EmailOutboxService,
+    };
     use tokio::time::Instant;
 
     #[test]
@@ -490,5 +735,93 @@ mod tests {
             now,
             now + std::time::Duration::from_secs(1)
         ));
+    }
+
+    #[test]
+    fn listener_reconnect_delay_is_capped() {
+        assert_eq!(
+            next_reconnect_delay(Duration::from_secs(1)),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            next_reconnect_delay(Duration::from_secs(20)),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            next_reconnect_delay(Duration::from_secs(30)),
+            Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn failure_metrics_follow_persisted_outcome() {
+        assert_eq!(FailureOutcome::Retry.metric_status(), "retry");
+        assert_eq!(FailureOutcome::Dead.metric_status(), "dead");
+        assert_eq!(FailureOutcome::Fenced.metric_status(), "fenced");
+        assert_eq!(
+            FailureOutcome::PersistFailed.metric_status(),
+            "persist_failed"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
+    async fn cancelling_lease_heartbeat_allows_stale_job_recovery() {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let outbox = std::sync::Arc::new(
+            EmailOutboxService::new(pool.clone(), &"ab".repeat(32)).expect("create outbox"),
+        );
+        let now = Utc::now();
+        outbox
+            .repository()
+            .insert(&NewEmailOutboxJob {
+                id: "cancelled-heartbeat".to_string(),
+                kind: EmailOutboxKind::EmailLogin,
+                recipient: "test@example.com".to_string(),
+                encrypted_payload: "test-payload".to_string(),
+                dedupe_key: "cancelled-heartbeat".to_string(),
+                attempts: 0,
+                next_attempt_at: now,
+                lock_version: 0,
+                expires_at: now + ChronoDuration::hours(1),
+                created_at: now,
+            })
+            .await
+            .expect("insert job");
+        let claimed = outbox
+            .repository()
+            .claim_batch("worker-a", 1)
+            .await
+            .expect("claim job")
+            .remove(0);
+
+        let heartbeat_outbox = outbox.clone();
+        let heartbeat = tokio::spawn(async move {
+            wait_until_lease_lost(
+                &heartbeat_outbox,
+                &claimed.id,
+                "worker-a",
+                claimed.lock_version,
+                Duration::from_millis(20),
+            )
+            .await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        heartbeat.abort();
+        heartbeat.await.expect_err("heartbeat should be cancelled");
+
+        sqlx::query("UPDATE email_outbox SET locked_at = NOW() - INTERVAL '3 minutes'")
+            .execute(&pool)
+            .await
+            .expect("age lease");
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(
+            outbox
+                .repository()
+                .requeue_stale_processing(120)
+                .await
+                .expect("requeue stale job"),
+            1
+        );
     }
 }

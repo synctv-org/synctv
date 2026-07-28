@@ -831,8 +831,19 @@ impl Provider for OidcProvider {
             .client
             .authorize_url(|| oauth2::CsrfToken::new(state.to_string()))
             .add_scope(Scope::new("openid".to_string()))
-            .add_scope(Scope::new("profile".to_string()))
-            .add_scope(Scope::new("email".to_string()))
+            .add_scope(Scope::new("email".to_string()));
+        // Apple supports `openid`, `email`, and `name`; requesting the generic
+        // OIDC `profile` scope causes an invalid_scope response.
+        if self
+            .init_config
+            .issuer
+            .eq_ignore_ascii_case("https://appleid.apple.com")
+        {
+            request = request.add_scope(Scope::new("name".to_string()));
+        } else {
+            request = request.add_scope(Scope::new("profile".to_string()));
+        }
+        let mut request = request
             .add_extra_param("nonce", nonce.as_str())
             .set_pkce_challenge(pkce_challenge);
         if let Some(redirect_url) = redirect_url {
@@ -1909,6 +1920,33 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         assert!(auth_url.contains("code_challenge_method=S256"));
         // PKCE verifier should be non-empty
         assert!(!pkce_verifier.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_apple_auth_url_uses_supported_scopes() {
+        let provider = OidcProvider::create_with_endpoints(
+            "org.synctv.app.web".to_string(),
+            "secret".to_string(),
+            "https://syncs.tv/oauth2/callback".to_string(),
+            "https://appleid.apple.com",
+            OidcEndpointOverrides {
+                auth_url: Some("https://appleid.apple.com/auth/authorize".to_string()),
+                token_url: Some("https://appleid.apple.com/auth/token".to_string()),
+                userinfo_url: None,
+                jwks_url: Some("https://appleid.apple.com/auth/keys".to_string()),
+            },
+        )
+        .checked("operation should succeed");
+
+        let auth = provider
+            .new_auth_url("apple_state", None)
+            .await
+            .checked("operation should succeed");
+
+        assert!(auth.auth_url.contains("scope=openid"));
+        assert!(auth.auth_url.contains("+email"));
+        assert!(auth.auth_url.contains("+name"));
+        assert!(!auth.auth_url.contains("+profile"));
     }
 
     #[test]

@@ -7,6 +7,10 @@ import { docsBase, docsSite, githubEditUrl, githubUrl } from './src/lib/project'
 export default defineConfig({
   site: docsSite,
   base: docsBase,
+  redirects: {
+    '/install/quick-start': '/install/docker-compose',
+    '/en/install/quick-start': '/en/install/docker-compose',
+  },
   integrations: [
     starlight({
       title: {
@@ -125,8 +129,7 @@ export default defineConfig({
           translations: { en: 'Get Started' },
           items: [
             { label: '选择部署方式', translations: { en: 'Choose a Deployment' }, slug: 'install/choose-path' },
-            { label: 'Docker Compose 安装', translations: { en: 'Install with Docker Compose' }, slug: 'install/quick-start' },
-            { label: 'Docker Compose 部署', translations: { en: 'Docker Compose Deployment' }, slug: 'install/docker-compose' },
+            { label: 'Docker Compose 安装', translations: { en: 'Install with Docker Compose' }, slug: 'install/docker-compose' },
             { label: 'Helm 部署', translations: { en: 'Helm Deployment' }, slug: 'install/helm' },
             { label: '生产部署清单', translations: { en: 'Production Checklist' }, slug: 'install/production-checklist' },
           ],

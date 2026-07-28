@@ -1,51 +1,63 @@
 ---
-title: Docker Compose 部署
-description: 使用生产 docker-compose.yml 部署和运行单机 SyncTV。
+title: 使用 Docker Compose 安装
+description: 在一台主机上安装和运行 SyncTV、PostgreSQL 与 Redis。
 ---
 
-import { Code } from '@astrojs/starlight/components';
+import { Aside, Code, Steps } from '@astrojs/starlight/components';
 import {
   dockerImageReference,
   githubCloneUrl,
 } from '../../../lib/project';
 
-单机部署优先使用 `docker-compose.yml`。它使用预构建镜像、显式生产 secret、持久化 env 文件和数据卷，适合一台服务器或本机长期运行。
+此方法使用预构建镜像，在一台服务器、NAS 或虚拟机上运行 SyncTV、PostgreSQL 和 Redis。Kubernetes 环境使用 [Helm 部署](../helm/)。
 
 还没有确定部署方式时，先读 [部署路径选择](../choose-path/)。
 
-## 获取生产 Compose 配置
+## 前置条件
 
-生产 Compose 的配置与生命周期由仓库 Makefile 统一维护。获取源码：
+- Docker 和 Docker Compose。
+- GNU Make 和 `openssl`，用于生成环境文件和长期 secret。
+- 一个长期保留的工作目录，用于保存 Compose 配置、环境文件和数据卷。
+- 使用密码管理器生成的初始 root 密码。
 
-<Code code={`git clone --depth 1 ${githubCloneUrl} synctv
-cd synctv`} lang="bash" />
+## 安装
 
-确认主机已安装 Docker Compose、GNU Make 和 `openssl`。`make compose-init` 使用 `openssl` 生成 PostgreSQL、Redis、JWT、cluster、credential-encryption 和 OPAQUE secret。PostgreSQL 与 Redis 密码使用 URL 安全的十六进制格式。Compose 默认使用镜像 <code>{dockerImageReference}</code>。
+<Steps>
+1. 获取生产 Compose 配置：
 
-## 生产 Compose 启动
+    <Code code={`git clone --depth 1 ${githubCloneUrl} synctv\ncd synctv`} lang="bash" />
 
-首次启动前生成持久化环境文件：
+2. 生成 `.env.postgres`、`.env.redis` 和 `.env.synctv`：
 
-```bash
-make compose-init
-```
+    ```bash
+    make compose-init
+    ```
 
-编辑 `.env.synctv`，至少设置：
+3. 编辑 `.env.synctv`，设置初始 root 密码。前端与 API 使用不同 origin 时，同时填写 CORS origin：
 
-```dotenv
-SYNCTV_BOOTSTRAP_ROOT_PASSWORD=replace-with-a-strong-password
-# 如果前端和 API 不同 origin，使用 JSON 数组。
-SYNCTV_SERVER_CORS_ALLOWED_ORIGINS=["https://app.example.com"]
-```
+    ```dotenv
+    SYNCTV_BOOTSTRAP_ROOT_PASSWORD=replace-with-a-strong-password
+    SYNCTV_SERVER_CORS_ALLOWED_ORIGINS=["https://app.example.com"]
+    ```
 
-检查配置并启动：
+4. 检查最终 Compose 配置：
 
-```bash
-make compose-config
-make compose-up
-```
+    ```bash
+    make compose-config
+    ```
 
-启动成功后立即验证：
+5. 在后台启动服务：
+
+    ```bash
+    make compose-up
+    ```
+</Steps>
+
+`make compose-init` 使用 `openssl` 生成 PostgreSQL、Redis、JWT、cluster、credential-encryption 和 OPAQUE secret。PostgreSQL 与 Redis 密码使用 URL 安全的十六进制格式。Compose 默认使用镜像 <code>{dockerImageReference}</code>。
+
+## 验证
+
+查看容器状态并请求 readiness endpoint：
 
 ```bash
 make compose-ps
@@ -53,6 +65,8 @@ curl -fsS http://localhost:8080/health/ready
 ```
 
 浏览器打开 `http://localhost:8080`。默认 root 用户名是 `root`，密码来自 `.env.synctv` 里的 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`。
+
+## 环境文件与版本
 
 Docker Compose 会通过 `env_file` 分别加载必需的 `.env.postgres`、`.env.redis` 和 `.env.synctv`：PostgreSQL 只读取数据库变量，Redis 只读取 `REDIS_PASSWORD`，`synctv` 只读取 `SYNCTV_*` 应用配置。`make compose-init` 会把同一个 Redis 密码写入 `.env.redis` 的 `REDIS_PASSWORD`，并写入 `.env.synctv` 中带认证信息的 `SYNCTV_REDIS_URL`。请备份这三个文件；重启、换 shell、服务器重启或升级时都应复用同一组环境文件。缺少任一文件时，`make compose-config` 会直接失败。
 
@@ -91,36 +105,35 @@ SYNCTV_DATA_DIR=/data
 
 如果宿主机端口冲突，可以修改 Compose ports。
 
-## 健康检查
+## 备份
 
-Compose 使用：
+备份 PostgreSQL volume、三个环境文件，以及启用了持久化 HLS 或 proxy slice cache 时的 `/data`。以下值需要长期保存：
 
-```text
-http://localhost:8080/health/ready
-```
+| 环境变量 | 用途 |
+| --- | --- |
+| `SYNCTV_JWT_SECRET` | 签发 access token、refresh token 和 guest token |
+| `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` | OPAQUE 密码认证的服务端长期 secret |
+| `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` | 加密 Provider 凭据 |
+| `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` | 首次创建 root 用户 |
 
-如果健康检查失败，先看日志：
+<Aside type="caution">
+长期复用 `.env.synctv` 中的 secret。OPAQUE secret 关联现有密码记录，凭据加密密钥关联现有 Provider 凭据。
+</Aside>
 
-```bash
-make compose-logs SERVICE=synctv
-```
+Redis 保存缓存和共享状态。恢复或清空 Redis 会影响 OAuth2 state、token blacklist、限流计数器等短期状态。
 
-## 故障与边界
+## 常见失败
 
-### 生产 Secret
+| 现象 | 处理 |
+| --- | --- |
+| `make compose-config` 提示变量或文件缺失 | 运行 `make compose-init`，并在当前目录保留三个环境文件。 |
+| `/health/ready` 失败 | 运行 `make compose-logs SERVICE=synctv`，检查第一条启动错误。 |
+| 浏览器出现 CORS 错误 | 在 `.env.synctv` 中设置 `SYNCTV_SERVER_CORS_ALLOWED_ORIGINS`，值使用 origin 数组。 |
+| root 用户无法登录 | 确认首次启动数据库前已经设置 root 密码，并检查 bootstrap 日志。 |
+| 宿主机端口冲突 | 修改 Compose 的端口映射，然后重新运行 `make compose-config`。 |
 
-`docker-compose.yml` 要求显式设置 secret，避免生产实例使用已知默认值启动。
+## 上线前
 
-### OPAQUE Secret 变更
-
-`SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` 关联已有密码记录。跨重启和升级保留同一个值；变更后已有用户密码可能无法验证。
-
-### 备份范围
-
-至少备份：
-
-- PostgreSQL volume。
-- 生产 secret。
-- 如果启用了持久化 slice cache 或 HLS 文件，也按需求备份 `/data`。
-
-Redis 通常是缓存和共享状态，但如果你依赖 token blacklist、OAuth2 state 等短期状态，重启影响也要考虑。
+- 按[生产部署清单](../production-checklist/)配置 TLS、备份、metrics 和告警。
+- 按[升级与迁移](../../operations/upgrades/)升级镜像和数据库。
+- 配置字段和环境变量分别见[配置字段](../../reference/configuration-index/)与[环境变量](../../reference/environment-variables/)。

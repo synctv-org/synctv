@@ -46,6 +46,7 @@ use crate::bootstrap::{
     bootstrap_root_user, has_any_admin_users, init_database_with_read_pool_and_cancel, init_redis,
     init_services_with_options, DatabasePools, InitServicesOptions, RedisInitOptions,
 };
+use crate::email_outbox_dispatcher::start_email_outbox_dispatcher;
 use crate::realtime_bridge::room_event_to_realtime_event;
 use crate::realtime_outbox_dispatcher::start_realtime_outbox_dispatcher;
 use crate::resource_options::{
@@ -735,6 +736,7 @@ impl Application {
             };
 
         // Phase 5: Singleton background tasks
+        Self::start_email_outbox_dispatcher(&infra, &core, &leader, &mut shutdown);
         Self::start_singleton_tasks(&infra, &runtime_plan, &core, &leader, &mut shutdown);
 
         // Phase 6: Cluster infrastructure
@@ -1324,6 +1326,34 @@ impl Application {
         }
     }
 
+    fn start_email_outbox_dispatcher(
+        infra: &Infrastructure,
+        core: &CoreState,
+        leader: &LeaderState,
+        shutdown: &mut ShutdownCoordinator,
+    ) {
+        let (Some(email_service), Some(email_token_service)) = (
+            core.services.email_service.clone(),
+            core.services.email_token_service.clone(),
+        ) else {
+            return;
+        };
+        let cancel = shutdown.register_token("email_outbox_dispatcher");
+        shutdown.register_task(
+            "email_outbox_dispatcher",
+            start_email_outbox_dispatcher(
+                core.services.email_outbox_service.clone(),
+                email_service,
+                email_token_service,
+                core.services.user_service.clone(),
+                leader.leader_runtime.clone(),
+                infra.node_id.clone(),
+                cancel,
+            ),
+        );
+        info!("Email outbox dispatcher started with active-active delivery");
+    }
+
     fn start_playback_background_tasks(
         infra: &Infrastructure,
         core: &CoreState,
@@ -1647,6 +1677,7 @@ impl Application {
             runtime_settings_store: core.services.runtime_settings_store.clone(),
             email_service: core.services.email_service.clone(),
             email_token_service: core.services.email_token_service.clone(),
+            email_outbox_service: core.services.email_outbox_service.clone(),
             ws_ticket_service: core.services.ws_ticket_service.clone(),
             publish_key_service: core.services.publish_key_service.clone(),
             notification_service: Some(core.services.notification_service.clone()),

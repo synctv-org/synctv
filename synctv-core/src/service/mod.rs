@@ -10,6 +10,7 @@ pub(crate) mod content_report;
 pub(crate) mod db_maintenance;
 pub(crate) mod distributed_lock;
 pub(crate) mod email;
+pub(crate) mod email_outbox;
 pub(crate) mod email_templates;
 pub(crate) mod email_token;
 pub(crate) mod file_storage;
@@ -85,6 +86,7 @@ pub use distributed_lock::{with_coordination_lock, CoordinationLock, Distributed
 pub use email::{
     mask_email, EmailConfig, EmailConfigProvider, EmailService, SmtpCredentials, SmtpProxyConfig,
 };
+pub use email_outbox::{EmailOutboxPayload, EmailOutboxService};
 pub use email_token::{EmailTokenRateLimitConfig, EmailTokenService};
 pub use file_storage::{
     submitted_file_reference_from_reuse_token, submitted_file_reference_from_session_file,

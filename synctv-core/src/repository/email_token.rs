@@ -6,7 +6,7 @@ use crate::{
 };
 use chrono::Utc;
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 
 /// Email token record
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -37,6 +37,11 @@ impl EmailTokenRepository {
         Self { pool }
     }
 
+    #[must_use]
+    pub const fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     /// Create a new token
     pub async fn create(
         &self,
@@ -44,6 +49,22 @@ impl EmailTokenRepository {
         user_id: &UserId,
         token_type: EmailTokenType,
         expires_at: chrono::DateTime<Utc>,
+    ) -> Result<EmailToken> {
+        let mut tx = self.pool.begin().await?;
+        let token = self
+            .create_with_executor(token, user_id, token_type, expires_at, &mut tx)
+            .await?;
+        tx.commit().await?;
+        Ok(token)
+    }
+
+    pub async fn create_with_executor(
+        &self,
+        token: &str,
+        user_id: &UserId,
+        token_type: EmailTokenType,
+        expires_at: chrono::DateTime<Utc>,
+        tx: &mut Transaction<'_, Postgres>,
     ) -> Result<EmailToken> {
         let t = sqlx::query_as!(
             EmailToken,
@@ -57,7 +78,7 @@ impl EmailTokenRepository {
             i16::from(token_type),
             expires_at,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(&mut **tx)
         .await?;
 
         Ok(t)
@@ -72,13 +93,27 @@ impl EmailTokenRepository {
         expires_at: chrono::DateTime<Utc>,
     ) -> Result<EmailToken> {
         let mut tx = self.pool.begin().await?;
+        let token = self
+            .create_or_replace_unused_with_executor(token, user_id, token_type, expires_at, &mut tx)
+            .await?;
+        tx.commit().await?;
+        Ok(token)
+    }
 
+    pub async fn create_or_replace_unused_with_executor(
+        &self,
+        token: &str,
+        user_id: &UserId,
+        token_type: EmailTokenType,
+        expires_at: chrono::DateTime<Utc>,
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> Result<EmailToken> {
         sqlx::query!(
             "SELECT pg_advisory_xact_lock(hashtext($1::text), $2)",
             user_id.to_string(),
             i32::from(i16::from(token_type)),
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
 
         sqlx::query!(
@@ -91,7 +126,7 @@ impl EmailTokenRepository {
             user_id as &UserId,
             i16::from(token_type),
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
 
         let t = sqlx::query_as!(
@@ -106,10 +141,8 @@ impl EmailTokenRepository {
             i16::from(token_type),
             expires_at,
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
-
-        tx.commit().await?;
 
         Ok(t)
     }

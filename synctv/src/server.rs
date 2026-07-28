@@ -107,6 +107,7 @@ pub struct Services {
     pub runtime_settings_store: Arc<synctv_core::service::RuntimeSettingsStore>,
     pub email_service: Option<Arc<synctv_core::service::EmailService>>,
     pub email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
+    pub email_outbox_service: Arc<synctv_core::service::EmailOutboxService>,
     pub ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
     pub publish_key_service: Arc<dyn synctv_core::service::StreamingPublishKeyService>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
@@ -272,6 +273,7 @@ fn build_core_api_impls(
     provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     email_service: Option<Arc<synctv_core::service::EmailService>>,
     email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
+    email_outbox_service: Option<Arc<synctv_core::service::EmailOutboxService>>,
     passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
     redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
     builtin_stun_url: Option<String>,
@@ -291,12 +293,16 @@ fn build_core_api_impls(
     notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
 ) -> anyhow::Result<SharedCoreApiImpls> {
-    let email = match (email_service.clone(), email_token_service) {
-        (Some(email_service), Some(email_token_service)) => {
+    let email = match (
+        email_service.clone(),
+        email_token_service,
+        email_outbox_service,
+    ) {
+        (Some(_email_service), Some(email_token_service), Some(email_outbox_service)) => {
             Some(Arc::new(synctv_api::EmailApiImpl::new(
                 user_service.clone(),
-                email_service,
                 email_token_service,
+                email_outbox_service,
                 rate_limiter.clone(),
                 public_id_codec.clone(),
             )))
@@ -2312,6 +2318,7 @@ impl SyncTvServer {
             shared_provider_runtime.provider_stores.clone(),
             self.services.email_service.clone(),
             self.services.email_token_service.clone(),
+            Some(self.services.email_outbox_service.clone()),
             self.services.passkey_service.clone(),
             self.services.redis_runtime.clone(),
             self.builtin_stun_url(),
@@ -2897,6 +2904,7 @@ mod tests {
             None,
             shared_runtime.provider_stores.clone(),
             Some(email_service.clone()),
+            None,
             None,
             None,
             None,

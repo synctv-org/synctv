@@ -66,6 +66,10 @@ curl -fsS \
 | `webrtc_peers_active` | gauge | none | 活跃 WebRTC peer |
 | `active_connections` | gauge | none | 活跃连接 |
 | `spawned_task_panics_total` | counter | `task_name` | `spawn_monitored` 捕获的后台任务 panic |
+| `email_delivery_queue_depth` | gauge | none | PostgreSQL outbox 中等待投递的邮件任务数 |
+| `email_delivery_in_flight` | gauge | none | 当前实例正在投递的邮件任务数 |
+| `email_delivery_jobs_total` | counter | `kind`, `status` | 邮件任务结果数；状态包括 `sent`、`retry`、`dead`、`fenced` 和 `ack_failed` |
+| `email_delivery_duration_seconds` | histogram | `kind`, `status` | 按任务类型和结果统计的投递耗时 |
 | `rate_limit_checks_total` | counter | `backend`, `category` | 限流检查数 |
 | `rate_limit_rejections_total` | counter | `backend`, `category` | 限流拒绝数 |
 | `rate_limit_redis_fallbacks_total` | counter | `category` | Redis 限流失败后的内存降级次数 |

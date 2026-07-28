@@ -66,6 +66,10 @@ Disabled or unused features may not emit their metrics. Do not expose the metric
 | `webrtc_peers_active` | gauge | none | Active WebRTC peers |
 | `active_connections` | gauge | none | Active connections |
 | `spawned_task_panics_total` | counter | `task_name` | Background task panics caught by `spawn_monitored` |
+| `email_delivery_queue_depth` | gauge | none | Email jobs awaiting delivery in the PostgreSQL outbox |
+| `email_delivery_in_flight` | gauge | none | Email jobs being delivered by this instance |
+| `email_delivery_jobs_total` | counter | `kind`, `status` | Email job outcomes: `sent`, `retry`, `dead`, `fenced`, or `ack_failed` |
+| `email_delivery_duration_seconds` | histogram | `kind`, `status` | Delivery duration by job kind and outcome |
 | `rate_limit_checks_total` | counter | `backend`, `category` | Rate-limit checks |
 | `rate_limit_rejections_total` | counter | `backend`, `category` | Rate-limit rejections |
 | `rate_limit_redis_fallbacks_total` | counter | `category` | In-memory fallback after Redis rate-limit errors |

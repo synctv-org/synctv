@@ -3,6 +3,7 @@ pub(crate) mod ban;
 pub mod chat;
 pub(crate) mod content_report;
 pub(crate) mod email_bind;
+pub mod email_outbox;
 pub(crate) mod email_registration_token;
 pub(crate) mod email_token;
 pub(crate) mod file_storage;
@@ -51,6 +52,9 @@ pub use content_report::{
     ContentReportListQuery, ContentReportListScope, ContentReportPage, ContentReportRepository,
 };
 pub use email_bind::EmailBindRepository;
+pub use email_outbox::{
+    EmailOutboxJob, EmailOutboxKind, EmailOutboxRepository, EmailOutboxStatus, NewEmailOutboxJob,
+};
 pub use email_registration_token::{EmailRegistrationToken, EmailRegistrationTokenRepository};
 pub use email_token::EmailTokenRepository;
 pub use file_storage::{

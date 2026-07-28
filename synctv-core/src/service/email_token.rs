@@ -17,7 +17,7 @@ use tracing::{debug, info, warn};
 use crate::{
     models::UserId,
     repository::EmailTokenRepository,
-    service::{RateLimitError, RequestRateLimiterService},
+    service::{EmailOutboxService, RateLimitError, RequestRateLimiterService},
     Clock, Error, Result, SystemClock,
 };
 
@@ -238,6 +238,56 @@ impl EmailTokenService {
 
         debug!("Generated {} token for user {}", token_type, user_id);
 
+        Ok(token)
+    }
+
+    pub async fn generate_token_and_enqueue_with_control(
+        &self,
+        outbox: &EmailOutboxService,
+        recipient: &str,
+        user_id: &UserId,
+        token_type: EmailTokenType,
+        control: Option<&ExecutionControl>,
+    ) -> Result<String> {
+        self.check_generation_rate_limit(user_id, token_type, control)
+            .await?;
+
+        let token = synctv_common::snanoid!(64);
+        let expires_at = self.clock.now() + token_type.expiration_duration();
+        let job = outbox.prepare_token(recipient, &token, user_id, token_type, expires_at)?;
+
+        Self::run_with_control(control, async {
+            let mut tx = self.repository.pool().begin().await?;
+            if token_type.keeps_multiple_unused_tokens() {
+                self.repository
+                    .create_with_executor(&token, user_id, token_type, expires_at, &mut tx)
+                    .await?;
+            } else {
+                self.repository
+                    .create_or_replace_unused_with_executor(
+                        &token, user_id, token_type, expires_at, &mut tx,
+                    )
+                    .await?;
+            }
+            if !outbox
+                .repository()
+                .insert_with_executor(&job, &mut tx)
+                .await?
+            {
+                return Err(Error::Internal(
+                    "Email outbox job was unexpectedly deduplicated".to_string(),
+                ));
+            }
+            tx.commit().await?;
+            Ok(())
+        })
+        .await?;
+
+        debug!(
+            user_id = %user_id,
+            token_type = %token_type,
+            "Generated email token and persisted delivery job"
+        );
         Ok(token)
     }
 

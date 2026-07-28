@@ -7993,6 +7993,7 @@ dependencies = [
  "governor",
  "handlebars",
  "hex",
+ "hkdf 0.12.4",
  "hmac 0.13.0",
  "hostname",
  "humantime",

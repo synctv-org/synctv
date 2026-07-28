@@ -26,15 +26,16 @@ use synctv_core::{
     service::{
         AuditFlushHandle, AuditService, ChatService, ContentFilter,
         DatabaseFileStorageCompressionConfig, DatabaseFileStorageService,
-        DisabledFileStorageService, EmailService, EmailTokenRateLimitConfig, EmailTokenService,
-        FileStorageBackendRegistry, FileStorageService, JwtService, MediaProvidersOptions,
-        NotificationService as RoomNotificationService, OAuth2Service, OAuth2ServiceRuntime,
-        PasskeyService, PasskeyServiceOptions, PermissionService, PgTokenBlacklistStore,
-        ProvidersManager, RateLimitConfig, RemoteProviderManager, RemoteProviderManagerOptions,
-        RequestRateLimiterService, RoomService, RoomSettingsRuntime, RoomSettingsService,
-        RuntimeEmailConfigProvider, RuntimeSettingsStore, S3CompatibleFileStorageService,
-        S3FileStorageConfig, SettingsService, SettingsServiceRuntime, StreamingPublishKeyService,
-        TieredTokenBlacklistStore, UserNotificationService, UserService,
+        DisabledFileStorageService, EmailOutboxService, EmailService, EmailTokenRateLimitConfig,
+        EmailTokenService, FileStorageBackendRegistry, FileStorageService, JwtService,
+        MediaProvidersOptions, NotificationService as RoomNotificationService, OAuth2Service,
+        OAuth2ServiceRuntime, PasskeyService, PasskeyServiceOptions, PermissionService,
+        PgTokenBlacklistStore, ProvidersManager, RateLimitConfig, RemoteProviderManager,
+        RemoteProviderManagerOptions, RequestRateLimiterService, RoomService, RoomSettingsRuntime,
+        RoomSettingsService, RuntimeEmailConfigProvider, RuntimeSettingsStore,
+        S3CompatibleFileStorageService, S3FileStorageConfig, SettingsService,
+        SettingsServiceRuntime, StreamingPublishKeyService, TieredTokenBlacklistStore,
+        UserNotificationService, UserService,
     },
     validation::PasswordComplexityOptions,
     RedisDeploymentMode, SharedStateMode, SharedStateProfile,
@@ -364,6 +365,8 @@ pub struct Services {
     pub email_service: Option<Arc<EmailService>>,
     /// Email token service for bind, login, and password reset codes.
     pub email_token_service: Option<Arc<EmailTokenService>>,
+    /// Durable email delivery outbox shared by API writers and cluster workers.
+    pub email_outbox_service: Arc<EmailOutboxService>,
     /// Shared WebSocket ticket service reused across transports.
     pub ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
     /// Publish key service for RTMP streaming
@@ -920,6 +923,11 @@ pub async fn init_services_with_options(
         runtime_options.clock.clone(),
     ));
     info!("Email token service initialized");
+    let email_outbox_service = Arc::new(EmailOutboxService::new(
+        pool.clone(),
+        service_options.jwt.secret.as_bytes(),
+    )?);
+    info!("Durable email outbox initialized");
 
     let ws_ticket_service = build_ws_ticket_service(&shared_state_profile)?;
     info!(
@@ -1245,6 +1253,7 @@ pub async fn init_services_with_options(
         runtime_settings_store,
         email_service,
         email_token_service,
+        email_outbox_service,
         ws_ticket_service,
         publish_key_service,
         notification_service,

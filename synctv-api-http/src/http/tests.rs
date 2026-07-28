@@ -126,11 +126,15 @@ fn test_core_api_impls(
     provider_instance_manager: Arc<synctv_core::service::RemoteProviderManager>,
 ) -> TestResult<TestCoreApiImpls> {
     let email = match (email_service.clone(), email_token_service) {
-        (Some(email_service), Some(email_token_service)) => {
+        (Some(_email_service), Some(email_token_service)) => {
+            let email_outbox_service = Arc::new(synctv_core::service::EmailOutboxService::new(
+                user_service.pool().clone(),
+                b"http-test-email-outbox-secret",
+            )?);
             Some(Arc::new(synctv_api_common::impls::EmailApiImpl::new(
                 user_service.clone(),
-                email_service,
                 email_token_service,
+                email_outbox_service,
                 rate_limiter.clone(),
                 public_id_codec.clone(),
             )))

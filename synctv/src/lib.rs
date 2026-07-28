@@ -10,6 +10,7 @@ mod bootstrap;
 pub mod cli;
 mod config_env;
 mod config_loader;
+mod email_outbox_dispatcher;
 mod management_runtime;
 mod migrations;
 mod path_util;

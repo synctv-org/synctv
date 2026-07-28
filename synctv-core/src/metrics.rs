@@ -233,6 +233,52 @@ pub mod application {
         });
 }
 
+/// Asynchronous email delivery metrics.
+pub mod email {
+    use super::*;
+
+    /// Number of queued email jobs waiting for a worker.
+    pub static EMAIL_DELIVERY_QUEUE_DEPTH: std::sync::LazyLock<IntGauge> =
+        std::sync::LazyLock::new(|| {
+            int_gauge(
+                "email_delivery_queue_depth",
+                "Number of queued email delivery jobs",
+            )
+        });
+
+    /// Number of email jobs currently being processed.
+    pub static EMAIL_DELIVERY_IN_FLIGHT: std::sync::LazyLock<IntGauge> =
+        std::sync::LazyLock::new(|| {
+            int_gauge(
+                "email_delivery_in_flight",
+                "Number of email delivery jobs currently being processed",
+            )
+        });
+
+    /// Email delivery job transitions, labeled by message kind and status.
+    pub static EMAIL_DELIVERY_JOBS_TOTAL: std::sync::LazyLock<IntCounterVec> =
+        std::sync::LazyLock::new(|| {
+            int_counter_vec(
+                "email_delivery_jobs_total",
+                "Total email delivery job transitions",
+                &["kind", "status"],
+            )
+        });
+
+    /// SMTP delivery duration, labeled by message kind and final status.
+    pub static EMAIL_DELIVERY_DURATION_SECONDS: std::sync::LazyLock<HistogramVec> =
+        std::sync::LazyLock::new(|| {
+            histogram_vec(
+                HistogramOpts::new(
+                    "email_delivery_duration_seconds",
+                    "Email delivery processing duration in seconds",
+                )
+                .buckets(vec![0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0]),
+                &["kind", "status"],
+            )
+        });
+}
+
 /// Active connections gauge
 pub static ACTIVE_CONNECTIONS: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
     int_gauge("active_connections", "Current number of active connections")
@@ -1244,6 +1290,14 @@ mod tests {
         application::CHAT_MESSAGES_TOTAL
             .with_label_values(&[] as &[&str])
             .inc();
+        email::EMAIL_DELIVERY_QUEUE_DEPTH.set(0);
+        email::EMAIL_DELIVERY_IN_FLIGHT.set(0);
+        email::EMAIL_DELIVERY_JOBS_TOTAL
+            .with_label_values(&["_test", "queued"])
+            .inc();
+        email::EMAIL_DELIVERY_DURATION_SECONDS
+            .with_label_values(&["_test", "sent"])
+            .observe(0.0);
         database::DB_CONNECTIONS_ACTIVE.set(0);
         database::DB_CONNECTIONS_IDLE.set(0);
         database::DB_POOL_SIZE_MAX.set(0);
@@ -1311,6 +1365,22 @@ mod tests {
         assert!(
             output.contains("chat_messages_total"),
             "Missing chat_messages_total"
+        );
+        assert!(
+            output.contains("email_delivery_queue_depth"),
+            "Missing email_delivery_queue_depth"
+        );
+        assert!(
+            output.contains("email_delivery_in_flight"),
+            "Missing email_delivery_in_flight"
+        );
+        assert!(
+            output.contains("email_delivery_jobs_total"),
+            "Missing email_delivery_jobs_total"
+        );
+        assert!(
+            output.contains("email_delivery_duration_seconds"),
+            "Missing email_delivery_duration_seconds"
         );
 
         // Cache metrics

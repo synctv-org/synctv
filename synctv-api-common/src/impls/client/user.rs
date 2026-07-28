@@ -636,23 +636,9 @@ impl ClientApiImpl {
                 None,
             )
             .await?;
-        let token = self
-            .user_service
-            .start_email_bind(user_id, &email)
-            .await
-            .map_err(ApiError::from)?;
-
-        if let Err(error) = email_api
-            .email_service
-            .send_email_bind_token_email_with_control(&email, &token, None)
-            .await
-        {
-            self.user_service
-                .delete_pending_email_bind(user_id, &email, &token)
-                .await
-                .map_err(ApiError::from)?;
-            return Err(ApiError::from(error));
-        }
+        email_api
+            .start_email_bind_and_enqueue(&email, user_id)
+            .await?;
 
         Ok(synctv_proto::client::StartEmailBindResponse {
             masked_email: synctv_core::service::mask_email(&email),
@@ -768,10 +754,10 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::Authentication("Authentication failed".to_string()))?;
         email_api
-            .check_email_delivery_rate_limits(&email, user_id, EmailTokenType::EmailLogin, None)
+            .check_email_address_rate_limit(&email, None)
             .await?;
         email_api
-            .send_tokenized_email_with_control(
+            .enqueue_tokenized_email_with_control(
                 &email,
                 user_id,
                 synctv_core::models::EmailTokenType::EmailLogin,

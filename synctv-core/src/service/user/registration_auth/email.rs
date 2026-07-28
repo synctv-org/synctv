@@ -5,7 +5,7 @@ use synctv_common::ExecutionControl;
 use crate::{
     models::{SignupMethod, User, UserStatus},
     repository::{EmailRegistrationTokenRepository, PasswordCredentialMaterial},
-    service::UserService,
+    service::{EmailOutboxService, UserService},
     Error, Result,
 };
 
@@ -146,6 +146,51 @@ impl UserService {
             .await?;
 
         Ok(token)
+    }
+
+    pub async fn create_email_registration_and_enqueue_with_control(
+        &self,
+        outbox: &EmailOutboxService,
+        username: String,
+        email: String,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        self.ensure_registration_review_supported(RegistrationMode::Email)?;
+        let username = Self::normalize_username_for_storage(&username)?;
+        Self::validate_email(&email)?;
+        self.validate_email_whitelist_policy(&email)?;
+        self.validate_registration_identity_with_control(
+            &username,
+            Some(&email),
+            client_ip,
+            control,
+        )
+        .await?;
+        if let Some(control) = control {
+            control
+                .check_active()
+                .map_err(|error| Error::Timeout(error.to_string()))?;
+        }
+
+        let token = synctv_common::snanoid!(64);
+        let expires_at = crate::SystemClock.now() + chrono::Duration::minutes(15);
+        let job = outbox.prepare_registration(&email, &token, expires_at)?;
+        let mut tx = self.repository.pool().begin().await?;
+        self.email_registration_token_repository
+            .create_or_replace_unused_with_executor(&token, &username, &email, expires_at, &mut tx)
+            .await?;
+        if !outbox
+            .repository()
+            .insert_with_executor(&job, &mut tx)
+            .await?
+        {
+            return Err(Error::Internal(
+                "Registration email outbox job was unexpectedly deduplicated".to_string(),
+            ));
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn complete_email_registration_with_direct_password_transport_with_control(

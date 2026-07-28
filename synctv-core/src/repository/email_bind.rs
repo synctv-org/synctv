@@ -1,6 +1,6 @@
 use chrono::Utc;
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::{
     models::{EmailTokenType, UserId},
@@ -31,13 +31,26 @@ impl EmailBindRepository {
         expires_at: chrono::DateTime<Utc>,
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
+        self.create_or_replace_unused_with_executor(user_id, email, token, expires_at, &mut tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
 
+    pub async fn create_or_replace_unused_with_executor(
+        &self,
+        user_id: &UserId,
+        email: &str,
+        token: &str,
+        expires_at: chrono::DateTime<Utc>,
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> Result<()> {
         sqlx::query!(
             "SELECT pg_advisory_xact_lock(hashtext($1::text), $2)",
             user_id.to_string(),
             i32::from(i16::from(EmailTokenType::EmailBind))
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
 
         sqlx::query!(
@@ -48,7 +61,7 @@ impl EmailBindRepository {
             ",
             user_id as &UserId,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
 
         sqlx::query!(
@@ -63,10 +76,8 @@ impl EmailBindRepository {
             Self::hash_token(token),
             expires_at,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
-
-        tx.commit().await?;
 
         Ok(())
     }

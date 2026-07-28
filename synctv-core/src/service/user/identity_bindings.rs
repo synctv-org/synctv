@@ -5,7 +5,7 @@ use sqlx::{Postgres, Transaction};
 use crate::{
     models::{SignupMethod, User, UserAuthFactors, UserId},
     repository::UserOAuthProviderRepository,
-    service::UserService,
+    service::{EmailOutboxService, UserService},
     Error, Result,
 };
 
@@ -21,6 +21,34 @@ impl UserService {
             .await?;
 
         Ok(token)
+    }
+
+    pub async fn start_email_bind_and_enqueue(
+        &self,
+        outbox: &EmailOutboxService,
+        user_id: &UserId,
+        email: &str,
+    ) -> Result<()> {
+        let email = self.validate_email_bind_target(user_id, email).await?;
+        let token = synctv_common::snanoid!(64);
+        let expires_at = crate::SystemClock.now()
+            + crate::models::EmailTokenType::EmailBind.expiration_duration();
+        let job = outbox.prepare_bind(&email, &token, user_id, expires_at)?;
+        let mut tx = self.repository.pool().begin().await?;
+        self.email_bind_repository
+            .create_or_replace_unused_with_executor(user_id, &email, &token, expires_at, &mut tx)
+            .await?;
+        if !outbox
+            .repository()
+            .insert_with_executor(&job, &mut tx)
+            .await?
+        {
+            return Err(Error::Internal(
+                "Email bind outbox job was unexpectedly deduplicated".to_string(),
+            ));
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn delete_pending_email_bind(

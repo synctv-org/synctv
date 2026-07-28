@@ -28,7 +28,7 @@ use tokio_socks::tcp::Socks5Stream;
 use url::Url;
 
 use super::email_templates::EmailTemplateManager;
-use crate::{Error, InternalExt, Result};
+use crate::{repository::EmailOutboxKind, Error, InternalExt, Result};
 
 /// Mask an email address for safe logging: `user***@example.com`
 pub fn mask_email(email: &str) -> String {
@@ -53,6 +53,13 @@ fn map_email_send_failure(_error: impl std::fmt::Display) -> Error {
 pub enum EmailError {
     #[error("Send error: {0}")]
     SendError(String),
+}
+
+struct RenderedEmail<'a> {
+    subject: &'a str,
+    html_body: &'a str,
+    plain_text_body: &'a str,
+    message_id: Option<&'a str>,
 }
 
 /// Email configuration
@@ -466,7 +473,7 @@ impl EmailService {
             )
         })?;
 
-        self.send_email_bind_email_impl(&config, email, token, control)
+        self.send_email_bind_email_impl(&config, email, token, None, control)
             .await
             .map_err(map_email_send_failure)?;
 
@@ -494,7 +501,7 @@ impl EmailService {
             )
         })?;
 
-        self.send_password_reset_email_impl(&config, email, token, control)
+        self.send_password_reset_email_impl(&config, email, token, None, control)
             .await
             .map_err(map_email_send_failure)?;
 
@@ -522,7 +529,7 @@ impl EmailService {
             )
         })?;
 
-        self.send_email_login_email_impl(&config, email, token, control)
+        self.send_email_login_email_impl(&config, email, token, None, control)
             .await
             .map_err(map_email_send_failure)?;
 
@@ -550,7 +557,7 @@ impl EmailService {
             )
         })?;
 
-        self.send_email_registration_email_impl(&config, email, token, control)
+        self.send_email_registration_email_impl(&config, email, token, None, control)
             .await
             .map_err(map_email_send_failure)?;
 
@@ -583,9 +590,19 @@ impl EmailService {
             .internal_with_err("Failed to render template")?;
 
         let subject = "SyncTV Email Test";
-        self.send_html_email(&config, to, subject, &html_body, &plain_text_body, control)
-            .await
-            .internal_with_err("Failed to send test email")?;
+        self.send_html_email(
+            &config,
+            to,
+            RenderedEmail {
+                subject,
+                html_body: &html_body,
+                plain_text_body: &plain_text_body,
+                message_id: None,
+            },
+            control,
+        )
+        .await
+        .internal_with_err("Failed to send test email")?;
 
         tracing::info!("Sent test email to {}", mask_email(to));
         Ok(())
@@ -596,6 +613,7 @@ impl EmailService {
         config: &EmailConfig,
         to: &str,
         token: &str,
+        message_id: Option<&str>,
         control: Option<&ExecutionControl>,
     ) -> std::result::Result<(), EmailError> {
         let subject = "Confirm your SyncTV email";
@@ -604,8 +622,18 @@ impl EmailService {
             .render_email_bind_email(token, "24 hours")
             .map_err(|e| EmailError::SendError(format!("Failed to render template: {e}")))?;
 
-        self.send_html_email(config, to, subject, &html_body, &plain_text_body, control)
-            .await
+        self.send_html_email(
+            config,
+            to,
+            RenderedEmail {
+                subject,
+                html_body: &html_body,
+                plain_text_body: &plain_text_body,
+                message_id,
+            },
+            control,
+        )
+        .await
     }
 
     async fn send_password_reset_email_impl(
@@ -613,6 +641,7 @@ impl EmailService {
         config: &EmailConfig,
         to: &str,
         token: &str,
+        message_id: Option<&str>,
         control: Option<&ExecutionControl>,
     ) -> std::result::Result<(), EmailError> {
         let subject = "Reset your SyncTV password";
@@ -621,8 +650,18 @@ impl EmailService {
             .render_password_reset_email(token, "1 hour")
             .map_err(|e| EmailError::SendError(format!("Failed to render template: {e}")))?;
 
-        self.send_html_email(config, to, subject, &html_body, &plain_text_body, control)
-            .await
+        self.send_html_email(
+            config,
+            to,
+            RenderedEmail {
+                subject,
+                html_body: &html_body,
+                plain_text_body: &plain_text_body,
+                message_id,
+            },
+            control,
+        )
+        .await
     }
 
     async fn send_email_login_email_impl(
@@ -630,6 +669,7 @@ impl EmailService {
         config: &EmailConfig,
         to: &str,
         token: &str,
+        message_id: Option<&str>,
         control: Option<&ExecutionControl>,
     ) -> std::result::Result<(), EmailError> {
         let subject = "Your SyncTV login code";
@@ -638,8 +678,18 @@ impl EmailService {
             .render_email_login_email(token, "15 minutes")
             .map_err(|e| EmailError::SendError(format!("Failed to render template: {e}")))?;
 
-        self.send_html_email(config, to, subject, &html_body, &plain_text_body, control)
-            .await
+        self.send_html_email(
+            config,
+            to,
+            RenderedEmail {
+                subject,
+                html_body: &html_body,
+                plain_text_body: &plain_text_body,
+                message_id,
+            },
+            control,
+        )
+        .await
     }
 
     async fn send_email_registration_email_impl(
@@ -647,6 +697,7 @@ impl EmailService {
         config: &EmailConfig,
         to: &str,
         token: &str,
+        message_id: Option<&str>,
         control: Option<&ExecutionControl>,
     ) -> std::result::Result<(), EmailError> {
         let subject = "Your SyncTV registration code";
@@ -655,17 +706,78 @@ impl EmailService {
             .render_email_registration_email(token, "15 minutes")
             .map_err(|e| EmailError::SendError(format!("Failed to render template: {e}")))?;
 
-        self.send_html_email(config, to, subject, &html_body, &plain_text_body, control)
-            .await
+        self.send_html_email(
+            config,
+            to,
+            RenderedEmail {
+                subject,
+                html_body: &html_body,
+                plain_text_body: &plain_text_body,
+                message_id,
+            },
+            control,
+        )
+        .await
+    }
+
+    pub async fn send_outbox_email_with_control(
+        &self,
+        kind: EmailOutboxKind,
+        email: &str,
+        token: &str,
+        message_id: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        Self::validate_email(email)?;
+        let config = self.current_config()?.ok_or_else(|| {
+            Error::ServiceUnavailable(
+                "Email delivery is not configured on this server.".to_string(),
+            )
+        })?;
+        let result = match kind {
+            EmailOutboxKind::EmailBind => {
+                self.send_email_bind_email_impl(&config, email, token, Some(message_id), control)
+                    .await
+            }
+            EmailOutboxKind::PasswordReset => {
+                self.send_password_reset_email_impl(
+                    &config,
+                    email,
+                    token,
+                    Some(message_id),
+                    control,
+                )
+                .await
+            }
+            EmailOutboxKind::EmailLogin => {
+                self.send_email_login_email_impl(&config, email, token, Some(message_id), control)
+                    .await
+            }
+            EmailOutboxKind::EmailRegistration => {
+                self.send_email_registration_email_impl(
+                    &config,
+                    email,
+                    token,
+                    Some(message_id),
+                    control,
+                )
+                .await
+            }
+        };
+        result.map_err(map_email_send_failure)?;
+        tracing::info!(
+            kind = kind.as_str(),
+            recipient = %mask_email(email),
+            "Sent outbox email"
+        );
+        Ok(())
     }
 
     async fn send_html_email(
         &self,
         config: &EmailConfig,
         to: &str,
-        subject: &str,
-        html_body: &str,
-        plain_text_body: &str,
+        content: RenderedEmail<'_>,
         control: Option<&ExecutionControl>,
     ) -> std::result::Result<(), EmailError> {
         let from_mailbox: Mailbox = format!("{} <{}>", config.from_name, config.from_email)
@@ -679,18 +791,19 @@ impl EmailService {
         let email = Message::builder()
             .from(from_mailbox)
             .to(to_mailbox)
-            .subject(subject)
+            .message_id(content.message_id.map(str::to_string))
+            .subject(content.subject)
             .multipart(
                 MultiPart::alternative()
                     .singlepart(
                         lettre::message::SinglePart::builder()
                             .header(ContentType::TEXT_PLAIN)
-                            .body(plain_text_body.to_string()),
+                            .body(content.plain_text_body.to_string()),
                     )
                     .singlepart(
                         lettre::message::SinglePart::builder()
                             .header(ContentType::TEXT_HTML)
-                            .body(html_body.to_string()),
+                            .body(content.html_body.to_string()),
                     ),
             )
             .map_err(|e| EmailError::SendError(format!("Failed to build email: {e}")))?;

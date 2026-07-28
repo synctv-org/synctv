@@ -38,19 +38,33 @@ impl EmailRegistrationTokenRepository {
         expires_at: DateTime<Utc>,
     ) -> Result<EmailRegistrationToken> {
         let mut tx = self.pool.begin().await?;
+        let record = self
+            .create_or_replace_unused_with_executor(token, username, email, expires_at, &mut tx)
+            .await?;
+        tx.commit().await?;
+        Ok(record)
+    }
 
+    pub async fn create_or_replace_unused_with_executor(
+        &self,
+        token: &str,
+        username: &str,
+        email: &str,
+        expires_at: DateTime<Utc>,
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> Result<EmailRegistrationToken> {
         sqlx::query!(
             "SELECT pg_advisory_xact_lock(hashtext('auth_email_registration_username'), hashtext(LOWER($1::text)))",
             username,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
 
         sqlx::query!(
             "SELECT pg_advisory_xact_lock(hashtext('auth_email_registration_email'), hashtext(LOWER($1::text)))",
             email,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
 
         sqlx::query!(
@@ -62,7 +76,7 @@ impl EmailRegistrationTokenRepository {
             username,
             email,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
 
         let record = sqlx::query_as!(
@@ -86,10 +100,8 @@ impl EmailRegistrationTokenRepository {
             email,
             expires_at,
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
-
-        tx.commit().await?;
 
         Ok(record)
     }

@@ -225,22 +225,20 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound(format!("Playlist {playlist_id} not found")))?;
 
-        let child_folder_count = i64_to_i32_api(
+        let (child_folder_count, media_count) = tokio::join!(
             self.room_service
                 .playlist_service()
-                .count_room_children(&rid, &pid)
-                .await
-                .map_err(ApiError::from)?,
-            "child playlist count",
-        )?;
-        let media_count = i64_to_i32_api(
+                .count_room_children(&rid, &pid),
             self.room_service
                 .media_service()
-                .count_room_playlist_media(&rid, &pid)
-                .await
-                .map_err(ApiError::from)?,
-            "playlist media count",
+                .count_room_playlist_media(&rid, &pid),
+        );
+        let child_folder_count = i64_to_i32_api(
+            child_folder_count.map_err(ApiError::from)?,
+            "child playlist count",
         )?;
+        let media_count =
+            i64_to_i32_api(media_count.map_err(ApiError::from)?, "playlist media count")?;
 
         Ok(synctv_proto::client::GetPlaylistResponse {
             playlist: Some(
@@ -304,21 +302,22 @@ impl AdminApiImpl {
             sort_by: map_admin_playlist_sort(req.sort_by)?,
             sort_direction: map_client_sort_direction(req.sort_direction)?,
         };
-        let total = i64_to_i32_api(
-            self.room_service
-                .count_client_playlists(&rid, parent_id.as_ref(), &query)
-                .await
-                .map_err(ApiError::from)?,
-            "playlist total",
-        )?;
         let offset = (page - 1) * page_size;
         let limit = usize_to_i64_api(page_size, "playlist page size")?;
         let offset = usize_to_i64_api(offset, "playlist offset")?;
-        let playlists = self
-            .room_service
-            .list_client_playlists(&rid, parent_id.as_ref(), &query, limit, offset)
-            .await
-            .map_err(ApiError::from)?;
+        let (total, playlists) = tokio::join!(
+            self.room_service
+                .count_client_playlists(&rid, parent_id.as_ref(), &query),
+            self.room_service.list_client_playlists(
+                &rid,
+                parent_id.as_ref(),
+                &query,
+                limit,
+                offset,
+            ),
+        );
+        let total = i64_to_i32_api(total.map_err(ApiError::from)?, "playlist total")?;
+        let playlists = playlists.map_err(ApiError::from)?;
 
         let playlist_ids: Vec<_> = playlists.iter().map(|pl| pl.playlist.id).collect();
         let counts = self
@@ -558,16 +557,16 @@ impl AdminApiImpl {
                 sort_by: map_admin_media_sort(req.sort_by)?,
                 sort_direction: map_client_sort_direction(req.sort_direction)?,
             };
-            let folder_count = self
-                .room_service
-                .count_client_playlists(&rid, None, &playlist_query)
-                .await
+            let (folder_count, file_count) = tokio::join!(
+                self.room_service
+                    .count_client_playlists(&rid, None, &playlist_query),
+                self.room_service
+                    .count_client_media(&rid, None, &media_query),
+            );
+            let folder_count = folder_count
                 .map_err(ApiError::from)
                 .and_then(|count| i64_count_to_usize(count, "root playlist count"))?;
-            let file_count = self
-                .room_service
-                .count_client_media(&rid, None, &media_query)
-                .await
+            let file_count = file_count
                 .map_err(ApiError::from)
                 .and_then(|count| i64_count_to_usize(count, "root media count"))?;
             let total = folder_count.checked_add(file_count).ok_or_else(|| {
@@ -1076,16 +1075,16 @@ impl AdminApiImpl {
             sort_by: map_admin_media_sort(req.sort_by)?,
             sort_direction: map_client_sort_direction(req.sort_direction)?,
         };
-        let folder_count = self
-            .room_service
-            .count_client_playlists(&rid, Some(&playlist_id), &playlist_query)
-            .await
+        let (folder_count, file_count) = tokio::join!(
+            self.room_service
+                .count_client_playlists(&rid, Some(&playlist_id), &playlist_query,),
+            self.room_service
+                .count_client_media(&rid, Some(&playlist_id), &media_query),
+        );
+        let folder_count = folder_count
             .map_err(ApiError::from)
             .and_then(|count| i64_count_to_usize(count, "playlist child playlist count"))?;
-        let file_count = self
-            .room_service
-            .count_client_media(&rid, Some(&playlist_id), &media_query)
-            .await
+        let file_count = file_count
             .map_err(ApiError::from)
             .and_then(|count| i64_count_to_usize(count, "playlist child media count"))?;
         let total = folder_count.checked_add(file_count).ok_or_else(|| {

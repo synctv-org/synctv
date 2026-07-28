@@ -679,7 +679,17 @@ impl EmbyClient {
 
         let headers = self.build_headers()?;
 
-        let items: ItemsResponse = self.send_get_json(&url, &headers).await?;
+        let parent_item = async {
+            match &source {
+                EmbyListSource::Folder(Some(parent_id)) => self.get_item(parent_id).await.ok(),
+                _ => None,
+            }
+        };
+        let (items, parent_item) = tokio::join!(
+            self.send_get_json::<ItemsResponse>(&url, &headers),
+            parent_item,
+        );
+        let items = items?;
 
         let mut paths = vec![PathInfo {
             name: "Home".to_string(),
@@ -687,13 +697,11 @@ impl EmbyClient {
         }];
 
         // Add current path if specified
-        if let EmbyListSource::Folder(Some(parent_id)) = &source {
-            if let Ok(item) = self.get_item(parent_id).await {
-                paths.push(PathInfo {
-                    name: item.name,
-                    path: item.id,
-                });
-            }
+        if let Some(item) = parent_item {
+            paths.push(PathInfo {
+                name: item.name,
+                path: item.id,
+            });
         }
 
         Ok(FsListResponse {

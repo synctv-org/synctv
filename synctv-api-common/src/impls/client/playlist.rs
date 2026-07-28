@@ -609,21 +609,17 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound(format!("Playlist {playlist_id} not found")))?;
-        let playlist_availability = self
-            .room_service
-            .playlist_availability(&playlist)
-            .await
-            .map_err(ApiError::from)?;
-
-        let child_folder_count = self
-            .room_service
-            .playlist_service()
-            .count_room_children(&rid, &pid)
-            .await
-            .map_err(ApiError::from)?;
+        let (playlist_availability, child_folder_count, media_count) = tokio::join!(
+            self.room_service.playlist_availability(&playlist),
+            self.room_service
+                .playlist_service()
+                .count_room_children(&rid, &pid),
+            self.playlist_media_count_i32(&rid, &pid),
+        );
+        let playlist_availability = playlist_availability.map_err(ApiError::from)?;
+        let child_folder_count = child_folder_count.map_err(ApiError::from)?;
         let child_folder_count = i64_to_i32_api(child_folder_count, "child folder count")?;
-
-        let media_count = self.playlist_media_count_i32(&rid, &pid).await?;
+        let media_count = media_count?;
 
         Ok(synctv_proto::client::GetPlaylistResponse {
             playlist: Some(
@@ -715,24 +711,20 @@ impl ClientApiImpl {
             sort_by,
             sort_direction,
         };
-        let total = self
-            .room_service
-            .count_client_playlists(&rid, parent_id.as_ref(), &query)
-            .await
-            .map_err(ApiError::from)?;
-        let total = i64_to_i32_api(total, "playlist total")?;
         let offset = (page - 1) * page_size;
-        let playlists = self
-            .room_service
-            .list_client_playlists(
+        let (total, playlists) = tokio::join!(
+            self.room_service
+                .count_client_playlists(&rid, parent_id.as_ref(), &query),
+            self.room_service.list_client_playlists(
                 &rid,
                 parent_id.as_ref(),
                 &query,
                 usize_to_i64_api(page_size, "page_size")?,
                 usize_to_i64_api(offset, "offset")?,
-            )
-            .await
-            .map_err(ApiError::from)?;
+            ),
+        );
+        let total = i64_to_i32_api(total.map_err(ApiError::from)?, "playlist total")?;
+        let playlists = playlists.map_err(ApiError::from)?;
 
         // Batch-fetch media counts to avoid N+1 queries.
         let playlist_ids: Vec<synctv_core::models::PlaylistId> =

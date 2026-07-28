@@ -281,17 +281,12 @@ impl NotificationApiImpl {
     ) -> Result<ListNotificationsResult, ApiError> {
         let query = build_notification_list_query(&req)?;
 
-        let (notifications, total) = self
-            .notification_service
-            .list(user_id, query)
-            .await
-            .map_err(ApiError::from)?;
-
-        let unread_count = self
-            .notification_service
-            .get_unread_count(user_id)
-            .await
-            .map_err(map_notification_mutation_error)?;
+        let (list_result, unread_count) = tokio::join!(
+            self.notification_service.list(user_id, query),
+            self.notification_service.get_unread_count(user_id),
+        );
+        let (notifications, total) = list_result.map_err(ApiError::from)?;
+        let unread_count = unread_count.map_err(map_notification_mutation_error)?;
 
         Ok(ListNotificationsResult {
             notifications,

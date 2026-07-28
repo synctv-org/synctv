@@ -35,23 +35,20 @@ impl PlaybackProviderAccessValidator<'_> {
         room_id: &RoomId,
         user_id: &UserId,
     ) -> Result<(), ApiError> {
-        let user = self
-            .user_service
-            .get_user(user_id)
-            .await
-            .map_err(ApiError::from)?;
+        let (user, room) = tokio::join!(
+            self.user_service.get_user(user_id),
+            self.playback_transport_services
+                .room_service
+                .get_room(room_id),
+        );
+        let user = user.map_err(ApiError::from)?;
         if user.status != synctv_core::models::UserStatus::Active || user.deleted_at.is_some() {
             return Err(ApiError::Authorization(
                 synctv_common::messages::STALE_PROXY_ACCESS.to_string(),
             ));
         }
 
-        let room = self
-            .playback_transport_services
-            .room_service
-            .get_room(room_id)
-            .await
-            .map_err(ApiError::from)?;
+        let room = room.map_err(ApiError::from)?;
         if room.is_banned || !room.status.is_active() {
             return Err(ApiError::Authorization(
                 "Playback provider URL is no longer valid for this room".to_string(),
@@ -60,7 +57,7 @@ impl PlaybackProviderAccessValidator<'_> {
 
         self.playback_transport_services
             .room_service
-            .check_membership(room_id, user_id)
+            .check_membership_with_room(&room, user_id)
             .await
             .map_err(map_playback_provider_membership_probe_error)
     }

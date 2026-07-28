@@ -242,12 +242,12 @@ impl OAuth2ApiImpl {
             ));
         }
 
-        let linked_mappings = self
-            .oauth2_service
-            .get_user_provider_mappings(user_id)
-            .await
-            .map_err(ApiError::from)?;
-        let active_provider_keys = self.active_oauth2_provider_keys().await?;
+        let (linked_mappings, active_provider_keys) = tokio::join!(
+            self.oauth2_service.get_user_provider_mappings(user_id),
+            self.active_oauth2_provider_keys(),
+        );
+        let linked_mappings = linked_mappings.map_err(ApiError::from)?;
+        let active_provider_keys = active_provider_keys?;
         let active_linked_mappings =
             Self::active_oauth2_mappings(&linked_mappings, &active_provider_keys);
         let active_linked_mappings = active_linked_mappings
@@ -896,12 +896,12 @@ impl OAuth2ApiImpl {
         &self,
         user_id: &UserId,
     ) -> Result<Vec<LinkedProviderInfo>, ApiError> {
-        let mappings = self
-            .oauth2_service
-            .get_user_provider_mappings(user_id)
-            .await
-            .map_err(ApiError::from)?;
-        let available = self.active_oauth2_provider_keys().await?;
+        let (mappings, available) = tokio::join!(
+            self.oauth2_service.get_user_provider_mappings(user_id),
+            self.active_oauth2_provider_keys(),
+        );
+        let mappings = mappings.map_err(ApiError::from)?;
+        let available = available?;
 
         let result = mappings
             .into_iter()

@@ -12,14 +12,12 @@ impl UserService {
         user_id: &UserId,
     ) -> Result<(UserPreferences, UserAuthFactors)> {
         self.get_user(user_id).await?;
-        let preferences = self
-            .user_preferences_repository
-            .get_or_default(user_id)
-            .await?;
-        let auth_factors = self
-            .user_preferences_repository
-            .auth_factors(user_id)
-            .await?;
+        let (preferences, auth_factors) = tokio::join!(
+            self.user_preferences_repository.get_or_default(user_id),
+            self.user_preferences_repository.auth_factors(user_id),
+        );
+        let preferences = preferences?;
+        let auth_factors = auth_factors?;
         Ok((preferences, auth_factors))
     }
 

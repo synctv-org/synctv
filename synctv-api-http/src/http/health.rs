@@ -96,8 +96,11 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
     let mut is_healthy = true;
     let mut error_messages = Vec::new();
 
+    let (database_health, redis_health) =
+        tokio::join!(check_database_health(&state), check_redis_health(&state),);
+
     // Check database connectivity
-    let db_status = match check_database_health(&state).await {
+    let db_status = match database_health {
         Ok(()) => "healthy".to_string(),
         Err(e) => {
             error_messages.push(format!("Database: {e}"));
@@ -108,7 +111,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
     };
 
     // Check Redis connectivity
-    let redis_status = match check_redis_health(&state).await {
+    let redis_status = match redis_health {
         RedisHealthStatus::Healthy => "healthy".to_string(),
         RedisHealthStatus::NotConfigured => "not configured".to_string(),
         RedisHealthStatus::Unhealthy(e) => {

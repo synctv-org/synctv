@@ -9,10 +9,29 @@ use crate::storage::{
 };
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::{Stream, StreamExt, TryStreamExt};
 use std::io::{Error, ErrorKind, Result};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::fs;
+
+const BUCKET_IO_CONCURRENCY: usize = 8;
+
+/// Drain every result so Tokio's blocking file operations finish before an
+/// error is returned to the caller.
+async fn sum_io_results<S>(results: S) -> Result<usize>
+where
+    S: Stream<Item = Result<usize>>,
+{
+    results
+        .fold(Ok(0usize), |aggregate, result| async move {
+            match (aggregate, result) {
+                (Ok(total), Ok(count)) => Ok(total.saturating_add(count)),
+                (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+            }
+        })
+        .await
+}
 
 /// File system storage backend
 pub struct FileStorage {
@@ -283,14 +302,16 @@ impl HlsStorage for FileStorage {
     async fn delete_app_stream(&self, app: &str, stream: &str) -> Result<usize> {
         validate_component(app, "app")?;
         validate_component(stream, "stream")?;
-        let mut deleted = 0;
-
-        for (bucket_name, bucket_path) in self.collect_bucket_dirs().await? {
-            let stream_dir = self.bucket_stream_path(&bucket_name, app, stream);
-            deleted += Self::remove_dir_all_counting_files(&stream_dir).await?;
-            Self::remove_empty_dir_if_exists(self.bucket_app_path(&bucket_name, app)).await?;
-            Self::remove_empty_dir_if_exists(bucket_path).await?;
-        }
+        let operations = futures::stream::iter(self.collect_bucket_dirs().await?)
+            .map(|(bucket_name, bucket_path)| async move {
+                let stream_dir = self.bucket_stream_path(&bucket_name, app, stream);
+                let deleted = Self::remove_dir_all_counting_files(&stream_dir).await?;
+                Self::remove_empty_dir_if_exists(self.bucket_app_path(&bucket_name, app)).await?;
+                Self::remove_empty_dir_if_exists(bucket_path).await?;
+                Ok::<usize, Error>(deleted)
+            })
+            .buffer_unordered(BUCKET_IO_CONCURRENCY);
+        let deleted = sum_io_results(operations).await?;
 
         Self::remove_empty_dir_if_exists(self.segments_root_path()).await?;
 
@@ -305,14 +326,16 @@ impl HlsStorage for FileStorage {
 
     async fn delete_app(&self, app: &str) -> Result<usize> {
         validate_component(app, "app")?;
-        let mut deleted = 0;
-
-        for (bucket_name, bucket_path) in self.collect_bucket_dirs().await? {
-            deleted +=
-                Self::remove_dir_all_counting_files(&self.bucket_app_path(&bucket_name, app))
-                    .await?;
-            Self::remove_empty_dir_if_exists(bucket_path).await?;
-        }
+        let operations = futures::stream::iter(self.collect_bucket_dirs().await?)
+            .map(|(bucket_name, bucket_path)| async move {
+                let deleted =
+                    Self::remove_dir_all_counting_files(&self.bucket_app_path(&bucket_name, app))
+                        .await?;
+                Self::remove_empty_dir_if_exists(bucket_path).await?;
+                Ok::<usize, Error>(deleted)
+            })
+            .buffer_unordered(BUCKET_IO_CONCURRENCY);
+        let deleted = sum_io_results(operations).await?;
 
         Self::remove_empty_dir_if_exists(self.segments_root_path()).await?;
 
@@ -335,13 +358,18 @@ impl HlsStorage for FileStorage {
     async fn count_stream_segments(&self, app: &str, stream: &str) -> Result<usize> {
         validate_component(app, "app")?;
         validate_component(stream, "stream")?;
-        let mut total = 0;
-        for (stream_name, stream_dir) in self.collect_app_stream_dirs(app).await? {
-            if stream_name == stream {
-                total += Self::count_files_under(&stream_dir).await?;
-            }
-        }
-        Ok(total)
+        let stream_dirs = self
+            .collect_app_stream_dirs(app)
+            .await?
+            .into_iter()
+            .filter_map(|(stream_name, stream_dir)| (stream_name == stream).then_some(stream_dir));
+        futures::stream::iter(stream_dirs)
+            .map(|stream_dir| async move { Self::count_files_under(&stream_dir).await })
+            .buffer_unordered(BUCKET_IO_CONCURRENCY)
+            .try_fold(0usize, |total, count| async move {
+                Ok(total.saturating_add(count))
+            })
+            .await
     }
 
     async fn delete_oldest_stream_segments(
@@ -377,28 +405,33 @@ impl HlsStorage for FileStorage {
 
         segments.sort();
         let to_delete = segments.len() - max_count;
-        let mut deleted = 0;
-        for path in segments.into_iter().take(to_delete) {
-            match fs::remove_file(&path).await {
-                Ok(()) => deleted += 1,
-                Err(err) if err.kind() == ErrorKind::NotFound => {}
-                Err(err) => return Err(err),
-            }
-        }
-
-        Ok(deleted)
+        let operations = futures::stream::iter(segments.into_iter().take(to_delete))
+            .map(|path| async move {
+                match fs::remove_file(&path).await {
+                    Ok(()) => Ok(1usize),
+                    Err(err) if err.kind() == ErrorKind::NotFound => Ok(0),
+                    Err(err) => Err(err),
+                }
+            })
+            .buffer_unordered(BUCKET_IO_CONCURRENCY);
+        sum_io_results(operations).await
     }
 
     async fn cleanup(&self, older_than: Duration) -> Result<usize> {
         let segments_root = self.segments_root_path();
-        let mut deleted = 0;
-
-        for (bucket_name, bucket_path) in self.collect_bucket_dirs().await? {
-            if minute_bucket_is_expired(&bucket_name, older_than) {
-                deleted += Self::remove_dir_all_counting_files(&bucket_path).await?;
+        let expired_buckets = self.collect_bucket_dirs().await?.into_iter().filter_map(
+            |(bucket_name, bucket_path)| {
+                minute_bucket_is_expired(&bucket_name, older_than).then_some(bucket_path)
+            },
+        );
+        let operations = futures::stream::iter(expired_buckets)
+            .map(|bucket_path| async move {
+                let deleted = Self::remove_dir_all_counting_files(&bucket_path).await?;
                 tracing::trace!("Deleted expired minute bucket: {:?}", bucket_path);
-            }
-        }
+                Ok::<usize, Error>(deleted)
+            })
+            .buffer_unordered(BUCKET_IO_CONCURRENCY);
+        let deleted = sum_io_results(operations).await?;
 
         Self::remove_empty_dir_if_exists(segments_root).await?;
 
@@ -422,6 +455,11 @@ impl HlsStorage for FileStorage {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use futures::FutureExt as _;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
     use tempfile::tempdir;
 
     fn current_bucket() -> String {
@@ -434,6 +472,27 @@ mod tests {
 
     fn segment_name(bucket: &str, suffix: &str) -> String {
         format!("{bucket}_{suffix}")
+    }
+
+    #[tokio::test]
+    async fn test_sum_io_results_waits_for_all_operations_after_error() {
+        let delayed_completed = Arc::new(AtomicBool::new(false));
+        let delayed_completed_for_operation = delayed_completed.clone();
+        let operations = futures::stream::iter(vec![
+            async { Err(Error::other("first operation failed")) }.boxed(),
+            async move {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                delayed_completed_for_operation.store(true, Ordering::Release);
+                Ok(1)
+            }
+            .boxed(),
+        ])
+        .buffer_unordered(2);
+
+        let error = sum_io_results(operations).await.unwrap_err();
+
+        assert_eq!(error.to_string(), "first operation failed");
+        assert!(delayed_completed.load(Ordering::Acquire));
     }
 
     #[tokio::test]

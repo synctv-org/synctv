@@ -767,13 +767,17 @@ where
 async fn load_metrics_tls_server_config(
     tls: &MetricsTlsConfig,
 ) -> anyhow::Result<rustls::ServerConfig> {
-    let cert_pem = tokio::fs::read(&tls.cert_path).await.with_context(|| {
+    let (cert_pem, key_pem) = tokio::join!(
+        tokio::fs::read(&tls.cert_path),
+        tokio::fs::read(&tls.key_path),
+    );
+    let cert_pem = cert_pem.with_context(|| {
         format!(
             "failed to read metrics TLS certificate {}",
             absolute_display_path(std::path::Path::new(&tls.cert_path))
         )
     })?;
-    let key_pem = tokio::fs::read(&tls.key_path).await.with_context(|| {
+    let key_pem = key_pem.with_context(|| {
         format!(
             "failed to read metrics TLS private key {}",
             absolute_display_path(std::path::Path::new(&tls.key_path))

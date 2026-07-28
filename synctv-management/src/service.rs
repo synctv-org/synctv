@@ -5,6 +5,7 @@ use futures::{stream, Stream, StreamExt as _, TryStreamExt as _};
 use tonic::{Request, Response, Status};
 
 const MANAGEMENT_ROOM_LOAD_CONCURRENCY: usize = 16;
+const MANAGEMENT_USER_RESOLUTION_CONCURRENCY: usize = 16;
 
 use crate::access::ManagementAccessController;
 use crate::admin_runtime::{
@@ -880,109 +881,112 @@ impl ManagementServiceImpl {
         let mut failures = Vec::new();
         let mut seen = std::collections::HashSet::with_capacity(users.len());
 
-        for user in users {
-            match user.value {
-                Some(crate::proto::user_ref::Value::Username(username)) => {
-                    let username = username.trim();
-                    if username.is_empty() {
-                        failures.push(Self::batch_user_ref_failure(
-                            "",
-                            "username values must not be empty",
-                        ));
-                        continue;
-                    }
+        let resolutions = stream::iter(
+            users
+                .into_iter()
+                .map(|user| self.resolve_batch_user_ref(user)),
+        )
+        .buffered(MANAGEMENT_USER_RESOLUTION_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
 
-                    match self.user_service.get_user_by_username(username).await {
-                        Ok(user) => match self.public_id_codec.encode_user_id(user.id) {
-                            Ok(user_id) => {
-                                if seen.insert(user_id.clone()) {
-                                    resolved.push(user_id);
-                                }
-                            }
-                            Err(error) => {
-                                failures.push(Self::batch_user_ref_failure(
-                                    username,
-                                    format!("Failed to encode resolved user id: {error}"),
-                                ));
-                            }
-                        },
-                        Err(synctv_core::Error::NotFound(_)) => {
-                            failures.push(Self::batch_user_ref_failure(
-                                username,
-                                format!("User '{username}' was not found"),
-                            ));
-                        }
-                        Err(error) => {
-                            failures.push(Self::batch_user_ref_failure(
-                                username,
-                                format!("Failed to resolve user '{username}': {error}"),
-                            ));
-                        }
-                    }
-                }
-                Some(crate::proto::user_ref::Value::UserId(user_id)) => {
-                    let trimmed = user_id.trim();
-                    if trimmed.is_empty() {
-                        failures.push(Self::batch_user_ref_failure(
-                            "",
-                            "user_id values must not be empty",
-                        ));
-                        continue;
-                    }
-                    if let Err(error) = self.public_id_codec.decode_user_id(trimmed) {
-                        failures.push(Self::batch_user_ref_failure(
-                            trimmed,
-                            format!("user_id is invalid: {error}"),
-                        ));
-                        continue;
-                    }
-                    if seen.insert(trimmed.to_string()) {
-                        resolved.push(trimmed.to_string());
-                    }
-                }
-                Some(crate::proto::user_ref::Value::Email(email)) => {
-                    let email = email.trim();
-                    if email.is_empty() {
-                        failures.push(Self::batch_user_ref_failure(
-                            "",
-                            "email values must not be empty",
-                        ));
-                        continue;
-                    }
-                    match self.user_service.get_by_email(email).await {
-                        Ok(Some(user)) => match self.public_id_codec.encode_user_id(user.id) {
-                            Ok(user_id) => {
-                                if seen.insert(user_id.clone()) {
-                                    resolved.push(user_id);
-                                }
-                            }
-                            Err(error) => failures.push(Self::batch_user_ref_failure(
-                                email,
-                                format!("Failed to encode resolved user id: {error}"),
-                            )),
-                        },
-                        Ok(None) => failures.push(Self::batch_user_ref_failure(
-                            email,
-                            format!("User with email '{email}' was not found"),
-                        )),
-                        Err(error) => failures.push(Self::batch_user_ref_failure(
-                            email,
-                            format!("Failed to resolve user email '{email}': {error}"),
-                        )),
-                    }
-                }
-                None => {
-                    failures.push(Self::batch_user_ref_failure(
-                        "",
-                        "user ref must contain user_id, username, or email",
-                    ));
-                }
+        for resolution in resolutions {
+            match resolution {
+                Ok(user_id) if seen.insert(user_id.clone()) => resolved.push(user_id),
+                Ok(_) => {}
+                Err(failure) => failures.push(failure),
             }
         }
 
         BatchUserResolution {
             user_ids: resolved,
             failures,
+        }
+    }
+
+    async fn resolve_batch_user_ref(
+        &self,
+        user: UserRef,
+    ) -> Result<String, admin_proto::BatchResultItem> {
+        match user.value {
+            Some(crate::proto::user_ref::Value::Username(username)) => {
+                let username = username.trim();
+                if username.is_empty() {
+                    return Err(Self::batch_user_ref_failure(
+                        "",
+                        "username values must not be empty",
+                    ));
+                }
+
+                match self.user_service.get_user_by_username(username).await {
+                    Ok(user) => self
+                        .public_id_codec
+                        .encode_user_id(user.id)
+                        .map_err(|error| {
+                            Self::batch_user_ref_failure(
+                                username,
+                                format!("Failed to encode resolved user id: {error}"),
+                            )
+                        }),
+                    Err(synctv_core::Error::NotFound(_)) => Err(Self::batch_user_ref_failure(
+                        username,
+                        format!("User '{username}' was not found"),
+                    )),
+                    Err(error) => Err(Self::batch_user_ref_failure(
+                        username,
+                        format!("Failed to resolve user '{username}': {error}"),
+                    )),
+                }
+            }
+            Some(crate::proto::user_ref::Value::UserId(user_id)) => {
+                let trimmed = user_id.trim();
+                if trimmed.is_empty() {
+                    return Err(Self::batch_user_ref_failure(
+                        "",
+                        "user_id values must not be empty",
+                    ));
+                }
+                if let Err(error) = self.public_id_codec.decode_user_id(trimmed) {
+                    return Err(Self::batch_user_ref_failure(
+                        trimmed,
+                        format!("user_id is invalid: {error}"),
+                    ));
+                }
+                Ok(trimmed.to_string())
+            }
+            Some(crate::proto::user_ref::Value::Email(email)) => {
+                let email = email.trim();
+                if email.is_empty() {
+                    return Err(Self::batch_user_ref_failure(
+                        "",
+                        "email values must not be empty",
+                    ));
+                }
+                match self.user_service.get_by_email(email).await {
+                    Ok(Some(user)) => {
+                        self.public_id_codec
+                            .encode_user_id(user.id)
+                            .map_err(|error| {
+                                Self::batch_user_ref_failure(
+                                    email,
+                                    format!("Failed to encode resolved user id: {error}"),
+                                )
+                            })
+                    }
+                    Ok(None) => Err(Self::batch_user_ref_failure(
+                        email,
+                        format!("User with email '{email}' was not found"),
+                    )),
+                    Err(error) => Err(Self::batch_user_ref_failure(
+                        email,
+                        format!("Failed to resolve user email '{email}': {error}"),
+                    )),
+                }
+            }
+            None => Err(Self::batch_user_ref_failure(
+                "",
+                "user ref must contain user_id, username, or email",
+            )),
         }
     }
 
@@ -1824,16 +1828,12 @@ impl ManagementService for ManagementServiceImpl {
             .map_err(map_core_error)?;
         prepared_outbox_fanout.publish_after_outbox_commit();
 
-        let member_count = self
-            .room_service
-            .get_member_count(&room.id)
-            .await
-            .map_err(map_core_error)?;
-        let creator = self
-            .user_service
-            .get_user(&room.created_by)
-            .await
-            .map_err(map_core_error)?;
+        let (member_count, creator) = tokio::join!(
+            self.room_service.get_member_count(&room.id),
+            self.user_service.get_user(&room.created_by),
+        );
+        let member_count = member_count.map_err(map_core_error)?;
+        let creator = creator.map_err(map_core_error)?;
         let response = created_room_to_client_proto(
             &room,
             &response_settings,

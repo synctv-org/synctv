@@ -161,11 +161,12 @@ impl CacheManager {
                             );
                             // Flush both L1 and L2 so stale Redis entries cannot
                             // re-populate L1 on this or other replicas.
-                            user_cache.clear().await;
-                            room_cache.clear().await;
-                            if let Some(ref uc) = username_cache {
-                                uc.clear().await;
-                            }
+                            let username_clear = async {
+                                if let Some(ref uc) = username_cache {
+                                    uc.clear().await;
+                                }
+                            };
+                            tokio::join!(user_cache.clear(), room_cache.clear(), username_clear,);
                             // Record metric so operators can observe flush frequency
                             crate::metrics::cache::CACHE_LAG_FLUSH_TOTAL
                                 .with_label_values(&["cache_manager"])

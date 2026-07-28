@@ -196,25 +196,24 @@ impl Provider for GitHubProvider {
             .await
             .map_err(|err| map_provider_http_error("Failed to exchange code", err))?;
 
-        // Fetch user info
-        let resp = self
-            .http_client
-            .get("https://api.github.com/user")
-            .header(
-                "Authorization",
-                format!("Bearer {}", token.access_token().secret()),
-            )
-            .header("User-Agent", "synctv-rs")
-            .send()
-            .await
-            .map_err(|err| map_provider_http_error("Failed to fetch user info", err))?
-            .error_for_status()
-            .internal_with_err("GitHub API error")?;
-
-        let user: GitHubUser = resp
-            .json()
-            .await
-            .internal_with_err("Failed to parse user info")?;
+        let access_token = token.access_token().secret();
+        let user_request = async {
+            self.http_client
+                .get("https://api.github.com/user")
+                .header("Authorization", format!("Bearer {access_token}"))
+                .header("User-Agent", "synctv-rs")
+                .send()
+                .await
+                .map_err(|err| map_provider_http_error("Failed to fetch user info", err))?
+                .error_for_status()
+                .internal_with_err("GitHub API error")?
+                .json::<GitHubUser>()
+                .await
+                .internal_with_err("Failed to parse user info")
+        };
+        let (user, verified_email) =
+            tokio::join!(user_request, self.fetch_verified_email(access_token),);
+        let user = user?;
         // Fetch verified email from the /user/emails endpoint.
         // The /user endpoint may return an email, but does not indicate
         // whether it is verified. We must call /user/emails to get the
@@ -224,10 +223,7 @@ impl Provider for GitHubProvider {
         // - API succeeds but no verified email exists: use the primary email as unverified.
         // - API fails and the profile has no email: return an error.
         // - API fails and the profile has an email: use it as unverified and warn.
-        let (email, email_verified) = match self
-            .fetch_verified_email(token.access_token().secret())
-            .await
-        {
+        let (email, email_verified) = match verified_email {
             Ok((maybe_email, verified)) => (maybe_email, verified),
             Err(e) => {
                 tracing::warn!(

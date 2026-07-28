@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use futures::{stream, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::cache::l2_backend::CacheL2Backend;
@@ -18,6 +19,7 @@ use crate::{cache::CacheInvalidationRuntime, Result};
 /// Matches UserCache/RoomCache defaults so stale entries are bounded even
 /// without cross-replica invalidation.
 const L1_TTL_SECONDS: u64 = 5 * 60;
+const USERNAME_PRELOAD_CONCURRENCY: usize = 16;
 
 /// Wrapper around a username string for `TieredCache` serialization.
 ///
@@ -211,9 +213,13 @@ impl UsernameCache {
     /// invalidation messages (since `set()` does not broadcast).
     pub async fn preload(&self, entries: HashMap<UserId, String>) -> Result<()> {
         let count = entries.len();
-        for (user_id, username) in entries {
-            self.set(&user_id, &username).await?;
-        }
+        stream::iter(entries)
+            .map(Ok::<_, crate::Error>)
+            .try_for_each_concurrent(
+                USERNAME_PRELOAD_CONCURRENCY,
+                |(user_id, username)| async move { self.set(&user_id, &username).await },
+            )
+            .await?;
 
         tracing::debug!(count, "Username cache preloaded");
         Ok(())

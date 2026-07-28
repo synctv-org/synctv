@@ -136,23 +136,21 @@ impl ClientApiImpl {
         let (room_id, media_id) = codec.build_create_publish_key_request(req)?;
         let rid = codec.parse_room_id(&room_id)?;
 
-        let media = self
-            .room_service
-            .media_service()
-            .get_room_media(&rid, &media_id)
-            .await
+        let (media, room) = tokio::join!(
+            self.room_service
+                .media_service()
+                .get_room_media(&rid, &media_id),
+            self.room_service.get_room(&rid),
+        );
+        let media = media
             .map_err(|e| Self::map_media_lookup_error(e, "Media not found"))?
             .ok_or_else(|| ApiError::NotFound(format!("Media {media_id} not found")))?;
 
-        let room = self
-            .room_service
-            .get_room(&rid)
-            .await
-            .map_err(ApiError::from)?;
+        let room = room.map_err(ApiError::from)?;
         ensure_room_accepts_live_publish(&room)?;
 
         self.room_service
-            .check_membership(&rid, &uid)
+            .check_membership_with_room(&room, &uid)
             .await
             .map_err(Self::map_room_access_error)?;
 
@@ -270,19 +268,17 @@ impl AdminApiImpl {
         let (room_id, media_id) = codec.build_create_publish_key_request(req)?;
         let rid = codec.parse_room_id(&room_id)?;
 
-        let _media = self
-            .room_service
-            .media_service()
-            .get_room_media(&rid, &media_id)
-            .await
+        let (media, room) = tokio::join!(
+            self.room_service
+                .media_service()
+                .get_room_media(&rid, &media_id),
+            self.room_service.get_room(&rid),
+        );
+        let _media = media
             .map_err(|e| ApiError::Internal(format!("Failed to load media: {e}")))?
             .ok_or_else(|| ApiError::NotFound(format!("Media {media_id} not found")))?;
 
-        let room = self
-            .room_service
-            .get_room(&rid)
-            .await
-            .map_err(ApiError::from)?;
+        let room = room.map_err(ApiError::from)?;
         ensure_room_accepts_live_publish(&room)?;
 
         let publish_key_service = self

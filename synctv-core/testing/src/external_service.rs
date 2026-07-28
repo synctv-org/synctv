@@ -9,7 +9,7 @@ use tokio::sync::Semaphore;
 use crate::docker::{
     acquire_docker_slot, acquire_run_lock, cleanup_orphaned_run_lock_files,
     cleanup_orphaned_testcontainers, current_test_run_id as docker_current_test_run_id,
-    sanitize_container_name, TEST_RUN_LABEL,
+    ensure_docker_image, sanitize_container_name, TEST_RUN_LABEL,
 };
 use crate::postgres::{docker_startup_parallelism, docker_startup_timeout};
 
@@ -149,6 +149,11 @@ pub async fn start_external_service(request: ExternalServiceRequest) -> External
 
     let container_name = next_container_name(&container_prefix, &service, &run_id);
     let _slot = acquire_external_service_start_slot(&service).await;
+
+    let image_descriptor = format!("{}:{}", request.image, request.tag);
+    ensure_docker_image(&image_descriptor, docker_startup_timeout())
+        .await
+        .unwrap_or_else(|error| panic!("Failed to prepare {service} image: {error}"));
 
     let mut image = GenericImage::new(request.image, request.tag);
 

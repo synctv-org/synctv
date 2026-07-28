@@ -1,13 +1,21 @@
 use std::fs::{File, OpenOptions};
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::LazyLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use sha2::{Digest as _, Sha256};
+use testcontainers::core::client::docker_client_instance;
+use testcontainers::runners::AsyncRunner;
+use testcontainers::GenericImage;
 use tokio::sync::{Semaphore, SemaphorePermit};
 
 pub(crate) const TEST_RUN_LABEL: &str = "synctv.test.run_id";
+const DOCKER_IMAGE_PULL_LOCK_PREFIX: &str = "docker-image-pull";
+const IMAGE_PULL_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const IMAGE_PULL_RETRY_MAX_DELAY: Duration = Duration::from_secs(10);
 
 pub struct ProcessLock(File);
 
@@ -201,6 +209,156 @@ pub(crate) fn format_command_failure(
             .join(" "),
         output.status
     )
+}
+
+fn docker_image_missing_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("no such image") || normalized.contains("no such object")
+}
+
+async fn docker_image_inspect(descriptor: &str) -> Result<bool, String> {
+    let client = docker_client_instance()
+        .await
+        .map_err(|error| format!("failed to connect to Docker: {error}"))?;
+
+    match client.inspect_image(descriptor).await {
+        Ok(_) => Ok(true),
+        Err(error) if docker_image_missing_error(&error.to_string()) => Ok(false),
+        Err(error) => Err(format!(
+            "failed to inspect Docker image `{descriptor}`: {error}"
+        )),
+    }
+}
+
+fn image_descriptor_parts(descriptor: &str) -> Result<(&str, &str), String> {
+    let Some((name, tag)) = descriptor.rsplit_once(':') else {
+        return Err(format!("Docker image descriptor `{descriptor}` has no tag"));
+    };
+    if name.is_empty() || tag.is_empty() || tag.contains('/') {
+        return Err(format!("Docker image descriptor `{descriptor}` is invalid"));
+    }
+    Ok((name, tag))
+}
+
+async fn docker_pull_image(descriptor: &str) -> Result<(), String> {
+    let (name, tag) = image_descriptor_parts(descriptor)?;
+    GenericImage::new(name, tag)
+        .pull_image()
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("failed to pull Docker image `{descriptor}`: {error}"))
+}
+
+async fn run_until_deadline<T>(
+    deadline: Instant,
+    operation: impl Future<Output = Result<T, String>>,
+    timeout_message: String,
+) -> Result<T, String> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(timeout_message);
+    }
+    tokio::time::timeout(remaining, operation)
+        .await
+        .map_err(|_| timeout_message)?
+}
+
+fn image_pull_error_is_rate_limited(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("toomanyrequests")
+        || normalized.contains("too many requests")
+        || (normalized.contains("oauth token") && normalized.contains("429"))
+}
+
+fn docker_image_pull_lock_name(descriptor: &str) -> String {
+    let digest = Sha256::digest(descriptor.as_bytes());
+    format!("{DOCKER_IMAGE_PULL_LOCK_PREFIX}-{}", hex::encode(digest))
+}
+
+fn acquire_image_pull_lock(
+    name: &str,
+    deadline: Instant,
+    timeout: Duration,
+) -> Result<ProcessLock, String> {
+    loop {
+        if let Some(lock) = ProcessLock::try_acquire(name) {
+            return Ok(lock);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out after {timeout:?} waiting to prepare Docker image"
+            ));
+        }
+        std::thread::sleep(IMAGE_PULL_LOCK_POLL_INTERVAL);
+    }
+}
+
+pub(crate) async fn ensure_docker_image(descriptor: &str, timeout: Duration) -> Result<(), String> {
+    let descriptor = descriptor.to_string();
+    let deadline = Instant::now() + timeout;
+    let timeout_message =
+        format!("timed out after {timeout:?} preparing Docker image '{descriptor}'");
+
+    if run_until_deadline(
+        deadline,
+        docker_image_inspect(&descriptor),
+        timeout_message.clone(),
+    )
+    .await?
+    {
+        return Ok(());
+    }
+
+    let pull_lock_name = docker_image_pull_lock_name(&descriptor);
+    let lock_timeout = timeout;
+    let lock_deadline = deadline;
+    let pull_lock_task = tokio::task::spawn_blocking(move || {
+        acquire_image_pull_lock(&pull_lock_name, lock_deadline, lock_timeout)
+    });
+    let _pull_lock = run_until_deadline(
+        deadline,
+        async move {
+            pull_lock_task
+                .await
+                .map_err(|error| format!("Docker image pull lock task failed: {error}"))?
+        },
+        timeout_message.clone(),
+    )
+    .await?;
+
+    // Another cargo/nextest process may have populated the image while this
+    // process waited for the cross-process pull lock.
+    if run_until_deadline(
+        deadline,
+        docker_image_inspect(&descriptor),
+        timeout_message.clone(),
+    )
+    .await?
+    {
+        return Ok(());
+    }
+
+    let mut retry_delay = Duration::from_secs(1);
+    loop {
+        match run_until_deadline(
+            deadline,
+            docker_pull_image(&descriptor),
+            timeout_message.clone(),
+        )
+        .await
+        {
+            Ok(()) => return Ok(()),
+            Err(error) if image_pull_error_is_rate_limited(&error) && Instant::now() < deadline => {
+                eprintln!(
+                    "warning: Docker registry rate-limited image pull for {descriptor}, retrying: {error}"
+                );
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                tokio::time::sleep(retry_delay.min(remaining)).await;
+                retry_delay = (retry_delay * 2).min(IMAGE_PULL_RETRY_MAX_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 pub(crate) fn cleanup_orphaned_testcontainers(
@@ -489,5 +647,61 @@ pub(crate) async fn acquire_docker_slot(
     DockerSlotGuard {
         _local_permit: local_permit,
         _process_lock: process_lock,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_pull_rate_limit_detection_matches_docker_hub_errors() {
+        assert!(image_pull_error_is_rate_limited(
+            "failed to fetch oauth token: unexpected status 429 Too Many Requests"
+        ));
+        assert!(image_pull_error_is_rate_limited(
+            "error from registry: TOOMANYREQUESTS"
+        ));
+    }
+
+    #[test]
+    fn image_pull_rate_limit_detection_rejects_authentication_errors() {
+        assert!(!image_pull_error_is_rate_limited(
+            "failed to fetch oauth token: unexpected status 401 Unauthorized"
+        ));
+    }
+
+    #[test]
+    fn image_pull_lock_name_is_stable_for_the_same_descriptor() {
+        let first = docker_image_pull_lock_name("postgres:18");
+        let second = docker_image_pull_lock_name("postgres:18");
+
+        assert_eq!(first, second);
+        assert!(first.starts_with("docker-image-pull-"));
+    }
+
+    #[test]
+    fn image_pull_lock_name_distinguishes_images_and_tags() {
+        let postgres = docker_image_pull_lock_name("postgres:18");
+        let redis = docker_image_pull_lock_name("redis:8");
+        let older_postgres = docker_image_pull_lock_name("postgres:17");
+
+        assert_ne!(postgres, redis);
+        assert_ne!(postgres, older_postgres);
+    }
+
+    #[test]
+    fn image_descriptor_parts_support_registry_ports() {
+        assert_eq!(
+            image_descriptor_parts("registry.example:5000/synctv/postgres:18"),
+            Ok(("registry.example:5000/synctv/postgres", "18"))
+        );
+    }
+
+    #[test]
+    fn image_descriptor_parts_reject_missing_or_invalid_tags() {
+        assert!(image_descriptor_parts("postgres").is_err());
+        assert!(image_descriptor_parts("postgres:").is_err());
+        assert!(image_descriptor_parts(":18").is_err());
     }
 }

@@ -24,9 +24,10 @@ use crate::docker::{
     acquire_run_lock, candidate_endpoints_for_host, cleanup_orphaned_run_lock_files,
     cleanup_orphaned_testcontainers, current_test_run_id as docker_current_test_run_id,
     current_test_run_id_from as docker_current_test_run_id_from,
-    docker_named_container_belongs_to_current_run, docker_port_candidates, host_address_family,
-    run_has_active_lock, sanitize_container_name, startup_error_is_named_container_conflict,
-    startup_error_is_retriable, ProcessLock, TEST_RUN_LABEL,
+    docker_named_container_belongs_to_current_run, docker_port_candidates, ensure_docker_image,
+    host_address_family, run_has_active_lock, sanitize_container_name,
+    startup_error_is_named_container_conflict, startup_error_is_retriable, ProcessLock,
+    TEST_RUN_LABEL,
 };
 
 fn trusted_dynamic_sql(sql: String) -> sqlx::AssertSqlSafe<String> {
@@ -919,6 +920,10 @@ async fn init_shared_postgres_server() -> SharedPostgresServer {
     {
         (None, host, port)
     } else {
+        let image_descriptor = named_postgres_request(ADMIN_DATABASE, &container_name).descriptor();
+        ensure_docker_image(&image_descriptor, docker_startup_timeout())
+            .await
+            .unwrap_or_else(|error| panic!("Failed to prepare Postgres image: {error}"));
         let start_deadline = std::time::Instant::now() + docker_startup_timeout();
         loop {
             match tokio::time::timeout(

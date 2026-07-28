@@ -18,8 +18,9 @@ use crate::docker::{
     current_test_run_id as docker_current_test_run_id,
     current_test_run_id_from as docker_current_test_run_id_from,
     docker_named_container_belongs_to_current_run, docker_port_candidates, docker_rm_force,
-    host_address_family, sanitize_container_name, startup_error_is_named_container_conflict,
-    startup_error_is_retriable, DockerSlotGuard, ProcessLock, TEST_RUN_LABEL,
+    ensure_docker_image, host_address_family, sanitize_container_name,
+    startup_error_is_named_container_conflict, startup_error_is_retriable, DockerSlotGuard,
+    ProcessLock, TEST_RUN_LABEL,
 };
 use crate::postgres::{docker_startup_parallelism, docker_startup_timeout};
 
@@ -384,6 +385,10 @@ async fn init_shared_rustfs_server() -> SharedRustfsServer {
         if let Some((host, port)) = resolve_existing_named_rustfs_endpoint(&container_name).await {
             (None, host, port)
         } else {
+            let image_descriptor = named_rustfs_request(&container_name).descriptor();
+            ensure_docker_image(&image_descriptor, docker_startup_timeout())
+                .await
+                .unwrap_or_else(|error| panic!("Failed to prepare RustFS image: {error}"));
             let start_deadline = std::time::Instant::now() + docker_startup_timeout();
             let mut last_start_error;
             loop {

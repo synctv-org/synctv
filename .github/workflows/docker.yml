@@ -79,6 +79,7 @@ jobs:
       build-args: |
         SYNCTV_CARGO_BUILD_PROFILE=${{ github.event_name == 'pull_request' && 'dev' || 'release' }}
         CARGO_INCREMENTAL=0
+        CARGO_TERM_COLOR=always
       set-meta-annotations: true
       set-meta-labels: true
       meta-images: ${{ needs.docker-prepare.outputs.meta-images }}

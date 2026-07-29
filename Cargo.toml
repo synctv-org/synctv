@@ -382,7 +382,6 @@ strip = "symbols"
 
 [profile.release]
 opt-level = 2
-codegen-units = 1
 debug = 0
 lto = "thin"
 panic = "unwind"

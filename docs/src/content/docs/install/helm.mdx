@@ -8,7 +8,7 @@ import {
   helmChartName,
   helmChartVersion,
   helmOciChartReference,
-  helmOciRepository,
+  helmOciNamespace,
 } from '../../../lib/project';
 
 Helm 面向已有 Kubernetes、Ingress 和集中式 Secret 管理的平台。单机服务器、NAS 和虚拟机使用 [Docker Compose](../docker-compose/)；部署条件对照见[选择部署方式](../choose-path/)。
@@ -73,7 +73,7 @@ ingress:
   --namespace synctv \
   --create-namespace`} lang="bash" />
 
-Chart 位于 <code>{helmOciRepository}/{helmChartName}</code>。生产环境使用自己的 values 文件：
+完整可安装 Chart 地址为 <code>{helmOciChartReference}</code>。发布命名空间为 <code>{helmOciNamespace}</code>。生产环境使用自己的 values 文件：
 
 <Code code={`helm install ${helmChartName} ${helmOciChartReference} \\
   --version ${helmChartVersion} \\

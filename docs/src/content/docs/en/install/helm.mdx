@@ -8,7 +8,7 @@ import {
   helmChartName,
   helmChartVersion,
   helmOciChartReference,
-  helmOciRepository,
+  helmOciNamespace,
 } from '../../../../lib/project';
 
 Helm fits platforms that already run Kubernetes, Ingress, and centralized secret management. Servers, NAS devices, and virtual machines use [Docker Compose](../docker-compose/); compare the infrastructure requirements in [Choose a Deployment](../choose-path/).
@@ -73,7 +73,7 @@ OCI registry install:
   --namespace synctv \
   --create-namespace`} lang="bash" />
 
-The chart is available at <code>{helmOciRepository}/{helmChartName}</code>. Production deployments should use a values file:
+The complete installable Chart reference is <code>{helmOciChartReference}</code>. Its publishing namespace is <code>{helmOciNamespace}</code>. Production deployments should use a values file:
 
 <Code code={`helm install ${helmChartName} ${helmOciChartReference} \\
   --version ${helmChartVersion} \\

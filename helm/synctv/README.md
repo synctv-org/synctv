@@ -50,9 +50,9 @@ helm install synctv oci://ghcr.io/synctv-org/synctv/charts/synctv \
   --create-namespace
 ```
 
-The default parent OCI repository is `ghcr.io/synctv-org/synctv/charts`. Helm
-appends the chart name, so the install reference ends with `/synctv`.
-Maintainers can override the publishing target with `HELM_OCI_REPOSITORY`.
+The default OCI publishing namespace is `ghcr.io/synctv-org/synctv/charts`. Helm
+appends the chart name, so the complete install reference ends with `/synctv`.
+Maintainers can override the publishing namespace with `HELM_OCI_NAMESPACE`.
 
 For local development, install from the chart source:
 

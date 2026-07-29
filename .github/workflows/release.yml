@@ -27,7 +27,7 @@ jobs:
       release-tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     secrets:
       token: ${{ secrets.GITHUB_TOKEN }}
-      HELM_OCI_REPOSITORY: ${{ secrets.HELM_OCI_REPOSITORY }}
+      HELM_OCI_NAMESPACE: ${{ secrets.HELM_OCI_NAMESPACE }}
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_REPOSITORY: ${{ secrets.DOCKERHUB_REPOSITORY }}
       DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}

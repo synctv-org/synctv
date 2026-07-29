@@ -10,7 +10,7 @@ on:
     secrets:
       token:
         required: true
-      HELM_OCI_REPOSITORY:
+      HELM_OCI_NAMESPACE:
         required: false
       DOCKERHUB_USERNAME:
         required: false
@@ -48,7 +48,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.release-tag }}
           GHCR_REPOSITORY: ${{ github.repository }}
-          HELM_OCI_REPOSITORY: ${{ vars.HELM_OCI_REPOSITORY || secrets.HELM_OCI_REPOSITORY }}
+          HELM_OCI_NAMESPACE: ${{ vars.HELM_OCI_NAMESPACE || secrets.HELM_OCI_NAMESPACE }}
           DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY || secrets.DOCKERHUB_REPOSITORY }}
         run: |
@@ -97,8 +97,8 @@ jobs:
             echo "app_version=$app_version"
             echo "dockerhub_username=$DOCKERHUB_USERNAME"
             echo 'oci_repos<<EOF'
-            if [ -n "$HELM_OCI_REPOSITORY" ]; then
-              printf '%s\n' "$HELM_OCI_REPOSITORY"
+            if [ -n "$HELM_OCI_NAMESPACE" ]; then
+              printf '%s\n' "$HELM_OCI_NAMESPACE"
             else
               echo "ghcr.io/$GHCR_REPOSITORY/charts"
               if [ -n "${dockerhub_repository:-}" ]; then

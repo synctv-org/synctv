@@ -55,8 +55,8 @@ export const dockerImageReference = `${dockerImage}:${dockerImageTag}`;
 
 export const helmChartName = readEnv('SYNCTV_DOCS_HELM_CHART_NAME') || 'synctv';
 export const helmChartVersion = readEnv('SYNCTV_DOCS_HELM_CHART_VERSION') || defaultAppVersion;
-export const helmOciRepository =
-  readEnv('SYNCTV_DOCS_HELM_OCI_REPOSITORY') ||
-  readEnv('HELM_OCI_REPOSITORY') ||
+export const helmOciNamespace =
+  readEnv('SYNCTV_DOCS_HELM_OCI_NAMESPACE') ||
+  readEnv('HELM_OCI_NAMESPACE') ||
   `ghcr.io/${githubRepository}/charts`;
-export const helmOciChartReference = `oci://${helmOciRepository}/${helmChartName}`;
+export const helmOciChartReference = `oci://${helmOciNamespace}/${helmChartName}`;

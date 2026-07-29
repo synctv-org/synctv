@@ -395,9 +395,11 @@ pub enum OAuth2ProviderPrivateConfig {
     #[serde(rename = "logto")]
     Logto(OAuth2LogtoProviderConfig),
     #[serde(rename = "casdoor")]
-    Casdoor(OAuth2OidcProviderConfig),
+    Casdoor(OAuth2CasdoorProviderConfig),
     #[serde(rename = "oidc")]
     Oidc(OAuth2OidcProviderConfig),
+    #[serde(rename = "apple")]
+    Apple(OAuth2AppleProviderConfig),
 }
 
 impl Default for OAuth2ProviderPrivateConfig {
@@ -447,6 +449,33 @@ pub struct OAuth2OidcProviderConfig {
     pub userinfo_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jwks_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct OAuth2CasdoorProviderConfig {
+    pub client_id: String,
+    pub client_secret: String,
+    pub redirect_url: String,
+    pub issuer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub userinfo_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jwks_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct OAuth2AppleProviderConfig {
+    pub client_id: String,
+    pub client_secret: String,
+    pub redirect_url: String,
 }
 
 impl OAuth2ProviderPrivateConfig {
@@ -458,6 +487,7 @@ impl OAuth2ProviderPrivateConfig {
             Self::Logto(_) => "logto",
             Self::Casdoor(_) => "casdoor",
             Self::Oidc(_) => "oidc",
+            Self::Apple(_) => "apple",
         }
     }
 }

@@ -5,7 +5,10 @@ use super::{
     validate_oauth2_redirect_url, validate_provider_url, validate_required_oauth2_field,
 };
 use crate::oauth2::{OAuth2Authorization, OAuth2UserInfo, Provider};
-use crate::service::{OAuth2OidcProviderConfig, OAuth2ProviderPrivateConfig};
+use crate::service::{
+    OAuth2AppleProviderConfig, OAuth2CasdoorProviderConfig, OAuth2OidcProviderConfig,
+    OAuth2ProviderPrivateConfig,
+};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use jsonwebtoken::{
@@ -21,6 +24,7 @@ use oauth2::{
 };
 use reqwest::Client as ReqwestClient;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -49,6 +53,64 @@ type OidcClient = Client<
 
 const OIDC_JWKS_CACHE_TTL: Duration = Duration::from_mins(10);
 const OIDC_JWKS_REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
+const APPLE_OIDC_ISSUER: &str = "https://appleid.apple.com";
+const DEFAULT_OIDC_SCOPES: &[&str] = &["openid", "profile"];
+const APPLE_OIDC_SCOPES: &[&str] = &["openid"];
+const MAX_OIDC_SCOPES: usize = 32;
+const MAX_OIDC_SCOPE_LEN: usize = 256;
+const MAX_OIDC_SCOPES_TOTAL_LEN: usize = 2048;
+
+fn normalize_oidc_scopes(scopes: Vec<String>, issuer: &str) -> Result<Vec<String>, Error> {
+    let defaults = if issuer.eq_ignore_ascii_case(APPLE_OIDC_ISSUER) {
+        APPLE_OIDC_SCOPES
+    } else {
+        DEFAULT_OIDC_SCOPES
+    };
+    let source = if scopes.is_empty() {
+        defaults.iter().map(|scope| (*scope).to_string()).collect()
+    } else {
+        scopes
+    };
+
+    if source.len() > MAX_OIDC_SCOPES {
+        return Err(Error::InvalidInput(format!(
+            "OIDC scopes must contain at most {MAX_OIDC_SCOPES} entries"
+        )));
+    }
+
+    let mut normalized = Vec::with_capacity(source.len());
+    let mut seen = HashSet::new();
+    let mut total_len = 0;
+    for raw_scope in source {
+        let scope = raw_scope.trim();
+        let valid = !scope.is_empty()
+            && scope.len() <= MAX_OIDC_SCOPE_LEN
+            && scope.bytes().all(|byte| {
+                byte == b'!' || (b'#'..=b'[').contains(&byte) || (b']'..=b'~').contains(&byte)
+            });
+        if !valid {
+            return Err(Error::InvalidInput(format!(
+                "OIDC scope '{scope}' is not a valid OAuth scope token"
+            )));
+        }
+        total_len += scope.len();
+        if total_len > MAX_OIDC_SCOPES_TOTAL_LEN {
+            return Err(Error::InvalidInput(format!(
+                "OIDC scopes must contain at most {MAX_OIDC_SCOPES_TOTAL_LEN} characters"
+            )));
+        }
+        if seen.insert(scope.to_string()) {
+            normalized.push(scope.to_string());
+        }
+    }
+
+    if !seen.contains("openid") {
+        return Err(Error::InvalidInput(
+            "OIDC scopes must include 'openid'".to_string(),
+        ));
+    }
+    Ok(normalized)
+}
 
 /// OIDC provider configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +128,8 @@ pub struct OidcConfig {
     pub userinfo_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jwks_url: Option<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
 }
 
 /// Optional static OIDC endpoints.
@@ -101,6 +165,7 @@ struct ResolvedOidc {
 /// are resolved lazily on first use by fetching `{issuer}/.well-known/openid-configuration`.
 /// When created via `create_with_endpoints()`, the provided endpoints are used directly.
 pub struct OidcProvider {
+    provider_type: &'static str,
     resolved: OnceCell<ResolvedOidc>,
     jwks_cache: RwLock<Option<CachedJwks>>,
     jwks_refresh_state: Mutex<JwksRefreshState>,
@@ -117,6 +182,7 @@ struct OidcInitConfig {
     client_secret: String,
     redirect_url: String,
     issuer: String,
+    scopes: Vec<String>,
     /// If set, these are static overrides (no discovery needed)
     static_endpoints: Option<StaticEndpoints>,
 }
@@ -177,10 +243,6 @@ struct OidcIdTokenClaims {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
-    email: Option<String>,
-    #[serde(default)]
-    email_verified: Option<bool>,
-    #[serde(default)]
     picture: Option<String>,
 }
 
@@ -210,9 +272,6 @@ struct OidcUserInfoResponse {
     #[serde(default)]
     preferred_username: Option<String>,
     name: Option<String>,
-    email: Option<String>,
-    #[serde(default)]
-    email_verified: Option<bool>,
     picture: Option<String>,
 }
 
@@ -246,10 +305,30 @@ impl OidcProvider {
         issuer: &str,
         ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     ) -> Result<Self, Error> {
+        Self::create_with_scopes_and_ssrf_guard(
+            client_id,
+            client_secret,
+            redirect_url,
+            issuer,
+            Vec::new(),
+            ssrf_guard,
+        )
+    }
+
+    pub fn create_with_scopes_and_ssrf_guard(
+        client_id: String,
+        client_secret: String,
+        redirect_url: String,
+        issuer: &str,
+        scopes: Vec<String>,
+        ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> Result<Self, Error> {
         let issuer = issuer.trim_end_matches('/');
         validate_provider_url(issuer, "Invalid OIDC issuer URL", ssrf_guard)?;
         validate_oauth2_redirect_url(&redirect_url, "Invalid OIDC redirect URL")?;
+        let scopes = normalize_oidc_scopes(scopes, issuer)?;
         Ok(Self {
+            provider_type: "oidc",
             resolved: OnceCell::new(),
             jwks_cache: RwLock::new(None),
             jwks_refresh_state: Mutex::new(JwksRefreshState::default()),
@@ -258,6 +337,7 @@ impl OidcProvider {
                 client_secret,
                 redirect_url,
                 issuer: issuer.to_string(),
+                scopes,
                 static_endpoints: None,
             },
             oauth2_http_client: build_oauth2_http_client(ssrf_guard)?,
@@ -295,6 +375,26 @@ impl OidcProvider {
         endpoints: OidcEndpointOverrides,
         ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     ) -> Result<Self, Error> {
+        Self::create_with_endpoints_scopes_and_ssrf_guard(
+            client_id,
+            client_secret,
+            redirect_url,
+            issuer,
+            endpoints,
+            Vec::new(),
+            ssrf_guard,
+        )
+    }
+
+    pub fn create_with_endpoints_scopes_and_ssrf_guard(
+        client_id: String,
+        client_secret: String,
+        redirect_url: String,
+        issuer: &str,
+        endpoints: OidcEndpointOverrides,
+        scopes: Vec<String>,
+        ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> Result<Self, Error> {
         let issuer_trimmed = issuer.trim_end_matches('/');
         if issuer_trimmed.is_empty() {
             return Err(Error::InvalidInput(
@@ -303,6 +403,7 @@ impl OidcProvider {
         }
         validate_provider_url(issuer_trimmed, "Invalid OIDC issuer URL", ssrf_guard)?;
         validate_oauth2_redirect_url(&redirect_url, "Invalid OIDC redirect URL")?;
+        let scopes = normalize_oidc_scopes(scopes, issuer_trimmed)?;
         let auth = endpoints.auth_url.ok_or_else(|| {
             Error::InvalidInput(
                 "OIDC static endpoint mode requires explicit 'auth_url'".to_string(),
@@ -325,6 +426,7 @@ impl OidcProvider {
             validate_provider_url(userinfo, "Invalid OIDC userinfo URL", ssrf_guard)?;
         }
         Ok(Self {
+            provider_type: "oidc",
             resolved: OnceCell::new(),
             jwks_cache: RwLock::new(None),
             jwks_refresh_state: Mutex::new(JwksRefreshState::default()),
@@ -333,6 +435,7 @@ impl OidcProvider {
                 client_secret,
                 redirect_url,
                 issuer: issuer_trimmed.to_string(),
+                scopes,
                 static_endpoints: Some(StaticEndpoints {
                     auth,
                     token,
@@ -344,6 +447,12 @@ impl OidcProvider {
             http_client: build_provider_http_client(ssrf_guard)?,
             ssrf_guard: ssrf_guard.clone(),
         })
+    }
+
+    #[must_use]
+    fn with_provider_type(mut self, provider_type: &'static str) -> Self {
+        self.provider_type = provider_type;
+        self
     }
 
     /// Resolve the `OAuth2` client, performing .well-known discovery if needed.
@@ -726,9 +835,7 @@ impl OidcProvider {
         OAuth2UserInfo {
             provider_user_id,
             username,
-            email: claims.email,
             avatar: claims.picture,
-            email_verified: claims.email_verified.unwrap_or(false),
         }
     }
 
@@ -748,12 +855,7 @@ impl OidcProvider {
         OAuth2UserInfo {
             provider_user_id,
             username,
-            email: user.email.or(id_token_claims.email),
             avatar: user.picture.or(id_token_claims.picture),
-            email_verified: user
-                .email_verified
-                .or(id_token_claims.email_verified)
-                .unwrap_or(false),
         }
     }
 }
@@ -816,7 +918,7 @@ fn validate_jwk_for_id_token(jwk: &Jwk, algorithm: Algorithm) -> Result<(), Erro
 #[async_trait]
 impl Provider for OidcProvider {
     fn provider_type(&self) -> &'static str {
-        "oidc"
+        self.provider_type
     }
 
     async fn new_auth_url(
@@ -829,19 +931,9 @@ impl Provider for OidcProvider {
         let nonce = synctv_common::snanoid!(32);
         let mut request = resolved
             .client
-            .authorize_url(|| oauth2::CsrfToken::new(state.to_string()))
-            .add_scope(Scope::new("openid".to_string()))
-            .add_scope(Scope::new("email".to_string()));
-        // Apple supports `openid`, `email`, and `name`; requesting the generic
-        // OIDC `profile` scope causes an invalid_scope response.
-        if self
-            .init_config
-            .issuer
-            .eq_ignore_ascii_case("https://appleid.apple.com")
-        {
-            request = request.add_scope(Scope::new("name".to_string()));
-        } else {
-            request = request.add_scope(Scope::new("profile".to_string()));
+            .authorize_url(|| oauth2::CsrfToken::new(state.to_string()));
+        for scope in &self.init_config.scopes {
+            request = request.add_scope(Scope::new(scope.clone()));
         }
         let mut request = request
             .add_extra_param("nonce", nonce.as_str())
@@ -949,7 +1041,19 @@ pub fn casdoor_factory_from_private_config(
             "Casdoor provider requires casdoor config".to_string(),
         ));
     };
-    oidc_factory_from_typed_config(config, ssrf_guard)
+    casdoor_factory_from_typed_config(config, ssrf_guard)
+}
+
+pub fn apple_factory_from_private_config(
+    config: &OAuth2ProviderPrivateConfig,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+) -> Result<Box<dyn Provider>, Error> {
+    let OAuth2ProviderPrivateConfig::Apple(config) = config else {
+        return Err(Error::InvalidInput(
+            "Apple provider requires apple config".to_string(),
+        ));
+    };
+    apple_factory_from_typed_config(config, ssrf_guard)
 }
 
 fn oidc_factory_from_typed_config(
@@ -969,13 +1073,65 @@ fn oidc_factory_from_typed_config(
             token_url: config.token_url.clone(),
             userinfo_url: config.userinfo_url.clone(),
             jwks_url: config.jwks_url.clone(),
+            scopes: config.scopes.clone(),
         },
+        "oidc",
         ssrf_guard,
     )
 }
 
+fn casdoor_factory_from_typed_config(
+    config: &OAuth2CasdoorProviderConfig,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+) -> Result<Box<dyn Provider>, Error> {
+    validate_required_oauth2_field("Casdoor", "client_id", &config.client_id)?;
+    validate_required_oauth2_field("Casdoor", "client_secret", &config.client_secret)?;
+    validate_required_oauth2_field("Casdoor", "redirect_url", &config.redirect_url)?;
+    oidc_factory_from_config(
+        OidcConfig {
+            client_id: config.client_id.clone(),
+            client_secret: config.client_secret.clone(),
+            redirect_url: config.redirect_url.clone(),
+            issuer: config.issuer.clone(),
+            auth_url: config.auth_url.clone(),
+            token_url: config.token_url.clone(),
+            userinfo_url: config.userinfo_url.clone(),
+            jwks_url: config.jwks_url.clone(),
+            scopes: DEFAULT_OIDC_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect(),
+        },
+        "casdoor",
+        ssrf_guard,
+    )
+}
+
+fn apple_factory_from_typed_config(
+    config: &OAuth2AppleProviderConfig,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+) -> Result<Box<dyn Provider>, Error> {
+    validate_required_oauth2_field("Apple", "client_id", &config.client_id)?;
+    validate_required_oauth2_field("Apple", "client_secret", &config.client_secret)?;
+    validate_required_oauth2_field("Apple", "redirect_url", &config.redirect_url)?;
+    let provider = OidcProvider::create_with_scopes_and_ssrf_guard(
+        config.client_id.clone(),
+        config.client_secret.clone(),
+        config.redirect_url.clone(),
+        APPLE_OIDC_ISSUER,
+        APPLE_OIDC_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string())
+            .collect(),
+        ssrf_guard,
+    )?
+    .with_provider_type("apple");
+    Ok(Box::new(provider))
+}
+
 fn oidc_factory_from_config(
     config: OidcConfig,
+    provider_type: &'static str,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
 ) -> Result<Box<dyn Provider>, Error> {
     let has_custom_endpoints = config.auth_url.is_some()
@@ -999,7 +1155,7 @@ fn oidc_factory_from_config(
     }
 
     let provider = if has_custom_endpoints {
-        OidcProvider::create_with_endpoints_and_ssrf_guard(
+        OidcProvider::create_with_endpoints_scopes_and_ssrf_guard(
             config.client_id,
             config.client_secret,
             config.redirect_url,
@@ -1010,19 +1166,21 @@ fn oidc_factory_from_config(
                 userinfo_url: config.userinfo_url,
                 jwks_url: config.jwks_url,
             },
+            config.scopes,
             ssrf_guard,
         )?
     } else {
-        OidcProvider::create_with_ssrf_guard(
+        OidcProvider::create_with_scopes_and_ssrf_guard(
             config.client_id,
             config.client_secret,
             config.redirect_url,
             &config.issuer,
+            config.scopes,
             ssrf_guard,
         )?
     };
 
-    Ok(Box::new(provider))
+    Ok(Box::new(provider.with_provider_type(provider_type)))
 }
 
 #[cfg(test)]
@@ -1052,6 +1210,7 @@ mod tests {
             token_url: endpoints.token_url,
             userinfo_url: endpoints.userinfo_url,
             jwks_url: endpoints.jwks_url,
+            scopes: Vec::new(),
         })
     }
 
@@ -1426,8 +1585,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             nonce: Some("nonce".to_string()),
             preferred_username: Some("preferred_user".to_string()),
             name: Some("Display Name".to_string()),
-            email: Some("user@example.com".to_string()),
-            email_verified: Some(true),
             picture: Some("https://example.com/avatar.png".to_string()),
         };
 
@@ -1435,8 +1592,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
 
         assert_eq!(user.provider_user_id, "subject-123");
         assert_eq!(user.username, "preferred_user");
-        assert_eq!(user.email.as_deref(), Some("user@example.com"));
-        assert!(user.email_verified);
         assert_eq!(
             user.avatar.as_deref(),
             Some("https://example.com/avatar.png")
@@ -1454,8 +1609,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             nonce: Some("nonce".to_string()),
             preferred_username: None,
             name: Some("   ".to_string()),
-            email: None,
-            email_verified: None,
             picture: None,
         };
 
@@ -1463,7 +1616,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
 
         assert_eq!(user.provider_user_id, "subject-123");
         assert_eq!(user.username, "subject-123");
-        assert!(!user.email_verified);
     }
 
     #[test]
@@ -1477,16 +1629,12 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             nonce: Some("nonce".to_string()),
             preferred_username: Some("token_user".to_string()),
             name: Some("Token Name".to_string()),
-            email: Some("token@example.com".to_string()),
-            email_verified: Some(false),
             picture: Some("https://example.com/token.png".to_string()),
         };
         let userinfo = OidcUserInfoResponse {
             sub: "subject-123".to_string(),
             preferred_username: Some("userinfo_user".to_string()),
             name: None,
-            email: Some("userinfo@example.com".to_string()),
-            email_verified: Some(true),
             picture: Some("https://example.com/userinfo.png".to_string()),
         };
 
@@ -1494,8 +1642,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
 
         assert_eq!(user.provider_user_id, "subject-123");
         assert_eq!(user.username, "userinfo_user");
-        assert_eq!(user.email.as_deref(), Some("userinfo@example.com"));
-        assert!(user.email_verified);
         assert_eq!(
             user.avatar.as_deref(),
             Some("https://example.com/userinfo.png")
@@ -1513,16 +1659,12 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             nonce: Some("nonce".to_string()),
             preferred_username: None,
             name: None,
-            email: None,
-            email_verified: None,
             picture: None,
         };
         let userinfo = OidcUserInfoResponse {
             sub: "subject-123".to_string(),
             preferred_username: Some(" ".to_string()),
             name: None,
-            email: None,
-            email_verified: None,
             picture: None,
         };
 
@@ -1530,7 +1672,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
 
         assert_eq!(user.provider_user_id, "subject-123");
         assert_eq!(user.username, "subject-123");
-        assert!(!user.email_verified);
     }
 
     #[test]
@@ -1912,7 +2053,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         assert!(auth_url.contains("redirect_uri="));
         assert!(auth_url.contains("scope=openid"));
         assert!(auth_url.contains("+profile"));
-        assert!(auth_url.contains("+email"));
+        assert!(!auth_url.contains("email"));
         assert!(auth_url.contains("nonce="));
         assert!(auth.nonce.is_some());
         // Should contain PKCE
@@ -1944,9 +2085,63 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             .checked("operation should succeed");
 
         assert!(auth.auth_url.contains("scope=openid"));
-        assert!(auth.auth_url.contains("+email"));
-        assert!(auth.auth_url.contains("+name"));
+        assert!(!auth.auth_url.contains("name"));
+        assert!(!auth.auth_url.contains("email"));
         assert!(!auth.auth_url.contains("+profile"));
+    }
+
+    #[tokio::test]
+    async fn test_custom_oidc_scopes_are_used_in_authorization_url() {
+        let provider = OidcProvider::create_with_endpoints_scopes_and_ssrf_guard(
+            "client".to_string(),
+            "secret".to_string(),
+            "https://app.example.com/callback".to_string(),
+            "https://issuer.example.com",
+            OidcEndpointOverrides {
+                auth_url: Some("https://issuer.example.com/authorize".to_string()),
+                token_url: Some("https://issuer.example.com/token".to_string()),
+                userinfo_url: Some("https://issuer.example.com/userinfo".to_string()),
+                jwks_url: Some("https://issuer.example.com/jwks".to_string()),
+            },
+            vec!["openid".to_string(), "groups".to_string()],
+            &synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+        .checked("custom OIDC scopes should be accepted");
+
+        let auth = provider
+            .new_auth_url("custom_scope_state", None)
+            .await
+            .checked("authorization URL should be generated");
+
+        assert!(auth.auth_url.contains("scope=openid"));
+        assert!(auth.auth_url.contains("+groups"));
+        assert!(!auth.auth_url.contains("profile"));
+        assert!(!auth.auth_url.contains("email"));
+    }
+
+    #[test]
+    fn test_normalize_oidc_scopes_trims_deduplicates_and_requires_openid() {
+        assert_eq!(
+            normalize_oidc_scopes(
+                vec![
+                    " openid ".to_string(),
+                    "groups".to_string(),
+                    "groups".to_string(),
+                ],
+                "https://issuer.example.com",
+            )
+            .checked("valid scopes should normalize"),
+            vec!["openid".to_string(), "groups".to_string()]
+        );
+        assert!(
+            normalize_oidc_scopes(vec!["profile".to_string()], "https://issuer.example.com")
+                .is_err()
+        );
+        assert!(normalize_oidc_scopes(
+            vec!["openid".to_string(), "bad scope".to_string()],
+            "https://issuer.example.com"
+        )
+        .is_err());
     }
 
     #[test]
@@ -1963,6 +2158,39 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         assert_eq!(
             provider.checked("operation should succeed").provider_type(),
             "oidc"
+        );
+    }
+
+    #[test]
+    fn test_dedicated_provider_factories_report_stable_types() {
+        let guard = synctv_common::ssrf::SsrfGuard::strict_policy();
+        let apple = OAuth2ProviderPrivateConfig::Apple(OAuth2AppleProviderConfig {
+            client_id: "org.example.app.web".to_string(),
+            client_secret: "secret".to_string(),
+            redirect_url: "https://app.example.com/oauth2/callback".to_string(),
+        });
+        assert_eq!(
+            apple_factory_from_private_config(&apple, &guard)
+                .checked("Apple provider should be created")
+                .provider_type(),
+            "apple"
+        );
+
+        let casdoor = OAuth2ProviderPrivateConfig::Casdoor(OAuth2CasdoorProviderConfig {
+            client_id: "client".to_string(),
+            client_secret: "secret".to_string(),
+            redirect_url: "https://app.example.com/oauth2/callback".to_string(),
+            issuer: "https://casdoor.example.com".to_string(),
+            auth_url: None,
+            token_url: None,
+            userinfo_url: None,
+            jwks_url: None,
+        });
+        assert_eq!(
+            casdoor_factory_from_private_config(&casdoor, &guard)
+                .checked("Casdoor provider should be created")
+                .provider_type(),
+            "casdoor"
         );
     }
 
@@ -2127,6 +2355,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             token_url: None,
             userinfo_url: None,
             jwks_url: None,
+            scopes: Vec::new(),
         };
         let json = serde_json::to_value(&config).checked("operation should succeed");
         // Optional fields with skip_serializing_if should not appear

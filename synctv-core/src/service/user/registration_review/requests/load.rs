@@ -3,7 +3,7 @@ use sqlx::{Postgres, Transaction};
 use crate::{
     models::{ReviewStatus, SignupMethod, UserId},
     service::UserService,
-    Error, Result,
+    Result,
 };
 
 use super::super::super::registration_types::{
@@ -30,7 +30,6 @@ impl UserService {
                    oauth2_provider_user_id,
                    oauth2_provider_username,
                    oauth2_avatar_url,
-                   oauth2_email_trusted,
                    webauthn_credential_id,
                    webauthn_passkey AS "webauthn_passkey: PendingRegistrationPasskey",
                    webauthn_credential_name
@@ -48,14 +47,6 @@ impl UserService {
             let webauthn_passkey = row
                 .webauthn_passkey
                 .map(PendingRegistrationPasskey::into_inner);
-            let oauth2_email_trusted = match row.signup_method {
-                SignupMethod::OAuth2 => row.oauth2_email_trusted.ok_or_else(|| {
-                    Error::Internal(
-                        "OAuth2 registration request is missing email trust state".to_string(),
-                    )
-                })?,
-                _ => false,
-            };
             Ok(PendingRegistrationRequest {
                 username: row.username,
                 email: row.email,
@@ -69,7 +60,6 @@ impl UserService {
                 oauth2_provider_user_id: row.oauth2_provider_user_id,
                 oauth2_provider_username: row.oauth2_provider_username,
                 oauth2_avatar_url: row.oauth2_avatar_url,
-                oauth2_email_trusted,
                 webauthn_credential_id: row.webauthn_credential_id,
                 webauthn_passkey,
                 webauthn_credential_name: row.webauthn_credential_name,

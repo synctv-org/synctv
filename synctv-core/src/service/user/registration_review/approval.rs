@@ -45,7 +45,6 @@ impl UserService {
                 .oauth2_provider_username
                 .clone()
                 .unwrap_or_else(|| request.username.clone()),
-            email: request.email.clone(),
             avatar: request.oauth2_avatar_url.clone(),
         };
         UserOAuthProviderRepository::new(self.repository.pool().clone())
@@ -143,11 +142,9 @@ impl UserService {
                 ))
             })?;
 
-        let approved_email = match request.signup_method {
-            SignupMethod::OAuth2 if request.oauth2_email_trusted => request.email.clone(),
-            SignupMethod::OAuth2 => None,
-            _ => request.email.clone(),
-        };
+        let approved_email = (!matches!(request.signup_method, SignupMethod::OAuth2))
+            .then(|| request.email.clone())
+            .flatten();
 
         if self
             .repository

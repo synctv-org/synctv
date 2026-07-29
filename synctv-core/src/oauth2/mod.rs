@@ -90,10 +90,7 @@ pub trait Provider: Send + Sync {
 pub struct OAuth2UserInfo {
     pub provider_user_id: String,
     pub username: String,
-    pub email: Option<String>,
     pub avatar: Option<String>,
-    /// Whether the provider has verified the user's email address
-    pub email_verified: bool,
 }
 
 // Provider Registry

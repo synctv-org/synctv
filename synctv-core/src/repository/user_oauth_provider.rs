@@ -72,15 +72,14 @@ impl UserOAuthProviderRepository {
             r"
             INSERT INTO auth_oauth2_identities (
                 provider_type, provider_instance_name, provider_issuer,
-                provider_user_id, user_id, username, email, avatar_url
+                provider_user_id, user_id, username, avatar_url
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (provider_instance_name, provider_user_id)
             DO UPDATE SET
                 provider_type = EXCLUDED.provider_type,
                 provider_issuer = EXCLUDED.provider_issuer,
                 username = EXCLUDED.username,
-                email = EXCLUDED.email,
                 avatar_url = EXCLUDED.avatar_url,
                 updated_at = CURRENT_TIMESTAMP
             WHERE auth_oauth2_identities.user_id = EXCLUDED.user_id
@@ -91,7 +90,6 @@ impl UserOAuthProviderRepository {
             provider_user_id,
             user_id as &UserId,
             user_info.username.as_str(),
-            user_info.email.as_deref(),
             user_info.avatar.as_deref(),
         )
         .execute(executor)
@@ -139,7 +137,7 @@ impl UserOAuthProviderRepository {
             SELECT id, provider_type as "provider: OAuth2Provider",
                    provider_instance_name, provider_issuer, provider_user_id,
                    user_id as "user_id: UserId",
-                   username, email, avatar_url, created_at, updated_at
+                   username, avatar_url, created_at, updated_at
             FROM auth_oauth2_identities
             WHERE provider_instance_name = $1 AND provider_user_id = $2
             "#,
@@ -172,7 +170,7 @@ impl UserOAuthProviderRepository {
             SELECT id, provider_type as "provider: OAuth2Provider",
                    provider_instance_name, provider_issuer, provider_user_id,
                    user_id as "user_id: UserId",
-                   username, email, avatar_url, created_at, updated_at
+                   username, avatar_url, created_at, updated_at
             FROM auth_oauth2_identities
             WHERE user_id = $1
             "#,
@@ -286,7 +284,6 @@ struct OAuth2ClientRow {
     pub provider_user_id: String,
     pub user_id: UserId,
     pub username: String,
-    pub email: Option<String>,
     pub avatar_url: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -302,7 +299,6 @@ impl From<OAuth2ClientRow> for UserOAuthProviderMapping {
             provider_user_id: row.provider_user_id,
             user_id: row.user_id,
             username: row.username,
-            email: row.email,
             avatar_url: row.avatar_url,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -325,7 +321,6 @@ mod tests {
             provider_user_id: "gh_user_456".to_string(),
             user_id: UserId::expect_positive(42),
             username: "ghuser".to_string(),
-            email: Some("ghuser@example.com".to_string()),
             avatar_url: Some("https://avatars.example.com/ghuser.png".to_string()),
             created_at: now,
             updated_at: now,
@@ -342,7 +337,6 @@ mod tests {
         assert_eq!(mapping.provider_user_id, "gh_user_456");
         assert_eq!(mapping.user_id, UserId::expect_positive(42));
         assert_eq!(mapping.username, "ghuser");
-        assert_eq!(mapping.email.as_deref(), Some("ghuser@example.com"));
         assert_eq!(
             mapping.avatar_url.as_deref(),
             Some("https://avatars.example.com/ghuser.png")
@@ -362,14 +356,12 @@ mod tests {
             provider_user_id: "oidc_user_001".to_string(),
             user_id: UserId::expect_positive(2),
             username: "oidcuser".to_string(),
-            email: None,
             avatar_url: None,
             created_at: now,
             updated_at: now,
         };
 
         let mapping: UserOAuthProviderMapping = row.into();
-        assert!(mapping.email.is_none());
         assert!(mapping.avatar_url.is_none());
     }
 
@@ -384,7 +376,6 @@ mod tests {
             provider_user_id: "goog_123".to_string(),
             user_id: UserId::expect_positive(3),
             username: "googleuser".to_string(),
-            email: None,
             avatar_url: None,
             created_at: now,
             updated_at: now,

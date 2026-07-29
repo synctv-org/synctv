@@ -10,7 +10,7 @@ use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use oauth2::{
     basic::BasicClient, AuthUrl, ClientId, ClientSecret, EndpointNotSet, EndpointSet,
-    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,
+    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, TokenResponse, TokenUrl,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -36,7 +36,6 @@ pub struct GitHubProvider {
 struct GitHubUser {
     login: String,
     id: u64,
-    email: Option<String>,
     avatar_url: Option<String>,
 }
 
@@ -92,54 +91,6 @@ impl GitHubProvider {
     }
 }
 
-impl GitHubProvider {
-    /// Fetch the user's primary verified email from the GitHub `/user/emails` API.
-    ///
-    /// Returns `(Some(email), true)` if a primary+verified email is found,
-    /// `(Some(email), false)` if only a primary (unverified) email is found,
-    /// or an error if the API call fails.
-    async fn fetch_verified_email(
-        &self,
-        access_token: &str,
-    ) -> Result<(Option<String>, bool), Error> {
-        #[derive(Deserialize)]
-        struct GitHubEmail {
-            email: String,
-            primary: bool,
-            verified: bool,
-        }
-
-        let resp = self
-            .http_client
-            .get("https://api.github.com/user/emails")
-            .header("Authorization", format!("Bearer {access_token}"))
-            .header("User-Agent", "synctv-rs")
-            .send()
-            .await
-            .map_err(|err| map_provider_http_error("Failed to fetch user emails", err))?
-            .error_for_status()
-            .internal_with_err("GitHub emails API error")?;
-
-        let emails: Vec<GitHubEmail> = resp
-            .json()
-            .await
-            .internal_with_err("Failed to parse email list")?;
-
-        // Prefer the primary + verified email
-        if let Some(e) = emails.iter().find(|e| e.primary && e.verified) {
-            return Ok((Some(e.email.clone()), true));
-        }
-
-        // Fall back to primary (unverified)
-        if let Some(e) = emails.iter().find(|e| e.primary) {
-            return Ok((Some(e.email.clone()), false));
-        }
-
-        // No primary email found
-        Ok((None, false))
-    }
-}
-
 #[async_trait]
 impl Provider for GitHubProvider {
     fn provider_type(&self) -> &'static str {
@@ -155,7 +106,6 @@ impl Provider for GitHubProvider {
         let mut request = self
             .client
             .authorize_url(|| oauth2::CsrfToken::new(state.to_string()))
-            .add_scope(Scope::new("user:email".to_string()))
             .set_pkce_challenge(pkce_challenge);
         if let Some(redirect_url) = redirect_url {
             request = request.set_redirect_uri(std::borrow::Cow::Owned(
@@ -197,69 +147,24 @@ impl Provider for GitHubProvider {
             .map_err(|err| map_provider_http_error("Failed to exchange code", err))?;
 
         let access_token = token.access_token().secret();
-        let user_request = async {
-            self.http_client
-                .get("https://api.github.com/user")
-                .header("Authorization", format!("Bearer {access_token}"))
-                .header("User-Agent", "synctv-rs")
-                .send()
-                .await
-                .map_err(|err| map_provider_http_error("Failed to fetch user info", err))?
-                .error_for_status()
-                .internal_with_err("GitHub API error")?
-                .json::<GitHubUser>()
-                .await
-                .internal_with_err("Failed to parse user info")
-        };
-        let (user, verified_email) =
-            tokio::join!(user_request, self.fetch_verified_email(access_token),);
-        let user = user?;
-        // Fetch verified email from the /user/emails endpoint.
-        // The /user endpoint may return an email, but does not indicate
-        // whether it is verified. We must call /user/emails to get the
-        // actual verification status.
-        // Fallback rules:
-        // - API succeeds and a verified email exists: use it as verified.
-        // - API succeeds but no verified email exists: use the primary email as unverified.
-        // - API fails and the profile has no email: return an error.
-        // - API fails and the profile has an email: use it as unverified and warn.
-        let (email, email_verified) = match verified_email {
-            Ok((maybe_email, verified)) => (maybe_email, verified),
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    github_user_id = %user.id,
-                    "Failed to fetch GitHub verified email from /user/emails API"
-                );
-                match user.email {
-                    None => {
-                        // Cannot determine email ownership — refuse to create an account.
-                        return Err(Error::Internal(
-                            "Could not retrieve GitHub email address. \
-                             Please ensure your GitHub account has a public or verified \
-                             email address and try again."
-                                .to_string(),
-                        ));
-                    }
-                    Some(fallback_email) => {
-                        // Profile email is available but GitHub did not provide a trusted
-                        // primary email claim for this response.
-                        tracing::warn!(
-                            "Using GitHub profile email as unverified fallback — \
-                             email bind may be required."
-                        );
-                        (Some(fallback_email), false)
-                    }
-                }
-            }
-        };
+        let user = self
+            .http_client
+            .get("https://api.github.com/user")
+            .header("Authorization", format!("Bearer {access_token}"))
+            .header("User-Agent", "synctv-rs")
+            .send()
+            .await
+            .map_err(|err| map_provider_http_error("Failed to fetch user info", err))?
+            .error_for_status()
+            .internal_with_err("GitHub API error")?
+            .json::<GitHubUser>()
+            .await
+            .internal_with_err("Failed to parse user info")?;
 
         Ok(OAuth2UserInfo {
             provider_user_id: user.id.to_string(),
             username: user.login,
-            email,
             avatar: user.avatar_url,
-            email_verified,
         })
     }
 }
@@ -386,7 +291,7 @@ mod tests {
         assert!(auth_url.contains(&format!("state={state}")));
         // Auth URL should contain redirect_uri (URL-encoded)
         assert!(auth_url.contains("redirect_uri="));
-        assert!(auth_url.contains("scope=user%3Aemail"));
+        assert!(!auth_url.contains("scope="));
         // Auth URL should contain PKCE code_challenge
         assert!(auth_url.contains("code_challenge="));
         assert!(auth_url.contains("code_challenge_method=S256"));

@@ -298,6 +298,9 @@ pub(in crate::impls::admin) fn user_registration_review_row_to_proto(
             synctv_core::models::OAuth2Provider::Gitee => {
                 synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeGitee
             }
+            synctv_core::models::OAuth2Provider::Apple => {
+                synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeApple
+            }
         }) as i32
     });
 
@@ -319,7 +322,6 @@ pub(in crate::impls::admin) fn user_registration_review_row_to_proto(
         oauth2_provider_user_id: row.oauth2_provider_user_id.clone(),
         oauth2_provider_username: row.oauth2_provider_username.clone(),
         oauth2_avatar_url: row.oauth2_avatar_url.clone(),
-        oauth2_email_trusted: row.oauth2_email_trusted,
         webauthn_credential_id: row
             .webauthn_credential_id
             .as_deref()

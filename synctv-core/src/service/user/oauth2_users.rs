@@ -19,13 +19,11 @@ impl UserService {
     ///
     /// Note: This method doesn't save the `OAuth2` provider mapping - that's handled
     /// by `OAuth2Service::upsert_user_provider`.
-    /// Note: Email is optional for `OAuth2` users.
     pub async fn create_or_load_by_oauth2(
         &self,
         provider: &OAuth2Provider,
         provider_user_id: &str,
         username: &str,
-        email: Option<&str>,
     ) -> Result<User> {
         let (base_username, candidates) =
             Self::oauth2_username_candidates(provider_user_id, username)?;
@@ -40,9 +38,6 @@ impl UserService {
                 let created_user = self
                     .repository
                     .create_with_executor(&user, &mut *tx)
-                    .await?;
-                self.user_email_repository
-                    .create_for_user_with_executor(&created_user, email, &mut *tx)
                     .await?;
                 tx.commit().await?;
                 Ok::<_, Error>(created_user)

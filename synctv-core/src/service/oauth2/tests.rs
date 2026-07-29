@@ -109,9 +109,7 @@ impl TestOAuth2Provider {
             user_info: Some(crate::oauth2::OAuth2UserInfo {
                 provider_user_id: "provider_user_42".to_string(),
                 username: "testuser".to_string(),
-                email: Some("test@example.com".to_string()),
                 avatar: Some("https://avatar.example.com/42.png".to_string()),
-                email_verified: true,
             }),
             exchange_error: None,
         }
@@ -944,7 +942,6 @@ async fn test_exchange_code_for_user_info_success() {
 
     assert_eq!(user_info.provider_user_id, "provider_user_42");
     assert_eq!(user_info.username, "testuser");
-    assert_eq!(user_info.email.as_deref(), Some("test@example.com"));
     assert_eq!(
         user_info.avatar.as_deref(),
         Some("https://avatar.example.com/42.png")
@@ -1211,9 +1208,7 @@ async fn test_pkce_verifier_preserved_through_state_lifecycle() {
         user_info: Some(crate::oauth2::OAuth2UserInfo {
             provider_user_id: "94001".to_string(),
             username: "user1".to_string(),
-            email: None,
             avatar: None,
-            email_verified: false,
         }),
         exchange_error: None,
     };

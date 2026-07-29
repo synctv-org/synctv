@@ -503,15 +503,14 @@ async fn insert_oauth2_identity(
 ) {
     sqlx::query!(
         "INSERT INTO auth_oauth2_identities (
-             provider_type, provider_instance_name, provider_user_id, user_id, username, email
+             provider_type, provider_instance_name, provider_user_id, user_id, username
          )
-         VALUES ($1, $2, $3, $4, $5, $6)",
+         VALUES ($1, $2, $3, $4, $5)",
         2_i16,
         provider_instance_name,
         provider_user_id,
         user_id.as_i64(),
-        provider_user_id,
-        &format!("{provider_user_id}@example.com")
+        provider_user_id
     )
     .execute(pool)
     .await
@@ -963,15 +962,14 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
 
     sqlx::query!(
         "INSERT INTO auth_oauth2_identities (
-             provider_type, provider_instance_name, provider_user_id, user_id, username, email
+             provider_type, provider_instance_name, provider_user_id, user_id, username
          )
-         VALUES ($1, $2, $3, $4, $5, $6)",
+         VALUES ($1, $2, $3, $4, $5)",
         2_i16,
         "github",
         "delete-owner-gh",
         doomed_user.id.as_i64(),
-        "delete_owner",
-        "delete_owner@example.com"
+        "delete_owner"
     )
     .execute(&pool)
     .await

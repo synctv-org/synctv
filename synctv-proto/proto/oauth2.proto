@@ -17,6 +17,7 @@ enum OAuth2ProviderType {
   OAUTH2_PROVIDER_TYPE_OIDC = 8;
   OAUTH2_PROVIDER_TYPE_FEISHU = 9;
   OAUTH2_PROVIDER_TYPE_GITEE = 10;
+  OAUTH2_PROVIDER_TYPE_APPLE = 11;
 }
 
 enum OAuth2Operation {
@@ -327,19 +328,16 @@ message OAuth2UserInfo {
   // Username
   string username = 2;
 
-  // Email, when the provider or account record exposes one.
-  optional string email = 3;
-
   // Avatar URL, when available.
-  optional string avatar = 4;
+  optional string avatar = 3;
 
   // User role
-  synctv.common.UserRole role = 5;
+  synctv.common.UserRole role = 4;
 
   // Account status
-  synctv.common.UserStatus status = 6;
+  synctv.common.UserStatus status = 5;
 
   // When the account was created (Unix timestamp, seconds)
   // NOTE: Changed from string to int64 for consistency with all other timestamp fields.
-  int64 created_at = 7;
+  int64 created_at = 6;
 }

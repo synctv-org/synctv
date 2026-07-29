@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO auth_oauth2_identities (\n             provider_type, provider_instance_name, provider_user_id, user_id, username\n         )\n         VALUES ($1, $2, $3, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "Varchar",
+        "Varchar",
+        "Int8",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "af7ac5f58fc6bf56665fadda5f96be2c44a29f1f854755e8b82a83141be71ac7"
+}

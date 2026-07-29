@@ -3,9 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use synctv_core::{
     models::PlayMode,
     service::{
-        ConfiguredIceServer, OAuth2GithubProviderConfig, OAuth2GoogleProviderConfig,
-        OAuth2LogtoProviderConfig, OAuth2OidcProviderConfig, OAuth2ProviderConfig,
-        OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig, RoomPasswordPolicy,
+        ConfiguredIceServer, OAuth2AppleProviderConfig, OAuth2CasdoorProviderConfig,
+        OAuth2GithubProviderConfig, OAuth2GoogleProviderConfig, OAuth2LogtoProviderConfig,
+        OAuth2OidcProviderConfig, OAuth2ProviderConfig, OAuth2ProviderConfigs,
+        OAuth2ProviderPrivateConfig, RoomPasswordPolicy,
     },
 };
 use synctv_proto::{admin as admin_proto, client as client_proto};
@@ -406,9 +407,10 @@ fn oauth2_config_from_admin_proto(
                 token_url: config.token_url,
                 userinfo_url: config.userinfo_url,
                 jwks_url: config.jwks_url,
+                scopes: config.scopes,
             }),
             Config::Casdoor(config) => {
-                OAuth2ProviderPrivateConfig::Casdoor(OAuth2OidcProviderConfig {
+                OAuth2ProviderPrivateConfig::Casdoor(OAuth2CasdoorProviderConfig {
                     client_id: config.client_id,
                     client_secret: config.client_secret,
                     redirect_url: config.redirect_url,
@@ -417,6 +419,13 @@ fn oauth2_config_from_admin_proto(
                     token_url: config.token_url,
                     userinfo_url: config.userinfo_url,
                     jwks_url: config.jwks_url,
+                })
+            }
+            Config::Apple(config) => {
+                OAuth2ProviderPrivateConfig::Apple(OAuth2AppleProviderConfig {
+                    client_id: config.client_id,
+                    client_secret: config.client_secret,
+                    redirect_url: config.redirect_url,
                 })
             }
         },

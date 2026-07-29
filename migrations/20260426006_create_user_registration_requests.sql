@@ -12,7 +12,6 @@ CREATE TABLE IF NOT EXISTS user_registration_requests (
     oauth2_provider_user_id VARCHAR(255),
     oauth2_provider_username VARCHAR(255),
     oauth2_avatar_url TEXT,
-    oauth2_email_trusted BOOLEAN NOT NULL DEFAULT FALSE,
     webauthn_credential_id BYTEA,
     webauthn_passkey JSONB,
     webauthn_credential_name VARCHAR(100),

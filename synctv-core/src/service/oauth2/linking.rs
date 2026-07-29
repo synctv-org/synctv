@@ -78,31 +78,14 @@ impl OAuth2Service {
             &user_info.provider_user_id,
             &user_info.username,
         )?;
-        let user_email = user_info
-            .email_verified
-            .then(|| user_info.email.clone())
-            .flatten();
-
         if signup_policy.signup_need_review {
             return self
-                .create_pending_registration_with_review(
-                    tx,
-                    instance_name,
-                    user_info,
-                    &candidates,
-                    user_email.as_deref(),
-                )
+                .create_pending_registration_with_review(tx, instance_name, user_info, &candidates)
                 .await;
         }
 
         let new_user = self
-            .create_oauth2_user_with_candidates(
-                &mut tx,
-                user_info,
-                &base_username,
-                &candidates,
-                user_email.as_deref(),
-            )
+            .create_oauth2_user_with_candidates(&mut tx, user_info, &base_username, &candidates)
             .await?;
 
         match self
@@ -149,22 +132,8 @@ impl OAuth2Service {
         instance_name: &str,
         user_info: &OAuth2UserInfo,
         candidates: &[String],
-        user_email: Option<&str>,
     ) -> Result<OAuth2LinkResult> {
         let user_service = self.user_service()?;
-        if let Some(email) = user_email {
-            if user_service.get_by_email(email).await?.is_some()
-                && user_service
-                    .user_email_repository
-                    .email_exists(email)
-                    .await?
-            {
-                tx.rollback().await?;
-                return Err(Error::AlreadyExists(
-                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
-                ));
-            }
-        }
 
         let mut pending_request_id = None;
         for candidate in candidates {
@@ -188,7 +157,7 @@ impl OAuth2Service {
             UserService::lock_oauth2_pending_registration_identity(
                 &mut tx,
                 candidate,
-                user_email,
+                None,
                 instance_name,
                 &user_info.provider_user_id,
             )
@@ -198,7 +167,7 @@ impl OAuth2Service {
             match user_service
                 .pending_oauth2_registration_conflict(
                     candidate,
-                    user_email,
+                    None,
                     instance_name,
                     &user_info.provider_user_id,
                     &mut *tx,
@@ -230,7 +199,6 @@ impl OAuth2Service {
             match user_service
                 .create_oauth2_registration_request_with_executor(
                     candidate,
-                    user_email,
                     &user_info.provider_user_id,
                     user_info,
                     &mut *tx,
@@ -271,7 +239,6 @@ impl OAuth2Service {
         user_info: &OAuth2UserInfo,
         base_username: &str,
         candidates: &[String],
-        user_email: Option<&str>,
     ) -> Result<User> {
         let user_service = self.user_service()?;
         let mut new_user = None;
@@ -293,29 +260,6 @@ impl OAuth2Service {
                 .await
             {
                 Ok(created_user) => {
-                    if let Err(error) = user_service
-                        .user_email_repository
-                        .create_for_user_with_executor(&created_user, user_email, &mut **tx)
-                        .await
-                    {
-                        sqlx::query(trusted_dynamic_sql(format!(
-                            "ROLLBACK TO SAVEPOINT {savepoint}"
-                        )))
-                        .execute(&mut **tx)
-                        .await
-                        .internal_with_err(
-                            "Failed to roll back OAuth2 user savepoint after email create error",
-                        )?;
-                        match error {
-                            Error::AlreadyExists(_) => {
-                                return Err(Error::AlreadyExists(
-                                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN
-                                        .to_string(),
-                                ));
-                            }
-                            err => return Err(err),
-                        }
-                    }
                     sqlx::query(trusted_dynamic_sql(format!(
                         "RELEASE SAVEPOINT {savepoint}"
                     )))

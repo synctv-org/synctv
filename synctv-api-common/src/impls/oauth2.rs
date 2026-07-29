@@ -67,6 +67,7 @@ impl OAuth2ApiImpl {
             OAuth2Provider::Oidc => OAuth2ProviderType::Oauth2ProviderTypeOidc,
             OAuth2Provider::Feishu => OAuth2ProviderType::Oauth2ProviderTypeFeishu,
             OAuth2Provider::Gitee => OAuth2ProviderType::Oauth2ProviderTypeGitee,
+            OAuth2Provider::Apple => OAuth2ProviderType::Oauth2ProviderTypeApple,
         }) as i32
     }
 
@@ -88,6 +89,7 @@ impl OAuth2ApiImpl {
             Ok(OAuth2ProviderType::Oauth2ProviderTypeOidc) => Ok(OAuth2Provider::Oidc),
             Ok(OAuth2ProviderType::Oauth2ProviderTypeFeishu) => Ok(OAuth2Provider::Feishu),
             Ok(OAuth2ProviderType::Oauth2ProviderTypeGitee) => Ok(OAuth2Provider::Gitee),
+            Ok(OAuth2ProviderType::Oauth2ProviderTypeApple) => Ok(OAuth2Provider::Apple),
             Ok(OAuth2ProviderType::Oauth2ProviderTypeUnspecified) | Err(_) => Err(
                 ApiError::InvalidInput("OAuth2 provider type is required".to_string()),
             ),
@@ -750,7 +752,7 @@ impl OAuth2ApiImpl {
         match login {
             synctv_core::service::AuthenticatedLogin::Complete {
                 user,
-                email,
+                email: _,
                 access_token,
                 refresh_token,
             } => Ok(ExchangeCodeResult {
@@ -758,11 +760,12 @@ impl OAuth2ApiImpl {
                 refresh_token: Some(refresh_token),
                 expires_in,
                 user_info: Some(
-                    user_to_oauth2_user_info(&user, email.as_deref(), &self.public_id_codec)
-                        .map_err(|error| ApiError::OAuth2ResponseBuildFailed {
+                    user_to_oauth2_user_info(&user, &self.public_id_codec).map_err(|error| {
+                        ApiError::OAuth2ResponseBuildFailed {
                             operation,
                             message: error.message().to_string(),
-                        })?,
+                        }
+                    })?,
                 ),
                 redirect_url: oauth_state.redirect_url,
                 operation,
@@ -978,7 +981,6 @@ pub struct LinkedProviderInfo {
 /// Convert User model to `OAuth2UserInfo` proto
 fn user_to_oauth2_user_info(
     user: &User,
-    email: Option<&str>,
     public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<OAuth2UserInfo, ApiError> {
     use synctv_proto::common::{UserRole as ProtoUserRole, UserStatus as ProtoUserStatus};
@@ -999,7 +1001,6 @@ fn user_to_oauth2_user_info(
             .encode_user_id(user.id)
             .map_err(ApiError::InvalidInput)?,
         username: user.username.clone(),
-        email: email.map(str::to_string),
         avatar: None,
         role: proto_role as i32,
         status: proto_status as i32,
@@ -1057,7 +1058,6 @@ mod tests {
         OAuth2UserInfo {
             user_id: "user_1".to_string(),
             username: "alice".to_string(),
-            email: Some("alice@example.test".to_string()),
             avatar: None,
             role: synctv_proto::common::UserRole::User as i32,
             status: synctv_proto::common::UserStatus::Active as i32,
@@ -1260,7 +1260,6 @@ mod tests {
                 provider_user_id: "github-a".to_string(),
                 user_id: UserId::expect_positive(42),
                 username: "github-a".to_string(),
-                email: None,
                 avatar_url: None,
                 created_at: now,
                 updated_at: now,
@@ -1273,7 +1272,6 @@ mod tests {
                 provider_user_id: "github-b".to_string(),
                 user_id: UserId::expect_positive(42),
                 username: "github-b".to_string(),
-                email: None,
                 avatar_url: None,
                 created_at: now,
                 updated_at: now,
@@ -1306,7 +1304,6 @@ mod tests {
                 provider_user_id: "github-a".to_string(),
                 user_id: UserId::expect_positive(42),
                 username: "github-a".to_string(),
-                email: None,
                 avatar_url: None,
                 created_at: now,
                 updated_at: now,
@@ -1319,7 +1316,6 @@ mod tests {
                 provider_user_id: "github-b".to_string(),
                 user_id: UserId::expect_positive(42),
                 username: "github-b".to_string(),
-                email: None,
                 avatar_url: None,
                 created_at: now,
                 updated_at: now,
@@ -1332,7 +1328,6 @@ mod tests {
                 provider_user_id: "google-a".to_string(),
                 user_id: UserId::expect_positive(42),
                 username: "google-a".to_string(),
-                email: None,
                 avatar_url: None,
                 created_at: now,
                 updated_at: now,
@@ -1365,7 +1360,6 @@ mod tests {
                 provider_user_id: "github-a".to_string(),
                 user_id: UserId::expect_positive(42),
                 username: "github-a".to_string(),
-                email: None,
                 avatar_url: None,
                 created_at: now,
                 updated_at: now,
@@ -1378,7 +1372,6 @@ mod tests {
                 provider_user_id: "google-a".to_string(),
                 user_id: UserId::expect_positive(42),
                 username: "google-a".to_string(),
-                email: None,
                 avatar_url: None,
                 created_at: now,
                 updated_at: now,

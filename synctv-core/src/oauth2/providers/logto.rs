@@ -42,9 +42,6 @@ struct LogtoUser {
     sub: String,
     username: Option<String>,
     name: Option<String>,
-    email: Option<String>,
-    #[serde(default)]
-    email_verified: bool,
     picture: Option<String>,
 }
 
@@ -124,7 +121,6 @@ impl Provider for LogtoProvider {
             .authorize_url(|| oauth2::CsrfToken::new(state.to_string()))
             .add_scope(Scope::new("openid".to_string()))
             .add_scope(Scope::new("profile".to_string()))
-            .add_scope(Scope::new("email".to_string()))
             .set_pkce_challenge(pkce_challenge);
         if let Some(redirect_url) = redirect_url {
             request = request.set_redirect_uri(std::borrow::Cow::Owned(
@@ -187,9 +183,7 @@ impl Provider for LogtoProvider {
         Ok(OAuth2UserInfo {
             provider_user_id: user.sub,
             username,
-            email: user.email,
             avatar: user.picture,
-            email_verified: user.email_verified,
         })
     }
 }
@@ -372,7 +366,7 @@ mod tests {
         assert!(auth_url.contains("redirect_uri="));
         assert!(auth_url.contains("scope=openid"));
         assert!(auth_url.contains("+profile"));
-        assert!(auth_url.contains("+email"));
+        assert!(!auth_url.contains("email"));
         // Auth URL should contain PKCE code_challenge
         assert!(auth_url.contains("code_challenge="));
         assert!(auth_url.contains("code_challenge_method=S256"));

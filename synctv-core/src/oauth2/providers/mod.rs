@@ -239,6 +239,11 @@ pub fn provider_registry(
         "casdoor",
         Arc::new(move |config| oidc::casdoor_factory_from_private_config(config, &casdoor_guard)),
     );
+    let apple_guard = ssrf_guard.clone();
+    registry.register(
+        "apple",
+        Arc::new(move |config| oidc::apple_factory_from_private_config(config, &apple_guard)),
+    );
     let oidc_guard = ssrf_guard;
     registry.register(
         "oidc",

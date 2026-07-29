@@ -35,12 +35,12 @@ use tracing::warn;
 mod types;
 pub use types::{
     ChatRuntimeSettings, ConfiguredIceServer, CorsAllowedOrigins, CorsRuntimeSettings,
-    EmailRuntimeSettings, IceServerList, OAuth2GithubProviderConfig, OAuth2GoogleProviderConfig,
-    OAuth2LogtoProviderConfig, OAuth2OidcProviderConfig, OAuth2ProviderConfig,
-    OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig, OAuth2RuntimeSettings, OAuth2SignupPolicy,
-    OptionalRuntimeConfig, PermissionRuntimeSettings, PermissionSet,
-    PlaybackHistoryRuntimeSettings, ProxyRuntimeSettings, PublicSettings,
-    RoomCreationRuntimeSettings, RoomDefaultsRuntimeSettings, RoomPasswordPolicy,
+    EmailRuntimeSettings, IceServerList, OAuth2AppleProviderConfig, OAuth2CasdoorProviderConfig,
+    OAuth2GithubProviderConfig, OAuth2GoogleProviderConfig, OAuth2LogtoProviderConfig,
+    OAuth2OidcProviderConfig, OAuth2ProviderConfig, OAuth2ProviderConfigs,
+    OAuth2ProviderPrivateConfig, OAuth2RuntimeSettings, OAuth2SignupPolicy, OptionalRuntimeConfig,
+    PermissionRuntimeSettings, PermissionSet, PlaybackHistoryRuntimeSettings, ProxyRuntimeSettings,
+    PublicSettings, RoomCreationRuntimeSettings, RoomDefaultsRuntimeSettings, RoomPasswordPolicy,
     RtmpRuntimeSettings, RuntimeSettings, RuntimeSettingsUpdateMask, ServerRuntimeSettings,
     UserRuntimeSettings, WebRtcRuntimeSettings,
 };
@@ -1690,6 +1690,7 @@ mod tests {
                     token_url: None,
                     userinfo_url: None,
                     jwks_url: None,
+                    scopes: Vec::new(),
                 }),
             },
         );

@@ -102,7 +102,6 @@ impl UserService {
     pub(crate) async fn create_oauth2_registration_request_with_executor<'e, E>(
         &self,
         username: &str,
-        email: Option<&str>,
         provider_user_id: &str,
         user_info: &crate::service::oauth2::OAuth2UserInfo,
         executor: E,
@@ -113,16 +112,14 @@ impl UserService {
         let request_id = sqlx::query_scalar!(
             r#"
             INSERT INTO user_registration_requests (
-                username, email, signup_method, status, requested_at,
+                username, signup_method, status, requested_at,
                 oauth2_provider_type, oauth2_provider_instance_name, oauth2_provider_issuer,
-                oauth2_provider_user_id, oauth2_provider_username, oauth2_avatar_url,
-                oauth2_email_trusted
+                oauth2_provider_user_id, oauth2_provider_username, oauth2_avatar_url
             )
-            VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, $5, $6, $7, $8, $9, $10, $11)
+            VALUES ($1, $2, $3, CURRENT_TIMESTAMP, $4, $5, $6, $7, $8, $9)
             RETURNING id AS "id: UserId"
             "#,
             username,
-            email,
             i16::from(SignupMethod::OAuth2),
             i16::from(ReviewStatus::Pending),
             user_info.provider.as_i16(),
@@ -130,8 +127,7 @@ impl UserService {
             user_info.provider_issuer.as_deref(),
             provider_user_id,
             user_info.username.as_str(),
-            user_info.avatar.as_deref(),
-            user_info.email_verified
+            user_info.avatar.as_deref()
         )
         .fetch_one(executor)
         .await

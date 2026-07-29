@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, provider_type as \"provider: OAuth2Provider\",\n                   provider_instance_name, provider_issuer, provider_user_id,\n                   user_id as \"user_id: UserId\",\n                   username, email, avatar_url, created_at, updated_at\n            FROM auth_oauth2_identities\n            WHERE user_id = $1\n            ",
+  "query": "\n            SELECT id, provider_type as \"provider: OAuth2Provider\",\n                   provider_instance_name, provider_issuer, provider_user_id,\n                   user_id as \"user_id: UserId\",\n                   username, avatar_url, created_at, updated_at\n            FROM auth_oauth2_identities\n            WHERE user_id = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -82,17 +82,6 @@
       },
       {
         "ordinal": 7,
-        "name": "email",
-        "type_info": "Varchar",
-        "origin": {
-          "Table": {
-            "table": "auth_oauth2_identities",
-            "name": "email"
-          }
-        }
-      },
-      {
-        "ordinal": 8,
         "name": "avatar_url",
         "type_info": "Text",
         "origin": {
@@ -103,7 +92,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 8,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -114,7 +103,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 9,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -139,10 +128,9 @@
       false,
       false,
       true,
-      true,
       false,
       false
     ]
   },
-  "hash": "f9d5563ecd2df5441ff7774a009ec32ba02f959b654981d916537cea9dc51a46"
+  "hash": "f86b2279287875cffcf41c8d678418113bb7098c54b6fced034bacdf4914699c"
 }

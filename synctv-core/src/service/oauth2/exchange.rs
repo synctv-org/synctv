@@ -82,9 +82,7 @@ impl OAuth2Service {
             provider_issuer: None,
             provider_user_id: user_info.provider_user_id,
             username: user_info.username,
-            email: user_info.email,
             avatar: user_info.avatar,
-            email_verified: user_info.email_verified,
         })
     }
 }

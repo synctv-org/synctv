@@ -241,6 +241,7 @@ message OAuth2ProviderSettings {
     OAuth2LogtoProviderConfig logto = 6;
     OAuth2OidcProviderConfig oidc = 7;
     OAuth2CasdoorProviderConfig casdoor = 8;
+    OAuth2AppleProviderConfig apple = 9;
   }
 }
 
@@ -272,6 +273,13 @@ message OAuth2OidcProviderConfig {
   optional string token_url = 6;
   optional string userinfo_url = 7;
   optional string jwks_url = 8;
+  repeated string scopes = 9;
+}
+
+message OAuth2AppleProviderConfig {
+  string client_id = 1;
+  string client_secret = 2;
+  string redirect_url = 3;
 }
 
 message OAuth2CasdoorProviderConfig {
@@ -487,11 +495,10 @@ message UserRegistrationReview {
   optional string oauth2_provider_user_id = 11;
   optional string oauth2_provider_username = 12;
   optional string oauth2_avatar_url = 13;
-  bool oauth2_email_trusted = 14;
-  optional string oauth2_provider_instance_name = 15;
-  optional string oauth2_provider_issuer = 16;
-  optional string webauthn_credential_id = 17;
-  optional string webauthn_credential_name = 18;
+  optional string oauth2_provider_instance_name = 14;
+  optional string oauth2_provider_issuer = 15;
+  optional string webauthn_credential_id = 16;
+  optional string webauthn_credential_name = 17;
 }
 
 message RoomCreationReview {

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT username,\n                   email,\n                   opaque_record,\n                   opaque_credential_identifier,\n                   opaque_ciphersuite,\n                   opaque_server_setup_version,\n                   signup_method AS \"signup_method: SignupMethod\",\n                   oauth2_provider_type AS \"oauth2_provider: crate::models::OAuth2Provider\",\n                   oauth2_provider_instance_name,\n                   oauth2_provider_issuer,\n                   oauth2_provider_user_id,\n                   oauth2_provider_username,\n                   oauth2_avatar_url,\n                   oauth2_email_trusted,\n                   webauthn_credential_id,\n                   webauthn_passkey AS \"webauthn_passkey: PendingRegistrationPasskey\",\n                   webauthn_credential_name\n            FROM user_registration_requests\n            WHERE id = $1 AND reviewed_at IS NULL AND status = $2\n            FOR UPDATE\n            ",
+  "query": "SELECT username,\n                   email,\n                   opaque_record,\n                   opaque_credential_identifier,\n                   opaque_ciphersuite,\n                   opaque_server_setup_version,\n                   signup_method AS \"signup_method: SignupMethod\",\n                   oauth2_provider_type AS \"oauth2_provider: crate::models::OAuth2Provider\",\n                   oauth2_provider_instance_name,\n                   oauth2_provider_issuer,\n                   oauth2_provider_user_id,\n                   oauth2_provider_username,\n                   oauth2_avatar_url,\n                   webauthn_credential_id,\n                   webauthn_passkey AS \"webauthn_passkey: PendingRegistrationPasskey\",\n                   webauthn_credential_name\n            FROM user_registration_requests\n            WHERE id = $1 AND reviewed_at IS NULL AND status = $2\n            FOR UPDATE\n            ",
   "describe": {
     "columns": [
       {
@@ -148,17 +148,6 @@
       },
       {
         "ordinal": 13,
-        "name": "oauth2_email_trusted",
-        "type_info": "Bool",
-        "origin": {
-          "Table": {
-            "table": "user_registration_requests",
-            "name": "oauth2_email_trusted"
-          }
-        }
-      },
-      {
-        "ordinal": 14,
         "name": "webauthn_credential_id",
         "type_info": "Bytea",
         "origin": {
@@ -169,7 +158,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 14,
         "name": "webauthn_passkey: PendingRegistrationPasskey",
         "type_info": "Jsonb",
         "origin": {
@@ -180,7 +169,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 15,
         "name": "webauthn_credential_name",
         "type_info": "Varchar",
         "origin": {
@@ -211,11 +200,10 @@
       true,
       true,
       true,
-      false,
       true,
       true,
       true
     ]
   },
-  "hash": "d452423101e26224411ab6dadc43fe95fcbeb4326dbe0f70052b39d3c8b3b240"
+  "hash": "982fc7cef996b74fc1be6663dadfcd771408fa6f93c2570e31dc9ee9bd0be9f4"
 }

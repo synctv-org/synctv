@@ -32,6 +32,8 @@ pub enum OAuth2Provider {
     Feishu,
     /// Gitee
     Gitee,
+    /// Sign in with Apple
+    Apple,
 }
 
 impl OAuth2Provider {
@@ -48,6 +50,7 @@ impl OAuth2Provider {
             Self::Oidc => 8,
             Self::Feishu => 9,
             Self::Gitee => 10,
+            Self::Apple => 11,
         }
     }
 
@@ -64,6 +67,7 @@ impl OAuth2Provider {
             Self::Oidc => "oidc",
             Self::Feishu => "feishu",
             Self::Gitee => "gitee",
+            Self::Apple => "apple",
         }
     }
 
@@ -84,18 +88,17 @@ impl OAuth2Provider {
                 | Self::Feishu
                 | Self::Google
                 | Self::Microsoft
+                | Self::Apple
         )
     }
 
     /// Get default scopes for this provider type
     #[must_use]
     pub fn default_scopes(&self) -> Vec<String> {
-        if self.is_oidc() {
-            vec![
-                "openid".to_string(),
-                "profile".to_string(),
-                "email".to_string(),
-            ]
+        if matches!(self, Self::Apple) {
+            vec!["openid".to_string()]
+        } else if self.is_oidc() {
+            vec!["openid".to_string(), "profile".to_string()]
         } else {
             vec!["identify".to_string()]
         }
@@ -117,6 +120,7 @@ impl FromStr for OAuth2Provider {
             "oidc" => Ok(Self::Oidc),
             "feishu" => Ok(Self::Feishu),
             "gitee" => Ok(Self::Gitee),
+            "apple" => Ok(Self::Apple),
             other => Err(format!("Unknown OAuth2 provider: {other}")),
         }
     }
@@ -137,6 +141,7 @@ impl TryFrom<i16> for OAuth2Provider {
             8 => Ok(Self::Oidc),
             9 => Ok(Self::Feishu),
             10 => Ok(Self::Gitee),
+            11 => Ok(Self::Apple),
             other => Err(format!("Unknown OAuth2 provider type code: {other}")),
         }
     }
@@ -175,7 +180,6 @@ pub struct UserOAuthProviderMapping {
     pub provider_user_id: String,
     pub user_id: UserId,
     pub username: String,
-    pub email: Option<String>,
     pub avatar_url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -189,7 +193,6 @@ pub struct OAuth2UserInfo {
     pub provider_issuer: Option<String>,
     pub provider_user_id: String,
     pub username: String,
-    pub email: Option<String>,
     pub avatar: Option<String>,
 }
 
@@ -238,6 +241,7 @@ mod tests {
             (OAuth2Provider::Oidc, "oidc", 8),
             (OAuth2Provider::Feishu, "feishu", 9),
             (OAuth2Provider::Gitee, "gitee", 10),
+            (OAuth2Provider::Apple, "apple", 11),
         ];
 
         for (provider, name, code) in providers {
@@ -286,8 +290,13 @@ mod tests {
             assert!(provider.is_oidc());
             assert!(scopes.contains(&"openid".to_string()));
             assert!(scopes.contains(&"profile".to_string()));
-            assert!(scopes.contains(&"email".to_string()));
+            assert!(!scopes.contains(&"email".to_string()));
         }
+
+        assert_eq!(
+            OAuth2Provider::Apple.default_scopes(),
+            vec!["openid".to_string()]
+        );
 
         for provider in [
             OAuth2Provider::QQ,
@@ -310,7 +319,6 @@ mod tests {
             provider_user_id: "gh_123".to_string(),
             user_id: UserId::expect_positive(1),
             username: "testuser".to_string(),
-            email: Some("test@example.com".to_string()),
             avatar_url: Some("https://example.com/avatar.png".to_string()),
             created_at: crate::SystemClock.now(),
             updated_at: crate::SystemClock.now(),

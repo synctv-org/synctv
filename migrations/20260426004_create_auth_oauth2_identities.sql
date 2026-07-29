@@ -6,7 +6,6 @@ CREATE TABLE IF NOT EXISTS auth_oauth2_identities (
     provider_user_id VARCHAR(255) NOT NULL,
     user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     username VARCHAR(255) NOT NULL,
-    email VARCHAR(255),
     avatar_url TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,

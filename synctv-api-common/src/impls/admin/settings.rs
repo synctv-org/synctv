@@ -359,6 +359,7 @@ fn oauth2_config_to_proto(
             token_url: config.token_url.clone(),
             userinfo_url: config.userinfo_url.clone(),
             jwks_url: config.jwks_url.clone(),
+            scopes: config.scopes.clone(),
         }),
         CoreConfig::Casdoor(config) => {
             Config::Casdoor(synctv_proto::admin::OAuth2CasdoorProviderConfig {
@@ -370,6 +371,13 @@ fn oauth2_config_to_proto(
                 token_url: config.token_url.clone(),
                 userinfo_url: config.userinfo_url.clone(),
                 jwks_url: config.jwks_url.clone(),
+            })
+        }
+        CoreConfig::Apple(config) => {
+            Config::Apple(synctv_proto::admin::OAuth2AppleProviderConfig {
+                client_id: config.client_id.clone(),
+                client_secret: config.client_secret.clone(),
+                redirect_url: config.redirect_url.clone(),
             })
         }
     }

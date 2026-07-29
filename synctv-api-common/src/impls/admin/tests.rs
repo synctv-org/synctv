@@ -1687,7 +1687,6 @@ fn review_rows_preserve_absent_optional_fields() -> TestResult {
             oauth2_provider_user_id: None,
             oauth2_provider_username: None,
             oauth2_avatar_url: None,
-            oauth2_email_trusted: false,
             webauthn_credential_id: None,
             webauthn_credential_name: None,
         },

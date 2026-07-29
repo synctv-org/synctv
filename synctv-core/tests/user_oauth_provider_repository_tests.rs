@@ -46,7 +46,6 @@ fn oauth_user_info(
     provider_instance_name: &str,
     provider_user_id: &str,
     username: &str,
-    email: Option<&str>,
     avatar: Option<&str>,
 ) -> OAuth2UserInfo {
     OAuth2UserInfo {
@@ -55,7 +54,6 @@ fn oauth_user_info(
         provider_issuer: None,
         provider_user_id: provider_user_id.to_string(),
         username: username.to_string(),
-        email: email.map(str::to_string),
         avatar: avatar.map(str::to_string),
     }
 }
@@ -94,7 +92,6 @@ async fn test_upsert_different_user_id_rejects_rebinding_and_preserves_mapping()
         provider_instance_name,
         provider_user_id,
         "ghuser",
-        None,
         None,
     );
 
@@ -180,7 +177,6 @@ async fn test_upsert_same_user_id_updates_profile_fields_without_rebinding() {
         provider_user_id,
         "oldname",
         None,
-        None,
     );
 
     ok(
@@ -201,7 +197,6 @@ async fn test_upsert_same_user_id_updates_profile_fields_without_rebinding() {
         provider_instance_name,
         provider_user_id,
         "newname",
-        Some("new@example.com"),
         Some("https://avatar.example/new.png"),
     );
     updated_info.provider_issuer = Some("https://github.com".to_string());
@@ -222,7 +217,6 @@ async fn test_upsert_same_user_id_updates_profile_fields_without_rebinding() {
     let mapping = find_mapping(&oauth_repo, provider_instance_name, provider_user_id).await;
     assert_eq!(mapping.user_id, user.id);
     assert_eq!(mapping.username, "newname");
-    assert_eq!(mapping.email.as_deref(), Some("new@example.com"));
     assert_eq!(
         mapping.avatar_url.as_deref(),
         Some("https://avatar.example/new.png")
@@ -249,7 +243,6 @@ async fn test_upsert_with_executor_rejects_rebinding_inside_transaction() {
         provider_instance_name,
         provider_user_id,
         "googleuser",
-        Some("tx@google.com"),
         None,
     );
 
@@ -310,7 +303,6 @@ async fn test_upsert_with_executor_in_transaction() {
         provider_instance_name,
         provider_user_id,
         "googleuser",
-        Some("tx@google.com"),
         None,
     );
 
@@ -339,7 +331,6 @@ async fn test_upsert_with_executor_in_transaction() {
     let mapping = find_mapping(&oauth_repo, provider_instance_name, provider_user_id).await;
     assert_eq!(user_mappings.len(), 1);
     assert_eq!(mapping.user_id, user.id);
-    assert_eq!(mapping.email.as_deref(), Some("tx@google.com"));
 }
 
 #[tokio::test]
@@ -357,7 +348,6 @@ async fn test_find_by_provider_with_executor_in_transaction() {
         provider_instance_name,
         provider_user_id,
         "discorduser",
-        None,
         None,
     );
 
@@ -410,7 +400,6 @@ async fn test_delete_all_for_user_with_executor() {
         provider_issuer: None,
         provider_user_id: "gh_del_001".to_string(),
         username: "ghuser".to_string(),
-        email: None,
         avatar: None,
     };
     ok(
@@ -432,7 +421,6 @@ async fn test_delete_all_for_user_with_executor() {
         provider_issuer: None,
         provider_user_id: "google_del_001".to_string(),
         username: "googleuser".to_string(),
-        email: None,
         avatar: None,
     };
     ok(

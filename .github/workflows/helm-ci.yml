@@ -3,8 +3,6 @@ name: Helm CI
 on:
   push:
     branches: ['**']
-    tags:
-      - "v*"
     paths:
       - ".github/workflows/helm-ci.yml"
       - ".github/workflows/helm.yml"

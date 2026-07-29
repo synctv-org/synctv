@@ -155,6 +155,8 @@ fn sample_config() -> crate::app_config::AppConfig {
     config.jwt.secret = "jwt-secret-123456789012345678901234".into();
     config.security.opaque_server_setup_secret =
         "opaque-server-setup-secret-123456789012345678901234".into();
+    config.security.credential_encryption_key =
+        "4444444444444444444444444444444444444444444444444444444444444444".into();
     config.security.email_outbox_encryption_key =
         "5555555555555555555555555555555555555555555555555555555555555555".into();
     config.security.totp_encryption_key =
@@ -205,7 +207,17 @@ fn cli_parses_global_data_dir() {
 fn serve_config_context_warns_on_unknown_inputs() {
     let _env_lock = acquire_env_test_lock();
     let _unknown_env = EnvVarGuard::set("SYNCTV_UNKNOWN_BOOT_FLAG", "1");
+    let mut config_file = tempfile::Builder::new()
+        .suffix(".yaml")
+        .tempfile()
+        .expect("temporary config file should be created");
+    serde_yaml::to_writer(&mut config_file, &sample_config())
+        .expect("sample config should be serialized");
+    config_file
+        .flush()
+        .expect("sample config should be written");
     let context = CliConfigContext::new(GlobalConfigArgs {
+        config: Some(config_file.path().to_path_buf()),
         no_dotenv: true,
         ..GlobalConfigArgs::default()
     });

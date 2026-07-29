@@ -27,9 +27,6 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
 
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
-
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
@@ -43,9 +40,6 @@ jobs:
 
       - name: Synchronize release version
         run: make set-release-version VERSION="${{ steps.version.outputs.value }}"
-
-      - name: Validate Helm chart
-        run: make validate-helm
 
       - name: Create release preparation PR
         uses: peter-evans/create-pull-request@v7

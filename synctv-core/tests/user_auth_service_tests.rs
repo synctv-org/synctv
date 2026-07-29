@@ -288,7 +288,6 @@ async fn oauth2_service_with_provider_signup(
         OAuth2ServiceRuntime {
             runtime_settings_store: Some(runtime_settings_store),
             user_service: Some(Arc::new(create_user_service(pool))),
-            ..OAuth2ServiceRuntime::default()
         },
     )
     .checked("OAuth2 service should initialize")

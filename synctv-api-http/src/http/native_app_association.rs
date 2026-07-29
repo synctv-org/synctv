@@ -64,7 +64,7 @@ pub async fn apple_app_site_association(
         .unwrap_or_default();
     let document = apple_app_site_association_document(
         app_ids,
-        oauth2_app_link_paths(&allowed_redirect_urls, host),
+        &oauth2_app_link_paths(&allowed_redirect_urls, host),
     );
     Ok((
         [(header::CACHE_CONTROL, ASSOCIATION_CACHE_CONTROL)],
@@ -74,7 +74,7 @@ pub async fn apple_app_site_association(
 
 fn apple_app_site_association_document(
     app_ids: Vec<String>,
-    callback_paths: Vec<String>,
+    callback_paths: &[String],
 ) -> AppleAppSiteAssociation {
     AppleAppSiteAssociation {
         applinks: AppleAppLinks {
@@ -83,7 +83,7 @@ fn apple_app_site_association_document(
                 .iter()
                 .map(|app_id| AppleAppLinkDetails {
                     app_id: app_id.clone(),
-                    paths: callback_paths.clone(),
+                    paths: callback_paths.to_vec(),
                 })
                 .collect(),
         },
@@ -171,7 +171,7 @@ mod tests {
         );
         let document = apple_app_site_association_document(
             vec!["85KBWFQ6F6.org.synctv.app".to_string()],
-            paths,
+            &paths,
         );
         assert_eq!(
             serde_json::to_value(document).expect("association document should serialize"),

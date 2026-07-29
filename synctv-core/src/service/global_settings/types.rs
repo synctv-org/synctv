@@ -364,15 +364,9 @@ impl std::str::FromStr for CorsAllowedOrigins {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
 pub struct OAuth2AllowedRedirectUrls(pub Vec<String>);
-
-impl Default for OAuth2AllowedRedirectUrls {
-    fn default() -> Self {
-        Self(Vec::new())
-    }
-}
 
 impl fmt::Display for OAuth2AllowedRedirectUrls {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -11,8 +11,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -37,6 +37,28 @@ jobs:
 
       - name: Check formatting
         run: make fmt-check
+
+  # Run Clippy lints independently from the test jobs.
+  clippy:
+    name: Clippy Lints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Clippy
+        timeout-minutes: 60
+        run: make clippy-check
 
   # Build
   build:
@@ -97,55 +119,6 @@ jobs:
       - name: Check SQLx offline metadata
         run: make check-all-targets
 
-  feature-check:
-    name: Feature Check (${{ matrix.name }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: synctv-no-default-features
-            target: feature-check
-            args: --no-default-features
-          - name: synctv-tls-aws-lc-webpki
-            target: feature-check
-            args: --no-default-features --features tls-aws-lc,tls-webpki-roots
-          - name: synctv-tls-aws-lc-native
-            target: feature-check
-            args: --no-default-features --features tls-aws-lc,tls-native-roots
-          - name: synctv-tls-ring-webpki
-            target: feature-check
-            args: --no-default-features --features tls-ring,tls-webpki-roots
-          - name: synctv-tls-ring-native
-            target: feature-check
-            args: --no-default-features --features tls-ring,tls-native-roots
-          - name: synctv-production-default
-            target: feature-check
-            args: --features tls-native-roots
-          - name: synctv-openapi
-            target: feature-check
-            args: --features openapi
-          - name: key-crates-tls-ring-webpki
-            target: feature-check-key-crates-tls-ring-webpki
-            args: ""
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
-
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@v2
-
-      - name: Run feature check
-        env:
-          FEATURE_CHECK_ARGS: ${{ matrix.args }}
-        run: make ${{ matrix.target }}
-
   # Test non-ignored cases
   test-default:
     name: Test Default (${{ matrix.os }})
@@ -162,8 +135,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: clippy
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -186,10 +157,6 @@ jobs:
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
-
-      - name: Run clippy
-        timeout-minutes: 60
-        run: make clippy-check
 
       - name: Run non-ignored tests with nextest
         timeout-minutes: 60

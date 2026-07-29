@@ -196,7 +196,9 @@ fn select_runtime_settings_patch(
             }
             "user.enable_guest" => select_required!(user, enable_guest, path),
             "oauth2.providers" => select_required!(oauth2, providers, path),
-            "oauth2.allowedRedirectUrls" => select_required!(oauth2, allowed_redirect_urls, path),
+            "oauth2.allowedRedirectUrls" | "oauth2.allowed_redirect_urls" => {
+                select_required!(oauth2, allowed_redirect_urls, path);
+            }
             "proxy.movie_proxy" => select_required!(proxy, movie_proxy, path),
             "proxy.live_proxy" => select_required!(proxy, live_proxy, path),
             "rtmp.custom_publish_host" => select_optional!(rtmp, custom_publish_host),

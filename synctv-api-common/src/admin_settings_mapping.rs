@@ -196,6 +196,7 @@ fn select_runtime_settings_patch(
             }
             "user.enable_guest" => select_required!(user, enable_guest, path),
             "oauth2.providers" => select_required!(oauth2, providers, path),
+            "oauth2.allowedRedirectUrls" => select_required!(oauth2, allowed_redirect_urls, path),
             "proxy.movie_proxy" => select_required!(proxy, movie_proxy, path),
             "proxy.live_proxy" => select_required!(proxy, live_proxy, path),
             "rtmp.custom_publish_host" => select_optional!(rtmp, custom_publish_host),
@@ -338,6 +339,7 @@ fn oauth2_settings_patch_from_admin_proto(
 ) -> Result<OAuth2SettingsPatch, ApiError> {
     Ok(OAuth2SettingsPatch {
         providers: Some(oauth2_provider_configs_from_admin_proto(patch.providers)?),
+        allowed_redirect_urls: Some(patch.allowed_redirect_urls),
     })
 }
 

@@ -364,6 +364,33 @@ impl std::str::FromStr for CorsAllowedOrigins {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct OAuth2AllowedRedirectUrls(pub Vec<String>);
+
+impl Default for OAuth2AllowedRedirectUrls {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
+impl fmt::Display for OAuth2AllowedRedirectUrls {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&serde_json::to_string(&self.0).map_err(|_| fmt::Error)?)
+    }
+}
+
+impl std::str::FromStr for OAuth2AllowedRedirectUrls {
+    type Err = serde_json::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.is_empty() {
+            return Ok(Self::default());
+        }
+        Ok(Self(serde_json::from_str(s)?))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct OAuth2SignupPolicy {
@@ -799,17 +826,21 @@ impl UserRuntimeSettingsUpdateMask {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OAuth2RuntimeSettingsUpdateMask {
     pub providers: bool,
+    pub allowed_redirect_urls: bool,
 }
 
 impl OAuth2RuntimeSettingsUpdateMask {
     #[must_use]
     pub const fn all() -> Self {
-        Self { providers: true }
+        Self {
+            providers: true,
+            allowed_redirect_urls: true,
+        }
     }
 
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        !self.providers
+        !self.providers && !self.allowed_redirect_urls
     }
 }
 
@@ -1027,6 +1058,7 @@ pub struct UserRuntimeSettings {
 #[derive(Debug, Clone, PartialEq)]
 pub struct OAuth2RuntimeSettings {
     pub providers: OAuth2ProviderConfigs,
+    pub allowed_redirect_urls: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1096,6 +1128,9 @@ fn validate_all_runtime_settings(
     validate_room_policy_settings(&settings.room_creation)?;
     validate_user_settings(&settings.user, &settings.email)?;
     settings.oauth2.providers.validate(ctx)?;
+    validate_oauth2_allowed_redirect_urls(&OAuth2AllowedRedirectUrls(
+        settings.oauth2.allowed_redirect_urls.clone(),
+    ))?;
     validate_proxy_settings(&settings.proxy);
     validate_rtmp_settings(&settings.rtmp)?;
     validate_email_settings(&settings.email)?;
@@ -1103,6 +1138,35 @@ fn validate_all_runtime_settings(
     validate_chat_settings(&settings.chat)?;
     validate_playback_history_settings(&settings.playback_history)?;
     validate_cors_settings(&settings.cors)
+}
+
+pub(super) fn validate_oauth2_allowed_redirect_urls(
+    urls: &OAuth2AllowedRedirectUrls,
+) -> crate::Result<()> {
+    for value in &urls.0 {
+        let parsed = url::Url::parse(value).map_err(|error| {
+            crate::Error::InvalidInput(format!(
+                "oauth2.allowed_redirect_urls contains invalid URL: {error}"
+            ))
+        })?;
+        if parsed.username() != "" || parsed.password().is_some() {
+            return Err(crate::Error::InvalidInput(
+                "oauth2.allowed_redirect_urls cannot contain credentials".to_string(),
+            ));
+        }
+        let host = parsed.host_str().ok_or_else(|| {
+            crate::Error::InvalidInput(
+                "oauth2.allowed_redirect_urls entries must include a host".to_string(),
+            )
+        })?;
+        let loopback = matches!(host, "127.0.0.1" | "localhost" | "::1");
+        if parsed.scheme() != "https" && !(parsed.scheme() == "http" && loopback) {
+            return Err(crate::Error::InvalidInput(
+                "oauth2.allowed_redirect_urls entries must use https or loopback http".to_string(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn validate_server_name(name: &str) -> crate::Result<()> {

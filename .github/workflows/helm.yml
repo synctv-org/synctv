@@ -108,6 +108,22 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
+      - name: Set release image repository
+        env:
+          PUBLISH_IMAGE_REPOSITORY: ${{ github.repository }}
+        run: |
+          ruby <<'RUBY'
+          require "yaml"
+
+          path = "helm/synctv/values.yaml"
+          values = YAML.load_file(path)
+          image = values.fetch("image")
+          image["registry"] = "ghcr.io"
+          image["repository"] = ENV.fetch("PUBLISH_IMAGE_REPOSITORY").downcase
+          File.write(path, YAML.dump(values))
+          puts "OCI release image: #{image['registry']}/#{image['repository']}"
+          RUBY
+
       - name: Validate chart
         run: make validate-helm
 

@@ -1742,6 +1742,13 @@ async fn test_native_passkey_association_documents_are_served_from_config() -> T
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&apple_body)?,
         serde_json::json!({
+            "applinks": {
+                "apps": [],
+                "details": [{
+                    "appID": "85KBWFQ6F6.org.synctv.app",
+                    "paths": []
+                }]
+            },
             "webcredentials": {"apps": ["85KBWFQ6F6.org.synctv.app"]}
         })
     );
@@ -1759,7 +1766,10 @@ async fn test_native_passkey_association_documents_are_served_from_config() -> T
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&android_body)?,
         serde_json::json!([{
-            "relation": ["delegate_permission/common.get_login_creds"],
+            "relation": [
+                "delegate_permission/common.get_login_creds",
+                "delegate_permission/common.handle_all_urls"
+            ],
             "target": {
                 "namespace": "android_app",
                 "package_name": "org.synctv.app",

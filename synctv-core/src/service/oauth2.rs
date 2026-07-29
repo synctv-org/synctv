@@ -144,8 +144,6 @@ pub struct OAuth2Service {
     provider_registry: crate::oauth2::ProviderRegistry,
     /// Runtime SSRF policy used when validating dynamic provider settings.
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
-    /// Allowlist of permitted non-loopback redirect domains.
-    allowed_redirect_domains: Arc<Vec<String>>,
     runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
     user_service: Option<Arc<UserService>>,
     providers_fingerprint: Arc<RwLock<Option<String>>>,
@@ -153,7 +151,6 @@ pub struct OAuth2Service {
 
 #[derive(Clone, Default)]
 pub struct OAuth2ServiceRuntime {
-    pub allowed_redirect_domains: Vec<String>,
     pub runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
     pub user_service: Option<Arc<UserService>>,
 }

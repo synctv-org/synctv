@@ -1,19 +1,34 @@
 use axum::{
     extract::State,
-    http::{header, HeaderValue},
+    http::{header, HeaderMap, HeaderValue},
     response::IntoResponse,
     Json,
 };
 use serde::Serialize;
 
-use super::AppState;
+use super::{AppResult, AppState};
 
 const ASSOCIATION_CACHE_CONTROL: HeaderValue = HeaderValue::from_static("public, max-age=300");
 const ANDROID_LOGIN_CREDENTIAL_RELATION: &str = "delegate_permission/common.get_login_creds";
+const ANDROID_APP_LINK_RELATION: &str = "delegate_permission/common.handle_all_urls";
 
 #[derive(Debug, Serialize)]
 struct AppleAppSiteAssociation {
+    applinks: AppleAppLinks,
     webcredentials: AppleWebCredentials,
+}
+
+#[derive(Debug, Serialize)]
+struct AppleAppLinks {
+    apps: Vec<String>,
+    details: Vec<AppleAppLinkDetails>,
+}
+
+#[derive(Debug, Serialize)]
+struct AppleAppLinkDetails {
+    #[serde(rename = "appID")]
+    app_id: String,
+    paths: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -23,7 +38,7 @@ struct AppleWebCredentials {
 
 #[derive(Debug, Serialize)]
 struct AndroidAssetLinkStatement {
-    relation: [&'static str; 1],
+    relation: [&'static str; 2],
     target: AndroidAssetLinkTarget,
 }
 
@@ -34,16 +49,69 @@ struct AndroidAssetLinkTarget {
     sha256_cert_fingerprints: Vec<String>,
 }
 
-pub async fn apple_app_site_association(State(state): State<AppState>) -> impl IntoResponse {
-    let document = AppleAppSiteAssociation {
-        webcredentials: AppleWebCredentials {
-            apps: state.runtime_settings.server.apple_app_ids.clone(),
-        },
+pub async fn apple_app_site_association(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<impl IntoResponse> {
+    let app_ids = state.runtime_settings.server.apple_app_ids.clone();
+    let allowed_redirect_urls = match &state.runtime_settings_store {
+        Some(settings) => settings.oauth2.allowed_redirect_urls.get()?.0,
+        None => Vec::new(),
     };
-    (
+    let host = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    let document = apple_app_site_association_document(
+        app_ids,
+        oauth2_app_link_paths(&allowed_redirect_urls, host),
+    );
+    Ok((
         [(header::CACHE_CONTROL, ASSOCIATION_CACHE_CONTROL)],
         Json(document),
-    )
+    ))
+}
+
+fn apple_app_site_association_document(
+    app_ids: Vec<String>,
+    callback_paths: Vec<String>,
+) -> AppleAppSiteAssociation {
+    AppleAppSiteAssociation {
+        applinks: AppleAppLinks {
+            apps: Vec::new(),
+            details: app_ids
+                .iter()
+                .map(|app_id| AppleAppLinkDetails {
+                    app_id: app_id.clone(),
+                    paths: callback_paths.clone(),
+                })
+                .collect(),
+        },
+        webcredentials: AppleWebCredentials { apps: app_ids },
+    }
+}
+
+fn oauth2_app_link_paths(allowed_redirect_urls: &[String], request_host: &str) -> Vec<String> {
+    let Ok(origin) = url::Url::parse(&format!("https://{request_host}")) else {
+        return Vec::new();
+    };
+    let Some(request_host) = origin.host_str() else {
+        return Vec::new();
+    };
+
+    allowed_redirect_urls
+        .iter()
+        .filter_map(|value| url::Url::parse(value).ok())
+        .filter(|url| {
+            url.scheme() == "https"
+                && url
+                    .host_str()
+                    .is_some_and(|host| host.eq_ignore_ascii_case(request_host))
+        })
+        .map(|url| url.path().to_string())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 pub async fn android_asset_links(State(state): State<AppState>) -> impl IntoResponse {
@@ -53,7 +121,7 @@ pub async fn android_asset_links(State(state): State<AppState>) -> impl IntoResp
         .android_apps
         .iter()
         .map(|app| AndroidAssetLinkStatement {
-            relation: [ANDROID_LOGIN_CREDENTIAL_RELATION],
+            relation: [ANDROID_LOGIN_CREDENTIAL_RELATION, ANDROID_APP_LINK_RELATION],
             target: AndroidAssetLinkTarget {
                 namespace: "android_app",
                 package_name: app.package_name.clone(),
@@ -86,7 +154,39 @@ fn canonical_sha256_fingerprint(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::canonical_sha256_fingerprint;
+    use super::{
+        apple_app_site_association_document, canonical_sha256_fingerprint, oauth2_app_link_paths,
+    };
+
+    #[test]
+    fn apple_document_uses_runtime_oauth_callback_paths() {
+        let paths = oauth2_app_link_paths(
+            &[
+                "https://syncs.tv/oauth2/callback".to_string(),
+                "https://syncs.tv/oauth2/callback".to_string(),
+                "https://other.example/oauth2/other".to_string(),
+                "http://127.0.0.1:34567/oauth2/callback".to_string(),
+            ],
+            "syncs.tv",
+        );
+        let document = apple_app_site_association_document(
+            vec!["85KBWFQ6F6.org.synctv.app".to_string()],
+            paths,
+        );
+        assert_eq!(
+            serde_json::to_value(document).expect("association document should serialize"),
+            serde_json::json!({
+                "applinks": {
+                    "apps": [],
+                    "details": [{
+                        "appID": "85KBWFQ6F6.org.synctv.app",
+                        "paths": ["/oauth2/callback"]
+                    }]
+                },
+                "webcredentials": {"apps": ["85KBWFQ6F6.org.synctv.app"]}
+            })
+        );
+    }
 
     #[test]
     fn certificate_fingerprint_is_served_in_android_canonical_form() {

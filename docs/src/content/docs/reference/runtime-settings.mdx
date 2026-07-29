@@ -111,8 +111,15 @@ runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通�
 | Key | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `oauth2.providers` | JSON 数组 | `[]` | OAuth2/OIDC provider 实例注册表。每个元素是一个 `OAuth2ProviderSettings` ProtoJSON 对象 |
+| `oauth2.allowedRedirectUrls` | JSON 字符串数组 | `[]` | 客户端可请求的 HTTPS 回调地址白名单；loopback 回调单独放行 |
 
 `oauth2.providers` 是 OAuth2 配置入口。`instanceName` 只能包含 ASCII 字母、数字、`_` 和 `-`，并且最长 64 字节。每个元素使用一个 provider oneof 字段，例如 `github` 或 `oidc`：
+
+移动端和商店包建议配置统一回调地址：
+
+```bash
+synctv settings update --set 'oauth2.allowedRedirectUrls=["https://syncs.tv/oauth2/callback"]'
+```
 
 ```json
 [

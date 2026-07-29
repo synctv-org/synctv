@@ -1302,7 +1302,6 @@ fn init_oauth2_service(
         ssrf_guard,
         matches!(profile.state_mode(), SharedStateMode::SharedRequired),
         OAuth2ServiceRuntime {
-            allowed_redirect_domains: Vec::new(),
             runtime_settings_store: Some(runtime_settings_store),
             user_service: Some(user_service),
         },

@@ -93,7 +93,7 @@ webauthn:
     - "ABCDE12345.org.synctv.app"
 ```
 
-The server exposes these values as `webcredentials.apps` at `/.well-known/apple-app-site-association`. Add `webcredentials:example.com` to the app's Associated Domains entitlement.
+The server exposes these values as `webcredentials.apps` and App Link identities at `/.well-known/apple-app-site-association`. App Link paths are derived from `oauth2.allowedRedirectUrls` entries whose HTTPS host matches the request domain. Add both `webcredentials:example.com` and `applinks:example.com` to the app's Associated Domains entitlement when OAuth2 login is enabled.
 
 Android uses the app package and SHA-256 fingerprints of its signing certificates:
 
@@ -105,7 +105,7 @@ webauthn:
         - "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
 ```
 
-The server publishes `delegate_permission/common.get_login_creds` statements at `/.well-known/assetlinks.json`. Multiple fingerprints support signing-certificate rotation.
+The server publishes `delegate_permission/common.get_login_creds` and `delegate_permission/common.handle_all_urls` statements at `/.well-known/assetlinks.json`. Multiple fingerprints support signing-certificate rotation.
 
 The matching environment variables accept JSON:
 

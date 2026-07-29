@@ -65,6 +65,7 @@ pub struct UserSettingsPatch {
 #[derive(Debug, Clone, Default)]
 pub struct OAuth2SettingsPatch {
     pub providers: Option<synctv_core::service::OAuth2ProviderConfigs>,
+    pub allowed_redirect_urls: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -437,6 +438,7 @@ impl AdminApiImpl {
                 enable_guest: settings.user.enable_guest,
             }),
             oauth2: Some(synctv_proto::admin::OAuth2Settings {
+                allowed_redirect_urls: settings.oauth2.allowed_redirect_urls,
                 providers: settings
                     .oauth2
                     .providers
@@ -591,6 +593,10 @@ impl AdminApiImpl {
             if let Some(providers) = oauth2.providers {
                 current.oauth2.providers = providers;
                 update_mask.oauth2.providers = true;
+            }
+            if let Some(urls) = oauth2.allowed_redirect_urls {
+                current.oauth2.allowed_redirect_urls = urls;
+                update_mask.oauth2.allowed_redirect_urls = true;
             }
         }
 

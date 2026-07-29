@@ -52,6 +52,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      enableServiceLinks: false
       {{- $imagePullSecrets := .Values.imagePullSecrets | default .Values.global.imagePullSecrets }}
       {{- with $imagePullSecrets }}
       imagePullSecrets:
@@ -190,7 +191,7 @@ spec:
               value: {{ include "synctv.postgresql.port" . | quote }}
             - name: SYNCTV_DATABASE_NAME
               value: {{ include "synctv.postgresql.database" . | quote }}
-            - name: SYNCTV_DATABASE_USER
+            - name: SYNCTV_DATABASE_USERNAME
               value: {{ include "synctv.postgresql.appUsername" . | quote }}
             {{- if include "synctv.database.useSecretReadUrlEnv" . }}
             - name: SYNCTV_DATABASE_READ_URL

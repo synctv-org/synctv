@@ -114,6 +114,12 @@ All registration modes are disabled by default. Production deployments should en
 
 `oauth2.providers` is the OAuth2 configuration entry point. `instanceName` may contain only ASCII letters, digits, `_`, and `-`, and must be at most 64 bytes. Each element uses one provider oneof field such as `github` or `oidc`:
 
+Configure the shared callback allowlist as a runtime setting. Store builds commonly use one fixed App Link callback:
+
+```bash
+synctv settings update --set 'oauth2.allowedRedirectUrls=["https://syncs.tv/oauth2/callback"]'
+```
+
 ```json
 [
   {

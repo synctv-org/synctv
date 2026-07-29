@@ -27,6 +27,9 @@ ENV SQLX_OFFLINE=true
 # fully explicit feature set.
 ARG SYNCTV_BUILD_NO_DEFAULT_FEATURES=false
 ARG SYNCTV_BUILD_FEATURES="k8s,mimalloc,openapi"
+ARG SYNCTV_BUILD_JOBS=1
+ARG TARGETARCH
+ENV CARGO_BUILD_JOBS=$SYNCTV_BUILD_JOBS
 
 # Copy entire source tree
 COPY . .
@@ -35,7 +38,7 @@ COPY . .
 # Copy binary out of cache mount before RUN completes
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
+    --mount=type=cache,id=synctv-target-${TARGETARCH},target=/app/target,sharing=locked \
     build_flags="--release --bin synctv"; \
     if [ "$SYNCTV_BUILD_NO_DEFAULT_FEATURES" = "true" ]; then \
         build_flags="$build_flags --no-default-features"; \

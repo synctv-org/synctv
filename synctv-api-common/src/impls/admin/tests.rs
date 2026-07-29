@@ -116,6 +116,7 @@ fn test_runtime_settings() -> synctv_core::service::RuntimeSettings {
         },
         oauth2: synctv_core::service::OAuth2RuntimeSettings {
             providers: synctv_core::service::OAuth2ProviderConfigs::default(),
+            allowed_redirect_urls: Vec::new(),
         },
         proxy: synctv_core::service::ProxyRuntimeSettings {
             movie_proxy: true,
@@ -2456,6 +2457,7 @@ fn test_runtime_settings_field_mask_maps_repeated_fields_directly() -> TestResul
             synctv_proto::admin::RuntimeSettingsPatch {
                 oauth2: Some(synctv_proto::admin::OAuth2SettingsPatch {
                     providers: Vec::new(),
+                    allowed_redirect_urls: Vec::new(),
                 }),
                 email: Some(synctv_proto::admin::EmailSettingsPatch {
                     whitelist_domains: vec!["example.com".to_string()],

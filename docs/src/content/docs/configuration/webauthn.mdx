@@ -142,7 +142,7 @@ webauthn:
     - "ABCDE12345.org.synctv.app"
 ```
 
-服务器会在 `/.well-known/apple-app-site-association` 返回 `webcredentials.apps`。App 的 Associated Domains entitlement 需要包含 `webcredentials:example.com`。
+服务器会在 `/.well-known/apple-app-site-association` 返回 `webcredentials.apps` 和 App Link 关联。App Link 路径从 HTTPS 主机与当前请求域名相同的 `oauth2.allowedRedirectUrls` 条目自动派生。启用 OAuth2 登录时，App 的 Associated Domains entitlement 需要同时包含 `webcredentials:example.com` 和 `applinks:example.com`。
 
 Android 平台通过包名和发布证书 SHA-256 指纹配置：
 
@@ -154,7 +154,7 @@ webauthn:
         - "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
 ```
 
-服务器会在 `/.well-known/assetlinks.json` 返回 `delegate_permission/common.get_login_creds` 关联声明。证书轮换期间可以同时配置多个指纹。
+服务器会在 `/.well-known/assetlinks.json` 返回 `delegate_permission/common.get_login_creds` 和 `delegate_permission/common.handle_all_urls` 关联声明。证书轮换期间可以同时配置多个指纹。
 
 对应环境变量接受 JSON：
 

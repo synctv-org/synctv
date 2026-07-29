@@ -82,7 +82,7 @@ Create the name of the service account to use
 Return the synctv image name
 */}}
 {{- define "synctv.image" -}}
-{{- $registry := .Values.image.registry | default .Values.global.imageRegistry | default "docker.io" -}}
+{{- $registry := .Values.image.registry | default "docker.io" -}}
 {{- $repository := .Values.image.repository -}}
 {{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
 {{- include "synctv.imageReference" (list $registry $repository $tag) -}}
@@ -112,7 +112,7 @@ Return a chart-managed backing service image name.
 {{- $image := index . 1 -}}
 {{- $defaultRepository := index . 2 -}}
 {{- $defaultTag := index . 3 -}}
-{{- $registry := $root.Values.global.imageRegistry | default "docker.io" -}}
+{{- $registry := "docker.io" -}}
 {{- $repository := $image.repository | default $defaultRepository -}}
 {{- $tag := $image.tag | default $defaultTag -}}
 {{- include "synctv.imageReference" (list $registry $repository $tag) -}}

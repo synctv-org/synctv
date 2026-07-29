@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) async fn execute_serve(args: ServeArgs) -> Result<()> {
     let context = CliConfigContext::new(args.global.clone());
-    let config = context.strict_validated_config()?;
+    let config = context.validated_config()?;
     let public_id_config = context.public_id_config()?;
     switch_process_working_dir_to_data_dir(&config)?;
 

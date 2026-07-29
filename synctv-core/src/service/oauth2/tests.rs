@@ -181,13 +181,35 @@ fn create_test_service_with_runtime(
     )
 }
 
-fn create_test_service_with_domains(domains: Vec<String>) -> OAuth2Service {
-    create_test_service_with_runtime(
-        false,
-        OAuth2ServiceRuntime {
-            allowed_redirect_domains: domains,
-            ..OAuth2ServiceRuntime::default()
-        },
+fn create_test_service_with_allowed_urls(urls: Vec<String>) -> OAuth2Service {
+    let guard = synctv_common::ssrf::SsrfGuard::strict_policy();
+    let settings = create_test_runtime_settings_store(&guard);
+    let providers: crate::service::OAuth2ProviderConfigs = ok(
+        r#"{"github":{"type":"github","enableSignup":true,"clientId":"id","clientSecret":"secret","redirectUrl":"https://syncs.tv/oauth2/callback"}}"#.parse(),
+        "test GitHub provider config should parse",
+    );
+    ok(
+        settings.oauth2.providers.set_for_test(&providers),
+        "test provider settings should validate",
+    );
+    ok(
+        settings.oauth2.allowed_redirect_urls.set_for_test(
+            &crate::service::global_settings::OAuth2AllowedRedirectUrls(urls),
+        ),
+        "test redirect allowlist should validate",
+    );
+    ok(
+        OAuth2Service::new_without_repository_for_tests(
+            local_oauth_state_store(),
+            crate::oauth2::providers::provider_registry(guard.clone()),
+            guard,
+            false,
+            OAuth2ServiceRuntime {
+                runtime_settings_store: Some(settings),
+                ..OAuth2ServiceRuntime::default()
+            },
+        ),
+        "OAuth2 service should be created",
     )
 }
 
@@ -232,41 +254,37 @@ fn test_redirect_whitespace_only_rejected() {
 }
 
 #[test]
-fn test_redirect_absolute_url_rejected_when_no_domains_configured() {
+fn test_redirect_absolute_url_rejected_when_allowlist_is_empty() {
     let result =
         OAuth2Service::validate_redirect_url_with_allowlist("https://example.com/callback", &[]);
     assert!(result.is_err());
     let error = err(result, "absolute redirect should require allowlist");
-    assert!(matches!(&error, Error::InvalidInput(msg) if msg.contains("allowlist")));
+    assert!(matches!(&error, Error::InvalidInput(msg) if msg.contains("allowed redirect URLs")));
 }
 
 #[test]
-fn test_redirect_absolute_url_allowed_when_domain_matches() {
-    let domains = vec!["example.com".to_string()];
-    let result = OAuth2Service::validate_redirect_url_with_allowlist(
-        "https://example.com/callback",
-        &domains,
-    );
+fn test_redirect_absolute_url_allowed_when_url_matches() {
+    let urls = vec!["https://example.com/callback".to_string()];
+    let result =
+        OAuth2Service::validate_redirect_url_with_allowlist("https://example.com/callback", &urls);
     assert!(result.is_ok());
 }
 
 #[test]
-fn test_redirect_absolute_url_allowed_for_subdomain() {
-    let domains = vec!["example.com".to_string()];
+fn test_redirect_allowlist_requires_exact_path() {
+    let urls = vec!["https://app.example.com/oauth2/callback".to_string()];
     let result = OAuth2Service::validate_redirect_url_with_allowlist(
         "https://app.example.com/callback",
-        &domains,
+        &urls,
     );
-    assert!(result.is_ok());
+    assert!(result.is_err());
 }
 
 #[test]
 fn test_redirect_http_url_rejected_for_non_loopback_host() {
-    let domains = vec!["example.com".to_string()];
-    let result = OAuth2Service::validate_redirect_url_with_allowlist(
-        "http://example.com/callback",
-        &domains,
-    );
+    let urls = vec!["http://example.com/callback".to_string()];
+    let result =
+        OAuth2Service::validate_redirect_url_with_allowlist("http://example.com/callback", &urls);
     assert!(result.is_err());
     let error = err(result, "non-loopback HTTP redirect should fail");
     assert!(matches!(&error, Error::InvalidInput(msg) if msg.contains("HTTPS")));
@@ -274,12 +292,12 @@ fn test_redirect_http_url_rejected_for_non_loopback_host() {
 
 #[test]
 fn test_redirect_absolute_url_rejected_for_wrong_domain() {
-    let domains = vec!["example.com".to_string()];
+    let urls = vec!["https://example.com/callback".to_string()];
     let result =
-        OAuth2Service::validate_redirect_url_with_allowlist("https://evil.com/callback", &domains);
+        OAuth2Service::validate_redirect_url_with_allowlist("https://evil.com/callback", &urls);
     assert!(result.is_err());
     let error = err(result, "wrong-domain redirect should fail");
-    assert!(matches!(&error, Error::InvalidInput(msg) if msg.contains("not in the allowed")));
+    assert!(matches!(&error, Error::InvalidInput(msg) if msg.contains("allowed redirect URLs")));
 }
 
 #[test]
@@ -313,6 +331,21 @@ fn test_redirect_url_with_credentials_rejected() {
 }
 
 #[test]
+fn test_redirect_url_requires_runtime_allowlist_match() {
+    let allowed = vec!["https://syncs.tv/oauth2/callback".to_string()];
+    assert!(OAuth2Service::validate_redirect_url_with_allowlist(
+        "https://syncs.tv/oauth2/callback",
+        &allowed,
+    )
+    .is_ok());
+    assert!(OAuth2Service::validate_redirect_url_with_allowlist(
+        "https://syncs.tv/other",
+        &allowed,
+    )
+    .is_err());
+}
+
+#[test]
 fn test_redirect_malformed_url_rejected() {
     let domains = vec!["example.com".to_string()];
     let result =
@@ -321,21 +354,19 @@ fn test_redirect_malformed_url_rejected() {
 }
 
 #[test]
-fn test_redirect_tld_only_domain_rejected() {
-    // Adding "com" to allowlist should NOT allow all.com domains
-    let domains = vec!["com".to_string()];
+fn test_redirect_host_fragment_rejected() {
+    let urls = vec!["com".to_string()];
     let result =
-        OAuth2Service::validate_redirect_url_with_allowlist("https://evil.com/callback", &domains);
+        OAuth2Service::validate_redirect_url_with_allowlist("https://evil.com/callback", &urls);
     assert!(result.is_err());
 }
 
 #[test]
-fn test_redirect_deep_subdomain_rejected() {
-    // Only single-level subdomains are allowed
-    let domains = vec!["example.com".to_string()];
+fn test_redirect_same_domain_different_subdomain_rejected() {
+    let urls = vec!["https://example.com/callback".to_string()];
     let result = OAuth2Service::validate_redirect_url_with_allowlist(
         "https://deep.sub.example.com/callback",
-        &domains,
+        &urls,
     );
     assert!(result.is_err());
 }
@@ -788,15 +819,11 @@ async fn test_get_authorization_url_unknown_provider() {
 }
 
 #[tokio::test]
-async fn test_get_authorization_url_with_allowed_redirect_domains() {
-    let service = create_test_service_with_domains(vec!["myapp.com".to_string()]);
-    service
-        .register_provider(
-            "github".to_string(),
-            OAuth2Provider::GitHub,
-            Box::new(TestOAuth2Provider::new()),
-        )
-        .await;
+async fn test_get_authorization_url_with_runtime_allowlist() {
+    let service = create_test_service_with_allowed_urls(vec![
+        "https://myapp.com/callback".to_string(),
+        "https://auth.myapp.com/cb".to_string(),
+    ]);
 
     let result = service
         .get_authorization_url("github", Some("https://myapp.com/callback".to_string()))
@@ -816,7 +843,7 @@ async fn test_get_authorization_url_with_allowed_redirect_domains() {
 
 #[tokio::test]
 async fn test_get_authorization_url_accepts_loopback_native_client_redirects() {
-    let service = create_test_service_with_domains(vec!["github.io".to_string()]);
+    let service = create_test_service();
     service
         .register_provider(
             "github".to_string(),
@@ -1088,17 +1115,11 @@ async fn test_state_store_is_abstracted() {
 }
 
 #[tokio::test]
-async fn test_allowed_redirect_domains_are_constructor_configured() {
-    let service =
-        create_test_service_with_domains(vec!["example.com".to_string(), "myapp.io".to_string()]);
-
-    service
-        .register_provider(
-            "github".to_string(),
-            OAuth2Provider::GitHub,
-            Box::new(TestOAuth2Provider::new()),
-        )
-        .await;
+async fn test_allowed_redirect_urls_are_runtime_configured() {
+    let service = create_test_service_with_allowed_urls(vec![
+        "https://example.com/cb".to_string(),
+        "https://myapp.io/cb".to_string(),
+    ]);
 
     let result = service
         .get_authorization_url("github", Some("https://example.com/cb".to_string()))

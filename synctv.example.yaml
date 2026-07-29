@@ -694,9 +694,9 @@ webauthn:
   rp_name: "SyncTV"
   allowed_origins: []
   # Apple application identifiers served from
-  # /.well-known/apple-app-site-association for native passkeys.
+  # /.well-known/apple-app-site-association for native passkeys and OAuth2 app links.
   apple_app_ids: []
-  # Android app identities served from /.well-known/assetlinks.json.
+  # Android app identities served from /.well-known/assetlinks.json for passkeys and OAuth2 app links.
   android_apps: []
   # android_apps:
   #   - package_name: "org.synctv.app"

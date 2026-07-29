@@ -35,12 +35,13 @@ use tracing::warn;
 mod types;
 pub use types::{
     ChatRuntimeSettings, ConfiguredIceServer, CorsAllowedOrigins, CorsRuntimeSettings,
-    EmailRuntimeSettings, IceServerList, OAuth2AppleProviderConfig, OAuth2CasdoorProviderConfig,
-    OAuth2GithubProviderConfig, OAuth2GoogleProviderConfig, OAuth2LogtoProviderConfig,
-    OAuth2OidcProviderConfig, OAuth2ProviderConfig, OAuth2ProviderConfigs,
-    OAuth2ProviderPrivateConfig, OAuth2RuntimeSettings, OAuth2SignupPolicy, OptionalRuntimeConfig,
-    PermissionRuntimeSettings, PermissionSet, PlaybackHistoryRuntimeSettings, ProxyRuntimeSettings,
-    PublicSettings, RoomCreationRuntimeSettings, RoomDefaultsRuntimeSettings, RoomPasswordPolicy,
+    EmailRuntimeSettings, IceServerList, OAuth2AllowedRedirectUrls, OAuth2AppleProviderConfig,
+    OAuth2CasdoorProviderConfig, OAuth2GithubProviderConfig, OAuth2GoogleProviderConfig,
+    OAuth2LogtoProviderConfig, OAuth2OidcProviderConfig, OAuth2ProviderConfig,
+    OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig, OAuth2RuntimeSettings, OAuth2SignupPolicy,
+    OptionalRuntimeConfig, PermissionRuntimeSettings, PermissionSet,
+    PlaybackHistoryRuntimeSettings, ProxyRuntimeSettings, PublicSettings,
+    RoomCreationRuntimeSettings, RoomDefaultsRuntimeSettings, RoomPasswordPolicy,
     RtmpRuntimeSettings, RuntimeSettings, RuntimeSettingsUpdateMask, ServerRuntimeSettings,
     UserRuntimeSettings, WebRtcRuntimeSettings,
 };
@@ -443,6 +444,14 @@ impl std::ops::Deref for OAuth2ProvidersSetting {
     }
 }
 
+setting!(
+    OAuth2AllowedRedirectUrlsSetting,
+    OAuth2AllowedRedirectUrls,
+    "oauth2.allowed_redirect_urls",
+    OAuth2AllowedRedirectUrls::default(),
+    |value: &OAuth2AllowedRedirectUrls| types::validate_oauth2_allowed_redirect_urls(value)
+);
+
 fn validate_email_whitelist_domains(raw: &str) -> crate::Result<()> {
     for entry in raw
         .split(',')
@@ -566,6 +575,7 @@ pub struct UserSettingsStore {
 #[derive(Clone)]
 pub struct OAuth2SettingsStore {
     pub providers: OAuth2ProvidersSetting,
+    pub allowed_redirect_urls: OAuth2AllowedRedirectUrlsSetting,
 }
 
 #[derive(Clone)]
@@ -837,6 +847,7 @@ impl RuntimeSettingsStore {
 
         let oauth2 = OAuth2SettingsStore {
             providers: OAuth2ProvidersSetting::new(storage.clone(), ssrf_guard.clone()),
+            allowed_redirect_urls: OAuth2AllowedRedirectUrlsSetting::new(storage.clone()),
         };
 
         let proxy = ProxySettingsStore {
@@ -963,6 +974,7 @@ impl RuntimeSettingsStore {
             },
             oauth2: OAuth2RuntimeSettings {
                 providers: self.oauth2.providers.get()?,
+                allowed_redirect_urls: self.oauth2.allowed_redirect_urls.get()?.0,
             },
             proxy: ProxyRuntimeSettings {
                 movie_proxy: self.proxy.movie_proxy.get()?,
@@ -1148,6 +1160,12 @@ impl RuntimeSettingsStore {
             update_mask.oauth2.providers,
             &self.oauth2.providers,
             &settings.oauth2.providers,
+        )?;
+        Self::push_update_entry(
+            &mut entries,
+            update_mask.oauth2.allowed_redirect_urls,
+            &self.oauth2.allowed_redirect_urls,
+            &OAuth2AllowedRedirectUrls(settings.oauth2.allowed_redirect_urls.clone()),
         )?;
         Self::push_update_entry(
             &mut entries,

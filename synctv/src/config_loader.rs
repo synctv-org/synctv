@@ -566,23 +566,6 @@ pub fn load_config() -> Result<Config> {
     })
 }
 
-fn load_core_config_with_env_map_and_data_dir_override(
-    config_file: Option<&str>,
-    env: &HashMap<String, String>,
-    data_dir_override: Option<&str>,
-    extensions: &ConfigLoadExtensions,
-) -> Result<Config, ConfigError> {
-    let loaded =
-        load_core_config_with_env_lenient(config_file, env, data_dir_override, extensions)?;
-    if !loaded.unknown.is_empty() {
-        return Err(ConfigError::Message(format!(
-            "strict configuration rejected unknown setting(s): {}",
-            loaded.unknown.strict_error_message()
-        )));
-    }
-    Ok(loaded.config)
-}
-
 fn load_core_config_with_env_lenient(
     config_file: Option<&str>,
     env: &HashMap<String, String>,
@@ -775,17 +758,21 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
         if options.verbose {
             tracing::info!(path = %display_path, "Loading config file");
         }
-        match load_core_config_with_env_map_and_data_dir_override(
+        match load_core_config_with_env_lenient(
             Some(&path),
             &env,
             options.data_dir.as_deref(),
             &options.extensions,
         ) {
-            Ok(cfg) => {
+            Ok(loaded) => {
+                if !loaded.unknown.is_empty() {
+                    let message = loaded.unknown.strict_error_message();
+                    tracing::warn!("Ignoring unknown configuration setting(s): {message}");
+                }
                 if options.verbose {
                     tracing::info!(path = %display_path, "Config file loaded");
                 }
-                cfg
+                loaded.config
             }
             Err(e) => {
                 let source = if options.config_path.is_some() {
@@ -815,12 +802,19 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
         if options.verbose {
             tracing::info!("No config file found, using environment variables");
         }
-        load_core_config_with_env_map_and_data_dir_override(
-            None,
-            &env,
-            options.data_dir.as_deref(),
-            &options.extensions,
-        )?
+        {
+            let loaded = load_core_config_with_env_lenient(
+                None,
+                &env,
+                options.data_dir.as_deref(),
+                &options.extensions,
+            )?;
+            if !loaded.unknown.is_empty() {
+                let message = loaded.unknown.strict_error_message();
+                tracing::warn!("Ignoring unknown configuration setting(s): {message}");
+            }
+            loaded.config
+        }
     };
 
     set_default_timezone_name(&config.time.timezone).map_err(|error| {
@@ -1353,7 +1347,7 @@ metrics:
         )
         .checked("config should be written");
 
-        let err = load_config_with_options(&LoadConfigOptions {
+        load_config_with_options(&LoadConfigOptions {
             config_path: Some(config_path.to_string_lossy().to_string()),
             data_dir: None,
             load_dotenv: false,
@@ -1361,11 +1355,7 @@ metrics:
             verbose: false,
             extensions: ConfigLoadExtensions::default(),
         })
-        .failed("default config loading should reject unsupported inputs");
-        let message = err.to_string();
-
-        assert!(message.contains("metrics.obsolete_token"));
-        assert!(message.contains("SYNCTV_UNKNOWN_SETTING"));
+        .checked("default config loading should warn and continue for unsupported inputs");
     }
 
     #[test]

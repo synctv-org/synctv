@@ -223,6 +223,7 @@ message UserSettings {
 
 message OAuth2Settings {
   repeated OAuth2ProviderSettings providers = 1;
+  repeated string allowed_redirect_urls = 2;
 }
 
 message OAuth2ProviderSettings {
@@ -404,6 +405,7 @@ message UserSettingsPatch {
 
 message OAuth2SettingsPatch {
   repeated OAuth2ProviderSettings providers = 1;
+  repeated string allowed_redirect_urls = 2;
 }
 
 message ProxySettingsPatch {

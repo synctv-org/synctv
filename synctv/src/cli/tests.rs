@@ -202,7 +202,7 @@ fn cli_parses_global_data_dir() {
 }
 
 #[test]
-fn serve_config_context_rejects_unknown_inputs_strictly() {
+fn serve_config_context_warns_on_unknown_inputs() {
     let _env_lock = acquire_env_test_lock();
     let _unknown_env = EnvVarGuard::set("SYNCTV_UNKNOWN_BOOT_FLAG", "1");
     let context = CliConfigContext::new(GlobalConfigArgs {
@@ -210,14 +210,9 @@ fn serve_config_context_rejects_unknown_inputs_strictly() {
         ..GlobalConfigArgs::default()
     });
 
-    let err = context
-        .strict_validated_config()
-        .expect_err("serve config loading should fail on unsupported SYNCTV_ inputs");
-
-    assert!(
-        err.to_string().contains("SYNCTV_UNKNOWN_BOOT_FLAG"),
-        "strict startup error should name the unsupported environment variable: {err}"
-    );
+    context
+        .validated_config()
+        .expect("serve config loading should ignore unsupported SYNCTV_ inputs");
 }
 
 #[test]
@@ -5670,6 +5665,7 @@ fn render_human_output_uses_proto_json_for_admin_settings() {
     .expect("room settings output should render");
     let rendered_oauth2 = render_human_output(&synctv_proto::admin::RuntimeSettings {
         oauth2: Some(synctv_proto::admin::OAuth2Settings {
+            allowed_redirect_urls: vec!["https://syncs.tv/oauth2/callback".into()],
             providers: vec![synctv_proto::admin::OAuth2ProviderSettings {
                 name: "github-main".into(),
                 enable_signup: true,
@@ -5697,6 +5693,10 @@ fn render_human_output_uses_proto_json_for_admin_settings() {
     assert_eq!(
         rendered_oauth2["oauth2"]["providers"][0]["name"],
         "github-main"
+    );
+    assert_eq!(
+        rendered_oauth2["oauth2"]["allowedRedirectUrls"][0],
+        "https://syncs.tv/oauth2/callback"
     );
     assert_eq!(
         rendered_oauth2["oauth2"]["providers"][0]["github"]["clientId"],

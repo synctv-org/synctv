@@ -47,7 +47,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cp /app/target/release/synctv /tmp/synctv
 
 # Stage 2: Runtime image
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 # OCI image labels
 LABEL org.opencontainers.image.title="SyncTV" \

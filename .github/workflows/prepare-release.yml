@@ -16,6 +16,9 @@ permissions:
   contents: write
   pull-requests: write
 
+env:
+  CARGO_INCREMENTAL: "0"
+
 jobs:
   prepare:
     name: Open Release PR

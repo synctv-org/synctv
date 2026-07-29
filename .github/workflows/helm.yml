@@ -23,6 +23,9 @@ permissions:
   contents: read
   packages: write
 
+env:
+  CARGO_INCREMENTAL: "0"
+
 jobs:
   publish:
     name: Publish Helm Chart

@@ -29,7 +29,11 @@ ARG SYNCTV_BUILD_NO_DEFAULT_FEATURES=false
 ARG SYNCTV_BUILD_FEATURES="k8s,mimalloc,openapi"
 ARG SYNCTV_CARGO_BUILD_ARGS=""
 ARG SYNCTV_CARGO_BUILD_PROFILE=release
+ARG CARGO_INCREMENTAL=0
 ARG TARGETARCH
+
+# Clean CI runners benefit from deterministic non-incremental compilation.
+ENV CARGO_INCREMENTAL=$CARGO_INCREMENTAL
 
 # Copy entire source tree
 COPY . .

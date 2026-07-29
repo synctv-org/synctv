@@ -231,6 +231,28 @@ assert_security_rendering() {
   ' "$file"
 }
 
+assert_native_webauthn_rendering() {
+  local file="$1"
+  ruby -ryaml -e '
+    file = ARGV.fetch(0)
+    docs = YAML.load_stream(File.read(file)).compact
+    config = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "synctv-config" }
+    abort("synctv-config ConfigMap was not rendered in #{file}") unless config
+    synctv_yaml = config.dig("data", "synctv.yaml")
+    abort("synctv.yaml ConfigMap entry was not rendered in #{file}") unless synctv_yaml
+    webauthn = YAML.safe_load(synctv_yaml).dig("webauthn") || {}
+
+    expected_apple_ids = ["ABCDE12345.org.synctv.app"]
+    abort("Apple app IDs were not rendered") unless webauthn["apple_app_ids"] == expected_apple_ids
+
+    expected_android_apps = [{
+      "package_name" => "org.synctv.app",
+      "sha256_cert_fingerprints" => ["AA:BB:CC:DD"]
+    }]
+    abort("Android app identities were not rendered") unless webauthn["android_apps"] == expected_android_apps
+  ' "$file"
+}
+
 assert_file_storage_s3_file_credentials_rendering() {
   local file="$1"
   ruby -ryaml -e '
@@ -447,6 +469,13 @@ helm template synctv "$chart_dir" \
 
 helm template synctv "$chart_dir" \
   --namespace "$namespace" \
+  --set-string config.webauthn.appleAppIds[0]=ABCDE12345.org.synctv.app \
+  --set-string config.webauthn.androidApps[0].packageName=org.synctv.app \
+  --set-string config.webauthn.androidApps[0].sha256CertFingerprints[0]=AA:BB:CC:DD \
+  >"$tmp_dir/native-webauthn.yaml"
+
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
   --set secrets.database.readUrl=postgresql://reader:secret@postgres-read:5432/synctv \
   --set config.database.useSecretReadUrl=true \
   >"$tmp_dir/secret-read-url.yaml"
@@ -540,6 +569,7 @@ helm template synctv "$chart_dir" \
 assert_service "$tmp_dir/loadbalancer-stun.yaml" synctv-stun LoadBalancer
 
 assert_security_rendering "$tmp_dir/security.yaml"
+assert_native_webauthn_rendering "$tmp_dir/native-webauthn.yaml"
 for key in \
   SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY \
   SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY \

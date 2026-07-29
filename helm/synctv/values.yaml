@@ -607,6 +607,13 @@ config:
     rpOrigin: ""
     rpName: "SyncTV"
     allowedOrigins: []
+    ## Native app identities authorized to use passkeys for this RP ID.
+    appleAppIds: []
+      # - "ABCDE12345.org.synctv.app"
+    androidApps: []
+      # - packageName: "org.synctv.app"
+      #   sha256CertFingerprints:
+      #     - "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
     allowSubdomains: false
     allowAnyPort: false
     timeoutSeconds: 300

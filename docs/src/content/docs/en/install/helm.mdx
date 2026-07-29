@@ -170,6 +170,22 @@ Production clusters commonly supply the Secret through External Secrets, Sealed 
 existingSecret: "my-external-synctv-secret"
 ```
 
+Native passkey associations are configured directly through chart values:
+
+```yaml
+config:
+  webauthn:
+    enabled: true
+    rpId: synctv.example.com
+    rpOrigin: https://synctv.example.com
+    appleAppIds:
+      - ABCDE12345.org.synctv.app
+    androidApps:
+      - packageName: org.synctv.app
+        sha256CertFingerprints:
+          - "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+```
+
 Always include:
 
 - `SYNCTV_DATABASE_PASSWORD` for PostgreSQL standard mode, external mode, and the KubeBlocks application role.

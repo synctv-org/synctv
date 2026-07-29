@@ -1,5 +1,5 @@
 # Stage 1: Build
-FROM rust:slim AS builder
+FROM rust:slim-trixie AS builder
 
 # Install build dependencies
 # build-essential, perl, cmake needed for vendored builds (xiu/opus dependencies)
@@ -76,6 +76,10 @@ WORKDIR /app
 COPY --from=builder \
     --chown=synctv:synctv \
     /tmp/synctv /app/synctv
+
+# Execute the binary in the final image so ABI/runtime dependency mismatches
+# fail the image build for every target platform.
+RUN /app/synctv --version
 
 # Switch to non-root user
 USER synctv

@@ -348,6 +348,16 @@ data:
       rp_origin: {{ $webauthn.rpOrigin | default "" | quote }}
       rp_name: {{ $webauthn.rpName | default "SyncTV" | quote }}
       allowed_origins: {{ $webauthn.allowedOrigins | default list | toJson }}
+      apple_app_ids: {{ $webauthn.appleAppIds | default list | toJson }}
+      {{- if $webauthn.androidApps }}
+      android_apps:
+        {{- range $webauthn.androidApps }}
+        - package_name: {{ .packageName | quote }}
+          sha256_cert_fingerprints: {{ .sha256CertFingerprints | default list | toJson }}
+        {{- end }}
+      {{- else }}
+      android_apps: []
+      {{- end }}
       allow_subdomains: {{ $webauthn.allowSubdomains | default false }}
       allow_any_port: {{ $webauthn.allowAnyPort | default false }}
       timeout_seconds: {{ $webauthn.timeoutSeconds | default 300 }}

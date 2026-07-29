@@ -76,6 +76,8 @@ jobs:
       cache: true
       cache-mode: max
       cache-scope: synctv-image
+      build-args: |
+        SYNCTV_CARGO_BUILD_PROFILE=${{ github.event_name == 'pull_request' && 'dev' || 'release' }}
       set-meta-annotations: true
       set-meta-labels: true
       meta-images: ${{ needs.docker-prepare.outputs.meta-images }}

@@ -28,6 +28,7 @@ ENV SQLX_OFFLINE=true
 ARG SYNCTV_BUILD_NO_DEFAULT_FEATURES=false
 ARG SYNCTV_BUILD_FEATURES="k8s,mimalloc,openapi"
 ARG SYNCTV_CARGO_BUILD_ARGS=""
+ARG SYNCTV_CARGO_BUILD_PROFILE=release
 ARG TARGETARCH
 
 # Copy entire source tree
@@ -38,7 +39,11 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,id=synctv-target-${TARGETARCH},target=/app/target,sharing=locked \
-    build_flags="--release --bin synctv"; \
+    case "$SYNCTV_CARGO_BUILD_PROFILE" in \
+        dev|release) ;; \
+        *) echo "Unsupported SYNCTV_CARGO_BUILD_PROFILE: $SYNCTV_CARGO_BUILD_PROFILE" >&2; exit 1 ;; \
+    esac; \
+    build_flags="--profile $SYNCTV_CARGO_BUILD_PROFILE --bin synctv"; \
     if [ -n "$SYNCTV_CARGO_BUILD_ARGS" ]; then \
         build_flags="$build_flags $SYNCTV_CARGO_BUILD_ARGS"; \
     fi; \
@@ -49,7 +54,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         build_flags="$build_flags --features $SYNCTV_BUILD_FEATURES"; \
     fi; \
     cargo +nightly build $build_flags && \
-    cp /app/target/release/synctv /tmp/synctv
+    cp "/app/target/$SYNCTV_CARGO_BUILD_PROFILE/synctv" /tmp/synctv
 
 # Stage 2: Runtime image
 FROM debian:trixie-slim

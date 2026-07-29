@@ -2,8 +2,8 @@ apiVersion: v2
 name: synctv
 description: A distributed video synchronization platform with real-time streaming (RTMP/HLS/WebRTC)
 type: application
-version: 1.0.1-rc.1
-appVersion: "1.0.1-rc.1"
+version: 1.0.2-rc.1
+appVersion: "1.0.2-rc.1"
 
 keywords:
   - synctv

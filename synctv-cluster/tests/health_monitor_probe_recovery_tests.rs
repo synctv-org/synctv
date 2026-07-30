@@ -25,7 +25,7 @@ async fn test_stale_node_overrides_healthy() {
         status.insert("node-1".to_string(), NodeHealth::Healthy);
     }
 
-    let mut stale_node = NodeInfo::new("node-1".to_string(), "localhost:8080".to_string());
+    let mut stale_node = NodeInfo::new("node-1".to_string(), "localhost:50051".to_string());
     stale_node.last_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(120);
 
     // Process heartbeats: stale check overrides Healthy -> Unhealthy
@@ -53,7 +53,7 @@ async fn test_unhealthy_not_overridden_by_fresh_heartbeat() {
         status.insert("node-1".to_string(), NodeHealth::Unhealthy);
     }
 
-    let fresh_node = NodeInfo::new("node-1".to_string(), "localhost:8080".to_string());
+    let fresh_node = NodeInfo::new("node-1".to_string(), "localhost:50051".to_string());
 
     // Process heartbeats: fresh node with existing status is NOT overridden
     HealthMonitor::process_heartbeats(&health_status, &[fresh_node], 30).await;
@@ -73,7 +73,7 @@ async fn test_stale_then_fresh_stays_unhealthy_until_probed() {
     let health_status: Arc<RwLock<HashMap<String, NodeHealth>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
-    let fresh_node = NodeInfo::new("node-1".to_string(), "localhost:8080".to_string());
+    let fresh_node = NodeInfo::new("node-1".to_string(), "localhost:50051".to_string());
     HealthMonitor::process_heartbeats(&health_status, std::slice::from_ref(&fresh_node), 30).await;
 
     {
@@ -91,7 +91,7 @@ async fn test_stale_then_fresh_stays_unhealthy_until_probed() {
     }
 
     // status is preserved (NOT overridden by heartbeat)
-    let recovered = NodeInfo::new("node-1".to_string(), "localhost:8080".to_string());
+    let recovered = NodeInfo::new("node-1".to_string(), "localhost:50051".to_string());
     HealthMonitor::process_heartbeats(&health_status, &[recovered], 30).await;
 
     let status = health_status.read().await;
@@ -114,7 +114,7 @@ async fn test_degraded_preserved_through_heartbeat() {
         status.insert("node-1".to_string(), NodeHealth::Degraded);
     }
 
-    let fresh_node = NodeInfo::new("node-1".to_string(), "localhost:8080".to_string());
+    let fresh_node = NodeInfo::new("node-1".to_string(), "localhost:50051".to_string());
 
     HealthMonitor::process_heartbeats(&health_status, &[fresh_node], 30).await;
 
@@ -135,7 +135,7 @@ async fn test_new_fresh_node_gets_healthy() {
 
     // No prior status entry for node-new
 
-    let fresh_node = NodeInfo::new("node-new".to_string(), "localhost:8080".to_string());
+    let fresh_node = NodeInfo::new("node-new".to_string(), "localhost:50051".to_string());
 
     HealthMonitor::process_heartbeats(&health_status, &[fresh_node], 30).await;
 
@@ -162,7 +162,7 @@ async fn test_multiple_nodes_mixed_states() {
     }
 
     // node-a becomes stale, node-b stays fresh, node-c is new and fresh
-    let mut stale_a = NodeInfo::new("node-a".to_string(), "localhost:8080".to_string());
+    let mut stale_a = NodeInfo::new("node-a".to_string(), "localhost:50051".to_string());
     stale_a.last_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(60);
 
     let fresh_b = NodeInfo::new("node-b".to_string(), "localhost:8081".to_string());

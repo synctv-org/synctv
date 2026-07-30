@@ -48,7 +48,7 @@ use tower_http::trace::{
 
 pub use auth::extract_client_ip;
 pub use error::{map_api_error, AppError, AppResult};
-pub use health::{create_metrics_router, liveness_check};
+pub use health::{create_health_router, create_metrics_router, liveness_check};
 pub use middleware::{hsts_header, security_headers_middleware};
 pub use websocket::{websocket_handler, AuthMethod};
 
@@ -888,7 +888,6 @@ fn register_all_routes() -> Router<AppState> {
             "/.well-known/assetlinks.json",
             get(native_app_association::android_asset_links),
         )
-        .merge(health::create_health_router())
         .merge(openapi_router())
         .merge(public::create_public_router())
         .merge(register_extracted_auth_routes())
@@ -1686,7 +1685,7 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> anyhow::Re
             )))
             .layer(
                 TraceLayer::new_for_http()
-                    .make_span_with(DefaultMakeSpan::new().level(tracing::Level::INFO))
+                    .make_span_with(DefaultMakeSpan::new().level(tracing::Level::DEBUG))
                     .on_request(DefaultOnRequest::new().level(tracing::Level::DEBUG))
                     .on_response(DefaultOnResponse::new().level(tracing::Level::INFO)),
             )

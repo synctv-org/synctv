@@ -16,7 +16,7 @@ use synctv_cluster::NodeInfo;
 
 #[tokio::test]
 async fn test_process_heartbeats_marks_stale_unhealthy() {
-    let mut stale_node = NodeInfo::new("stale-node".to_string(), "localhost:8080".to_string());
+    let mut stale_node = NodeInfo::new("stale-node".to_string(), "localhost:50051".to_string());
     stale_node.last_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(60);
 
     let health_status: Arc<RwLock<HashMap<String, NodeHealth>>> =
@@ -35,7 +35,7 @@ async fn test_process_heartbeats_marks_stale_unhealthy() {
 
 #[tokio::test]
 async fn test_process_heartbeats_marks_fresh_healthy() {
-    let fresh_node = NodeInfo::new("fresh-node".to_string(), "localhost:8080".to_string());
+    let fresh_node = NodeInfo::new("fresh-node".to_string(), "localhost:50051".to_string());
 
     let health_status: Arc<RwLock<HashMap<String, NodeHealth>>> =
         Arc::new(RwLock::new(HashMap::new()));
@@ -54,7 +54,7 @@ async fn test_process_heartbeats_marks_fresh_healthy() {
 
 #[tokio::test]
 async fn test_process_heartbeats_does_not_override_existing() {
-    let fresh_node = NodeInfo::new("probed-node".to_string(), "localhost:8080".to_string());
+    let fresh_node = NodeInfo::new("probed-node".to_string(), "localhost:50051".to_string());
 
     let health_status: Arc<RwLock<HashMap<String, NodeHealth>>> =
         Arc::new(RwLock::new(HashMap::new()));

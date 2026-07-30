@@ -715,8 +715,8 @@ impl HlsStreamingApi {
                 url_generator,
             ))
         } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
-            let api_addr = publisher_info
-                .validate_api_address()
+            let cluster_address = publisher_info
+                .validate_cluster_address()
                 .map_err(|e| anyhow::anyhow!("Cannot proxy HLS for {room_id}/{media_id}: {e}"))?;
 
             let sample_url = url_generator("__PLACEHOLDER__");
@@ -728,7 +728,7 @@ impl HlsStreamingApi {
 
             let playlist = hls_proxy
                 .get_playlist(
-                    api_addr,
+                    cluster_address,
                     room_id,
                     media_id,
                     &segment_url_base,
@@ -806,13 +806,13 @@ impl HlsStreamingApi {
         if is_local || infrastructure.hls_storage_backend == HlsStorageBackend::SharedFile {
             Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
         } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
-            let api_addr = publisher_info.validate_api_address().map_err(|e| {
+            let cluster_address = publisher_info.validate_cluster_address().map_err(|e| {
                 anyhow::anyhow!("Cannot proxy HLS segment for {room_id}/{media_id}: {e}")
             })?;
 
             let segment = hls_proxy
                 .get_segment(
-                    api_addr,
+                    cluster_address,
                     room_id,
                     media_id,
                     segment_name,
@@ -893,14 +893,14 @@ mod tests {
     fn make_infrastructure_with_publisher(
         local_node_id: &str,
         publisher_node_id: &str,
-        api_address: &str,
+        cluster_address: &str,
     ) -> std::result::Result<LiveStreamingInfrastructure, crate::error::StreamError> {
         let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([(
                 ("room1".to_string(), "media1".to_string()),
                 PublisherInfo {
                     node_id: publisher_node_id.to_string(),
-                    api_address: api_address.to_string(),
+                    cluster_address: cluster_address.to_string(),
                     app_name: "live".to_string(),
                     user_id: String::new(),
                     started_at: synctv_core::SystemClock.now(),
@@ -953,7 +953,7 @@ mod tests {
                 ("room1".to_string(), "media1".to_string()),
                 PublisherInfo {
                     node_id: "node-remote".to_string(),
-                    api_address: String::new(),
+                    cluster_address: String::new(),
                     app_name: "live".to_string(),
                     user_id: String::new(),
                     started_at: synctv_core::SystemClock.now(),
@@ -973,11 +973,11 @@ mod tests {
         let error = infrastructure
             .ensure_pull_stream("room1", "media1", Some("http://127.0.0.1:8080/live.flv"))
             .await
-            .expect_err("remote publisher relay should fail fast because api_address is empty");
+            .expect_err("remote publisher relay should fail fast because cluster_address is empty");
 
         assert!(
             error.to_string().contains("Failed to create pull stream")
-                || error.to_string().contains("api_address"),
+                || error.to_string().contains("cluster_address"),
             "unexpected error: {error}"
         );
         assert_eq!(
@@ -1008,7 +1008,7 @@ mod tests {
             ("room1".to_string(), "media1".to_string()),
             PublisherInfo {
                 node_id: "node-local".to_string(),
-                api_address: String::new(),
+                cluster_address: String::new(),
                 app_name: "live".to_string(),
                 user_id: String::new(),
                 started_at: synctv_core::SystemClock.now(),
@@ -1084,7 +1084,7 @@ mod tests {
                 ("room1".to_string(), "media1".to_string()),
                 PublisherInfo {
                     node_id: "node-local".to_string(),
-                    api_address: "127.0.0.1:50051".to_string(),
+                    cluster_address: "127.0.0.1:50051".to_string(),
                     app_name: "live".to_string(),
                     user_id: "user1".to_string(),
                     started_at: synctv_core::SystemClock.now(),
@@ -1139,7 +1139,7 @@ mod tests {
                 ("room1".to_string(), "media1".to_string()),
                 PublisherInfo {
                     node_id: "node-local".to_string(),
-                    api_address: "127.0.0.1:50051".to_string(),
+                    cluster_address: "127.0.0.1:50051".to_string(),
                     app_name: "live".to_string(),
                     user_id: "user1".to_string(),
                     started_at: synctv_core::SystemClock.now(),
@@ -1187,7 +1187,7 @@ mod tests {
                 ("room1".to_string(), "media1".to_string()),
                 PublisherInfo {
                     node_id: "node-local".to_string(),
-                    api_address: "127.0.0.1:50051".to_string(),
+                    cluster_address: "127.0.0.1:50051".to_string(),
                     app_name: "live".to_string(),
                     user_id: "user1".to_string(),
                     started_at: synctv_core::SystemClock.now(),
@@ -1239,7 +1239,7 @@ mod tests {
                     ("room1".to_string(), "media1".to_string()),
                     PublisherInfo {
                         node_id: "node-local".to_string(),
-                        api_address: "127.0.0.1:50051".to_string(),
+                        cluster_address: "127.0.0.1:50051".to_string(),
                         app_name: "live".to_string(),
                         user_id: "user1".to_string(),
                         started_at: synctv_core::SystemClock.now(),
@@ -1250,7 +1250,7 @@ mod tests {
                     ("room2".to_string(), "media2".to_string()),
                     PublisherInfo {
                         node_id: "node-local".to_string(),
-                        api_address: "127.0.0.1:50051".to_string(),
+                        cluster_address: "127.0.0.1:50051".to_string(),
                         app_name: "live".to_string(),
                         user_id: "user1".to_string(),
                         started_at: synctv_core::SystemClock.now(),
@@ -1308,7 +1308,7 @@ mod tests {
                     ("room1".to_string(), "media1".to_string()),
                     PublisherInfo {
                         node_id: "node-local".to_string(),
-                        api_address: "127.0.0.1:50051".to_string(),
+                        cluster_address: "127.0.0.1:50051".to_string(),
                         app_name: "live".to_string(),
                         user_id: "user1".to_string(),
                         started_at: synctv_core::SystemClock.now(),
@@ -1319,7 +1319,7 @@ mod tests {
                     ("room2".to_string(), "media2".to_string()),
                     PublisherInfo {
                         node_id: "node-local".to_string(),
-                        api_address: "127.0.0.1:50051".to_string(),
+                        cluster_address: "127.0.0.1:50051".to_string(),
                         app_name: "live".to_string(),
                         user_id: "user1".to_string(),
                         started_at: synctv_core::SystemClock.now(),
@@ -1388,7 +1388,7 @@ mod tests {
                     ("room1".to_string(), "media1".to_string()),
                     PublisherInfo {
                         node_id: "node-local".to_string(),
-                        api_address: "127.0.0.1:50051".to_string(),
+                        cluster_address: "127.0.0.1:50051".to_string(),
                         app_name: "live".to_string(),
                         user_id: "user1".to_string(),
                         started_at: synctv_core::SystemClock.now(),
@@ -1399,7 +1399,7 @@ mod tests {
                     ("room2".to_string(), "media2".to_string()),
                     PublisherInfo {
                         node_id: "node-remote".to_string(),
-                        api_address: "127.0.0.1:50052".to_string(),
+                        cluster_address: "127.0.0.1:50052".to_string(),
                         app_name: "live".to_string(),
                         user_id: "user1".to_string(),
                         started_at: synctv_core::SystemClock.now(),
@@ -1443,7 +1443,7 @@ mod tests {
                 ("room1".to_string(), "media1".to_string()),
                 PublisherInfo {
                     node_id: "node-remote".to_string(),
-                    api_address: "127.0.0.1:50052".to_string(),
+                    cluster_address: "127.0.0.1:50052".to_string(),
                     app_name: "live".to_string(),
                     user_id: "user1".to_string(),
                     started_at: synctv_core::SystemClock.now(),

@@ -21,7 +21,7 @@ Production monitoring covers request handling, external dependencies, authentica
 Main service readiness:
 
 ```bash
-curl -fsS http://localhost:8080/health/ready
+curl -fsS http://localhost:8081/health/ready
 ```
 
 Probe requirements:
@@ -60,20 +60,26 @@ Production requirements:
 
 ## Logs
 
-Use JSON logs in production:
+Service logs use text by default:
 
 ```yaml
-logging:
-  level: "info"
-  format: "json"
+server:
+  logging:
+    level: "info"
+    format: "text"
+    output: stdout
+    color: auto
 ```
 
 For troubleshooting:
 
 ```yaml
-logging:
-  level: "debug"
-  filter: "synctv=debug,tower_http=info"
+server:
+  logging:
+    level: "debug"
+    format: "text"
+    output: stdout
+    color: auto
 ```
 
 Notes:
@@ -88,6 +94,7 @@ Notes:
 - **Authentication**: Login failures, MFA failures, email send failures, OAuth2 state errors, and brute-force lockouts.
 - **Realtime**: WebSocket connections, per-user/per-room limits, message rate limiting, and reconnect spikes.
 - **Media**: Provider error rate, upstream timeouts, proxy bypass, slice-cache hit rate, Range anomalies, and livestream retries.
+- **Logging**: `logging_dropped_lines_total{component=...}` should remain at zero; an increase means that component's non-blocking queue reached capacity.
 
 ## Alert Starting Points
 
@@ -99,6 +106,7 @@ Notes:
 | WebSocket disconnect spike | Ingress timeout, rolling update, low connection limits | Ingress timeout, shutdown drain, connection limits |
 | Provider errors spike | Upstream unavailable, header mismatch, expired credential | Provider config, proxy headers, upstream response |
 | Redis errors | Redis restart, network issue, Sentinel misconfiguration | Redis logs, `redis.deployment_mode`, connection URL |
+| `logging_dropped_lines_total` increases | Log sink is slow or a component produces logs faster than its sink can drain | Component log level, disk/collector latency, component output configuration |
 
 ## Incident Data Collection
 

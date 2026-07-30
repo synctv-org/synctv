@@ -126,7 +126,7 @@ impl SliceCacheManagementRemoteClient for ApiSliceCacheManagementRemoteClient {
     ) -> SliceCacheManagementResult<SliceCacheStatsNode> {
         let mut request = Request::new(synctv_proxy::grpc::GetSliceCacheStatsRequest {});
         attach_slice_cache_cluster_secret(&mut request, &self.runtime_settings.cluster.secret)?;
-        let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
+        let mut client = self.proxy_slice_cache_client(&node.cluster_address).await?;
         client
             .get_slice_cache_stats(request)
             .await
@@ -143,7 +143,7 @@ impl SliceCacheManagementRemoteClient for ApiSliceCacheManagementRemoteClient {
     ) -> SliceCacheManagementResult<SliceCachePurgeNodeResult> {
         let mut request = Request::new(synctv_proxy::grpc::PurgeSliceCacheRequest {});
         attach_slice_cache_cluster_secret(&mut request, &self.runtime_settings.cluster.secret)?;
-        let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
+        let mut client = self.proxy_slice_cache_client(&node.cluster_address).await?;
         client
             .purge_slice_cache(request)
             .await
@@ -160,7 +160,7 @@ impl SliceCacheManagementRemoteClient for ApiSliceCacheManagementRemoteClient {
     ) -> SliceCacheManagementResult<SliceCacheEvictExpiredNodeResult> {
         let mut request = Request::new(synctv_proxy::grpc::EvictExpiredSliceCacheRequest {});
         attach_slice_cache_cluster_secret(&mut request, &self.runtime_settings.cluster.secret)?;
-        let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
+        let mut client = self.proxy_slice_cache_client(&node.cluster_address).await?;
         client
             .evict_expired_slice_cache(request)
             .await

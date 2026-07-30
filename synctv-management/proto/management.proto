@@ -1139,7 +1139,7 @@ message ServerStateRedis {
 
 message ServerStateClusterNode {
     string node_id = 1;
-    string api_address = 2;
+    string cluster_address = 2;
     int64 last_heartbeat = 3;
     uint64 epoch = 4;
 }

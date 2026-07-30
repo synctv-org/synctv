@@ -52,7 +52,8 @@ PostgreSQL 是持久业务数据源。Redis 是共享短期状态和集群协调
 
 | 入口 | 默认端口或路径 | 作用 | 生产处理 |
 | --- | --- | --- | --- |
-| HTTP REST | `server.port=8080` | 客户端业务 API、健康检查、OpenAPI UI | 通过反向代理或 Ingress 暴露 |
+| HTTP REST | `server.port=8080` | 客户端业务 API 和 OpenAPI UI | 通过反向代理或 Ingress 暴露 |
+| 健康检查 | `health.port=8081` | 存活和就绪探针 | 仅对集群或本机开放 |
 | 公开 gRPC | `server.port=8080` | 客户端或 SDK 使用的 gRPC API | Kubernetes 中使用独立 Service 和独立 Ingress |
 | WebSocket | `server.port=8080` | 房间实时事件、播放同步、聊天等长连接 | 配置连接限制和合理 shutdown drain |
 | management gRPC | Unix socket 或 `management.port=50052` | CLI、管理命令、运维控制面 | 优先 Unix socket；TCP 必须配置 token |

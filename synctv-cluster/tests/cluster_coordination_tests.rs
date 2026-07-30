@@ -23,7 +23,7 @@ fn make_registry(node_id: &str) -> Arc<NodeRegistry> {
 async fn test_node_info_serialization() {
     let node = NodeInfo {
         node_id: "node-123".to_string(),
-        api_address: "127.0.0.1:8080".to_string(),
+        cluster_address: "127.0.0.1:50051".to_string(),
         epoch: 0,
         last_heartbeat: chrono::Utc::now(),
         metadata: Default::default(),
@@ -33,7 +33,7 @@ async fn test_node_info_serialization() {
     let deserialized: NodeInfo = serde_json::from_str(&json).expect("Failed to deserialize");
 
     assert_eq!(node.node_id, deserialized.node_id);
-    assert_eq!(node.api_address, deserialized.api_address);
+    assert_eq!(node.cluster_address, deserialized.cluster_address);
     assert_eq!(node.epoch, deserialized.epoch);
 }
 
@@ -45,7 +45,7 @@ async fn test_node_registry_register_and_get() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:8080".to_string(),
+            "localhost:50051".to_string(),
         ))
         .await;
 
@@ -53,7 +53,7 @@ async fn test_node_registry_register_and_get() {
     assert!(node.is_some());
     let node = node.unwrap();
     assert_eq!(node.node_id, "self");
-    assert_eq!(node.api_address, "localhost:8080");
+    assert_eq!(node.cluster_address, "localhost:50051");
 }
 
 #[tokio::test]
@@ -62,7 +62,7 @@ async fn test_node_registry_concurrent_registration() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:8080".to_string(),
+            "localhost:50051".to_string(),
         ))
         .await;
 
@@ -89,7 +89,7 @@ async fn test_node_registry_unregister() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:8080".to_string(),
+            "localhost:50051".to_string(),
         ))
         .await;
 
@@ -109,7 +109,7 @@ async fn test_node_registry_get_nonexistent() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:8080".to_string(),
+            "localhost:50051".to_string(),
         ))
         .await;
 
@@ -144,7 +144,7 @@ async fn test_load_balancer_single_node() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:8080".to_string(),
+            "localhost:50051".to_string(),
         ))
         .await;
 
@@ -159,7 +159,7 @@ async fn test_load_balancer_round_robin_cycles() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:8080".to_string(),
+            "localhost:50051".to_string(),
         ))
         .await;
 
@@ -198,7 +198,7 @@ async fn test_load_balancer_random_distributes() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:8080".to_string(),
+            "localhost:50051".to_string(),
         ))
         .await;
 
@@ -226,7 +226,7 @@ async fn test_load_balancer_with_health_monitor_no_status() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:8080".to_string(),
+            "localhost:50051".to_string(),
         ))
         .await;
 
@@ -252,7 +252,7 @@ async fn test_load_balancer_available_count() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:8080".to_string(),
+            "localhost:50051".to_string(),
         ))
         .await;
 
@@ -271,7 +271,7 @@ async fn test_load_balancer_select_by_id() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:8080".to_string(),
+            "localhost:50051".to_string(),
         ))
         .await;
 

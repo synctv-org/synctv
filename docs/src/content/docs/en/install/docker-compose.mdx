@@ -61,7 +61,7 @@ Inspect the containers and request the readiness endpoint:
 
 ```bash
 make compose-ps
-curl -fsS http://localhost:8080/health/ready
+curl -fsS http://localhost:8081/health/ready
 ```
 
 Open `http://localhost:8080` in a browser. The default root username is `root`; the password comes from `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` in `.env.synctv`.
@@ -99,7 +99,8 @@ Default exposed ports:
 
 | Host port | Container port | Purpose |
 | --- | --- | --- |
-| `8080` | `8080` | HTTP REST + gRPC + health checks |
+| `8080` | `8080` | HTTP REST + gRPC |
+| `8081` | `8081` | Health checks |
 | `1935` | `1935` | RTMP |
 | `3478/udp` | `3478/udp` | STUN |
 

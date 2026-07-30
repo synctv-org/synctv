@@ -12,7 +12,7 @@ use super::registry_trait::{
     PUBLISHER_REFRESH_BATCH_SIZE,
 };
 use crate::util::{
-    validate_publisher_api_address, validate_stream_id_component, validate_stream_ids,
+    validate_publisher_cluster_address, validate_stream_id_component, validate_stream_ids,
 };
 
 /// Heartbeat interval in seconds for publisher liveness.
@@ -303,14 +303,13 @@ const _: () = assert!(
 pub struct PublisherInfo {
     /// Node ID of the publisher
     pub node_id: String,
-    /// Shared API address of the publisher node (e.g., "10.0.0.1:8080").
-    /// Used by pull streams to connect to the publisher over gRPC on the
-    /// shared single-port listener.
+    /// Dedicated cluster listener address of the publisher node
+    /// (e.g., "10.0.0.1:50051").
+    /// Used by pull streams to connect to internal relay services over gRPC.
     ///
     /// **Must not be empty** when the publisher is used for cross-node proxying.
-    /// Use [`PublisherInfo::validate_api_address`] before connecting.
-    #[serde(default)]
-    pub api_address: String,
+    /// Use [`PublisherInfo::validate_cluster_address`] before connecting.
+    pub cluster_address: String,
     /// RTMP app name
     pub app_name: String,
     /// User ID of the publisher (for reverse-index lookups)
@@ -326,19 +325,18 @@ pub struct PublisherInfo {
 }
 
 impl PublisherInfo {
-    /// Validate that `api_address` is set and non-empty.
+    /// Validate that `cluster_address` is set and non-empty.
     ///
     /// Returns `Err` if the address is empty, which would happen if the publisher
-    /// registered without configuring its shared API listen address
-    /// (misconfiguration).
-    pub fn validate_api_address(&self) -> Result<&str> {
-        if self.api_address.trim().is_empty() {
+    /// registered without configuring its advertised cluster address.
+    pub fn validate_cluster_address(&self) -> Result<&str> {
+        if self.cluster_address.trim().is_empty() {
             return Err(anyhow!(
-                "PublisherInfo for node={} has empty api_address (room/media stream cannot be proxied)",
+                "PublisherInfo for node={} has empty cluster_address (room/media stream cannot be proxied)",
                 self.node_id
             ));
         }
-        Ok(&self.api_address)
+        Ok(&self.cluster_address)
     }
 }
 
@@ -347,12 +345,12 @@ impl PublisherInfo {
 /// **Role**: Publisher Ownership -- enforces single-publisher-per-media and provides
 /// publisher discovery for cross-node gRPC relay. Used by the livestream layer to:
 /// 1. Atomically register a publisher (prevents duplicate publishers for the same media)
-/// 2. Look up the publisher's node/API address for cross-node relay
+/// 2. Look up the publisher's cluster address for cross-node relay
 /// 3. Manage publisher TTL via heartbeat for crash detection
 ///
 /// **Distinction from realtime room/connection state**:
 /// - This registry tracks *publisher ownership* (who is publishing, on which node,
-///   with what API address, at what epoch) using `room_id/media_id` keys.
+///   with what cluster address, at what epoch) using `room_id/media_id` keys.
 /// - Realtime room/connection state tracks websocket presence and fan-out
 ///   delivery, not livestream publisher ownership.
 /// - Both use Redis; this one is Redis-only (no local cache) because publisher
@@ -545,18 +543,18 @@ impl StreamRegistry {
     ///
     /// # Errors
     ///
-    /// Returns an error if `api_address` is empty, as cross-node proxying requires
-    /// a valid shared API address.
+    /// Returns an error if `cluster_address` is empty, as cross-node proxying requires
+    /// a valid cluster listener address.
     pub async fn try_register_publisher_with_user(
         &self,
         room_id: &str,
         media_id: &str,
         node_id: &str,
         user_id: &str,
-        api_address: &str,
+        cluster_address: &str,
     ) -> anyhow::Result<bool> {
         validate_stream_ids(room_id, media_id)?;
-        validate_publisher_api_address(api_address, node_id, room_id, media_id)?;
+        validate_publisher_cluster_address(cluster_address, node_id, room_id, media_id)?;
 
         let key = self.publisher_key(room_id, media_id);
         let epoch_key = self.epoch_key(room_id, media_id);
@@ -565,7 +563,7 @@ impl StreamRegistry {
         // Create PublisherInfo template (epoch will be filled by Lua script)
         let info = PublisherInfo {
             node_id: node_id.to_string(),
-            api_address: api_address.to_string(),
+            cluster_address: cluster_address.to_string(),
             app_name: "live".to_string(),
             user_id: user_id.to_string(),
             started_at: synctv_core::SystemClock.now(),
@@ -1236,7 +1234,7 @@ mod tests {
         let publisher = registry.get_publisher("room123", "media456").await?;
         let pub_info = require_publisher(publisher)?;
         assert_eq!(pub_info.node_id, "node1");
-        assert_eq!(pub_info.api_address, "localhost:50051");
+        assert_eq!(pub_info.cluster_address, "localhost:50051");
 
         registry.unregister_publisher("room123", "media456").await?;
         Ok(())
@@ -1741,7 +1739,7 @@ mod tests {
         let publisher = require_publisher(registry.get_publisher("room123", "media456").await?)?;
 
         assert_eq!(publisher.node_id, "node1");
-        assert_eq!(publisher.api_address, "localhost:50051");
+        assert_eq!(publisher.cluster_address, "localhost:50051");
         assert!(publisher.started_at <= synctv_core::SystemClock.now());
 
         registry.unregister_publisher("room123", "media456").await?;

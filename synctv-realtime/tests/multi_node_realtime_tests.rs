@@ -170,7 +170,7 @@ async fn test_node_discovery_three_nodes() {
         .expect("Node B not found");
 
     assert_eq!(node_b_info.node_id, "node_b");
-    assert_eq!(node_b_info.api_address, "node_b:8080");
+    assert_eq!(node_b_info.cluster_address, "node_b:8080");
     assert!(node_b_info.epoch >= 1, "Epoch should be at least 1");
 
     // Heartbeat should work

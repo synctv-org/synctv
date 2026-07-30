@@ -173,21 +173,46 @@ Container deployments usually use `/data` and mount it as a volume.
 
 | Field | Default | Purpose |
 | --- | --- | --- |
-| `logging.level` | `info` | Log level |
-| `logging.format` | `pretty` | Human-readable or JSON logs |
-| `logging.filter` | `null` | Advanced tracing filter |
-| `logging.backtrace` | `false` | Include backtraces when useful |
-| `logging.file_path` | `null` | Optional file output |
+| `<component>.logging.level` | `info` (`warn` for metrics/cluster) | Component log level |
+| `<component>.logging.format` | `text` | Component log format (`text` or `json`) |
+| `<component>.logging.output` | `stdout` | Independent `stdout`, `stderr`, or file output |
+| `<component>.logging.color` | `auto` | `auto`, `always`, or `never` |
 
 Use `json` in Kubernetes or log aggregation systems:
 
 ```yaml
-logging:
-  level: "info"
-  format: "json"
+server:
+  logging:
+    level: "info"
+    format: "text"
+    output: stdout
+    color: auto
+
+health:
+  logging:
+    level: "info"
+    format: "json"
+    output: stdout
+    color: never
+
+metrics:
+  logging:
+    level: "warn"
+    format: "json"
+    output:
+      type: file
+      path: "logs/metrics.log"
+      rotation:
+        strategy: daily
+        max_files: 30
+    color: never
 ```
 
-Relative `logging.file_path` values are resolved under `data_dir`. Containers usually should log to stdout instead of files.
+`server`, `health`, `metrics`, `cluster`, and `management` each build an independent
+logging layer. Their levels, formats, outputs, and file rotation settings apply
+independently. Relative component log paths resolve under `data_dir`.
+`rotation.max_files` limits retained files per component and defaults to 30.
+Containers usually write component logs to stdout.
 
 ## Management Endpoint
 

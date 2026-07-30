@@ -36,7 +36,7 @@ Run these checks after changing configuration:
 ```bash
 synctv config validate
 synctv config show --output yaml
-curl -fsS http://localhost:8080/health/ready
+curl -fsS http://localhost:8081/health/ready
 ```
 
 ## Single-node Production Focus
@@ -94,7 +94,7 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | Field | Type / values | Default | Meaning |
 | --- | --- | --- | --- |
 | `server.host` | IP/listen address | `0.0.0.0` | Main API listen address |
-| `server.port` | port | `8080` | HTTP REST, public gRPC, and health-check port |
+| `server.port` | port | `8080` | HTTP REST and public gRPC listen port |
 | `server.enable_reflection` | boolean | `false` | Enable public gRPC reflection |
 | `server.trusted_proxies` | string array | `[]` | Trusted reverse proxy IPs/CIDRs |
 | `server.cors_allowed_origins` | string array | `[]` | Frontend origins allowed by startup CORS |
@@ -102,6 +102,14 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `server.shutdown_drain_timeout_seconds` | seconds | `30` | Graceful shutdown drain timeout |
 | `server.grpc_max_message_size_bytes` | bytes | `16777216` | Maximum gRPC message size |
 | `server.grpc_compression_enabled` | boolean | `true` | Allow gRPC gzip compression negotiation |
+
+## `health`
+
+| Field | Type / values | Default | Meaning |
+| --- | --- | --- | --- |
+| `health.enabled` | boolean | `true` | Enable the dedicated health listener |
+| `health.host` | IP/listen address | `127.0.0.1` | Health listener address |
+| `health.port` | port | `8081` | Health listener port for liveness and readiness endpoints |
 
 ## `time`, `public_ids`, and `security`
 
@@ -197,11 +205,12 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `jwt.refresh_token_duration_days` | days | `30` | Refresh-token lifetime |
 | `jwt.guest_token_duration_hours` | hours | `4` | Guest-token lifetime |
 | `jwt.clock_skew_leeway_secs` | seconds | `60` | Token timestamp skew allowance |
-| `logging.level` | `error`, `warn`, `info`, `debug`, or `trace` | `info` | Log level |
-| `logging.format` | `pretty` or `json` | `pretty` | Log format |
-| `logging.filter` | tracing filter string or null | `null` | Advanced module-level log filter |
-| `logging.backtrace` | boolean | `false` | Emit backtraces |
-| `logging.file_path` | file path or null | `null` | Log file path |
+| `<component>.logging.level` | `error`, `warn`, `info`, `debug`, or `trace` | `info` (`warn` for metrics/cluster) | Component log level |
+| `<component>.logging.format` | `text` or `json` | `text` | Component log format |
+| `<component>.logging.output` | `stdout`, `stderr`, or a file object | `stdout` | Independent component output |
+| `<component>.logging.output.rotation.strategy` | `daily`, `hourly`, or `never` | `daily` | File rotation period |
+| `<component>.logging.output.rotation.max_files` | positive integer | `30` | Files retained per component |
+| `<component>.logging.color` | `auto`, `always`, or `never` | `auto` | Component color output |
 
 ## `livestream`
 
@@ -345,6 +354,10 @@ file_storage:
 | `bootstrap.root_username` | string | `root` | Initial root username |
 | `bootstrap.root_password` | secret string | `""` | Initial root password |
 | `cluster.enabled` | boolean | `false` | Enable cluster mode |
+| `cluster.host` | IP/listen address | `0.0.0.0` | Dedicated internal gRPC listen address |
+| `cluster.port` | port | `50051` | Dedicated internal gRPC listen port |
+| `cluster.advertise_host` | hostname or IP | `""` | Internal address advertised to peers; empty uses `server.advertise_host` |
+| `cluster.advertise_port` | port or `0` | `0` | Internal port advertised to peers; `0` uses `cluster.port` |
 | `cluster.secret` | secret string | `""` | Authentication secret for internal cluster gRPC |
 | `cluster.secret_file` | file path or empty | `""` | File containing the internal cluster request authentication secret |
 | `cluster.critical_channel_capacity` | integer | `10000` | High-priority cluster event queue capacity |

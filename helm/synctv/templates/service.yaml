@@ -33,6 +33,25 @@ spec:
   sessionAffinity: {{ .Values.service.sessionAffinity }}
   {{- end }}
 ---
+{{- if .Values.config.health.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "synctv.fullname" . }}-health
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: health
+spec:
+  type: ClusterIP
+  ports:
+    - name: health
+      port: {{ .Values.config.health.port | default 8081 }}
+      targetPort: health
+      protocol: TCP
+  selector:
+    {{- include "synctv.appSelectorLabels" . | nindent 4 }}
+{{- end }}
+---
 {{- if .Values.rtmpService.enabled }}
 apiVersion: v1
 kind: Service

@@ -52,7 +52,8 @@ PostgreSQL is durable business state. Redis is shared short-lived state and coor
 
 | Surface | Default port or path | Purpose | Production guidance |
 | --- | --- | --- | --- |
-| HTTP REST | `server.port=8080` | Client API, health checks, OpenAPI UI | Expose through a reverse proxy or Ingress |
+| HTTP REST | `server.port=8080` | Client API and OpenAPI UI | Expose through a reverse proxy or Ingress |
+| Health | `health.port=8081` | Liveness and readiness probes | Keep private to the cluster or local host |
 | Public gRPC | `server.port=8080` | gRPC API for clients or SDKs | Use a separate Kubernetes Service and Ingress |
 | WebSocket | `server.port=8080` | Room realtime events, playback sync, chat | Configure connection limits and shutdown drain |
 | Management gRPC | Unix socket or `management.port=50052` | CLI, administration, operational control plane | Prefer Unix socket; TCP requires a token |

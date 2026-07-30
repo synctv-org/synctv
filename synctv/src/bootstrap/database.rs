@@ -519,8 +519,14 @@ mod tests {
     #[test]
     fn effective_log_level_uses_synctv_config_for_database_policy() {
         let logging = LoggingOptions {
-            level: "debug".to_string(),
-            ..LoggingOptions::default()
+            components: vec![synctv_core::logging::ComponentLoggingOptions {
+                name: "server".to_string(),
+                level: "debug".to_string(),
+                targets: Vec::new(),
+                format: "text".to_string(),
+                output: synctv_core::logging::LogOutput::Stdout,
+                color: synctv_core::logging::LogColor::Auto,
+            }],
         };
 
         let effective = synctv_core::logging::effective_log_level(&logging)
@@ -623,7 +629,6 @@ mod tests {
                 ..DatabasePoolOptions::default()
             },
             logging: LoggingOptions {
-                level: "info".to_string(),
                 ..LoggingOptions::default()
             },
         };
@@ -669,7 +674,6 @@ mod tests {
                 ..DatabasePoolOptions::default()
             },
             logging: LoggingOptions {
-                level: "info".to_string(),
                 ..LoggingOptions::default()
             },
         };

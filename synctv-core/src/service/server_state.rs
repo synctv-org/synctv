@@ -312,7 +312,7 @@ pub struct ServerStateWebRtc {
 #[serde(rename_all = "camelCase")]
 pub struct ServerStateClusterNode {
     pub node_id: String,
-    pub api_address: String,
+    pub cluster_address: String,
     pub last_heartbeat: i64,
     pub epoch: u64,
 }
@@ -349,7 +349,7 @@ pub struct ServerStateFailure {
 #[derive(Debug, Clone)]
 pub struct ServerStateClusterTarget {
     pub node_id: String,
-    pub api_address: String,
+    pub cluster_address: String,
     pub last_heartbeat: i64,
     pub epoch: u64,
 }
@@ -798,7 +798,7 @@ impl ServerStateService {
             .into_iter()
             .map(|node| ServerStateClusterNode {
                 node_id: node.node_id,
-                api_address: node.api_address,
+                cluster_address: node.cluster_address,
                 last_heartbeat: node.last_heartbeat,
                 epoch: node.epoch,
             })

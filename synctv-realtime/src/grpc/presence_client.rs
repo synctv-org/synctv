@@ -185,12 +185,12 @@ impl RealtimePresenceClient {
 
         let mut pending_nodes = remote_nodes
             .iter()
-            .map(|node| (node.node_id.clone(), node.api_address.clone()))
+            .map(|node| (node.node_id.clone(), node.cluster_address.clone()))
             .collect::<HashMap<_, _>>();
         let mut futs = stream::iter(remote_nodes.iter())
             .map(|node| {
                 let node_id = node.node_id.clone();
-                let address = node.api_address.clone();
+                let address = node.cluster_address.clone();
                 let fut = query_fn(node_id.clone(), address.clone());
                 async move { (node_id, address, fut.await) }
             })

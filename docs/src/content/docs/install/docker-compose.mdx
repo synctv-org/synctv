@@ -61,7 +61,7 @@ import {
 
 ```bash
 make compose-ps
-curl -fsS http://localhost:8080/health/ready
+curl -fsS http://localhost:8081/health/ready
 ```
 
 浏览器打开 `http://localhost:8080`。默认 root 用户名是 `root`，密码来自 `.env.synctv` 里的 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`。
@@ -99,7 +99,8 @@ SYNCTV_DATA_DIR=/data
 
 | 宿主端口 | 容器端口 | 用途 |
 | --- | --- | --- |
-| `8080` | `8080` | HTTP REST + gRPC + 健康检查 |
+| `8080` | `8080` | HTTP REST + gRPC |
+| `8081` | `8081` | 健康检查 |
 | `1935` | `1935` | RTMP |
 | `3478/udp` | `3478/udp` | STUN |
 

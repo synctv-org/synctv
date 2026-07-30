@@ -3,7 +3,6 @@ use super::*;
 pub(super) async fn execute_db(db_command: DbCommand) -> Result<()> {
     let context = CliConfigContext::new(db_command.global.clone());
     let config = context.validated_config()?;
-    crate::install_panic_hook(config.logging.backtrace);
     let _log_guard =
         synctv_core::logging::init_logging(&crate::resource_options::logging_options(&config))?;
 

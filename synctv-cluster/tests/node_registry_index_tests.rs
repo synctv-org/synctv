@@ -67,7 +67,7 @@ async fn test_heartbeat_restores_missing_node_index_membership() {
     .unwrap();
 
     registry
-        .register("127.0.0.1:8080".to_string())
+        .register("127.0.0.1:50051".to_string())
         .await
         .expect("register should succeed");
 
@@ -125,7 +125,7 @@ async fn test_node_index_uses_crash_safety_ttl() {
     .unwrap();
 
     registry
-        .register("127.0.0.1:8080".to_string())
+        .register("127.0.0.1:50051".to_string())
         .await
         .expect("register should succeed");
 

@@ -205,7 +205,7 @@ impl RecreateOnReregisterRegistry {
         Self {
             publisher: tokio::sync::Mutex::new(Some(PublisherInfo {
                 node_id: "test-node".to_string(),
-                api_address: "addr1".to_string(),
+                cluster_address: "addr1".to_string(),
                 app_name: "live".to_string(),
                 user_id: "user1".to_string(),
                 started_at: synctv_core::SystemClock.now(),
@@ -227,7 +227,7 @@ impl StreamRegistryTrait for RecreateOnReregisterRegistry {
         _media_id: &str,
         node_id: &str,
         user_id: &str,
-        api_address: &str,
+        cluster_address: &str,
     ) -> Result<bool> {
         let mut publisher = self.publisher.lock().await;
         if self
@@ -243,7 +243,7 @@ impl StreamRegistryTrait for RecreateOnReregisterRegistry {
             let epoch = self.next_epoch.fetch_add(1, Ordering::AcqRel);
             *publisher = Some(PublisherInfo {
                 node_id: node_id.to_string(),
-                api_address: api_address.to_string(),
+                cluster_address: cluster_address.to_string(),
                 app_name: "live".to_string(),
                 user_id: user_id.to_string(),
                 started_at: synctv_core::SystemClock.now(),
@@ -259,7 +259,7 @@ impl StreamRegistryTrait for RecreateOnReregisterRegistry {
         let epoch = self.next_epoch.fetch_add(1, Ordering::AcqRel);
         *publisher = Some(PublisherInfo {
             node_id: node_id.to_string(),
-            api_address: api_address.to_string(),
+            cluster_address: cluster_address.to_string(),
             app_name: "live".to_string(),
             user_id: user_id.to_string(),
             started_at: synctv_core::SystemClock.now(),
@@ -486,7 +486,7 @@ async fn test_reregister_refreshes_local_epoch_after_registry_recreate() -> Test
         tx,
         Arc::new(AtomicBool::new(false)),
     )
-    .with_api_address("addr1".to_string());
+    .with_cluster_address("addr1".to_string());
     manager.active_publishers.insert(
         "room-reregister:media-reregister".to_string(),
         Arc::new(PublisherEntry::with_registration("user1".to_string(), 1)),
@@ -531,7 +531,7 @@ async fn test_reregister_refreshes_local_epoch_after_ttl_only_recovery() -> Test
         tx,
         Arc::new(AtomicBool::new(false)),
     )
-    .with_api_address("addr1".to_string());
+    .with_cluster_address("addr1".to_string());
     manager.active_publishers.insert(
         "room-reregister:media-reregister".to_string(),
         Arc::new(PublisherEntry::with_registration("user1".to_string(), 1)),
@@ -578,7 +578,7 @@ async fn test_reregister_recreates_entry_when_ttl_refresh_reports_missing() -> T
         tx,
         Arc::new(AtomicBool::new(false)),
     )
-    .with_api_address("addr1".to_string());
+    .with_cluster_address("addr1".to_string());
     manager.active_publishers.insert(
         "room-reregister:media-reregister".to_string(),
         Arc::new(PublisherEntry::with_registration("user1".to_string(), 1)),
@@ -1062,7 +1062,7 @@ async fn test_start_stops_heartbeat_and_sync_when_broadcast_channel_closes() -> 
             ("room1".to_string(), "media1".to_string()),
             PublisherInfo {
                 node_id: "test-node".to_string(),
-                api_address: "127.0.0.1:50051".to_string(),
+                cluster_address: "127.0.0.1:50051".to_string(),
                 app_name: "live".to_string(),
                 user_id: "user1".to_string(),
                 started_at: synctv_core::SystemClock.now(),

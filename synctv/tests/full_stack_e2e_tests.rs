@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
-use std::sync::Once;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -87,8 +87,8 @@ impl CipherSuite for TestOpaqueCipherSuite {
     type Ksf = OpaqueArgon2Ksf<'static>;
 }
 
-fn reserve_local_ports() -> (u16, u16, u16) {
-    let listeners: [_; 3] =
+fn reserve_local_ports() -> (u16, u16, u16, u16) {
+    let listeners: [_; 4] =
         std::array::from_fn(|_| TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port"));
     let mut ports = listeners
         .iter()
@@ -97,6 +97,7 @@ fn reserve_local_ports() -> (u16, u16, u16) {
         ports.next().expect("API port"),
         ports.next().expect("management port"),
         ports.next().expect("RTMP port"),
+        ports.next().expect("health port"),
     )
 }
 
@@ -367,6 +368,7 @@ fn test_config(
     api_port: u16,
     management_port: u16,
     rtmp_port: u16,
+    health_port: u16,
 ) -> Config {
     let mut config = Config::default();
     config.server.host = "127.0.0.1".to_string();
@@ -375,6 +377,8 @@ fn test_config(
     config.metrics.enabled = false;
     config.server.advertise_host = "127.0.0.1".to_string();
     config.server.shutdown_drain_timeout_seconds = 3;
+    config.health.host = "127.0.0.1".to_string();
+    config.health.port = health_port;
     config.management.enabled = true;
     config.management.transport = ManagementTransport::Tcp;
     config.management.port = management_port;
@@ -484,22 +488,28 @@ fn isolated_default_management_socket_impl(
     )
 }
 
-static TEST_LOGGING: Once = Once::new();
+static TEST_LOGGING: OnceLock<synctv_core::logging::LoggingGuards> = OnceLock::new();
 
 fn ensure_test_logging() {
-    TEST_LOGGING.call_once(|| {
+    TEST_LOGGING.get_or_init(|| {
         let logging = synctv_core::logging::LoggingOptions {
-            level: "debug".to_string(),
-            filter: Some("debug,synctv=debug,synctv_core=debug".to_string()),
-            ..Default::default()
+            components: vec![synctv_core::logging::ComponentLoggingOptions {
+                name: "server".to_string(),
+                targets: Vec::new(),
+                level: "debug".to_string(),
+                format: "text".to_string(),
+                output: synctv_core::logging::LogOutput::Stdout,
+                color: synctv_core::logging::LogColor::Auto,
+            }],
         };
         synctv_core::logging::init_logging(&logging)
-            .expect("test tracing subscriber should initialize");
+            .expect("test tracing subscriber should initialize")
     });
 }
 
 struct TestServer {
     api_base_url: String,
+    health_base_url: String,
     management_base_url: String,
     provider_probe_endpoint: String,
     provider_probe_secret: String,
@@ -569,13 +579,14 @@ async fn start_test_server() -> TestServer {
     );
 
     for attempt in 1..=3 {
-        let (api_port, management_port, rtmp_port) = reserve_local_ports();
+        let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
         let config = test_config(
             database_url.clone(),
             redis_url.clone(),
             api_port,
             management_port,
             rtmp_port,
+            health_port,
         );
 
         let provider_probe_host = PROVIDER_PROBE_HOST.to_string();
@@ -604,10 +615,11 @@ async fn start_test_server() -> TestServer {
         });
 
         let api_base_url = format!("http://127.0.0.1:{api_port}");
+        let health_base_url = format!("http://127.0.0.1:{health_port}");
         let management_base_url = format!("http://127.0.0.1:{management_port}");
 
         let startup_result: Result<(), String> = async {
-            wait_until_live_or_server_exit(&api_base_url, &startup_exit_rx).await?;
+            wait_until_live_or_server_exit(&health_base_url, &startup_exit_rx).await?;
             wait_until_grpc_ready_or_server_exit(&api_base_url, &startup_exit_rx).await?;
             wait_until_grpc_ready_or_server_exit(&management_base_url, &startup_exit_rx).await
         }
@@ -617,6 +629,7 @@ async fn start_test_server() -> TestServer {
             Ok(()) => {
                 return TestServer {
                     api_base_url,
+                    health_base_url,
                     management_base_url,
                     provider_probe_endpoint,
                     provider_probe_secret: PROVIDER_PROBE_SECRET.to_string(),
@@ -2449,7 +2462,7 @@ async fn full_stack_health_endpoints_report_live_and_ready() {
         .expect("HTTP client");
 
     let live = client
-        .get(format!("{}/health/live", server.api_base_url))
+        .get(format!("{}/health/live", server.health_base_url))
         .send()
         .await
         .expect("liveness request");
@@ -2458,7 +2471,7 @@ async fn full_stack_health_endpoints_report_live_and_ready() {
     assert_eq!(live_body["status"], "ok");
 
     let ready = client
-        .get(format!("{}/health/ready", server.api_base_url))
+        .get(format!("{}/health/ready", server.health_base_url))
         .send()
         .await
         .expect("readiness request");
@@ -5404,7 +5417,7 @@ async fn full_stack_cli_system_stats_uses_management_unix_socket_via_env_without
     let (postgres, database_url) =
         create_test_database_url_with_label("synctv_e2e_unix", "full-stack-management-unix").await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-management-unix").await;
-    let (api_port, management_port, rtmp_port) = reserve_local_ports();
+    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
     let socket_dir = tempfile::tempdir().expect("temp dir should be created");
     let socket_path = socket_dir.path().join("management.sock");
 
@@ -5414,6 +5427,7 @@ async fn full_stack_cli_system_stats_uses_management_unix_socket_via_env_without
         api_port,
         management_port,
         rtmp_port,
+        health_port,
     );
     configure_management_unix_socket(&mut config, &socket_path);
 
@@ -5435,8 +5449,8 @@ async fn full_stack_cli_system_stats_uses_management_unix_socket_via_env_without
         .await
     });
 
-    let api_base_url = format!("http://127.0.0.1:{api_port}");
-    wait_until_live_or_server_exit(&api_base_url, &startup_exit_rx)
+    let health_base_url = format!("http://127.0.0.1:{health_port}");
+    wait_until_live_or_server_exit(&health_base_url, &startup_exit_rx)
         .await
         .expect("unix management server should become live");
     wait_until_unix_grpc_ready_or_server_exit(&socket_path, &startup_exit_rx)
@@ -5490,7 +5504,7 @@ async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without
     let (postgres, database_url) =
         create_test_database_url_with_label(&database_name, &container_label).await;
     let (redis, redis_url) = start_redis_url_with_label(&container_label).await;
-    let (api_port, management_port, rtmp_port) = reserve_local_ports();
+    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
 
     let mut config = test_config(
         database_url,
@@ -5498,6 +5512,7 @@ async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without
         api_port,
         management_port,
         rtmp_port,
+        health_port,
     );
     configure_management_unix_socket(&mut config, &default_socket_path);
     config.management.enable_reflection = false;
@@ -5520,8 +5535,8 @@ async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without
         .await
     });
 
-    let api_base_url = format!("http://127.0.0.1:{api_port}");
-    wait_until_live_or_server_exit(&api_base_url, &startup_exit_rx)
+    let health_base_url = format!("http://127.0.0.1:{health_port}");
+    wait_until_live_or_server_exit(&health_base_url, &startup_exit_rx)
         .await
         .expect("default unix management server should become live");
     wait_until_unix_grpc_ready_or_server_exit(&default_socket_path, &startup_exit_rx)
@@ -5571,7 +5586,7 @@ async fn full_stack_cli_system_stats_reads_management_unix_socket_auth_token_fro
     )
     .await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-management-unix-auth").await;
-    let (api_port, management_port, rtmp_port) = reserve_local_ports();
+    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
     let socket_dir = tempfile::tempdir().expect("temp dir should be created");
     let socket_path = socket_dir.path().join("management.sock");
     let config_path = socket_dir.path().join("synctv.yaml");
@@ -5583,6 +5598,7 @@ async fn full_stack_cli_system_stats_reads_management_unix_socket_auth_token_fro
         api_port,
         management_port,
         rtmp_port,
+        health_port,
     );
     configure_management_unix_socket_with_auth_token(
         &mut config,
@@ -5610,8 +5626,8 @@ async fn full_stack_cli_system_stats_reads_management_unix_socket_auth_token_fro
         .await
     });
 
-    let api_base_url = format!("http://127.0.0.1:{api_port}");
-    wait_until_live_or_server_exit(&api_base_url, &startup_exit_rx)
+    let health_base_url = format!("http://127.0.0.1:{health_port}");
+    wait_until_live_or_server_exit(&health_base_url, &startup_exit_rx)
         .await
         .expect("unix management auth server should become live");
     wait_until_unix_grpc_ready_or_server_exit(&socket_path, &startup_exit_rx)
@@ -5665,7 +5681,7 @@ async fn full_stack_cli_explicit_management_endpoint_does_not_implicitly_use_con
     .await;
     let (redis, redis_url) =
         start_redis_url_with_label("full-stack-management-unix-auth-explicit").await;
-    let (api_port, management_port, rtmp_port) = reserve_local_ports();
+    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
     let socket_dir = tempfile::tempdir().expect("temp dir should be created");
     let socket_path = socket_dir.path().join("management.sock");
     let config_path = socket_dir.path().join("synctv.yaml");
@@ -5677,6 +5693,7 @@ async fn full_stack_cli_explicit_management_endpoint_does_not_implicitly_use_con
         api_port,
         management_port,
         rtmp_port,
+        health_port,
     );
     configure_management_unix_socket_with_auth_token(
         &mut config,
@@ -5703,8 +5720,8 @@ async fn full_stack_cli_explicit_management_endpoint_does_not_implicitly_use_con
         .await
     });
 
-    let api_base_url = format!("http://127.0.0.1:{api_port}");
-    wait_until_live_or_server_exit(&api_base_url, &startup_exit_rx)
+    let health_base_url = format!("http://127.0.0.1:{health_port}");
+    wait_until_live_or_server_exit(&health_base_url, &startup_exit_rx)
         .await
         .expect("unix management explicit-endpoint server should become live");
     wait_until_unix_grpc_ready_or_server_exit(&socket_path, &startup_exit_rx)
@@ -5758,7 +5775,7 @@ async fn full_stack_cli_stop_gracefully_shuts_down_server_via_management_api() {
         create_test_database_url_with_label("synctv_e2e_stop_graceful", "full-stack-stop-graceful")
             .await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-stop-graceful").await;
-    let (api_port, management_port, rtmp_port) = reserve_local_ports();
+    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
     let socket_dir = tempfile::tempdir().expect("temp dir should be created");
     let socket_path = socket_dir.path().join("management.sock");
 
@@ -5768,6 +5785,7 @@ async fn full_stack_cli_stop_gracefully_shuts_down_server_via_management_api() {
         api_port,
         management_port,
         rtmp_port,
+        health_port,
     );
     configure_management_unix_socket(&mut config, &socket_path);
 
@@ -5784,8 +5802,8 @@ async fn full_stack_cli_stop_gracefully_shuts_down_server_via_management_api() {
     let (server_handle, startup_exit_rx) =
         spawn_server_task(async move { Box::pin(app.run()).await });
 
-    let api_base_url = format!("http://127.0.0.1:{api_port}");
-    wait_until_live_or_server_exit(&api_base_url, &startup_exit_rx)
+    let health_base_url = format!("http://127.0.0.1:{health_port}");
+    wait_until_live_or_server_exit(&health_base_url, &startup_exit_rx)
         .await
         .expect("graceful stop test server should become live");
     wait_until_unix_grpc_ready_or_server_exit(&socket_path, &startup_exit_rx)
@@ -5828,7 +5846,7 @@ async fn full_stack_cli_stop_gracefully_shuts_down_server_via_management_api() {
 
 #[tokio::test]
 async fn full_stack_cli_config_validate_and_show_use_explicit_config_file() {
-    let (api_port, management_port, rtmp_port) = reserve_local_ports();
+    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
     let temp_dir = tempfile::tempdir().expect("temp dir should be created");
     let config_path = temp_dir.path().join("synctv.yaml");
 
@@ -5838,6 +5856,7 @@ async fn full_stack_cli_config_validate_and_show_use_explicit_config_file() {
         api_port,
         management_port,
         rtmp_port,
+        health_port,
     );
     config.management.auth_token = "management-config-secret".to_string();
     write_cli_test_config(&config_path, &config);
@@ -5942,7 +5961,7 @@ async fn full_stack_cli_db_status_reports_migration_readiness_and_db_migrate_is_
     let (postgres, database_url) =
         create_test_database_url_with_label("synctv_e2e_db_cli", "full-stack-cli-db").await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-cli-db").await;
-    let (api_port, management_port, rtmp_port) = reserve_local_ports();
+    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
     let temp_dir = tempfile::tempdir().expect("temp dir should be created");
     let config_path = temp_dir.path().join("synctv-db-cli.yaml");
 
@@ -5952,6 +5971,7 @@ async fn full_stack_cli_db_status_reports_migration_readiness_and_db_migrate_is_
         api_port,
         management_port,
         rtmp_port,
+        health_port,
     );
     write_cli_test_config(&config_path, &config);
     postgres.recreate_as_empty_database().await;
@@ -6109,7 +6129,7 @@ async fn full_stack_cli_db_status_fails_when_migration_metadata_is_unreadable() 
     let (postgres, database_url) =
         create_test_database_url_with_label("synctv_e2e_db_cli_acl", "full-stack-cli-db-acl").await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-cli-db-acl").await;
-    let (api_port, management_port, rtmp_port) = reserve_local_ports();
+    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
     let temp_dir = tempfile::tempdir().expect("temp dir should be created");
     let config_path = temp_dir.path().join("synctv-db-cli-acl.yaml");
 
@@ -6119,6 +6139,7 @@ async fn full_stack_cli_db_status_fails_when_migration_metadata_is_unreadable() 
         api_port,
         management_port,
         rtmp_port,
+        health_port,
     );
     write_cli_test_config(&config_path, &config);
 
@@ -6173,13 +6194,14 @@ async fn full_stack_cli_db_status_fails_when_migration_metadata_is_unreadable() 
         &limited_role,
         limited_password,
     );
-    let (api_port, management_port, rtmp_port) = reserve_local_ports();
+    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
     let limited_config = test_config(
         limited_database_url,
         redis_url,
         api_port,
         management_port,
         rtmp_port,
+        health_port,
     );
     let limited_config_path = temp_dir.path().join("synctv-db-cli-acl-limited.yaml");
     write_cli_test_config(&limited_config_path, &limited_config);
@@ -6215,7 +6237,7 @@ async fn full_stack_cli_db_status_fails_when_migration_metadata_is_unreadable() 
 
 #[tokio::test]
 async fn full_stack_cli_serve_dry_run_validates_config_without_starting_listeners() {
-    let (api_port, management_port, rtmp_port) = reserve_local_ports();
+    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
     let temp_dir = tempfile::tempdir().expect("temp dir should be created");
     let config_path = temp_dir.path().join("synctv-dry-run.yaml");
 
@@ -6225,6 +6247,7 @@ async fn full_stack_cli_serve_dry_run_validates_config_without_starting_listener
         api_port,
         management_port,
         rtmp_port,
+        health_port,
     );
     write_cli_test_config(&config_path, &config);
 
@@ -6266,7 +6289,7 @@ async fn full_stack_cli_server_binary_starts_and_handles_management_commands() {
     )
     .await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-server-binary-cli").await;
-    let (api_port, management_port, rtmp_port) = reserve_local_ports();
+    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
     let temp_dir = tempfile::tempdir().expect("temp dir should be created");
     let config_path = temp_dir.path().join("synctv-server-binary.yaml");
 
@@ -6276,6 +6299,7 @@ async fn full_stack_cli_server_binary_starts_and_handles_management_commands() {
         api_port,
         management_port,
         rtmp_port,
+        health_port,
     );
     config.management.auth_token = MANAGEMENT_E2E_AUTH_TOKEN.to_string();
     write_cli_test_config(&config_path, &config);
@@ -6293,10 +6317,10 @@ async fn full_stack_cli_server_binary_starts_and_handles_management_commands() {
         temp_dir.path(),
     );
 
-    let api_base_url = format!("http://127.0.0.1:{api_port}");
+    let health_base_url = format!("http://127.0.0.1:{health_port}");
     let management_base_url = format!("http://127.0.0.1:{management_port}");
     wait_until_http_live_or_process_exit(
-        &api_base_url,
+        &health_base_url,
         &mut server_process.child,
         &server_process.stdout_log_path,
         &server_process.stderr_log_path,
@@ -6469,7 +6493,7 @@ async fn full_stack_cli_force_stop_shuts_down_server_via_management_api() {
     let (postgres, database_url) =
         create_test_database_url_with_label("synctv_e2e_stop_force", "full-stack-stop-force").await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-stop-force").await;
-    let (api_port, management_port, rtmp_port) = reserve_local_ports();
+    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
     let socket_dir = tempfile::tempdir().expect("temp dir should be created");
     let socket_path = socket_dir.path().join("management.sock");
 
@@ -6479,6 +6503,7 @@ async fn full_stack_cli_force_stop_shuts_down_server_via_management_api() {
         api_port,
         management_port,
         rtmp_port,
+        health_port,
     );
     configure_management_unix_socket(&mut config, &socket_path);
 
@@ -6495,8 +6520,8 @@ async fn full_stack_cli_force_stop_shuts_down_server_via_management_api() {
     let (server_handle, startup_exit_rx) =
         spawn_server_task(async move { Box::pin(app.run()).await });
 
-    let api_base_url = format!("http://127.0.0.1:{api_port}");
-    wait_until_live_or_server_exit(&api_base_url, &startup_exit_rx)
+    let health_base_url = format!("http://127.0.0.1:{health_port}");
+    wait_until_live_or_server_exit(&health_base_url, &startup_exit_rx)
         .await
         .expect("force stop test server should become live");
     wait_until_unix_grpc_ready_or_server_exit(&socket_path, &startup_exit_rx)

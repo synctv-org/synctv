@@ -6,7 +6,6 @@ pub(super) async fn execute_serve(args: ServeArgs) -> Result<()> {
     let public_id_config = context.public_id_config()?;
     switch_process_working_dir_to_data_dir(&config)?;
 
-    crate::install_panic_hook(config.logging.backtrace);
     let _log_guard =
         synctv_core::logging::init_logging(&crate::resource_options::logging_options(&config))?;
 

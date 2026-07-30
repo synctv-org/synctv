@@ -49,7 +49,7 @@ SYNCTV_FILE_UPLOAD_TOKEN_SECRET=...
 ```bash
 docker compose config
 docker compose up -d
-curl -fsS http://localhost:8080/health/ready
+curl -fsS http://localhost:8081/health/ready
 ```
 
 裸机、Kubernetes 或自定义 secret file 使用下面的 YAML 模板。
@@ -72,6 +72,11 @@ server:
     - "https://app.example.com"
   trusted_proxies:
     - "10.0.0.0/8"
+  logging:
+    level: "info"
+    format: "text"
+    output: stdout
+    color: auto
 
 data_dir: "/var/lib/synctv"
 
@@ -136,9 +141,15 @@ bootstrap:
   root_username: "root"
   root_password_file: "/run/secrets/bootstrap_root_password"
 
-logging:
-  level: "info"
-  format: "json"
+health:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8081
+  logging:
+    level: "info"
+    format: "text"
+    output: stdout
+    color: auto
 
 metrics:
   enabled: true
@@ -147,6 +158,11 @@ metrics:
   auth:
     mode: "bearer_token"
     bearer_token_file: "/run/secrets/metrics_bearer_token"
+  logging:
+    level: "warn"
+    format: "text"
+    output: stdout
+    color: auto
 ```
 
 这个骨架没有启用集群、WebAuthn、OAuth2、SMTP、Provider、HLS 文件存储或 slice cache 文件后端。按功能补充对应配置页。
@@ -172,6 +188,11 @@ server:
   shutdown_drain_timeout_seconds: 30
   grpc_max_message_size_bytes: 16777216
   grpc_compression_enabled: true
+  logging:
+    level: "info"
+    format: "text"
+    output: stdout
+    color: auto
 
 time:
   timezone: "Asia/Shanghai"
@@ -208,6 +229,16 @@ security:
 
 data_dir: "/var/lib/synctv"
 
+health:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8081
+  logging:
+    level: "info"
+    format: "text"
+    output: stdout
+    color: auto
+
 metrics:
   enabled: true
   host: "0.0.0.0"
@@ -227,6 +258,11 @@ metrics:
       audience: ""
       authentication_cache_ttl_seconds: 60
       authorization_cache_ttl_seconds: 60
+  logging:
+    level: "warn"
+    format: "text"
+    output: stdout
+    color: auto
 
 management:
   enabled: true
@@ -235,6 +271,11 @@ management:
   unix_socket_path: "run/synctv.sock"
   auth_token: ""
   enable_reflection: false
+  logging:
+    level: "info"
+    format: "text"
+    output: stdout
+    color: auto
 
 database:
   url: ""
@@ -273,13 +314,6 @@ jwt:
   refresh_token_duration_days: 30
   guest_token_duration_hours: 4
   clock_skew_leeway_secs: 60
-
-logging:
-  level: "info"
-  format: "json"
-  filter: null
-  backtrace: false
-  file_path: null
 
 livestream:
   rtmp_port: 1935
@@ -366,6 +400,15 @@ bootstrap:
 
 cluster:
   enabled: false
+  host: "0.0.0.0"
+  port: 50051
+  advertise_host: ""
+  advertise_port: 0
+  logging:
+    level: "warn"
+    format: "text"
+    output: stdout
+    color: auto
   secret: ""
   secret_file: ""
   critical_channel_capacity: 10000

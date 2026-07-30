@@ -163,7 +163,7 @@ impl StreamRegistryTrait for TestStreamRegistry {
         media_id: &str,
         node_id: &str,
         user_id: &str,
-        api_address: &str,
+        cluster_address: &str,
     ) -> Result<bool> {
         self.register_call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -180,7 +180,7 @@ impl StreamRegistryTrait for TestStreamRegistry {
 
             entry.insert(PublisherInfo {
                 node_id: node_id.to_string(),
-                api_address: api_address.to_string(),
+                cluster_address: cluster_address.to_string(),
                 app_name: "live".to_string(),
                 user_id: user_id.to_string(),
                 started_at: synctv_core::SystemClock.now(),
@@ -421,7 +421,7 @@ mod tests {
             ("room1".to_string(), "media1".to_string()),
             PublisherInfo {
                 node_id: "node1".to_string(),
-                api_address: String::new(),
+                cluster_address: String::new(),
                 app_name: "live".to_string(),
                 user_id: String::new(),
                 started_at: synctv_core::SystemClock.now(),

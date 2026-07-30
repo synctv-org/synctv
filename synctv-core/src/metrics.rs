@@ -935,6 +935,41 @@ pub mod task {
         });
 }
 
+/// Logging pipeline metrics.
+pub mod logging {
+    use std::{collections::HashMap, sync::Mutex};
+
+    use super::*;
+
+    /// Total log lines dropped by a full non-blocking component queue.
+    pub static LOGGING_DROPPED_LINES_TOTAL: std::sync::LazyLock<IntCounterVec> =
+        std::sync::LazyLock::new(|| {
+            int_counter_vec(
+                "logging_dropped_lines_total",
+                "Total log lines dropped by a full non-blocking queue",
+                &["component"],
+            )
+        });
+
+    static LAST_OBSERVED: std::sync::LazyLock<Mutex<HashMap<String, usize>>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    pub(crate) fn sync_dropped_lines(samples: &[(String, usize)]) {
+        let mut observed = LAST_OBSERVED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (component, current) in samples {
+            let previous = observed.entry(component.clone()).or_default();
+            let delta = current.saturating_sub(*previous);
+            let counter = LOGGING_DROPPED_LINES_TOTAL.with_label_values(&[component]);
+            if delta > 0 {
+                counter.inc_by(u64::try_from(delta).unwrap_or(u64::MAX));
+            }
+            *previous = *current;
+        }
+    }
+}
+
 /// Rate limiting operations
 pub mod rate_limit {
     use super::*;
@@ -1241,6 +1276,7 @@ pub mod tracing_spans {}
 
 /// Expose metrics in Prometheus format
 pub fn gather_metrics() -> String {
+    logging::sync_dropped_lines(&crate::logging::dropped_lines_by_component());
     let encoder = TextEncoder::new();
     let metric_families = REGISTRY.gather();
     let mut buffer = Vec::new();
@@ -1327,6 +1363,7 @@ mod tests {
         livestream::GOP_CACHE_SIZE.set(0);
         livestream::GOP_CACHE_DROPS_TOTAL.inc();
         livestream::GOP_CACHE_MEMORY_BYTES.set(0);
+        logging::sync_dropped_lines(&[("_test".to_string(), 0)]);
 
         let output = gather_metrics();
 
@@ -1350,6 +1387,10 @@ mod tests {
         assert!(
             output.contains("websocket_connection_duration_seconds"),
             "Missing websocket_connection_duration_seconds"
+        );
+        assert!(
+            output.contains("logging_dropped_lines_total"),
+            "Missing logging_dropped_lines_total"
         );
         assert!(output.contains("rooms_active"), "Missing rooms_active");
         assert!(output.contains("users_online"), "Missing users_online");
@@ -1447,5 +1488,18 @@ mod tests {
             output.contains("grpc_request_duration_seconds"),
             "Missing grpc_request_duration_seconds"
         );
+    }
+
+    #[test]
+    fn logging_dropped_lines_are_synchronized_as_counter_deltas() {
+        const COMPONENT: &str = "_logging_delta_test";
+        let counter = logging::LOGGING_DROPPED_LINES_TOTAL.with_label_values(&[COMPONENT]);
+        let initial = counter.get();
+
+        logging::sync_dropped_lines(&[(COMPONENT.to_string(), 3)]);
+        assert_eq!(counter.get(), initial + 3);
+
+        logging::sync_dropped_lines(&[(COMPONENT.to_string(), 5)]);
+        assert_eq!(counter.get(), initial + 5);
     }
 }

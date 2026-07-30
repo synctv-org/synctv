@@ -136,8 +136,8 @@ where
 pub(crate) struct PublisherManager {
     registry: Arc<dyn StreamRegistryTrait>,
     local_node_id: String,
-    /// Advertised shared API address of this node, used for re-registration after restart.
-    local_api_address: String,
+    /// Advertised cluster listener address used for re-registration after restart.
+    local_cluster_address: String,
     /// Active publishers (composite key -> `PublisherEntry`)
     /// Live streaming is media-level, not room-level
     active_publishers: Arc<DashMap<String, Arc<PublisherEntry>>>,
@@ -172,7 +172,7 @@ impl PublisherManager {
         Self {
             registry,
             local_node_id,
-            local_api_address: String::new(),
+            local_cluster_address: String::new(),
             active_publishers: Arc::new(DashMap::new()),
             hub_event_sender,
             lag_event_count: AtomicU64::new(0),
@@ -184,11 +184,11 @@ impl PublisherManager {
         }
     }
 
-    /// Set the advertised shared API address for this node.
+    /// Set the advertised cluster listener address for this node.
     /// Used during re-registration after `StreamHub` restart (L-05).
     #[must_use]
-    pub(crate) fn with_api_address(mut self, api_address: String) -> Self {
-        self.local_api_address = api_address;
+    pub(crate) fn with_cluster_address(mut self, cluster_address: String) -> Self {
+        self.local_cluster_address = cluster_address;
         self
     }
 
@@ -240,12 +240,12 @@ impl PublisherManager {
 
     /// Start listening to `StreamHub` broadcast events
     pub(crate) async fn start(self: Arc<Self>, mut event_receiver: BroadcastEventReceiver) {
-        if self.local_api_address.is_empty() {
+        if self.local_cluster_address.is_empty() {
             warn!(
-                "PublisherManager started with empty api_address. \
+                "PublisherManager started with empty cluster_address. \
                  Re-registration after StreamHub restart will use an empty address, \
                  preventing cross-node HLS proxy from reaching this node. \
-                 Set api_address in LivestreamConfig."
+                 Set cluster_address in LivestreamConfig."
             );
         }
 
@@ -744,7 +744,7 @@ impl PublisherManager {
                 media_id,
                 &self.local_node_id,
                 &entry.user_id,
-                &self.local_api_address,
+                &self.local_cluster_address,
             )
             .await
         {
@@ -831,10 +831,10 @@ impl PublisherManager {
             return;
         }
 
-        if self.local_api_address.is_empty() {
+        if self.local_cluster_address.is_empty() {
             warn!(
-                "Re-registering {} publishers with empty local_api_address. \
-                 Cross-node HLS proxying will fail until api_address is set in LivestreamConfig. \
+                "Re-registering {} publishers with empty local_cluster_address. \
+                 Cross-node HLS proxying will fail until cluster_address is set in LivestreamConfig. \
                  Proceeding with re-registration to restore local publisher ownership in Redis.",
                 snapshot.len()
             );
@@ -857,7 +857,7 @@ impl PublisherManager {
                         media_id,
                         &self.local_node_id,
                         &entry.user_id,
-                        &self.local_api_address,
+                        &self.local_cluster_address,
                     )
                     .await
                 {

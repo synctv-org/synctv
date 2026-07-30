@@ -19,7 +19,7 @@ async fn setup_registry(node_ids: &[&str]) -> Arc<NodeRegistry> {
         Arc::new(NodeRegistry::new_local_only("self".to_string(), 30, "cl8test:").unwrap());
 
     for id in node_ids {
-        let node = NodeInfo::new(id.to_string(), format!("{id}:8080"));
+        let node = NodeInfo::new(id.to_string(), format!("{id}:50051"));
         registry.test_insert_local(node).await;
     }
 

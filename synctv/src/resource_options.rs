@@ -19,7 +19,9 @@ use synctv_cluster::leader::{LeaderElectionMode, LeaderRedisDeploymentMode, Lead
 use synctv_core::clock::{
     ClockSyncOptions, ClockSyncProvider, ClockSyncSntpProviderOptions, TimeOptions,
 };
-use synctv_core::logging::LoggingOptions;
+use synctv_core::logging::{
+    ComponentLoggingOptions, LogColor, LogOutput, LogRotation, LoggingOptions,
+};
 use synctv_core::service::{
     LocalProviderHttpOptions, MediaProvidersOptions, PasskeyServiceOptions,
 };
@@ -38,11 +40,69 @@ use crate::app_config::{
 
 pub fn logging_options(config: &AppConfig) -> LoggingOptions {
     LoggingOptions {
-        level: config.logging.level.clone(),
-        format: config.logging.format.clone(),
-        filter: config.logging.filter.clone(),
-        backtrace: config.logging.backtrace,
-        file_path: config.logging.file_path.clone(),
+        components: vec![
+            component_logging("server", &config.server.logging, Vec::new()),
+            component_logging(
+                "health",
+                &config.health.logging,
+                vec!["synctv::health".to_string()],
+            ),
+            component_logging(
+                "metrics",
+                &config.metrics.logging,
+                vec!["synctv::metrics".to_string()],
+            ),
+            component_logging(
+                "cluster",
+                &config.cluster.logging,
+                vec![
+                    "synctv::cluster".to_string(),
+                    "synctv::bootstrap::cluster".to_string(),
+                    "synctv_cluster".to_string(),
+                ],
+            ),
+            component_logging(
+                "management",
+                &config.management.logging,
+                vec!["synctv_management".to_string()],
+            ),
+        ],
+    }
+}
+
+fn component_logging(
+    name: &str,
+    config: &crate::app_config::LoggingConfig,
+    targets: Vec<String>,
+) -> ComponentLoggingOptions {
+    let output = match &config.output {
+        crate::app_config::LogOutput::Named(crate::app_config::LogOutputName::Stdout) => {
+            LogOutput::Stdout
+        }
+        crate::app_config::LogOutput::Named(crate::app_config::LogOutputName::Stderr) => {
+            LogOutput::Stderr
+        }
+        crate::app_config::LogOutput::File(file) => LogOutput::File {
+            path: file.path.clone().into(),
+            rotation: match file.rotation.strategy.as_str() {
+                "hourly" => LogRotation::Hourly,
+                "never" => LogRotation::Never,
+                _ => LogRotation::Daily,
+            },
+            max_files: file.rotation.max_files,
+        },
+    };
+    ComponentLoggingOptions {
+        name: name.to_string(),
+        targets,
+        level: config.level.clone(),
+        format: config.format.clone(),
+        output,
+        color: match config.color {
+            crate::app_config::LogColor::Auto => LogColor::Auto,
+            crate::app_config::LogColor::Always => LogColor::Always,
+            crate::app_config::LogColor::Never => LogColor::Never,
+        },
     }
 }
 
@@ -576,4 +636,24 @@ pub fn hls_oss_options(storage: &HlsStorageConfig) -> HlsOssOptions {
             region: config.region.clone(),
             base_path: config.base_path.clone(),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cluster_logging_includes_application_bootstrap_target() {
+        let options = logging_options(&AppConfig::default());
+        let cluster = options
+            .components
+            .iter()
+            .find(|component| component.name == "cluster")
+            .expect("cluster logging component must exist");
+
+        assert!(cluster
+            .targets
+            .iter()
+            .any(|target| target == "synctv::bootstrap::cluster"));
+    }
 }

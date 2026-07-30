@@ -121,7 +121,7 @@ fn server_state_node_to_management(node: synctv_core::service::ServerStateNode) 
                 .into_iter()
                 .map(|cluster_node| ServerStateClusterNode {
                     node_id: cluster_node.node_id,
-                    api_address: cluster_node.api_address,
+                    cluster_address: cluster_node.cluster_address,
                     last_heartbeat: cluster_node.last_heartbeat,
                     epoch: cluster_node.epoch,
                 })

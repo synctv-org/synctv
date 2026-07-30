@@ -44,7 +44,7 @@ async fn test_cluster_mode_degrades_after_circuit_breaker_trips() {
     );
 
     // Populate the local cache with a known node so we can verify fallback
-    let node = NodeInfo::new("self".to_string(), "localhost:8080".to_string());
+    let node = NodeInfo::new("self".to_string(), "localhost:50051".to_string());
     registry.test_insert_local(node).await;
 
     // Attempt operations that will fail (Redis not running at port 1)
@@ -138,7 +138,7 @@ async fn test_routable_nodes_fail_closed_when_degraded_cache_is_stale() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:8080".to_string(),
+            "localhost:50051".to_string(),
         ))
         .await;
 
@@ -160,7 +160,7 @@ async fn test_routable_nodes_allow_recent_degraded_cache() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:8080".to_string(),
+            "localhost:50051".to_string(),
         ))
         .await;
 

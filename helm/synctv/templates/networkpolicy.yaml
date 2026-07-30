@@ -25,14 +25,16 @@ spec:
         - protocol: TCP
           port: {{ .Values.config.server.port }}
     {{- end }}
-    # Allow internal cluster API traffic (inter-node communication)
+    {{- if .Values.config.cluster.enabled }}
+    # Allow internal cluster traffic between SyncTV replicas.
     - from:
         - podSelector:
             matchLabels:
               {{- include "synctv.appSelectorLabels" . | nindent 14 }}
       ports:
         - protocol: TCP
-          port: {{ .Values.config.server.port }}
+          port: {{ .Values.config.cluster.port | default 50051 }}
+    {{- end }}
     # Allow RTMP ingest (external publishers)
     {{- if or .Values.networkPolicy.allowAnyRtmpSource .Values.networkPolicy.rtmpSourceCIDRs }}
     - from:
@@ -161,14 +163,16 @@ spec:
       ports:
         - protocol: TCP
           port: {{ include "synctv.redis.port" . }}
-    # Allow internal cluster traffic (shared API port)
+    {{- if .Values.config.cluster.enabled }}
+    # Allow internal cluster traffic between SyncTV replicas.
     - to:
         - podSelector:
             matchLabels:
               {{- include "synctv.appSelectorLabels" . | nindent 14 }}
       ports:
         - protocol: TCP
-          port: {{ .Values.config.server.port }}
+          port: {{ .Values.config.cluster.port | default 50051 }}
+    {{- end }}
     # Allow external HTTP/HTTPS (for OAuth2, media providers)
     {{- if or .Values.networkPolicy.allowAnyExternalHttpEgress .Values.networkPolicy.externalHttpCIDRs }}
     - to:

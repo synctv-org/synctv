@@ -25,14 +25,14 @@ async fn test_static_discovery_epoch_fencing_preserves_newer_registration_on_unr
 
     registry
         .register_remote(
-            NodeInfo::new("peer-node".to_string(), "10.0.0.2:8080".to_string()).with_epoch(7),
+            NodeInfo::new("peer-node".to_string(), "10.0.0.2:50051".to_string()).with_epoch(7),
         )
         .await
         .expect("registration with probed epoch should succeed");
 
     registry
         .register_remote(
-            NodeInfo::new("peer-node".to_string(), "10.0.0.3:8080".to_string()).with_epoch(8),
+            NodeInfo::new("peer-node".to_string(), "10.0.0.3:50051".to_string()).with_epoch(8),
         )
         .await
         .expect("newer registration should succeed");
@@ -61,8 +61,8 @@ async fn test_static_discovery_epoch_fencing_preserves_newer_registration_on_unr
         "stale unregister must not delete newer static-discovery registration"
     );
     assert_eq!(
-        node["api_address"].as_str(),
-        Some("10.0.0.3:8080"),
+        node["cluster_address"].as_str(),
+        Some("10.0.0.3:50051"),
         "newer registration must remain intact after stale unregister"
     );
 }

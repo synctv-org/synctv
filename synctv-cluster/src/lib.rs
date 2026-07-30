@@ -10,10 +10,11 @@ pub mod leader;
 pub use discovery::K8sDnsDiscovery;
 pub use discovery::{
     build_cluster_node_directory_factory, build_local_cluster_node_directory_factory,
-    ClusterHealthRuntime, ClusterMode, ClusterNodeDirectory, ClusterNodeDirectoryFactory,
-    HealthMonitor, HeartbeatResult, LoadBalancer, LoadBalancingStrategy,
-    LocalClusterNodeDirectoryFactory, NodeHealth, NodeInfo, NodeRegistry, NodeViewMode,
-    RedisClusterNodeDirectoryFactory, StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig,
+    normalize_static_peer_address, ClusterHealthRuntime, ClusterMode, ClusterNodeDirectory,
+    ClusterNodeDirectoryFactory, HealthMonitor, HeartbeatResult, LoadBalancer,
+    LoadBalancingStrategy, LocalClusterNodeDirectoryFactory, NodeHealth, NodeInfo, NodeRegistry,
+    NodeViewMode, RedisClusterNodeDirectoryFactory, StaticDiscovery, StaticDiscoveryConfig,
+    StaticPeerConfig,
 };
 pub use error::{Error, Result};
 pub use grpc::{

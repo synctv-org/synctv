@@ -40,7 +40,7 @@ fn test_fencing_token_same_node_higher_epoch_is_newer() {
 
 #[test]
 fn test_node_info_fencing_token_values() {
-    let node = NodeInfo::new("my-node".to_string(), "10.0.0.1:8080".to_string()).with_epoch(42);
+    let node = NodeInfo::new("my-node".to_string(), "10.0.0.1:50051".to_string()).with_epoch(42);
 
     let token = node.fencing_token();
     assert_eq!(token.node_id, "my-node");
@@ -61,7 +61,7 @@ fn test_fencing_token_serde_roundtrip() {
 
 #[test]
 fn test_node_info_is_stale() {
-    let mut node = NodeInfo::new("n1".to_string(), "localhost:8080".to_string());
+    let mut node = NodeInfo::new("n1".to_string(), "localhost:50051".to_string());
     // Fresh node should not be stale
     assert!(!node.is_stale(30));
 

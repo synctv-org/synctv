@@ -44,7 +44,7 @@ impl ClusterServer {
     fn discovery_to_proto_node(discovery: &DiscoveryNodeInfo) -> NodeInfo {
         NodeInfo {
             node_id: discovery.node_id.clone(),
-            address: discovery.api_address.clone(),
+            address: discovery.cluster_address.clone(),
             last_heartbeat: discovery.last_heartbeat.timestamp(),
             epoch: discovery.epoch,
         }

@@ -119,7 +119,7 @@ pg_dump --format=custom --file=synctv.dump "$DATABASE_URL"
 ```bash
 synctv db status
 synctv config validate --strict
-curl -fsS http://localhost:8080/health/ready
+curl -fsS http://localhost:8081/health/ready
 ```
 
 业务层验证：

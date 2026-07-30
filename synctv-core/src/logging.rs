@@ -1,189 +1,460 @@
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
+
 use tracing::Level;
+use tracing_appender::non_blocking::{ErrorCounter, NonBlocking, NonBlockingBuilder, WorkerGuard};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{
-    fmt::{self, format::FmtSpan},
-    layer::SubscriberExt,
+    filter::FilterFn,
+    fmt::{self, format::FmtSpan, writer::BoxMakeWriter},
+    layer::{Layer, Layered, SubscriberExt},
+    registry::Registry,
     util::SubscriberInitExt,
-    EnvFilter,
 };
 
 const SQLX_POSTGRES_NOTICE_TARGET: &str = "sqlx::postgres::notice";
+const LOG_BUFFERED_LINES_LIMIT: usize = 128_000;
+static LOGGING_ERROR_COUNTERS: OnceLock<Vec<ComponentErrorCounter>> = OnceLock::new();
+
+#[derive(Debug, Clone)]
+struct ComponentErrorCounter {
+    component: String,
+    counter: ErrorCounter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogColor {
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogRotation {
+    Daily,
+    Hourly,
+    Never,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LogOutput {
+    Stdout,
+    Stderr,
+    File {
+        path: PathBuf,
+        rotation: LogRotation,
+        max_files: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct ComponentLoggingOptions {
+    pub name: String,
+    pub targets: Vec<String>,
+    pub level: String,
+    pub format: String,
+    pub output: LogOutput,
+    pub color: LogColor,
+}
 
 #[derive(Debug, Clone)]
 pub struct LoggingOptions {
-    pub level: String,
-    pub format: String,
-    pub filter: Option<String>,
-    pub backtrace: bool,
-    pub file_path: Option<String>,
+    pub components: Vec<ComponentLoggingOptions>,
 }
 
 impl Default for LoggingOptions {
     fn default() -> Self {
         Self {
-            level: "info".to_string(),
-            format: "pretty".to_string(),
-            filter: None,
-            backtrace: false,
-            file_path: None,
+            components: vec![ComponentLoggingOptions {
+                name: "server".to_string(),
+                targets: Vec::new(),
+                level: "info".to_string(),
+                format: "text".to_string(),
+                output: LogOutput::Stdout,
+                color: LogColor::Auto,
+            }],
         }
     }
 }
 
-/// Initialize structured logging based on configuration
-///
-/// Supports both JSON (production) and pretty (development) formats
-/// with configurable log levels and optional file output with rotation.
-///
-/// Log rotation configuration:
-/// - Rotation: Daily (at midnight local time)
-/// - Filename format: synctv-YYYY-MM-DD.log
-/// - No automatic file count limit (use external logrotate for cleanup)
-///
-/// Returns an optional `WorkerGuard` when file logging is enabled.
-/// The caller **must** hold this guard alive (e.g. in `main()`) so that
-/// buffered log entries are flushed on shutdown.
-pub fn init_logging(
-    config: &LoggingOptions,
-) -> anyhow::Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
-    let env_filter = build_env_filter(config)?;
+/// Keeps every non-blocking logging worker alive until application shutdown.
+#[derive(Debug)]
+pub struct LoggingGuards {
+    workers: Vec<WorkerGuard>,
+    error_counters: Vec<ComponentErrorCounter>,
+}
 
-    let registry = tracing_subscriber::registry().with(env_filter);
-
-    if config.format.as_str() == "json" {
-        // JSON format for production (structured logging)
-        let json_layer = fmt::layer()
-            .json()
-            .with_span_events(FmtSpan::CLOSE)
-            .with_current_span(true)
-            .with_span_list(true)
-            .with_target(true)
-            .with_line_number(true)
-            .with_file(true);
-
-        if let Some(file_path) = &config.file_path {
-            // Extract directory and create rolling file appender
-            let log_dir = std::path::Path::new(file_path)
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."));
-
-            let file_appender = RollingFileAppender::builder()
-                .rotation(Rotation::DAILY)
-                .filename_prefix("synctv")
-                .filename_suffix("log")
-                .build(log_dir)?;
-
-            let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-            let file_layer = json_layer.with_writer(non_blocking);
-
-            registry.with(file_layer).init();
-
-            return Ok(Some(guard));
-        }
-        registry.with(json_layer).init();
-    } else {
-        // Compact human-readable format for development. `pretty()` inserts
-        // extra blank lines between events, which is too noisy for daemon logs.
-        let pretty_layer = fmt::layer()
-            .compact()
-            .with_span_events(FmtSpan::CLOSE)
-            .with_target(true)
-            .with_line_number(true)
-            .with_file(false);
-
-        if let Some(file_path) = &config.file_path {
-            // Extract directory and create rolling file appender
-            let log_dir = std::path::Path::new(file_path)
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."));
-
-            let file_appender = RollingFileAppender::builder()
-                .rotation(Rotation::DAILY)
-                .filename_prefix("synctv")
-                .filename_suffix("log")
-                .build(log_dir)?;
-
-            let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-            let file_layer = pretty_layer.with_writer(non_blocking);
-
-            registry.with(file_layer).init();
-
-            return Ok(Some(guard));
-        }
-        registry.with(pretty_layer).init();
+impl LoggingGuards {
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.workers.len()
     }
 
-    Ok(None)
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.workers.is_empty()
+    }
+
+    /// Return cumulative dropped log lines for every configured component.
+    #[must_use]
+    pub fn dropped_lines(&self) -> Vec<(String, usize)> {
+        dropped_lines(&self.error_counters)
+    }
 }
 
-fn build_env_filter(config: &LoggingOptions) -> anyhow::Result<EnvFilter> {
-    let filter_spec = build_env_filter_spec(config)?;
-    EnvFilter::try_new(filter_spec)
-        .map_err(|e| anyhow::anyhow!("Invalid log filter specification: {e}"))
+fn dropped_lines(counters: &[ComponentErrorCounter]) -> Vec<(String, usize)> {
+    counters
+        .iter()
+        .map(|entry| (entry.component.clone(), entry.counter.dropped_lines()))
+        .collect()
 }
 
-fn build_env_filter_spec(config: &LoggingOptions) -> anyhow::Result<String> {
-    let mut filter_spec = if let Some(filter) = config.filter.as_deref().map(str::trim) {
-        if filter.is_empty() {
-            parse_log_level(&config.level)?.to_string()
-        } else {
-            filter.to_string()
-        }
-    } else {
-        parse_log_level(&config.level)?.to_string()
-    };
+pub(crate) fn dropped_lines_by_component() -> Vec<(String, usize)> {
+    LOGGING_ERROR_COUNTERS
+        .get()
+        .map_or_else(Vec::new, |counters| dropped_lines(counters))
+}
 
-    if !filter_contains_target_directive(&filter_spec, SQLX_POSTGRES_NOTICE_TARGET) {
-        let notice_level = if matches!(effective_log_level(config)?, Level::TRACE | Level::DEBUG) {
-            "info"
+/// Build one filtered fmt layer per configured component and install them on a
+/// single registry. Routing is exclusive: a specialized target is handled by
+/// its component, while the server component receives all remaining targets.
+pub fn init_logging(config: &LoggingOptions) -> anyhow::Result<LoggingGuards> {
+    let (subscriber, guards) = build_subscriber(config)?;
+    subscriber
+        .try_init()
+        .map_err(|error| anyhow::anyhow!("failed to install global logging subscriber: {error}"))?;
+    let _ = LOGGING_ERROR_COUNTERS.set(guards.error_counters.clone());
+    Ok(guards)
+}
+
+type LoggingSubscriber = Layered<Vec<Box<dyn Layer<Registry> + Send + Sync>>, Registry>;
+
+fn build_subscriber(config: &LoggingOptions) -> anyhow::Result<(LoggingSubscriber, LoggingGuards)> {
+    validate_component_routes(config)?;
+
+    let specialized_targets: Vec<String> = config
+        .components
+        .iter()
+        .filter(|component| component.name != "server")
+        .flat_map(|component| component.targets.iter().cloned())
+        .collect();
+
+    let mut layers: Vec<Box<dyn Layer<Registry> + Send + Sync>> = Vec::new();
+    let mut writers = WriterPool::new();
+
+    for component in &config.components {
+        let level = parse_log_level(&component.level)?;
+        let targets = component.targets.clone();
+        let is_server = component.name == "server";
+        let specialized_targets_for_server = specialized_targets.clone();
+        let filter = FilterFn::new(move |metadata| {
+            if *metadata.level() > level {
+                return false;
+            }
+            if is_server && metadata.target() == SQLX_POSTGRES_NOTICE_TARGET {
+                let notice_level = if matches!(level, Level::TRACE | Level::DEBUG) {
+                    Level::INFO
+                } else {
+                    Level::WARN
+                };
+                if *metadata.level() > notice_level {
+                    return false;
+                }
+            }
+            target_is_owned_by_component(
+                metadata.target(),
+                is_server,
+                &targets,
+                &specialized_targets_for_server,
+            )
+        });
+
+        let writer = writers.writer_for(component)?;
+        let layer = if component.format.eq_ignore_ascii_case("json") {
+            fmt::layer()
+                .json()
+                .with_span_events(FmtSpan::CLOSE)
+                .with_current_span(true)
+                .with_span_list(true)
+                .with_target(true)
+                .with_line_number(true)
+                .with_file(true)
+                .with_ansi(false)
+                .with_writer(writer)
+                .with_filter(filter)
+                .boxed()
+        } else if component.format.eq_ignore_ascii_case("text") {
+            fmt::layer()
+                .compact()
+                .with_span_events(FmtSpan::CLOSE)
+                .with_target(true)
+                .with_line_number(true)
+                .with_file(false)
+                .with_ansi(ansi_enabled(component))
+                .with_writer(writer)
+                .with_filter(filter)
+                .boxed()
         } else {
-            "warn"
+            return Err(anyhow::anyhow!(
+                "invalid log format '{}' for component '{}'",
+                component.format,
+                component.name
+            ));
         };
-        filter_spec.push(',');
-        filter_spec.push_str(SQLX_POSTGRES_NOTICE_TARGET);
-        filter_spec.push('=');
-        filter_spec.push_str(notice_level);
+        layers.push(layer);
     }
 
-    Ok(filter_spec)
+    Ok((
+        tracing_subscriber::registry().with(layers),
+        LoggingGuards {
+            workers: writers.workers,
+            error_counters: writers.error_counters,
+        },
+    ))
 }
 
-fn filter_contains_target_directive(filter_spec: &str, target: &str) -> bool {
-    filter_spec.split(',').map(str::trim).any(|directive| {
-        directive
-            .strip_prefix(target)
-            .is_some_and(|rest| rest.starts_with('='))
-    })
+fn validate_component_routes(config: &LoggingOptions) -> anyhow::Result<()> {
+    let server_count = config
+        .components
+        .iter()
+        .filter(|component| component.name == "server")
+        .count();
+    if server_count != 1 {
+        return Err(anyhow::anyhow!(
+            "logging requires exactly one server component, found {server_count}"
+        ));
+    }
+
+    let mut names = HashSet::new();
+    for component in &config.components {
+        if component.name.trim().is_empty() || !names.insert(component.name.as_str()) {
+            return Err(anyhow::anyhow!(
+                "logging component names must be non-empty and unique"
+            ));
+        }
+        if component.name != "server" && component.targets.is_empty() {
+            return Err(anyhow::anyhow!(
+                "logging component '{}' requires at least one target",
+                component.name
+            ));
+        }
+        parse_log_level(&component.level).map_err(|error| {
+            anyhow::anyhow!(
+                "invalid log level for component '{}': {error}",
+                component.name
+            )
+        })?;
+        if !matches!(
+            component.format.to_ascii_lowercase().as_str(),
+            "text" | "json"
+        ) {
+            return Err(anyhow::anyhow!(
+                "invalid log format '{}' for component '{}'",
+                component.format,
+                component.name
+            ));
+        }
+        if matches!(&component.output, LogOutput::File { path, .. } if path.as_os_str().is_empty())
+        {
+            return Err(anyhow::anyhow!(
+                "file output path for component '{}' must not be empty",
+                component.name
+            ));
+        }
+        if matches!(&component.output, LogOutput::File { max_files: 0, .. }) {
+            return Err(anyhow::anyhow!(
+                "file retention for component '{}' must keep at least one file",
+                component.name
+            ));
+        }
+    }
+
+    let specialized: Vec<_> = config
+        .components
+        .iter()
+        .filter(|component| component.name != "server")
+        .collect();
+    for (index, left) in specialized.iter().enumerate() {
+        for right in specialized.iter().skip(index + 1) {
+            for left_target in &left.targets {
+                for right_target in &right.targets {
+                    if target_prefixes_overlap(left_target, right_target) {
+                        return Err(anyhow::anyhow!(
+                            "logging targets '{}' and '{}' overlap across components '{}' and '{}'",
+                            left_target,
+                            right_target,
+                            left.name,
+                            right.name
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
-/// Parse log level string to tracing Level
+fn target_prefixes_overlap(left: &str, right: &str) -> bool {
+    let is_prefix = |prefix: &str, target: &str| {
+        target == prefix
+            || target
+                .strip_prefix(prefix)
+                .is_some_and(|suffix| suffix.starts_with("::"))
+    };
+    is_prefix(left, right) || is_prefix(right, left)
+}
+
+fn target_is_owned_by_component(
+    target: &str,
+    is_server: bool,
+    component_targets: &[String],
+    specialized_targets: &[String],
+) -> bool {
+    let matches = |configured: &[String]| {
+        configured.iter().any(|prefix| {
+            target == prefix
+                || target
+                    .strip_prefix(prefix)
+                    .is_some_and(|suffix| suffix.starts_with("::"))
+        })
+    };
+    if is_server {
+        !matches(specialized_targets)
+    } else {
+        matches(component_targets)
+    }
+}
+
+struct WriterPool {
+    workers: Vec<WorkerGuard>,
+    error_counters: Vec<ComponentErrorCounter>,
+}
+
+impl WriterPool {
+    const fn new() -> Self {
+        Self {
+            workers: Vec::new(),
+            error_counters: Vec::new(),
+        }
+    }
+
+    fn writer_for(&mut self, component: &ComponentLoggingOptions) -> anyhow::Result<BoxMakeWriter> {
+        let thread_name = format!("synctv-log-{}", component.name);
+        match &component.output {
+            LogOutput::Stdout => {
+                Ok(self.component_writer(&component.name, std::io::stdout(), &thread_name))
+            }
+            LogOutput::Stderr => {
+                Ok(self.component_writer(&component.name, std::io::stderr(), &thread_name))
+            }
+            LogOutput::File {
+                path,
+                rotation,
+                max_files,
+            } => {
+                let appender = build_file_appender(path, *rotation, *max_files, &component.name)?;
+                Ok(self.component_writer(&component.name, appender, &thread_name))
+            }
+        }
+    }
+
+    fn component_writer<T>(
+        &mut self,
+        component: &str,
+        output: T,
+        thread_name: &str,
+    ) -> BoxMakeWriter
+    where
+        T: std::io::Write + Send + 'static,
+    {
+        let (writer, worker) = non_blocking_writer(output, thread_name);
+        self.error_counters.push(ComponentErrorCounter {
+            component: component.to_string(),
+            counter: writer.error_counter(),
+        });
+        self.workers.push(worker);
+        BoxMakeWriter::new(writer)
+    }
+}
+
+fn non_blocking_writer<T>(writer: T, thread_name: &str) -> (NonBlocking, WorkerGuard)
+where
+    T: std::io::Write + Send + 'static,
+{
+    NonBlockingBuilder::default()
+        .buffered_lines_limit(LOG_BUFFERED_LINES_LIMIT)
+        .lossy(true)
+        .thread_name(thread_name)
+        .finish(writer)
+}
+
+fn build_file_appender(
+    file_path: &Path,
+    rotation: LogRotation,
+    max_files: usize,
+    component_name: &str,
+) -> anyhow::Result<RollingFileAppender> {
+    let log_dir = file_path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(log_dir)?;
+    let prefix = file_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| format!("synctv-{component_name}"), str::to_string);
+    let rotation = match rotation {
+        LogRotation::Daily => Rotation::DAILY,
+        LogRotation::Hourly => Rotation::HOURLY,
+        LogRotation::Never => Rotation::NEVER,
+    };
+    RollingFileAppender::builder()
+        .rotation(rotation)
+        .filename_prefix(prefix)
+        .filename_suffix("log")
+        .max_log_files(max_files)
+        .build(log_dir)
+        .map_err(Into::into)
+}
+
+fn ansi_enabled(config: &ComponentLoggingOptions) -> bool {
+    if matches!(config.output, LogOutput::File { .. }) {
+        return false;
+    }
+    match config.color {
+        LogColor::Always => true,
+        LogColor::Never => false,
+        LogColor::Auto => match config.output {
+            LogOutput::Stderr => std::io::IsTerminal::is_terminal(&std::io::stderr()),
+            LogOutput::Stdout => std::io::IsTerminal::is_terminal(&std::io::stdout()),
+            LogOutput::File { .. } => false,
+        },
+    }
+}
+
 pub(crate) fn parse_log_level(level: &str) -> anyhow::Result<Level> {
-    match level.to_lowercase().as_str() {
+    match level.to_ascii_lowercase().as_str() {
         "trace" => Ok(Level::TRACE),
         "debug" => Ok(Level::DEBUG),
         "info" => Ok(Level::INFO),
         "warn" | "warning" => Ok(Level::WARN),
         "error" => Ok(Level::ERROR),
-        _ => Err(anyhow::anyhow!("Invalid log level: {level}")),
+        _ => Err(anyhow::anyhow!("invalid log level: {level}")),
     }
 }
 
 pub fn effective_log_level(config: &LoggingOptions) -> anyhow::Result<Level> {
-    if let Some(filter) = config.filter.as_deref().map(str::trim) {
-        if !filter.is_empty() {
-            for directive in filter.split(',').map(str::trim).filter(|d| !d.is_empty()) {
-                if directive.contains('=') {
-                    continue;
-                }
-                return parse_log_level(directive);
-            }
-        }
-    }
-
-    parse_log_level(&config.level)
+    let component = config
+        .components
+        .iter()
+        .find(|component| component.name == "server")
+        .or_else(|| config.components.first())
+        .ok_or_else(|| anyhow::anyhow!("at least one logging component is required"))?;
+    parse_log_level(&component.level)
 }
 
-/// Generate a trace ID for request tracing
+/// Generate a trace ID for request tracing.
 #[must_use]
 pub fn generate_trace_id() -> String {
     use rand::RngExt;
@@ -195,102 +466,244 @@ pub fn generate_trace_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{fs, process::Command};
 
-    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
-        match result {
-            Ok(value) => value,
-            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    use tempfile::tempdir;
+
+    #[test]
+    fn default_logging_has_a_server_component() {
+        let config = LoggingOptions::default();
+        assert_eq!(config.components.len(), 1);
+        assert_eq!(config.components[0].name, "server");
+    }
+
+    #[test]
+    fn effective_level_comes_from_server_component() {
+        let config = LoggingOptions {
+            components: vec![
+                ComponentLoggingOptions {
+                    name: "health".to_string(),
+                    level: "error".to_string(),
+                    targets: vec!["synctv::health".to_string()],
+                    ..default_component("health")
+                },
+                ComponentLoggingOptions {
+                    name: "server".to_string(),
+                    level: "debug".to_string(),
+                    ..default_component("server")
+                },
+            ],
+        };
+        assert_eq!(
+            effective_log_level(&config).expect("server level should be valid"),
+            Level::DEBUG
+        );
+    }
+
+    #[test]
+    fn specialized_targets_are_excluded_from_server_layer() {
+        let specialized = vec!["synctv::health".to_string()];
+        let health = vec!["synctv::health".to_string()];
+        assert!(target_is_owned_by_component(
+            "synctv::health::probe",
+            false,
+            &health,
+            &specialized
+        ));
+        assert!(!target_is_owned_by_component(
+            "synctv::health::probe",
+            true,
+            &[],
+            &specialized
+        ));
+        assert!(target_is_owned_by_component(
+            "synctv_api_http",
+            true,
+            &[],
+            &specialized
+        ));
+    }
+
+    #[test]
+    fn overlapping_specialized_routes_are_rejected() {
+        let config = LoggingOptions {
+            components: vec![
+                default_component("server"),
+                ComponentLoggingOptions {
+                    targets: vec!["synctv::cluster".to_string()],
+                    ..default_component("cluster")
+                },
+                ComponentLoggingOptions {
+                    targets: vec!["synctv::cluster::health".to_string()],
+                    ..default_component("cluster_health")
+                },
+            ],
+        };
+        assert!(validate_component_routes(&config).is_err());
+    }
+
+    #[test]
+    fn components_sharing_standard_output_have_independent_workers() {
+        let config = LoggingOptions {
+            components: vec![
+                default_component("server"),
+                ComponentLoggingOptions {
+                    targets: vec!["synctv::health".to_string()],
+                    ..default_component("health")
+                },
+            ],
+        };
+        let (_subscriber, guards) =
+            build_subscriber(&config).expect("logging subscriber should build");
+        assert_eq!(guards.len(), 2);
+        assert_eq!(
+            guards.dropped_lines(),
+            vec![("server".to_string(), 0), ("health".to_string(), 0)]
+        );
+    }
+
+    #[test]
+    fn duplicate_global_initialization_returns_an_error() {
+        const CHILD_ENV: &str = "SYNCTV_TEST_DUPLICATE_LOGGING_INIT";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            tracing_subscriber::registry()
+                .try_init()
+                .expect("first global subscriber should install");
+            let error = init_logging(&LoggingOptions::default())
+                .expect_err("second global subscriber should return an error");
+            assert!(error
+                .to_string()
+                .contains("failed to install global logging subscriber"));
+            return;
         }
+
+        let status = Command::new(std::env::current_exe().expect("test executable should exist"))
+            .arg("--exact")
+            .arg("logging::tests::duplicate_global_initialization_returns_an_error")
+            .env(CHILD_ENV, "1")
+            .status()
+            .expect("duplicate initialization child test should run");
+        assert!(status.success());
     }
 
     #[test]
-    fn test_generate_trace_id() {
-        let trace_id1 = generate_trace_id();
-        let trace_id2 = generate_trace_id();
-
-        assert_eq!(trace_id1.len(), 32);
-        assert_eq!(trace_id2.len(), 32);
-        assert_ne!(trace_id1, trace_id2);
-    }
-
-    #[test]
-    fn test_build_env_filter_spec_uses_config_level_without_env_override() {
+    fn zero_file_retention_is_rejected() {
         let config = LoggingOptions {
-            level: "debug".to_string(),
-            ..LoggingOptions::default()
+            components: vec![ComponentLoggingOptions {
+                output: LogOutput::File {
+                    path: PathBuf::from("server.log"),
+                    rotation: LogRotation::Daily,
+                    max_files: 0,
+                },
+                ..default_component("server")
+            }],
         };
-
-        let spec = ok(build_env_filter_spec(&config), "filter spec should build");
-
-        assert_eq!(spec.to_lowercase(), "debug,sqlx::postgres::notice=info");
+        assert!(validate_component_routes(&config).is_err());
     }
 
     #[test]
-    fn test_build_env_filter_spec_prefers_explicit_logging_filter() {
+    fn file_appender_prunes_logs_to_retention_limit() {
+        let dir = tempdir().expect("temporary log directory should be created");
+        for date in ["2026-07-27", "2026-07-28", "2026-07-29"] {
+            fs::write(dir.path().join(format!("server.{date}.log")), "old log")
+                .expect("old log fixture should be written");
+        }
+
+        let appender = build_file_appender(
+            &dir.path().join("server.log"),
+            LogRotation::Daily,
+            2,
+            "server",
+        )
+        .expect("rolling appender should build");
+        drop(appender);
+
+        let retained = fs::read_dir(dir.path())
+            .expect("log directory should be readable")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("server.") && name.ends_with(".log"))
+            })
+            .count();
+        assert_eq!(retained, 2);
+    }
+
+    #[test]
+    fn component_layers_use_independent_routes_levels_formats_and_files() {
+        let dir = tempdir().expect("temporary log directory should be created");
         let config = LoggingOptions {
+            components: vec![
+                ComponentLoggingOptions {
+                    format: "json".to_string(),
+                    output: LogOutput::File {
+                        path: dir.path().join("server.log"),
+                        rotation: LogRotation::Never,
+                        max_files: 2,
+                    },
+                    ..default_component("server")
+                },
+                ComponentLoggingOptions {
+                    targets: vec!["synctv::health".to_string()],
+                    level: "warn".to_string(),
+                    output: LogOutput::File {
+                        path: dir.path().join("health.log"),
+                        rotation: LogRotation::Never,
+                        max_files: 2,
+                    },
+                    ..default_component("health")
+                },
+            ],
+        };
+        let (subscriber, guards) =
+            build_subscriber(&config).expect("logging subscriber should build");
+        assert_eq!(guards.len(), 2);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "synctv_api_http", "server-only-event");
+            tracing::info!(target: "synctv::health", "filtered-health-event");
+            tracing::warn!(target: "synctv::health", "health-only-event");
+        });
+        drop(guards);
+
+        let server_log = read_log_with_prefix(dir.path(), "server");
+        let health_log = read_log_with_prefix(dir.path(), "health");
+        assert!(server_log.contains("server-only-event"));
+        assert!(server_log.contains("\"target\":\"synctv_api_http\""));
+        assert!(!server_log.contains("health-only-event"));
+        assert!(health_log.contains("health-only-event"));
+        assert!(!health_log.contains("filtered-health-event"));
+        assert!(!health_log.contains("server-only-event"));
+        assert!(!health_log.trim_start().starts_with('{'));
+    }
+
+    fn read_log_with_prefix(dir: &Path, prefix: &str) -> String {
+        let path = fs::read_dir(dir)
+            .expect("log directory should be readable")
+            .map(|entry| {
+                entry
+                    .expect("log directory entry should be readable")
+                    .path()
+            })
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(prefix))
+            })
+            .expect("component log file should exist");
+        fs::read_to_string(path).expect("component log file should be readable")
+    }
+
+    fn default_component(name: &str) -> ComponentLoggingOptions {
+        ComponentLoggingOptions {
+            name: name.to_string(),
+            targets: Vec::new(),
             level: "info".to_string(),
-            filter: Some("warn,synctv=debug".to_string()),
-            ..LoggingOptions::default()
-        };
-
-        let spec = ok(build_env_filter_spec(&config), "filter spec should build");
-
-        assert_eq!(spec, "warn,synctv=debug,sqlx::postgres::notice=warn");
-    }
-
-    #[test]
-    fn test_build_env_filter_spec_preserves_explicit_sqlx_notice_override() {
-        let config = LoggingOptions {
-            level: "info".to_string(),
-            filter: Some("warn,sqlx::postgres::notice=info,synctv=debug".to_string()),
-            ..LoggingOptions::default()
-        };
-
-        let spec = ok(build_env_filter_spec(&config), "filter spec should build");
-
-        assert_eq!(spec, "warn,sqlx::postgres::notice=info,synctv=debug");
-    }
-
-    #[test]
-    fn test_filter_contains_target_directive_matches_exact_target_only() {
-        assert!(filter_contains_target_directive(
-            "warn,sqlx::postgres::notice=warn",
-            "sqlx::postgres::notice"
-        ));
-        assert!(!filter_contains_target_directive(
-            "warn,sqlx::postgres::notice_extra=warn",
-            "sqlx::postgres::notice"
-        ));
-    }
-
-    #[test]
-    fn test_effective_log_level_uses_config_level_only() {
-        let config = LoggingOptions {
-            level: "debug".to_string(),
-            ..LoggingOptions::default()
-        };
-
-        let level = ok(
-            effective_log_level(&config),
-            "effective log level should resolve",
-        );
-
-        assert_eq!(level, Level::DEBUG);
-    }
-
-    #[test]
-    fn test_effective_log_level_prefers_global_directive_from_logging_filter() {
-        let config = LoggingOptions {
-            level: "info".to_string(),
-            filter: Some("warn,synctv=debug".to_string()),
-            ..LoggingOptions::default()
-        };
-
-        let level = ok(
-            effective_log_level(&config),
-            "effective log level should resolve",
-        );
-
-        assert_eq!(level, Level::WARN);
+            format: "text".to_string(),
+            output: LogOutput::Stdout,
+            color: LogColor::Auto,
+        }
     }
 }

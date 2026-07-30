@@ -444,9 +444,9 @@ impl HealthMonitor {
         let probe_results: Vec<_> = stream::iter(0..nodes_to_probe.len())
             .map(|index| {
                 let node = &nodes_to_probe[index];
-                let addr = node.api_address.clone();
+                let addr = node.cluster_address.clone();
                 let secret = secret.clone();
-                async move { Self::probe_node_api(&addr, probe_timeout, &secret).await }
+                async move { Self::probe_cluster_node(&addr, probe_timeout, &secret).await }
             })
             .buffered(NODE_PROBE_CONCURRENCY)
             .collect()
@@ -515,13 +515,17 @@ impl HealthMonitor {
         states.retain(|node_id, _| active_node_ids.contains(node_id.as_str()));
     }
 
-    /// Probe a node's gRPC service on the shared API address by calling `GetNodes`.
+    /// Probe a node's internal gRPC listener by calling `GetNodes`.
     ///
     /// Unlike a TCP-only probe, this validates that the application-layer
     /// gRPC service is responsive, not just that the port is open.
-    /// Delegates to the shared [`super::probe_node_api`] function.
-    async fn probe_node_api(api_address: &str, timeout_secs: u64, cluster_secret: &str) -> bool {
-        super::probe_node_api(api_address, timeout_secs, cluster_secret).await
+    /// Delegates to the shared [`super::probe_cluster_node`] function.
+    async fn probe_cluster_node(
+        cluster_address: &str,
+        timeout_secs: u64,
+        cluster_secret: &str,
+    ) -> bool {
+        super::probe_cluster_node(cluster_address, timeout_secs, cluster_secret).await
     }
 
     /// Gracefully shut down the health monitoring loop.
@@ -663,7 +667,7 @@ mod tests {
         registry
             .test_insert_local(NodeInfo::new(
                 "self".to_string(),
-                "localhost:8080".to_string(),
+                "localhost:50051".to_string(),
             ))
             .await;
 
@@ -684,7 +688,7 @@ mod tests {
         registry
             .test_insert_local(NodeInfo::new(
                 "self".to_string(),
-                "localhost:8080".to_string(),
+                "localhost:50051".to_string(),
             ))
             .await;
 
@@ -707,25 +711,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_probe_node_api_invalid_address() {
+    async fn test_probe_cluster_node_invalid_address() {
         // Invalid address should return false
-        assert!(!HealthMonitor::probe_node_api("not-an-address", 1, "").await);
+        assert!(!HealthMonitor::probe_cluster_node("not-an-address", 1, "").await);
     }
 
     #[tokio::test]
-    async fn test_probe_node_api_unreachable() {
+    async fn test_probe_cluster_node_unreachable() {
         // Unreachable address should return false (timeout)
-        assert!(!HealthMonitor::probe_node_api("192.0.2.1:12345", 1, "").await);
+        assert!(!HealthMonitor::probe_cluster_node("192.0.2.1:12345", 1, "").await);
     }
 
     #[tokio::test]
-    async fn test_probe_node_api_no_port() {
-        assert!(!HealthMonitor::probe_node_api("localhost", 1, "").await);
+    async fn test_probe_cluster_node_no_port() {
+        assert!(!HealthMonitor::probe_cluster_node("localhost", 1, "").await);
     }
 
     #[tokio::test]
-    async fn test_probe_node_api_invalid_port() {
-        assert!(!HealthMonitor::probe_node_api("localhost:abc", 1, "").await);
+    async fn test_probe_cluster_node_invalid_port() {
+        assert!(!HealthMonitor::probe_cluster_node("localhost:abc", 1, "").await);
     }
 
     #[tokio::test]
@@ -824,7 +828,7 @@ mod tests {
         registry
             .test_insert_local(NodeInfo::new(
                 "self".to_string(),
-                "127.0.0.1:8080".to_string(),
+                "127.0.0.1:50051".to_string(),
             ))
             .await;
 

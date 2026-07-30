@@ -70,7 +70,7 @@ async fn test_local_only_get_node_from_local_cache() {
     let found = registry.get_node_local("specific-node").await;
     assert!(found.is_some(), "Should find the node");
     let found = found.unwrap();
-    assert_eq!(found.api_address, "localhost:8082");
+    assert_eq!(found.cluster_address, "localhost:8082");
 }
 
 /// Test that local-only registry handles empty cache gracefully.
@@ -112,8 +112,8 @@ async fn test_local_only_merge_dns_peers() {
 
     // Merge some DNS-discovered peers
     let peers = vec![
-        NodeInfo::new("dns-peer-1".to_string(), "10.0.0.1:8080".to_string()),
-        NodeInfo::new("dns-peer-2".to_string(), "10.0.0.2:8080".to_string()),
+        NodeInfo::new("dns-peer-1".to_string(), "10.0.0.1:50051".to_string()),
+        NodeInfo::new("dns-peer-2".to_string(), "10.0.0.2:50051".to_string()),
     ];
     registry.merge_dns_peers(peers).await;
 

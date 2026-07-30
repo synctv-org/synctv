@@ -28,7 +28,7 @@ use synctv_proto::client::{HealthDetails, HealthResponse, MemoryHealth};
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Health check router.
-pub(crate) fn create_health_router() -> Router<AppState> {
+pub fn create_health_router() -> Router<AppState> {
     Router::new()
         .route("/health/live", get(liveness_check))
         .route("/health/ready", get(readiness_check))
@@ -105,7 +105,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
         Err(e) => {
             error_messages.push(format!("Database: {e}"));
             is_healthy = false;
-            warn!("Database health check failed: {}", e);
+            warn!(target: "synctv::health", "Database health check failed: {}", e);
             "unhealthy".to_string()
         }
     };
@@ -117,7 +117,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
         RedisHealthStatus::Unhealthy(e) => {
             error_messages.push(format!("Redis: {e}"));
             is_healthy = false;
-            warn!("Redis health check failed: {}", e);
+            warn!(target: "synctv::health", "Redis health check failed: {}", e);
             "unhealthy".to_string()
         }
     };
@@ -128,7 +128,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
         Some(Err(e)) => {
             error_messages.push(format!("Cluster: {e}"));
             is_healthy = false;
-            warn!("Cluster health check failed: {}", e);
+            warn!(target: "synctv::health", "Cluster health check failed: {}", e);
             Some("unhealthy".to_string())
         }
         None => None, // No cluster realtime service, single-node mode
@@ -149,7 +149,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
                     .to_string(),
             );
             is_healthy = false;
-            warn!(
+            warn!(target: "synctv::health",
                 "WsTicketService storage is not cross-node capable in distributed mode; \
                  cross-replica ticket validation will fail"
             );
@@ -178,7 +178,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
                 mem.usage_percent, MEMORY_UNHEALTHY_THRESHOLD_PERCENT
             ));
             is_healthy = false;
-            warn!("Memory pressure detected: {:.1}% usage", mem.usage_percent);
+            warn!(target: "synctv::health", "Memory pressure detected: {:.1}% usage", mem.usage_percent);
         }
     }
 
@@ -221,11 +221,11 @@ pub(crate) async fn check_database_health(state: &AppState) -> Result<(), String
     match tokio::time::timeout(HEALTH_CHECK_TIMEOUT, state.user_service.health_check()).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(e)) => {
-            warn!("Database health check failed: {}", e);
+            warn!(target: "synctv::health", "Database health check failed: {}", e);
             Err(format!("Database connection failed: {e}"))
         }
         Err(_) => {
-            warn!(
+            warn!(target: "synctv::health",
                 "Database health check timed out after {}s",
                 HEALTH_CHECK_TIMEOUT.as_secs()
             );
@@ -305,11 +305,11 @@ pub(crate) async fn check_redis_health_from_conn(
     {
         Ok(Ok(_)) => RedisHealthStatus::Healthy,
         Ok(Err(e)) => {
-            warn!("Redis health check failed: {}", e);
+            warn!(target: "synctv::health", "Redis health check failed: {}", e);
             RedisHealthStatus::Unhealthy(format!("Redis ping failed: {e}"))
         }
         Err(_) => {
-            warn!(
+            warn!(target: "synctv::health",
                 "Redis health check timed out after {}s",
                 HEALTH_CHECK_TIMEOUT.as_secs()
             );

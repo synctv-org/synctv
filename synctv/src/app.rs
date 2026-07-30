@@ -1716,9 +1716,9 @@ mod tests {
     use super::*;
     use crate::app_config::{
         BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig,
-        ConnectionLimitsConfig, DatabaseConfig, JwtConfig, LivestreamConfig, LoggingConfig,
-        MediaProvidersConfig, PasswordComplexityConfig, ProxySliceCacheConfig, RedisConfig,
-        RequestRateLimitConfig, ServerConfig, WebAuthnConfig, WebRTCConfig,
+        ConnectionLimitsConfig, DatabaseConfig, JwtConfig, LivestreamConfig, MediaProvidersConfig,
+        PasswordComplexityConfig, ProxySliceCacheConfig, RedisConfig, RequestRateLimitConfig,
+        ServerConfig, WebAuthnConfig, WebRTCConfig,
     };
     use crate::bootstrap::cluster::{ClusterNodeActivator, DefaultClusterNodeActivator};
     use synctv_core::{
@@ -1843,7 +1843,9 @@ mod tests {
                 cors_allowed_origins: Vec::new(),
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
+                logging: crate::app_config::LoggingConfig::default(),
             },
+            health: crate::app_config::HealthConfig::default(),
             time: crate::app_config::TimeConfig::default(),
             data_dir: crate::app_config::default_data_dir().display().to_string(),
             metrics: crate::app_config::MetricsConfig::default(),
@@ -1860,7 +1862,6 @@ mod tests {
                 secret: "test-jwt-secret-key-for-testing-minimum-length".to_string(),
                 ..JwtConfig::default()
             },
-            logging: LoggingConfig::default(),
             livestream: LivestreamConfig {
                 hls_storage: crate::app_config::HlsStorageConfig::SharedFile(
                     crate::app_config::HlsFileStorageConfig {

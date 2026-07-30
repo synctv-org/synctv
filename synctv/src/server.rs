@@ -137,6 +137,8 @@ pub struct SyncTvServer {
     database_pools: DatabasePools,
     lifecycle_controller: Arc<ManagementLifecycleController>,
     api_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    health_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    cluster_handle: Option<JoinHandle<anyhow::Result<()>>>,
     metrics_handle: Option<JoinHandle<anyhow::Result<()>>>,
     management_handle: Option<JoinHandle<anyhow::Result<()>>>,
     playback_lifecycle_event_source_handle: Option<JoinHandle<()>>,
@@ -736,7 +738,7 @@ where
             let response = match app.oneshot(request).await {
                 Ok(response) => response,
                 Err(error) => {
-                    tracing::error!(
+                    tracing::error!(target: "synctv::metrics",
                         error = ?error,
                         "metrics router failed to handle request"
                     );
@@ -857,7 +859,7 @@ async fn shutdown_metrics_connection_tasks(connections: &mut JoinSet<()>, timeou
                 if error.is_panic() {
                     std::panic::resume_unwind(error.into_panic());
                 }
-                warn!(error = %error, "metrics connection task ended unexpectedly");
+                warn!(target: "synctv::metrics", error = %error, "metrics connection task ended unexpectedly");
             }
             Ok(None) => return,
             Err(_) => break,
@@ -868,7 +870,7 @@ async fn shutdown_metrics_connection_tasks(connections: &mut JoinSet<()>, timeou
         return;
     }
 
-    warn!(
+    warn!(target: "synctv::metrics",
         timeout_secs = timeout.as_secs_f64(),
         remaining_connections = connections.len(),
         "metrics server still has active connections after drain timeout; aborting remaining tasks"
@@ -1231,6 +1233,7 @@ async fn shutdown_after_cluster_activation_failure(
 
     signal_server_shutdown(&shutdown_tx, "cluster activation failure cleanup");
     cleanup_cancel.cancel();
+    server.shutdown_auxiliary_handles(deadline).await;
 
     if let Some(handle) = cleanup_handle {
         await_task_shutdown(
@@ -1487,6 +1490,8 @@ impl SyncTvServer {
         err: anyhow::Error,
     ) -> anyhow::Error {
         let deadline = context.deadline;
+        signal_server_shutdown(&context.shutdown_tx, "startup failure cleanup");
+        self.shutdown_auxiliary_handles(deadline).await;
         shutdown_after_startup_failure(
             context,
             self.shutdown_startup_failure_components(deadline),
@@ -1497,6 +1502,17 @@ impl SyncTvServer {
         self.database_pools.close().await;
         info!("Database pools closed after startup failure");
         err
+    }
+
+    async fn shutdown_auxiliary_handles(&mut self, deadline: tokio::time::Instant) {
+        if let Some(handle) = self.cluster_handle.take() {
+            await_runtime_server_shutdown("Cluster server", handle, remaining_budget(deadline))
+                .await;
+        }
+        if let Some(handle) = self.health_handle.take() {
+            await_runtime_server_shutdown("Health server", handle, remaining_budget(deadline))
+                .await;
+        }
     }
 
     /// Create a new server instance
@@ -1518,6 +1534,8 @@ impl SyncTvServer {
             database_pools,
             lifecycle_controller,
             api_handle: None,
+            health_handle: None,
+            cluster_handle: None,
             metrics_handle: None,
             management_handle: None,
             playback_lifecycle_event_source_handle: None,
@@ -1645,6 +1663,72 @@ impl SyncTvServer {
             }
         };
         self.api_handle = Some(api_handle);
+
+        if self.config.cluster.enabled {
+            let cluster_handle = match self
+                .start_cluster_server(
+                    shutdown_rx.clone(),
+                    shared_http_app_state.clone(),
+                    &shared_provider_runtime,
+                )
+                .await
+            {
+                Ok(handle) => handle,
+                Err(err) => {
+                    let api_handle = self.api_handle.take();
+                    let startup_cleanup_deadline = self.startup_cleanup_deadline();
+                    let err = self
+                        .abort_startup(
+                            StartupFailureShutdownContext {
+                                shutdown_tx: shutdown_tx.clone(),
+                                cleanup_cancel: cleanup_cancel.clone(),
+                                cleanup_handle: Some(cleanup_handle),
+                                api_handle,
+                                metrics_handle: None,
+                                management_handle: None,
+                                deadline: startup_cleanup_deadline,
+                            },
+                            coordinator,
+                            err,
+                        )
+                        .await;
+                    return Err(err);
+                }
+            };
+            self.cluster_handle = Some(cluster_handle);
+        }
+
+        if self.config.health.enabled {
+            let health_handle = match self
+                .start_health_server(shutdown_rx.clone(), shared_http_app_state.clone())
+                .await
+            {
+                Ok(handle) => handle,
+                Err(err) => {
+                    let api_handle = self.api_handle.take();
+                    let startup_cleanup_deadline = self.startup_cleanup_deadline();
+                    let err = self
+                        .abort_startup(
+                            StartupFailureShutdownContext {
+                                shutdown_tx: shutdown_tx.clone(),
+                                cleanup_cancel: cleanup_cancel.clone(),
+                                cleanup_handle: Some(cleanup_handle),
+                                api_handle,
+                                metrics_handle: None,
+                                management_handle: None,
+                                deadline: startup_cleanup_deadline,
+                            },
+                            coordinator,
+                            err,
+                        )
+                        .await;
+                    return Err(err);
+                }
+            };
+            // The shared shutdown channel gives this auxiliary listener the same
+            // lifecycle as the public API listener.
+            self.health_handle = Some(health_handle);
+        }
 
         if self.config.metrics.enabled {
             let metrics_handle = match self
@@ -1780,6 +1864,8 @@ impl SyncTvServer {
         );
         let mut metrics_handle = self.metrics_handle.take();
         let mut management_handle = self.management_handle.take();
+        let mut health_handle = self.health_handle.take();
+        let mut cluster_handle = self.cluster_handle.take();
 
         let (
             shutdown_mode,
@@ -1787,6 +1873,8 @@ impl SyncTvServer {
             api_handle,
             metrics_handle,
             management_handle,
+            health_handle,
+            cluster_handle,
             defer_management_shutdown_wait,
         ) = tokio::select! {
             result = await_optional_runtime_server(&mut api_handle) => {
@@ -1797,6 +1885,8 @@ impl SyncTvServer {
                     None,
                     metrics_handle.take(),
                     management_handle.take(),
+                    health_handle.take(),
+                    cluster_handle.take(),
                     false,
                 )
             },
@@ -1808,6 +1898,8 @@ impl SyncTvServer {
                     api_handle.take(),
                     None,
                     management_handle.take(),
+                    health_handle.take(),
+                    cluster_handle.take(),
                     false,
                 )
             },
@@ -1818,6 +1910,34 @@ impl SyncTvServer {
                     Some(map_runtime_server_exit("Management server", result)),
                     api_handle.take(),
                     metrics_handle.take(),
+                    None,
+                    health_handle.take(),
+                    cluster_handle.take(),
+                    false,
+                )
+            },
+            result = await_optional_runtime_server(&mut health_handle), if health_handle.is_some() => {
+                let _ = health_handle.take();
+                (
+                    ShutdownMode::Graceful,
+                    Some(map_runtime_server_exit("Health server", result)),
+                    api_handle.take(),
+                    metrics_handle.take(),
+                    management_handle.take(),
+                    None,
+                    cluster_handle.take(),
+                    false,
+                )
+            },
+            result = await_optional_runtime_server(&mut cluster_handle), if cluster_handle.is_some() => {
+                let _ = cluster_handle.take();
+                (
+                    ShutdownMode::Graceful,
+                    Some(map_runtime_server_exit("Cluster server", result)),
+                    api_handle.take(),
+                    metrics_handle.take(),
+                    management_handle.take(),
+                    health_handle.take(),
                     None,
                     false,
                 )
@@ -1835,6 +1955,8 @@ impl SyncTvServer {
                     api_handle.take(),
                     metrics_handle.take(),
                     management_handle.take(),
+                    health_handle.take(),
+                    cluster_handle.take(),
                     true,
                 )
             },
@@ -1848,10 +1970,15 @@ impl SyncTvServer {
                     api_handle.take(),
                     metrics_handle.take(),
                     management_handle.take(),
+                    health_handle.take(),
+                    cluster_handle.take(),
                     false,
                 )
             }
         };
+
+        self.health_handle = health_handle;
+        self.cluster_handle = cluster_handle;
 
         // Signal API server to shut down
         signal_server_shutdown(&shutdown_tx, "runtime shutdown");
@@ -1871,6 +1998,8 @@ impl SyncTvServer {
             "Waiting up to {}s for API server and management server to shut down...",
             http_drain_budget.as_secs()
         );
+        self.shutdown_auxiliary_handles(tokio::time::Instant::now() + http_drain_budget)
+            .await;
         let deferred_management_handle = shutdown_runtime_phase(
             api_handle,
             metrics_handle,
@@ -2085,6 +2214,7 @@ impl SyncTvServer {
         shutdown_rx: watch::Receiver<bool>,
         shared_http_app_state: Arc<synctv_api::AppState>,
         shared_provider_runtime: &SharedProviderPlaybackRuntime,
+        expose_cluster_services: bool,
     ) -> anyhow::Result<axum::Router> {
         let provider_access_service = shared_http_app_state
             .shared_api_runtime
@@ -2271,6 +2401,7 @@ impl SyncTvServer {
             webrtc_status: self.current_webrtc_status(),
             credential_encryption: self.services.credential_encryption.clone(),
             grpc_listener: None,
+            expose_cluster_services,
         })
         .await
     }
@@ -2489,6 +2620,7 @@ impl SyncTvServer {
                 shutdown_rx.clone(),
                 shared_http_app_state.clone(),
                 shared_provider_runtime,
+                false,
             )
             .await?;
 
@@ -2558,6 +2690,48 @@ impl SyncTvServer {
         Ok(handle)
     }
 
+    async fn start_cluster_server(
+        &self,
+        shutdown_rx: watch::Receiver<bool>,
+        shared_http_app_state: Arc<synctv_api::AppState>,
+        shared_provider_runtime: &SharedProviderPlaybackRuntime,
+    ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+        let runtime_settings = shared_http_app_state.runtime_settings.clone();
+        let cluster_router = self
+            .build_grpc_router(
+                runtime_settings.as_ref(),
+                shutdown_rx.clone(),
+                shared_http_app_state,
+                shared_provider_runtime,
+                true,
+            )
+            .await?;
+        let cluster_address = self.config.cluster_address();
+        let listener_addr: std::net::SocketAddr = cluster_address
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid cluster address '{cluster_address}': {e}"))?;
+        let listener = tokio::net::TcpListener::bind(listener_addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to bind cluster address {listener_addr}: {e}"))?;
+        info!(target: "synctv::cluster", "Cluster server listening on http://{}", listener_addr);
+
+        Ok(tokio::spawn(async move {
+            let mut rx = shutdown_rx;
+            let graceful = async move {
+                let _ = rx.changed().await;
+            };
+            axum::serve(
+                listener,
+                cluster_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(graceful)
+            .await
+            .map_err(|error| anyhow::anyhow!("Cluster server error: {error}"))?;
+            info!(target: "synctv::cluster", "Cluster server shut down gracefully");
+            Ok(())
+        }))
+    }
+
     async fn start_metrics_server(
         &self,
         shutdown_rx: watch::Receiver<bool>,
@@ -2581,7 +2755,7 @@ impl SyncTvServer {
             None
         };
 
-        info!(
+        info!(target: "synctv::metrics",
             "Metrics server listening on {}://{}",
             if tls_acceptor.is_some() {
                 "https"
@@ -2610,18 +2784,18 @@ impl SyncTvServer {
                                 match acceptor.accept(stream).await {
                                     Ok(tls_stream) => {
                                         if let Err(error) = serve_metrics_connection(tls_stream, app).await {
-                                            warn!(peer = %peer_addr, error = %error, "metrics TLS connection failed");
+                                            warn!(target: "synctv::metrics", peer = %peer_addr, error = %error, "metrics TLS connection failed");
                                         }
                                     }
                                     Err(error) => {
-                                        warn!(peer = %peer_addr, error = %error, "metrics TLS handshake failed");
+                                        warn!(target: "synctv::metrics", peer = %peer_addr, error = %error, "metrics TLS handshake failed");
                                     }
                                 }
                             });
                         } else {
                             connections.spawn(async move {
                                 if let Err(error) = serve_metrics_connection(stream, app).await {
-                                    warn!(peer = %peer_addr, error = %error, "metrics connection failed");
+                                    warn!(target: "synctv::metrics", peer = %peer_addr, error = %error, "metrics connection failed");
                                 }
                             });
                         }
@@ -2632,11 +2806,44 @@ impl SyncTvServer {
             shutdown_metrics_connection_tasks(&mut connections, METRICS_CONNECTION_DRAIN_TIMEOUT)
                 .await;
 
-            info!("Metrics server shut down gracefully");
+            info!(target: "synctv::metrics", "Metrics server shut down gracefully");
             Ok(())
         });
 
         Ok(handle)
+    }
+
+    async fn start_health_server(
+        &self,
+        shutdown_rx: watch::Receiver<bool>,
+        shared_http_app_state: Arc<synctv_api::AppState>,
+    ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+        let health_address = self.config.health_address();
+        let listener_addr: std::net::SocketAddr = health_address
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid health address '{health_address}': {e}"))?;
+        let listener = tokio::net::TcpListener::bind(listener_addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to bind health address {listener_addr}: {e}"))?;
+        let health_app =
+            synctv_api::create_health_router().with_state(shared_http_app_state.as_ref().clone());
+        info!(target: "synctv::health", "Health server listening on http://{}", listener_addr);
+
+        Ok(tokio::spawn(async move {
+            let mut rx = shutdown_rx;
+            let graceful = async move {
+                let _ = rx.changed().await;
+            };
+            axum::serve(
+                listener,
+                health_app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(graceful)
+            .await
+            .map_err(|error| anyhow::anyhow!("Health server error: {error}"))?;
+            info!(target: "synctv::health", "Health server shut down gracefully");
+            Ok(())
+        }))
     }
 
     async fn start_management_server(

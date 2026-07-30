@@ -127,6 +127,61 @@ pub(crate) fn apply_env_overrides_with(
             *target = Some(val);
         }
     };
+    let apply_logging_env =
+        |service: &str, logging: &mut LoggingConfig| -> Result<(), ConfigError> {
+            let prefix = format!("SYNCTV_{service}_LOGGING");
+            if let Some(value) = get_env(&format!("{prefix}_LEVEL")) {
+                logging.level = value;
+            }
+            if let Some(value) = get_env(&format!("{prefix}_FORMAT")) {
+                logging.format = value;
+            }
+            if let Some(value) = get_env(&format!("{prefix}_COLOR")) {
+                logging.color = serde_json::from_value(serde_json::Value::String(value.clone()))
+                    .map_err(|error| {
+                        ConfigError::Message(format!("Invalid {prefix}_COLOR '{value}': {error}"))
+                    })?;
+            }
+            if let Some(value) = get_env(&format!("{prefix}_OUTPUT")) {
+                logging.output = match value.as_str() {
+                    "stdout" => LogOutput::Named(LogOutputName::Stdout),
+                    "stderr" => LogOutput::Named(LogOutputName::Stderr),
+                    _ => serde_json::from_str(&value).map_err(|error| {
+                        ConfigError::Message(format!("Invalid {prefix}_OUTPUT: {error}"))
+                    })?,
+                };
+            }
+            if let Some(value) = get_env(&format!("{prefix}_OUTPUT_PATH")) {
+                if value.trim().is_empty() {
+                    return Err(ConfigError::Message(format!(
+                        "{prefix}_OUTPUT_PATH must not be empty"
+                    )));
+                }
+                let rotation = match &logging.output {
+                    LogOutput::File(file) => file.rotation.clone(),
+                    _ => LogRotation::default(),
+                };
+                logging.output = LogOutput::File(LogFileOutput {
+                    r#type: "file".to_string(),
+                    path: value,
+                    rotation,
+                });
+            }
+            if let Some(value) = get_env(&format!("{prefix}_OUTPUT_ROTATION_STRATEGY")) {
+                let file = ensure_file_log_output(logging);
+                file.rotation.strategy = value;
+            }
+            if let Some(value) = get_env(&format!("{prefix}_OUTPUT_ROTATION_MAX_FILES")) {
+                let max_files = value.parse::<usize>().map_err(|error| {
+                    ConfigError::Message(format!(
+                        "Invalid {prefix}_OUTPUT_ROTATION_MAX_FILES '{value}': {error}"
+                    ))
+                })?;
+                let file = ensure_file_log_output(logging);
+                file.rotation.max_files = max_files;
+            }
+            Ok(())
+        };
     let env_override_parse = |name: &str,
                               target: &mut dyn std::any::Any|
      -> Result<(), ConfigError> {
@@ -396,6 +451,10 @@ pub(crate) fn apply_env_overrides_with(
         &mut config.server.grpc_compression_enabled,
     )?;
 
+    env_override_bool("SYNCTV_HEALTH_ENABLED", &mut config.health.enabled)?;
+    env_override_str("SYNCTV_HEALTH_HOST", &mut config.health.host);
+    env_override_parse("SYNCTV_HEALTH_PORT", &mut config.health.port)?;
+
     env_override_bool("SYNCTV_METRICS_ENABLED", &mut config.metrics.enabled)?;
     env_override_str("SYNCTV_METRICS_HOST", &mut config.metrics.host);
     env_override_parse("SYNCTV_METRICS_PORT", &mut config.metrics.port)?;
@@ -648,11 +707,11 @@ pub(crate) fn apply_env_overrides_with(
         &mut config.webauthn.timeout_seconds,
     )?;
 
-    env_override_str("SYNCTV_LOGGING_LEVEL", &mut config.logging.level);
-    env_override_str("SYNCTV_LOGGING_FORMAT", &mut config.logging.format);
-    env_override_opt_str("SYNCTV_LOGGING_FILTER", &mut config.logging.filter);
-    env_override_bool("SYNCTV_LOGGING_BACKTRACE", &mut config.logging.backtrace)?;
-    env_override_opt_str("SYNCTV_LOGGING_FILE_PATH", &mut config.logging.file_path);
+    apply_logging_env("SERVER", &mut config.server.logging)?;
+    apply_logging_env("HEALTH", &mut config.health.logging)?;
+    apply_logging_env("METRICS", &mut config.metrics.logging)?;
+    apply_logging_env("CLUSTER", &mut config.cluster.logging)?;
+    apply_logging_env("MANAGEMENT", &mut config.management.logging)?;
 
     env_override_parse(
         "SYNCTV_LIVESTREAM_RTMP_PORT",
@@ -909,6 +968,16 @@ pub(crate) fn apply_env_overrides_with(
     )?;
 
     env_override_bool("SYNCTV_CLUSTER_ENABLED", &mut config.cluster.enabled)?;
+    env_override_str("SYNCTV_CLUSTER_HOST", &mut config.cluster.host);
+    env_override_parse("SYNCTV_CLUSTER_PORT", &mut config.cluster.port)?;
+    env_override_str(
+        "SYNCTV_CLUSTER_ADVERTISE_HOST",
+        &mut config.cluster.advertise_host,
+    );
+    env_override_parse(
+        "SYNCTV_CLUSTER_ADVERTISE_PORT",
+        &mut config.cluster.advertise_port,
+    )?;
     env_override_parse(
         "SYNCTV_CLUSTER_CRITICAL_CHANNEL_CAPACITY",
         &mut config.cluster.critical_channel_capacity,
@@ -1107,6 +1176,16 @@ pub(crate) fn apply_env_overrides_with(
     Ok(())
 }
 
+fn ensure_file_log_output(logging: &mut LoggingConfig) -> &mut LogFileOutput {
+    if !matches!(logging.output, LogOutput::File(_)) {
+        logging.output = LogOutput::File(LogFileOutput::default());
+    }
+    let LogOutput::File(file) = &mut logging.output else {
+        unreachable!("logging output was initialized as a file")
+    };
+    file
+}
+
 pub(crate) fn resolve_owned_local_paths(
     config: &mut Config,
     config_file: Option<&Path>,
@@ -1155,17 +1234,24 @@ pub(crate) fn resolve_owned_local_paths(
             .to_string()
     };
 
-    config.logging.file_path = config
-        .logging
-        .file_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| {
-            resolve_relative_path_from(value, &data_dir)
+    for logging in [
+        &mut config.server.logging,
+        &mut config.health.logging,
+        &mut config.metrics.logging,
+        &mut config.cluster.logging,
+        &mut config.management.logging,
+    ] {
+        if let LogOutput::File(output) = &mut logging.output {
+            let path = output.path.trim();
+            if path.is_empty() {
+                output.path.clear();
+                continue;
+            }
+            output.path = resolve_relative_path_from(path, &data_dir)
                 .display()
-                .to_string()
-        });
+                .to_string();
+        }
+    }
 
     let cert_path = config.metrics.tls.cert_path.trim();
     config.metrics.tls.cert_path = if cert_path.is_empty() {
@@ -1363,6 +1449,93 @@ mod tests {
         assert_eq!(
             config.file_storage.upload_token_secret,
             env["SYNCTV_FILE_UPLOAD_TOKEN_SECRET"]
+        );
+    }
+
+    #[test]
+    fn service_logging_and_internal_listener_environment_overrides() {
+        let mut config = Config::default();
+        let env = HashMap::from([
+            ("SYNCTV_SERVER_LOGGING_LEVEL", "debug".to_string()),
+            ("SYNCTV_SERVER_LOGGING_FORMAT", "json".to_string()),
+            ("SYNCTV_SERVER_LOGGING_COLOR", "never".to_string()),
+            ("SYNCTV_HEALTH_LOGGING_LEVEL", "error".to_string()),
+            ("SYNCTV_HEALTH_LOGGING_FORMAT", "json".to_string()),
+            ("SYNCTV_HEALTH_LOGGING_COLOR", "never".to_string()),
+            (
+                "SYNCTV_HEALTH_LOGGING_OUTPUT_PATH",
+                "logs/health".to_string(),
+            ),
+            (
+                "SYNCTV_HEALTH_LOGGING_OUTPUT_ROTATION_STRATEGY",
+                "hourly".to_string(),
+            ),
+            (
+                "SYNCTV_HEALTH_LOGGING_OUTPUT_ROTATION_MAX_FILES",
+                "72".to_string(),
+            ),
+            ("SYNCTV_HEALTH_PORT", "18081".to_string()),
+            ("SYNCTV_CLUSTER_ENABLED", "true".to_string()),
+            ("SYNCTV_CLUSTER_HOST", "0.0.0.0".to_string()),
+            ("SYNCTV_CLUSTER_PORT", "15051".to_string()),
+            (
+                "SYNCTV_CLUSTER_ADVERTISE_HOST",
+                "node-0.internal".to_string(),
+            ),
+        ]);
+
+        apply_env_overrides_with(&mut config, &|name| env.get(name).cloned())
+            .expect("service configuration environment overrides should apply");
+
+        assert_eq!(config.server.logging.level, "debug");
+        assert_eq!(config.server.logging.format, "json");
+        assert!(matches!(config.server.logging.color, LogColor::Never));
+        assert_eq!(config.health.logging.level, "error");
+        assert_eq!(config.health.logging.format, "json");
+        assert!(matches!(config.health.logging.color, LogColor::Never));
+        let LogOutput::File(health_output) = &config.health.logging.output else {
+            panic!("health logging output should be a file output");
+        };
+        assert_eq!(health_output.path, "logs/health");
+        assert_eq!(health_output.rotation.strategy, "hourly");
+        assert_eq!(health_output.rotation.max_files, 72);
+        assert_eq!(config.health.port, 18081);
+        assert!(config.cluster.enabled);
+        assert_eq!(config.cluster.port, 15051);
+        assert_eq!(config.advertise_cluster_address(), "node-0.internal:15051");
+    }
+
+    #[test]
+    fn relative_component_log_paths_resolve_under_data_dir() {
+        let dir = tempdir().expect("temp dir should be created");
+        let config_path = dir.path().join("synctv.yaml");
+        let data_dir = dir.path().join("data");
+        let mut config = Config::default();
+        config.data_dir = data_dir.display().to_string();
+        config.server.logging.output = LogOutput::File(LogFileOutput {
+            path: "logs/server".to_string(),
+            ..LogFileOutput::default()
+        });
+        config.health.logging.output = LogOutput::File(LogFileOutput {
+            path: "logs/health".to_string(),
+            ..LogFileOutput::default()
+        });
+
+        resolve_owned_local_paths(&mut config, Some(&config_path), false, None);
+
+        let LogOutput::File(output) = config.server.logging.output else {
+            panic!("server logging output should remain a file output");
+        };
+        assert_eq!(
+            output.path,
+            data_dir.join("logs/server").display().to_string()
+        );
+        let LogOutput::File(output) = config.health.logging.output else {
+            panic!("health logging output should remain a file output");
+        };
+        assert_eq!(
+            output.path,
+            data_dir.join("logs/health").display().to_string()
         );
     }
 }

@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 use super::registry::PublisherInfo;
 use super::registry_trait::{ActivePublisherEntry, PublisherRefreshOutcome, StreamRegistryTrait};
 use crate::util::{
-    validate_publisher_api_address, validate_stream_id_component, validate_stream_ids,
+    validate_publisher_cluster_address, validate_stream_id_component, validate_stream_ids,
 };
 
 /// In-memory stream registry for standalone mode without Redis.
@@ -65,11 +65,11 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
         media_id: &str,
         node_id: &str,
         user_id: &str,
-        api_address: &str,
+        cluster_address: &str,
     ) -> Result<bool> {
         use std::collections::hash_map::Entry;
         validate_stream_ids(room_id, media_id)?;
-        validate_publisher_api_address(api_address, node_id, room_id, media_id)?;
+        validate_publisher_cluster_address(cluster_address, node_id, room_id, media_id)?;
         let mut state = self.state.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
 
@@ -79,7 +79,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
                 let epoch = self.next_epoch.fetch_add(1, Ordering::AcqRel);
                 entry.insert(PublisherInfo {
                     node_id: node_id.to_string(),
-                    api_address: api_address.to_string(),
+                    cluster_address: cluster_address.to_string(),
                     app_name: "live".to_string(),
                     user_id: user_id.to_string(),
                     started_at: synctv_core::SystemClock.now(),
@@ -260,7 +260,7 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("publisher should exist"))?;
         assert_eq!(publisher.node_id, "node1");
         assert_eq!(publisher.user_id, "user1");
-        assert_eq!(publisher.api_address, "localhost:50051");
+        assert_eq!(publisher.cluster_address, "localhost:50051");
         assert_eq!(publisher.epoch, 1);
         Ok(())
     }
@@ -343,13 +343,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn in_memory_registry_rejects_empty_api_address() {
+    async fn in_memory_registry_rejects_empty_cluster_address() {
         let registry = InMemoryStreamRegistry::new();
         let error = registry
             .try_register_publisher("room1", "media1", "node1", "user1", " ")
             .await
-            .expect_err("empty api_address must be rejected");
+            .expect_err("empty cluster_address must be rejected");
 
-        assert!(error.to_string().contains("api_address"));
+        assert!(error.to_string().contains("cluster_address"));
     }
 }

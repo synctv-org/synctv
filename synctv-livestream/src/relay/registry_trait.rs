@@ -35,15 +35,15 @@ pub trait StreamRegistryTrait: Send + Sync {
     /// Try to register as publisher (atomic operation)
     /// Returns true if registered successfully, false if already exists.
     /// `user_id` is stored for reverse-index lookups (pass "" if unknown).
-    /// `api_address` is the advertised shared API address of this node for
-    /// cross-node proxying.
+    /// `cluster_address` is the advertised cluster listener address of this node
+    /// for cross-node proxying.
     async fn try_register_publisher(
         &self,
         room_id: &str,
         media_id: &str,
         node_id: &str,
         user_id: &str,
-        api_address: &str,
+        cluster_address: &str,
     ) -> Result<bool>;
 
     /// Refresh TTL for a publisher (called by heartbeat).
@@ -141,7 +141,7 @@ impl StreamRegistryTrait for StreamRegistry {
         media_id: &str,
         node_id: &str,
         user_id: &str,
-        api_address: &str,
+        cluster_address: &str,
     ) -> Result<bool> {
         Self::try_register_publisher_with_user(
             self,
@@ -149,7 +149,7 @@ impl StreamRegistryTrait for StreamRegistry {
             media_id,
             node_id,
             user_id,
-            api_address,
+            cluster_address,
         )
         .await
     }

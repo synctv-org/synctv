@@ -33,7 +33,7 @@ async fn test_heartbeat_reregisters_after_key_deletion() {
 
     // Register the node
     registry
-        .register("localhost:8080".to_string())
+        .register("localhost:50051".to_string())
         .await
         .expect("register should succeed");
 
@@ -106,7 +106,7 @@ async fn test_heartbeat_auto_retries_on_epoch_mismatch() {
 
     // Register the node (gets epoch from atomic Lua script)
     registry
-        .register("localhost:8080".to_string())
+        .register("localhost:50051".to_string())
         .await
         .expect("register should succeed");
 

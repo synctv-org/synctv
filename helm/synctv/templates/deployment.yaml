@@ -169,6 +169,16 @@ spec:
             - name: api
               containerPort: {{ .Values.config.server.port }}
               protocol: TCP
+            {{- if .Values.config.health.enabled }}
+            - name: health
+              containerPort: {{ .Values.config.health.port | default 8081 }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.config.cluster.enabled }}
+            - name: cluster
+              containerPort: {{ .Values.config.cluster.port | default 50051 }}
+              protocol: TCP
+            {{- end }}
             {{- if .Values.metrics.enabled }}
             - name: metrics
               containerPort: {{ .Values.metrics.port | default 9090 }}
@@ -385,15 +395,15 @@ spec:
           lifecycle:
             {{- toYaml .Values.lifecycle | nindent 12 }}
           {{- end }}
-          {{- if .Values.startupProbe }}
+          {{- if and .Values.config.health.enabled .Values.startupProbe }}
           startupProbe:
             {{- toYaml .Values.startupProbe | nindent 12 }}
           {{- end }}
-          {{- if .Values.livenessProbe }}
+          {{- if and .Values.config.health.enabled .Values.livenessProbe }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           {{- end }}
-          {{- if .Values.readinessProbe }}
+          {{- if and .Values.config.health.enabled .Values.readinessProbe }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           {{- end }}

@@ -67,10 +67,9 @@ pub(crate) struct ExternalPublishManager {
     pool: StreamPool<ExternalPublishStream>,
     registry: Arc<dyn StreamRegistryTrait>,
     local_node_id: String,
-    /// Advertised shared API address of this node. Used when registering
-    /// external publishers in Redis so other nodes can discover and relay
-    /// streams via gRPC on the same listener.
-    local_api_address: String,
+    /// Advertised cluster listener address of this node. Used when registering
+    /// external publishers in Redis so other nodes can discover and relay streams.
+    local_cluster_address: String,
     stream_hub_event_sender: StreamHubEventSender,
     /// Shared HTTP client for FLV connections. Built once with TLS (rustls) support
     /// and reused across all external publish streams to avoid per-stream TLS setup cost.
@@ -122,7 +121,7 @@ impl ExternalPublishManager {
     pub(crate) fn with_timeouts(
         registry: Arc<dyn StreamRegistryTrait>,
         local_node_id: String,
-        local_api_address: String,
+        local_cluster_address: String,
         stream_hub_event_sender: StreamHubEventSender,
         ssrf_guard: SsrfGuard,
         cleanup_check_interval_secs: u64,
@@ -152,7 +151,7 @@ impl ExternalPublishManager {
             pool,
             registry,
             local_node_id,
-            local_api_address,
+            local_cluster_address,
             stream_hub_event_sender,
             http_client,
             ssrf_guard,
@@ -274,18 +273,18 @@ impl ExternalPublishManager {
             self.max_flv_tag_size_bytes,
         ));
 
-        // Validate that we have an API address before registering. Other nodes need this
+        // Validate that we have a cluster address before registering. Other nodes need this
         // address to relay the stream via gRPC; registering with an empty address means
         // cross-node relay will fail silently.
-        if self.local_api_address.is_empty() {
+        if self.local_cluster_address.is_empty() {
             error!(
-                "Cannot register external publisher for {}/{}: local_api_address is empty. \
+                "Cannot register external publisher for {}/{}: local_cluster_address is empty. \
                  Other nodes will be unable to relay this stream. \
-                 Set api_address in LivestreamConfig.",
+                 Set cluster_address in LivestreamConfig.",
                 room_id, media_id
             );
             return Err(crate::error::StreamError::InvalidState(
-                "local_api_address is empty; cannot register external publisher without a valid API address".to_string(),
+                "local_cluster_address is empty; cannot register external publisher without a valid cluster address".to_string(),
             ));
         }
 
@@ -439,7 +438,7 @@ impl ExternalPublishManager {
                 media_id,
                 &self.local_node_id,
                 EXTERNAL_PUBLISHER_USER_ID,
-                &self.local_api_address,
+                &self.local_cluster_address,
             )
             .await
             .map_err(|e| {

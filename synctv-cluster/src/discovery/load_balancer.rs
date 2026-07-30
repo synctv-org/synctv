@@ -281,7 +281,7 @@ mod tests {
         // Register "self" first
         nodes.insert(
             "self".to_string(),
-            NodeInfo::new("self".to_string(), "localhost:8080".to_string()),
+            NodeInfo::new("self".to_string(), "localhost:50051".to_string()),
         );
 
         // Add remote nodes

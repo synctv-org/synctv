@@ -200,9 +200,9 @@ pub struct LivestreamConfig {
     pub gop_cache_max_memory_mb: u64,
     /// Maximum FLV tag data size accepted from external HTTP-FLV sources.
     pub max_flv_tag_size_bytes: usize,
-    /// Advertised shared API address of this node for cross-node proxying.
+    /// Advertised cluster listener address of this node for cross-node proxying.
     /// Used by `PublisherManager` for re-registration after `StreamHub` restart.
-    pub api_address: String,
+    pub cluster_address: String,
     /// Maximum memory (in megabytes) for in-memory HLS segment storage.
     /// 0 means use the built-in default (512 MB).
     pub hls_memory_max_mb: u64,
@@ -594,7 +594,7 @@ impl LivestreamServer {
             ExternalPublishManager::with_timeouts(
                 self.publisher_registry.clone(),
                 local_node_id.clone(),
-                self.config.api_address.clone(),
+                self.config.cluster_address.clone(),
                 event_sender.clone(),
                 self.config.ssrf_guard.clone(),
                 self.config.cleanup_check_interval_seconds,
@@ -912,7 +912,7 @@ impl LivestreamServer {
                 event_sender.clone(),
                 Arc::clone(&is_restarting_flag),
             )
-            .with_api_address(self.config.api_address.clone()),
+            .with_cluster_address(self.config.cluster_address.clone()),
         );
 
         // Create activity callback for the HLS remuxer to record publisher data activity.
@@ -1075,7 +1075,7 @@ mod tests {
             grpc_compression_enabled: true,
             gop_cache_max_memory_mb: 0,
             max_flv_tag_size_bytes: 10 * 1024 * 1024,
-            api_address: "127.0.0.1:0".to_string(),
+            cluster_address: "127.0.0.1:0".to_string(),
             hls_memory_max_mb: 0,
             hls_storage_backend: HlsStorageBackend::Memory,
             hls_storage_path: String::new(),

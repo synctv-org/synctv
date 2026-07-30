@@ -354,7 +354,7 @@ fn cluster_node_to_cluster_proto(
 ) -> synctv_cluster::grpc::synctv::cluster::ServerStateClusterNode {
     synctv_cluster::grpc::synctv::cluster::ServerStateClusterNode {
         node_id: node.node_id,
-        api_address: node.api_address,
+        cluster_address: node.cluster_address,
         last_heartbeat: node.last_heartbeat,
         epoch: node.epoch,
     }
@@ -365,7 +365,7 @@ fn cluster_proto_node_to_core(
 ) -> ClusterNodeStatus {
     ClusterNodeStatus {
         node_id: node.node_id,
-        api_address: node.api_address,
+        cluster_address: node.cluster_address,
         last_heartbeat: node.last_heartbeat,
         epoch: node.epoch,
     }

@@ -75,6 +75,22 @@ fn test_config_api_address() {
 }
 
 #[test]
+fn listener_and_advertise_addresses_format_ipv6_hosts() {
+    let mut config = AppConfig::default();
+    config.server.host = "::1".to_string();
+    config.server.advertise_host = "2001:db8::10".to_string();
+    config.health.host = "[::1]".to_string();
+    config.cluster.host = "::".to_string();
+    config.cluster.advertise_host = "2001:db8::20".to_string();
+
+    assert_eq!(config.api_address(), "[::1]:8080");
+    assert_eq!(config.health_address(), "[::1]:8081");
+    assert_eq!(config.cluster_address(), "[::]:50051");
+    assert_eq!(config.advertise_cluster_address(), "[2001:db8::20]:50051");
+    assert_eq!(config.advertise_api_address(), "[2001:db8::10]:8080");
+}
+
+#[test]
 fn test_config_debug_redacts_secrets() {
     let config = AppConfig::default();
     let debug = format!("{config:?}");

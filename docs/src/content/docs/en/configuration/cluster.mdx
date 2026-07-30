@@ -117,11 +117,11 @@ Use explicit peer addresses:
 cluster:
   discovery_mode: "static"
   peers:
-    - "node2.example.com:8080"
+    - "node2.example.com:50051"
     - "node3.example.com"
 ```
 
-This works for small fixed-size clusters. If a peer omits the port, SyncTV tries `server.port`.
+This works for small fixed-size clusters. If a peer omits the port, SyncTV uses `cluster.port`.
 
 ### `k8s_dns`
 

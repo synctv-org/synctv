@@ -53,6 +53,20 @@ data:
       shutdown_drain_timeout_seconds: {{ .Values.config.server.shutdownDrainTimeoutSeconds | default 30 }}
       grpc_max_message_size_bytes: {{ printf "%d" (int64 (.Values.config.server.grpcMaxMessageSizeBytes | default 16777216)) }}
       grpc_compression_enabled: {{ if hasKey .Values.config.server "grpcCompressionEnabled" }}{{ .Values.config.server.grpcCompressionEnabled }}{{ else }}true{{ end }}
+      logging:
+        level: {{ .Values.config.server.logging.level | default "info" | quote }}
+        format: {{ .Values.config.server.logging.format | default "text" | quote }}
+        {{- if kindIs "map" .Values.config.server.logging.output }}
+        output:
+          type: {{ .Values.config.server.logging.output.type | default "file" | quote }}
+          path: {{ .Values.config.server.logging.output.path | quote }}
+          rotation:
+            strategy: {{ .Values.config.server.logging.output.rotation.strategy | default "daily" | quote }}
+            max_files: {{ .Values.config.server.logging.output.rotation.maxFiles | default 30 }}
+        {{- else }}
+        output: {{ .Values.config.server.logging.output | default "stdout" | quote }}
+        {{- end }}
+        color: {{ .Values.config.server.logging.color | default "auto" | quote }}
       {{- if .Values.config.server.trustedProxies }}
       trusted_proxies:
         {{- range .Values.config.server.trustedProxies }}
@@ -66,6 +80,24 @@ data:
         {{- end }}
       {{- end }}
 
+    health:
+      enabled: {{ if hasKey .Values.config.health "enabled" }}{{ .Values.config.health.enabled }}{{ else }}true{{ end }}
+      host: {{ .Values.config.health.host | default "0.0.0.0" | quote }}
+      port: {{ .Values.config.health.port | default 8081 }}
+      logging:
+        level: {{ .Values.config.health.logging.level | default "info" | quote }}
+        format: {{ .Values.config.health.logging.format | default "text" | quote }}
+        {{- if kindIs "map" .Values.config.health.logging.output }}
+        output:
+          type: {{ .Values.config.health.logging.output.type | default "file" | quote }}
+          path: {{ .Values.config.health.logging.output.path | quote }}
+          rotation:
+            strategy: {{ .Values.config.health.logging.output.rotation.strategy | default "daily" | quote }}
+            max_files: {{ .Values.config.health.logging.output.rotation.maxFiles | default 30 }}
+        {{- else }}
+        output: {{ .Values.config.health.logging.output | default "stdout" | quote }}
+        {{- end }}
+        color: {{ .Values.config.health.logging.color | default "auto" | quote }}
     {{- if and .Values.config.publicIds .Values.config.publicIds.sqids .Values.config.publicIds.sqids.enabled }}
     public_ids:
       sqids:
@@ -115,6 +147,20 @@ data:
           authentication_cache_ttl_seconds: {{ .Values.metrics.auth.kubernetes.authenticationCacheTtlSeconds | default 60 }}
           authorization_cache_ttl_seconds: {{ .Values.metrics.auth.kubernetes.authorizationCacheTtlSeconds | default 60 }}
         {{- end }}
+      logging:
+        level: {{ .Values.metrics.logging.level | default "warn" | quote }}
+        format: {{ .Values.metrics.logging.format | default "text" | quote }}
+        {{- if kindIs "map" .Values.metrics.logging.output }}
+        output:
+          type: {{ .Values.metrics.logging.output.type | default "file" | quote }}
+          path: {{ .Values.metrics.logging.output.path | quote }}
+          rotation:
+            strategy: {{ .Values.metrics.logging.output.rotation.strategy | default "daily" | quote }}
+            max_files: {{ .Values.metrics.logging.output.rotation.maxFiles | default 30 }}
+        {{- else }}
+        output: {{ .Values.metrics.logging.output | default "stdout" | quote }}
+        {{- end }}
+        color: {{ .Values.metrics.logging.color | default "auto" | quote }}
 
     management:
       enabled: {{ .Values.config.management.enabled }}
@@ -122,6 +168,20 @@ data:
       unix_socket_path: {{ .Values.config.management.unixSocketPath | default "/run/synctv/synctv.sock" | quote }}
       port: {{ .Values.config.management.port | default 50052 }}
       enable_reflection: {{ .Values.config.management.enableReflection | default false }}
+      logging:
+        level: {{ .Values.config.management.logging.level | default "info" | quote }}
+        format: {{ .Values.config.management.logging.format | default "text" | quote }}
+        {{- if kindIs "map" .Values.config.management.logging.output }}
+        output:
+          type: {{ .Values.config.management.logging.output.type | default "file" | quote }}
+          path: {{ .Values.config.management.logging.output.path | quote }}
+          rotation:
+            strategy: {{ .Values.config.management.logging.output.rotation.strategy | default "daily" | quote }}
+            max_files: {{ .Values.config.management.logging.output.rotation.maxFiles | default 30 }}
+        {{- else }}
+        output: {{ .Values.config.management.logging.output | default "stdout" | quote }}
+        {{- end }}
+        color: {{ .Values.config.management.logging.color | default "auto" | quote }}
 
     database:
       max_connections: {{ .Values.config.database.maxConnections | default 20 }}
@@ -151,17 +211,6 @@ data:
       refresh_token_duration_days: {{ .Values.config.jwt.refreshTokenDurationDays | default 30 }}
       guest_token_duration_hours: {{ .Values.config.jwt.guestTokenDurationHours | default 4 }}
       clock_skew_leeway_secs: {{ .Values.config.jwt.clockSkewLeewaySecs | default 60 }}
-
-    logging:
-      level: {{ .Values.config.logging.level | quote }}
-      format: {{ .Values.config.logging.format | quote }}
-      {{- if .Values.config.logging.filePath }}
-      file_path: {{ .Values.config.logging.filePath | quote }}
-      {{- end }}
-      {{- if .Values.config.logging.filter }}
-      filter: {{ .Values.config.logging.filter | quote }}
-      {{- end }}
-      backtrace: {{ .Values.config.logging.backtrace | default false }}
 
     cache:
       l1_capacity: {{ $cache.l1Capacity | default 5000 }}
@@ -262,6 +311,10 @@ data:
 
     cluster:
       enabled: {{ .Values.config.cluster.enabled }}
+      host: {{ .Values.config.cluster.host | default "0.0.0.0" | quote }}
+      port: {{ .Values.config.cluster.port | default 50051 }}
+      advertise_host: {{ .Values.config.cluster.advertiseHost | default "" | quote }}
+      advertise_port: {{ .Values.config.cluster.advertisePort | default 0 }}
       critical_channel_capacity: {{ .Values.config.cluster.criticalChannelCapacity | default 10000 }}
       publish_channel_capacity: {{ .Values.config.cluster.publishChannelCapacity | default 100000 }}
       discovery_mode: {{ .Values.config.cluster.discoveryMode | default "redis" | quote }}
@@ -274,6 +327,20 @@ data:
       {{- end }}
       catchup_window_secs: {{ .Values.config.cluster.catchupWindowSecs | default 300 }}
       stream_max_length: {{ .Values.config.cluster.streamMaxLength | default 100000 }}
+      logging:
+        level: {{ .Values.config.cluster.logging.level | default "warn" | quote }}
+        format: {{ .Values.config.cluster.logging.format | default "text" | quote }}
+        {{- if kindIs "map" .Values.config.cluster.logging.output }}
+        output:
+          type: {{ .Values.config.cluster.logging.output.type | default "file" | quote }}
+          path: {{ .Values.config.cluster.logging.output.path | quote }}
+          rotation:
+            strategy: {{ .Values.config.cluster.logging.output.rotation.strategy | default "daily" | quote }}
+            max_files: {{ .Values.config.cluster.logging.output.rotation.maxFiles | default 30 }}
+        {{- else }}
+        output: {{ .Values.config.cluster.logging.output | default "stdout" | quote }}
+        {{- end }}
+        color: {{ .Values.config.cluster.logging.color | default "auto" | quote }}
 
     webrtc:
       mode: {{ .Values.config.webrtc.mode | default "peer_to_peer" | quote }}

@@ -93,6 +93,7 @@ pub struct ServerConfig {
     pub shutdown_drain_timeout_seconds: u64,
     pub grpc_max_message_size_bytes: usize,
     pub grpc_compression_enabled: bool,
+    pub logging: LoggingConfig,
 }
 
 impl Default for ServerConfig {
@@ -108,6 +109,110 @@ impl Default for ServerConfig {
             shutdown_drain_timeout_seconds: 30,
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
             grpc_compression_enabled: true,
+            logging: LoggingConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LoggingConfig {
+    pub level: String,
+    pub format: String,
+    pub output: LogOutput,
+    pub color: LogColor,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            level: "info".to_string(),
+            format: "text".to_string(),
+            output: LogOutput::Named(LogOutputName::Stdout),
+            color: LogColor::Auto,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogColor {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum LogOutput {
+    Named(LogOutputName),
+    File(LogFileOutput),
+}
+
+impl Default for LogOutput {
+    fn default() -> Self {
+        Self::Named(LogOutputName::Stdout)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogOutputName {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LogFileOutput {
+    pub r#type: String,
+    pub path: String,
+    pub rotation: LogRotation,
+}
+
+impl Default for LogFileOutput {
+    fn default() -> Self {
+        Self {
+            r#type: "file".to_string(),
+            path: String::new(),
+            rotation: LogRotation::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LogRotation {
+    pub strategy: String,
+    pub max_files: usize,
+}
+
+impl Default for LogRotation {
+    fn default() -> Self {
+        Self {
+            strategy: "daily".to_string(),
+            max_files: 30,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HealthConfig {
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+    pub logging: LoggingConfig,
+}
+
+impl Default for HealthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            host: "127.0.0.1".to_string(),
+            port: 8081,
+            logging: LoggingConfig::default(),
         }
     }
 }
@@ -392,6 +497,7 @@ pub struct MetricsConfig {
     pub port: u16,
     pub tls: MetricsTlsConfig,
     pub auth: MetricsAuthConfig,
+    pub logging: LoggingConfig,
 }
 
 impl Default for MetricsConfig {
@@ -402,6 +508,10 @@ impl Default for MetricsConfig {
             port: 9090,
             tls: MetricsTlsConfig::default(),
             auth: MetricsAuthConfig::default(),
+            logging: LoggingConfig {
+                level: "warn".to_string(),
+                ..LoggingConfig::default()
+            },
         }
     }
 }
@@ -437,6 +547,7 @@ pub struct ManagementConfig {
     pub unix_socket_path: String,
     pub auth_token: String,
     pub enable_reflection: bool,
+    pub logging: LoggingConfig,
 }
 
 impl Default for ManagementConfig {
@@ -452,6 +563,7 @@ impl Default for ManagementConfig {
             unix_socket_path: default_management_unix_socket_path().display().to_string(),
             auth_token: String::new(),
             enable_reflection: false,
+            logging: LoggingConfig::default(),
         }
     }
 }
@@ -655,28 +767,6 @@ impl std::fmt::Debug for JwtConfig {
             )
             .field("clock_skew_leeway_secs", &self.clock_skew_leeway_secs)
             .finish()
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LoggingConfig {
-    pub level: String,
-    pub format: String,
-    pub filter: Option<String>,
-    pub backtrace: bool,
-    pub file_path: Option<String>,
-}
-
-impl Default for LoggingConfig {
-    fn default() -> Self {
-        Self {
-            level: "info".to_string(),
-            format: "pretty".to_string(),
-            filter: None,
-            backtrace: false,
-            file_path: None,
-        }
     }
 }
 
@@ -1373,6 +1463,11 @@ impl std::str::FromStr for ClusterLeaderElectionMode {
 #[serde(default)]
 pub struct ClusterChannelConfig {
     pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+    pub advertise_host: String,
+    pub advertise_port: u16,
+    pub logging: LoggingConfig,
     pub secret: String,
     pub critical_channel_capacity: usize,
     pub publish_channel_capacity: usize,
@@ -1387,6 +1482,10 @@ impl std::fmt::Debug for ClusterChannelConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClusterChannelConfig")
             .field("enabled", &self.enabled)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("advertise_host", &self.advertise_host)
+            .field("advertise_port", &self.advertise_port)
             .field("secret", &"<redacted>")
             .field("critical_channel_capacity", &self.critical_channel_capacity)
             .field("publish_channel_capacity", &self.publish_channel_capacity)
@@ -1403,6 +1502,14 @@ impl Default for ClusterChannelConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            host: "0.0.0.0".to_string(),
+            port: 50051,
+            advertise_host: String::new(),
+            advertise_port: 0,
+            logging: LoggingConfig {
+                level: "warn".to_string(),
+                ..LoggingConfig::default()
+            },
             secret: String::new(),
             critical_channel_capacity: 10_000,
             publish_channel_capacity: 100_000,
@@ -1582,6 +1689,7 @@ pub struct RateLimitScopeRule {
 #[serde(default)]
 pub struct AppConfig {
     pub server: ServerConfig,
+    pub health: HealthConfig,
     pub time: TimeConfig,
     pub security: SecurityConfig,
     pub data_dir: String,
@@ -1590,7 +1698,6 @@ pub struct AppConfig {
     pub database: DatabaseConfig,
     pub redis: RedisConfig,
     pub jwt: JwtConfig,
-    pub logging: LoggingConfig,
     pub livestream: LivestreamConfig,
     pub file_storage: FileStorageConfig,
     pub chat: ChatConfig,
@@ -1612,6 +1719,7 @@ impl std::fmt::Debug for AppConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppConfig")
             .field("server", &self.server)
+            .field("health", &self.health)
             .field("time", &self.time)
             .field("security", &"<redacted>")
             .field("data_dir", &self.data_dir)
@@ -1620,7 +1728,6 @@ impl std::fmt::Debug for AppConfig {
             .field("database", &"<redacted>")
             .field("redis", &self.redis)
             .field("jwt", &"<redacted>")
-            .field("logging", &self.logging)
             .field("livestream", &self.livestream)
             .field("file_storage", &self.file_storage)
             .field("chat", &self.chat)
@@ -1644,6 +1751,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             server: ServerConfig::default(),
+            health: HealthConfig::default(),
             time: TimeConfig::default(),
             security: SecurityConfig::default(),
             data_dir: default_data_dir().display().to_string(),
@@ -1652,7 +1760,6 @@ impl Default for AppConfig {
             database: DatabaseConfig::default(),
             redis: RedisConfig::default(),
             jwt: JwtConfig::default(),
-            logging: LoggingConfig::default(),
             livestream: LivestreamConfig::default(),
             file_storage: FileStorageConfig::default(),
             chat: ChatConfig::default(),

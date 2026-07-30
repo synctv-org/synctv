@@ -47,15 +47,15 @@ pub(crate) fn validate_stream_ids(room_id: &str, media_id: &str) -> anyhow::Resu
     Ok(())
 }
 
-pub(crate) fn validate_publisher_api_address(
-    api_address: &str,
+pub(crate) fn validate_publisher_cluster_address(
+    cluster_address: &str,
     node_id: &str,
     room_id: &str,
     media_id: &str,
 ) -> anyhow::Result<()> {
-    if api_address.trim().is_empty() {
+    if cluster_address.trim().is_empty() {
         return Err(anyhow::anyhow!(
-            "Cannot register publisher for node={node_id} with empty api_address (room={room_id}, media={media_id})"
+            "Cannot register publisher for node={node_id} with empty cluster_address (room={room_id}, media={media_id})"
         ));
     }
     Ok(())
@@ -165,14 +165,15 @@ mod tests {
     }
 
     #[test]
-    fn validate_publisher_api_address_rejects_empty_values() {
+    fn validate_publisher_cluster_address_rejects_empty_values() {
         assert!(
-            validate_publisher_api_address("127.0.0.1:50051", "node1", "room1", "media1").is_ok()
+            validate_publisher_cluster_address("127.0.0.1:50051", "node1", "room1", "media1")
+                .is_ok()
         );
 
-        let error = validate_publisher_api_address("  ", "node1", "room1", "media1")
-            .expect_err("empty api_address must be rejected");
-        assert!(error.to_string().contains("api_address"));
+        let error = validate_publisher_cluster_address("  ", "node1", "room1", "media1")
+            .expect_err("empty cluster_address must be rejected");
+        assert!(error.to_string().contains("cluster_address"));
     }
 
     #[test]

@@ -119,7 +119,7 @@ Relative `*_file` paths are resolved relative to the configuration file director
 Paths affected by `data_dir`:
 
 - `management.unix_socket_path`
-- `logging.file_path`
+- `<component>.logging.output.path` for `server`, `health`, `metrics`, `cluster`, and `management`
 - `livestream.hls_storage.path`
 - `proxy_slice_cache.file_cache_dir`
 

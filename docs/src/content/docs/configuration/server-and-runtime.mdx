@@ -145,21 +145,45 @@ data_dir: "/var/lib/synctv"
 
 | 字段 | 默认值 | 用途 |
 | --- | --- | --- |
-| `logging.level` | `info` | 日志级别 |
-| `logging.format` | `pretty` | 人类可读日志或 JSON |
-| `logging.filter` | `null` | tracing 过滤表达式 |
-| `logging.backtrace` | `false` | 是否输出 backtrace |
-| `logging.file_path` | `null` | 可选文件输出 |
+| `<component>.logging.level` | `info`（metrics/cluster 为 `warn`） | 组件日志级别 |
+| `<component>.logging.format` | `text` | 组件日志格式（`text` 或 `json`） |
+| `<component>.logging.output` | `stdout` | 组件独立的 `stdout`、`stderr` 或文件对象 |
+| `<component>.logging.color` | `auto` | `auto`、`always` 或 `never` |
 
 Kubernetes 或日志采集系统使用 JSON：
 
 ```yaml
-logging:
-  level: "info"
-  format: "json"
+server:
+  logging:
+    level: "info"
+    format: "text"
+    output: stdout
+    color: auto
+
+health:
+  logging:
+    level: "info"
+    format: "json"
+    output: stdout
+    color: never
+
+metrics:
+  logging:
+    level: "warn"
+    format: "json"
+    output:
+      type: file
+      path: "logs/metrics.log"
+      rotation:
+        strategy: daily
+        max_files: 30
+    color: never
 ```
 
-相对 `logging.file_path` 会解析到 `data_dir` 下。容器中通常输出到 stdout。
+`server`、`health`、`metrics`、`cluster` 和 `management` 分别构建独立日志 layer，
+各自的级别、格式、输出和文件轮转配置单独生效。
+
+各组件的相对日志文件路径按 `data_dir` 解析。`rotation.max_files` 限制组件保留的日志文件数量，默认保留 30 个。容器中通常输出到 stdout。
 
 ## `management`
 

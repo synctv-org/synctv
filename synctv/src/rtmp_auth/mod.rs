@@ -245,7 +245,7 @@ struct PublisherCleanupRuntime {
     user_stream_tracker: Arc<StreamTracker>,
     registry: Arc<dyn StreamRegistryTrait>,
     node_id: String,
-    api_address: String,
+    cluster_address: String,
     stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
     user_stream_index: Arc<dyn UserStreamIndex>,
     pending_publish_cleanups: Arc<DashMap<(String, String), VecDeque<PendingPublishCleanup>>>,
@@ -255,7 +255,7 @@ struct PublisherCleanupRuntimeConfig {
     user_stream_tracker: Arc<StreamTracker>,
     registry: Arc<dyn StreamRegistryTrait>,
     node_id: String,
-    api_address: String,
+    cluster_address: String,
     stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
     user_stream_index: Arc<dyn UserStreamIndex>,
 }
@@ -266,7 +266,7 @@ impl PublisherCleanupRuntime {
             user_stream_tracker: config.user_stream_tracker,
             registry: config.registry,
             node_id: config.node_id,
-            api_address: config.api_address,
+            cluster_address: config.cluster_address,
             stream_event_tx: config.stream_event_tx,
             user_stream_index: config.user_stream_index,
             pending_publish_cleanups: Arc::new(DashMap::new()),
@@ -311,7 +311,7 @@ pub struct SyncTvRtmpAuthConfig {
     pub user_stream_tracker: Arc<StreamTracker>,
     pub registry: Arc<dyn StreamRegistryTrait>,
     pub node_id: String,
-    pub api_address: String,
+    pub cluster_address: String,
     pub public_id_codec: Arc<PublicIdCodec>,
     pub stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
     pub is_restarting: Option<Arc<AtomicBool>>,
@@ -328,7 +328,7 @@ impl SyncTvRtmpAuth {
                 user_stream_tracker: config.user_stream_tracker,
                 registry: config.registry,
                 node_id: config.node_id.clone(),
-                api_address: config.api_address.clone(),
+                cluster_address: config.cluster_address.clone(),
                 stream_event_tx: config.stream_event_tx,
                 user_stream_index: config.user_stream_index,
             }),
@@ -500,7 +500,7 @@ impl PublisherCleanupRuntime {
                 &validated.media_id.to_string(),
                 &self.node_id,
                 &validated.user_id.to_string(),
-                &self.api_address,
+                &self.cluster_address,
             )
             .await
             .map_err(|e| format!("Failed to register publisher in Redis: {e}"))?;
@@ -1056,10 +1056,10 @@ mod tests {
             media_id: &str,
             node_id: &str,
             user_id: &str,
-            api_address: &str,
+            cluster_address: &str,
         ) -> anyhow::Result<bool> {
             self.inner
-                .try_register_publisher(room_id, media_id, node_id, user_id, api_address)
+                .try_register_publisher(room_id, media_id, node_id, user_id, cluster_address)
                 .await
         }
 
@@ -1602,7 +1602,7 @@ mod tests {
             user_stream_tracker: Arc::new(StreamTracker::new()),
             registry,
             node_id: "node-1".to_string(),
-            api_address: "127.0.0.1:50051".to_string(),
+            cluster_address: "127.0.0.1:50051".to_string(),
             stream_event_tx: None,
             user_stream_index: Arc::new(LocalOnlyUserStreamIndex),
         })

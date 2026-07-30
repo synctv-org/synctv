@@ -182,7 +182,7 @@ impl ClusterPeerDiscoveryDriver for StaticClusterPeerDiscoveryDriver {
 
 #[cfg(feature = "k8s")]
 struct K8sClusterPeerDiscoveryDriver {
-    api_port: u16,
+    cluster_port: u16,
     cluster_secret: String,
     shutdown_token: CancellationToken,
 }
@@ -195,7 +195,7 @@ impl ClusterPeerDiscoveryDriver for K8sClusterPeerDiscoveryDriver {
         registry: Arc<dyn ClusterNodeDirectory>,
     ) -> Result<Vec<ClusterDiscoveryTask>, anyhow::Error> {
         info!("Using K8s DNS discovery mode");
-        let discovery_options = k8s_dns_discovery_options_from_env(self.api_port)?;
+        let discovery_options = k8s_dns_discovery_options_from_env(self.cluster_port)?;
         let discovery = K8sDnsDiscovery::from_options(&discovery_options).map_err(|e| {
             anyhow::anyhow!(
                 "Failed to initialize K8s DNS discovery: {e}. \
@@ -225,13 +225,13 @@ impl ClusterPeerDiscoveryDriver for K8sClusterPeerDiscoveryDriver {
 
 #[cfg(feature = "k8s")]
 fn k8s_dns_discovery_options_from_env(
-    api_port: u16,
+    cluster_port: u16,
 ) -> Result<K8sDnsDiscoveryOptions, anyhow::Error> {
     Ok(K8sDnsDiscoveryOptions {
         service_name: required_env("HEADLESS_SERVICE_NAME", "cluster.discovery_mode='k8s_dns'")?,
         namespace: required_env("POD_NAMESPACE", "cluster.discovery_mode='k8s_dns'")?,
         self_ip: required_env("POD_IP", "cluster.discovery_mode='k8s_dns'")?,
-        api_port,
+        cluster_port,
     })
 }
 
@@ -255,7 +255,7 @@ fn build_cluster_peer_discovery_driver(
 ) -> Box<dyn ClusterPeerDiscoveryDriver> {
     match config.cluster.discovery_mode {
         ClusterDiscoveryMode::K8sDns => Box::new(K8sClusterPeerDiscoveryDriver {
-            api_port: config.server.port,
+            cluster_port: config.cluster.port,
             cluster_secret: config.cluster.secret.clone(),
             shutdown_token,
         }),
@@ -294,7 +294,7 @@ fn build_static_cluster_peer_discovery_driver(
         .peers
         .iter()
         .map(|addr| StaticPeerConfig {
-            api_address: addr.clone(),
+            cluster_address: addr.clone(),
         })
         .collect();
 
@@ -308,7 +308,7 @@ fn build_static_cluster_peer_discovery_driver(
             probe_interval_secs: 10,
             connect_timeout: Duration::from_secs(3),
             cluster_secret: config.cluster.secret.clone(),
-            default_api_port: config.server.port,
+            default_cluster_port: config.cluster.port,
         },
         cancel_token: shutdown_token,
     })
@@ -352,23 +352,23 @@ pub async fn activate_cluster_node(
     registry: &Arc<dyn ClusterNodeDirectory>,
     health_monitor: &Arc<dyn ClusterHealthRuntime>,
 ) -> Result<(), anyhow::Error> {
-    let advertise_api = config.advertise_api_address();
+    let cluster_address = config.advertise_cluster_address();
 
     registry
-        .register(advertise_api.clone())
+        .register(cluster_address.clone())
         .await
         .map_err(|e| anyhow::anyhow!("Failed to register node in Redis: {e}"))?;
 
     info!(
         node_id = %cm.node_id(),
-        advertise_api = %advertise_api,
+        cluster_address = %cluster_address,
         "Node registered in cluster"
     );
 
     let conn_mgr_for_hb = connection_manager.clone();
     cm.start_heartbeat_loop_with_directory(
         registry.clone(),
-        advertise_api,
+        cluster_address,
         Some(move || conn_mgr_for_hb.connection_count()),
     )
     .await;

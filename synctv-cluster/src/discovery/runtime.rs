@@ -11,7 +11,7 @@ use crate::error::Result;
 
 #[async_trait]
 pub trait ClusterNodeDirectory: Send + Sync {
-    async fn register(&self, api_address: String) -> Result<()>;
+    async fn register(&self, cluster_address: String) -> Result<()>;
     async fn heartbeat(&self) -> Result<HeartbeatResult>;
     async fn unregister(&self) -> Result<()>;
     async fn register_remote(&self, node_info: NodeInfo) -> Result<()>;

@@ -48,7 +48,7 @@ impl ClusterClient {
     /// Resolve a routable cluster node by ID.
     ///
     /// This keeps cluster's responsibility limited to topology discovery. Callers
-    /// use the returned `api_address` to invoke their own internal gRPC services.
+    /// use the returned `cluster_address` to invoke their own internal gRPC services.
     pub async fn resolve_routable_node(&self, target_node_id: &str) -> Result<NodeInfo> {
         self.find_routable_node(target_node_id).await
     }

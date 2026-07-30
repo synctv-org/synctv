@@ -36,8 +36,6 @@ pub struct GoogleRpcStatusSchema {
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        health::liveness_check,
-        health::readiness_check,
         public::get_public_settings,
         public::get_server_info,
         public::get_server_time,
@@ -1063,11 +1061,11 @@ mod tests {
         assert_eq!(
             paths,
             [
-                "/health/live",
-                "/health/ready",
                 "/api/public/settings",
                 "/api/public/server-info",
                 "/api/public/time",
+                "/api/auth/email/confirm",
+                "/api/auth/guest-token",
             ]
         );
     }
@@ -1105,8 +1103,6 @@ mod tests {
         );
 
         for (path, method) in [
-            ("/health/live", "get"),
-            ("/health/ready", "get"),
             ("/api/public/settings", "get"),
             ("/api/auth/email/confirm", "post"),
             ("/api/auth/opaque/registration/start", "post"),

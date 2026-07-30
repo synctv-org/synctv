@@ -78,6 +78,10 @@ fn validate_random_secret(path: &str, value: &str, errors: &mut Vec<String>) {
     }
 }
 
+fn is_unspecified_host(host: &str) -> bool {
+    matches!(host.trim(), "0.0.0.0" | "::" | "[::]")
+}
+
 impl AppConfig {
     fn database_split_config_present(&self) -> bool {
         !self.database.host.trim().is_empty()
@@ -521,23 +525,84 @@ impl AppConfig {
             }
         }
 
-        if self.logging.level.parse::<tracing::Level>().is_err() {
-            errors.push(format!(
-                "logging.level '{}' must be one of: trace, debug, info, warn, error",
-                self.logging.level
-            ));
+        if self.health.enabled && self.health.port == 0 {
+            errors.push("health.port must be between 1 and 65535, got 0".to_string());
         }
-        if !matches!(self.logging.format.as_str(), "pretty" | "json") {
-            errors.push(format!(
-                "logging.format '{}' must be either 'pretty' or 'json'",
-                self.logging.format
-            ));
+        if self.cluster.enabled && self.cluster.port == 0 {
+            errors.push("cluster.port must be between 1 and 65535, got 0".to_string());
         }
-        if let Some(filter) = self.logging.filter.as_deref().map(str::trim) {
-            if !filter.is_empty() && tracing_subscriber::EnvFilter::try_new(filter).is_err() {
+        if self.management.enabled
+            && matches!(self.management.transport, ManagementTransport::Tcp)
+            && self.management.port == 0
+        {
+            errors.push("management.port must be between 1 and 65535, got 0".to_string());
+        }
+        let mut listener_ports = vec![
+            ("server.port", self.server.port),
+            ("livestream.rtmp_port", self.livestream.rtmp_port),
+        ];
+        if self.health.enabled {
+            listener_ports.push(("health.port", self.health.port));
+        }
+        if self.metrics.enabled {
+            listener_ports.push(("metrics.port", self.metrics.port));
+        }
+        if self.cluster.enabled {
+            listener_ports.push(("cluster.port", self.cluster.port));
+        }
+        if self.management.enabled && matches!(self.management.transport, ManagementTransport::Tcp)
+        {
+            listener_ports.push(("management.port", self.management.port));
+        }
+        for (index, (left_name, left_port)) in listener_ports.iter().enumerate() {
+            for (right_name, right_port) in listener_ports.iter().skip(index + 1) {
+                if left_port == right_port {
+                    errors.push(format!(
+                        "{left_name} and {right_name} must use different ports ({left_port})"
+                    ));
+                }
+            }
+        }
+
+        for (name, logging) in [
+            ("server", &self.server.logging),
+            ("health", &self.health.logging),
+            ("metrics", &self.metrics.logging),
+            ("cluster", &self.cluster.logging),
+            ("management", &self.management.logging),
+        ] {
+            if logging.level.parse::<tracing::Level>().is_err() {
                 errors.push(format!(
-                    "logging.filter '{filter}' is not a valid tracing filter specification"
+                    "{name}.logging.level '{}' must be one of: trace, debug, info, warn, error",
+                    logging.level
                 ));
+            }
+            if !matches!(logging.format.as_str(), "text" | "json") {
+                errors.push(format!(
+                    "{name}.logging.format '{}' must be text or json",
+                    logging.format
+                ));
+            }
+            if let LogOutput::File(output) = &logging.output {
+                if output.r#type != "file" {
+                    errors.push(format!("{name}.logging.output.type must be file"));
+                }
+                if output.path.trim().is_empty() {
+                    errors.push(format!("{name}.logging.output.path must not be empty"));
+                }
+                if !matches!(
+                    output.rotation.strategy.as_str(),
+                    "daily" | "hourly" | "never"
+                ) {
+                    errors.push(format!(
+                        "{name}.logging.output.rotation.strategy must be daily, hourly, or never"
+                    ));
+                }
+                if output.rotation.max_files == 0 {
+                    errors.push(format!(
+                        "{name}.logging.output.rotation.max_files must be at least 1"
+                    ));
+                }
             }
         }
 
@@ -561,44 +626,6 @@ impl AppConfig {
         // confirms it needs to create a root user.
         if self.bootstrap.create_root_user && self.bootstrap.root_username.len() < 3 {
             errors.push("Root username must be at least 3 characters".to_string());
-        }
-
-        // Validate port conflicts: RTMP must not collide with the unified API port.
-        if self.livestream.rtmp_port == self.server.port {
-            errors.push(format!(
-                "livestream.rtmp_port ({}) and server.port ({}) must be different",
-                self.livestream.rtmp_port, self.server.port
-            ));
-        }
-
-        if self.metrics.enabled {
-            if self.metrics.port == 0 {
-                errors.push("metrics.port must be between 1 and 65535, got 0".to_string());
-            }
-            if self.metrics.port == self.server.port {
-                errors.push(format!(
-                    "metrics bind target ({}) must be different from server.host:port ({})",
-                    self.metrics_address(),
-                    self.api_address()
-                ));
-            }
-            if self.metrics.port == self.livestream.rtmp_port {
-                errors.push(format!(
-                    "metrics bind target ({}) must be different from livestream port ({})",
-                    self.metrics_address(),
-                    self.livestream.rtmp_port
-                ));
-            }
-            if self.management.enabled
-                && matches!(self.management.transport, ManagementTransport::Tcp)
-                && self.metrics.port == self.management.port
-            {
-                errors.push(format!(
-                    "metrics bind target ({}) must be different from management bind target ({})",
-                    self.metrics_address(),
-                    self.management_bind_target()
-                ));
-            }
         }
 
         // Validate remote transport max message size (prevent OOM attacks)
@@ -1108,6 +1135,16 @@ impl AppConfig {
             );
         }
 
+        if cluster_mode_active && self.cluster.discovery_mode == ClusterDiscoveryMode::Static {
+            for (index, peer) in self.cluster.peers.iter().enumerate() {
+                if let Err(error) =
+                    synctv_cluster::normalize_static_peer_address(peer, self.cluster.port)
+                {
+                    errors.push(format!("cluster.peers[{index}] is invalid: {error}"));
+                }
+            }
+        }
+
         // Kubernetes metadata is collected by the outer runtime bootstrap.
 
         if cluster_mode_active
@@ -1224,13 +1261,28 @@ impl AppConfig {
             );
         }
 
-        if self.cluster.enabled && self.advertise_host() == "0.0.0.0" {
+        if self.cluster.enabled && is_unspecified_host(&self.advertise_host()) {
             errors.push(
                 "server.advertise_host must resolve to a routable address when distributed mode is enabled. \
-                 The current advertise host resolves to 0.0.0.0, which other replicas cannot reach for cluster/HLS proxying. \
+                 The current advertise host resolves to an unspecified address, which other replicas cannot reach for cluster/HLS proxying. \
                  Use the pod IP, node IP, or service-reachable hostname."
                     .to_string(),
             );
+        }
+
+        if self.cluster.enabled {
+            let cluster_advertise_host = if self.cluster.advertise_host.trim().is_empty() {
+                self.advertise_host()
+            } else {
+                self.cluster.advertise_host.clone()
+            };
+            if is_unspecified_host(&cluster_advertise_host) {
+                errors.push(
+                    "cluster.advertise_host must resolve to a routable address when distributed mode is enabled. \
+                     Use the pod IP, node IP, or service-reachable hostname."
+                        .to_string(),
+                );
+            }
         }
 
         // Warn if cors_allowed_origins is empty
@@ -1370,7 +1422,9 @@ mod tests {
         valid_android_package_name, valid_apple_application_identifier,
         valid_sha256_certificate_fingerprint, validate_project_url,
     };
-    use crate::app_config::{AppConfig, ClusterChannelConfig, SecurityConfig, SsrfConfig};
+    use crate::app_config::{
+        AppConfig, ClusterChannelConfig, ClusterDiscoveryMode, SecurityConfig, SsrfConfig,
+    };
 
     #[test]
     fn project_url_accepts_http_urls_with_project_paths() {
@@ -1501,5 +1555,37 @@ mod tests {
         let debug = format!("{config:?}");
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("cluster-debug-secret"));
+    }
+
+    #[test]
+    fn cluster_advertise_host_rejects_unspecified_addresses() {
+        for host in ["0.0.0.0", "::", "[::]"] {
+            let mut config = AppConfig::default();
+            config.cluster.enabled = true;
+            config.server.advertise_host = "api.example.com".to_string();
+            config.cluster.advertise_host = host.to_string();
+
+            let errors = config
+                .validate()
+                .expect_err("an unspecified cluster advertise host must fail validation");
+            assert!(errors
+                .iter()
+                .any(|error| error.contains("cluster.advertise_host must resolve")));
+        }
+    }
+
+    #[test]
+    fn static_discovery_rejects_malformed_peer_addresses() {
+        let mut config = AppConfig::default();
+        config.cluster.enabled = true;
+        config.cluster.discovery_mode = ClusterDiscoveryMode::Static;
+        config.cluster.peers = vec!["node.example.com:abc".to_string()];
+
+        let errors = config
+            .validate()
+            .expect_err("a malformed static peer must fail validation");
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("cluster.peers[0] is invalid")));
     }
 }

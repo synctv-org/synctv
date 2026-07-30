@@ -82,7 +82,7 @@ set +a; \
 export SYNCTV_DATA_DIR="$(DEV_DATA_DIR)"; \
 export SYNCTV_DATABASE_URL="$(DEV_DATABASE_URL)"; \
 export SYNCTV_REDIS_URL="$(DEV_REDIS_URL)"; \
-export SYNCTV_LOGGING_LEVEL="$${SYNCTV_LOGGING_LEVEL:-debug}"; \
+export SYNCTV_SERVER_LOGGING_LEVEL="$${SYNCTV_SERVER_LOGGING_LEVEL:-debug}"; \
 export SYNCTV_SERVER_HOST=0.0.0.0; \
 export SYNCTV_SERVER_PORT=8080; \
 export SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='$(DEV_CORS_ORIGINS)'; \
@@ -239,7 +239,7 @@ dev-start: dev-up dev-build ## Start SyncTV in the background with development d
 	printf "%s\n" "$$pid" >"$(DEV_PID)"; \
 	printf "Started SyncTV pid %s. Logs: %s\n" "$$pid" "$(DEV_LOG)"; \
 	deadline=$$((SECONDS + $(DEV_START_TIMEOUT))); \
-	until [ -S "$(DEV_SOCKET)" ] && "$(DEV_BIN)" --endpoint "unix://$(DEV_SOCKET)" system stats --output json >/dev/null 2>&1 && curl -fsS http://127.0.0.1:8080/health/ready >/dev/null; do \
+	until [ -S "$(DEV_SOCKET)" ] && "$(DEV_BIN)" --endpoint "unix://$(DEV_SOCKET)" system stats --output json >/dev/null 2>&1 && curl -fsS http://127.0.0.1:8081/health/ready >/dev/null; do \
 		if ! kill -0 "$$pid" 2>/dev/null; then \
 			printf "SyncTV exited during startup. Last log lines:\n"; \
 			tail -n 80 "$(DEV_LOG)" || true; \

@@ -21,7 +21,7 @@ import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 主服务健康检查：
 
 ```bash
-curl -fsS http://localhost:8080/health/ready
+curl -fsS http://localhost:8081/health/ready
 ```
 
 探针要求：
@@ -60,20 +60,26 @@ curl -fsS \
 
 ## 日志
 
-生产使用 JSON 日志：
+服务级日志默认使用 text：
 
 ```yaml
-logging:
-  level: "info"
-  format: "json"
+server:
+  logging:
+    level: "info"
+    format: "text"
+    output: stdout
+    color: auto
 ```
 
 排障时可以临时调高：
 
 ```yaml
-logging:
-  level: "debug"
-  filter: "synctv=debug,tower_http=info"
+server:
+  logging:
+    level: "debug"
+    format: "text"
+    output: stdout
+    color: auto
 ```
 
 注意：
@@ -88,6 +94,7 @@ logging:
 - **认证安全**： 登录失败率、MFA 失败率、邮箱验证码发送失败、OAuth2 state 错误和 brute-force 锁定。
 - **实时连接**： WebSocket 连接数、每用户/房间连接限制、消息限流和断开重连峰值。
 - **媒体路径**： Provider 错误率、上游超时、proxy bypass、slice cache 命中率、Range 异常和直播拉流重试。
+- **日志管线**：`logging_dropped_lines_total{component=...}` 应保持为零；数值增长表示对应组件的 non-blocking 队列达到容量上限。
 
 ## 告警起点
 
@@ -99,6 +106,7 @@ logging:
 | WebSocket 大量断开 | Ingress 超时、Pod 滚动更新、连接限制过低 | Ingress timeout、shutdown drain、连接限制 |
 | Provider 错误突增 | 上游不可用、header 不一致、凭据过期 | Provider 配置、代理 header、上游响应 |
 | Redis 错误 | Redis 重启、网络抖动、Sentinel 配置错误 | Redis 日志、`redis.deployment_mode`、连接串 |
+| `logging_dropped_lines_total` 增长 | 日志输出端变慢，或组件产生日志的速度持续高于输出速度 | 组件日志级别、磁盘或采集器延迟、组件输出配置 |
 
 ## 事故信息收集
 

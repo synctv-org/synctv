@@ -12,8 +12,8 @@ spec:
   selector:
     {{- include "synctv.appSelectorLabels" . | nindent 4 }}
   ports:
-    - name: api
-      port: {{ .Values.config.server.port }}
-      targetPort: api
+    - name: cluster
+      port: {{ .Values.config.cluster.port | default 50051 }}
+      targetPort: cluster
       protocol: TCP
 {{- end }}

@@ -70,6 +70,7 @@ fn standalone_test_config() -> Config {
             cors_allowed_origins: Vec::new(),
             advertise_host: String::new(),
             shutdown_drain_timeout_seconds: 30,
+            logging: LoggingConfig::default(),
         },
         time: TimeConfig::default(),
         data_dir: default_data_dir().display().to_string(),
@@ -84,7 +85,7 @@ fn standalone_test_config() -> Config {
             secret: "test-jwt-secret-key-for-testing-minimum-length".to_string(),
             ..JwtConfig::default()
         },
-        logging: LoggingConfig::default(),
+        health: HealthConfig::default(),
         livestream: LivestreamConfig::default(),
         file_storage: test_file_storage_config(),
         chat: ChatConfig::default(),
@@ -123,6 +124,7 @@ fn cluster_test_config() -> Config {
             cors_allowed_origins: Vec::new(),
             advertise_host: "127.0.0.1".to_string(),
             shutdown_drain_timeout_seconds: 30,
+            logging: LoggingConfig::default(),
         },
         time: TimeConfig::default(),
         data_dir: default_data_dir().display().to_string(),
@@ -140,7 +142,7 @@ fn cluster_test_config() -> Config {
             secret: "test-jwt-secret-key-for-testing-minimum-length".to_string(),
             ..JwtConfig::default()
         },
-        logging: LoggingConfig::default(),
+        health: HealthConfig::default(),
         livestream: LivestreamConfig {
             hls_storage: HlsStorageConfig::SharedFile(HlsFileStorageConfig {
                 path: "/var/lib/synctv/hls".to_string(),

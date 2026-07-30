@@ -203,7 +203,7 @@ impl ServerStateRemoteClient for ApiServerStateRemoteClient {
         let mut request =
             Request::new(synctv_cluster::grpc::synctv::cluster::GetServerStateRequest {});
         attach_cluster_secret(&mut request, &self.runtime_settings.cluster.secret)?;
-        let mut client = server_state_client(&self.runtime_settings, &node.api_address).await?;
+        let mut client = server_state_client(&self.runtime_settings, &node.cluster_address).await?;
         let response = client.get_server_state(request).await.map_err(|error| {
             ServerStateError::RemoteRequest {
                 node_id: node.node_id.clone(),
@@ -255,7 +255,7 @@ impl ServerStateSliceCacheRuntime for ApiServerStateSliceCacheRuntime {
 fn cluster_node_to_target(node: synctv_cluster::discovery::NodeInfo) -> ServerStateClusterTarget {
     ServerStateClusterTarget {
         node_id: node.node_id,
-        api_address: node.api_address,
+        cluster_address: node.cluster_address,
         last_heartbeat: node.last_heartbeat.timestamp(),
         epoch: node.epoch,
     }

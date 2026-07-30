@@ -36,7 +36,7 @@ OAuth2 provider 实例属于 [Runtime settings](../runtime-settings/#oauth2)。�
 ```bash
 synctv config validate
 synctv config show --output yaml
-curl -fsS http://localhost:8080/health/ready
+curl -fsS http://localhost:8081/health/ready
 ```
 
 ## 单机生产重点字段
@@ -94,7 +94,7 @@ curl -fsS http://localhost:8080/health/ready
 | 字段 | 类型/可选值 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `server.host` | IP/监听地址 | `0.0.0.0` | 主 API 监听地址 |
-| `server.port` | 端口 | `8080` | HTTP REST、公开 gRPC、健康检查端口 |
+| `server.port` | 端口 | `8080` | HTTP REST 和公开 gRPC 监听端口 |
 | `server.enable_reflection` | 布尔值 | `false` | 是否开启公开 gRPC reflection |
 | `server.trusted_proxies` | 字符串数组 | `[]` | 可信反向代理 IP/CIDR |
 | `server.cors_allowed_origins` | 字符串数组 | `[]` | 允许跨域访问的前端 origin |
@@ -102,6 +102,14 @@ curl -fsS http://localhost:8080/health/ready
 | `server.shutdown_drain_timeout_seconds` | 秒数 | `30` | 关闭时等待连接 drain 的时间 |
 | `server.grpc_max_message_size_bytes` | 字节数 | `16777216` | gRPC 消息最大大小 |
 | `server.grpc_compression_enabled` | 布尔值 | `true` | 是否允许 gRPC gzip 压缩协商 |
+
+## `health`
+
+| 字段 | 类型/可选值 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `health.enabled` | 布尔值 | `true` | 是否启用独立健康监听器 |
+| `health.host` | IP/监听地址 | `127.0.0.1` | 健康监听器地址 |
+| `health.port` | 端口 | `8081` | 存活和就绪端点的健康监听器端口 |
 
 ## `time`、`public_ids`、`security`
 
@@ -197,11 +205,12 @@ curl -fsS http://localhost:8080/health/ready
 | `jwt.refresh_token_duration_days` | 天数 | `30` | refresh token 有效期 |
 | `jwt.guest_token_duration_hours` | 小时数 | `4` | guest token 有效期 |
 | `jwt.clock_skew_leeway_secs` | 秒数 | `60` | token 时间误差容忍 |
-| `logging.level` | `error`、`warn`、`info`、`debug`、`trace` | `info` | 日志级别 |
-| `logging.format` | `pretty` 或 `json` | `pretty` | 日志格式 |
-| `logging.filter` | tracing filter 字符串或空 | `null` | 高级模块级日志过滤 |
-| `logging.backtrace` | 布尔值 | `false` | 是否输出 backtrace |
-| `logging.file_path` | 文件路径或空 | `null` | 日志文件路径 |
+| `<component>.logging.level` | `error`、`warn`、`info`、`debug`、`trace` | `info`（metrics/cluster 为 `warn`） | 组件日志级别 |
+| `<component>.logging.format` | `text` 或 `json` | `text` | 组件日志格式 |
+| `<component>.logging.output` | `stdout`、`stderr` 或文件对象 | `stdout` | 组件独立输出目标 |
+| `<component>.logging.output.rotation.strategy` | `daily`、`hourly`、`never` | `daily` | 文件轮转周期 |
+| `<component>.logging.output.rotation.max_files` | 正整数 | `30` | 每个组件保留的文件数量 |
+| `<component>.logging.color` | `auto`、`always`、`never` | `auto` | 组件颜色输出 |
 
 ## `livestream`
 
@@ -345,6 +354,10 @@ file_storage:
 | `bootstrap.root_username` | 字符串 | `root` | 初始 root 用户名 |
 | `bootstrap.root_password` | secret 字符串 | `""` | 初始 root 密码 |
 | `cluster.enabled` | 布尔值 | `false` | 是否启用集群模式 |
+| `cluster.host` | IP/监听地址 | `0.0.0.0` | 集群内部 gRPC 监听地址 |
+| `cluster.port` | 端口 | `50051` | 集群内部 gRPC 监听端口 |
+| `cluster.advertise_host` | 主机名或 IP | `""` | 向其他节点广播的内部地址；空值使用 `server.advertise_host` |
+| `cluster.advertise_port` | 端口或 `0` | `0` | 向其他节点广播的内部端口；`0` 使用 `cluster.port` |
 | `cluster.secret` | secret 字符串 | `""` | 集群内部 gRPC 认证密钥 |
 | `cluster.secret_file` | 文件路径或空 | `""` | 读取集群内部 gRPC 认证密钥的文件 |
 | `cluster.critical_channel_capacity` | 整数 | `10000` | 高优先级集群事件队列容量 |

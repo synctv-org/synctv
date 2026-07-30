@@ -213,8 +213,8 @@ pub struct RealtimeManager {
 struct HeartbeatState {
     node_registry: Option<Arc<dyn ClusterNodeDirectory>>,
     handle: Option<tokio::task::JoinHandle<()>>,
-    /// Stored API address for heartbeat re-registration (avoid empty-address bug)
-    api_address: String,
+    /// Stored cluster address for heartbeat re-registration.
+    cluster_address: String,
 }
 
 async fn await_shutdown_handle(
@@ -383,7 +383,7 @@ impl RealtimeManager {
             heartbeat_state: tokio::sync::Mutex::new(HeartbeatState {
                 node_registry: None,
                 handle: None,
-                api_address: String::new(),
+                cluster_address: String::new(),
             }),
             connection_manager: runtime.connection_runtime,
             heartbeat_failure_count: Arc::new(AtomicU64::new(0)),
@@ -759,20 +759,24 @@ impl RealtimeManager {
     pub async fn start_heartbeat_loop<N, F>(
         &self,
         node_registry: Arc<N>,
-        api_address: String,
+        cluster_address: String,
         connection_count_fn: Option<F>,
     ) where
         N: ClusterNodeDirectory + 'static,
         F: Fn() -> usize + Send + Sync + 'static,
     {
-        self.start_heartbeat_loop_with_directory(node_registry, api_address, connection_count_fn)
-            .await;
+        self.start_heartbeat_loop_with_directory(
+            node_registry,
+            cluster_address,
+            connection_count_fn,
+        )
+        .await;
     }
 
     pub async fn start_heartbeat_loop_with_directory<F>(
         &self,
         node_registry: Arc<dyn ClusterNodeDirectory>,
-        api_address: String,
+        cluster_address: String,
         connection_count_fn: Option<F>,
     ) where
         F: Fn() -> usize + Send + Sync + 'static,
@@ -785,9 +789,9 @@ impl RealtimeManager {
         let is_quarantined = self.is_quarantined.clone();
         let leader_elector = self.leader_elector.clone();
 
-        // Store the API address into the spawned task so it can be used for
+        // Store the cluster address in the spawned task so it can be used for
         // re-registration when the local cache has been lost or corrupted.
-        let stored_api_address = api_address.clone();
+        let stored_cluster_address = cluster_address.clone();
 
         let registry_for_task = node_registry.clone();
         let handle = tokio::spawn(async move {
@@ -825,17 +829,17 @@ impl RealtimeManager {
                                 // internally. If we still get NeedReregistration, it means the
                                 // internal retry failed.
                                 warn!("Node key expired in Redis, internal auto-registration failed; \
-                                       attempting re-registration with stored api_address");
+                                       attempting re-registration with stored cluster_address");
                                 if let Err(e) = node_registry
-                                    .register(stored_api_address.clone())
+                                    .register(stored_cluster_address.clone())
                                     .await
                                 {
                                     error!(
                                         error = %e,
-                                        "Re-registration with stored api_address also failed; will retry on next heartbeat"
+                                        "Re-registration with stored cluster_address also failed; will retry on next heartbeat"
                                     );
                                 } else {
-                                    info!("Re-registration with stored api_address succeeded");
+                                    info!("Re-registration with stored cluster_address succeeded");
                                 }
                             }
                             Ok(HeartbeatResult::EpochMismatch(remote_epoch)) => {
@@ -845,19 +849,19 @@ impl RealtimeManager {
                                     remote_epoch = remote_epoch,
                                     consecutive_mismatches = mismatches,
                                     "Epoch mismatch during heartbeat, internal auto-registration failed; \
-                                     attempting re-registration with stored api_address"
+                                     attempting re-registration with stored cluster_address"
                                 );
 
                                 if let Err(e) = node_registry
-                                    .register(stored_api_address.clone())
+                                    .register(stored_cluster_address.clone())
                                     .await
                                 {
                                     error!(
                                         error = %e,
-                                        "Re-registration with stored api_address also failed after epoch mismatch"
+                                        "Re-registration with stored cluster_address also failed after epoch mismatch"
                                     );
                                 } else {
-                                    info!("Re-registration with stored api_address succeeded after epoch mismatch");
+                                    info!("Re-registration with stored cluster_address succeeded after epoch mismatch");
                                     // Reset epoch mismatch counter on successful re-registration
                                     epoch_mismatch_count.store(0, Ordering::Release);
                                     is_quarantined.store(false, Ordering::Release);
@@ -887,21 +891,21 @@ impl RealtimeManager {
                             }
                             Ok(HeartbeatResult::EmptyAddress) => {
                                 warn!(
-                                    "Heartbeat: local cache has empty api_address; \
-                                     attempting re-registration with stored api_address ({})",
-                                    stored_api_address
+                                    "Heartbeat: local cache has empty cluster_address; \
+                                     attempting re-registration with stored cluster_address ({})",
+                                    stored_cluster_address
                                 );
                                 if let Err(e) = node_registry
-                                    .register(stored_api_address.clone())
+                                    .register(stored_cluster_address.clone())
                                     .await
                                 {
                                     error!(
                                         error = %e,
-                                        "Re-registration with stored api_address failed; \
+                                        "Re-registration with stored cluster_address failed; \
                                          node remains unreachable by peers"
                                     );
                                 } else {
-                                    info!("Re-registration with stored api_address succeeded; \
+                                    info!("Re-registration with stored cluster_address succeeded; \
                                            node should be reachable again");
                                 }
                             }
@@ -933,11 +937,11 @@ impl RealtimeManager {
             }
         });
 
-        // Store the node_registry, handle, and api_address for re-registration
+        // Store the node registry, handle, and cluster address for re-registration.
         let mut state = self.heartbeat_state.lock().await;
         state.node_registry = Some(node_registry);
         state.handle = Some(handle);
-        state.api_address = api_address;
+        state.cluster_address = cluster_address;
         info!(interval_secs = interval_secs, "Heartbeat loop started");
     }
 

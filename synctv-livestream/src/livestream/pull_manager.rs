@@ -187,20 +187,19 @@ impl PullStreamManager {
         // Store the epoch from publisher info for split-brain detection
         let epoch = publisher_info.epoch;
 
-        // Use the shared api_address from publisher info. All publisher nodes MUST
-        // set this during registration for reliable cross-node proxying.
+        // Use the cluster listener address registered by the publisher node.
         let publisher_address = publisher_info
-            .validate_api_address()
+            .validate_cluster_address()
             .map(std::string::ToString::to_string)
             .map_err(|_| {
                 error!(
                     node_id = %publisher_info.node_id,
-                    "Publisher has no valid api_address. \
-                     Set advertise_api_address on the publisher node."
+                    "Publisher has no valid cluster_address. \
+                     Set advertise_cluster_address on the publisher node."
                 );
                 crate::error::StreamError::InvalidAddress(format!(
-                    "Publisher node '{}' has no api_address. \
-                     Configure advertise_api_address on the publisher node.",
+                    "Publisher node '{}' has no cluster_address. \
+                     Configure advertise_cluster_address on the publisher node.",
                     publisher_info.node_id
                 ))
             })?;

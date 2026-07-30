@@ -11,6 +11,9 @@ description: 常用 SYNCTV_ 环境变量速查。
 | `SYNCTV_DATA_DIR` | `data_dir` |
 | `SYNCTV_SERVER_HOST` | `server.host` |
 | `SYNCTV_SERVER_PORT` | `server.port` |
+| `SYNCTV_HEALTH_ENABLED` | `health.enabled` |
+| `SYNCTV_HEALTH_HOST` | `health.host` |
+| `SYNCTV_HEALTH_PORT` | `health.port` |
 | `SYNCTV_SERVER_ENABLE_REFLECTION` | `server.enable_reflection` |
 | `SYNCTV_SERVER_CORS_ALLOWED_ORIGINS` | `server.cors_allowed_origins` |
 | `SYNCTV_SERVER_TRUSTED_PROXIES` | `server.trusted_proxies` |
@@ -129,11 +132,41 @@ description: 常用 SYNCTV_ 环境变量速查。
 
 | 环境变量 | 对应配置 |
 | --- | --- |
-| `SYNCTV_LOGGING_LEVEL` | `logging.level` |
-| `SYNCTV_LOGGING_FORMAT` | `logging.format` |
-| `SYNCTV_LOGGING_FILTER` | `logging.filter` |
-| `SYNCTV_LOGGING_BACKTRACE` | `logging.backtrace` |
-| `SYNCTV_LOGGING_FILE_PATH` | `logging.file_path` |
+| `SYNCTV_SERVER_LOGGING_LEVEL` | `server.logging.level` |
+| `SYNCTV_SERVER_LOGGING_FORMAT` | `server.logging.format` |
+| `SYNCTV_SERVER_LOGGING_OUTPUT` | `server.logging.output` |
+| `SYNCTV_SERVER_LOGGING_COLOR` | `server.logging.color` |
+| `SYNCTV_SERVER_LOGGING_OUTPUT_PATH` | `server.logging.output.path` |
+| `SYNCTV_SERVER_LOGGING_OUTPUT_ROTATION_STRATEGY` | `server.logging.output.rotation.strategy` |
+| `SYNCTV_SERVER_LOGGING_OUTPUT_ROTATION_MAX_FILES` | `server.logging.output.rotation.max_files` |
+| `SYNCTV_HEALTH_LOGGING_LEVEL` | `health.logging.level` |
+| `SYNCTV_HEALTH_LOGGING_FORMAT` | `health.logging.format` |
+| `SYNCTV_HEALTH_LOGGING_OUTPUT` | `health.logging.output` |
+| `SYNCTV_HEALTH_LOGGING_COLOR` | `health.logging.color` |
+| `SYNCTV_HEALTH_LOGGING_OUTPUT_PATH` | `health.logging.output.path` |
+| `SYNCTV_HEALTH_LOGGING_OUTPUT_ROTATION_STRATEGY` | `health.logging.output.rotation.strategy` |
+| `SYNCTV_HEALTH_LOGGING_OUTPUT_ROTATION_MAX_FILES` | `health.logging.output.rotation.max_files` |
+| `SYNCTV_METRICS_LOGGING_LEVEL` | `metrics.logging.level` |
+| `SYNCTV_METRICS_LOGGING_FORMAT` | `metrics.logging.format` |
+| `SYNCTV_METRICS_LOGGING_OUTPUT` | `metrics.logging.output` |
+| `SYNCTV_METRICS_LOGGING_COLOR` | `metrics.logging.color` |
+| `SYNCTV_METRICS_LOGGING_OUTPUT_PATH` | `metrics.logging.output.path` |
+| `SYNCTV_METRICS_LOGGING_OUTPUT_ROTATION_STRATEGY` | `metrics.logging.output.rotation.strategy` |
+| `SYNCTV_METRICS_LOGGING_OUTPUT_ROTATION_MAX_FILES` | `metrics.logging.output.rotation.max_files` |
+| `SYNCTV_CLUSTER_LOGGING_LEVEL` | `cluster.logging.level` |
+| `SYNCTV_CLUSTER_LOGGING_FORMAT` | `cluster.logging.format` |
+| `SYNCTV_CLUSTER_LOGGING_OUTPUT` | `cluster.logging.output` |
+| `SYNCTV_CLUSTER_LOGGING_COLOR` | `cluster.logging.color` |
+| `SYNCTV_CLUSTER_LOGGING_OUTPUT_PATH` | `cluster.logging.output.path` |
+| `SYNCTV_CLUSTER_LOGGING_OUTPUT_ROTATION_STRATEGY` | `cluster.logging.output.rotation.strategy` |
+| `SYNCTV_CLUSTER_LOGGING_OUTPUT_ROTATION_MAX_FILES` | `cluster.logging.output.rotation.max_files` |
+| `SYNCTV_MANAGEMENT_LOGGING_LEVEL` | `management.logging.level` |
+| `SYNCTV_MANAGEMENT_LOGGING_FORMAT` | `management.logging.format` |
+| `SYNCTV_MANAGEMENT_LOGGING_OUTPUT` | `management.logging.output` |
+| `SYNCTV_MANAGEMENT_LOGGING_COLOR` | `management.logging.color` |
+| `SYNCTV_MANAGEMENT_LOGGING_OUTPUT_PATH` | `management.logging.output.path` |
+| `SYNCTV_MANAGEMENT_LOGGING_OUTPUT_ROTATION_STRATEGY` | `management.logging.output.rotation.strategy` |
+| `SYNCTV_MANAGEMENT_LOGGING_OUTPUT_ROTATION_MAX_FILES` | `management.logging.output.rotation.max_files` |
 
 ## 管理端点
 
@@ -303,6 +336,10 @@ SYNCTV_FILE_STORAGE_BACKENDS='{"s3_public":{"type":"s3","endpoint":"https://s3.e
 | 环境变量 | 对应配置 |
 | --- | --- |
 | `SYNCTV_CLUSTER_ENABLED` | `cluster.enabled` |
+| `SYNCTV_CLUSTER_HOST` | `cluster.host` |
+| `SYNCTV_CLUSTER_PORT` | `cluster.port` |
+| `SYNCTV_CLUSTER_ADVERTISE_HOST` | `cluster.advertise_host` |
+| `SYNCTV_CLUSTER_ADVERTISE_PORT` | `cluster.advertise_port` |
 | `SYNCTV_CLUSTER_SECRET` | `cluster.secret` |
 | `SYNCTV_CLUSTER_SECRET_FILE` | `cluster.secret` 文件 |
 | `SYNCTV_CLUSTER_CRITICAL_CHANNEL_CAPACITY` | `cluster.critical_channel_capacity` |

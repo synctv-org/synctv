@@ -557,7 +557,7 @@ pub(in crate::cli) struct HumanServerStateRedis {
 #[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanServerStateClusterNode {
     node_id: String,
-    api_address: String,
+    cluster_address: String,
     last_heartbeat: String,
     epoch: u64,
 }
@@ -2164,7 +2164,7 @@ impl ToHuman for synctv_management::proto::ServerStateClusterNode {
     fn to_human(&self) -> Self::Human {
         HumanServerStateClusterNode {
             node_id: self.node_id.clone(),
-            api_address: self.api_address.clone(),
+            cluster_address: self.cluster_address.clone(),
             last_heartbeat: humanize_timestamp(self.last_heartbeat),
             epoch: self.epoch,
         }

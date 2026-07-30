@@ -103,13 +103,15 @@ USER synctv
 
 # Expose ports
 # 8080: HTTP API + public gRPC (also serves HLS via /api/room/movie/live/hls/*)
+# 8081: dedicated health endpoints
+# 50051: dedicated cluster gRPC
 # 1935: RTMP (livestream)
 # 3478/udp: STUN (WebRTC)
-EXPOSE 8080 1935 3478/udp
+EXPOSE 8080 8081 50051 1935 3478/udp
 
 # Health check against the HTTP health endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD ["curl", "-f", "http://localhost:8080/health/ready"]
+    CMD ["curl", "-f", "http://localhost:8081/health/ready"]
 
 # Run the application
 ENTRYPOINT ["/app/synctv"]

@@ -117,13 +117,13 @@ critical 事件满队列时会反压发送方；普通事件在极端拥塞时�
 cluster:
   discovery_mode: "static"
   peers:
-    - "node2.example.com:8080"
+    - "node2.example.com:50051"
     - "node3.example.com"
 ```
 
 适合固定服务器数量的小集群。
 
-如果 peer 不写端口，SyncTV 会尝试使用 `server.port`。
+如果 peer 不写端口，SyncTV 使用 `cluster.port`。
 
 ### `k8s_dns`
 

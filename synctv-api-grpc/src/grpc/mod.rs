@@ -263,25 +263,32 @@ struct GrpcOptionalRegistrations {
 
 const fn grpc_service_registration_plan(
     runtime_settings: &synctv_api_common::ApiRuntimeSettings,
+    expose_cluster_services: bool,
     optional: GrpcOptionalRegistrations,
 ) -> GrpcServiceRegistrationPlan {
+    let expose_public_services = !expose_cluster_services;
     GrpcServiceRegistrationPlan {
-        reflection_enabled: runtime_settings.server.enable_reflection,
+        reflection_enabled: expose_public_services && runtime_settings.server.enable_reflection,
         health_state: GrpcHealthRegistrationState {
-            auth_registered: true,
-            user_registered: true,
-            room_registered: true,
-            public_registered: true,
-            admin_registered: true,
-            email_registered: optional.email_registered,
-            notification_registered: optional.notification_registered,
-            oauth2_registered: optional.oauth2_registered,
-            provider_services_registered: optional.provider_services_registered,
-            cluster_service_registered: optional.cluster_service_registered,
-            server_state_registered: optional.server_state_registered,
-            realtime_presence_registered: optional.realtime_presence_registered,
-            proxy_slice_cache_registered: optional.proxy_slice_cache_registered,
-            livestream_relay_registered: optional.livestream_relay_registered,
+            auth_registered: expose_public_services,
+            user_registered: expose_public_services,
+            room_registered: expose_public_services,
+            public_registered: expose_public_services,
+            admin_registered: expose_public_services,
+            email_registered: expose_public_services && optional.email_registered,
+            notification_registered: expose_public_services && optional.notification_registered,
+            oauth2_registered: expose_public_services && optional.oauth2_registered,
+            provider_services_registered: expose_public_services
+                && optional.provider_services_registered,
+            cluster_service_registered: expose_cluster_services
+                && optional.cluster_service_registered,
+            server_state_registered: expose_cluster_services && optional.server_state_registered,
+            realtime_presence_registered: expose_cluster_services
+                && optional.realtime_presence_registered,
+            proxy_slice_cache_registered: expose_cluster_services
+                && optional.proxy_slice_cache_registered,
+            livestream_relay_registered: expose_cluster_services
+                && optional.livestream_relay_registered,
         },
     }
 }
@@ -835,6 +842,7 @@ pub struct GrpcServerOptions<'a> {
     /// When provided, the server will use this listener instead of binding internally.
     /// This allows the caller to detect port-in-use errors before spawning the server task.
     pub grpc_listener: Option<tokio::net::TcpListener>,
+    pub expose_cluster_services: bool,
 }
 
 struct FallbackHttpAppStateDeps {
@@ -1116,7 +1124,19 @@ async fn build_axum_router_with_health(
         webrtc_status,
         credential_encryption,
         grpc_listener: _,
+        expose_cluster_services,
     } = grpc_options;
+
+    macro_rules! profile_info {
+        ($($field:tt)*) => {
+            if expose_cluster_services {
+                tracing::info!(target: "synctv::cluster", $($field)*);
+            } else {
+                tracing::info!($($field)*);
+            }
+        };
+    }
+
     validate_cluster_grpc_runtime_requirements(runtime_settings, node_registry.is_some())?;
 
     let shared_http_app_state = if let Some(state) = shared_http_app_state {
@@ -1212,10 +1232,11 @@ async fn build_axum_router_with_health(
         })?
     };
 
-    tracing::info!(
-        "Building gRPC router for {}",
-        runtime_settings.api_address()
-    );
+    if expose_cluster_services {
+        tracing::info!(target: "synctv::cluster", "Building cluster gRPC router");
+    } else {
+        tracing::info!("Building public gRPC router");
+    }
 
     let user_service_clone = user_service.as_ref().clone();
     let room_service_clone = room_service.as_ref().clone();
@@ -1278,14 +1299,14 @@ async fn build_axum_router_with_health(
     );
 
     let grpc_unary_request_timeout = grpc_unary_request_timeout();
-    tracing::info!(
+    profile_info!(
         grpc_unary_request_timeout_secs = grpc_unary_request_timeout.as_secs(),
         "gRPC impl-level unary request timeout configured"
     );
 
     // Get the configured max message size (prevents OOM from oversized messages)
     let max_message_size = runtime_settings.server.grpc_max_message_size_bytes;
-    tracing::info!(
+    profile_info!(
         max_message_size_bytes = max_message_size,
         max_message_size_mb = max_message_size / (1024 * 1024),
         "gRPC message size limit configured"
@@ -1300,10 +1321,11 @@ async fn build_axum_router_with_health(
     let notification_service_registered = notification_service.is_some();
     let oauth2_service_registered = oauth2_service.is_some();
     let provider_services_registered = providers_manager.is_some();
-    let cluster_service_registered =
-        should_register_cluster_grpc_service(runtime_settings, node_registry.is_some());
+    let cluster_service_registered = expose_cluster_services
+        && should_register_cluster_grpc_service(runtime_settings, node_registry.is_some());
     let grpc_registration_plan = grpc_service_registration_plan(
         runtime_settings,
+        expose_cluster_services,
         GrpcOptionalRegistrations {
             email_registered: email_service_registered,
             notification_registered: notification_service_registered,
@@ -1325,437 +1347,455 @@ async fn build_axum_router_with_health(
     );
 
     let mut routes = tonic::service::Routes::builder();
-    if grpc_registration_plan.health_state.auth_registered {
-        routes.add_service(
-            AuthServiceServer::new(client_service).with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-    }
+    if !expose_cluster_services {
+        if grpc_registration_plan.health_state.auth_registered {
+            routes.add_service(
+                AuthServiceServer::new(client_service).with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+        }
 
-    if grpc_registration_plan.health_state.user_registered {
-        routes.add_service(
-            UserServiceServer::new(client_service_clone1).with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-    }
+        if grpc_registration_plan.health_state.user_registered {
+            routes.add_service(
+                UserServiceServer::new(client_service_clone1).with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+        }
 
-    if grpc_registration_plan.health_state.room_registered {
-        routes.add_service(
-            RoomServiceServer::new(client_service_clone2).with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-    }
+        if grpc_registration_plan.health_state.room_registered {
+            routes.add_service(
+                RoomServiceServer::new(client_service_clone2).with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+        }
 
-    if grpc_registration_plan.health_state.public_registered {
-        routes.add_service(
-            PublicServiceServer::new(client_service_clone3).with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-    }
+        if grpc_registration_plan.health_state.public_registered {
+            routes.add_service(
+                PublicServiceServer::new(client_service_clone3).with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+        }
 
-    if grpc_registration_plan.health_state.admin_registered {
-        routes.add_service(
-            AdminServiceServer::new(admin_service).with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-    }
+        if grpc_registration_plan.health_state.admin_registered {
+            routes.add_service(
+                AdminServiceServer::new(admin_service).with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+        }
 
-    if grpc_registration_plan.health_state.email_registered {
-        routes.add_service(
-            EmailServiceServer::new(client_service_clone4).with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-    }
+        if grpc_registration_plan.health_state.email_registered {
+            routes.add_service(
+                EmailServiceServer::new(client_service_clone4).with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+        }
 
-    // Register NotificationService if notification_service is configured
-    if grpc_registration_plan.health_state.notification_registered {
-        let notif_svc = notification_service.ok_or_else(|| {
-            anyhow::anyhow!("NotificationService gRPC registration requires notification_service")
-        })?;
-        let notification_api = shared_api_runtime.notification_api.clone().ok_or_else(|| {
-            anyhow::anyhow!(
+        // Register NotificationService if notification_service is configured
+        if grpc_registration_plan.health_state.notification_registered {
+            let notif_svc = notification_service.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NotificationService gRPC registration requires notification_service"
+                )
+            })?;
+            let notification_api =
+                shared_api_runtime.notification_api.clone().ok_or_else(|| {
+                    anyhow::anyhow!(
                 "NotificationService gRPC registration requires shared notification API wiring"
             )
-        })?;
-        let notif_impl = NotificationServiceImpl::new(
-            notification_api,
-            shared_api_runtime.request_executor.clone(),
-            Arc::new(runtime_settings.clone()),
-        );
-        routes.add_service(
-            NotificationServiceServer::new(notif_impl).with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        tracing::info!("NotificationService gRPC registered");
+                })?;
+            let notif_impl = NotificationServiceImpl::new(
+                notification_api,
+                shared_api_runtime.request_executor.clone(),
+                Arc::new(runtime_settings.clone()),
+            );
+            routes.add_service(
+                NotificationServiceServer::new(notif_impl).with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            tracing::info!("NotificationService gRPC registered");
 
-        // Spawn a background task that bridges notification creation events to
-        // the realtime event system, enabling real-time WebSocket push for
-        // persistent user notifications. Without this, clients must poll.
-        // The task listens for the server shutdown signal so it does not leak
-        // when the gRPC server stops.
-        {
-            let event_service = Arc::clone(&event_service);
-            let mut notification_rx = notif_svc.subscribe_events();
-            // Clone the optional shutdown watch receiver so the bridge task
-            // can stop cleanly when the server receives a shutdown signal.
-            // When no shutdown receiver is configured (e.g., test environments),
-            // the bridge runs until the notification channel closes.
-            let mut bridge_shutdown_rx: Option<tokio::sync::watch::Receiver<bool>> =
-                shutdown_rx.clone();
-            tokio::spawn(async move {
-                loop {
-                    // Build a future that resolves when the shutdown signal fires.
-                    // When no receiver is available, use a pending future so the
-                    // select falls through to the notification arm.
-                    let shutdown_future: std::pin::Pin<
-                        Box<dyn std::future::Future<Output = ()> + Send>,
-                    > = match bridge_shutdown_rx.as_mut() {
-                        Some(rx) => Box::pin(async move {
-                            if rx.changed().await.is_err() {
-                                tracing::debug!(
+            // Spawn a background task that bridges notification creation events to
+            // the realtime event system, enabling real-time WebSocket push for
+            // persistent user notifications. Without this, clients must poll.
+            // The task listens for the server shutdown signal so it does not leak
+            // when the gRPC server stops.
+            {
+                let event_service = Arc::clone(&event_service);
+                let mut notification_rx = notif_svc.subscribe_events();
+                // Clone the optional shutdown watch receiver so the bridge task
+                // can stop cleanly when the server receives a shutdown signal.
+                // When no shutdown receiver is configured (e.g., test environments),
+                // the bridge runs until the notification channel closes.
+                let mut bridge_shutdown_rx: Option<tokio::sync::watch::Receiver<bool>> =
+                    shutdown_rx.clone();
+                tokio::spawn(async move {
+                    loop {
+                        // Build a future that resolves when the shutdown signal fires.
+                        // When no receiver is available, use a pending future so the
+                        // select falls through to the notification arm.
+                        let shutdown_future: std::pin::Pin<
+                            Box<dyn std::future::Future<Output = ()> + Send>,
+                        > = match bridge_shutdown_rx.as_mut() {
+                            Some(rx) => Box::pin(async move {
+                                if rx.changed().await.is_err() {
+                                    tracing::debug!(
                                     "Notification-to-realtime bridge shutdown signal channel closed"
                                 );
-                            }
-                        }),
-                        None => Box::pin(std::future::pending()),
-                    };
+                                }
+                            }),
+                            None => Box::pin(std::future::pending()),
+                        };
 
-                    tokio::select! {
-                        // Honour the server-wide shutdown signal.
-                        () = shutdown_future => {
-                            tracing::info!("Notification-to-realtime bridge task stopping (shutdown signal)");
-                            break;
-                        }
-                        result = notification_rx.recv() => {
-                            match result {
-                                Ok(event) => {
-                                    let realtime_event = synctv_realtime::sync::RealtimeEvent::UserNotification {
-                                        event_id: synctv_common::snanoid!(16),
-                                        user_id: event.user_id,
-                                        notification_id: event.notification.id.to_string(),
-                                        title: event.notification.title,
-                                        content: event.notification.content,
-                                        notification_type: event.notification.notification_type,
-                                        data: event.notification.data,
-                                        timestamp: synctv_core::SystemClock.now(),
-                                    };
-                                    let outcome = event_service.publish_only_outcome(realtime_event);
-                                    if !outcome.satisfies(
-                                        RealtimeDeliveryRequirement::DistributedIfAvailable,
-                                    ) {
-                                        tracing::error!(
-                                            "Notification-to-realtime bridge failed to reach the distributed fan-out path"
+                        tokio::select! {
+                            // Honour the server-wide shutdown signal.
+                            () = shutdown_future => {
+                                tracing::info!("Notification-to-realtime bridge task stopping (shutdown signal)");
+                                break;
+                            }
+                            result = notification_rx.recv() => {
+                                match result {
+                                    Ok(event) => {
+                                        let realtime_event = synctv_realtime::sync::RealtimeEvent::UserNotification {
+                                            event_id: synctv_common::snanoid!(16),
+                                            user_id: event.user_id,
+                                            notification_id: event.notification.id.to_string(),
+                                            title: event.notification.title,
+                                            content: event.notification.content,
+                                            notification_type: event.notification.notification_type,
+                                            data: event.notification.data,
+                                            timestamp: synctv_core::SystemClock.now(),
+                                        };
+                                        let outcome = event_service.publish_only_outcome(realtime_event);
+                                        if !outcome.satisfies(
+                                            RealtimeDeliveryRequirement::DistributedIfAvailable,
+                                        ) {
+                                            tracing::error!(
+                                                "Notification-to-realtime bridge failed to reach the distributed fan-out path"
+                                            );
+                                        }
+                                    }
+                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                        tracing::warn!(
+                                            lagged = n,
+                                            "Notification-to-realtime bridge lagged, some notifications may not have been pushed in real time"
                                         );
                                     }
-                                }
-                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                                    tracing::warn!(
-                                        lagged = n,
-                                        "Notification-to-realtime bridge lagged, some notifications may not have been pushed in real time"
-                                    );
-                                }
-                                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                    tracing::info!("Notification event channel closed, stopping bridge task");
-                                    break;
+                                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                        tracing::info!("Notification event channel closed, stopping bridge task");
+                                        break;
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            });
-            tracing::info!(
-                "Notification-to-realtime bridge task spawned for real-time WebSocket push"
+                });
+                tracing::info!(
+                    "Notification-to-realtime bridge task spawned for real-time WebSocket push"
+                );
+            }
+        }
+
+        // Register OAuth2Service if oauth2_service is configured.
+        // Uses a single service with no transport-level auth middleware. Public
+        // endpoints (GetAuthorizationUrl, ExchangeAuthorizationCode,
+        // ListAvailableProviders) require no authentication. Private endpoints
+        // (GetAuthorizationUrlForBind, UnlinkProvider, GetLinkedProviders) execute
+        // the shared impl-level auth pipeline inline through RequestExecutor.
+        if grpc_registration_plan.health_state.oauth2_registered {
+            let _oauth2_service = oauth2_service.ok_or_else(|| {
+                anyhow::anyhow!("OAuth2Service gRPC registration requires oauth2_service")
+            })?;
+            let oauth2_api = shared_api_runtime.oauth2_api.clone().ok_or_else(|| {
+                anyhow::anyhow!("OAuth2Service gRPC registration requires shared OAuth2 API wiring")
+            })?;
+            let oauth2_impl = oauth2_service::OAuth2GrpcService::new(
+                oauth2_api,
+                Arc::new(runtime_settings.clone()),
+                shared_api_runtime.request_executor.clone(),
             );
+            // Public endpoints are unauthenticated; private endpoints invoke the
+            // shared impl-level auth pipeline inline.
+            routes.add_service(
+                OAuth2ServiceServer::new(oauth2_impl).with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            tracing::info!("OAuth2Service gRPC registered (public + authenticated split)");
         }
-    }
 
-    // Register OAuth2Service if oauth2_service is configured.
-    // Uses a single service with no transport-level auth middleware. Public
-    // endpoints (GetAuthorizationUrl, ExchangeAuthorizationCode,
-    // ListAvailableProviders) require no authentication. Private endpoints
-    // (GetAuthorizationUrlForBind, UnlinkProvider, GetLinkedProviders) execute
-    // the shared impl-level auth pipeline inline through RequestExecutor.
-    if grpc_registration_plan.health_state.oauth2_registered {
-        let _oauth2_service = oauth2_service.ok_or_else(|| {
-            anyhow::anyhow!("OAuth2Service gRPC registration requires oauth2_service")
-        })?;
-        let oauth2_api = shared_api_runtime.oauth2_api.clone().ok_or_else(|| {
-            anyhow::anyhow!("OAuth2Service gRPC registration requires shared OAuth2 API wiring")
-        })?;
-        let oauth2_impl = oauth2_service::OAuth2GrpcService::new(
-            oauth2_api,
-            Arc::new(runtime_settings.clone()),
-            shared_api_runtime.request_executor.clone(),
-        );
-        // Public endpoints are unauthenticated; private endpoints invoke the
-        // shared impl-level auth pipeline inline.
-        routes.add_service(
-            OAuth2ServiceServer::new(oauth2_impl).with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        tracing::info!("OAuth2Service gRPC registered (public + authenticated split)");
-    }
+        // Register provider gRPC services
+        if grpc_registration_plan
+            .health_state
+            .provider_services_registered
+        {
+            if providers_manager.is_none() {
+                return Err(anyhow::anyhow!(
+                    "provider gRPC registration requires providers_manager"
+                ));
+            }
+            tracing::info!("Registering provider gRPC services");
 
-    // Register provider gRPC services
-    if grpc_registration_plan
-        .health_state
-        .provider_services_registered
-    {
-        if providers_manager.is_none() {
-            return Err(anyhow::anyhow!(
-                "provider gRPC registration requires providers_manager"
-            ));
-        }
-        tracing::info!("Registering provider gRPC services");
+            let shared_api_runtime = shared_api_runtime.clone();
 
-        let shared_api_runtime = shared_api_runtime.clone();
-
-        // Register provider gRPC services. Auth, blacklist, rate limiting, and
-        // timeouts are enforced explicitly inside the shared impl layer.
-        routes.add_service(
-            ProviderCommonServiceServer::new(providers::common::ProviderCommonGrpcService::new(
-                &shared_api_runtime,
-                Arc::new(runtime_settings.clone()),
-            ))
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            AlistProviderServiceServer::new(providers::alist::AlistProviderGrpcService::new(
-                &shared_api_runtime,
-                shared_api_runtime.request_executor.clone(),
-                Arc::new(runtime_settings.clone()),
-            ))
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            BilibiliProviderServiceServer::new(
-                providers::bilibili::BilibiliProviderGrpcService::new(
+            // Register provider gRPC services. Auth, blacklist, rate limiting, and
+            // timeouts are enforced explicitly inside the shared impl layer.
+            routes.add_service(
+                ProviderCommonServiceServer::new(
+                    providers::common::ProviderCommonGrpcService::new(
+                        &shared_api_runtime,
+                        Arc::new(runtime_settings.clone()),
+                    ),
+                )
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            routes.add_service(
+                AlistProviderServiceServer::new(providers::alist::AlistProviderGrpcService::new(
                     &shared_api_runtime,
                     shared_api_runtime.request_executor.clone(),
                     Arc::new(runtime_settings.clone()),
+                ))
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
                 ),
-            )
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            CloudreveProviderServiceServer::new(
-                providers::cloudreve::CloudreveProviderGrpcService::new(
+            );
+            routes.add_service(
+                BilibiliProviderServiceServer::new(
+                    providers::bilibili::BilibiliProviderGrpcService::new(
+                        &shared_api_runtime,
+                        shared_api_runtime.request_executor.clone(),
+                        Arc::new(runtime_settings.clone()),
+                    ),
+                )
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            routes.add_service(
+                CloudreveProviderServiceServer::new(
+                    providers::cloudreve::CloudreveProviderGrpcService::new(
+                        &shared_api_runtime,
+                        shared_api_runtime.request_executor.clone(),
+                        Arc::new(runtime_settings.clone()),
+                    ),
+                )
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            routes.add_service(
+                EmbyProviderServiceServer::new(providers::emby::EmbyProviderGrpcService::new(
                     &shared_api_runtime,
                     shared_api_runtime.request_executor.clone(),
                     Arc::new(runtime_settings.clone()),
+                ))
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
                 ),
-            )
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            EmbyProviderServiceServer::new(providers::emby::EmbyProviderGrpcService::new(
-                &shared_api_runtime,
-                shared_api_runtime.request_executor.clone(),
-                Arc::new(runtime_settings.clone()),
-            ))
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            RtmpProviderServiceServer::new(providers::rtmp::RtmpProviderGrpcService::new(
-                &shared_api_runtime,
-                shared_api_runtime.request_executor.clone(),
-                Arc::new(runtime_settings.clone()),
-            ))
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            TwitchProviderServiceServer::new(providers::twitch::TwitchProviderGrpcService::new(
-                &shared_api_runtime,
-                shared_api_runtime.request_executor.clone(),
-                Arc::new(runtime_settings.clone()),
-            ))
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            HuyaProviderServiceServer::new(providers::huya::HuyaProviderGrpcService::new(
-                &shared_api_runtime,
-                shared_api_runtime.request_executor.clone(),
-                Arc::new(runtime_settings.clone()),
-            ))
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            DouyuProviderServiceServer::new(providers::douyu::DouyuProviderGrpcService::new(
-                &shared_api_runtime,
-                shared_api_runtime.request_executor.clone(),
-                Arc::new(runtime_settings.clone()),
-            ))
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            AcFunProviderServiceServer::new(providers::acfun::AcFunProviderGrpcService::new(
-                &shared_api_runtime,
-                shared_api_runtime.request_executor.clone(),
-                Arc::new(runtime_settings.clone()),
-            ))
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            CctvProviderServiceServer::new(providers::cctv::CctvProviderGrpcService::new(
-                &shared_api_runtime,
-                shared_api_runtime.request_executor.clone(),
-                Arc::new(runtime_settings.clone()),
-            ))
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            YoutubeProviderServiceServer::new(providers::youtube::YoutubeProviderGrpcService::new(
-                &shared_api_runtime,
-                shared_api_runtime.request_executor.clone(),
-                Arc::new(runtime_settings.clone()),
-            ))
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            DouyinProviderServiceServer::new(providers::douyin::DouyinProviderGrpcService::new(
-                &shared_api_runtime,
-                shared_api_runtime.request_executor.clone(),
-                Arc::new(runtime_settings.clone()),
-            ))
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            TikTokProviderServiceServer::new(providers::tiktok::TikTokProviderGrpcService::new(
-                &shared_api_runtime,
-                shared_api_runtime.request_executor.clone(),
-                Arc::new(runtime_settings.clone()),
-            ))
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            FnosProviderServiceServer::new(providers::fnos::FnosProviderGrpcService::new(
-                &shared_api_runtime,
-                shared_api_runtime.request_executor.clone(),
-                Arc::new(runtime_settings.clone()),
-            ))
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            QnapProviderServiceServer::new(providers::qnap::QnapProviderGrpcService::new(
-                &shared_api_runtime,
-                shared_api_runtime.request_executor.clone(),
-                Arc::new(runtime_settings.clone()),
-            ))
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            NextcloudProviderServiceServer::new(
-                providers::nextcloud::NextcloudProviderGrpcService::new(
+            );
+            routes.add_service(
+                RtmpProviderServiceServer::new(providers::rtmp::RtmpProviderGrpcService::new(
                     &shared_api_runtime,
                     shared_api_runtime.request_executor.clone(),
                     Arc::new(runtime_settings.clone()),
+                ))
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
                 ),
-            )
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            SeafileProviderServiceServer::new(providers::seafile::SeafileProviderGrpcService::new(
-                &shared_api_runtime,
-                shared_api_runtime.request_executor.clone(),
-                Arc::new(runtime_settings.clone()),
-            ))
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            TrueNasProviderServiceServer::new(providers::truenas::TrueNasProviderGrpcService::new(
-                &shared_api_runtime,
-                shared_api_runtime.request_executor.clone(),
-                Arc::new(runtime_settings.clone()),
-            ))
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            SynologyProviderServiceServer::new(
-                providers::synology::SynologyProviderGrpcService::new(
+            );
+            routes.add_service(
+                TwitchProviderServiceServer::new(
+                    providers::twitch::TwitchProviderGrpcService::new(
+                        &shared_api_runtime,
+                        shared_api_runtime.request_executor.clone(),
+                        Arc::new(runtime_settings.clone()),
+                    ),
+                )
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            routes.add_service(
+                HuyaProviderServiceServer::new(providers::huya::HuyaProviderGrpcService::new(
                     &shared_api_runtime,
                     shared_api_runtime.request_executor.clone(),
                     Arc::new(runtime_settings.clone()),
+                ))
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
                 ),
-            )
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
+            );
+            routes.add_service(
+                DouyuProviderServiceServer::new(providers::douyu::DouyuProviderGrpcService::new(
+                    &shared_api_runtime,
+                    shared_api_runtime.request_executor.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ))
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            routes.add_service(
+                AcFunProviderServiceServer::new(providers::acfun::AcFunProviderGrpcService::new(
+                    &shared_api_runtime,
+                    shared_api_runtime.request_executor.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ))
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            routes.add_service(
+                CctvProviderServiceServer::new(providers::cctv::CctvProviderGrpcService::new(
+                    &shared_api_runtime,
+                    shared_api_runtime.request_executor.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ))
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            routes.add_service(
+                YoutubeProviderServiceServer::new(
+                    providers::youtube::YoutubeProviderGrpcService::new(
+                        &shared_api_runtime,
+                        shared_api_runtime.request_executor.clone(),
+                        Arc::new(runtime_settings.clone()),
+                    ),
+                )
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            routes.add_service(
+                DouyinProviderServiceServer::new(
+                    providers::douyin::DouyinProviderGrpcService::new(
+                        &shared_api_runtime,
+                        shared_api_runtime.request_executor.clone(),
+                        Arc::new(runtime_settings.clone()),
+                    ),
+                )
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            routes.add_service(
+                TikTokProviderServiceServer::new(
+                    providers::tiktok::TikTokProviderGrpcService::new(
+                        &shared_api_runtime,
+                        shared_api_runtime.request_executor.clone(),
+                        Arc::new(runtime_settings.clone()),
+                    ),
+                )
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            routes.add_service(
+                FnosProviderServiceServer::new(providers::fnos::FnosProviderGrpcService::new(
+                    &shared_api_runtime,
+                    shared_api_runtime.request_executor.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ))
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            routes.add_service(
+                QnapProviderServiceServer::new(providers::qnap::QnapProviderGrpcService::new(
+                    &shared_api_runtime,
+                    shared_api_runtime.request_executor.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ))
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            routes.add_service(
+                NextcloudProviderServiceServer::new(
+                    providers::nextcloud::NextcloudProviderGrpcService::new(
+                        &shared_api_runtime,
+                        shared_api_runtime.request_executor.clone(),
+                        Arc::new(runtime_settings.clone()),
+                    ),
+                )
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            routes.add_service(
+                SeafileProviderServiceServer::new(
+                    providers::seafile::SeafileProviderGrpcService::new(
+                        &shared_api_runtime,
+                        shared_api_runtime.request_executor.clone(),
+                        Arc::new(runtime_settings.clone()),
+                    ),
+                )
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            routes.add_service(
+                TrueNasProviderServiceServer::new(
+                    providers::truenas::TrueNasProviderGrpcService::new(
+                        &shared_api_runtime,
+                        shared_api_runtime.request_executor.clone(),
+                        Arc::new(runtime_settings.clone()),
+                    ),
+                )
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            routes.add_service(
+                SynologyProviderServiceServer::new(
+                    providers::synology::SynologyProviderGrpcService::new(
+                        &shared_api_runtime,
+                        shared_api_runtime.request_executor.clone(),
+                        Arc::new(runtime_settings.clone()),
+                    ),
+                )
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
+            );
+            routes.add_service(
             DirectUrlPlaybackProviderServiceServer::new(
                 crate::providers::playback_provider::direct_url::DirectUrlPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
@@ -1767,7 +1807,7 @@ async fn build_axum_router_with_health(
                 runtime_settings.server.grpc_compression_enabled,
             ),
         );
-        routes.add_service(
+            routes.add_service(
             AlistPlaybackProviderServiceServer::new(
                 crate::providers::playback_provider::alist::AlistPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
@@ -1779,19 +1819,19 @@ async fn build_axum_router_with_health(
                 runtime_settings.server.grpc_compression_enabled,
             ),
         );
-        routes.add_service(
-            EmbyPlaybackProviderServiceServer::new(
-                crate::providers::playback_provider::emby::EmbyPlaybackProviderGrpcService::new(
-                    playback_provider_state.clone(),
-                    Arc::new(runtime_settings.clone()),
+            routes.add_service(
+                EmbyPlaybackProviderServiceServer::new(
+                    crate::providers::playback_provider::emby::EmbyPlaybackProviderGrpcService::new(
+                        playback_provider_state.clone(),
+                        Arc::new(runtime_settings.clone()),
+                    ),
+                )
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
                 ),
-            )
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
+            );
+            routes.add_service(
             BilibiliPlaybackProviderServiceServer::new(
                 crate::providers::playback_provider::bilibili::BilibiliPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
@@ -1803,19 +1843,19 @@ async fn build_axum_router_with_health(
                 runtime_settings.server.grpc_compression_enabled,
             ),
         );
-        routes.add_service(
-            RtmpPlaybackProviderServiceServer::new(
-                crate::providers::playback_provider::rtmp::RtmpPlaybackProviderGrpcService::new(
-                    playback_provider_state.clone(),
-                    Arc::new(runtime_settings.clone()),
+            routes.add_service(
+                RtmpPlaybackProviderServiceServer::new(
+                    crate::providers::playback_provider::rtmp::RtmpPlaybackProviderGrpcService::new(
+                        playback_provider_state.clone(),
+                        Arc::new(runtime_settings.clone()),
+                    ),
+                )
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
                 ),
-            )
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
+            );
+            routes.add_service(
             LiveProxyPlaybackProviderServiceServer::new(
                 crate::providers::playback_provider::live_proxy::LiveProxyPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
@@ -1827,7 +1867,7 @@ async fn build_axum_router_with_health(
                 runtime_settings.server.grpc_compression_enabled,
             ),
         );
-        routes.add_service(
+            routes.add_service(
             TwitchPlaybackProviderServiceServer::new(
                 crate::providers::playback_provider::twitch::TwitchPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
@@ -1839,7 +1879,7 @@ async fn build_axum_router_with_health(
                 runtime_settings.server.grpc_compression_enabled,
             ),
         );
-        routes.add_service(
+            routes.add_service(
             YoutubePlaybackProviderServiceServer::new(
                 crate::providers::playback_provider::youtube::YoutubePlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
@@ -1851,7 +1891,7 @@ async fn build_axum_router_with_health(
                 runtime_settings.server.grpc_compression_enabled,
             ),
         );
-        routes.add_service(
+            routes.add_service(
             DouyinPlaybackProviderServiceServer::new(
                 crate::providers::playback_provider::douyin::DouyinPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
@@ -1863,7 +1903,7 @@ async fn build_axum_router_with_health(
                 runtime_settings.server.grpc_compression_enabled,
             ),
         );
-        routes.add_service(
+            routes.add_service(
             TikTokPlaybackProviderServiceServer::new(
                 crate::providers::playback_provider::tiktok::TikTokPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
@@ -1875,19 +1915,19 @@ async fn build_axum_router_with_health(
                 runtime_settings.server.grpc_compression_enabled,
             ),
         );
-        routes.add_service(
-            HuyaPlaybackProviderServiceServer::new(
-                crate::providers::playback_provider::huya::HuyaPlaybackProviderGrpcService::new(
-                    playback_provider_state.clone(),
-                    Arc::new(runtime_settings.clone()),
+            routes.add_service(
+                HuyaPlaybackProviderServiceServer::new(
+                    crate::providers::playback_provider::huya::HuyaPlaybackProviderGrpcService::new(
+                        playback_provider_state.clone(),
+                        Arc::new(runtime_settings.clone()),
+                    ),
+                )
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
                 ),
-            )
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
+            );
+            routes.add_service(
             DouyuPlaybackProviderServiceServer::new(
                 crate::providers::playback_provider::douyu::DouyuPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
@@ -1899,7 +1939,7 @@ async fn build_axum_router_with_health(
                 runtime_settings.server.grpc_compression_enabled,
             ),
         );
-        routes.add_service(
+            routes.add_service(
             AcFunPlaybackProviderServiceServer::new(
                 crate::providers::playback_provider::acfun::AcFunPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
@@ -1911,43 +1951,43 @@ async fn build_axum_router_with_health(
                 runtime_settings.server.grpc_compression_enabled,
             ),
         );
-        routes.add_service(
-            CctvPlaybackProviderServiceServer::new(
-                crate::providers::playback_provider::cctv::CctvPlaybackProviderGrpcService::new(
-                    playback_provider_state.clone(),
-                    Arc::new(runtime_settings.clone()),
+            routes.add_service(
+                CctvPlaybackProviderServiceServer::new(
+                    crate::providers::playback_provider::cctv::CctvPlaybackProviderGrpcService::new(
+                        playback_provider_state.clone(),
+                        Arc::new(runtime_settings.clone()),
+                    ),
+                )
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
                 ),
-            )
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            FnosPlaybackProviderServiceServer::new(
-                crate::providers::playback_provider::fnos::FnosPlaybackProviderGrpcService::new(
-                    playback_provider_state.clone(),
-                    Arc::new(runtime_settings.clone()),
+            );
+            routes.add_service(
+                FnosPlaybackProviderServiceServer::new(
+                    crate::providers::playback_provider::fnos::FnosPlaybackProviderGrpcService::new(
+                        playback_provider_state.clone(),
+                        Arc::new(runtime_settings.clone()),
+                    ),
+                )
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
                 ),
-            )
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
-            QnapPlaybackProviderServiceServer::new(
-                crate::providers::playback_provider::qnap::QnapPlaybackProviderGrpcService::new(
-                    playback_provider_state.clone(),
-                    Arc::new(runtime_settings.clone()),
+            );
+            routes.add_service(
+                QnapPlaybackProviderServiceServer::new(
+                    crate::providers::playback_provider::qnap::QnapPlaybackProviderGrpcService::new(
+                        playback_provider_state.clone(),
+                        Arc::new(runtime_settings.clone()),
+                    ),
+                )
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
                 ),
-            )
-            .with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        routes.add_service(
+            );
+            routes.add_service(
             NextcloudPlaybackProviderServiceServer::new(
                 crate::providers::playback_provider::nextcloud::NextcloudPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
@@ -1959,7 +1999,7 @@ async fn build_axum_router_with_health(
                 runtime_settings.server.grpc_compression_enabled,
             ),
         );
-        routes.add_service(
+            routes.add_service(
             SeafilePlaybackProviderServiceServer::new(
                 crate::providers::playback_provider::seafile::SeafilePlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
@@ -1971,7 +2011,7 @@ async fn build_axum_router_with_health(
                 runtime_settings.server.grpc_compression_enabled,
             ),
         );
-        routes.add_service(
+            routes.add_service(
             TrueNasPlaybackProviderServiceServer::new(
                 crate::providers::playback_provider::truenas::TrueNasPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
@@ -1983,7 +2023,7 @@ async fn build_axum_router_with_health(
                 runtime_settings.server.grpc_compression_enabled,
             ),
         );
-        routes.add_service(
+            routes.add_service(
             SynologyPlaybackProviderServiceServer::new(
                 crate::providers::playback_provider::synology::SynologyPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
@@ -1995,126 +2035,136 @@ async fn build_axum_router_with_health(
                 runtime_settings.server.grpc_compression_enabled,
             ),
         );
+        }
     }
 
-    // Register cluster gRPC service only in distributed mode.
-    if !grpc_registration_plan
-        .health_state
-        .cluster_service_registered
-    {
-        if runtime_settings.cluster_runtime_enabled() {
-            tracing::info!("Cluster gRPC service hidden by gRPC exposure profile");
+    // Register cluster and other inter-node gRPC services only on the
+    // dedicated cluster listener.
+    if expose_cluster_services {
+        if !grpc_registration_plan
+            .health_state
+            .cluster_service_registered
+        {
+            if runtime_settings.cluster_runtime_enabled() {
+                tracing::info!(target: "synctv::cluster", "Cluster gRPC service hidden by gRPC exposure profile");
+            } else {
+                tracing::info!(target: "synctv::cluster",
+                    "Cluster mode disabled — cluster gRPC service will not be registered"
+                );
+            }
+        } else if !runtime_settings.cluster_runtime_enabled() {
+            tracing::info!(target: "synctv::cluster", "Cluster mode disabled — cluster gRPC service will not be registered");
+        } else if runtime_settings.cluster.secret.is_empty() {
+            tracing::error!(target: "synctv::cluster",
+                "cluster.secret is empty — cluster gRPC service will NOT be registered. \
+                 Cluster coordination will be disabled. Set cluster.secret or SYNCTV_CLUSTER_SECRET to enable."
+            );
+        } else if should_register_cluster_grpc_service(runtime_settings, node_registry.is_some()) {
+            let nr = node_registry.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("cluster gRPC registration requires node_registry")
+            })?;
+            let cluster_server = synctv_cluster::grpc::ClusterServer::from_runtime(nr.clone())
+                .with_cluster_secret(runtime_settings.cluster.secret.clone());
+            routes.add_service(
+                synctv_cluster::grpc::ClusterServiceServer::new(cluster_server)
+                    .with_transport_settings(
+                        max_message_size,
+                        runtime_settings.server.grpc_compression_enabled,
+                    ),
+            );
+            tracing::info!(target: "synctv::cluster",
+                "Cluster node-discovery gRPC service registered with shared-secret auth"
+            );
         } else {
-            tracing::info!("Cluster mode disabled — cluster gRPC service will not be registered");
+            anyhow::bail!("cluster gRPC registration requirements were not satisfied");
         }
-    } else if !runtime_settings.cluster_runtime_enabled() {
-        tracing::info!("Cluster mode disabled — cluster gRPC service will not be registered");
-    } else if runtime_settings.cluster.secret.is_empty() {
-        tracing::error!(
-            "cluster.secret is empty — cluster gRPC service will NOT be registered. \
-             Cluster coordination will be disabled. Set cluster.secret or SYNCTV_CLUSTER_SECRET to enable."
-        );
-    } else if should_register_cluster_grpc_service(runtime_settings, node_registry.is_some()) {
-        let nr = node_registry
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("cluster gRPC registration requires node_registry"))?;
-        let cluster_server = synctv_cluster::grpc::ClusterServer::from_runtime(nr.clone())
+
+        if grpc_registration_plan.health_state.server_state_registered {
+            let service = synctv_api_common::status::ServerStateGrpcService::new(
+                shared_http_app_state
+                    .shared_api_runtime
+                    .server_state_runtime
+                    .clone(),
+                runtime_settings.cluster.secret.clone(),
+            );
+            routes.add_service(
+                synctv_cluster::grpc::ServerStateServiceServer::new(service)
+                    .with_transport_settings(
+                        max_message_size,
+                        runtime_settings.server.grpc_compression_enabled,
+                    ),
+            );
+            tracing::info!(target: "synctv::cluster", "Server-state gRPC service registered with shared-secret auth");
+        }
+
+        if grpc_registration_plan
+            .health_state
+            .realtime_presence_registered
+        {
+            let service = synctv_realtime::grpc::RealtimePresenceServiceImpl::new(
+                connection_service.clone(),
+                cluster_node_id.clone(),
+            )
             .with_cluster_secret(runtime_settings.cluster.secret.clone());
-        routes.add_service(
-            synctv_cluster::grpc::ClusterServiceServer::new(cluster_server)
-                .with_transport_settings(
+            routes.add_service(
+                RealtimePresenceServiceServer::new(service).with_transport_settings(
                     max_message_size,
                     runtime_settings.server.grpc_compression_enabled,
                 ),
-        );
-        tracing::info!("Cluster node-discovery gRPC service registered with shared-secret auth");
-    } else {
-        anyhow::bail!("cluster gRPC registration requirements were not satisfied");
-    }
+            );
+            tracing::info!(target: "synctv::cluster", "Realtime presence gRPC service registered with shared-secret auth");
+        }
 
-    if grpc_registration_plan.health_state.server_state_registered {
-        let service = synctv_api_common::status::ServerStateGrpcService::new(
-            shared_http_app_state
-                .shared_api_runtime
-                .server_state_runtime
-                .clone(),
-            runtime_settings.cluster.secret.clone(),
-        );
-        routes.add_service(
-            synctv_cluster::grpc::ServerStateServiceServer::new(service).with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        tracing::info!("Server-state gRPC service registered with shared-secret auth");
-    }
+        if grpc_registration_plan
+            .health_state
+            .proxy_slice_cache_registered
+        {
+            let service = synctv_proxy::grpc::ProxySliceCacheServiceImpl::new(
+                shared_http_app_state.proxy_slice_cache.clone(),
+                cluster_node_id.clone(),
+            )
+            .with_cluster_secret(runtime_settings.cluster.secret.clone());
+            routes.add_service(
+                synctv_proxy::grpc::ProxySliceCacheServiceServer::new(service)
+                    .with_transport_settings(
+                        max_message_size,
+                        runtime_settings.server.grpc_compression_enabled,
+                    ),
+            );
+            tracing::info!(target: "synctv::cluster", "Proxy slice-cache gRPC service registered with shared-secret auth");
+        }
 
-    if grpc_registration_plan
-        .health_state
-        .realtime_presence_registered
-    {
-        let service = synctv_realtime::grpc::RealtimePresenceServiceImpl::new(
-            connection_service.clone(),
-            cluster_node_id.clone(),
-        )
-        .with_cluster_secret(runtime_settings.cluster.secret.clone());
-        routes.add_service(
-            RealtimePresenceServiceServer::new(service).with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        tracing::info!("Realtime presence gRPC service registered with shared-secret auth");
-    }
-
-    if grpc_registration_plan
-        .health_state
-        .proxy_slice_cache_registered
-    {
-        let service = synctv_proxy::grpc::ProxySliceCacheServiceImpl::new(
-            shared_http_app_state.proxy_slice_cache.clone(),
-            cluster_node_id.clone(),
-        )
-        .with_cluster_secret(runtime_settings.cluster.secret.clone());
-        routes.add_service(
-            synctv_proxy::grpc::ProxySliceCacheServiceServer::new(service).with_transport_settings(
-                max_message_size,
-                runtime_settings.server.grpc_compression_enabled,
-            ),
-        );
-        tracing::info!("Proxy slice-cache gRPC service registered with shared-secret auth");
-    }
-
-    if grpc_registration_plan
-        .health_state
-        .livestream_relay_registered
-    {
-        let live_infra = live_streaming_infrastructure.as_ref().ok_or_else(|| {
+        if grpc_registration_plan
+            .health_state
+            .livestream_relay_registered
+        {
+            let live_infra = live_streaming_infrastructure.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "cluster.enabled=true requires livestream infrastructure before registering the relay gRPC service"
             )
         })?;
-        let relay_service = live_infra.relay_service(
-            cluster_node_id.clone(),
-            runtime_settings.cluster.secret.clone(),
-            tokio_util::sync::CancellationToken::new(),
-        );
+            let relay_service = live_infra.relay_service(
+                cluster_node_id.clone(),
+                runtime_settings.cluster.secret.clone(),
+                tokio_util::sync::CancellationToken::new(),
+            );
 
-        let relay_interceptor =
-            ClusterAuthInterceptor::new(runtime_settings.cluster.secret.clone());
-        routes.add_service(tonic::codegen::InterceptedService::new(
-            synctv_livestream::StreamRelayServiceServer::new(relay_service)
-                .with_transport_settings(
-                    max_message_size,
-                    runtime_settings.server.grpc_compression_enabled,
-                ),
-            move |req| relay_interceptor.validate(req),
-        ));
-        tracing::info!("Livestream relay gRPC service registered with shared-secret auth");
-    } else if runtime_settings.cluster_runtime_enabled() {
-        tracing::warn!(
-            "Cluster mode enabled but livestream relay gRPC service not registered because livestream infrastructure is unavailable"
-        );
+            let relay_interceptor =
+                ClusterAuthInterceptor::new(runtime_settings.cluster.secret.clone());
+            routes.add_service(tonic::codegen::InterceptedService::new(
+                synctv_livestream::StreamRelayServiceServer::new(relay_service)
+                    .with_transport_settings(
+                        max_message_size,
+                        runtime_settings.server.grpc_compression_enabled,
+                    ),
+                move |req| relay_interceptor.validate(req),
+            ));
+            tracing::info!(target: "synctv::cluster", "Livestream relay gRPC service registered with shared-secret auth");
+        } else if runtime_settings.cluster_runtime_enabled() {
+            tracing::warn!(target: "synctv::cluster",
+                "Cluster mode enabled but livestream relay gRPC service not registered because livestream infrastructure is unavailable"
+            );
+        }
     }
 
     // Register gRPC health check service (standard grpc.health.v1.Health).
@@ -2124,7 +2174,7 @@ async fn build_axum_router_with_health(
     set_registered_grpc_services_serving(&health_reporter, grpc_registration_plan.health_state)
         .await;
     routes.add_service(health_service);
-    tracing::info!("gRPC health check service registered");
+    profile_info!("gRPC health check service registered");
 
     // Register gRPC reflection service if enabled in config
     if grpc_registration_plan.reflection_enabled {
@@ -3617,10 +3667,12 @@ mod tests {
 
     #[test]
     fn test_public_grpc_registration_plan_preserves_optional_service_registration() {
-        let config = synctv_api_common::ApiRuntimeSettings::default();
+        let mut config = synctv_api_common::ApiRuntimeSettings::default();
+        config.server.enable_reflection = true;
 
         let plan = grpc_service_registration_plan(
             &config,
+            false,
             super::GrpcOptionalRegistrations {
                 email_registered: true,
                 notification_registered: false,
@@ -3643,11 +3695,50 @@ mod tests {
         assert!(!plan.health_state.notification_registered);
         assert!(plan.health_state.oauth2_registered);
         assert!(!plan.health_state.provider_services_registered);
+        assert!(!plan.health_state.cluster_service_registered);
+        assert!(!plan.health_state.server_state_registered);
+        assert!(!plan.health_state.realtime_presence_registered);
+        assert!(!plan.health_state.proxy_slice_cache_registered);
+        assert!(!plan.health_state.livestream_relay_registered);
+        assert!(plan.reflection_enabled);
+    }
+
+    #[test]
+    fn test_cluster_grpc_registration_plan_contains_only_internal_services() {
+        let mut config = synctv_api_common::ApiRuntimeSettings::default();
+        config.server.enable_reflection = true;
+
+        let plan = grpc_service_registration_plan(
+            &config,
+            true,
+            super::GrpcOptionalRegistrations {
+                email_registered: true,
+                notification_registered: true,
+                oauth2_registered: true,
+                provider_services_registered: true,
+                cluster_service_registered: true,
+                server_state_registered: true,
+                realtime_presence_registered: true,
+                proxy_slice_cache_registered: true,
+                livestream_relay_registered: true,
+            },
+        );
+
+        assert!(!plan.health_state.auth_registered);
+        assert!(!plan.health_state.user_registered);
+        assert!(!plan.health_state.room_registered);
+        assert!(!plan.health_state.public_registered);
+        assert!(!plan.health_state.admin_registered);
+        assert!(!plan.health_state.email_registered);
+        assert!(!plan.health_state.notification_registered);
+        assert!(!plan.health_state.oauth2_registered);
+        assert!(!plan.health_state.provider_services_registered);
         assert!(plan.health_state.cluster_service_registered);
         assert!(plan.health_state.server_state_registered);
         assert!(plan.health_state.realtime_presence_registered);
         assert!(plan.health_state.proxy_slice_cache_registered);
-        assert!(!plan.health_state.livestream_relay_registered);
+        assert!(plan.health_state.livestream_relay_registered);
+        assert!(!plan.reflection_enabled);
     }
 
     #[test]

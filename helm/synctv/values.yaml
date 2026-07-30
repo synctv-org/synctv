@@ -244,7 +244,7 @@ podDisruptionBudget:
 startupProbe:
   httpGet:
     path: /health/ready
-    port: api
+    port: health
   initialDelaySeconds: 5
   periodSeconds: 5
   timeoutSeconds: 3
@@ -253,7 +253,7 @@ startupProbe:
 livenessProbe:
   httpGet:
     path: /health/live
-    port: api
+    port: health
   initialDelaySeconds: 0
   periodSeconds: 10
   timeoutSeconds: 5
@@ -262,7 +262,7 @@ livenessProbe:
 readinessProbe:
   httpGet:
     path: /health/ready
-    port: api
+    port: health
   initialDelaySeconds: 0
   periodSeconds: 5
   timeoutSeconds: 3
@@ -313,7 +313,7 @@ config:
   ## Shared root directory for runtime-owned local files.
   ## It rebases relative:
   ## - management.unix_socket_path
-  ## - logging.file_path
+  ## - server logging file output path
   ## - livestream.hls_storage.path
   ## - proxy_slice_cache.file_cache_dir
   ## It does NOT rebase *_file secrets or metrics TLS cert/key paths.
@@ -347,6 +347,23 @@ config:
     grpcCompressionEnabled: true
     # trustedProxies: ["10.0.0.0/8", "172.16.0.0/12"]
     corsAllowedOrigins: []
+    logging:
+      level: info
+      format: text
+      ## File output example:
+      ## output: {type: file, path: /data/logs/server.log, rotation: {strategy: daily, maxFiles: 30}}
+      output: stdout
+      color: auto
+
+  health:
+    enabled: true
+    host: "0.0.0.0"
+    port: 8081
+    logging:
+      level: info
+      format: text
+      output: stdout
+      color: auto
 
   ## PublicIdsConfig
   publicIds:
@@ -380,6 +397,11 @@ config:
     unixSocketPath: "/run/synctv/synctv.sock"
     port: 50052
     enableReflection: false
+    logging:
+      level: info
+      format: text
+      output: stdout
+      color: auto
 
   ## DatabaseConfig (url composed from secrets; these are for connection pool)
   database:
@@ -411,18 +433,6 @@ config:
     refreshTokenDurationDays: 30
     guestTokenDurationHours: 4
     clockSkewLeewaySecs: 60
-
-  ## LoggingConfig
-  ## NOTE: If securityContext.readOnlyRootFilesystem is true (the default),
-  ## any logging.filePath must point to a writable mount (e.g., /tmp which is
-  ## backed by an emptyDir volume). Alternatively, leave filePath empty to log
-  ## to stdout only, which is the recommended approach for Kubernetes.
-  logging:
-    level: "info"
-    format: "json"
-    filePath: ""
-    filter: ""
-    backtrace: false
 
   ## CacheConfig: business L1/L2 caches.
   cache:
@@ -516,6 +526,15 @@ config:
     ## publisher-node gRPC proxying; shared_file storage or OSS is recommended
     ## for production multi-replica HLS traffic.
     enabled: false
+    host: "0.0.0.0"
+    port: 50051
+    advertiseHost: ""
+    advertisePort: 0
+    logging:
+      level: warn
+      format: text
+      output: stdout
+      color: auto
     criticalChannelCapacity: 10000
     publishChannelCapacity: 100000
     ## Discovery mode: "redis" (default), "static", or "k8s_dns" (uses headless service DNS)
@@ -791,6 +810,11 @@ metrics:
   enabled: false
   host: "0.0.0.0"
   port: 9090
+  logging:
+    level: warn
+    format: text
+    output: stdout
+    color: auto
   auth:
     mode: "bearer_token"
     kubernetes:
@@ -878,8 +902,6 @@ networkPolicy:
 
 ## Extra Environment Variables
 extraEnvVars: []
-  # - name: RUST_LOG
-  #   value: "info"
 
 ## Extra volumes and mounts for externally managed files, such as Secret-backed
 ## file-storage S3 credentials referenced by accessKeyIdFile/secretAccessKeyFile.

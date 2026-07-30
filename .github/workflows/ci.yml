@@ -20,7 +20,6 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  SYNCTV_LOGGING_BACKTRACE: true
   SQLX_OFFLINE: true
 
 jobs:

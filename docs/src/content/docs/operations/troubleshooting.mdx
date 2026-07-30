@@ -65,7 +65,7 @@ kubectl -n synctv logs deploy/synctv -f
 ### Readiness
 
 ```bash
-curl -i http://localhost:8080/health/ready
+curl -i http://localhost:8081/health/ready
 ```
 
 成功条件是 200。失败时先看响应体，再看服务日志。

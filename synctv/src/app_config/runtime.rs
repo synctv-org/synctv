@@ -1,5 +1,16 @@
 use super::*;
 
+fn format_socket_address(host: &str, port: u16) -> String {
+    let host = host.trim();
+    if host.starts_with('[') && host.ends_with(']') {
+        format!("{host}:{port}")
+    } else if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
 impl AppConfig {
     /// Get database URL
     #[must_use]
@@ -114,13 +125,38 @@ impl AppConfig {
     /// Get unified API address
     #[must_use]
     pub fn api_address(&self) -> String {
-        format!("{}:{}", self.server.host, self.server.port)
+        format_socket_address(&self.server.host, self.server.port)
     }
 
     /// Get dedicated metrics address.
     #[must_use]
     pub fn metrics_address(&self) -> String {
-        format!("{}:{}", self.metrics.host, self.metrics.port)
+        format_socket_address(&self.metrics.host, self.metrics.port)
+    }
+
+    #[must_use]
+    pub fn health_address(&self) -> String {
+        format_socket_address(&self.health.host, self.health.port)
+    }
+
+    #[must_use]
+    pub fn cluster_address(&self) -> String {
+        format_socket_address(&self.cluster.host, self.cluster.port)
+    }
+
+    #[must_use]
+    pub fn advertise_cluster_address(&self) -> String {
+        let host = if self.cluster.advertise_host.trim().is_empty() {
+            self.advertise_host()
+        } else {
+            self.cluster.advertise_host.clone()
+        };
+        let port = if self.cluster.advertise_port == 0 {
+            self.cluster.port
+        } else {
+            self.cluster.advertise_port
+        };
+        format_socket_address(&host, port)
     }
 
     /// Get the dedicated management endpoint used by local/operational CLI commands.
@@ -172,10 +208,10 @@ impl AppConfig {
         }
     }
 
-    /// Get the unified API address advertised to other cluster nodes.
+    /// Get the public API address advertised by livestream metadata.
     #[must_use]
     pub fn advertise_api_address(&self) -> String {
-        format!("{}:{}", self.advertise_host(), self.server.port)
+        format_socket_address(&self.advertise_host(), self.server.port)
     }
 
     /// Public RTMP host for publisher-facing URLs.

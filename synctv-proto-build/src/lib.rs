@@ -1043,7 +1043,11 @@ fn build_playback_provider_protos(
 fn prepare_build() -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
     let out_dir = build_out_dir()?;
-    emit_proto_rerun_if_changed(Path::new("proto"))?;
+    // Cargo resolves relative rerun paths against the package manifest directory,
+    // while the thin proto crates run this helper from the shared synctv-proto
+    // directory. Emit absolute paths so Cargo watches the files we actually read.
+    let proto_dir = fs::canonicalize("proto")?;
+    emit_proto_rerun_if_changed(&proto_dir)?;
     Ok((protoc, out_dir))
 }
 

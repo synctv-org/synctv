@@ -57,7 +57,7 @@ pub async fn get_live_proxy_flv_stream(
                     "LiveProxy FLV action resolved with unexpected provider".to_string(),
                 ));
             }
-            let source_url = deps.live_proxy_source_url(&room_id, &media_id).await;
+            let external_source = deps.live_proxy_source(&room_id, &media_id).await;
             stream_live_flv_chunks(
                 deps.live_deps(),
                 LiveFlvChunksRequest {
@@ -66,7 +66,7 @@ pub async fn get_live_proxy_flv_stream(
                     media_id,
                     user_id,
                     expires_at,
-                    source_url,
+                    external_source,
                     head,
                 },
             )
@@ -100,7 +100,7 @@ pub async fn get_live_proxy_hls_playlist(
                     "LiveProxy HLS playlist action resolved with unexpected provider".to_string(),
                 ));
             }
-            let source_url = deps.live_proxy_source_url(&room_id, &media_id).await;
+            let external_source = deps.live_proxy_source(&room_id, &media_id).await;
             get_live_hls_playlist_chunks(
                 deps.live_deps(),
                 LiveHlsPlaylistChunksRequest {
@@ -112,7 +112,7 @@ pub async fn get_live_proxy_hls_playlist(
                     signature_room_id,
                     signature_expires_at,
                     route_provider: "live-proxy".to_string(),
-                    source_url,
+                    external_source,
                 },
             )
             .await?
@@ -144,14 +144,14 @@ pub async fn get_live_proxy_hls_segment(
                     "LiveProxy HLS segment action resolved with unexpected provider".to_string(),
                 ));
             }
-            let source_url = deps.live_proxy_source_url(&room_id, &media_id).await;
+            let external_source = deps.live_proxy_source(&room_id, &media_id).await;
             get_live_hls_segment_chunks(
                 deps.live_deps(),
                 LiveHlsSegmentChunksRequest {
                     room_id,
                     media_id,
                     segment_name,
-                    source_url,
+                    external_source,
                     head,
                 },
             )
@@ -261,13 +261,13 @@ impl<'a> LiveProxyPlaybackProviderDeps<'a> {
         }
     }
 
-    async fn live_proxy_source_url(
+    async fn live_proxy_source(
         &self,
         room_id: &synctv_core::models::RoomId,
         media_id: &synctv_core::models::MediaId,
-    ) -> Option<String> {
+    ) -> Option<synctv_core::models::LiveProxyMediaSourceConfig> {
         self.playback_provider_service
-            .source_url_for_media(room_id, media_id)
+            .source_config_for_media(room_id, media_id)
             .await
     }
 }

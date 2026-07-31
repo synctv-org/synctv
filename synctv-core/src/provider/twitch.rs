@@ -836,7 +836,11 @@ impl TwitchProvider {
             duration_seconds: metadata
                 .duration_seconds
                 .map(|value| std::time::Duration::from_secs(value).as_secs_f64()),
-            is_live: Some(metadata.is_live),
+            playback_kind: Some(if metadata.is_live {
+                crate::models::PlaybackKind::Live
+            } else {
+                crate::models::PlaybackKind::Regular
+            }),
             metadata: Some(PlaybackMetadata::Twitch(TwitchPlaybackMetadata {
                 resource_id: metadata.id,
                 title: metadata.title,
@@ -1591,7 +1595,10 @@ mod tests {
         .expect("playback should map");
         assert_eq!(result.default_mode, "hls");
         assert_eq!(result.playback_infos.len(), 1);
-        assert_eq!(result.is_live, Some(true));
+        assert_eq!(
+            result.playback_kind,
+            Some(crate::models::PlaybackKind::Live)
+        );
         let source = result
             .playback_infos
             .get("hls")

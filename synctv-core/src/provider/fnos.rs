@@ -1653,7 +1653,7 @@ impl MediaProvider for FnosProvider {
                     provider: Self::NAME.to_string(),
                     provider_instance_name: instance_name,
                     duration_seconds: None,
-                    is_live: Some(false),
+                    playback_kind: Some(crate::models::PlaybackKind::Regular),
                     metadata: Some(PlaybackMetadata::Fnos(FnosPlaybackMetadata::File(
                         FnosFilePlaybackMetadata {
                             name,
@@ -1910,7 +1910,7 @@ impl MediaProvider for FnosProvider {
                     provider: Self::NAME.to_string(),
                     provider_instance_name: instance_name,
                     duration_seconds: duration,
-                    is_live: Some(false),
+                    playback_kind: Some(crate::models::PlaybackKind::Regular),
                     metadata: Some(PlaybackMetadata::Fnos(FnosPlaybackMetadata::Media(
                         FnosMediaPlaybackMetadata {
                             item_guid: play.guid.clone(),
@@ -2932,7 +2932,7 @@ mod tests {
             provider: FnosProvider::NAME.to_string(),
             provider_instance_name: None,
             duration_seconds: None,
-            is_live: Some(false),
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
             metadata: Some(PlaybackMetadata::Fnos(FnosPlaybackMetadata::Media(
                 FnosMediaPlaybackMetadata {
                     item_guid: "item".to_string(),

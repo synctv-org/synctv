@@ -1533,11 +1533,11 @@ impl LiveProxyPlaybackProviderService {
             .await
     }
 
-    pub async fn source_url_for_media(
+    pub async fn source_config_for_media(
         &self,
         room_id: &RoomId,
         media_id: &MediaId,
-    ) -> Option<String> {
+    ) -> Option<crate::models::LiveProxyMediaSourceConfig> {
         self.runtime
             .playback_transport_services
             .room_service
@@ -1548,7 +1548,7 @@ impl LiveProxyPlaybackProviderService {
             .flatten()
             .filter(|media| media.source_provider == SourceProvider::LiveProxy)
             .and_then(|media| match media.source_config {
-                crate::models::MediaSourceConfig::LiveProxy(config) => Some(config.url),
+                crate::models::MediaSourceConfig::LiveProxy(config) => Some(config),
                 _ => None,
             })
     }

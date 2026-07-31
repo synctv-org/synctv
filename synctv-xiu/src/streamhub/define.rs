@@ -37,7 +37,7 @@ pub enum PublishType {
     RtmpPush,
     /// This node pulls a remote RTMP stream and republishes it locally.
     RtmpRelay,
-    /// This node owns an external RTMP/HTTP-FLV pull and republishes it locally.
+    /// This node owns an external RTMP, RTSP, or HTTP-FLV pull and republishes it locally.
     ExternalPull,
 }
 

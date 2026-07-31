@@ -30,11 +30,13 @@ pub fn media_source_config_from_proto(
         Provider::Emby(config) => synctv_core::models::MediaSourceConfig::Emby(
             emby_media_source_config_from_proto(config),
         ),
-        Provider::Rtmp(_) => synctv_core::models::MediaSourceConfig::Rtmp(
-            synctv_core::models::RtmpMediaSourceConfig {},
+        Provider::Rtmp(config) => synctv_core::models::MediaSourceConfig::Rtmp(
+            synctv_core::models::RtmpMediaSourceConfig {
+                mode: rtmp_stream_mode_from_proto(config.mode)?,
+            },
         ),
         Provider::LiveProxy(config) => synctv_core::models::MediaSourceConfig::LiveProxy(
-            live_proxy_media_source_config_from_proto(config),
+            live_proxy_media_source_config_from_proto(config)?,
         ),
         Provider::Cloudreve(config) => synctv_core::models::MediaSourceConfig::Cloudreve(
             synctv_core::models::CloudreveMediaSourceConfig {
@@ -794,8 +796,92 @@ fn emby_playlist_source_config_from_proto(
 
 fn live_proxy_media_source_config_from_proto(
     config: source_config_proto::LiveProxyMediaSourceConfig,
-) -> synctv_core::models::LiveProxyMediaSourceConfig {
-    synctv_core::models::LiveProxyMediaSourceConfig { url: config.url }
+) -> AdapterResult<synctv_core::models::LiveProxyMediaSourceConfig> {
+    use source_config_proto::live_proxy_media_source_config::Source;
+
+    let source = match config.source {
+        Some(Source::Rtmp(config)) => {
+            let mode = match source_config_proto::RtmpStreamMode::try_from(config.mode)
+                .map_err(|_| invalid_source_config("RTMP stream mode is invalid"))?
+            {
+                source_config_proto::RtmpStreamMode::Unspecified
+                | source_config_proto::RtmpStreamMode::Default => {
+                    synctv_core::models::RtmpStreamMode::Default
+                }
+                source_config_proto::RtmpStreamMode::VideoOnly => {
+                    synctv_core::models::RtmpStreamMode::VideoOnly
+                }
+                source_config_proto::RtmpStreamMode::AudioOnly => {
+                    synctv_core::models::RtmpStreamMode::AudioOnly
+                }
+            };
+            synctv_core::models::ExternalLiveSourceConfig::Rtmp {
+                url: config.url,
+                mode,
+            }
+        }
+        Some(Source::Rtsp(config)) => {
+            let transport = match source_config_proto::RtspTransport::try_from(config.transport)
+                .map_err(|_| invalid_source_config("RTSP transport is invalid"))?
+            {
+                source_config_proto::RtspTransport::Tcp => synctv_core::models::RtspTransport::Tcp,
+                source_config_proto::RtspTransport::Udp => synctv_core::models::RtspTransport::Udp,
+                source_config_proto::RtspTransport::Unspecified => {
+                    return Err(invalid_source_config("RTSP transport is required"));
+                }
+            };
+            synctv_core::models::ExternalLiveSourceConfig::Rtsp {
+                url: config.url,
+                transport,
+                video_track: rtsp_track_selection_from_proto(
+                    config.video_track,
+                    "RTSP video track selection is required",
+                )?,
+                audio_track: rtsp_track_selection_from_proto(
+                    config.audio_track,
+                    "RTSP audio track selection is required",
+                )?,
+            }
+        }
+        Some(Source::HttpFlv(config)) => {
+            synctv_core::models::ExternalLiveSourceConfig::HttpFlv { url: config.url }
+        }
+        None => return Err(invalid_source_config("external live source is required")),
+    };
+    Ok(synctv_core::models::LiveProxyMediaSourceConfig { source })
+}
+
+fn rtsp_track_selection_from_proto(
+    selection: Option<source_config_proto::RtspTrackSelection>,
+    missing_message: &'static str,
+) -> AdapterResult<synctv_core::models::RtspTrackSelection> {
+    use source_config_proto::rtsp_track_selection::Mode;
+
+    match selection.and_then(|selection| selection.mode) {
+        Some(Mode::FirstCompatible(_)) => {
+            Ok(synctv_core::models::RtspTrackSelection::FirstCompatible)
+        }
+        Some(Mode::Index(index)) => Ok(synctv_core::models::RtspTrackSelection::Index(index)),
+        Some(Mode::Disabled(_)) => Ok(synctv_core::models::RtspTrackSelection::Disabled),
+        None => Err(invalid_source_config(missing_message)),
+    }
+}
+
+fn rtmp_stream_mode_from_proto(mode: i32) -> AdapterResult<synctv_core::models::RtmpStreamMode> {
+    match source_config_proto::RtmpStreamMode::try_from(mode)
+        .map_err(|_| invalid_source_config("RTMP stream mode is invalid"))?
+    {
+        source_config_proto::RtmpStreamMode::Unspecified
+        | source_config_proto::RtmpStreamMode::Default => {
+            Ok(synctv_core::models::RtmpStreamMode::Default)
+        }
+        source_config_proto::RtmpStreamMode::VideoOnly => {
+            Ok(synctv_core::models::RtmpStreamMode::VideoOnly)
+        }
+        source_config_proto::RtmpStreamMode::AudioOnly => {
+            Ok(synctv_core::models::RtmpStreamMode::AudioOnly)
+        }
+    }
 }
 
 fn twitch_playlist_content_from_proto(

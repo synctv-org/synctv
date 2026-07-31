@@ -95,14 +95,14 @@ impl DirectUrlProvider {
                 )));
             }
 
-            // Block all Sec-* prefix headers (HTTP/3 security headers, Client Hints, WebSocket headers)
+            // Block all Sec-* prefix headers used by browser security and transport protocols.
             if lower.starts_with("sec-") {
                 return Err(ProviderError::InvalidConfig(format!(
                     "DirectUrl header '{key}' is forbidden (Sec- prefix blocked for security)"
                 )));
             }
 
-            // Block Priority header (HTTP/3 prioritization)
+            // Block Priority header to prevent transport-level request manipulation.
             if lower == "priority" {
                 return Err(ProviderError::InvalidConfig(format!(
                     "DirectUrl header '{key}' is forbidden for security reasons"
@@ -759,7 +759,13 @@ impl MediaProvider for DirectUrlProvider {
             provider: Self::NAME.to_string(),
             provider_instance_name: _ctx.provider_instance_name().map(str::to_string),
             duration_seconds,
-            is_live,
+            playback_kind: is_live.map(|value| {
+                if value {
+                    crate::models::PlaybackKind::Live
+                } else {
+                    crate::models::PlaybackKind::Regular
+                }
+            }),
             metadata: Some(metadata),
         };
 
@@ -810,7 +816,10 @@ mod tests {
             .await
             .expect("direct url playback should generate");
 
-        assert_eq!(result.is_live, Some(false));
+        assert_eq!(
+            result.playback_kind,
+            Some(crate::models::PlaybackKind::Regular)
+        );
         assert_eq!(result.duration_seconds, None);
     }
 
@@ -830,7 +839,7 @@ mod tests {
             .await
             .expect("direct url playback should generate");
 
-        assert_eq!(result.is_live, None);
+        assert_eq!(result.playback_kind, None);
         assert_eq!(result.duration_seconds, None);
     }
 

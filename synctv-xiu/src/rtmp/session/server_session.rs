@@ -1,4 +1,4 @@
-use crate::rtmp::auth::AuthCallback;
+use crate::rtmp::auth::{AuthCallback, RtmpStreamMode};
 use crate::rtmp::callbacks::StreamEventCallbacks;
 use crate::rtmp::chunk::{errors::UnpackErrorValue, packetizer::ChunkPacketizer};
 
@@ -108,6 +108,7 @@ pub struct ServerSession {
     per_stream_max_bytes: Option<usize>,
     /// Optional callbacks for stream lifecycle events (metrics, etc.)
     callbacks: Arc<StreamEventCallbacks>,
+    media_mode: RtmpStreamMode,
 }
 
 impl ServerSession {
@@ -157,6 +158,7 @@ impl ServerSession {
             last_message_time: tokio::time::Instant::now(),
             per_stream_max_bytes,
             callbacks,
+            media_mode: RtmpStreamMode::Default,
         }
     }
 
@@ -404,10 +406,14 @@ impl ServerSession {
                 self.on_set_chunk_size(*chunk_size as usize);
             }
             RtmpMessageData::AudioData { data } => {
-                self.common.on_audio_data(data, *timestamp)?;
+                if self.media_mode != RtmpStreamMode::VideoOnly {
+                    self.common.on_audio_data(data, *timestamp)?;
+                }
             }
             RtmpMessageData::VideoData { data } => {
-                self.common.on_video_data(data, *timestamp)?;
+                if self.media_mode != RtmpStreamMode::AudioOnly {
+                    self.common.on_video_data(data, *timestamp)?;
+                }
             }
             RtmpMessageData::AmfData { raw_data } => {
                 self.common.on_meta_data(raw_data, *timestamp)?;
@@ -895,6 +901,7 @@ impl ServerSession {
                 );
                 self.app_name = rewrite.app_name;
                 self.stream_name = rewrite.stream_name;
+                self.media_mode = rewrite.media_mode;
             }
         }
 
@@ -1117,6 +1124,7 @@ mod tests {
             last_message_time: tokio::time::Instant::now(),
             per_stream_max_bytes: None,
             callbacks,
+            media_mode: RtmpStreamMode::Default,
         }
     }
 
@@ -1162,6 +1170,7 @@ mod tests {
             last_message_time: tokio::time::Instant::now(),
             per_stream_max_bytes: None,
             callbacks: Arc::new(StreamEventCallbacks::default()),
+            media_mode: RtmpStreamMode::Default,
         };
 
         let result = timeout(Duration::from_secs(1), session.handshake()).await;
@@ -1300,6 +1309,7 @@ mod tests {
             last_message_time: tokio::time::Instant::now(),
             per_stream_max_bytes: None,
             callbacks: Arc::new(StreamEventCallbacks::default()),
+            media_mode: RtmpStreamMode::Default,
         };
 
         let result = session.force_shutdown().await;

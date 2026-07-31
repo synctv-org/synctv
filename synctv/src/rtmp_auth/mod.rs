@@ -32,7 +32,9 @@ use synctv_core::{
 };
 use synctv_livestream::{StreamRegistryTrait, StreamTracker, PUBLISHER_TTL_SECS};
 // TTL for the per-user rtmp:user_stream:{user_id} Redis key, matching the publisher TTL.
-use synctv_xiu::rtmp::auth::{AuthCallback, AuthPublishRewrite};
+use synctv_xiu::rtmp::auth::{
+    AuthCallback, AuthPublishRewrite, RtmpStreamMode as XiuRtmpStreamMode,
+};
 
 const STREAMHUB_RESTARTING_MESSAGE: &str = "StreamHub is restarting, please retry in a few seconds";
 
@@ -737,6 +739,11 @@ impl AuthCallback for SyncTvRtmpAuth {
         Ok(Some(AuthPublishRewrite {
             app_name: validated.room_id.to_string(),
             stream_name: validated.media_id.to_string(),
+            media_mode: match validated.media_mode {
+                synctv_core::models::RtmpStreamMode::Default => XiuRtmpStreamMode::Default,
+                synctv_core::models::RtmpStreamMode::VideoOnly => XiuRtmpStreamMode::VideoOnly,
+                synctv_core::models::RtmpStreamMode::AudioOnly => XiuRtmpStreamMode::AudioOnly,
+            },
         }))
     }
 
@@ -814,6 +821,7 @@ struct ValidatedPublish {
     media_id: MediaId,
     user_id: UserId,
     auth_level: &'static str,
+    media_mode: synctv_core::models::RtmpStreamMode,
 }
 
 fn media_creator_publish_authorized(
@@ -913,7 +921,7 @@ impl SyncTvRtmpAuth {
         }
 
         // Authorization check
-        let auth_level = self
+        let (auth_level, media_mode) = self
             .check_publish_authorization(
                 &user,
                 &expected_room_id,
@@ -928,11 +936,12 @@ impl SyncTvRtmpAuth {
             media_id: expected_media_id,
             user_id,
             auth_level,
+            media_mode,
         })
     }
 
     /// Check that the user has permission to publish to this room/media.
-    /// Returns the authorization level string on success.
+    /// Returns the authorization level and RTMP media filtering policy.
     async fn check_publish_authorization(
         &self,
         user: &synctv_core::models::User,
@@ -940,7 +949,10 @@ impl SyncTvRtmpAuth {
         media_id: &MediaId,
         user_id: &UserId,
         claims: &synctv_core::service::PublishClaims,
-    ) -> Result<&'static str, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<
+        (&'static str, synctv_core::models::RtmpStreamMode),
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
         let is_global_admin = user.role.is_admin_or_above();
 
         let room_member = if is_global_admin {
@@ -1007,13 +1019,18 @@ impl SyncTvRtmpAuth {
             ).into());
         }
 
-        Ok(if is_global_admin {
+        let auth_level = if is_global_admin {
             "global_admin"
         } else if is_room_admin_or_creator {
             "room_admin"
         } else {
             "media_creator"
-        })
+        };
+        let media_mode = match &media.source_config {
+            synctv_core::models::MediaSourceConfig::Rtmp(config) => config.mode,
+            _ => synctv_core::models::RtmpStreamMode::Default,
+        };
+        Ok((auth_level, media_mode))
     }
 }
 
@@ -1572,6 +1589,7 @@ mod tests {
             media_id: media_id.parse().expect("numeric test media id"),
             user_id: user_id.parse().expect("numeric test user id"),
             auth_level: "test",
+            media_mode: synctv_core::models::RtmpStreamMode::Default,
         }
     }
 

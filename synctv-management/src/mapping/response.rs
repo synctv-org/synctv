@@ -519,6 +519,19 @@ fn playlist_source_config_to_proto(
     }
 }
 
+fn rtsp_track_selection_to_proto(
+    selection: synctv_core::models::RtspTrackSelection,
+) -> source_config_proto::RtspTrackSelection {
+    use source_config_proto::rtsp_track_selection::Mode;
+
+    let mode = match selection {
+        synctv_core::models::RtspTrackSelection::FirstCompatible => Mode::FirstCompatible(true),
+        synctv_core::models::RtspTrackSelection::Index(index) => Mode::Index(index),
+        synctv_core::models::RtspTrackSelection::Disabled => Mode::Disabled(true),
+    };
+    source_config_proto::RtspTrackSelection { mode: Some(mode) }
+}
+
 fn media_source_config_to_proto(
     config: &synctv_core::models::MediaSourceConfig,
 ) -> source_config_proto::MediaSourceConfig {
@@ -613,11 +626,65 @@ fn media_source_config_to_proto(
                 item_id: config.item_id,
             })
         }
-        synctv_core::models::MediaSourceConfig::Rtmp(_) => {
-            Provider::Rtmp(source_config_proto::RtmpMediaSourceConfig {})
+        synctv_core::models::MediaSourceConfig::Rtmp(config) => {
+            Provider::Rtmp(source_config_proto::RtmpMediaSourceConfig {
+                mode: match config.mode {
+                    synctv_core::models::RtmpStreamMode::Default => {
+                        source_config_proto::RtmpStreamMode::Default as i32
+                    }
+                    synctv_core::models::RtmpStreamMode::VideoOnly => {
+                        source_config_proto::RtmpStreamMode::VideoOnly as i32
+                    }
+                    synctv_core::models::RtmpStreamMode::AudioOnly => {
+                        source_config_proto::RtmpStreamMode::AudioOnly as i32
+                    }
+                },
+            })
         }
         synctv_core::models::MediaSourceConfig::LiveProxy(config) => {
-            Provider::LiveProxy(source_config_proto::LiveProxyMediaSourceConfig { url: config.url })
+            use source_config_proto::live_proxy_media_source_config::Source;
+            let source = match config.source {
+                synctv_core::models::ExternalLiveSourceConfig::Rtmp { url, mode } => {
+                    Source::Rtmp(source_config_proto::RtmpPullSourceConfig {
+                        url,
+                        mode: match mode {
+                            synctv_core::models::RtmpStreamMode::Default => {
+                                source_config_proto::RtmpStreamMode::Default as i32
+                            }
+                            synctv_core::models::RtmpStreamMode::VideoOnly => {
+                                source_config_proto::RtmpStreamMode::VideoOnly as i32
+                            }
+                            synctv_core::models::RtmpStreamMode::AudioOnly => {
+                                source_config_proto::RtmpStreamMode::AudioOnly as i32
+                            }
+                        },
+                    })
+                }
+                synctv_core::models::ExternalLiveSourceConfig::Rtsp {
+                    url,
+                    transport,
+                    video_track,
+                    audio_track,
+                } => Source::Rtsp(source_config_proto::RtspPullSourceConfig {
+                    url,
+                    transport: match transport {
+                        synctv_core::models::RtspTransport::Tcp => {
+                            source_config_proto::RtspTransport::Tcp as i32
+                        }
+                        synctv_core::models::RtspTransport::Udp => {
+                            source_config_proto::RtspTransport::Udp as i32
+                        }
+                    },
+                    video_track: Some(rtsp_track_selection_to_proto(video_track)),
+                    audio_track: Some(rtsp_track_selection_to_proto(audio_track)),
+                }),
+                synctv_core::models::ExternalLiveSourceConfig::HttpFlv { url } => {
+                    Source::HttpFlv(source_config_proto::HttpFlvPullSourceConfig { url })
+                }
+            };
+            Provider::LiveProxy(source_config_proto::LiveProxyMediaSourceConfig {
+                source: Some(source),
+            })
         }
         synctv_core::models::MediaSourceConfig::Cloudreve(config) => {
             Provider::Cloudreve(source_config_proto::CloudreveMediaSourceConfig {
@@ -835,7 +902,9 @@ fn media_resource_metadata_to_proto(
         synctv_core::models::MediaSourceConfig::Alist(config) => config.path.clone(),
         synctv_core::models::MediaSourceConfig::Emby(config) => config.item_id.clone(),
         synctv_core::models::MediaSourceConfig::Rtmp(_) => "rtmp".to_string(),
-        synctv_core::models::MediaSourceConfig::LiveProxy(config) => config.url.clone(),
+        synctv_core::models::MediaSourceConfig::LiveProxy(config) => {
+            config.source.url().to_string()
+        }
         synctv_core::models::MediaSourceConfig::Cloudreve(config) => config.path.clone(),
         synctv_core::models::MediaSourceConfig::Twitch(config) => match config {
             synctv_core::models::TwitchMediaSourceConfig::Live { channel, .. } => {

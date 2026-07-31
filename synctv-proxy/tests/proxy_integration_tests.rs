@@ -121,6 +121,31 @@ async fn test_proxy_zstd_encoding_preserved() {
     assert_eq!(ce.unwrap().to_str().unwrap(), "zstd");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_proxy_client_preserves_compressed_response_bytes() {
+    let server = MockServer::start().await;
+    let body = b"upstream bytes that must remain encoded";
+    Mock::given(method("GET"))
+        .and(path("/gzip"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(body.to_vec())
+                .insert_header("content-encoding", "gzip"),
+        )
+        .mount(&server)
+        .await;
+
+    let client =
+        synctv_proxy::build_proxy_http_client(synctv_common::ssrf::SsrfGuard::disabled()).unwrap();
+    let response = client
+        .get(format!("{}/gzip", server.uri()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.headers()["content-encoding"], "gzip");
+    assert_eq!(response.bytes().await.unwrap().as_ref(), body);
+}
+
 // Cache-Control logic (detailed)
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

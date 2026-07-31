@@ -3,7 +3,7 @@ title: Runtime Settings
 description: Manage database-backed runtime settings and distinguish them from startup configuration.
 ---
 
-Runtime settings are hot-updated product policy stored in PostgreSQL. Use them for registration, room creation, proxy policy, CORS, chat retention, and similar behavior. Do not use them for startup secrets, listener ports, database connections, Redis connections, or cache enablement.
+Runtime settings are hot-updated product policy stored in PostgreSQL. Use them for registration, room creation, RTMP, CORS, chat retention, and similar behavior. Do not use them for startup secrets, listener ports, database connections, Redis connections, or cache enablement.
 
 ## Basic Commands
 
@@ -23,7 +23,7 @@ synctv settings update --set permissions.guestDefaultPermissions=40
 
 | Change | Location |
 | --- | --- |
-| Registration switches, room creation policy, proxy policy, CORS, chat retention | Runtime settings |
+| Registration switches, room creation policy, RTMP, CORS, chat retention | Runtime settings |
 | JWT, OPAQUE, encryption keys, and signing keys | Startup configuration and secret management |
 | PostgreSQL, Redis, listener ports, TLS, data_dir | Startup configuration |
 | User 2FA, notifications, default Provider | User preferences |

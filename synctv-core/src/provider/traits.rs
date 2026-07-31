@@ -58,7 +58,7 @@ pub struct PlaybackResult {
 
     /// Backend-owned source liveness when the provider can determine it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub is_live: Option<bool>,
+    pub playback_kind: Option<crate::models::PlaybackKind>,
 
     /// Additional provider metadata for display-only fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]

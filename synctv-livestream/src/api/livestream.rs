@@ -37,7 +37,7 @@ pub struct LiveStreamingInfrastructure {
     pub(crate) stream_hub_event_sender: StreamHubEventSender,
     /// Pull stream manager for gRPC relay (cross-node pull)
     pub(crate) pull_manager: Arc<PullStreamManager>,
-    /// External publish manager for pull-to-publish streams (RTMP/HTTP-FLV sources)
+    /// External publish manager for RTMP, RTSP, and HTTP-FLV pull-to-publish streams.
     pub(crate) external_publish_manager: Arc<ExternalPublishManager>,
     /// Segment manager for HLS storage
     pub(crate) segment_manager: Option<Arc<SegmentManager>>,
@@ -367,7 +367,27 @@ impl LiveStreamingInfrastructure {
         &self,
         room_id: &str,
         media_id: &str,
-        external_source_url: Option<&str>,
+        external_source: Option<&synctv_core::models::ExternalLiveSourceConfig>,
+    ) -> Result<StreamSubscriberGuard> {
+        self.ensure_pull_stream_internal(room_id, media_id, external_source)
+            .await
+    }
+
+    pub async fn ensure_external_pull_stream(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        source_config: &synctv_core::models::LiveProxyMediaSourceConfig,
+    ) -> Result<StreamSubscriberGuard> {
+        self.ensure_pull_stream_internal(room_id, media_id, Some(&source_config.source))
+            .await
+    }
+
+    async fn ensure_pull_stream_internal(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        external_source: Option<&synctv_core::models::ExternalLiveSourceConfig>,
     ) -> Result<StreamSubscriberGuard> {
         // Check Redis for an existing publisher
         let publisher = self
@@ -430,10 +450,10 @@ impl LiveStreamingInfrastructure {
             return Ok(guard);
         }
 
-        if let Some(source_url) = external_source_url {
+        if let Some(source) = external_source {
             let stream = self
                 .external_publish_manager
-                .get_or_create(room_id, media_id, source_url)
+                .get_or_create(room_id, media_id, source)
                 .await
                 .context("Failed to create external publish stream")?;
             let guard = StreamSubscriberGuard::new(move || stream.decrement_subscriber_count());
@@ -605,20 +625,29 @@ impl FlvStreamingApi {
     /// so the subscriber count is decremented when the viewer disconnects.
     ///
     /// # Arguments
-    /// * `external_source_url` - If provided and no Redis publisher exists, starts an
-    ///   external pull from this URL (RTMP or HTTP-FLV).
+    /// * `external_source` - If provided and no Redis publisher exists, starts an
+    ///   external RTMP, RTSP, or HTTP-FLV pull.
     pub async fn create_session_with_pull(
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
         media_id: &str,
-        external_source_url: Option<&str>,
+        external_source: Option<&synctv_core::models::LiveProxyMediaSourceConfig>,
     ) -> Result<(
         mpsc::Receiver<Result<Bytes, std::io::Error>>,
         StreamSubscriberGuard,
     )> {
-        let guard = infrastructure
-            .ensure_pull_stream(room_id, media_id, external_source_url)
-            .await?;
+        let guard = match external_source {
+            Some(config) => {
+                infrastructure
+                    .ensure_external_pull_stream(room_id, media_id, config)
+                    .await?
+            }
+            None => {
+                infrastructure
+                    .ensure_pull_stream(room_id, media_id, None)
+                    .await?
+            }
+        };
 
         let rx = Self::create_session(infrastructure, room_id, media_id).await?;
         Ok((rx, guard))
@@ -664,15 +693,15 @@ impl HlsStreamingApi {
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
         media_id: &str,
-        external_source_url: Option<&str>,
+        external_source: Option<&synctv_core::models::LiveProxyMediaSourceConfig>,
         url_generator: F,
     ) -> Result<Option<String>>
     where
         F: Fn(&str) -> String,
     {
-        if let Some(source_url) = external_source_url {
+        if let Some(source) = external_source {
             let _guard = infrastructure
-                .ensure_pull_stream(room_id, media_id, Some(source_url))
+                .ensure_external_pull_stream(room_id, media_id, source)
                 .await?;
             return Self::wait_for_playlist(infrastructure, room_id, media_id, &url_generator)
                 .await;
@@ -798,7 +827,7 @@ impl HlsStreamingApi {
             .map_err(|e| StreamError::RegistryError(format!("Failed to check publisher: {e}")))?;
 
         let Some(publisher_info) = publisher_info else {
-            return Err(StreamError::NoPublisher(format!("{room_id}/{media_id}")).into());
+            return Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await;
         };
 
         let is_local = infrastructure.is_local_publisher_node(&publisher_info.node_id);
@@ -837,12 +866,12 @@ impl HlsStreamingApi {
         room_id: &str,
         media_id: &str,
         segment_name: &str,
-        external_source_url: Option<&str>,
+        external_source: Option<&synctv_core::models::LiveProxyMediaSourceConfig>,
     ) -> Result<Bytes> {
-        let _guard = if let Some(source_url) = external_source_url {
+        let _guard = if let Some(source) = external_source {
             Some(
                 infrastructure
-                    .ensure_pull_stream(room_id, media_id, Some(source_url))
+                    .ensure_external_pull_stream(room_id, media_id, source)
                     .await?,
             )
         } else {
@@ -970,8 +999,11 @@ mod tests {
             synctv_common::ssrf::SsrfGuard::disabled(),
         )?;
 
+        let source = synctv_core::models::ExternalLiveSourceConfig::HttpFlv {
+            url: "http://127.0.0.1:8080/live.flv".to_string(),
+        };
         let error = infrastructure
-            .ensure_pull_stream("room1", "media1", Some("http://127.0.0.1:8080/live.flv"))
+            .ensure_pull_stream("room1", "media1", Some(&source))
             .await
             .expect_err("remote publisher relay should fail fast because cluster_address is empty");
 

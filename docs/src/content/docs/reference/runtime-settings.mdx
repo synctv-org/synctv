@@ -12,7 +12,7 @@ Runtime settings 是存储在 PostgreSQL 的热更新设置，主要用于运行
 | 类型 | 存储位置 | 是否热更新 | 适合内容 |
 | --- | --- | --- | --- |
 | 启动配置 | YAML、env、secret file、CLI flag | 否，通常需要重启 | 端口、数据库、Redis、secret、TLS、data_dir、cache 启用 |
-| Runtime settings | PostgreSQL `settings` 表 | 是，多副本通过 LISTEN/NOTIFY 同步 | 注册、房间创建、权限默认值、代理开关、CORS、聊天保留策略 |
+| Runtime settings | PostgreSQL `settings` 表 | 是，多副本通过 LISTEN/NOTIFY 同步 | 注册、房间创建、权限默认值、RTMP、CORS、聊天保留策略 |
 
 <Aside type="caution">
 不要把启动期 secret、数据库连接、Redis 连接、监听端口或 slice cache 启用状态放进 runtime settings。这些必须由启动配置管理。
@@ -151,15 +151,6 @@ synctv settings update --set 'oauth2.allowedRedirectUrls=["https://syncs.tv/oaut
 
 用户级 2FA、通知偏好和 Provider 默认实例属于 user preferences，见 [角色、权限与用户偏好](../../admin/permissions/)。
 
-### Proxy
-
-| Key | 类型 | 默认值 | 说明 |
-| --- | --- | --- | --- |
-| `proxy.movieProxy` | bool | `true` | 是否允许电影/媒体代理路径 |
-| `proxy.liveProxy` | bool | `true` | 是否允许直播代理路径 |
-
-这些是业务代理策略，不等同于启动配置 `proxy_slice_cache.enabled`。slice cache 启用只能在启动时配置。
-
 ### RTMP
 
 | Key | 类型 | 默认值 | 说明 |
@@ -264,4 +255,4 @@ synctv settings update --set 'oauth2.providers=[{"name":"github","enableSignup":
 - **先确认是否应热更新**： 如果是端口、secret、数据库、Redis、TLS 或 cache 启用，应该改启动配置而不是 runtime settings。
 - **先查当前值**： 修改前运行 `synctv settings get <key>`，记录当前值，方便回滚。
 - **关注多副本同步**： 多副本依赖 PostgreSQL 通知同步，修改后观察所有副本日志和行为。
-- **保留变更原因**： 对注册、房间创建、代理和权限默认值这类策略变更记录 reason。
+- **保留变更原因**： 对注册、房间创建、RTMP 和权限默认值这类策略变更记录 reason。

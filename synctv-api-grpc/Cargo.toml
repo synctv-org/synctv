@@ -163,7 +163,6 @@ tracing-subscriber.workspace = true
 clap.workspace = true
 regex.workspace = true
 ammonia.workspace = true
-garde.workspace = true
 
 # Caching
 moka.workspace = true

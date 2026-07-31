@@ -169,14 +169,13 @@ message RuntimeSettings {
   RoomCreationSettings room_creation = 3 [(buf.validate.field).required = true];
   UserSettings user = 4 [(buf.validate.field).required = true];
   OAuth2Settings oauth2 = 5 [(buf.validate.field).required = true];
-  ProxySettings proxy = 6 [(buf.validate.field).required = true];
-  RtmpSettings rtmp = 7 [(buf.validate.field).required = true];
-  EmailSettings email = 8 [(buf.validate.field).required = true];
-  WebRTCSettings webrtc = 9 [(buf.validate.field).required = true];
-  ChatSettings chat = 10 [(buf.validate.field).required = true];
-  CorsSettings cors = 11 [(buf.validate.field).required = true];
-  ServerSettings server = 12 [(buf.validate.field).required = true];
-  PlaybackHistorySettings playback_history = 13 [(buf.validate.field).required = true];
+  RtmpSettings rtmp = 6 [(buf.validate.field).required = true];
+  EmailSettings email = 7 [(buf.validate.field).required = true];
+  WebRTCSettings webrtc = 8 [(buf.validate.field).required = true];
+  ChatSettings chat = 9 [(buf.validate.field).required = true];
+  CorsSettings cors = 10 [(buf.validate.field).required = true];
+  ServerSettings server = 11 [(buf.validate.field).required = true];
+  PlaybackHistorySettings playback_history = 12 [(buf.validate.field).required = true];
 }
 
 message ServerSettings {
@@ -294,11 +293,6 @@ message OAuth2CasdoorProviderConfig {
   optional string jwks_url = 8;
 }
 
-message ProxySettings {
-  bool movie_proxy = 1;
-  bool live_proxy = 2;
-}
-
 message RtmpSettings {
   optional string custom_publish_host = 1;
   bool ts_disguised_as_png = 2;
@@ -358,14 +352,13 @@ message RuntimeSettingsPatch {
   RoomCreationSettingsPatch room_creation = 3;
   UserSettingsPatch user = 4;
   OAuth2SettingsPatch oauth2 = 5;
-  ProxySettingsPatch proxy = 6;
-  RtmpSettingsPatch rtmp = 7;
-  EmailSettingsPatch email = 8;
-  WebRTCSettingsPatch webrtc = 9;
-  ChatSettingsPatch chat = 10;
-  CorsSettingsPatch cors = 11;
-  ServerSettingsPatch server = 12;
-  PlaybackHistorySettingsPatch playback_history = 13;
+  RtmpSettingsPatch rtmp = 6;
+  EmailSettingsPatch email = 7;
+  WebRTCSettingsPatch webrtc = 8;
+  ChatSettingsPatch chat = 9;
+  CorsSettingsPatch cors = 10;
+  ServerSettingsPatch server = 11;
+  PlaybackHistorySettingsPatch playback_history = 12;
 }
 
 message ServerSettingsPatch {
@@ -406,11 +399,6 @@ message UserSettingsPatch {
 message OAuth2SettingsPatch {
   repeated OAuth2ProviderSettings providers = 1;
   repeated string allowed_redirect_urls = 2;
-}
-
-message ProxySettingsPatch {
-  optional bool movie_proxy = 1;
-  optional bool live_proxy = 2;
 }
 
 message RtmpSettingsPatch {

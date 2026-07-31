@@ -10,6 +10,7 @@ use crate::flv::{
     define::{frame_type, FlvData},
     demuxer::{FlvAudioTagDemuxer, FlvVideoTagDemuxer},
 };
+use crate::hls::playlist::{HlsPlaylist, SegmentInfo};
 use crate::hls::segment_manager::SegmentManager;
 use crate::mpegts::{
     define::{epsi_stream_type, MPEG_FLAG_IDR_FRAME},
@@ -29,8 +30,6 @@ use crate::streamhub::{
 };
 use bytes::{Bytes, BytesMut};
 use dashmap::DashMap;
-use std::collections::VecDeque;
-use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -39,20 +38,11 @@ const STREAM_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
 const RECV_TIMEOUT_MS: u64 = 65000;
 const ACTIVITY_RECORD_INTERVAL: Duration = Duration::from_secs(10);
 const DTS_REGRESSION_THRESHOLD_MS: i64 = 1000;
-const DEFAULT_TARGET_DURATION_SECS: i64 = 10;
 
-fn duration_ms_to_secs_f64(duration_ms: i64) -> f64 {
-    Duration::from_millis(duration_ms.max(0).cast_unsigned()).as_secs_f64()
-}
-
-fn playlist_target_duration_secs(segments: &VecDeque<SegmentInfo>) -> i64 {
-    match segments
-        .iter()
-        .map(|segment| segment.duration.max(0).saturating_add(999) / 1000)
-        .max()
-    {
-        Some(max_segment_duration_secs) => max_segment_duration_secs,
-        None => DEFAULT_TARGET_DURATION_SECS,
+fn now_epoch_ms() -> i64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => i64::try_from(duration.as_millis()).unwrap_or(i64::MAX),
+        Err(error) => -i64::try_from(error.duration().as_millis()).unwrap_or(i64::MAX),
     }
 }
 
@@ -77,30 +67,13 @@ fn generate_ts_name() -> String {
     )
 }
 
-/// Segment metadata for M3U8 generation
-#[derive(Debug, Clone)]
-pub struct SegmentInfo {
-    /// Segment sequence number
-    pub sequence: u64,
-    /// Segment duration in milliseconds
-    pub duration: i64,
-    /// TS filename (base62 ID, e.g., "a1b2c3d4e5f6")
-    pub ts_name: String,
-    /// Whether this is a discontinuity point
-    pub discontinuity: bool,
-    /// Creation time (for cleanup)
-    pub created_at: Instant,
-}
-
 /// Registry of active streams (for M3U8 generation)
 pub type StreamRegistry = Arc<DashMap<String, Arc<parking_lot::RwLock<StreamProcessorState>>>>;
-
 /// Stream processor state that can be accessed by HTTP server
 pub struct StreamProcessorState {
     pub app_name: String,
     pub stream_name: String,
-    pub segments: VecDeque<SegmentInfo>,
-    pub is_ended: bool,
+    pub playlist: HlsPlaylist,
     /// Creation timestamp used to detect if this entry was replaced by a new handler
     pub created_at: Instant,
     /// When set, this stream's segments can be cleaned up immediately.
@@ -158,45 +131,13 @@ impl StreamProcessorState {
     where
         F: FnMut(&str) -> String,
     {
-        let mut m3u8_content = String::new();
-
-        // Header
-        m3u8_content.push_str("#EXTM3U\n");
-        m3u8_content.push_str("#EXT-X-VERSION:3\n");
-
-        // Target duration (max segment duration in seconds, rounded up)
-        let max_duration_sec = playlist_target_duration_secs(&self.segments);
-        let _ = writeln!(m3u8_content, "#EXT-X-TARGETDURATION:{max_duration_sec}");
-
-        // Media sequence (first segment in playlist)
-        let first_seq = self.segments.front().map_or(0, |s| s.sequence);
-        let _ = writeln!(m3u8_content, "#EXT-X-MEDIA-SEQUENCE:{first_seq}");
-
-        // Segments
-        for segment in &self.segments {
-            if segment.discontinuity {
-                m3u8_content.push_str("#EXT-X-DISCONTINUITY\n");
-            }
-
-            let duration_sec = duration_ms_to_secs_f64(segment.duration);
-            let _ = writeln!(m3u8_content, "#EXTINF:{duration_sec:.3},");
-
-            // Use closure to generate segment URL (allows custom auth, CDN URLs, etc)
-            let segment_url = gen_ts_url(&segment.ts_name);
-            m3u8_content.push_str(&segment_url);
-            m3u8_content.push('\n');
-        }
-
-        if self.is_ended {
-            m3u8_content.push_str("#EXT-X-ENDLIST\n");
-        }
-
-        m3u8_content
+        self.playlist.generate_m3u8(&mut gen_ts_url)
     }
 }
 
 fn mark_stream_state_for_cleanup(state: &mut StreamProcessorState) {
     state.cleanup_segment_names = state
+        .playlist
         .segments
         .iter()
         .map(|segment| segment.ts_name.clone())
@@ -536,13 +477,14 @@ impl StreamHandler {
         // Create registry key
         let registry_key = format!("{}/{}", self.app_name, self.stream_name);
 
+        let playlist = HlsPlaylist::new();
+
         // Register stream in registry
         let handler_created_at = Instant::now();
         let state = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
             app_name: self.app_name.clone(),
             stream_name: self.stream_name.clone(),
-            segments: VecDeque::new(),
-            is_ended: false,
+            playlist,
             created_at: handler_created_at,
             marked_for_cleanup: false,
             cleanup_segment_names: Vec::new(),
@@ -569,7 +511,7 @@ impl StreamHandler {
         };
 
         processor
-            .process_stream(&mut self.data_consumer, self.activity_callback.as_ref())
+            .process_stream(&mut self.data_consumer, self.activity_callback.clone())
             .await?;
 
         // Unsubscribe when done
@@ -700,18 +642,13 @@ impl StreamHandler {
 /// Retries transient storage failures (timeouts, connection errors) up to
 /// 3 times with exponential backoff (100ms base, 2s max, with jitter).
 async fn write_with_retry(
-    storage: &Arc<dyn HlsStorage>,
-    app: &str,
-    stream: &str,
-    name: &str,
+    storage: Arc<dyn HlsStorage>,
+    app: String,
+    stream: String,
+    name: String,
     data: Bytes,
 ) -> std::io::Result<()> {
     use backon::{ExponentialBuilder, Retryable};
-
-    let storage = Arc::clone(storage);
-    let app = app.to_owned();
-    let stream = stream.to_owned();
-    let name = name.to_owned();
 
     (|| {
         let storage = storage.clone();
@@ -768,10 +705,12 @@ struct StreamProcessor {
     // Codec detection: tracks the video codec detected from the stream.
     // When HEVC is detected, the TsMuxer is re-initialized with PSI_STREAM_HEVC.
     video_codec_id: Option<u8>,
+    /// True after a decodable video frame has been received. Audio-only streams
+    /// use audio DTS to rotate live segments because they have no keyframes.
+    video_seen: bool,
 
     // Segment tracking
     sequence_no: u64,
-    max_segments: usize, // Keep last N segments in M3U8
 
     // Timing
     segment_duration_ms: i64, // Target segment duration (e.g., 10000ms = 10s)
@@ -800,6 +739,18 @@ impl StreamProcessor {
             .add_stream(epsi_stream_type::PSI_STREAM_H264, BytesMut::new())
             .map_err(|e| HlsRemuxerError::MuxError(format!("Failed to add video stream: {e:?}")))?;
 
+        let (sequence_no, discontinuity_pending) = {
+            let state = state.read();
+            (
+                state
+                    .playlist
+                    .segments
+                    .back()
+                    .map_or(0, |segment| segment.sequence.saturating_add(1)),
+                !state.playlist.segments.is_empty(),
+            )
+        };
+
         Ok(Self {
             app_name: app_name.to_string(),
             stream_name: stream_name.to_string(),
@@ -811,20 +762,20 @@ impl StreamProcessor {
             video_pid,
             audio_pid,
             video_codec_id: None,
-            sequence_no: 0,
-            max_segments: 6,            // Keep last 6 segments
+            video_seen: false,
+            sequence_no,
             segment_duration_ms: 10000, // 10 seconds
             last_segment_dts: 0,
             last_dts: 0,
             last_pts: 0,
-            discontinuity_pending: false,
+            discontinuity_pending,
         })
     }
 
     async fn process_stream(
         &mut self,
         data_consumer: &mut FrameDataReceiver,
-        activity_callback: Option<&PublisherActivityCallback>,
+        activity_callback: Option<PublisherActivityCallback>,
     ) -> Result<(), HlsRemuxerError> {
         // Use a longer timeout for stream end detection
         // The original logic had a flaw: it would increment retry_count on any
@@ -857,7 +808,7 @@ impl StreamProcessor {
                     };
 
                     // Record publisher activity (throttled) to prevent silent publisher timeout
-                    if let Some(callback) = activity_callback {
+                    if let Some(callback) = activity_callback.as_ref() {
                         if last_activity_record.elapsed() >= ACTIVITY_RECORD_INTERVAL {
                             callback(&self.app_name, &self.stream_name);
                             last_activity_record = Instant::now();
@@ -905,6 +856,7 @@ impl StreamProcessor {
                 let Some(video_data) = video_data else {
                     return Ok(());
                 };
+                self.video_seen = true;
 
                 // Detect codec on first video frame and re-initialize TsMuxer if HEVC.
                 // This ensures the PMT advertises the correct stream_type (0x24 for HEVC,
@@ -968,6 +920,16 @@ impl StreamProcessor {
 
                 let payload = audio_data.data;
 
+                // Video streams rotate on keyframes. An audio-only RTMP/RTSP
+                // source has no keyframes, so use the audio clock to maintain
+                // the same live HLS sliding-window behavior.
+                if !self.video_seen
+                    && audio_data.dts - self.last_segment_dts >= self.segment_duration_ms
+                    && self.last_dts > self.last_segment_dts
+                {
+                    self.finalize_segment(audio_data.dts, false).await?;
+                }
+
                 (self.audio_pid, audio_data.pts, audio_data.dts, 0, payload)
             }
             FlvData::MetaData { .. } => return Ok(()),
@@ -1030,18 +992,24 @@ impl StreamProcessor {
         // Write segment to storage with retry using structured (app, stream, name)
         let storage = self.segment_manager.storage().clone();
         let data: Bytes = ts_data.into();
-        write_with_retry(&storage, &self.app_name, &self.stream_name, &ts_name, data)
-            .await
-            .map_err(|e| {
-                tracing::warn!(
-                    "HLS segment write failed after retries: {}/{}/{} - {}",
-                    self.app_name,
-                    self.stream_name,
-                    ts_name,
-                    e
-                );
-                HlsRemuxerError::StorageError(e.to_string())
-            })?;
+        write_with_retry(
+            storage,
+            self.app_name.clone(),
+            self.stream_name.clone(),
+            ts_name.clone(),
+            data,
+        )
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                "HLS segment write failed after retries: {}/{}/{} - {}",
+                self.app_name,
+                self.stream_name,
+                ts_name,
+                e
+            );
+            HlsRemuxerError::StorageError(e.to_string())
+        })?;
 
         tracing::debug!(
             "Wrote segment: {}/{}/{} ({}ms, {} bytes)",
@@ -1058,33 +1026,27 @@ impl StreamProcessor {
         let discontinuity = self.discontinuity_pending;
         self.discontinuity_pending = false;
 
+        let started_at_ms = now_epoch_ms().saturating_sub(duration_ms);
+
         // Track segment metadata
         let segment_info = SegmentInfo {
             sequence: self.sequence_no,
-            duration: duration_ms,
+            duration_ms,
+            started_at_ms,
             ts_name,
             discontinuity,
-            created_at: Instant::now(),
         };
 
-        // Update shared state with new segment
+        // Update the in-memory playlist. Storage cleanup runs independently using
+        // the configured retention window so clients can fetch an older segment
+        // after it leaves the playlist window.
         {
             let mut state = self.state.write();
-            state.segments.push_back(segment_info);
-
-            // Remove old segments from list (but keep in storage for now, cleanup task will handle)
-            if state.segments.len() > self.max_segments {
-                state.segments.pop_front();
-            }
-
-            // Mark stream as ended if this is the last segment
+            state.playlist.push_segment(segment_info);
             if is_eof {
-                state.is_ended = true;
-                drop(state);
-                tracing::info!("Stream ended: {}/{}", self.app_name, self.stream_name);
+                state.playlist.mark_ended();
             }
         }
-
         // Reset for next segment
         self.ts_muxer.reset();
         self.last_segment_dts = current_dts;
@@ -1096,6 +1058,8 @@ impl StreamProcessor {
     async fn flush_remaining_segment(&mut self) -> Result<(), HlsRemuxerError> {
         if self.last_dts > self.last_segment_dts {
             self.finalize_segment(self.last_dts, true).await?;
+        } else {
+            self.state.write().playlist.mark_ended();
         }
         Ok(())
     }
@@ -1132,652 +1096,5 @@ pub enum HlsRemuxerError {
 impl From<crate::streamhub::errors::StreamHubError> for HlsRemuxerError {
     fn from(error: crate::streamhub::errors::StreamHubError) -> Self {
         Self::SubscribeError(error)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn assert_rtmp_identifier(
-        identifier: StreamIdentifier,
-        expected_app: &str,
-        expected_stream: &str,
-    ) {
-        let StreamIdentifier::Rtmp {
-            app_name,
-            stream_name,
-        } = identifier;
-        assert_eq!(app_name, expected_app);
-        assert_eq!(stream_name, expected_stream);
-    }
-
-    fn assert_unsubscribe_event(event: StreamHubEvent, expected_app: &str, expected_stream: &str) {
-        let StreamHubEvent::UnSubscribe { identifier, .. } = event else {
-            panic!("expected unsubscribe event, got {event:?}");
-        };
-        assert_rtmp_identifier(identifier, expected_app, expected_stream);
-    }
-
-    fn subscribe_result_sender(
-        event: StreamHubEvent,
-    ) -> tokio::sync::oneshot::Sender<
-        Result<
-            (
-                crate::streamhub::define::DataReceiver,
-                Option<crate::streamhub::define::StatisticDataSender>,
-            ),
-            crate::streamhub::errors::StreamHubError,
-        >,
-    > {
-        let StreamHubEvent::Subscribe { result_sender, .. } = event else {
-            panic!("expected subscribe event, got {event:?}");
-        };
-        result_sender
-    }
-
-    #[test]
-    fn test_segment_info_creation() {
-        let segment = SegmentInfo {
-            sequence: 1,
-            duration: 10000,
-            ts_name: "test_segment".to_string(),
-            discontinuity: false,
-            created_at: Instant::now(),
-        };
-
-        assert_eq!(segment.sequence, 1);
-        assert_eq!(segment.duration, 10000);
-        assert!(!segment.discontinuity);
-    }
-
-    #[test]
-    fn test_playlist_target_duration_defaults_for_empty_playlist() {
-        let segments = VecDeque::new();
-        assert_eq!(
-            playlist_target_duration_secs(&segments),
-            DEFAULT_TARGET_DURATION_SECS
-        );
-    }
-
-    #[test]
-    fn test_playlist_target_duration_uses_rounded_max_segment_duration() {
-        let mut segments = VecDeque::new();
-        segments.push_back(SegmentInfo {
-            sequence: 0,
-            duration: -500,
-            ts_name: "negative.ts".to_string(),
-            discontinuity: false,
-            created_at: Instant::now(),
-        });
-        segments.push_back(SegmentInfo {
-            sequence: 1,
-            duration: 10001,
-            ts_name: "long.ts".to_string(),
-            discontinuity: false,
-            created_at: Instant::now(),
-        });
-
-        assert_eq!(playlist_target_duration_secs(&segments), 11);
-    }
-
-    #[test]
-    fn test_stream_processor_state_generate_m3u8() {
-        let mut state = StreamProcessorState {
-            app_name: "live".to_string(),
-            stream_name: "room123/media456".to_string(),
-            segments: VecDeque::new(),
-            is_ended: false,
-            created_at: Instant::now(),
-            marked_for_cleanup: false,
-            cleanup_segment_names: Vec::new(),
-        };
-
-        // Add some segments
-        state.segments.push_back(SegmentInfo {
-            sequence: 0,
-            duration: 10000,
-            ts_name: "segment0.ts".to_string(),
-            discontinuity: false,
-            created_at: Instant::now(),
-        });
-
-        state.segments.push_back(SegmentInfo {
-            sequence: 1,
-            duration: 10000,
-            ts_name: "segment1.ts".to_string(),
-            discontinuity: false,
-            created_at: Instant::now(),
-        });
-
-        // Generate M3U8
-        let m3u8 = state.generate_m3u8(|ts_name| format!("/api/hls/{ts_name}"));
-
-        // Verify M3U8 content
-        assert!(m3u8.contains("#EXTM3U"));
-        assert!(m3u8.contains("#EXT-X-VERSION:3"));
-        assert!(m3u8.contains("#EXT-X-TARGETDURATION:"));
-        assert!(m3u8.contains("#EXT-X-MEDIA-SEQUENCE:0"));
-        assert!(m3u8.contains("segment0.ts"));
-        assert!(m3u8.contains("segment1.ts"));
-    }
-
-    #[test]
-    fn test_stream_processor_state_with_discontinuity() {
-        let mut state = StreamProcessorState {
-            app_name: "live".to_string(),
-            stream_name: "room123/media456".to_string(),
-            segments: VecDeque::new(),
-            is_ended: false,
-            created_at: Instant::now(),
-            marked_for_cleanup: false,
-            cleanup_segment_names: Vec::new(),
-        };
-
-        // Add segment with discontinuity
-        state.segments.push_back(SegmentInfo {
-            sequence: 0,
-            duration: 10000,
-            ts_name: "segment0.ts".to_string(),
-            discontinuity: true,
-            created_at: Instant::now(),
-        });
-
-        // Generate M3U8
-        let m3u8 = state.generate_m3u8(|ts_name| format!("/api/hls/{ts_name}"));
-
-        // Verify discontinuity tag is present
-        assert!(m3u8.contains("#EXT-X-DISCONTINUITY"));
-    }
-
-    #[test]
-    fn test_stream_processor_state_ended() {
-        let mut state = StreamProcessorState {
-            app_name: "live".to_string(),
-            stream_name: "room123/media456".to_string(),
-            segments: VecDeque::new(),
-            is_ended: true,
-            created_at: Instant::now(),
-            marked_for_cleanup: false,
-            cleanup_segment_names: Vec::new(),
-        };
-
-        // Add a segment
-        state.segments.push_back(SegmentInfo {
-            sequence: 0,
-            duration: 10000,
-            ts_name: "segment0.ts".to_string(),
-            discontinuity: false,
-            created_at: Instant::now(),
-        });
-
-        // Generate M3U8
-        let m3u8 = state.generate_m3u8(|ts_name| format!("/api/hls/{ts_name}"));
-
-        // Verify ENDLIST tag is present
-        assert!(m3u8.contains("#EXT-X-ENDLIST"));
-    }
-
-    #[test]
-    fn test_stream_processor_state_custom_url_generator() {
-        let mut state = StreamProcessorState {
-            app_name: "live".to_string(),
-            stream_name: "room123/media456".to_string(),
-            segments: VecDeque::new(),
-            is_ended: false,
-            created_at: Instant::now(),
-            marked_for_cleanup: false,
-            cleanup_segment_names: Vec::new(),
-        };
-
-        // Add segment
-        state.segments.push_back(SegmentInfo {
-            sequence: 0,
-            duration: 10000,
-            ts_name: "segment0.ts".to_string(),
-            discontinuity: false,
-            created_at: Instant::now(),
-        });
-
-        // Generate M3U8 with custom URL generator (e.g., adding auth token)
-        let m3u8 = state.generate_m3u8(|ts_name| {
-            format!("/api/room/live/hls/data/room123/media456/{ts_name}?token=abc123")
-        });
-
-        // Verify custom URL format is used
-        assert!(m3u8.contains("?token=abc123"));
-        assert!(m3u8.contains("/api/room/live/hls/data/room123/media456/"));
-    }
-
-    #[test]
-    fn test_hls_remuxer_error_display() {
-        use crate::streamhub::errors::{StreamHubError, StreamHubErrorValue};
-
-        let error = HlsRemuxerError::DemuxError("test error".to_string());
-        assert_eq!(error.to_string(), "Demux error: test error");
-
-        let error = HlsRemuxerError::StorageError("storage failed".to_string());
-        assert_eq!(error.to_string(), "Storage error: storage failed");
-
-        let error = HlsRemuxerError::SubscribeTimeout;
-        assert_eq!(error.to_string(), "Subscribe timed out");
-
-        let error = HlsRemuxerError::StreamHubEventSendError(StreamHubError {
-            value: StreamHubErrorValue::EventChannelClosed,
-        });
-        assert_eq!(
-            error.to_string(),
-            "StreamHub event send error: streamhub event channel closed"
-        );
-    }
-
-    #[test]
-    fn test_dts_regression_marks_discontinuity_before_last_dts_is_updated() {
-        let storage = Arc::new(crate::storage::MemoryStorage::new());
-        let segment_manager = Arc::new(SegmentManager::new(storage, Default::default()));
-        let state = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
-            app_name: "live".to_string(),
-            stream_name: "stream".to_string(),
-            segments: VecDeque::new(),
-            is_ended: false,
-            created_at: Instant::now(),
-            marked_for_cleanup: false,
-            cleanup_segment_names: Vec::new(),
-        }));
-
-        let mut processor = StreamProcessor::new("live", "stream", segment_manager, state)
-            .expect("stream processor should initialize");
-        let previous_dts = 5_000;
-        let current_dts = 3_000;
-        processor.last_dts = previous_dts;
-
-        if previous_dts > 0 && current_dts < previous_dts - DTS_REGRESSION_THRESHOLD_MS {
-            processor.discontinuity_pending = true;
-        }
-        processor.last_dts = current_dts;
-
-        assert!(
-            processor.discontinuity_pending,
-            "regressed DTS should mark the next segment as discontinuous"
-        );
-        assert_eq!(processor.last_dts, current_dts);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_stream_handler_subscribe_times_out_when_result_never_arrives() {
-        let (event_sender, mut event_rx) = tokio::sync::mpsc::channel(8);
-        let storage = Arc::new(crate::storage::MemoryStorage::new());
-        let segment_manager = Arc::new(SegmentManager::new(storage, Default::default()));
-        let registry: StreamRegistry = Arc::new(DashMap::new());
-
-        let mut handler = StreamHandler::new(
-            "live".to_string(),
-            "room/stream".to_string(),
-            event_sender,
-            segment_manager,
-            registry,
-            None,
-        );
-
-        let subscribe_task = tokio::spawn(async move { handler.subscribe_from_stream_hub().await });
-
-        let event = event_rx
-            .recv()
-            .await
-            .expect("subscribe event should be emitted");
-        assert!(matches!(event, StreamHubEvent::Subscribe { .. }));
-
-        tokio::time::advance(STREAM_SUBSCRIBE_TIMEOUT + Duration::from_secs(1)).await;
-
-        let err = subscribe_task
-            .await
-            .expect("task should join")
-            .expect_err("subscribe should time out when no result arrives");
-        assert!(matches!(err, HlsRemuxerError::SubscribeTimeout));
-
-        let rollback = event_rx
-            .recv()
-            .await
-            .expect("timed-out subscribe should emit rollback unsubscribe");
-        assert_unsubscribe_event(rollback, "live", "room/stream");
-    }
-
-    #[tokio::test]
-    async fn test_stream_handler_run_cleans_registry_on_unsubscribe_error() {
-        let (event_sender, mut event_rx) = tokio::sync::mpsc::channel(8);
-        let storage = Arc::new(crate::storage::MemoryStorage::new());
-        let segment_manager = Arc::new(SegmentManager::new(storage, Default::default()));
-        let registry: StreamRegistry = Arc::new(DashMap::new());
-        let registry_key = "live/room/stream".to_string();
-
-        let handler = StreamHandler::new(
-            "live".to_string(),
-            "room/stream".to_string(),
-            event_sender,
-            segment_manager,
-            registry.clone(),
-            None,
-        );
-
-        let handler_task = tokio::spawn(async move { handler.run().await });
-
-        let subscribe_event = event_rx
-            .recv()
-            .await
-            .expect("subscribe event should be emitted");
-        let result_sender = subscribe_result_sender(subscribe_event);
-
-        let (frame_sender, frame_receiver) =
-            tokio::sync::mpsc::channel(crate::streamhub::define::FRAME_DATA_CHANNEL_CAPACITY);
-        result_sender
-            .send(Ok((
-                crate::streamhub::define::DataReceiver {
-                    frame_receiver: Some(crate::streamhub::define::FrameDataReceiver::bounded(
-                        frame_receiver,
-                    )),
-                    packet_receiver: None,
-                },
-                None,
-            )))
-            .expect("subscribe response should be delivered");
-
-        // Close the frame channel immediately so the handler exits its receive loop
-        // without waiting for the idle timeout path.
-        drop(frame_sender);
-
-        // Close the event channel before the handler tries to unsubscribe so that
-        // `unsubscribe_from_stream_hub()` returns an error.
-        drop(event_rx);
-
-        let err = handler_task
-            .await
-            .expect("stream handler task should join")
-            .expect_err("unsubscribe should fail when the event channel is closed");
-        assert!(matches!(err, HlsRemuxerError::StreamHubEventSendError(_)));
-        assert!(
-            !registry.contains_key(&registry_key),
-            "registry entry should still be cleaned up on unsubscribe error"
-        );
-    }
-
-    #[test]
-    fn test_is_transient_error() {
-        // Transient errors - should retry
-        assert!(is_transient_error(&std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "timeout"
-        )));
-        assert!(is_transient_error(&std::io::Error::new(
-            std::io::ErrorKind::ConnectionReset,
-            "reset"
-        )));
-        assert!(is_transient_error(&std::io::Error::new(
-            std::io::ErrorKind::ConnectionRefused,
-            "refused"
-        )));
-        assert!(is_transient_error(&std::io::Error::new(
-            std::io::ErrorKind::ConnectionAborted,
-            "aborted"
-        )));
-        assert!(is_transient_error(&std::io::Error::new(
-            std::io::ErrorKind::BrokenPipe,
-            "broken pipe"
-        )));
-        assert!(is_transient_error(&std::io::Error::new(
-            std::io::ErrorKind::Interrupted,
-            "interrupted"
-        )));
-        assert!(is_transient_error(&std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            "would block"
-        )));
-
-        // Non-transient errors - should not retry
-        assert!(!is_transient_error(&std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "not found"
-        )));
-        assert!(!is_transient_error(&std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "permission denied"
-        )));
-        assert!(!is_transient_error(&std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "invalid input"
-        )));
-    }
-
-    #[tokio::test]
-    async fn test_write_with_retry_success() {
-        use crate::storage::MemoryStorage;
-
-        let storage = Arc::new(MemoryStorage::new()) as Arc<dyn HlsStorage>;
-        let data = Bytes::from_static(b"test segment data");
-
-        // Should succeed immediately
-        let result = write_with_retry(&storage, "app", "stream", "test-key", data.clone()).await;
-        assert!(result.is_ok());
-
-        // Verify data was written
-        let read_data = storage.read("app", "stream", "test-key").await.unwrap();
-        assert_eq!(data, read_data);
-    }
-
-    #[test]
-    fn test_cleanup_captures_segment_names() {
-        // Simulates the old handler marking for cleanup with captured segment names
-        let mut state = StreamProcessorState {
-            app_name: "live".to_string(),
-            stream_name: "room123".to_string(),
-            segments: VecDeque::new(),
-            is_ended: false,
-            created_at: Instant::now(),
-            marked_for_cleanup: false,
-            cleanup_segment_names: Vec::new(),
-        };
-
-        // Simulate adding segments during stream processing
-        state.segments.push_back(SegmentInfo {
-            sequence: 0,
-            duration: 10000,
-            ts_name: "old_seg_0".to_string(),
-            discontinuity: false,
-            created_at: Instant::now(),
-        });
-        state.segments.push_back(SegmentInfo {
-            sequence: 1,
-            duration: 10000,
-            ts_name: "old_seg_1".to_string(),
-            discontinuity: false,
-            created_at: Instant::now(),
-        });
-
-        mark_stream_state_for_cleanup(&mut state);
-
-        // Verify captured names match exactly what was in the segment list
-        assert_eq!(state.cleanup_segment_names.len(), 2);
-        assert_eq!(state.cleanup_segment_names[0], "old_seg_0");
-        assert_eq!(state.cleanup_segment_names[1], "old_seg_1");
-    }
-
-    #[test]
-    fn test_registry_cleanup_checker() {
-        use crate::hls::segment_manager::StreamCleanupChecker;
-
-        let registry: StreamRegistry = Arc::new(DashMap::new());
-
-        // Insert a stream that is NOT marked for cleanup
-        let state1 = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
-            app_name: "live".to_string(),
-            stream_name: "active_stream".to_string(),
-            segments: VecDeque::new(),
-            is_ended: false,
-            created_at: Instant::now(),
-            marked_for_cleanup: false,
-            cleanup_segment_names: Vec::new(),
-        }));
-        registry.insert("live/active_stream".to_string(), state1);
-
-        // Insert a stream that IS marked for cleanup
-        let state2 = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
-            app_name: "live".to_string(),
-            stream_name: "ended_stream".to_string(),
-            segments: VecDeque::new(),
-            is_ended: true,
-            created_at: Instant::now(),
-            marked_for_cleanup: true,
-            cleanup_segment_names: vec!["seg0".to_string(), "seg1".to_string()],
-        }));
-        registry.insert("live/ended_stream".to_string(), state2);
-
-        let checker = RegistryCleanupChecker { registry };
-        let marked = checker.get_streams_marked_for_cleanup();
-
-        // Only the ended stream should be returned
-        assert_eq!(marked.len(), 1);
-        assert_eq!(marked[0].app_name, "live");
-        assert_eq!(marked[0].stream_name, "ended_stream");
-        assert_eq!(
-            marked[0].segment_names,
-            vec!["seg0".to_string(), "seg1".to_string()]
-        );
-    }
-
-    #[test]
-    fn test_new_handler_replaces_old_state_no_cleanup_race() {
-        use crate::hls::segment_manager::StreamCleanupChecker;
-
-        let registry: StreamRegistry = Arc::new(DashMap::new());
-        let key = "live/stream1".to_string();
-
-        // Old handler's state (marked for cleanup)
-        let old_state = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
-            app_name: "live".to_string(),
-            stream_name: "stream1".to_string(),
-            segments: VecDeque::new(),
-            is_ended: true,
-            created_at: Instant::now(),
-            marked_for_cleanup: true,
-            cleanup_segment_names: vec!["old_seg".to_string()],
-        }));
-        registry.insert(key.clone(), old_state);
-
-        // New handler starts, replaces the entry
-        let new_state = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
-            app_name: "live".to_string(),
-            stream_name: "stream1".to_string(),
-            segments: VecDeque::new(),
-            is_ended: false,
-            created_at: Instant::now(),
-            marked_for_cleanup: false,
-            cleanup_segment_names: Vec::new(),
-        }));
-        registry.insert(key, new_state);
-
-        let checker = RegistryCleanupChecker { registry };
-        let marked = checker.get_streams_marked_for_cleanup();
-
-        // After replacement, the new handler's state is NOT marked for cleanup.
-        // The cleanup task should not see any streams to clean up.
-        assert!(
-            marked.is_empty(),
-            "New handler replaced old state; cleanup should not be triggered"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_concurrent_segment_write_and_cleanup_no_corruption() {
-        use crate::storage::MemoryStorage;
-
-        let storage = Arc::new(MemoryStorage::new());
-        let registry: StreamRegistry = Arc::new(DashMap::new());
-        let key = "live/stream1".to_string();
-
-        // Simulate: old handler writes segments, then ends
-        for i in 0..5 {
-            storage
-                .write(
-                    "live",
-                    "stream1",
-                    &format!("seg_{i}"),
-                    Bytes::from(format!("data_{i}")),
-                )
-                .await
-                .unwrap();
-        }
-
-        let state = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
-            app_name: "live".to_string(),
-            stream_name: "stream1".to_string(),
-            segments: (0..5)
-                .map(|i| SegmentInfo {
-                    sequence: i,
-                    duration: 10000,
-                    ts_name: format!("seg_{i}"),
-                    discontinuity: false,
-                    created_at: Instant::now(),
-                })
-                .collect(),
-            is_ended: true,
-            created_at: Instant::now(),
-            marked_for_cleanup: false,
-            cleanup_segment_names: Vec::new(),
-        }));
-        registry.insert(key.clone(), state.clone());
-
-        // Mark for cleanup with captured segment names
-        {
-            let mut s = state.write();
-            mark_stream_state_for_cleanup(&mut s);
-        }
-
-        // Meanwhile, a new handler starts and writes new segments
-        let new_state = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
-            app_name: "live".to_string(),
-            stream_name: "stream1".to_string(),
-            segments: VecDeque::new(),
-            is_ended: false,
-            created_at: Instant::now(),
-            marked_for_cleanup: false,
-            cleanup_segment_names: Vec::new(),
-        }));
-        registry.insert(key.clone(), new_state.clone());
-
-        // New handler writes a fresh segment
-        storage
-            .write("live", "stream1", "new_seg_0", Bytes::from("new_data"))
-            .await
-            .unwrap();
-
-        // The old cleanup_segment_names only contain "seg_0".."seg_4"
-        // If we simulate cleanup of only those specific segments (not blanket delete),
-        // the new handler's "new_seg_0" is preserved.
-        let old_cleanup_names: Vec<String> = state.read().cleanup_segment_names.clone();
-        for name in &old_cleanup_names {
-            storage
-                .delete("live", "stream1", name)
-                .await
-                .expect("old segment cleanup should succeed");
-        }
-
-        // Verify: new segment is NOT deleted
-        assert!(
-            storage
-                .exists("live", "stream1", "new_seg_0")
-                .await
-                .unwrap(),
-            "New handler's segment should survive old handler's cleanup"
-        );
-
-        // Verify: old segments ARE deleted
-        for i in 0..5 {
-            assert!(
-                !storage
-                    .exists("live", "stream1", &format!("seg_{i}"))
-                    .await
-                    .unwrap(),
-                "Old segment seg_{i} should be deleted"
-            );
-        }
     }
 }

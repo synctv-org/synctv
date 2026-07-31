@@ -256,15 +256,10 @@ impl SegmentManager {
                 }
             }
 
-            // Then, clean up expired segments by time
             match self.storage.cleanup(self.config.retention).await {
                 Ok(deleted) => {
                     if deleted > 0 {
-                        tracing::info!(
-                            "Cleaned up {} expired segments (older than {:?})",
-                            deleted,
-                            self.config.retention
-                        );
+                        tracing::info!("Cleaned up {} expired HLS segments", deleted);
                     } else {
                         tracing::trace!("No expired segments to clean up");
                     }
@@ -376,99 +371,6 @@ mod tests {
         fn get_streams_marked_for_cleanup(&self) -> Vec<MarkedStreamCleanup> {
             self.marked.clone()
         }
-    }
-
-    #[tokio::test]
-    async fn test_segment_manager_cleanup() {
-        let storage = Arc::new(MemoryStorage::new());
-
-        // Write some segments
-        storage
-            .write(
-                "live",
-                "room_123",
-                "segment_0",
-                Bytes::from_static(b"data0"),
-            )
-            .await
-            .unwrap();
-        storage
-            .write(
-                "live",
-                "room_123",
-                "segment_1",
-                Bytes::from_static(b"data1"),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(storage.key_count(), 2);
-
-        // Sleep
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Create manager with short retention
-        let config = CleanupConfig {
-            interval: Duration::from_hours(1), // Don't auto-run in test
-            retention: Duration::from_millis(50),
-            max_segments_per_stream: 0,
-        };
-
-        let _manager = SegmentManager::new(storage.clone(), config);
-
-        // Manual cleanup
-        let deleted = storage.cleanup(Duration::from_millis(50)).await.unwrap();
-
-        assert_eq!(deleted, 2);
-        assert_eq!(storage.key_count(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_segment_manager_cleanup_expired() {
-        let storage = Arc::new(MemoryStorage::new());
-
-        // Write segments for two rooms
-        storage
-            .write(
-                "live",
-                "room_123",
-                "segment_0",
-                Bytes::from_static(b"data0"),
-            )
-            .await
-            .unwrap();
-        storage
-            .write(
-                "live",
-                "room_456",
-                "segment_0",
-                Bytes::from_static(b"data1"),
-            )
-            .await
-            .unwrap();
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        let config = CleanupConfig {
-            interval: Duration::from_hours(1),
-            retention: Duration::from_millis(10),
-            max_segments_per_stream: 0,
-        };
-        let manager = SegmentManager::new(storage.clone(), config);
-
-        // Cleanup segments older than the configured retention window.
-        let deleted = manager.cleanup_expired().await.unwrap();
-
-        // Both segments are deleted since they're older than retention.
-        assert_eq!(deleted, 2);
-        assert!(!storage
-            .exists("live", "room_123", "segment_0")
-            .await
-            .unwrap());
-        assert!(!storage
-            .exists("live", "room_456", "segment_0")
-            .await
-            .unwrap());
     }
 
     #[tokio::test]

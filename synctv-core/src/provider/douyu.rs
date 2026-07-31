@@ -258,7 +258,11 @@ impl DouyuProvider {
             provider: Self::NAME.to_string(),
             provider_instance_name: None,
             duration_seconds: None,
-            is_live: Some(metadata.is_live),
+            playback_kind: Some(if metadata.is_live {
+                crate::models::PlaybackKind::Live
+            } else {
+                crate::models::PlaybackKind::Regular
+            }),
             metadata: Some(PlaybackMetadata::Douyu(metadata_model(metadata))),
         })
     }

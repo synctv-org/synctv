@@ -375,7 +375,11 @@ impl AcFunProvider {
             provider: Self::NAME.to_string(),
             provider_instance_name: None,
             duration_seconds,
-            is_live: Some(is_live),
+            playback_kind: Some(if is_live {
+                crate::models::PlaybackKind::Live
+            } else {
+                crate::models::PlaybackKind::Regular
+            }),
             metadata: Some(PlaybackMetadata::AcFun(metadata_model(metadata))),
         })
     }

@@ -11,7 +11,11 @@ fn test_proxy_client() -> Result<reqwest::Client, reqwest::Error> {
 }
 
 fn proxy_client_builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_gzip()
+        .no_brotli()
+        .no_zstd()
 }
 
 fn require_proxy_err<T>(

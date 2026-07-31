@@ -2463,6 +2463,12 @@ enum PlaybackAudioCapability {
   PLAYBACK_AUDIO_CAPABILITY_LOSSLESS_SURROUND = 3;
 }
 
+enum PlaybackKind {
+  PLAYBACK_KIND_UNSPECIFIED = 0;
+  PLAYBACK_KIND_REGULAR = 1;
+  PLAYBACK_KIND_LIVE = 2;
+}
+
 message PlaybackClientProfile {
   PlaybackStreamPreference stream_preference = 1 [(buf.validate.field).enum.defined_only = true];
   optional int64 max_streaming_bitrate = 2 [(buf.validate.field).int64.gt = 0];
@@ -2493,26 +2499,26 @@ message Playback {
   string room_id = 3; // Room ID
   string name = 4; // Media name
   double playlist_position = 5; // Order position in playlist
-  synctv.source_config.SourceProvider provider = 12; // Provider that generated this playback
-  string provider_instance_name = 13; // Provider instance selected for this playback
+  synctv.source_config.SourceProvider provider = 6; // Provider that generated this playback
+  string provider_instance_name = 7; // Provider instance selected for this playback
 
   // Multiple playback modes (e.g., "direct", "proxied", "cdn1", "cdn2")
   // Provider can define arbitrary mode names
-  map<string, PlaybackInfo> playback_infos = 6;
+  map<string, PlaybackInfo> playback_infos = 8;
 
   // Default mode name (must be a key in playback_infos)
-  string default_mode = 7;
+  string default_mode = 9;
 
   // Media-level metadata.
-  optional PlaybackMetadata metadata = 8;
+  optional PlaybackMetadata metadata = 10;
   // Earliest media expiration across playback media resources, if any.
-  optional int64 expires_at = 10;
+  optional int64 expires_at = 11;
   // Backend-owned source duration in seconds, when available.
-  optional double duration_seconds = 11;
-  // Whether the current playback source is a live stream.
-  bool is_live = 14;
+  optional double duration_seconds = 12;
+  // Behavioral kind of the current playback source.
+  PlaybackKind playback_kind = 13 [(buf.validate.field).enum.defined_only = true];
   // Provider-facing playback target for dynamic playlist playback.
-  ProviderTarget target = 15;
+  ProviderTarget target = 14;
 }
 
 message PlaybackMetadata {
@@ -4864,39 +4870,35 @@ message RoomPlaylistTargetPathRequest {
 message GetPublicSettingsRequest {}
 
 message GetPublicSettingsResponse {
-  string server_name = 28;
+  string server_name = 1;
   bool room_creation_enabled = 2;
   int64 max_rooms_per_user = 3;
   int64 default_max_members = 4;
 
   // Room settings
-  bool room_creation_approval_required = 6;
-  string room_password_policy = 8;
+  bool room_creation_approval_required = 5;
+  string room_password_policy = 6;
 
   // User settings
-  bool enable_password_signup = 10;
-  bool password_signup_need_review = 16;
-  bool enable_email_signup = 17;
-  bool enable_guest = 18;
-  bool email_signup_need_review = 19;
-  bool enable_email = 24;
-  bool enable_webauthn = 25;
-  string webauthn_rp_id = 29;
-  bool enable_webauthn_signup = 22;
-  bool webauthn_signup_need_review = 23;
-  uint64 max_pinned_chat_messages_per_room = 27;
-
-  // Proxy settings
-  bool movie_proxy = 11;
-  bool live_proxy = 12;
+  bool enable_password_signup = 7;
+  bool password_signup_need_review = 8;
+  bool enable_email_signup = 9;
+  bool enable_guest = 10;
+  bool email_signup_need_review = 11;
+  bool enable_email = 12;
+  bool enable_webauthn = 13;
+  string webauthn_rp_id = 14;
+  bool enable_webauthn_signup = 15;
+  bool webauthn_signup_need_review = 16;
+  uint64 max_pinned_chat_messages_per_room = 17;
 
   // RTMP settings
-  bool ts_disguised_as_png = 13;
-  optional string custom_publish_host = 14;
+  bool ts_disguised_as_png = 18;
+  optional string custom_publish_host = 19;
 
   // Email settings
-  bool email_whitelist_enabled = 15;
-  repeated string email_whitelist_domains = 26;
+  bool email_whitelist_enabled = 20;
+  repeated string email_whitelist_domains = 21;
 }
 
 // ==================== Public Server Info ====================

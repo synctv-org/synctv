@@ -1845,7 +1845,7 @@ impl AlistProvider {
             provider: Self::NAME.to_string(),
             provider_instance_name,
             duration_seconds,
-            is_live: Some(false),
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
             metadata: Some(PlaybackMetadata::Alist(metadata)),
         }
     }

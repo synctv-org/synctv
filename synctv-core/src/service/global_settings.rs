@@ -40,10 +40,9 @@ pub use types::{
     OAuth2LogtoProviderConfig, OAuth2OidcProviderConfig, OAuth2ProviderConfig,
     OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig, OAuth2RuntimeSettings, OAuth2SignupPolicy,
     OptionalRuntimeConfig, PermissionRuntimeSettings, PermissionSet,
-    PlaybackHistoryRuntimeSettings, ProxyRuntimeSettings, PublicSettings,
-    RoomCreationRuntimeSettings, RoomDefaultsRuntimeSettings, RoomPasswordPolicy,
-    RtmpRuntimeSettings, RuntimeSettings, RuntimeSettingsUpdateMask, ServerRuntimeSettings,
-    UserRuntimeSettings, WebRtcRuntimeSettings,
+    PlaybackHistoryRuntimeSettings, PublicSettings, RoomCreationRuntimeSettings,
+    RoomDefaultsRuntimeSettings, RoomPasswordPolicy, RtmpRuntimeSettings, RuntimeSettings,
+    RuntimeSettingsUpdateMask, ServerRuntimeSettings, UserRuntimeSettings, WebRtcRuntimeSettings,
 };
 
 /// Maximum allowed value for `default_max_chat_messages` setting (0 = unlimited)
@@ -205,8 +204,6 @@ setting!(
 );
 setting!(EnableGuestSetting, bool, "user.enable_guest", true);
 
-setting!(MovieProxySetting, bool, "proxy.movie_proxy", true);
-setting!(LiveProxySetting, bool, "proxy.live_proxy", true);
 setting!(
     CustomPublishHostSetting,
     OptionalRuntimeConfig<String>,
@@ -518,7 +515,6 @@ pub struct RuntimeSettingsStore {
     pub room_creation: RoomCreationSettingsStore,
     pub user: UserSettingsStore,
     pub oauth2: OAuth2SettingsStore,
-    pub proxy: ProxySettingsStore,
     pub rtmp: RtmpSettingsStore,
     pub email: EmailSettingsStore,
     pub webrtc: WebRtcSettingsStore,
@@ -576,12 +572,6 @@ pub struct UserSettingsStore {
 pub struct OAuth2SettingsStore {
     pub providers: OAuth2ProvidersSetting,
     pub allowed_redirect_urls: OAuth2AllowedRedirectUrlsSetting,
-}
-
-#[derive(Clone)]
-pub struct ProxySettingsStore {
-    pub movie_proxy: MovieProxySetting,
-    pub live_proxy: LiveProxySetting,
 }
 
 #[derive(Clone)]
@@ -850,11 +840,6 @@ impl RuntimeSettingsStore {
             allowed_redirect_urls: OAuth2AllowedRedirectUrlsSetting::new(storage.clone()),
         };
 
-        let proxy = ProxySettingsStore {
-            movie_proxy: MovieProxySetting::new(storage.clone()),
-            live_proxy: LiveProxySetting::new(storage.clone()),
-        };
-
         let rtmp = RtmpSettingsStore {
             custom_publish_host: CustomPublishHostSetting::new(storage.clone()),
             ts_disguised_as_png: TsDisguisedAsPngSetting::new(storage.clone()),
@@ -903,7 +888,6 @@ impl RuntimeSettingsStore {
             room_creation,
             user,
             oauth2,
-            proxy,
             rtmp,
             email,
             webrtc,
@@ -975,10 +959,6 @@ impl RuntimeSettingsStore {
             oauth2: OAuth2RuntimeSettings {
                 providers: self.oauth2.providers.get()?,
                 allowed_redirect_urls: self.oauth2.allowed_redirect_urls.get()?.0,
-            },
-            proxy: ProxyRuntimeSettings {
-                movie_proxy: self.proxy.movie_proxy.get()?,
-                live_proxy: self.proxy.live_proxy.get()?,
             },
             rtmp: RtmpRuntimeSettings {
                 custom_publish_host: self.rtmp.custom_publish_host.get()?.0,
@@ -1166,18 +1146,6 @@ impl RuntimeSettingsStore {
             update_mask.oauth2.allowed_redirect_urls,
             &self.oauth2.allowed_redirect_urls,
             &OAuth2AllowedRedirectUrls(settings.oauth2.allowed_redirect_urls.clone()),
-        )?;
-        Self::push_update_entry(
-            &mut entries,
-            update_mask.proxy.movie_proxy,
-            &self.proxy.movie_proxy,
-            &settings.proxy.movie_proxy,
-        )?;
-        Self::push_update_entry(
-            &mut entries,
-            update_mask.proxy.live_proxy,
-            &self.proxy.live_proxy,
-            &settings.proxy.live_proxy,
         )?;
         Self::push_update_entry(
             &mut entries,
@@ -1376,8 +1344,6 @@ impl RuntimeSettingsStore {
             enable_guest: self.user.enable_guest.get()?,
             enable_email: self.email.enabled.get()?,
             enable_webauthn: false,
-            movie_proxy: self.proxy.movie_proxy.get()?,
-            live_proxy: self.proxy.live_proxy.get()?,
             ts_disguised_as_png: self.rtmp.ts_disguised_as_png.get()?,
             custom_publish_host: self.rtmp.custom_publish_host.get()?.0,
             email_whitelist_enabled,

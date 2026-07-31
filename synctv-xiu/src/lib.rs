@@ -19,5 +19,6 @@ pub mod hls;
 pub mod httpflv;
 pub mod mpegts;
 pub mod rtmp;
+pub mod rtsp;
 pub mod storage;
 pub mod streamhub;

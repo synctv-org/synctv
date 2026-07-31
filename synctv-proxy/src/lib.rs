@@ -112,6 +112,7 @@ pub fn build_proxy_http_client(
         .disable_read_timeout()
         .pool_max_idle_per_host(100)
         .pool_idle_timeout(Duration::from_secs(30))
+        .preserve_content_encoding()
         .build()
         .map_err(|e| anyhow::anyhow!("failed to build proxy HTTP client: {e}"))
 }

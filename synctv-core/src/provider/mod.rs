@@ -541,6 +541,14 @@ pub fn provider_requires_credential_repo(provider_name: &str) -> bool {
 
 #[must_use]
 pub fn build_live_playback(media_id: MediaId, room_id: RoomId) -> PlaybackResult {
+    build_live_playback_with_flv(media_id, room_id, true)
+}
+
+fn build_live_playback_with_flv(
+    media_id: MediaId,
+    room_id: RoomId,
+    include_flv: bool,
+) -> PlaybackResult {
     use std::collections::HashMap;
 
     let live_expires_at = crate::SystemClock.now().timestamp() + 30;
@@ -571,29 +579,31 @@ pub fn build_live_playback(media_id: MediaId, room_id: RoomId) -> PlaybackResult
         },
     );
 
-    playback_infos.insert(
-        "flv".to_string(),
-        PlaybackInfo {
-            thumbnail: None,
-            medias: vec![PlaybackMedia {
-                name: "FLV".to_string(),
-                format: "flv".to_string(),
-                expire_at: chrono::DateTime::from_timestamp(live_expires_at, 0),
-                metadata: None,
-                provider: PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::FlvStream {
-                    version: String::new(),
-                    expires_at: live_expires_at,
-                    room_id,
-                    media_id,
-                }),
-            }],
-            default_media_index: None,
-            subtitles: Vec::new(),
-            default_subtitle_index: None,
-            danmakus: Vec::new(),
-            default_danmaku_index: None,
-        },
-    );
+    if include_flv {
+        playback_infos.insert(
+            "flv".to_string(),
+            PlaybackInfo {
+                thumbnail: None,
+                medias: vec![PlaybackMedia {
+                    name: "FLV".to_string(),
+                    format: "flv".to_string(),
+                    expire_at: chrono::DateTime::from_timestamp(live_expires_at, 0),
+                    metadata: None,
+                    provider: PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::FlvStream {
+                        version: String::new(),
+                        expires_at: live_expires_at,
+                        room_id,
+                        media_id,
+                    }),
+                }],
+                default_media_index: None,
+                subtitles: Vec::new(),
+                default_subtitle_index: None,
+                danmakus: Vec::new(),
+                default_danmaku_index: None,
+            },
+        );
+    }
 
     let metadata = crate::models::PlaybackMetadata::Live(crate::models::LivePlaybackMetadata {
         media_id,
@@ -606,7 +616,7 @@ pub fn build_live_playback(media_id: MediaId, room_id: RoomId) -> PlaybackResult
         provider: RtmpProvider::NAME.to_string(),
         provider_instance_name: None,
         duration_seconds: None,
-        is_live: Some(true),
+        playback_kind: Some(crate::models::PlaybackKind::Live),
         metadata: Some(metadata),
     }
 }

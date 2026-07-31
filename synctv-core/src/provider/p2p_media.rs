@@ -22,7 +22,7 @@ pub fn playback_media_p2p_delivery(
     media_index: usize,
     media: &PlaybackMedia,
 ) -> Option<P2pMediaDelivery> {
-    if result.is_live || is_inherently_live(&media.provider) {
+    if result.playback_kind.is_live_edge() || is_inherently_live(&media.provider) {
         return None;
     }
     if matches!(
@@ -787,7 +787,7 @@ mod tests {
             "hls",
         );
         let mut playback = result(media.clone());
-        playback.is_live = true;
+        playback.playback_kind = crate::models::PlaybackKind::Live;
 
         assert!(playback_media_p2p_delivery(&playback, "hls", 0, &media).is_none());
     }

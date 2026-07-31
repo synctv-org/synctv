@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS playback_source_metadata (
     target_hash TEXT NOT NULL,
     media_name TEXT,
     playlist_name TEXT,
-    is_live BOOLEAN,
+    playback_kind SMALLINT NOT NULL DEFAULT 0,
     duration_seconds DOUBLE PRECISION,
     duration_status SMALLINT NOT NULL DEFAULT 0,
     duration_source SMALLINT,
@@ -24,9 +24,6 @@ CREATE TABLE IF NOT EXISTS playback_source_metadata (
     ),
     CONSTRAINT playback_source_metadata_duration_non_negative CHECK (
         duration_seconds IS NULL OR duration_seconds >= 0
-    ),
-    CONSTRAINT playback_source_metadata_live_has_no_duration CHECK (
-        is_live IS DISTINCT FROM TRUE OR duration_seconds IS NULL
     )
 );
 
@@ -43,7 +40,7 @@ CREATE INDEX IF NOT EXISTS idx_playback_source_metadata_room
 
 CREATE INDEX IF NOT EXISTS idx_playback_source_metadata_probeable
     ON playback_source_metadata(duration_status, next_retry_at, updated_at)
-    WHERE duration_seconds IS NULL AND is_live = FALSE;
+    WHERE duration_seconds IS NULL;
 
 CREATE TRIGGER update_playback_source_metadata_updated_at
     BEFORE UPDATE ON playback_source_metadata

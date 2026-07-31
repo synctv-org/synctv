@@ -1,10 +1,18 @@
 use async_trait::async_trait;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RtmpStreamMode {
+    #[default]
+    Default,
+    VideoOnly,
+    AudioOnly,
+}
+
 /// Optional rewrite of RTMP identifiers returned by [`AuthCallback::on_publish`].
 ///
 /// When the auth callback resolves a JWT token in `stream_name` to a logical
-/// `media_id`, it returns `Some(AuthPublishRewrite { app_name, stream_name })`
-/// so the RTMP session uses the canonical identifiers for `StreamHub`.
+/// `media_id`, it returns `Some(AuthPublishRewrite { app_name, stream_name, media_mode })`
+/// so the RTMP session uses canonical identifiers and the configured media mode.
 ///
 /// This ensures that publishers, subscribers (HLS, FLV), and gRPC relay all
 /// use the same `StreamIdentifier` format: `(room_id, media_id)`.
@@ -12,6 +20,7 @@ use async_trait::async_trait;
 pub struct AuthPublishRewrite {
     pub app_name: String,
     pub stream_name: String,
+    pub media_mode: RtmpStreamMode,
 }
 
 /// Trait for RTMP authentication callbacks.

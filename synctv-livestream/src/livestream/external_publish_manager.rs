@@ -1,5 +1,5 @@
 // External Publish Manager
-// Manages external pull-to-publish streams (RTMP / HTTP-FLV → local StreamHub).
+// Manages external RTMP, RTSP, and HTTP-FLV pull-to-publish streams.
 // From the system's perspective this is a **publisher**: frames are pushed into
 // the local StreamHub and the stream is registered in Redis so other nodes can
 // discover and relay it via gRPC. The lifecycle mirrors PullStreamManager
@@ -205,20 +205,23 @@ impl ExternalPublishManager {
         &self,
         room_id: &str,
         media_id: &str,
-        source_url: &str,
+        source: &synctv_core::models::ExternalLiveSourceConfig,
     ) -> StreamResult<Arc<ExternalPublishStream>> {
         let stream_key = format!("{room_id}:{media_id}");
 
         // Fast path: reuse healthy stream. get_existing() increments subscriber count.
         if let Some(stream) = self.pool.get_existing(&stream_key).await {
-            if let Err(error) = self
-                .ensure_external_registration(room_id, media_id, &stream)
-                .await
-            {
-                stream.decrement_subscriber_count();
-                return Err(error);
+            if stream.source == *source {
+                if let Err(error) = self
+                    .ensure_external_registration(room_id, media_id, &stream)
+                    .await
+                {
+                    stream.decrement_subscriber_count();
+                    return Err(error);
+                }
+                return Ok(stream);
             }
-            return Ok(stream);
+            stream.decrement_subscriber_count();
         }
 
         // Acquire per-key creation lock
@@ -226,18 +229,31 @@ impl ExternalPublishManager {
 
         // Re-check after lock. get_existing() increments subscriber count.
         if let Some(stream) = self.pool.get_existing(&stream_key).await {
-            if let Err(error) = self
-                .ensure_external_registration(room_id, media_id, &stream)
-                .await
-            {
-                stream.decrement_subscriber_count();
-                return Err(error);
+            if stream.source == *source {
+                if let Err(error) = self
+                    .ensure_external_registration(room_id, media_id, &stream)
+                    .await
+                {
+                    stream.decrement_subscriber_count();
+                    return Err(error);
+                }
+                debug!(
+                    "Reusing external publish stream created by concurrent request for {}/{}",
+                    room_id, media_id,
+                );
+                return Ok(stream);
             }
-            debug!(
-                "Reusing external publish stream created by concurrent request for {}/{}",
-                room_id, media_id,
+            stream.decrement_subscriber_count();
+            info!(
+                room_id,
+                media_id,
+                old_source = %super::external_puller::redact_source_url_for_logs(stream.source.url()),
+                new_source = %super::external_puller::redact_source_url_for_logs(source.url()),
+                "Replacing external pull after source configuration changed"
             );
-            return Ok(stream);
+            self.pool
+                .remove_if_same_and_stop(&stream_key, &stream)
+                .await;
         }
 
         let _capacity_guard = self.creation_capacity_lock.lock().await;
@@ -258,20 +274,20 @@ impl ExternalPublishManager {
             "Lazy-load: Creating external publish stream for {}/{} from {} ({}/{} active streams)",
             room_id,
             media_id,
-            super::external_puller::redact_source_url_for_logs(source_url),
+            super::external_puller::redact_source_url_for_logs(source.url()),
             current_count + 1,
             self.max_concurrent_streams,
         );
 
-        let stream = Arc::new(ExternalPublishStream::new(
-            room_id.to_string(),
-            media_id.to_string(),
-            source_url.to_string(),
-            self.stream_hub_event_sender.clone(),
-            self.http_client.clone(),
-            self.ssrf_guard.clone(),
-            self.max_flv_tag_size_bytes,
-        ));
+        let stream = Arc::new(ExternalPublishStream::new(ExternalPublishStreamParams {
+            room_id: room_id.to_string(),
+            media_id: media_id.to_string(),
+            source: source.clone(),
+            stream_hub_event_sender: self.stream_hub_event_sender.clone(),
+            http_client: self.http_client.clone(),
+            ssrf_guard: self.ssrf_guard.clone(),
+            max_flv_tag_size_bytes: self.max_flv_tag_size_bytes,
+        }));
 
         // Validate that we have a cluster address before registering. Other nodes need this
         // address to relay the stream via gRPC; registering with an empty address means
@@ -660,12 +676,12 @@ impl ExternalPublishManager {
 
 /// A single external publish stream instance.
 ///
-/// Pulls from an external RTMP or HTTP-FLV source and publishes frames into
+/// Pulls from an external RTMP, RTSP, or HTTP-FLV source and publishes frames into
 /// the local `StreamHub` under `live/{room_id}/{media_id}`.
 pub(crate) struct ExternalPublishStream {
     room_id: String,
     media_id: String,
-    source_url: String,
+    source: synctv_core::models::ExternalLiveSourceConfig,
     stream_hub_event_sender: StreamHubEventSender,
     lifecycle: StreamLifecycle,
     /// Guard against sending duplicate `UnPublish` events (`stop()` + Drop)
@@ -673,6 +689,16 @@ pub(crate) struct ExternalPublishStream {
     /// Redis publisher epoch for the system-owned external puller.
     registration_epoch: std::sync::atomic::AtomicU64,
     /// Shared HTTP client for FLV connections (supports TLS via rustls).
+    http_client: reqwest::Client,
+    ssrf_guard: SsrfGuard,
+    max_flv_tag_size_bytes: usize,
+}
+
+struct ExternalPublishStreamParams {
+    room_id: String,
+    media_id: String,
+    source: synctv_core::models::ExternalLiveSourceConfig,
+    stream_hub_event_sender: StreamHubEventSender,
     http_client: reqwest::Client,
     ssrf_guard: SsrfGuard,
     max_flv_tag_size_bytes: usize,
@@ -698,19 +724,20 @@ impl ManagedStream for ExternalPublishStream {
 
 impl ExternalPublishStream {
     #[must_use]
-    pub(crate) fn new(
-        room_id: String,
-        media_id: String,
-        source_url: String,
-        stream_hub_event_sender: StreamHubEventSender,
-        http_client: reqwest::Client,
-        ssrf_guard: SsrfGuard,
-        max_flv_tag_size_bytes: usize,
-    ) -> Self {
+    fn new(params: ExternalPublishStreamParams) -> Self {
+        let ExternalPublishStreamParams {
+            room_id,
+            media_id,
+            source,
+            stream_hub_event_sender,
+            http_client,
+            ssrf_guard,
+            max_flv_tag_size_bytes,
+        } = params;
         Self {
             room_id,
             media_id,
-            source_url,
+            source,
             stream_hub_event_sender,
             lifecycle: StreamLifecycle::new(),
             unpublish_sent: AtomicBool::new(false),
@@ -732,7 +759,7 @@ impl ExternalPublishStream {
 
         let room_id = self.room_id.clone();
         let media_id = self.media_id.clone();
-        let source_url = self.source_url.clone();
+        let source = self.source.clone();
         let stream_hub_sender = self.stream_hub_event_sender.clone();
         let http_client = self.http_client.clone();
         let ssrf_guard = self.ssrf_guard.clone();
@@ -750,7 +777,7 @@ impl ExternalPublishStream {
             let puller = match ExternalStreamPuller::new_async(
                 room_id.clone(),
                 media_id.clone(),
-                source_url,
+                source,
                 stream_hub_sender,
                 ssrf_guard,
             )
@@ -901,6 +928,19 @@ mod tests {
         anyhow::anyhow!(message.into()).into()
     }
 
+    fn rtmp_source(url: &str) -> synctv_core::models::ExternalLiveSourceConfig {
+        synctv_core::models::ExternalLiveSourceConfig::Rtmp {
+            url: url.to_string(),
+            mode: synctv_core::models::RtmpStreamMode::Default,
+        }
+    }
+
+    fn http_flv_source(url: &str) -> synctv_core::models::ExternalLiveSourceConfig {
+        synctv_core::models::ExternalLiveSourceConfig::HttpFlv {
+            url: url.to_string(),
+        }
+    }
+
     #[tokio::test]
     async fn test_external_publish_manager_creation() -> TestResult {
         let registry = Arc::new(TestStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
@@ -929,10 +969,8 @@ mod tests {
         )?;
         manager.max_concurrent_streams = 0;
 
-        let Err(error) = manager
-            .get_or_create("room1", "media1", "http://127.0.0.1:8080/live.flv")
-            .await
-        else {
+        let source = http_flv_source("http://127.0.0.1:8080/live.flv");
+        let Err(error) = manager.get_or_create("room1", "media1", &source).await else {
             return Err(test_error(
                 "capacity limit should reject before starting puller",
             ));
@@ -1042,15 +1080,15 @@ mod tests {
             300,
         )?;
 
-        let stream = Arc::new(ExternalPublishStream::new(
-            "room1".to_string(),
-            "media1".to_string(),
-            "rtmp://example.com/live/stream".to_string(),
-            sender,
-            reqwest::Client::new(),
-            SsrfGuard::disabled(),
-            ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
-        ));
+        let stream = Arc::new(ExternalPublishStream::new(ExternalPublishStreamParams {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            source: rtmp_source("rtmp://example.com/live/stream"),
+            stream_hub_event_sender: sender,
+            http_client: reqwest::Client::new(),
+            ssrf_guard: SsrfGuard::disabled(),
+            max_flv_tag_size_bytes: ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
+        }));
         stream.lifecycle().set_running();
 
         let registered = manager
@@ -1066,9 +1104,8 @@ mod tests {
             |_stream_key| Box::pin(async {}),
         );
 
-        let reused = manager
-            .get_or_create("room1", "media1", "rtmp://example.com/live/stream")
-            .await?;
+        let source = rtmp_source("rtmp://example.com/live/stream");
+        let reused = manager.get_or_create("room1", "media1", &source).await?;
 
         assert!(Arc::ptr_eq(&reused, &stream));
         let restored = registry
@@ -1089,15 +1126,15 @@ mod tests {
     #[tokio::test]
     async fn test_external_publish_stream_subscriber_count() {
         let (sender, _) = tokio::sync::mpsc::channel(64);
-        let stream = ExternalPublishStream::new(
-            "room-1".to_string(),
-            "media-1".to_string(),
-            "rtmp://example.com/live/stream".to_string(),
-            sender,
-            reqwest::Client::new(),
-            SsrfGuard::disabled(),
-            ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
-        );
+        let stream = ExternalPublishStream::new(ExternalPublishStreamParams {
+            room_id: "room-1".to_string(),
+            media_id: "media-1".to_string(),
+            source: rtmp_source("rtmp://example.com/live/stream"),
+            stream_hub_event_sender: sender,
+            http_client: reqwest::Client::new(),
+            ssrf_guard: SsrfGuard::disabled(),
+            max_flv_tag_size_bytes: ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
+        });
 
         assert_eq!(stream.lifecycle().subscriber_count(), 0);
         stream.lifecycle().increment_subscriber_count();

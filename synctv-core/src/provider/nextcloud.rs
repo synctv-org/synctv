@@ -633,7 +633,7 @@ impl MediaProvider for NextcloudProvider {
             provider: Self::NAME.to_string(),
             provider_instance_name: auth.instance_name,
             duration_seconds,
-            is_live: Some(false),
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
             metadata: Some(PlaybackMetadata::Nextcloud(metadata)),
         };
         super::cached_versioned_playback_or_fill(

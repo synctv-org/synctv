@@ -72,7 +72,7 @@ unnecessary_wraps = "allow"
 
 [workspace.dependencies]
 # Async Runtime
-tokio = { version = "=1.53.0", features = [
+tokio = { version = "=1.53.1", features = [
     "rt-multi-thread",
     "macros",
     "net",
@@ -83,8 +83,8 @@ tokio = { version = "=1.53.0", features = [
     "signal",
     "fs",
 ] }
-tokio-util = { version = "=0.7.18", features = ["codec", "io", "io-util", "rt"] }
-tokio-stream = "=0.1.18"
+tokio-util = { version = "=0.7.19", features = ["codec", "io-util", "rt"] }
+tokio-stream = "=0.1.19"
 
 # gRPC & Protobuf
 tonic = { version = "=0.14.6", default-features = false, features = [
@@ -113,29 +113,36 @@ pbjson-build = "=0.9.0"
 pbjson-types = "=0.9.0"
 
 # HTTP Framework
-axum = { version = "=0.8.9", features = ["macros", "ws"] }
+axum = { version = "=0.8.9", features = ["ws", "http2"] }
 tower = { version = "=0.5.3", features = [
     "util",
-    "timeout",
-    "limit",
-    "load-shed",
 ] }
 tower-http = { version = "=0.7.0", features = [
     "trace",
     "on-early-drop",
     "cors",
+    "compression-br",
+    "compression-gzip",
+    "compression-zstd",
 ] }
-hyper = { version = "=1.10.1", default-features = false, features = [
+hyper = { version = "=1.11.0", default-features = false, features = [
     "http1",
     "http2",
     "server",
-    "client",
 ] }
 reqwest = { version = "=0.13.4", default-features = false, features = [
     "json",
     "cookies",
     "query",
     "form",
+    "http2",
+    "charset",
+    "system-proxy",
+    "stream",
+    "gzip",
+    "brotli",
+    "zstd",
+    "hickory-dns",
 ] }
 
 # Database
@@ -150,7 +157,7 @@ sqlx = { version = "=0.9.0", default-features = false, features = [
 ] }
 
 # Redis
-redis = { version = "=1.4.1", default-features = false, features = [
+redis = { version = "=1.5.0", default-features = false, features = [
     "tokio-comp",
     "connection-manager",
     "streams",
@@ -160,7 +167,7 @@ redis = { version = "=1.4.1", default-features = false, features = [
 
 # Security
 opaque-ke = { version = "=4.1.0-pre.2", features = ["argon2"] }
-jsonwebtoken = { version = "=10.4.0", features = ["rust_crypto"] }
+jsonwebtoken = { version = "=11.0.0", features = ["rust_crypto"] }
 oauth2 = { version = "=5.0.0", default-features = false }
 webauthn-rs = { version = "=0.6.1-dev", features = ["conditional-ui", "danger-allow-state-serialisation"] }
 webauthn-rs-proto = "=0.6.1-dev"
@@ -180,12 +187,12 @@ rsa = "=0.9.10"
 subtle = "=2.6.1"
 
 # Serialization
-serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = "=1.0.150"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
 quick-xml = "=0.41.0"
 serde_yaml = "=0.9.34"
 serde_ignored = "=0.1.14"
-toml = "=1.1.2"
+toml = "=1.1.4"
 serde_urlencoded = "=0.7.1"
 serde_html_form = "=0.4.1"
 serde_path_to_error = "=0.1.20"
@@ -199,12 +206,12 @@ lru = "=0.18.1"
 
 # IDs & Crypto
 nanoid = "=0.5.0"
-uuid = { version = "=1.23.4", features = ["v4", "v5", "serde"] }
+uuid = { version = "=1.24.0", features = ["v4", "v5", "serde"] }
 sqids = "=0.4.2"
 rand = "=0.10.2"
 rand_08 = { package = "rand", version = "=0.8.6" }
 rand_chacha_08 = { package = "rand_chacha", version = "=0.3.1" }
-base64 = "=0.22.1"
+base64 = "=0.23.0"
 humantime = "=2.4.0"
 hex = "=0.4.3"
 chrono-tz = "=0.10.4"
@@ -213,42 +220,44 @@ iana-time-zone = "=0.1.65"
 
 # Streaming (consolidated xiu crate)
 synctv-xiu = { path = "synctv-xiu", default-features = false }
+retina = "=0.4.19"
 
 # Object Storage
-opendal = { version = "=0.58.0", default-features = false, features = [
+opendal = { version = "=0.58.1", default-features = false, features = [
     "executors-tokio",
     "services-s3",
+    "layers-retry",
+    "layers-timeout",
+    "layers-concurrent-limit",
 ] }
-opendal-http-transport-reqwest = { version = "=0.58.0", default-features = false, features = ["rustls-no-provider"] }
+opendal-http-transport-reqwest = { version = "=0.58.1", default-features = false, features = ["rustls-no-provider"] }
 
 # Logging & Tracing
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = [
-    "env-filter",
     "json",
-    "fmt",
 ] }
 tracing-appender = "=0.2.5"
 dotenvy = "=0.15.7"
 
 # Configuration
-config = "=0.15.25"
-clap = { version = "=4.6.1", features = ["derive"] }
+config = { version = "=0.15.25", default-features = false, features = ["yaml", "json", "toml"] }
+clap = { version = "=4.6.5", features = ["wrap_help", "derive"] }
 clap_complete = "=4.6.7"
 
 # Utilities
-anyhow = "=1.0.103"
-thiserror = "=2.0.18"
+anyhow = "=1.0.104"
+thiserror = "=2.0.19"
 bytes = { version = "=1.12.1", features = ["serde"] }
 parking_lot = "=0.12.5"
 async-trait = "=0.1.89"
-futures = "=0.3.32"
-futures-util = "=0.3.32"
+futures = "=0.3.33"
+futures-util = "=0.3.33"
 hostname = "=0.4.2"
 url = "=2.5.8"
 percent-encoding = "=2.3.2"
 urlencoding = "=2.1.3"
-regex = "=1.13.0"
+regex = "=1.13.1"
 oxc_allocator = "=0.139.0"
 oxc_ast = "=0.139.0"
 oxc_parser = "=0.139.0"
@@ -257,7 +266,6 @@ boa_engine = { version = "=0.21.1", default-features = false }
 paste = "=1.0.15"
 byteorder = "=1.5.0"
 http = "=1.4.2"
-garde = { version = "=0.23.0", features = ["derive"] }
 zxcvbn = { version = "=3.1.1", default-features = false }
 
 # Monitoring
@@ -268,21 +276,20 @@ chrono = { version = "=0.4.45", features = ["serde"] }
 html-escape = "=0.2.14"
 rsntp = "=4.1.2"
 
-
 # Kubernetes (in-cluster client for leader election & service discovery)
-kube = { version = "=4.0.0", default-features = false, features = ["runtime", "client", "derive"] }
+kube = { version = "=4.2.0", default-features = false, features = ["client", "gzip"] }
 k8s-openapi = { version = "=0.28.0", features = ["latest"] }
 
 # TLS
-tokio-rustls = { version = "=0.26.4", default-features = false, features = ["logging", "tls12"] }
-rustls = { version = "=0.23.41", default-features = false, features = ["std", "logging", "tls12"] }
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["tls12", "brotli", "zlib"] }
+rustls = { version = "=0.23.41", default-features = false, features = ["std", "tls12", "brotli", "zlib"] }
 rustls-pemfile = "=2.2.0"
-hyper-util = { version = "=0.1.20", features = ["client-legacy", "tokio", "http2"] }
+hyper-util = { version = "=0.1.20", default-features = false, features = ["tokio"] }
 
 # Networking
 ipnet = "=2.12.0"
 tokio-socks = "=0.5.2"
-webpki-roots = "=1.0.4"
+webpki-roots = "=1.0.9"
 
 # Email
 lettre = { version = "=0.11.22", default-features = false, features = [
@@ -295,21 +302,25 @@ lettre = { version = "=0.11.22", default-features = false, features = [
     "hostname",
     "tokio1",
 ] }
-handlebars = "=6.4.2"
+handlebars = { version = "=6.4.3", features = ["no_logging"] }
 
 # Compression
-flate2 = "=1.1.9"
+flate2 = { version = "=1.1.9", default-features = false, features = ["zlib-rs"] }
 brotli = "=8.0.4"
-lz4_flex = "=0.13.1"
-zstd = "=0.13.3"
-image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "webp", "avif", "rayon"] }
-symphonia = { version = "=0.6.0", default-features = false, features = ["aac", "flac", "isomp4", "mkv", "mp3", "ogg", "vorbis", "wav"] }
+lz4_flex = { version = "=0.14.0", default-features = false, features = [
+    "alloc",
+    "safe-encode",
+    "safe-decode",
+] }
+zstd = { version = "=0.13.3", default-features = false }
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "webp", "avif", "avif-native", "gif"] }
+symphonia = { version = "=0.6.0", default-features = false, features = ["opt-simd", "all-formats", "aac", "flac", "mp3", "vorbis"] }
 
 # Resilience
 governor = "=0.10.4"
 nonzero_ext = "=0.3.0"
 backon = "=1.6.0"
-failsafe = "=1.3.0"
+failsafe = { version = "=1.3.0", default-features = false }
 
 # Data Structures
 async_singleflight = "=0.6.2"
@@ -344,8 +355,8 @@ tokio-tungstenite = { version = "=0.30.0", default-features = false, features = 
 criterion = { version = "=0.8.2", features = ["html_reports", "async_tokio"] }
 
 # Allocators
-tikv-jemallocator = "=0.7.0"
-mimalloc = { version = "=0.1.52", features = ["v2"] }
+tikv-jemallocator = { version = "=0.7.0", features = ["override_allocator_on_supported_platforms"] }
+mimalloc = { version = "=0.1.52", features = ["v2", "override", "no_thp", "local_dynamic_tls"] }
 
 # Internal workspace crates
 synctv-proto = { path = "synctv-proto", default-features = false }

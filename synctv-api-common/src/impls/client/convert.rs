@@ -9,6 +9,13 @@ pub use crate::impls::source_provider::{
     proto_source_provider_filter as optional_proto_source_provider_to_core,
 };
 
+fn playback_kind_to_proto(kind: synctv_core::models::PlaybackKind) -> i32 {
+    match kind {
+        synctv_core::models::PlaybackKind::Regular => client_proto::PlaybackKind::Regular as i32,
+        synctv_core::models::PlaybackKind::Live => client_proto::PlaybackKind::Live as i32,
+    }
+}
+
 pub struct PlaybackHttpSigningContext<'a> {
     pub signing_key: &'a crate::proxy_signature::ProxySigningKey,
     pub media_swarm_signing_key: &'a crate::proxy_signature::MediaSwarmSigningKey,
@@ -986,7 +993,7 @@ pub fn media_source_config_to_proto(
             Provider::Emby(emby_media_source_config_to_proto(config))
         }
         synctv_core::models::MediaSourceConfig::Rtmp(config) => {
-            Provider::Rtmp(rtmp_media_source_config_to_proto(config))
+            Provider::Rtmp(rtmp_media_source_config_to_proto(&config))
         }
         synctv_core::models::MediaSourceConfig::LiveProxy(config) => {
             Provider::LiveProxy(live_proxy_media_source_config_to_proto(config))
@@ -1752,15 +1759,79 @@ fn emby_playlist_source_config_to_proto(
 }
 
 fn rtmp_media_source_config_to_proto(
-    _config: synctv_core::models::RtmpMediaSourceConfig,
+    config: &synctv_core::models::RtmpMediaSourceConfig,
 ) -> source_config_proto::RtmpMediaSourceConfig {
-    source_config_proto::RtmpMediaSourceConfig {}
+    source_config_proto::RtmpMediaSourceConfig {
+        mode: rtmp_stream_mode_to_proto(config.mode) as i32,
+    }
 }
 
 fn live_proxy_media_source_config_to_proto(
     config: synctv_core::models::LiveProxyMediaSourceConfig,
 ) -> source_config_proto::LiveProxyMediaSourceConfig {
-    source_config_proto::LiveProxyMediaSourceConfig { url: config.url }
+    use source_config_proto::live_proxy_media_source_config::Source;
+
+    let source = match config.source {
+        synctv_core::models::ExternalLiveSourceConfig::Rtmp { url, mode } => {
+            Source::Rtmp(source_config_proto::RtmpPullSourceConfig {
+                url,
+                mode: rtmp_stream_mode_to_proto(mode) as i32,
+            })
+        }
+        synctv_core::models::ExternalLiveSourceConfig::Rtsp {
+            url,
+            transport,
+            video_track,
+            audio_track,
+        } => Source::Rtsp(source_config_proto::RtspPullSourceConfig {
+            url,
+            transport: match transport {
+                synctv_core::models::RtspTransport::Tcp => {
+                    source_config_proto::RtspTransport::Tcp as i32
+                }
+                synctv_core::models::RtspTransport::Udp => {
+                    source_config_proto::RtspTransport::Udp as i32
+                }
+            },
+            video_track: Some(rtsp_track_selection_to_proto(video_track)),
+            audio_track: Some(rtsp_track_selection_to_proto(audio_track)),
+        }),
+        synctv_core::models::ExternalLiveSourceConfig::HttpFlv { url } => {
+            Source::HttpFlv(source_config_proto::HttpFlvPullSourceConfig { url })
+        }
+    };
+    source_config_proto::LiveProxyMediaSourceConfig {
+        source: Some(source),
+    }
+}
+
+fn rtmp_stream_mode_to_proto(
+    mode: synctv_core::models::RtmpStreamMode,
+) -> source_config_proto::RtmpStreamMode {
+    match mode {
+        synctv_core::models::RtmpStreamMode::Default => {
+            source_config_proto::RtmpStreamMode::Default
+        }
+        synctv_core::models::RtmpStreamMode::VideoOnly => {
+            source_config_proto::RtmpStreamMode::VideoOnly
+        }
+        synctv_core::models::RtmpStreamMode::AudioOnly => {
+            source_config_proto::RtmpStreamMode::AudioOnly
+        }
+    }
+}
+
+fn rtsp_track_selection_to_proto(
+    selection: synctv_core::models::RtspTrackSelection,
+) -> source_config_proto::RtspTrackSelection {
+    use source_config_proto::rtsp_track_selection::Mode;
+
+    let mode = match selection {
+        synctv_core::models::RtspTrackSelection::FirstCompatible => Mode::FirstCompatible(true),
+        synctv_core::models::RtspTrackSelection::Index(index) => Mode::Index(index),
+        synctv_core::models::RtspTrackSelection::Disabled => Mode::Disabled(true),
+    };
+    source_config_proto::RtspTrackSelection { mode: Some(mode) }
 }
 
 fn usize_to_i32(value: usize, field: &'static str) -> Result<i32, crate::impls::ApiError> {
@@ -2454,7 +2525,9 @@ fn media_resource_metadata_to_proto(
         synctv_core::models::MediaSourceConfig::Alist(config) => config.path.clone(),
         synctv_core::models::MediaSourceConfig::Emby(config) => config.item_id.clone(),
         synctv_core::models::MediaSourceConfig::Rtmp(_) => "rtmp".to_string(),
-        synctv_core::models::MediaSourceConfig::LiveProxy(config) => config.url.clone(),
+        synctv_core::models::MediaSourceConfig::LiveProxy(config) => {
+            config.source.url().to_string()
+        }
         synctv_core::models::MediaSourceConfig::Cloudreve(config) => config.path.clone(),
         synctv_core::models::MediaSourceConfig::Twitch(config) => match config {
             synctv_core::models::TwitchMediaSourceConfig::Live { channel, .. } => {
@@ -2889,7 +2962,7 @@ pub fn try_playback_to_proto(
         metadata,
         expires_at: None,
         duration_seconds: result.duration_seconds,
-        is_live: result.is_live,
+        playback_kind: playback_kind_to_proto(result.playback_kind),
         target: optional_provider_target_to_proto(result.target.as_ref()),
     })
 }
@@ -4624,7 +4697,7 @@ mod playback_conversion_tests {
             playback_infos,
             default_mode: "dash".to_string(),
             duration_seconds: None,
-            is_live: false,
+            playback_kind: synctv_core::models::PlaybackKind::Regular,
             target: None,
             metadata: None,
         }
@@ -4644,7 +4717,7 @@ mod playback_conversion_tests {
             playback_infos,
             default_mode: mode.to_string(),
             duration_seconds: None,
-            is_live: false,
+            playback_kind: synctv_core::models::PlaybackKind::Regular,
             target: None,
             metadata: None,
         }
@@ -5139,7 +5212,7 @@ mod playback_conversion_tests {
             })
             .build();
         let mut result = playback_result_with_mode("hls", info);
-        result.is_live = true;
+        result.playback_kind = synctv_core::models::PlaybackKind::Live;
 
         let key = signing_key();
         let signing = signing_context(&key);

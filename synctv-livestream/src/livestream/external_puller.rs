@@ -1,6 +1,6 @@
 //! External Stream Puller
 //!
-//! Pulls live streams from external RTMP or HTTP-FLV URLs and publishes them
+//! Pulls live streams from external RTMP, RTSP, or HTTP-FLV URLs and publishes them
 //! to the local `StreamHub` under the local stream identity (`live/{room_id}/{media_id}`).
 //!
 //! Supports:
@@ -12,6 +12,9 @@
 //! - **HTTP-FLV**: Streams FLV data via HTTP GET using reqwest, parses FLV tags
 //!   (header + audio/video/metadata tags) in a streaming fashion, and forwards
 //!   frames to the local `StreamHub`.
+//! - **RTSP**: Uses Retina for DESCRIBE/SETUP/PLAY, RTP transport, authentication,
+//!   and codec depacketization. H.264, H.265, and AAC are converted to FLV tag
+//!   bodies and published through the same local stream identity.
 //!
 //! Both modes include bounded retry logic for established streams.
 
@@ -20,11 +23,16 @@ use std::sync::Arc;
 use anyhow::Result;
 use bytes::{Buf, BytesMut};
 use synctv_common::{self, ssrf::SsrfGuard};
+use synctv_core::models::{
+    ExternalLiveSourceConfig, RtmpStreamMode as CoreRtmpStreamMode,
+    RtspTrackSelection as CoreRtspTrackSelection, RtspTransport as CoreRtspTransport,
+};
 use synctv_xiu::rtmp::session::client_session::{
-    ClientSession, ClientSessionConfig, ClientSessionType,
+    ClientSession, ClientSessionConfig, ClientSessionType, RtmpStreamMode,
 };
 use synctv_xiu::rtmp::session::common::RtmpStreamHandler;
 use synctv_xiu::rtmp::utils::RtmpUrlParser;
+use synctv_xiu::rtsp::{RtspPullConfig, RtspPullSession, RtspTrackSelection, RtspTransport};
 use synctv_xiu::streamhub::{
     define::{
         FrameData, FrameDataSender, NotifyInfo, PublishType, PublisherInfo, StreamHubEvent,
@@ -51,6 +59,8 @@ const MAX_FLV_BUFFER_SIZE: usize = 50 * 1024 * 1024;
 const HTTP_FLV_REQUEST_START_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1);
 /// Per-chunk read timeout: if no data arrives for 30s, the stream is dead.
 const HTTP_FLV_CHUNK_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Maximum time between decoded RTSP media frames before reconnecting.
+const RTSP_FRAME_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const FRAME_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const STREAMHUB_EVENT_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -103,11 +113,11 @@ async fn send_frame_with_backpressure(
         .await
         .map_err(|_| {
             anyhow::anyhow!(
-                "Timed out waiting {}s for local HTTP-FLV backpressure to clear",
+                "Timed out waiting {}s for local live-stream backpressure to clear",
                 FRAME_SEND_TIMEOUT.as_secs()
             )
         })?
-        .map_err(|_| anyhow::anyhow!("HTTP-FLV consumer stream channel closed"))
+        .map_err(|_| anyhow::anyhow!("Local live-stream consumer channel closed"))
 }
 
 /// Source type for external streams
@@ -115,20 +125,57 @@ async fn send_frame_with_backpressure(
 pub(crate) enum ExternalSourceType {
     /// RTMP URL (e.g., <rtmp://live.example.com/app/stream>)
     Rtmp,
+    /// RTSP URL (e.g., <rtsp://camera.example.com/live>)
+    Rtsp,
     /// HTTP-FLV URL (e.g., <http://live.example.com/app/stream.flv>)
     HttpFlv,
 }
 
 impl ExternalSourceType {
-    /// Detect source type from URL
-    #[must_use]
-    pub(crate) fn from_url(url: &str) -> Option<Self> {
-        let parsed = Url::parse(url).ok()?;
-        match parsed.scheme() {
-            "rtmp" => Some(Self::Rtmp),
-            "http" | "https" if parsed.path().ends_with(".flv") => Some(Self::HttpFlv),
-            _ => None,
+    fn from_config(config: &ExternalLiveSourceConfig) -> Result<Self> {
+        let (source_type, expected_scheme) = match config {
+            ExternalLiveSourceConfig::Rtmp { .. } => (Self::Rtmp, "rtmp"),
+            ExternalLiveSourceConfig::Rtsp { .. } => (Self::Rtsp, "rtsp"),
+            ExternalLiveSourceConfig::HttpFlv { .. } => (Self::HttpFlv, "http or https"),
+        };
+        let parsed = Url::parse(config.url())?;
+        let valid = match source_type {
+            Self::Rtmp => parsed.scheme() == "rtmp",
+            Self::Rtsp => parsed.scheme() == "rtsp",
+            Self::HttpFlv => {
+                matches!(parsed.scheme(), "http" | "https") && parsed.path().ends_with(".flv")
+            }
+        };
+        anyhow::ensure!(
+            valid,
+            "External source protocol and URL disagree: expected {expected_scheme} source"
+        );
+        Ok(source_type)
+    }
+}
+
+const fn map_rtsp_transport(transport: CoreRtspTransport) -> RtspTransport {
+    match transport {
+        CoreRtspTransport::Tcp => RtspTransport::Tcp,
+        CoreRtspTransport::Udp => RtspTransport::Udp,
+    }
+}
+
+fn map_rtsp_track(selection: CoreRtspTrackSelection) -> RtspTrackSelection {
+    match selection {
+        CoreRtspTrackSelection::FirstCompatible => RtspTrackSelection::FirstCompatible,
+        CoreRtspTrackSelection::Index(index) => {
+            RtspTrackSelection::Index(usize::try_from(index).unwrap_or(usize::MAX))
         }
+        CoreRtspTrackSelection::Disabled => RtspTrackSelection::Disabled,
+    }
+}
+
+const fn map_rtmp_mode(mode: CoreRtmpStreamMode) -> RtmpStreamMode {
+    match mode {
+        CoreRtmpStreamMode::Default => RtmpStreamMode::Default,
+        CoreRtmpStreamMode::VideoOnly => RtmpStreamMode::VideoOnly,
+        CoreRtmpStreamMode::AudioOnly => RtmpStreamMode::AudioOnly,
     }
 }
 
@@ -141,6 +188,8 @@ pub(crate) struct ExternalStreamPuller {
     media_id: String,
     source_url: String,
     source_type: ExternalSourceType,
+    rtmp_mode: RtmpStreamMode,
+    rtsp_options: Option<(RtspTransport, RtspTrackSelection, RtspTrackSelection)>,
     stream_hub_event_sender: StreamHubEventSender,
     /// Optional one-shot channel to signal that the first connection succeeded.
     /// Sent once after the first successful publish + connect, then set to `None`.
@@ -168,14 +217,14 @@ impl ExternalStreamPuller {
     pub(crate) async fn new_async(
         room_id: String,
         media_id: String,
-        source_url: String,
+        source: ExternalLiveSourceConfig,
         stream_hub_event_sender: StreamHubEventSender,
         ssrf_guard: SsrfGuard,
     ) -> Result<Self> {
         Self::new_async_with_resolver(
             room_id,
             media_id,
-            source_url,
+            source,
             stream_hub_event_sender,
             ssrf_guard,
             |host, port| async move {
@@ -192,7 +241,7 @@ impl ExternalStreamPuller {
     async fn new_async_with_resolver<F, Fut>(
         room_id: String,
         media_id: String,
-        source_url: String,
+        source: ExternalLiveSourceConfig,
         stream_hub_event_sender: StreamHubEventSender,
         ssrf_guard: SsrfGuard,
         resolver: F,
@@ -201,11 +250,25 @@ impl ExternalStreamPuller {
         F: Fn(String, u16) -> Fut,
         Fut: std::future::Future<Output = Result<Vec<std::net::SocketAddr>>>,
     {
-        let source_type = ExternalSourceType::from_url(&source_url).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Unsupported source URL format: {source_url}. Expected rtmp:// or *.flv"
-            )
-        })?;
+        let source_type = ExternalSourceType::from_config(&source)?;
+        let source_url = source.url().to_string();
+        let rtsp_options = match &source {
+            ExternalLiveSourceConfig::Rtsp {
+                transport,
+                video_track,
+                audio_track,
+                ..
+            } => Some((
+                map_rtsp_transport(*transport),
+                map_rtsp_track(*video_track),
+                map_rtsp_track(*audio_track),
+            )),
+            _ => None,
+        };
+        let rtmp_mode = match &source {
+            ExternalLiveSourceConfig::Rtmp { mode, .. } => map_rtmp_mode(*mode),
+            _ => RtmpStreamMode::Default,
+        };
 
         // Resolve hostname and validate IPs against SSRF ACL.
         // For RTMP: the DNS resolver can't be injected, so we check IPs explicitly.
@@ -215,6 +278,7 @@ impl ExternalStreamPuller {
         let host = parsed.host_str().unwrap_or("");
         let default_port = match source_type {
             ExternalSourceType::Rtmp => 1935,
+            ExternalSourceType::Rtsp => 554,
             ExternalSourceType::HttpFlv => {
                 if parsed.scheme() == "https" {
                     443
@@ -257,6 +321,8 @@ impl ExternalStreamPuller {
             media_id,
             source_url,
             source_type,
+            rtmp_mode,
+            rtsp_options,
             stream_hub_event_sender,
             confirm_tx: None,
             http_client: None,
@@ -384,6 +450,7 @@ impl ExternalStreamPuller {
 
             let result = match self.source_type {
                 ExternalSourceType::Rtmp => self.connect_and_stream_rtmp(&data_sender).await,
+                ExternalSourceType::Rtsp => self.connect_and_stream_rtsp(&data_sender).await,
                 ExternalSourceType::HttpFlv => self.connect_and_stream_flv(&data_sender).await,
             };
             let startup_confirmation_pending = self.confirm_tx.is_some();
@@ -576,6 +643,7 @@ impl ExternalStreamPuller {
                 event_producer: bridge_tx,
                 gop_num: 2,
                 per_stream_max_bytes: None,
+                media_mode: self.rtmp_mode,
             },
         );
 
@@ -610,6 +678,73 @@ impl ExternalStreamPuller {
         log_aborted_task_join("RTMP pull bridge", bridge_handle).await;
 
         result
+    }
+
+    /// Connect to an RTSP source and publish its selected H.264/H.265/AAC tracks.
+    async fn connect_and_stream_rtsp(&mut self, data_sender: &FrameDataSender) -> Result<()> {
+        let resolved_addr = self.resolved_addr.ok_or_else(|| {
+            anyhow::anyhow!("Resolved RTSP address is unavailable after source validation")
+        })?;
+        let mut config = RtspPullConfig::from_url(&self.source_url)?;
+        let (transport, video_track, audio_track) = self.rtsp_options.ok_or_else(|| {
+            anyhow::anyhow!("RTSP source is missing transport and track configuration")
+        })?;
+        config.transport = transport;
+        config.video_track = video_track;
+        config.audio_track = audio_track;
+        config.pin_address(resolved_addr)?;
+
+        info!(
+            source_url = %redact_source_url_for_logs(&self.source_url),
+            connect_addr = %resolved_addr,
+            transport = ?config.transport,
+            "Connecting to RTSP source"
+        );
+
+        let mut session = RtspPullSession::connect(config).await?;
+        let (video_track, audio_track) = session.selected_tracks();
+        info!(?video_track, ?audio_track, "RTSP source is playing");
+        self.send_confirm_ok();
+
+        loop {
+            let frame = tokio::select! {
+                () = self.cancel_token.cancelled() => {
+                    info!(
+                        room_id = %self.room_id,
+                        media_id = %self.media_id,
+                        "RTSP stream puller cancelled"
+                    );
+                    return Ok(());
+                }
+                result = tokio::time::timeout(RTSP_FRAME_READ_TIMEOUT, session.next_frame()) => {
+                    result
+                        .map_err(|_| anyhow::anyhow!(
+                            "No RTSP media frame received for {}s",
+                            RTSP_FRAME_READ_TIMEOUT.as_secs()
+                        ))??
+                },
+            };
+            let Some(frame) = frame else {
+                info!(
+                    room_id = %self.room_id,
+                    media_id = %self.media_id,
+                    "RTSP source ended"
+                );
+                return Ok(());
+            };
+            let frame_size = match &frame {
+                FrameData::Video { data, .. }
+                | FrameData::Audio { data, .. }
+                | FrameData::MetaData { data, .. } => data.len(),
+                FrameData::MediaInfo { .. } => 0,
+            };
+            anyhow::ensure!(
+                frame_size <= self.max_flv_tag_size_bytes,
+                "RTSP frame size {frame_size} exceeds the configured {} byte limit",
+                self.max_flv_tag_size_bytes
+            );
+            send_frame_with_backpressure(data_sender, frame).await?;
+        }
     }
 
     /// Connect to remote HTTP-FLV source and stream frames to local `StreamHub`.
@@ -1005,28 +1140,64 @@ mod tests {
         anyhow::anyhow!(message.into())
     }
 
+    fn rtmp_source(url: &str) -> ExternalLiveSourceConfig {
+        ExternalLiveSourceConfig::Rtmp {
+            url: url.to_string(),
+            mode: CoreRtmpStreamMode::Default,
+        }
+    }
+
+    fn http_flv_source(url: &str) -> ExternalLiveSourceConfig {
+        ExternalLiveSourceConfig::HttpFlv {
+            url: url.to_string(),
+        }
+    }
+
     #[test]
     fn test_source_type_detection() {
         assert!(matches!(
-            ExternalSourceType::from_url("rtmp://live.example.com/app/stream"),
-            Some(ExternalSourceType::Rtmp)
+            ExternalSourceType::from_config(&ExternalLiveSourceConfig::Rtmp {
+                url: "rtmp://live.example.com/app/stream".to_string(),
+                mode: CoreRtmpStreamMode::Default,
+            }),
+            Ok(ExternalSourceType::Rtmp)
         ));
         assert!(matches!(
-            ExternalSourceType::from_url("http://live.example.com/app/stream.flv"),
-            Some(ExternalSourceType::HttpFlv)
+            ExternalSourceType::from_config(&ExternalLiveSourceConfig::Rtsp {
+                url: "rtsp://camera.example.com/live".to_string(),
+                transport: CoreRtspTransport::Tcp,
+                video_track: CoreRtspTrackSelection::FirstCompatible,
+                audio_track: CoreRtspTrackSelection::FirstCompatible,
+            }),
+            Ok(ExternalSourceType::Rtsp)
         ));
         assert!(matches!(
-            ExternalSourceType::from_url("https://live.example.com/app/stream.flv?token=abc"),
-            Some(ExternalSourceType::HttpFlv)
+            ExternalSourceType::from_config(&ExternalLiveSourceConfig::HttpFlv {
+                url: "http://live.example.com/app/stream.flv".to_string(),
+            }),
+            Ok(ExternalSourceType::HttpFlv)
         ));
-        // m3u8/HLS is not supported
+        assert!(matches!(
+            ExternalSourceType::from_config(&ExternalLiveSourceConfig::HttpFlv {
+                url: "https://live.example.com/app/stream.flv?token=abc".to_string(),
+            }),
+            Ok(ExternalSourceType::HttpFlv)
+        ));
         assert!(
-            ExternalSourceType::from_url("https://live.example.com/app/stream/index.m3u8")
-                .is_none()
+            ExternalSourceType::from_config(&ExternalLiveSourceConfig::HttpFlv {
+                url: "https://live.example.com/app/stream/index.m3u8".to_string(),
+            })
+            .is_err()
         );
-        assert!(ExternalSourceType::from_url("http://example.com/video.mp4").is_none());
-        assert!(ExternalSourceType::from_url("ftp://example.com/video.flv").is_none());
-        assert!(ExternalSourceType::from_url("file:///tmp/video.flv").is_none());
+        assert!(
+            ExternalSourceType::from_config(&ExternalLiveSourceConfig::Rtsp {
+                url: "rtmp://camera.example.com/live".to_string(),
+                transport: CoreRtspTransport::Tcp,
+                video_track: CoreRtspTrackSelection::FirstCompatible,
+                audio_track: CoreRtspTrackSelection::Disabled,
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -1048,12 +1219,20 @@ mod tests {
     fn test_ssrf_urls_are_valid_format() {
         // URLs with private IPs are valid URL formats
         // SSRF protection happens at network level, not URL validation
-        assert!(ExternalSourceType::from_url("rtmp://10.0.0.1/app/stream").is_some());
-        assert!(ExternalSourceType::from_url("rtmp://192.168.1.1/app/stream").is_some());
-        assert!(ExternalSourceType::from_url("rtmp://172.16.0.1/app/stream").is_some());
-        assert!(ExternalSourceType::from_url("http://127.0.0.1/stream.flv").is_some());
-        assert!(ExternalSourceType::from_url("http://169.254.169.254/stream.flv").is_some());
-        assert!(ExternalSourceType::from_url("rtmp://localhost/app/stream").is_some());
+        for url in [
+            "rtmp://10.0.0.1/app/stream",
+            "rtmp://192.168.1.1/app/stream",
+            "rtmp://172.16.0.1/app/stream",
+            "rtmp://localhost/app/stream",
+        ] {
+            assert!(
+                ExternalSourceType::from_config(&ExternalLiveSourceConfig::Rtmp {
+                    url: url.to_string(),
+                    mode: CoreRtmpStreamMode::Default,
+                })
+                .is_ok()
+            );
+        }
     }
 
     fn spawn_stream_hub(
@@ -1152,6 +1331,8 @@ mod tests {
             media_id: "media456".to_string(),
             source_url: format!("http://{addr}/stream.flv"),
             source_type: ExternalSourceType::HttpFlv,
+            rtmp_mode: RtmpStreamMode::Default,
+            rtsp_options: None,
             stream_hub_event_sender: sender,
             confirm_tx: Some(confirm_tx),
             http_client: Some(reqwest::Client::new()),
@@ -1293,7 +1474,7 @@ mod tests {
         let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
-            "rtmp://93.184.216.34/app/stream".to_string(),
+            rtmp_source("rtmp://93.184.216.34/app/stream"),
             sender,
             SsrfGuard::strict_policy(),
         )
@@ -1316,7 +1497,7 @@ mod tests {
         let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
-            "http://93.184.216.34/app/stream.flv".to_string(),
+            http_flv_source("http://93.184.216.34/app/stream.flv"),
             sender,
             SsrfGuard::strict_policy(),
         )
@@ -1337,7 +1518,7 @@ mod tests {
         let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
-            "http://example.com/video.mp4".to_string(),
+            http_flv_source("http://example.com/video.mp4"),
             sender,
             SsrfGuard::strict_policy(),
         )
@@ -1353,7 +1534,7 @@ mod tests {
         let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
-            "https://live.example.com/app/stream/index.m3u8".to_string(),
+            http_flv_source("https://live.example.com/app/stream/index.m3u8"),
             sender,
             SsrfGuard::strict_policy(),
         )
@@ -1370,7 +1551,7 @@ mod tests {
         let puller = ExternalStreamPuller::new_async_with_resolver(
             "room123".to_string(),
             "media456".to_string(),
-            "rtmp://example.com/app/stream".to_string(),
+            rtmp_source("rtmp://example.com/app/stream"),
             sender,
             SsrfGuard::strict_policy(),
             move |host, port| {
@@ -1403,7 +1584,7 @@ mod tests {
         let puller = ExternalStreamPuller::new_async_with_resolver(
             "room123".to_string(),
             "media456".to_string(),
-            "rtmp://internal.example/app/stream".to_string(),
+            rtmp_source("rtmp://internal.example/app/stream"),
             sender,
             guard,
             move |host, port| {
@@ -1432,7 +1613,7 @@ mod tests {
         let puller = ExternalStreamPuller::new_async_with_resolver(
             "room123".to_string(),
             "media456".to_string(),
-            "http://internal.example:18000/live.flv".to_string(),
+            http_flv_source("http://internal.example:18000/live.flv"),
             sender,
             guard,
             move |host, port| {
@@ -1460,7 +1641,7 @@ mod tests {
         let Err(error) = ExternalStreamPuller::new_async_with_resolver(
             "room123".to_string(),
             "media456".to_string(),
-            "rtmp://internal.example/app/stream".to_string(),
+            rtmp_source("rtmp://internal.example/app/stream"),
             sender,
             guard,
             |_, _| async {
@@ -1610,7 +1791,7 @@ mod tests {
         let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
-            "rtmp://localhost/app/stream".to_string(),
+            rtmp_source("rtmp://localhost/app/stream"),
             sender.clone(),
             SsrfGuard::disabled(),
         )
@@ -1624,7 +1805,7 @@ mod tests {
         let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
-            "http://127.0.0.1/stream.flv".to_string(),
+            http_flv_source("http://127.0.0.1/stream.flv"),
             sender.clone(),
             SsrfGuard::disabled(),
         )
@@ -1638,7 +1819,7 @@ mod tests {
         let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
-            "rtmp://192.168.1.1/app/stream".to_string(),
+            rtmp_source("rtmp://192.168.1.1/app/stream"),
             sender.clone(),
             SsrfGuard::disabled(),
         )

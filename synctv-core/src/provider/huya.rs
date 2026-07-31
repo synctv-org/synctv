@@ -307,7 +307,11 @@ impl HuyaProvider {
             duration_seconds: metadata
                 .duration_seconds
                 .map(|value| std::time::Duration::from_secs(value).as_secs_f64()),
-            is_live: Some(metadata.is_live),
+            playback_kind: Some(if metadata.is_live {
+                crate::models::PlaybackKind::Live
+            } else {
+                crate::models::PlaybackKind::Regular
+            }),
             metadata: Some(PlaybackMetadata::Huya(metadata_model(metadata))),
         })
     }

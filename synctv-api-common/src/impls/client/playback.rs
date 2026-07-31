@@ -3,7 +3,7 @@
 //! Note: Real-time playback control (play/pause/seek/speed) is handled via WebSocket messages
 
 use synctv_core::models::SourceProvider;
-use synctv_core::models::{PlaylistId, RoomPlaybackState, UserId};
+use synctv_core::models::{PlaybackKind, PlaylistId, RoomPlaybackState, UserId};
 use synctv_core::provider::{ExecutionControl, ProviderContext};
 use synctv_core::service::{
     PlaybackSourceExpectation, PlaybackStatePatch, PlaybackStateUpdateRequest,
@@ -83,7 +83,7 @@ struct ProviderPlaybackResultBuildRequest {
     position: f64,
     media_id: Option<synctv_core::models::MediaId>,
     duration_seconds: Option<f64>,
-    is_live: bool,
+    playback_kind: PlaybackKind,
 }
 
 fn build_playback_result_from_provider(
@@ -97,7 +97,7 @@ fn build_playback_result_from_provider(
         position,
         media_id,
         duration_seconds,
-        is_live,
+        playback_kind,
     } = request;
     let mut builder =
         synctv_core::models::media::PlaybackResult::builder(playlist_id, room_id, name, position)
@@ -105,7 +105,7 @@ fn build_playback_result_from_provider(
             .provider_instance_name(provider_result.provider_instance_name.clone())
             .default_mode(provider_result.default_mode.clone())
             .duration_seconds(duration_seconds)
-            .is_live(is_live);
+            .playback_kind(playback_kind);
 
     if let Some(id) = media_id {
         builder = builder.id(id);
@@ -406,9 +406,11 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         let thumbnail = self.static_direct_url_thumbnail(&media).await?;
+        let playback_kind = provider_result
+            .playback_kind
+            .unwrap_or(PlaybackKind::Regular);
         let duration_seconds =
-            normalized_provider_duration(provider_result.is_live, provider_result.duration_seconds);
-        let is_live = provider_result.is_live.unwrap_or(false);
+            normalized_provider_duration(Some(playback_kind), provider_result.duration_seconds);
 
         let mut full_result =
             build_playback_result_from_provider(ProviderPlaybackResultBuildRequest {
@@ -419,7 +421,7 @@ impl ClientApiImpl {
                 position: media.position,
                 media_id: Some(media.id),
                 duration_seconds,
-                is_live,
+                playback_kind,
             })?;
         apply_static_direct_url_thumbnail(
             &mut full_result,
@@ -533,9 +535,11 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
+        let playback_kind = provider_result
+            .playback_kind
+            .unwrap_or(PlaybackKind::Regular);
         let duration_seconds =
-            normalized_provider_duration(provider_result.is_live, provider_result.duration_seconds);
-        let is_live = provider_result.is_live.unwrap_or(false);
+            normalized_provider_duration(Some(playback_kind), provider_result.duration_seconds);
 
         let mut full_result =
             build_playback_result_from_provider(ProviderPlaybackResultBuildRequest {
@@ -546,7 +550,7 @@ impl ClientApiImpl {
                 position: 0.0,
                 media_id: None,
                 duration_seconds,
-                is_live,
+                playback_kind,
             })?;
 
         full_result.target = Some(target.clone());
@@ -619,7 +623,7 @@ impl ClientApiImpl {
             metadata: None,
             expires_at: None,
             duration_seconds: None,
-            is_live: false,
+            playback_kind: synctv_proto::client::PlaybackKind::Regular as i32,
             target: None,
         })
     }

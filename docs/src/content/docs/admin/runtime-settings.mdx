@@ -3,7 +3,7 @@ title: 运行设置
 description: 管理存储在数据库中的 runtime settings，并区分它们和启动配置。
 ---
 
-runtime settings 是存储在 PostgreSQL 的热更新产品策略。它们适合运行中调整注册、房间创建、代理策略、CORS、聊天保留等行为；不适合保存启动期必须固定的 secret、监听端口、数据库连接、Redis 连接或 cache 启用状态。
+runtime settings 是存储在 PostgreSQL 的热更新产品策略。它们适合运行中调整注册、房间创建、RTMP、CORS、聊天保留等行为；不适合保存启动期必须固定的 secret、监听端口、数据库连接、Redis 连接或 cache 启用状态。
 
 ## 基本操作
 
@@ -23,7 +23,7 @@ synctv settings update --set permissions.guestDefaultPermissions=40
 
 | 想修改 | 应该去哪里 |
 | --- | --- |
-| 注册开关、房间创建策略、代理策略、CORS、聊天保留 | runtime settings |
+| 注册开关、房间创建策略、RTMP、CORS、聊天保留 | runtime settings |
 | JWT、OPAQUE、加密 key 和签名 key | 启动配置和 secret 管理 |
 | PostgreSQL、Redis、监听端口、TLS、data_dir | 启动配置 |
 | 用户 2FA、通知偏好、默认 Provider | 用户偏好 |

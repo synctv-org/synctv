@@ -168,7 +168,6 @@ tracing-subscriber.workspace = true
 clap.workspace = true
 regex.workspace = true
 ammonia.workspace = true
-garde.workspace = true
 serde_html_form.workspace = true
 serde_path_to_error.workspace = true
 

@@ -12,7 +12,7 @@ Runtime settings are hot-reload settings stored in PostgreSQL. They are mainly f
 | Type | Storage | Hot reload | Suitable for |
 | --- | --- | --- | --- |
 | Startup configuration | YAML, env, secret files, CLI flags | No; usually requires restart | Ports, database, Redis, secrets, TLS, data_dir, cache enablement |
-| Runtime settings | PostgreSQL `settings` table | Yes; replicas sync through LISTEN/NOTIFY | Registration, room creation, permission defaults, proxy switches, CORS, chat retention |
+| Runtime settings | PostgreSQL `settings` table | Yes; replicas sync through LISTEN/NOTIFY | Registration, room creation, permission defaults, RTMP, CORS, chat retention |
 
 <Aside type="caution">
 Do not put startup secrets, database URLs, Redis URLs, listener ports, or slice-cache enablement into runtime settings. Those belong to startup configuration.
@@ -150,15 +150,6 @@ A missing provider instance means that login entry point is unavailable. Missing
 
 User-level 2FA and notification preferences are user preferences. Provider instance bindings are stored on provider credentials created during provider login. See [Roles, Permissions, and Preferences](../../admin/permissions/).
 
-### Proxy
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `proxy.movieProxy` | bool | `true` | Allow media proxy paths |
-| `proxy.liveProxy` | bool | `true` | Allow livestream proxy paths |
-
-These are business proxy policy switches, not startup setting `proxy_slice_cache.enabled`. Slice-cache enablement is startup-only.
-
 ### RTMP
 
 | Key | Type | Default | Meaning |
@@ -263,4 +254,4 @@ synctv settings update --set 'oauth2.providers=[{"name":"github","enableSignup":
 - **Confirm Hot-Reload Scope**: Ports, secrets, database, Redis, TLS, and cache enablement are startup configuration, not runtime settings.
 - **Read Current Value**: Run `synctv settings get <key>` before changing a value and keep it for rollback.
 - **Watch Replicas**: Multi-replica sync depends on PostgreSQL notifications; observe all replicas after changes.
-- **Record Reason**: Keep reasons for registration, room creation, proxy, and permission-default policy changes.
+- **Record Reason**: Keep reasons for registration, room creation, RTMP, and permission-default policy changes.

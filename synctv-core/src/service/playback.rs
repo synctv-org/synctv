@@ -14,9 +14,9 @@ use crate::{
     models::{
         BilibiliMediaSourceConfig, ChatMessage, ChatMessageType, ChatMetadata,
         ChatPlaybackChangedMetadata, ChatPlaybackMetadata, MediaId, PlayMode, PlaybackChangeReason,
-        PlaybackHistoryEntry, PlaybackHistoryPage, PlaybackSourceIdentity, PlaybackSourceMetadata,
-        PlaylistId, ProviderTarget, RealtimeEvent, RoomId, RoomPlaybackState, RoomSettings,
-        SourceProvider, TwitchTargetKind, UserId,
+        PlaybackHistoryEntry, PlaybackHistoryPage, PlaybackKind, PlaybackSourceIdentity,
+        PlaybackSourceMetadata, PlaylistId, ProviderTarget, RealtimeEvent, RoomId,
+        RoomPlaybackState, RoomSettings, SourceProvider, TwitchTargetKind, UserId,
     },
     repository::{
         chat::InsertChatMessageEvent,
@@ -129,7 +129,7 @@ struct PlaybackSourceNames {
 #[derive(Debug, Clone)]
 struct PreflightMetadata {
     identity: PlaybackSourceIdentity,
-    is_live: bool,
+    playback_kind: PlaybackKind,
     duration_seconds: Option<f64>,
     media_name: Option<String>,
     playlist_name: Option<String>,
@@ -164,11 +164,22 @@ fn live_status_for_target(target: &ProviderTarget) -> Option<bool> {
     }
 }
 
-fn normalized_provider_duration(is_live: bool, duration_seconds: Option<f64>) -> Option<f64> {
-    (!is_live)
+fn normalized_provider_duration(
+    playback_kind: PlaybackKind,
+    duration_seconds: Option<f64>,
+) -> Option<f64> {
+    playback_kind
+        .supports_duration()
         .then_some(duration_seconds)
         .flatten()
         .filter(|duration| duration.is_finite() && *duration > 0.0)
+}
+
+fn playback_kind_for_source_config(
+    _source_config: &crate::models::MediaSourceConfig,
+    provider_kind: Option<PlaybackKind>,
+) -> PlaybackKind {
+    provider_kind.unwrap_or(PlaybackKind::Regular)
 }
 
 fn preflight_can_defer_generation(error: &Error) -> bool {
@@ -199,7 +210,8 @@ fn live_status_for_media_source(
             | SourceProvider::Seafile,
             _,
         ) => Some(false),
-        (SourceProvider::Rtmp | SourceProvider::LiveProxy, _) => Some(true),
+        (SourceProvider::Rtmp, _)
+        | (SourceProvider::LiveProxy, crate::models::MediaSourceConfig::LiveProxy(_)) => Some(true),
         (SourceProvider::Douyin, crate::models::MediaSourceConfig::Douyin(config)) => Some(
             matches!(config, crate::models::DouyinMediaSourceConfig::Live { .. }),
         ),
@@ -439,7 +451,7 @@ impl PlaybackService {
     pub async fn upsert_provider_playback_source_metadata(
         &self,
         identity: &PlaybackSourceIdentity,
-        is_live: bool,
+        playback_kind: PlaybackKind,
         duration_seconds: Option<f64>,
         media_name: Option<&str>,
         playlist_name: Option<&str>,
@@ -447,7 +459,7 @@ impl PlaybackService {
         self.source_metadata_repo
             .upsert_provider_source_metadata(
                 identity,
-                is_live,
+                playback_kind,
                 duration_seconds,
                 media_name,
                 playlist_name,
@@ -525,15 +537,13 @@ impl PlaybackService {
         let Some(identity) = PlaybackSourceIdentity::from_state(state)? else {
             return Ok(());
         };
-        if self
-            .source_metadata_repo
-            .get(&identity)
-            .await?
-            .is_some_and(|metadata| metadata.is_live == Some(true))
-        {
-            return Err(Error::InvalidInput(
-                "live playback does not accept position updates".to_string(),
-            ));
+        if let Some(metadata) = self.source_metadata_repo.get(&identity).await? {
+            if !metadata.playback_kind.accepts_position_updates() {
+                return Err(Error::InvalidInput(
+                    "live playback does not accept position updates".to_string(),
+                ));
+            }
+            return Ok(());
         }
         if self.source_live_status_for_state(state).await? == Some(true) {
             return Err(Error::InvalidInput(
@@ -709,13 +719,9 @@ impl PlaybackService {
             return Ok(None);
         };
         let source_metadata = self.source_metadata_repo.get(&identity).await?;
-        let is_live = match source_metadata
+        let is_live = source_metadata
             .as_ref()
-            .and_then(|metadata| metadata.is_live)
-        {
-            Some(is_live) => Some(is_live),
-            None => self.source_live_status_for_state(state).await?,
-        };
+            .map(|metadata| matches!(metadata.playback_kind, PlaybackKind::Live));
         let duration_seconds = source_metadata
             .as_ref()
             .and_then(|metadata| metadata.duration_seconds);
@@ -2415,11 +2421,12 @@ impl PlaybackService {
                 return Err(error);
             }
         };
-        let is_live = result.is_live.unwrap_or(false);
+        let playback_kind =
+            playback_kind_for_source_config(&media.source_config, result.playback_kind);
         Ok(Some(PreflightMetadata {
             identity: PlaybackSourceIdentity::static_media(media.room_id, media.id),
-            is_live,
-            duration_seconds: normalized_provider_duration(is_live, result.duration_seconds),
+            playback_kind,
+            duration_seconds: normalized_provider_duration(playback_kind, result.duration_seconds),
             media_name: Some(media.name.clone()),
             playlist_name: None,
         }))
@@ -2474,11 +2481,11 @@ impl PlaybackService {
         };
         let identity =
             PlaybackSourceIdentity::dynamic_playlist(playlist.room_id, playlist.id, target)?;
-        let is_live = result.is_live.unwrap_or(false);
+        let playback_kind = playback_kind_for_source_config(source_config, result.playback_kind);
         Ok(Some(PreflightMetadata {
             identity,
-            is_live,
-            duration_seconds: normalized_provider_duration(is_live, result.duration_seconds),
+            playback_kind,
+            duration_seconds: normalized_provider_duration(playback_kind, result.duration_seconds),
             media_name: Some(item_name.to_string()),
             playlist_name: Some(playlist.name.clone()),
         }))
@@ -2540,7 +2547,7 @@ impl PlaybackService {
         self.source_metadata_repo
             .upsert_provider_source_metadata(
                 &metadata.identity,
-                metadata.is_live,
+                metadata.playback_kind,
                 metadata.duration_seconds,
                 metadata.media_name.as_deref(),
                 metadata.playlist_name.as_deref(),

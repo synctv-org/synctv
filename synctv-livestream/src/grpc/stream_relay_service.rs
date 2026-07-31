@@ -813,13 +813,13 @@ mod tests {
         register_test_publisher(&registry).await?;
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
         let hls_registry = Arc::new(dashmap::DashMap::new());
-        let mut segments = std::collections::VecDeque::new();
-        segments.push_back(synctv_xiu::hls::SegmentInfo {
+        let mut playlist = synctv_xiu::hls::HlsPlaylist::new();
+        playlist.push_segment(synctv_xiu::hls::SegmentInfo {
             sequence: 0,
-            duration: 1_000,
+            duration_ms: 1_000,
+            started_at_ms: 0,
             ts_name: "seg001".to_string(),
             discontinuity: false,
-            created_at: std::time::Instant::now(),
         });
         hls_registry.insert(
             "room1/media1".to_string(),
@@ -827,8 +827,7 @@ mod tests {
                 synctv_xiu::hls::StreamProcessorState {
                     app_name: "room1".to_string(),
                     stream_name: "media1".to_string(),
-                    segments,
-                    is_ended: false,
+                    playlist,
                     created_at: std::time::Instant::now(),
                     marked_for_cleanup: false,
                     cleanup_segment_names: Vec::new(),
@@ -946,8 +945,7 @@ mod tests {
                 synctv_xiu::hls::StreamProcessorState {
                     app_name: "room1".to_string(),
                     stream_name: "media1".to_string(),
-                    segments: std::collections::VecDeque::new(),
-                    is_ended: false,
+                    playlist: synctv_xiu::hls::HlsPlaylist::new(),
                     created_at: std::time::Instant::now(),
                     marked_for_cleanup: false,
                     cleanup_segment_names: Vec::new(),

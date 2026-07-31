@@ -1,6 +1,6 @@
 [package]
 name = "synctv-xiu"
-description = "Consolidated streaming library: RTMP, HLS, HTTP-FLV protocols with FLV/MPEG-TS containers"
+description = "Consolidated streaming library: RTMP, RTSP, HLS, HTTP-FLV protocols with FLV/MPEG-TS containers"
 version.workspace = true
 edition.workspace = true
 license = "MIT"
@@ -35,6 +35,7 @@ tokio-util.workspace = true
 tokio-stream.workspace = true
 futures.workspace = true
 async-trait.workspace = true
+retina.workspace = true
 
 # Logging
 tracing.workspace = true
@@ -63,6 +64,8 @@ uuid.workspace = true
 
 # HTTP
 axum.workspace = true
+url.workspace = true
+percent-encoding.workspace = true
 
 # Resilience
 backon.workspace = true

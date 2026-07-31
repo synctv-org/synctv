@@ -651,7 +651,7 @@ mod tests {
                 provider: "test".to_string(),
                 provider_instance_name: None,
                 duration_seconds: None,
-                is_live: Some(false),
+                playback_kind: Some(crate::models::PlaybackKind::Regular),
                 metadata: None,
             },
             expires_at: 0, // Already expired

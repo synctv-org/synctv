@@ -25,7 +25,7 @@ use synctv_common::ssrf::SsrfTargetError;
 /// `LiveProxy` `MediaProvider`
 ///
 /// Generates playback media resources for live streams from external sources.
-/// The external URL is stored in `source_config.url` and validated on creation.
+/// The external protocol and URL are stored in `source_config.source` and validated on creation.
 /// Playback output references SyncTV live delivery resources. Internal
 /// room/media identity is injected at playback time through `ProviderContext`.
 pub struct LiveProxyProvider {
@@ -54,18 +54,19 @@ impl LiveProxyProvider {
         url: &str,
         guard: &synctv_common::ssrf::SsrfGuard,
     ) -> Result<(), ProviderError> {
-        // Validate URL format (only RTMP and HTTP-FLV are supported for pulling).
+        // Validate the external live-source URL format.
         // Use URL path parsing to avoid false positives from `.flv` appearing
         // outside the upstream URL path.
         let parsed_url = url::Url::parse(url).map_err(|error| {
             ProviderError::InvalidConfig(format!("Invalid LiveProxy source URL '{url}': {error}"))
         })?;
         let is_rtmp = parsed_url.scheme().eq_ignore_ascii_case("rtmp");
+        let is_rtsp = parsed_url.scheme().eq_ignore_ascii_case("rtsp");
         let is_flv =
             matches!(parsed_url.scheme(), "http" | "https") && parsed_url.path().ends_with(".flv");
-        if !is_rtmp && !is_flv {
+        if !is_rtmp && !is_rtsp && !is_flv {
             return Err(ProviderError::InvalidConfig(format!(
-                "Unsupported source URL format: {url}. Expected rtmp:// or *.flv"
+                "Unsupported source URL format: {url}. Expected rtmp://, rtsp://, or *.flv"
             )));
         }
         Self::reject_synctv_publish_url(&parsed_url)?;
@@ -75,6 +76,8 @@ impl LiveProxyProvider {
         })?;
         let default_port = if is_rtmp {
             1935
+        } else if is_rtsp {
+            554
         } else if parsed_url.scheme() == "https" {
             443
         } else {
@@ -96,19 +99,22 @@ impl LiveProxyProvider {
                 )),
             })?;
 
-        if host.parse::<std::net::IpAddr>().is_err() && is_rtmp && guard.dns_resolver().is_some() {
+        if host.parse::<std::net::IpAddr>().is_err()
+            && (is_rtmp || is_rtsp)
+            && guard.dns_resolver().is_some()
+        {
             let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
                 .await
                 .map_err(|error| {
                     ProviderError::InvalidConfig(format!(
-                        "LiveProxy RTMP source host '{host}' could not be resolved: {error}"
+                        "LiveProxy streaming source host '{host}' could not be resolved: {error}"
                     ))
                 })?
                 .collect();
 
             if addrs.is_empty() {
                 return Err(ProviderError::InvalidConfig(format!(
-                    "LiveProxy RTMP source host '{host}' did not resolve to any addresses"
+                    "LiveProxy streaming source host '{host}' did not resolve to any addresses"
                 )));
             }
 
@@ -117,13 +123,46 @@ impl LiveProxyProvider {
                 .find(|addr| guard.is_ip_blocked_for_host(host, &addr.ip()))
             {
                 return Err(ProviderError::InvalidConfig(format!(
-                    "LiveProxy RTMP source host '{host}' resolved to blocked IP '{}'",
+                    "LiveProxy streaming source host '{host}' resolved to blocked IP '{}'",
                     blocked_addr.ip()
                 )));
             }
         }
 
         Ok(())
+    }
+
+    async fn validate_external_source(
+        source: &crate::models::ExternalLiveSourceConfig,
+        guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> Result<(), ProviderError> {
+        if let crate::models::ExternalLiveSourceConfig::Rtsp {
+            video_track: crate::models::RtspTrackSelection::Disabled,
+            audio_track: crate::models::RtspTrackSelection::Disabled,
+            ..
+        } = source
+        {
+            return Err(ProviderError::InvalidConfig(
+                "RTSP source must enable a video or audio track".to_string(),
+            ));
+        }
+        let url = source.url();
+        let parsed = url::Url::parse(url).map_err(|error| {
+            ProviderError::InvalidConfig(format!("Invalid LiveProxy source URL '{url}': {error}"))
+        })?;
+        let protocol_matches = match source {
+            crate::models::ExternalLiveSourceConfig::Rtmp { .. } => parsed.scheme() == "rtmp",
+            crate::models::ExternalLiveSourceConfig::Rtsp { .. } => parsed.scheme() == "rtsp",
+            crate::models::ExternalLiveSourceConfig::HttpFlv { .. } => {
+                matches!(parsed.scheme(), "http" | "https") && parsed.path().ends_with(".flv")
+            }
+        };
+        if !protocol_matches {
+            return Err(ProviderError::InvalidConfig(
+                "External live source protocol and URL disagree".to_string(),
+            ));
+        }
+        Self::validate_live_source_url(url, guard).await
     }
 
     fn reject_synctv_publish_url(parsed_url: &url::Url) -> Result<(), ProviderError> {
@@ -248,9 +287,8 @@ impl MediaProvider for LiveProxyProvider {
         };
         let (room_id, media_id) = Self::resolve_live_binding(ctx)?;
 
-        let source_url = source_config.url.clone();
-        Self::validate_live_source_url(&source_url, &self.ssrf_guard).await?;
-
+        let source_url = source_config.source.url().to_string();
+        Self::validate_external_source(&source_config.source, &self.ssrf_guard).await?;
         let mut result = super::build_live_playback(*media_id, *room_id);
         let parsed_source_url = url::Url::parse(&source_url).map_err(|error| {
             ProviderError::InvalidConfig(format!(
@@ -294,7 +332,7 @@ impl MediaProvider for LiveProxyProvider {
                 "LiveProxy requires LiveProxy media source_config".to_string(),
             ));
         };
-        Self::validate_live_source_url(&source_config.url, &self.ssrf_guard).await
+        Self::validate_external_source(&source_config.source, &self.ssrf_guard).await
     }
 }
 
@@ -365,5 +403,47 @@ mod tests {
             matches!(error, ProviderError::InvalidConfig(ref message) if message.contains("port '18000'")),
             "unexpected error: {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn validates_explicit_rtsp_source_protocol() {
+        let guard = synctv_common::ssrf::SsrfGuard::disabled();
+        let source = crate::models::ExternalLiveSourceConfig::Rtsp {
+            url: "rtsp://camera.example/live".to_string(),
+            transport: crate::models::RtspTransport::Udp,
+            video_track: crate::models::RtspTrackSelection::Index(2),
+            audio_track: crate::models::RtspTrackSelection::Disabled,
+        };
+        LiveProxyProvider::validate_external_source(&source, &guard)
+            .await
+            .expect("explicit RTSP source should validate");
+
+        let mismatched = crate::models::ExternalLiveSourceConfig::Rtsp {
+            url: "rtmp://camera.example/live".to_string(),
+            transport: crate::models::RtspTransport::Tcp,
+            video_track: crate::models::RtspTrackSelection::FirstCompatible,
+            audio_track: crate::models::RtspTrackSelection::FirstCompatible,
+        };
+        let error = LiveProxyProvider::validate_external_source(&mismatched, &guard)
+            .await
+            .expect_err("protocol mismatch should fail validation");
+        assert!(error.to_string().contains("protocol and URL disagree"));
+    }
+
+    #[tokio::test]
+    async fn rejects_rtsp_source_with_both_tracks_disabled() {
+        let guard = synctv_common::ssrf::SsrfGuard::disabled();
+        let source = crate::models::ExternalLiveSourceConfig::Rtsp {
+            url: "rtsp://camera.example/live".to_string(),
+            transport: crate::models::RtspTransport::Tcp,
+            video_track: crate::models::RtspTrackSelection::Disabled,
+            audio_track: crate::models::RtspTrackSelection::Disabled,
+        };
+        let error = LiveProxyProvider::validate_external_source(&source, &guard)
+            .await
+            .expect_err("RTSP source with no enabled media must fail validation");
+        assert!(error
+            .to_string()
+            .contains("must enable a video or audio track"));
     }
 }

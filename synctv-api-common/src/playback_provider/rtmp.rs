@@ -63,7 +63,7 @@ pub async fn get_rtmp_flv_stream(
                     media_id,
                     user_id,
                     expires_at,
-                    source_url: None,
+                    external_source: None,
                     head,
                 },
             )
@@ -108,7 +108,7 @@ pub async fn get_rtmp_hls_playlist(
                     signature_room_id,
                     signature_expires_at,
                     route_provider: "rtmp".to_string(),
-                    source_url: None,
+                    external_source: None,
                 },
             )
             .await?
@@ -146,7 +146,7 @@ pub async fn get_rtmp_hls_segment(
                     room_id,
                     media_id,
                     segment_name,
-                    source_url: None,
+                    external_source: None,
                     head,
                 },
             )

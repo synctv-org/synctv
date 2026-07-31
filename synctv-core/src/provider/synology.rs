@@ -2022,7 +2022,7 @@ async fn generate_video_playback(
         provider_instance_name: auth.instance_name.clone(),
         duration_seconds: duration
             .map(|duration| std::time::Duration::from_secs(duration).as_secs_f64()),
-        is_live: Some(false),
+        playback_kind: Some(crate::models::PlaybackKind::Regular),
         metadata: Some(PlaybackMetadata::Synology(metadata)),
     })
 }
@@ -2053,7 +2053,13 @@ fn single_result(
         provider: SynologyProvider::NAME.to_string(),
         provider_instance_name: instance_name,
         duration_seconds,
-        is_live,
+        playback_kind: is_live.map(|value| {
+            if value {
+                crate::models::PlaybackKind::Live
+            } else {
+                crate::models::PlaybackKind::Regular
+            }
+        }),
         metadata,
     }
 }

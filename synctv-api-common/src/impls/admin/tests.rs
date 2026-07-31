@@ -118,10 +118,6 @@ fn test_runtime_settings() -> synctv_core::service::RuntimeSettings {
             providers: synctv_core::service::OAuth2ProviderConfigs::default(),
             allowed_redirect_urls: Vec::new(),
         },
-        proxy: synctv_core::service::ProxyRuntimeSettings {
-            movie_proxy: true,
-            live_proxy: true,
-        },
         rtmp: synctv_core::service::RtmpRuntimeSettings {
             custom_publish_host: None,
             ts_disguised_as_png: false,

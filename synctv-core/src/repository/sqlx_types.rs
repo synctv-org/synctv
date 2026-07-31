@@ -8,8 +8,8 @@ use crate::models::{
     FileBlobCompression, FileCleanupMetadata, FileMetadata, FileObjectAccess,
     FileReferenceMetadata, FileUploadSessionKind, FileUploadSessionMetadata, FileVariantMetadata,
     MediaId, MediaSourceConfig, Notification, NotificationData, NotificationType, OAuth2Provider,
-    PlaybackDurationSource, PlaybackDurationStatus, PlaybackSourceMetadata, Playlist, PlaylistId,
-    PlaylistSourceConfig, ProviderPlaybackSession, ProviderPlaybackSessionState,
+    PlaybackDurationSource, PlaybackDurationStatus, PlaybackKind, PlaybackSourceMetadata, Playlist,
+    PlaylistId, PlaylistSourceConfig, ProviderPlaybackSession, ProviderPlaybackSessionState,
     ProviderPlaybackStopReason, ProviderTarget, ReviewRequestId, ReviewStatus, RoomCategoryId,
     RoomId, RoomLabelId, RoomPlaybackProgress, RoomPlaybackState, RoomSettings, RuntimeSetting,
     SignupMethod, SourceProvider, UserId, UserRole, UserStatus,
@@ -99,6 +99,8 @@ sqlx_i16_enum!(Role);
 sqlx_i16_enum!(NotificationType);
 sqlx_i16_enum!(ReviewStatus);
 sqlx_i16_enum!(SourceProvider);
+
+sqlx_i16_enum!(PlaybackKind);
 
 macro_rules! sqlx_i16_file_enum {
     ($name:ty, $description:literal) => {
@@ -361,7 +363,7 @@ sqlx_from_row!(PlaybackSourceMetadata, {
     target_hash,
     media_name,
     playlist_name,
-    is_live,
+    playback_kind,
     duration_seconds,
     duration_status,
     duration_source,

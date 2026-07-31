@@ -2839,6 +2839,69 @@ async fn test_transport_layers_preserve_shared_http_metadata_without_global_time
 }
 
 #[tokio::test]
+async fn json_compression_is_enabled_without_compressing_media_responses() -> TestResult {
+    let state = test_app_state();
+    let app = apply_global_layers(
+        Router::new()
+            .route(
+                "/json",
+                get(|| async {
+                    Response::builder()
+                        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+                        .body(Body::from(format!(
+                            "{{\"payload\":\"{}\"}}",
+                            "x".repeat(256)
+                        )))
+                        .expect("JSON response should build")
+                }),
+            )
+            .route(
+                "/flv",
+                get(|| async {
+                    Response::builder()
+                        .header(header::CONTENT_TYPE, "video/x-flv")
+                        .body(Body::from("x".repeat(256)))
+                        .expect("FLV response should build")
+                }),
+            ),
+        &state,
+    )?;
+
+    let json_response = test_response(
+        app.clone()
+            .oneshot(test_request(
+                Request::builder()
+                    .uri("/json")
+                    .header(header::ACCEPT_ENCODING, "gzip")
+                    .body(Body::empty()),
+            )?)
+            .await,
+    )?;
+    assert_eq!(
+        json_response
+            .headers()
+            .get(header::CONTENT_ENCODING)
+            .and_then(|value| value.to_str().ok()),
+        Some("gzip")
+    );
+
+    let flv_response = test_response(
+        app.oneshot(test_request(
+            Request::builder()
+                .uri("/flv")
+                .header(header::ACCEPT_ENCODING, "gzip")
+                .body(Body::empty()),
+        )?)
+        .await,
+    )?;
+    assert!(flv_response
+        .headers()
+        .get(header::CONTENT_ENCODING)
+        .is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_streaming_proxy_routes_preserve_options_preflight() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);

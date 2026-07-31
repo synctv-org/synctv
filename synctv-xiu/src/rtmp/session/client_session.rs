@@ -33,6 +33,8 @@ use {
     tokio::{net::TcpStream, sync::Mutex},
 };
 
+pub use crate::rtmp::auth::RtmpStreamMode;
+
 enum ClientSessionState {
     Handshake,
     Connect,
@@ -49,6 +51,19 @@ pub enum ClientSessionType {
     Push,
 }
 
+const fn should_forward_media(
+    client_type: &ClientSessionType,
+    mode: RtmpStreamMode,
+    audio: bool,
+) -> bool {
+    matches!(client_type, ClientSessionType::Push)
+        || match mode {
+            RtmpStreamMode::Default => true,
+            RtmpStreamMode::VideoOnly => !audio,
+            RtmpStreamMode::AudioOnly => audio,
+        }
+}
+
 pub struct ClientSessionConfig {
     pub client_type: ClientSessionType,
     pub raw_domain_name: String,
@@ -57,6 +72,9 @@ pub struct ClientSessionConfig {
     pub event_producer: StreamHubEventSender,
     pub gop_num: usize,
     pub per_stream_max_bytes: Option<usize>,
+    /// Media types forwarded from a pulled RTMP stream.
+    /// Push sessions always receive the complete stream and ignore this policy.
+    pub media_mode: RtmpStreamMode,
 }
 
 pub struct ClientSession {
@@ -83,6 +101,7 @@ pub struct ClientSession {
     is_publishing: bool,
     /// Per-stream GOP cache memory limit in bytes. `None` uses the default.
     per_stream_max_bytes: Option<usize>,
+    media_mode: RtmpStreamMode,
 }
 
 impl ClientSession {
@@ -95,6 +114,7 @@ impl ClientSession {
             event_producer,
             gop_num,
             per_stream_max_bytes,
+            media_mode,
         } = config;
 
         let remote_addr = match stream.peer_addr() {
@@ -138,6 +158,7 @@ impl ClientSession {
             is_subscribed: false,
             is_publishing: false,
             per_stream_max_bytes,
+            media_mode,
         }
     }
 
@@ -342,10 +363,14 @@ impl ClientSession {
                 Self::on_stream_is_recorded(*stream_id);
             }
             RtmpMessageData::AudioData { data } => {
-                self.common.on_audio_data(data, *timestamp)?;
+                if should_forward_media(&self.client_type, self.media_mode, true) {
+                    self.common.on_audio_data(data, *timestamp)?;
+                }
             }
             RtmpMessageData::VideoData { data } => {
-                self.common.on_video_data(data, *timestamp)?;
+                if should_forward_media(&self.client_type, self.media_mode, false) {
+                    self.common.on_video_data(data, *timestamp)?;
+                }
             }
             RtmpMessageData::AmfData { raw_data } => {
                 self.common.on_meta_data(raw_data, *timestamp)?;
@@ -651,5 +676,56 @@ impl ClientSession {
     pub fn subscribe(&mut self, app_name: String, stream_name: String) {
         self.sub_app_name = Some(app_name);
         self.sub_stream_name = Some(stream_name);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{should_forward_media, ClientSessionType, RtmpStreamMode};
+
+    #[test]
+    fn pull_mode_filters_only_the_selected_media_type() {
+        assert!(should_forward_media(
+            &ClientSessionType::Pull,
+            RtmpStreamMode::Default,
+            true
+        ));
+        assert!(should_forward_media(
+            &ClientSessionType::Pull,
+            RtmpStreamMode::Default,
+            false
+        ));
+        assert!(!should_forward_media(
+            &ClientSessionType::Pull,
+            RtmpStreamMode::VideoOnly,
+            true
+        ));
+        assert!(should_forward_media(
+            &ClientSessionType::Pull,
+            RtmpStreamMode::VideoOnly,
+            false
+        ));
+        assert!(should_forward_media(
+            &ClientSessionType::Pull,
+            RtmpStreamMode::AudioOnly,
+            true
+        ));
+        assert!(!should_forward_media(
+            &ClientSessionType::Pull,
+            RtmpStreamMode::AudioOnly,
+            false
+        ));
+    }
+
+    #[test]
+    fn push_mode_keeps_both_media_types() {
+        for mode in [
+            RtmpStreamMode::Default,
+            RtmpStreamMode::VideoOnly,
+            RtmpStreamMode::AudioOnly,
+        ] {
+            assert!(should_forward_media(&ClientSessionType::Push, mode, true));
+            assert!(should_forward_media(&ClientSessionType::Push, mode, false));
+        }
     }
 }

@@ -297,7 +297,7 @@ pub struct LiveFlvChunksRequest {
     pub media_id: MediaId,
     pub user_id: UserId,
     pub expires_at: i64,
-    pub source_url: Option<String>,
+    pub external_source: Option<synctv_core::models::LiveProxyMediaSourceConfig>,
     pub head: bool,
 }
 
@@ -310,14 +310,14 @@ pub struct LiveHlsPlaylistChunksRequest {
     pub signature_room_id: String,
     pub signature_expires_at: i64,
     pub route_provider: String,
-    pub source_url: Option<String>,
+    pub external_source: Option<synctv_core::models::LiveProxyMediaSourceConfig>,
 }
 
 pub struct LiveHlsSegmentChunksRequest {
     pub room_id: RoomId,
     pub media_id: MediaId,
     pub segment_name: String,
-    pub source_url: Option<String>,
+    pub external_source: Option<synctv_core::models::LiveProxyMediaSourceConfig>,
     pub head: bool,
 }
 
@@ -352,7 +352,7 @@ pub async fn stream_live_flv_chunks(
         infrastructure,
         &room_id_key,
         &media_id_key,
-        req.source_url.as_deref(),
+        req.external_source.as_ref(),
     )
     .await
     .map_err(|error| crate::impls::map_livestream_backend_error(error.as_ref()))?;
@@ -461,7 +461,7 @@ pub async fn get_live_hls_playlist_chunks(
         infrastructure,
         &room_id_key,
         &media_id_key,
-        req.source_url.as_deref(),
+        req.external_source.as_ref(),
         |ts_name| {
             let extension = if segment_disguised_as_png {
                 "png"
@@ -530,7 +530,7 @@ pub async fn get_live_hls_segment_chunks(
         &req.room_id.to_string(),
         &req.media_id.to_string(),
         validated_name,
-        req.source_url.as_deref(),
+        req.external_source.as_ref(),
     )
     .await
     .map_err(|error| crate::impls::map_livestream_backend_error(error.as_ref()))?;

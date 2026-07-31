@@ -744,7 +744,7 @@ impl MediaProvider for QnapProvider {
             provider: Self::NAME.to_string(),
             provider_instance_name: auth.instance_name,
             duration_seconds: None,
-            is_live: Some(false),
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
             metadata: Some(PlaybackMetadata::Qnap(QnapPlaybackMetadata {
                 name: file.filename.clone(),
                 path: config.path.clone(),

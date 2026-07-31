@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use synctv_core::models::{RoomId, RoomPlaybackState, UserId};
+use synctv_core::models::{PlaybackKind, RoomId, RoomPlaybackState, UserId};
 use synctv_core::provider::ProviderCredentialDependency;
 
 use crate::impls::ApiError;
@@ -67,11 +67,12 @@ pub const fn playback_generation_error_allows_state_only(error: &ApiError) -> bo
 }
 
 pub fn normalized_provider_duration(
-    is_live: Option<bool>,
+    playback_kind: Option<PlaybackKind>,
     duration_seconds: Option<f64>,
 ) -> Option<f64> {
-    let is_live = is_live.unwrap_or(false);
-    (!is_live)
+    playback_kind
+        .unwrap_or(PlaybackKind::Regular)
+        .supports_duration()
         .then_some(duration_seconds)
         .flatten()
         .filter(|duration| duration.is_finite() && *duration > 0.0)

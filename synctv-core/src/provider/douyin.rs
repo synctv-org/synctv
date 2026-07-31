@@ -581,7 +581,11 @@ impl DouyinProvider {
                 .metadata
                 .duration_ms
                 .map(|duration| std::time::Duration::from_millis(duration).as_secs_f64()),
-            is_live: Some(media.metadata.is_live),
+            playback_kind: Some(if media.metadata.is_live {
+                crate::models::PlaybackKind::Live
+            } else {
+                crate::models::PlaybackKind::Regular
+            }),
             metadata: Some(PlaybackMetadata::Douyin(DouyinPlaybackMetadata {
                 id: media.metadata.id,
                 kind: match media.metadata.kind {

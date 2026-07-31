@@ -1,6 +1,6 @@
 ---
 title: Livestream Configuration
-description: RTMP, HLS, HTTP-FLV, pull retry behavior, GOP cache, and livestream storage.
+description: RTMP, RTSP, HLS, HTTP-FLV, pull retry behavior, GOP cache, and livestream storage.
 ---
 
 import Diagram from '../../../../components/Diagram.astro';
@@ -10,7 +10,7 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 ## What This Config Controls
 
-`livestream` controls RTMP push/pull, HLS segments, HTTP-FLV connections, livestream memory cache, and livestream file storage.
+`livestream` controls RTMP publishing, external RTMP/RTSP/HTTP-FLV pulls, HLS segments, HTTP-FLV connections, livestream memory cache, and livestream file storage.
 
 If you only use on-demand media providers, most values can remain at their defaults.
 
@@ -26,6 +26,7 @@ Livestreaming includes ingest, realtime packet distribution, FLV playback, HLS r
 />
 
 - **RTMP ingest**: Publishers connect through RTMP. During authentication, the publisher is registered on the local node or shared registry.
+- **RTSP ingest**: External sources are pulled through DESCRIBE/SETUP/PLAY and enter the same StreamHub after RTP depacketization.
 - **StreamHub**: Live packets are distributed in-process to FLV sessions, the HLS remuxer, and internal relay/pull logic.
 - **HTTP-FLV**: Best for low latency. Clients hold long-lived responses, and write timeouts protect the server from slow readers.
 - **HLS**: Best for broad player compatibility and shared storage/CDN-like deployments. It has higher latency but scales well across replicas.
@@ -38,8 +39,67 @@ Livestreaming includes ingest, realtime packet distribution, FLV playback, HLS r
 | HLS | Broad player compatibility; playlist/segment pull model; works with shared storage | Higher latency and segment storage management | Mobile clients, generic players, multi-replica deployments, object storage |
 
 <Aside type="note">
-RTMP is mainly the publishing protocol in the current design. Playback should use HTTP-FLV or HLS.
+RTMP is the publishing entry point. Playback uses SyncTV-generated HLS or HTTP-FLV links. Both outputs follow the current live edge, and room synchronization uses live playback state.
 </Aside>
+
+## External RTSP Sources
+
+RTSP sources use an explicit protocol configuration. Each media item owns an independent pull session, so multiple media items can pull multiple cameras or streaming servers concurrently. A node accepts up to 100 external streams by default.
+
+```json
+{
+  "provider": "liveProxy",
+  "source": {
+    "protocol": "rtsp",
+    "url": "rtsp://camera.example/live",
+    "transport": "tcp",
+    "videoTrack": { "mode": "firstCompatible" },
+    "audioTrack": { "mode": "firstCompatible" }
+  }
+}
+```
+
+Available settings:
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `transport` | `tcp` / `udp` | TCP uses interleaved RTP; UDP targets controlled LAN deployments |
+| `videoTrack` | `firstCompatible` / `index` / `disabled` | Select an H.264/H.265 video track |
+| `audioTrack` | `firstCompatible` / `index` / `disabled` | Select an AAC audio track |
+
+Select SDP video track 1 and disable audio:
+
+```json
+{
+  "videoTrack": { "mode": "index", "index": 1 },
+  "audioTrack": { "mode": "disabled" }
+}
+```
+
+Basic and Digest authentication accept RTSP URL userinfo, for example `rtsp://user:password@camera.example/live`. Logs remove userinfo, query, and fragment. Production deployments should manage credential-bearing source configs through controlled configuration paths.
+
+RTSP ingest supports H.264, H.265, and AAC. SyncTV maps these codecs to AVC/HEVC/AAC FLV tags, then reuses the existing HTTP-FLV, HLS, cluster registration, cross-node relay, idle cleanup, and reconnect paths.
+
+## External RTMP Sources
+
+External RTMP sources use `mode` to select which media messages enter the local stream. RTMP carries audio and video as separate message types, so this setting filters message types instead of selecting an RTSP track index.
+
+```json
+{
+  "provider": "liveProxy",
+  "source": {
+    "protocol": "rtmp",
+    "url": "rtmp://origin.example/live/stream",
+    "mode": "default"
+  }
+}
+```
+
+`mode` accepts `default` (audio and video), `videoOnly` (video only), or `audioOnly` (audio only). External RTMP pulls filter in the pull session, while SyncTV-managed RTMP publishing filters in the authenticated server session. HTTP-FLV and HLS receive the same filtered Live StreamHub data.
+
+RTSP `videoTrack` and `audioTrack` must enable at least one track. A double-disabled configuration is rejected while adding the media; track index existence and codec compatibility remain validated when the RTSP SDP connection is established.
+
+RTSP, external RTMP, and internal RTMP publishing enter the same Live StreamHub. SyncTV generates HLS and HTTP-FLV for all three; HLS uses a short sliding window, and TS segments are evicted with that window. Arbitrary seeking and durable recording are outside the current product scope.
 
 ## HLS Backend Design
 
@@ -98,6 +158,17 @@ OBS push URLs usually look like:
 ```text
 rtmp://your-domain:1935/live/<stream-key>
 ```
+
+The RTMP provider media source config accepts the same `mode` field:
+
+```json
+{
+  "provider": "rtmp",
+  "mode": "audioOnly"
+}
+```
+
+This setting controls which media types enter StreamHub. Playback continues through SyncTV-generated HLS or HTTP-FLV URLs.
 
 Change the port if another RTMP service already uses 1935.
 

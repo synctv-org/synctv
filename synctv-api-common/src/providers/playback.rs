@@ -3,11 +3,11 @@ use synctv_core::models::{MediaId, RoomId};
 use crate::impls::client::ClientApiImpl;
 
 impl ClientApiImpl {
-    pub async fn get_live_proxy_source_url(
+    pub async fn get_live_proxy_source_config(
         &self,
         room_id: &RoomId,
         media_id: &MediaId,
-    ) -> Option<String> {
+    ) -> Option<synctv_core::models::LiveProxyMediaSourceConfig> {
         let media = match self
             .room_service
             .media_service()
@@ -32,7 +32,7 @@ impl ClientApiImpl {
         }
 
         match media.source_config {
-            synctv_core::models::MediaSourceConfig::LiveProxy(config) => Some(config.url),
+            synctv_core::models::MediaSourceConfig::LiveProxy(config) => Some(config),
             _ => None,
         }
     }

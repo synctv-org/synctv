@@ -1,5 +1,5 @@
 use synctv_core::{
-    models::{PlaylistId, ProviderTarget, RoomId, UserId, UserStatus},
+    models::{PlaybackKind, PlaylistId, ProviderTarget, RoomId, UserId, UserStatus},
     service::{PlaybackStatePatch, PlaybackStateUpdateRequest},
 };
 
@@ -83,9 +83,11 @@ impl AdminApiImpl {
             .generate_playback(&ctx, &media.source_config)
             .await
             .map_err(ApiError::from)?;
+        let playback_kind = provider_result
+            .playback_kind
+            .unwrap_or(PlaybackKind::Regular);
         let duration_seconds =
-            normalized_provider_duration(provider_result.is_live, provider_result.duration_seconds);
-        let is_live = provider_result.is_live.unwrap_or(false);
+            normalized_provider_duration(Some(playback_kind), provider_result.duration_seconds);
 
         let mut builder = synctv_core::models::media::PlaybackResult::builder(
             media.playlist_id,
@@ -98,7 +100,7 @@ impl AdminApiImpl {
         .provider_instance_name(provider_result.provider_instance_name.clone())
         .default_mode(provider_result.default_mode.clone())
         .duration_seconds(duration_seconds)
-        .is_live(is_live);
+        .playback_kind(playback_kind);
 
         for (mode_name, provider_info) in provider_result.playback_infos {
             let info = provider_playback_info_to_model(&provider_info);
@@ -192,9 +194,11 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
+        let playback_kind = provider_result
+            .playback_kind
+            .unwrap_or(PlaybackKind::Regular);
         let duration_seconds =
-            normalized_provider_duration(provider_result.is_live, provider_result.duration_seconds);
-        let is_live = provider_result.is_live.unwrap_or(false);
+            normalized_provider_duration(Some(playback_kind), provider_result.duration_seconds);
 
         let mut builder = synctv_core::models::media::PlaybackResult::builder(
             Some(*playlist_id),
@@ -206,7 +210,7 @@ impl AdminApiImpl {
         .provider_instance_name(provider_result.provider_instance_name.clone())
         .default_mode(provider_result.default_mode.clone())
         .duration_seconds(duration_seconds)
-        .is_live(is_live);
+        .playback_kind(playback_kind);
 
         for (mode_name, provider_info) in provider_result.playback_infos {
             let info = provider_playback_info_to_model(&provider_info);
@@ -296,7 +300,7 @@ impl AdminApiImpl {
             metadata: None,
             expires_at: None,
             duration_seconds: None,
-            is_live: false,
+            playback_kind: synctv_proto::client::PlaybackKind::Regular as i32,
             target: None,
         })
     }

@@ -80,7 +80,7 @@ impl S3CompatibleFileStorageService {
             config,
             operator,
             repository,
-            http_client: s3_http_client(),
+            http_client: s3_http_client()?,
             #[cfg(test)]
             test_multipart_upload_id: None,
             #[cfg(test)]

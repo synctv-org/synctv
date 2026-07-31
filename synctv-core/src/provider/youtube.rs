@@ -702,7 +702,11 @@ impl YoutubeProvider {
             provider: Self::NAME.to_string(),
             provider_instance_name: None,
             duration_seconds: details.length_seconds.parse::<f64>().ok(),
-            is_live: Some(details.is_live || details.is_live_content),
+            playback_kind: Some(if details.is_live || details.is_live_content {
+                crate::models::PlaybackKind::Live
+            } else {
+                crate::models::PlaybackKind::Regular
+            }),
             metadata: Some(PlaybackMetadata::Youtube(YoutubePlaybackMetadata {
                 video_id: details.video_id.clone(),
                 channel_id: details.channel_id.clone(),
@@ -1348,7 +1352,10 @@ mod tests {
 
         assert_eq!(result.default_mode, "progressive");
         assert_eq!(result.duration_seconds, Some(212.0));
-        assert_eq!(result.is_live, Some(false));
+        assert_eq!(
+            result.playback_kind,
+            Some(crate::models::PlaybackKind::Regular)
+        );
         assert!(result.playback_infos.contains_key("progressive"));
         assert!(result.playback_infos.contains_key("hls"));
         assert!(result.playback_infos.contains_key("dash"));

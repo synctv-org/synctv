@@ -4087,7 +4087,7 @@ mod tests {
             provider: "bilibili".to_string(),
             provider_instance_name: None,
             duration_seconds: Some(10.0),
-            is_live: Some(false),
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
             metadata: Some(PlaybackMetadata::Bilibili(BilibiliPlaybackMetadata {
                 dash_manifests: BilibiliDashManifests {
                     dash: Some(BilibiliDashManifest::default()),
@@ -4904,7 +4904,7 @@ impl BilibiliProvider {
                     provider: Self::NAME.to_string(),
                     provider_instance_name: provider_instance_name.map(str::to_string),
                     duration_seconds,
-                    is_live: Some(false),
+                    playback_kind: Some(crate::models::PlaybackKind::Regular),
                     metadata: Some(metadata),
                 })
             }
@@ -5044,7 +5044,7 @@ impl BilibiliProvider {
                     provider: Self::NAME.to_string(),
                     provider_instance_name: provider_instance_name.map(str::to_string),
                     duration_seconds,
-                    is_live: Some(false),
+                    playback_kind: Some(crate::models::PlaybackKind::Regular),
                     metadata: Some(metadata),
                 })
             }
@@ -5077,7 +5077,7 @@ impl BilibiliProvider {
                     provider: Self::NAME.to_string(),
                     provider_instance_name: provider_instance_name.map(str::to_string),
                     duration_seconds: None,
-                    is_live: Some(true),
+                    playback_kind: Some(crate::models::PlaybackKind::Live),
                     metadata: Some(metadata),
                 })
             }

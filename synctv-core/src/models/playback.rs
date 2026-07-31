@@ -7,6 +7,56 @@ use super::{
     provider_target::{hash_empty_provider_target, hash_optional_provider_target, ProviderTarget},
 };
 
+/// Playback source behavior exposed to room synchronization and clients.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackKind {
+    /// Finite media with a fixed origin at the first frame.
+    #[default]
+    Regular,
+    /// Unseekable stream that follows the current live edge.
+    Live,
+}
+
+i16_enum!(PlaybackKind, "invalid playback kind", {
+    Regular = 0,
+    Live = 1,
+});
+
+impl PlaybackKind {
+    /// Whether a newly selected source should enter at its live edge.
+    #[must_use]
+    pub const fn starts_at_live_edge(self) -> bool {
+        matches!(self, Self::Live)
+    }
+
+    /// Whether the source exposes a seekable presentation timeline.
+    #[must_use]
+    pub const fn is_seekable(self) -> bool {
+        matches!(self, Self::Regular)
+    }
+
+    #[must_use]
+    pub const fn accepts_position_updates(self) -> bool {
+        !matches!(self, Self::Live)
+    }
+
+    #[must_use]
+    pub const fn supports_duration(self) -> bool {
+        matches!(self, Self::Regular)
+    }
+
+    #[must_use]
+    pub const fn allows_auto_advance(self) -> bool {
+        matches!(self, Self::Regular)
+    }
+
+    #[must_use]
+    pub const fn is_live_edge(self) -> bool {
+        matches!(self, Self::Live)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RoomPlaybackState {
     pub room_id: RoomId,
@@ -112,7 +162,7 @@ pub struct PlaybackSourceMetadata {
     pub target_hash: String,
     pub media_name: Option<String>,
     pub playlist_name: Option<String>,
-    pub is_live: Option<bool>,
+    pub playback_kind: PlaybackKind,
     pub duration_seconds: Option<f64>,
     pub duration_status: PlaybackDurationStatus,
     pub duration_source: Option<PlaybackDurationSource>,
@@ -268,5 +318,25 @@ mod tests {
         state.updated_at = crate::SystemClock.now() + chrono::Duration::seconds(30);
 
         assert!((state.computed_position() - 45.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn playback_kind_encodes_business_behavior() {
+        assert!(PlaybackKind::Regular.accepts_position_updates());
+        assert!(!PlaybackKind::Live.accepts_position_updates());
+        assert!(PlaybackKind::Regular.supports_duration());
+        assert!(PlaybackKind::Regular.allows_auto_advance());
+        assert!(PlaybackKind::Live.starts_at_live_edge());
+        assert!(!PlaybackKind::Live.is_seekable());
+        assert!(PlaybackKind::Regular.is_seekable());
+    }
+
+    #[test]
+    fn playback_kind_round_trips_i16_storage_values() {
+        for kind in [PlaybackKind::Regular, PlaybackKind::Live] {
+            let encoded: i16 = kind.into();
+            assert_eq!(PlaybackKind::try_from(encoded), Ok(kind));
+        }
+        assert!(PlaybackKind::try_from(99_i16).is_err());
     }
 }

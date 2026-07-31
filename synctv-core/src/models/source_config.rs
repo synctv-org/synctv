@@ -819,14 +819,79 @@ pub enum EmbyPlaylistSource {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RtmpMediaSourceConfig {}
+pub struct RtmpMediaSourceConfig {
+    #[serde(default)]
+    pub mode: RtmpStreamMode,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LiveProxyMediaSourceConfig {
-    pub url: String,
+    pub source: ExternalLiveSourceConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "protocol",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ExternalLiveSourceConfig {
+    Rtmp {
+        url: String,
+        #[serde(default)]
+        mode: RtmpStreamMode,
+    },
+    Rtsp {
+        url: String,
+        transport: RtspTransport,
+        video_track: RtspTrackSelection,
+        audio_track: RtspTrackSelection,
+    },
+    HttpFlv {
+        url: String,
+    },
+}
+
+impl ExternalLiveSourceConfig {
+    #[must_use]
+    pub fn url(&self) -> &str {
+        match self {
+            Self::Rtmp { url, .. } | Self::Rtsp { url, .. } | Self::HttpFlv { url } => url,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RtspTransport {
+    Tcp,
+    Udp,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "mode",
+    content = "index",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
+pub enum RtspTrackSelection {
+    FirstCompatible,
+    Index(u32),
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RtmpStreamMode {
+    #[default]
+    Default,
+    VideoOnly,
+    AudioOnly,
 }
 
 impl MediaSourceConfig {
@@ -1090,18 +1155,32 @@ mod tests {
             }),
         );
         media_round_trip(
-            &MediaSourceConfig::Rtmp(RtmpMediaSourceConfig {}),
+            &MediaSourceConfig::Rtmp(RtmpMediaSourceConfig {
+                mode: RtmpStreamMode::Default,
+            }),
             &json!({
-                "provider": "rtmp"
+                "provider": "rtmp",
+                "mode": "default"
             }),
         );
         media_round_trip(
             &MediaSourceConfig::LiveProxy(LiveProxyMediaSourceConfig {
-                url: "rtmp://example.com/live/room".to_string(),
+                source: ExternalLiveSourceConfig::Rtsp {
+                    url: "rtsp://example.com/live/room".to_string(),
+                    transport: RtspTransport::Tcp,
+                    video_track: RtspTrackSelection::Index(0),
+                    audio_track: RtspTrackSelection::FirstCompatible,
+                },
             }),
             &json!({
                 "provider": "liveProxy",
-                "url": "rtmp://example.com/live/room"
+                "source": {
+                    "protocol": "rtsp",
+                    "url": "rtsp://example.com/live/room",
+                    "transport": "tcp",
+                    "videoTrack": {"mode": "index", "index": 0},
+                    "audioTrack": {"mode": "firstCompatible"}
+                }
             }),
         );
     }
@@ -1134,6 +1213,22 @@ mod tests {
                 "source": {
                     "type": "folder",
                     "itemId": "folder-1"
+                }
+            }),
+        );
+        media_round_trip(
+            &MediaSourceConfig::LiveProxy(LiveProxyMediaSourceConfig {
+                source: ExternalLiveSourceConfig::Rtmp {
+                    url: "rtmp://example.com/live/room".to_string(),
+                    mode: RtmpStreamMode::VideoOnly,
+                },
+            }),
+            &json!({
+                "provider": "liveProxy",
+                "source": {
+                    "protocol": "rtmp",
+                    "url": "rtmp://example.com/live/room",
+                    "mode": "videoOnly"
                 }
             }),
         );

@@ -187,7 +187,7 @@ impl CctvProvider {
             provider: Self::NAME.to_string(),
             provider_instance_name: None,
             duration_seconds,
-            is_live: Some(false),
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
             metadata: Some(PlaybackMetadata::Cctv(metadata_model(metadata))),
         })
     }

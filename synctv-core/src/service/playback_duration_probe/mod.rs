@@ -162,24 +162,15 @@ impl PlaybackDurationProbeService {
             let Some(identity) = PlaybackSourceIdentity::from_state(&state)? else {
                 continue;
             };
-            match self
+            if let Some(false) = self
                 .playback_service
                 .source_live_status_for_state(&state)
                 .await?
             {
-                Some(true) => {
-                    self.playback_service
-                        .source_metadata_repository()
-                        .upsert_provider_source_metadata(&identity, true, None, None, None)
-                        .await?;
-                }
-                Some(false) => {
-                    self.playback_service
-                        .source_metadata_repository()
-                        .mark_probeable_unknown_if_absent(&identity)
-                        .await?;
-                }
-                None => {}
+                self.playback_service
+                    .source_metadata_repository()
+                    .mark_probeable_unknown_if_absent(&identity)
+                    .await?;
             }
         }
         Ok(())
@@ -256,11 +247,18 @@ impl PlaybackDurationProbeService {
             return Ok(());
         };
 
-        if playback.is_live == Some(true) {
-            self.playback_service
-                .source_metadata_repository()
-                .upsert_provider_source_metadata(&identity, true, None, None, None)
-                .await?;
+        if !matches!(
+            claim.metadata.playback_kind,
+            crate::models::PlaybackKind::Regular
+        ) {
+            self.mark_failed(
+                &identity,
+                claim.metadata.version,
+                PlaybackDurationStatus::Unavailable,
+                "playback kind does not use upstream duration probing",
+                Self::RETRY_AFTER_UNAVAILABLE,
+            )
+            .await?;
             return Ok(());
         }
 

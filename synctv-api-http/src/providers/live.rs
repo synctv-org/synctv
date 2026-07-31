@@ -30,8 +30,8 @@ pub(crate) async fn execute_live_stream_action(
             user_id,
             expires_at,
         } => {
-            let source_url =
-                live_proxy_source_url(state, &provider_name, &room_id, &media_id).await;
+            let external_source =
+                live_proxy_source(state, &provider_name, &room_id, &media_id).await;
             stream_live_flv_chunks(
                 live_deps(state),
                 LiveFlvChunksRequest {
@@ -40,7 +40,7 @@ pub(crate) async fn execute_live_stream_action(
                     media_id,
                     user_id,
                     expires_at,
-                    source_url,
+                    external_source,
                     head: false,
                 },
             )
@@ -53,8 +53,8 @@ pub(crate) async fn execute_live_stream_action(
             media_id,
             version,
         } => {
-            let source_url =
-                live_proxy_source_url(state, &provider_name, &room_id, &media_id).await;
+            let external_source =
+                live_proxy_source(state, &provider_name, &room_id, &media_id).await;
             let (signature_user_id, signature_room_id, signature_expires_at) = live_hls_signature(
                 state,
                 &provider_name,
@@ -76,7 +76,7 @@ pub(crate) async fn execute_live_stream_action(
                     signature_room_id,
                     signature_expires_at,
                     route_provider,
-                    source_url,
+                    external_source,
                 },
             )
             .await
@@ -89,15 +89,15 @@ pub(crate) async fn execute_live_stream_action(
             segment_name,
             disguised_as_png: _,
         } => {
-            let source_url =
-                live_proxy_source_url(state, &provider_name, &room_id, &media_id).await;
+            let external_source =
+                live_proxy_source(state, &provider_name, &room_id, &media_id).await;
             get_live_hls_segment_chunks(
                 live_deps(state),
                 LiveHlsSegmentChunksRequest {
                     room_id,
                     media_id,
                     segment_name,
-                    source_url,
+                    external_source,
                     head: false,
                 },
             )
@@ -142,12 +142,12 @@ fn live_hls_signature(
     Ok((uid, rid, exp))
 }
 
-async fn live_proxy_source_url(
+async fn live_proxy_source(
     state: &AppState,
     provider_name: &str,
     room_id: &RoomId,
     media_id: &MediaId,
-) -> Option<String> {
+) -> Option<synctv_core::models::LiveProxyMediaSourceConfig> {
     if provider_name != synctv_core::provider::LiveProxyProvider::NAME {
         return None;
     }
@@ -155,6 +155,6 @@ async fn live_proxy_source_url(
     state
         .shared_api_runtime
         .client_api
-        .get_live_proxy_source_url(room_id, media_id)
+        .get_live_proxy_source_config(room_id, media_id)
         .await
 }

@@ -1961,8 +1961,6 @@ impl ClientApiImpl {
             enable_webauthn_signup: s.enable_webauthn_signup,
             webauthn_signup_need_review: s.webauthn_signup_need_review,
             enable_guest: s.enable_guest,
-            movie_proxy: s.movie_proxy,
-            live_proxy: s.live_proxy,
             ts_disguised_as_png: s.ts_disguised_as_png,
             custom_publish_host: s.custom_publish_host,
             email_whitelist_enabled: s.email_whitelist_enabled,
@@ -2793,7 +2791,12 @@ impl ClientApiImpl {
             })
             .await
             .map_err(ApiError::from)?;
-        if source_metadata.is_some_and(|metadata| metadata.is_live == Some(true)) {
+        if source_metadata.is_some_and(|metadata| {
+            matches!(
+                metadata.playback_kind,
+                synctv_core::models::PlaybackKind::Live
+            )
+        }) {
             return Ok(synctv_proto::client::GetChatPlaybackMessagesResponse {
                 messages: Vec::new(),
             });

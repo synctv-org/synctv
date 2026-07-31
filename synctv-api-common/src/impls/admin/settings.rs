@@ -16,7 +16,6 @@ pub struct RuntimeSettingsPatch {
     pub room_creation: Option<RoomCreationSettingsPatch>,
     pub user: Option<UserSettingsPatch>,
     pub oauth2: Option<OAuth2SettingsPatch>,
-    pub proxy: Option<ProxySettingsPatch>,
     pub rtmp: Option<RtmpSettingsPatch>,
     pub email: Option<EmailSettingsPatch>,
     pub webrtc: Option<WebRtcSettingsPatch>,
@@ -66,12 +65,6 @@ pub struct UserSettingsPatch {
 pub struct OAuth2SettingsPatch {
     pub providers: Option<synctv_core::service::OAuth2ProviderConfigs>,
     pub allowed_redirect_urls: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct ProxySettingsPatch {
-    pub movie_proxy: Option<bool>,
-    pub live_proxy: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -269,9 +262,6 @@ fn changed_runtime_settings_sections(patch: &RuntimeSettingsPatch) -> Vec<String
     if patch.oauth2.is_some() {
         sections.push("oauth2".to_string());
     }
-    if patch.proxy.is_some() {
-        sections.push("proxy".to_string());
-    }
     if patch.rtmp.is_some() {
         sections.push("rtmp".to_string());
     }
@@ -454,10 +444,6 @@ impl AdminApiImpl {
                     )
                     .collect(),
             }),
-            proxy: Some(synctv_proto::admin::ProxySettings {
-                movie_proxy: settings.proxy.movie_proxy,
-                live_proxy: settings.proxy.live_proxy,
-            }),
             rtmp: Some(synctv_proto::admin::RtmpSettings {
                 custom_publish_host: settings.rtmp.custom_publish_host,
                 ts_disguised_as_png: settings.rtmp.ts_disguised_as_png,
@@ -600,17 +586,6 @@ impl AdminApiImpl {
             }
         }
 
-        if let Some(proxy) = patch.proxy {
-            if let Some(value) = proxy.movie_proxy {
-                current.proxy.movie_proxy = value;
-                update_mask.proxy.movie_proxy = true;
-            }
-            if let Some(value) = proxy.live_proxy {
-                current.proxy.live_proxy = value;
-                update_mask.proxy.live_proxy = true;
-            }
-        }
-
         if let Some(rtmp) = patch.rtmp {
             if let Some(patch) = rtmp.custom_publish_host {
                 current.rtmp.custom_publish_host = match patch {
@@ -749,7 +724,6 @@ impl AdminApiImpl {
             "roomCreation",
             "user",
             "oauth2",
-            "proxy",
             "rtmp",
             "email",
             "webrtc",

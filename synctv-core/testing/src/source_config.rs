@@ -45,12 +45,30 @@ pub fn direct_url_media_source_config_with_headers<S: BuildHasher>(
 
 #[must_use]
 pub fn rtmp_managed_live_media_source_config() -> MediaSourceConfig {
-    MediaSourceConfig::Rtmp(RtmpMediaSourceConfig {})
+    MediaSourceConfig::Rtmp(RtmpMediaSourceConfig {
+        mode: synctv_core::models::RtmpStreamMode::Default,
+    })
 }
 
 #[must_use]
 pub fn live_proxy_pull_live_media_source_config(url: impl Into<String>) -> MediaSourceConfig {
-    MediaSourceConfig::LiveProxy(LiveProxyMediaSourceConfig { url: url.into() })
+    let url = url.into();
+    let source = if url.starts_with("rtsp://") {
+        synctv_core::models::ExternalLiveSourceConfig::Rtsp {
+            url,
+            transport: synctv_core::models::RtspTransport::Tcp,
+            video_track: synctv_core::models::RtspTrackSelection::FirstCompatible,
+            audio_track: synctv_core::models::RtspTrackSelection::FirstCompatible,
+        }
+    } else if url.starts_with("rtmp://") {
+        synctv_core::models::ExternalLiveSourceConfig::Rtmp {
+            url,
+            mode: synctv_core::models::RtmpStreamMode::Default,
+        }
+    } else {
+        synctv_core::models::ExternalLiveSourceConfig::HttpFlv { url }
+    };
+    MediaSourceConfig::LiveProxy(LiveProxyMediaSourceConfig { source })
 }
 
 #[must_use]

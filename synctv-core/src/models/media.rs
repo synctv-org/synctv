@@ -7,7 +7,7 @@ use super::file_storage::FileReferenceTarget;
 use super::id::{MediaId, PlaylistId, RoomId, UserId};
 use super::normalize_provider_instance_name_owned;
 use super::query::SortDirection;
-use super::{MediaSourceConfig, ProviderTarget};
+use super::{MediaSourceConfig, PlaybackKind, ProviderTarget};
 
 sort_field_enum! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -468,9 +468,9 @@ pub struct PlaybackResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_seconds: Option<f64>,
 
-    /// Whether this playback source is a live stream.
+    /// Behavioral kind of this playback source.
     #[serde(default)]
-    pub is_live: bool,
+    pub playback_kind: PlaybackKind,
 
     /// Provider-facing playback target for dynamic playlist items.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2411,7 +2411,7 @@ impl PlaybackResult {
             playback_infos,
             default_mode: mode_name.to_string(),
             duration_seconds: None,
-            is_live: false,
+            playback_kind: PlaybackKind::Regular,
             target: None,
             metadata: None,
         }
@@ -2436,7 +2436,7 @@ impl PlaybackResult {
             playback_infos: indexmap::IndexMap::new(),
             default_mode: None,
             duration_seconds: None,
-            is_live: false,
+            playback_kind: PlaybackKind::Regular,
             target: None,
             metadata: None,
         }
@@ -2471,7 +2471,7 @@ pub struct PlaybackResultBuilder {
     playback_infos: indexmap::IndexMap<String, PlaybackInfo>,
     default_mode: Option<String>,
     duration_seconds: Option<f64>,
-    is_live: bool,
+    playback_kind: PlaybackKind,
     target: Option<ProviderTarget>,
     metadata: Option<PlaybackMetadata>,
 }
@@ -2517,8 +2517,8 @@ impl PlaybackResultBuilder {
     }
 
     #[must_use]
-    pub const fn is_live(mut self, is_live: bool) -> Self {
-        self.is_live = is_live;
+    pub const fn playback_kind(mut self, playback_kind: PlaybackKind) -> Self {
+        self.playback_kind = playback_kind;
         self
     }
 
@@ -2565,7 +2565,7 @@ impl PlaybackResultBuilder {
             playback_infos: self.playback_infos.into_iter().collect(),
             default_mode,
             duration_seconds: self.duration_seconds,
-            is_live: self.is_live,
+            playback_kind: self.playback_kind,
             target: self.target,
             metadata: self.metadata,
         })

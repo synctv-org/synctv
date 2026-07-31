@@ -102,9 +102,9 @@ impl MediaProvider for RtmpProvider {
                 "RTMP requires RTMP media source_config".to_string(),
             ));
         };
-        let _config = config;
         let (room_id, media_id) = Self::resolve_live_binding(ctx)?;
 
+        let _config = config;
         let result = super::build_live_playback(*media_id, *room_id);
 
         let cache_key = format!("playback:{room_id}:{media_id}");

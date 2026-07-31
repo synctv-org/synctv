@@ -4,8 +4,8 @@ use sqlx::PgPool;
 use crate::{
     models::{
         ClaimedPlaybackDurationProbe, MediaId, PlaybackDurationSource, PlaybackDurationStatus,
-        PlaybackSourceIdentity, PlaybackSourceMetadata, PlaylistId, ProviderTarget, RoomId,
-        RoomPlaybackState,
+        PlaybackKind, PlaybackSourceIdentity, PlaybackSourceMetadata, PlaylistId, ProviderTarget,
+        RoomId, RoomPlaybackState,
     },
     Result,
 };
@@ -23,7 +23,7 @@ struct PlaybackSourceWithStateRow {
     metadata_target_hash: String,
     metadata_media_name: Option<String>,
     metadata_playlist_name: Option<String>,
-    metadata_is_live: Option<bool>,
+    metadata_playback_kind: PlaybackKind,
     duration_seconds: Option<f64>,
     metadata_duration_status: PlaybackDurationStatus,
     metadata_duration_source: Option<PlaybackDurationSource>,
@@ -55,7 +55,7 @@ impl PlaybackSourceWithStateRow {
             target_hash: self.metadata_target_hash,
             media_name: self.metadata_media_name,
             playlist_name: self.metadata_playlist_name,
-            is_live: self.metadata_is_live,
+            playback_kind: self.metadata_playback_kind,
             duration_seconds: self.duration_seconds,
             duration_status: self.metadata_duration_status,
             duration_source: self.metadata_duration_source,
@@ -102,7 +102,7 @@ impl PlaybackSourceMetadataRepository {
                    target_hash,
                    media_name,
                    playlist_name,
-                   is_live,
+                   playback_kind AS "playback_kind!: PlaybackKind",
                    duration_seconds,
                    duration_status AS "duration_status!: PlaybackDurationStatus",
                    duration_source AS "duration_source?: PlaybackDurationSource",
@@ -131,7 +131,7 @@ impl PlaybackSourceMetadataRepository {
     pub async fn upsert_provider_source_metadata(
         &self,
         identity: &PlaybackSourceIdentity,
-        is_live: bool,
+        playback_kind: PlaybackKind,
         duration_seconds: Option<f64>,
         media_name: Option<&str>,
         playlist_name: Option<&str>,
@@ -155,7 +155,7 @@ impl PlaybackSourceMetadataRepository {
                 target_hash,
                 media_name,
                 playlist_name,
-                is_live,
+                playback_kind,
                 duration_seconds,
                 duration_status,
                 duration_source,
@@ -171,12 +171,12 @@ impl PlaybackSourceMetadataRepository {
             )
             DO UPDATE SET media_name = COALESCE(EXCLUDED.media_name, playback_source_metadata.media_name),
                           playlist_name = COALESCE(EXCLUDED.playlist_name, playback_source_metadata.playlist_name),
-                          is_live = EXCLUDED.is_live,
+                          playback_kind = EXCLUDED.playback_kind,
                           duration_seconds = EXCLUDED.duration_seconds,
                           duration_status = EXCLUDED.duration_status,
                           duration_source = EXCLUDED.duration_source,
                           duration_error = CASE
-                              WHEN playback_source_metadata.is_live IS DISTINCT FROM EXCLUDED.is_live
+                              WHEN playback_source_metadata.playback_kind IS DISTINCT FROM EXCLUDED.playback_kind
                                 OR playback_source_metadata.duration_seconds IS DISTINCT FROM EXCLUDED.duration_seconds
                                 OR playback_source_metadata.duration_status IS DISTINCT FROM EXCLUDED.duration_status
                                 OR playback_source_metadata.duration_source IS DISTINCT FROM EXCLUDED.duration_source
@@ -184,7 +184,7 @@ impl PlaybackSourceMetadataRepository {
                               ELSE playback_source_metadata.duration_error
                           END,
                           next_retry_at = CASE
-                              WHEN playback_source_metadata.is_live IS DISTINCT FROM EXCLUDED.is_live
+                              WHEN playback_source_metadata.playback_kind IS DISTINCT FROM EXCLUDED.playback_kind
                                 OR playback_source_metadata.duration_seconds IS DISTINCT FROM EXCLUDED.duration_seconds
                                 OR playback_source_metadata.duration_status IS DISTINCT FROM EXCLUDED.duration_status
                                 OR playback_source_metadata.duration_source IS DISTINCT FROM EXCLUDED.duration_source
@@ -192,14 +192,14 @@ impl PlaybackSourceMetadataRepository {
                               ELSE playback_source_metadata.next_retry_at
                           END,
                           version = CASE
-                              WHEN playback_source_metadata.is_live IS DISTINCT FROM EXCLUDED.is_live
+                              WHEN playback_source_metadata.playback_kind IS DISTINCT FROM EXCLUDED.playback_kind
                                 OR playback_source_metadata.duration_seconds IS DISTINCT FROM EXCLUDED.duration_seconds
                                 OR playback_source_metadata.duration_status IS DISTINCT FROM EXCLUDED.duration_status
                                 OR playback_source_metadata.duration_source IS DISTINCT FROM EXCLUDED.duration_source
                               THEN playback_source_metadata.version + 1
                               ELSE playback_source_metadata.version
                           END
-            WHERE playback_source_metadata.is_live IS DISTINCT FROM EXCLUDED.is_live
+            WHERE playback_source_metadata.playback_kind IS DISTINCT FROM EXCLUDED.playback_kind
                OR playback_source_metadata.duration_seconds IS DISTINCT FROM EXCLUDED.duration_seconds
                OR playback_source_metadata.duration_status IS DISTINCT FROM EXCLUDED.duration_status
                OR playback_source_metadata.duration_source IS DISTINCT FROM EXCLUDED.duration_source
@@ -212,7 +212,7 @@ impl PlaybackSourceMetadataRepository {
                       target_hash,
                       media_name,
                       playlist_name,
-                      is_live,
+                      playback_kind AS "playback_kind!: PlaybackKind",
                       duration_seconds,
                       duration_status AS "duration_status!: PlaybackDurationStatus",
                       duration_source AS "duration_source?: PlaybackDurationSource",
@@ -228,7 +228,7 @@ impl PlaybackSourceMetadataRepository {
             &identity.target_hash,
             media_name,
             playlist_name,
-            is_live,
+            i16::from(playback_kind),
             duration_seconds,
             i16::from(duration_status),
             duration_source.map(i16::from),
@@ -258,34 +258,25 @@ impl PlaybackSourceMetadataRepository {
                 media_id,
                 playlist_id,
                 target_hash,
-                is_live,
+                playback_kind,
                 duration_status
             )
-            VALUES ($1, $2, $3, $4, FALSE, $5)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (
                 room_id,
                 COALESCE(media_id, 0),
                 COALESCE(playlist_id, 0),
                 target_hash
             )
-            DO UPDATE SET is_live = COALESCE(playback_source_metadata.is_live, FALSE),
-                          duration_status = CASE
-                              WHEN playback_source_metadata.is_live IS NULL
-                              THEN EXCLUDED.duration_status
-                              ELSE playback_source_metadata.duration_status
-                          END,
-                          version = CASE
-                              WHEN playback_source_metadata.is_live IS NULL
-                              THEN playback_source_metadata.version + 1
-                              ELSE playback_source_metadata.version
-                          END
+            DO UPDATE SET duration_status = playback_source_metadata.duration_status,
+                          version = playback_source_metadata.version
             RETURNING room_id AS "room_id!: RoomId",
                       media_id AS "media_id?: MediaId",
                       playlist_id AS "playlist_id?: PlaylistId",
                       target_hash,
                       media_name,
                       playlist_name,
-                      is_live,
+                      playback_kind AS "playback_kind!: PlaybackKind",
                       duration_seconds,
                       duration_status AS "duration_status!: PlaybackDurationStatus",
                       duration_source AS "duration_source?: PlaybackDurationSource",
@@ -299,6 +290,7 @@ impl PlaybackSourceMetadataRepository {
             identity.media_id.map(i64::from),
             identity.playlist_id.map(i64::from),
             &identity.target_hash,
+            i16::from(PlaybackKind::Regular),
             i16::from(PlaybackDurationStatus::Unknown),
         )
         .fetch_one(&self.pool)
@@ -361,7 +353,7 @@ impl PlaybackSourceMetadataRepository {
                    metadata.target_hash AS "metadata_target_hash!",
                    metadata.media_name AS metadata_media_name,
                    metadata.playlist_name AS metadata_playlist_name,
-                   metadata.is_live AS metadata_is_live,
+                   metadata.playback_kind AS "metadata_playback_kind!: PlaybackKind",
                    metadata.duration_seconds,
                    metadata.duration_status AS "metadata_duration_status!: PlaybackDurationStatus",
                    metadata.duration_source AS "metadata_duration_source?: PlaybackDurationSource",
@@ -406,6 +398,7 @@ impl PlaybackSourceMetadataRepository {
         let sources = rows
             .into_iter()
             .map(PlaybackSourceWithStateRow::into_parts)
+            .filter(|(metadata, _)| metadata.playback_kind.allows_auto_advance())
             .collect();
 
         Ok(sources)
@@ -455,7 +448,7 @@ impl PlaybackSourceMetadataRepository {
                       )
                 )
                   AND state.is_playing = TRUE
-                  AND metadata.is_live = FALSE
+                  AND metadata.playback_kind = $6
                   AND metadata.duration_seconds IS NULL
                   AND (metadata.next_retry_at IS NULL OR metadata.next_retry_at <= NOW())
                 ORDER BY metadata.updated_at ASC
@@ -479,7 +472,7 @@ impl PlaybackSourceMetadataRepository {
                           metadata.target_hash,
                           metadata.media_name,
                           metadata.playlist_name,
-                          metadata.is_live,
+                          metadata.playback_kind,
                           metadata.duration_seconds,
                           metadata.duration_status,
                           metadata.duration_source,
@@ -495,7 +488,7 @@ impl PlaybackSourceMetadataRepository {
                    updated.target_hash AS "metadata_target_hash!",
                    updated.media_name AS metadata_media_name,
                    updated.playlist_name AS metadata_playlist_name,
-                   updated.is_live AS metadata_is_live,
+                   updated.playback_kind AS "metadata_playback_kind!: PlaybackKind",
                    updated.duration_seconds,
                    updated.duration_status AS "metadata_duration_status!: PlaybackDurationStatus",
                    updated.duration_source AS "metadata_duration_source?: PlaybackDurationSource",
@@ -530,6 +523,7 @@ impl PlaybackSourceMetadataRepository {
             limit,
             i16::from(PlaybackDurationStatus::Pending),
             &room_ids,
+            i16::from(PlaybackKind::Regular),
         )
         .fetch_all(&self.pool)
         .await?;
@@ -578,7 +572,7 @@ impl PlaybackSourceMetadataRepository {
                       )
                   )
                   AND state.is_playing = TRUE
-                  AND metadata.is_live = FALSE
+                  AND metadata.playback_kind = $8
                   AND metadata.duration_seconds IS NULL
                   AND (metadata.next_retry_at IS NULL OR metadata.next_retry_at <= NOW())
                 LIMIT 1
@@ -601,7 +595,7 @@ impl PlaybackSourceMetadataRepository {
                           metadata.target_hash,
                           metadata.media_name,
                           metadata.playlist_name,
-                          metadata.is_live,
+                          metadata.playback_kind,
                           metadata.duration_seconds,
                           metadata.duration_status,
                           metadata.duration_source,
@@ -617,7 +611,7 @@ impl PlaybackSourceMetadataRepository {
                    updated.target_hash AS "metadata_target_hash!",
                    updated.media_name AS metadata_media_name,
                    updated.playlist_name AS metadata_playlist_name,
-                   updated.is_live AS metadata_is_live,
+                   updated.playback_kind AS "metadata_playback_kind!: PlaybackKind",
                    updated.duration_seconds,
                    updated.duration_status AS "metadata_duration_status!: PlaybackDurationStatus",
                    updated.duration_source AS "metadata_duration_source?: PlaybackDurationSource",
@@ -654,6 +648,7 @@ impl PlaybackSourceMetadataRepository {
             &claimable_initial_statuses[..],
             i16::from(PlaybackDurationStatus::Pending),
             i16::from(PlaybackDurationStatus::Pending),
+            i16::from(PlaybackKind::Regular),
         )
         .fetch_optional(&self.pool)
         .await?;
@@ -673,8 +668,7 @@ impl PlaybackSourceMetadataRepository {
         let result = sqlx::query!(
             r"
             UPDATE playback_source_metadata
-               SET is_live = FALSE,
-                   duration_seconds = $5,
+               SET duration_seconds = $5,
                    duration_status = $6,
                    duration_source = $7,
                    duration_error = NULL,

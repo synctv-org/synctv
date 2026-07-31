@@ -40,6 +40,10 @@ use axum::{
 };
 use futures::StreamExt;
 use std::sync::{Arc, LazyLock};
+use tower_http::compression::{
+    predicate::{DefaultPredicate, Predicate},
+    CompressionLayer,
+};
 use tower_http::cors::CorsLayer;
 use tower_http::on_early_drop::{EarlyDropsAsFailures, OnEarlyDropLayer};
 use tower_http::trace::{
@@ -1622,6 +1626,22 @@ fn forwarded_proto_is_https(
     Ok(value.eq_ignore_ascii_case("https"))
 }
 
+fn should_compress_json_response(
+    _status: StatusCode,
+    _version: axum::http::Version,
+    headers: &HeaderMap,
+    _extensions: &axum::http::Extensions,
+) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .is_some_and(|media_type| {
+            media_type.eq_ignore_ascii_case("application/json") || media_type.ends_with("+json")
+        })
+}
+
 /// Apply shared transport layers (CORS, body limit, security headers, HSTS,
 /// request ID propagation, and tracing) and bind state.
 fn apply_shared_http_layers(
@@ -1632,6 +1652,13 @@ fn apply_shared_http_layers(
 ) -> Router<AppState> {
     router
         .layer(cors)
+        .layer(
+            CompressionLayer::new()
+                .br(true)
+                .gzip(true)
+                .zstd(true)
+                .compress_when(DefaultPredicate::default().and(should_compress_json_response)),
+        )
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .layer(axum_middleware::from_fn(middleware::request_id_middleware))
         .layer(axum_middleware::from_fn(

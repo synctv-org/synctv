@@ -24,6 +24,7 @@ pub struct SsrfSafeClientBuilder {
     user_agent: Option<String>,
     resolves: Vec<(String, std::net::SocketAddr)>,
     ssrf_guard: Option<SsrfGuard>,
+    preserve_content_encoding: bool,
 }
 
 impl Default for SsrfSafeClientBuilder {
@@ -47,6 +48,7 @@ impl SsrfSafeClientBuilder {
             user_agent: None,
             resolves: Vec::new(),
             ssrf_guard: None,
+            preserve_content_encoding: false,
         }
     }
 
@@ -131,12 +133,26 @@ impl SsrfSafeClientBuilder {
         self
     }
 
+    /// Preserve upstream response bytes and content-encoding headers.
+    ///
+    /// This is required for byte-transparent media proxying. Normal API
+    /// clients keep Reqwest's automatic response decompression enabled.
+    #[must_use]
+    pub const fn preserve_content_encoding(mut self) -> Self {
+        self.preserve_content_encoding = true;
+        self
+    }
+
     /// Build the [`reqwest::Client`].
     pub fn build(self) -> Result<reqwest::Client, reqwest::Error> {
         let mut builder = reqwest::Client::builder()
             .connect_timeout(self.connect_timeout)
             .pool_max_idle_per_host(self.pool_max_idle_per_host)
             .redirect(reqwest::redirect::Policy::none());
+
+        if self.preserve_content_encoding {
+            builder = builder.no_gzip().no_brotli().no_zstd();
+        }
 
         if let Some(resolver) = self.ssrf_guard.as_ref().and_then(SsrfGuard::dns_resolver) {
             builder = builder.dns_resolver(resolver);
@@ -211,5 +227,15 @@ mod tests {
             .read_timeout(Duration::from_secs(5))
             .disable_read_timeout();
         assert_eq!(builder.read_timeout, None);
+    }
+
+    #[test]
+    fn test_preserve_content_encoding_is_opt_in() {
+        assert!(!SsrfSafeClientBuilder::new().preserve_content_encoding);
+        assert!(
+            SsrfSafeClientBuilder::new()
+                .preserve_content_encoding()
+                .preserve_content_encoding
+        );
     }
 }

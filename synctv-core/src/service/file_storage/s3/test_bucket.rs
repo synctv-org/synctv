@@ -19,7 +19,7 @@ impl S3CompatibleFileStorageService {
             config: config.clone(),
             operator: s3_operator_from_config(config)?,
             repository: None,
-            http_client: s3_http_client(),
+            http_client: s3_http_client()?,
             #[cfg(test)]
             test_multipart_upload_id: None,
             #[cfg(test)]

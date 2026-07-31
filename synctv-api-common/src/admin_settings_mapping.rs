@@ -13,7 +13,7 @@ use synctv_proto::{admin as admin_proto, client as client_proto};
 
 use crate::impls::admin::settings::{
     ChatSettingsPatch, CorsSettingsPatch, EmailSettingsPatch, OAuth2SettingsPatch,
-    OptionalConfigPatch, PermissionSettingsPatch, PlaybackHistorySettingsPatch, ProxySettingsPatch,
+    OptionalConfigPatch, PermissionSettingsPatch, PlaybackHistorySettingsPatch,
     RoomAutoPlaySettingsPatch, RoomCreationSettingsPatch, RoomDefaultsSettingsPatch,
     RoomSettingsUpdatePatch, RtmpSettingsPatch, RuntimeSettingsPatch, ServerSettingsPatch,
     SmtpCredentialsInput, SmtpProxyInput, UserSettingsPatch, WebRtcSettingsPatch,
@@ -63,10 +63,6 @@ pub fn runtime_settings_patch_from_admin_proto(
             .oauth2
             .map(oauth2_settings_patch_from_admin_proto)
             .transpose()?,
-        proxy: settings.proxy.map(|patch| ProxySettingsPatch {
-            movie_proxy: patch.movie_proxy,
-            live_proxy: patch.live_proxy,
-        }),
         rtmp: settings.rtmp.map(|patch| RtmpSettingsPatch {
             custom_publish_host: patch.custom_publish_host.map(OptionalConfigPatch::Set),
             ts_disguised_as_png: patch.ts_disguised_as_png,
@@ -199,8 +195,6 @@ fn select_runtime_settings_patch(
             "oauth2.allowedRedirectUrls" | "oauth2.allowed_redirect_urls" => {
                 select_required!(oauth2, allowed_redirect_urls, path);
             }
-            "proxy.movie_proxy" => select_required!(proxy, movie_proxy, path),
-            "proxy.live_proxy" => select_required!(proxy, live_proxy, path),
             "rtmp.custom_publish_host" => select_optional!(rtmp, custom_publish_host),
             "rtmp.ts_disguised_as_png" => {
                 select_required!(rtmp, ts_disguised_as_png, path);

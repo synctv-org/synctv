@@ -126,10 +126,53 @@ message EmbyGenreItemsPlaylistSource {
   repeated string item_types = 2;
 }
 
-message RtmpMediaSourceConfig {}
+message RtmpMediaSourceConfig {
+  RtmpStreamMode mode = 1;
+}
+
+enum RtmpStreamMode {
+  RTMP_STREAM_MODE_UNSPECIFIED = 0;
+  RTMP_STREAM_MODE_DEFAULT = 1;
+  RTMP_STREAM_MODE_VIDEO_ONLY = 2;
+  RTMP_STREAM_MODE_AUDIO_ONLY = 3;
+}
+
+enum RtspTransport {
+  RTSP_TRANSPORT_UNSPECIFIED = 0;
+  RTSP_TRANSPORT_TCP = 1;
+  RTSP_TRANSPORT_UDP = 2;
+}
+
+message RtspTrackSelection {
+  oneof mode {
+    bool first_compatible = 1;
+    uint32 index = 2;
+    bool disabled = 3;
+  }
+}
+
+message RtmpPullSourceConfig {
+  string url = 1;
+  RtmpStreamMode mode = 2;
+}
+
+message RtspPullSourceConfig {
+  string url = 1;
+  RtspTransport transport = 2;
+  RtspTrackSelection video_track = 3;
+  RtspTrackSelection audio_track = 4;
+}
+
+message HttpFlvPullSourceConfig {
+  string url = 1;
+}
 
 message LiveProxyMediaSourceConfig {
-  string url = 1;
+  oneof source {
+    RtmpPullSourceConfig rtmp = 1;
+    RtspPullSourceConfig rtsp = 2;
+    HttpFlvPullSourceConfig http_flv = 3;
+  }
 }
 
 message BilibiliVideoSourceConfig {

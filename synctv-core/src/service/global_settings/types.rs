@@ -616,7 +616,6 @@ pub struct RuntimeSettings {
     pub room_creation: RoomCreationRuntimeSettings,
     pub user: UserRuntimeSettings,
     pub oauth2: OAuth2RuntimeSettings,
-    pub proxy: ProxyRuntimeSettings,
     pub rtmp: RtmpRuntimeSettings,
     pub email: EmailRuntimeSettings,
     pub webrtc: WebRtcRuntimeSettings,
@@ -642,7 +641,6 @@ pub struct RuntimeSettingsUpdateMask {
     pub room_creation: RoomCreationRuntimeSettingsUpdateMask,
     pub user: UserRuntimeSettingsUpdateMask,
     pub oauth2: OAuth2RuntimeSettingsUpdateMask,
-    pub proxy: ProxyRuntimeSettingsUpdateMask,
     pub rtmp: RtmpRuntimeSettingsUpdateMask,
     pub email: EmailRuntimeSettingsUpdateMask,
     pub webrtc: WebRtcRuntimeSettingsUpdateMask,
@@ -661,7 +659,6 @@ impl RuntimeSettingsUpdateMask {
             room_creation: RoomCreationRuntimeSettingsUpdateMask::all(),
             user: UserRuntimeSettingsUpdateMask::all(),
             oauth2: OAuth2RuntimeSettingsUpdateMask::all(),
-            proxy: ProxyRuntimeSettingsUpdateMask::all(),
             rtmp: RtmpRuntimeSettingsUpdateMask::all(),
             email: EmailRuntimeSettingsUpdateMask::all(),
             webrtc: WebRtcRuntimeSettingsUpdateMask::all(),
@@ -679,7 +676,6 @@ impl RuntimeSettingsUpdateMask {
             && self.room_creation.is_empty()
             && self.user.is_empty()
             && self.oauth2.is_empty()
-            && self.proxy.is_empty()
             && self.rtmp.is_empty()
             && self.email.is_empty()
             && self.webrtc.is_empty()
@@ -835,27 +831,6 @@ impl OAuth2RuntimeSettingsUpdateMask {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         !self.providers && !self.allowed_redirect_urls
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ProxyRuntimeSettingsUpdateMask {
-    pub movie_proxy: bool,
-    pub live_proxy: bool,
-}
-
-impl ProxyRuntimeSettingsUpdateMask {
-    #[must_use]
-    pub const fn all() -> Self {
-        Self {
-            movie_proxy: true,
-            live_proxy: true,
-        }
-    }
-
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        !self.movie_proxy && !self.live_proxy
     }
 }
 
@@ -1056,12 +1031,6 @@ pub struct OAuth2RuntimeSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProxyRuntimeSettings {
-    pub movie_proxy: bool,
-    pub live_proxy: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RtmpRuntimeSettings {
     pub custom_publish_host: Option<String>,
     pub ts_disguised_as_png: bool,
@@ -1125,7 +1094,6 @@ fn validate_all_runtime_settings(
     validate_oauth2_allowed_redirect_urls(&OAuth2AllowedRedirectUrls(
         settings.oauth2.allowed_redirect_urls.clone(),
     ))?;
-    validate_proxy_settings(&settings.proxy);
     validate_rtmp_settings(&settings.rtmp)?;
     validate_email_settings(&settings.email)?;
     validate_webrtc_settings(&settings.webrtc)?;
@@ -1225,11 +1193,6 @@ fn validate_user_settings(
     let _ = settings.webauthn_signup_need_review;
     let _ = settings.enable_guest;
     Ok(())
-}
-
-fn validate_proxy_settings(settings: &ProxyRuntimeSettings) {
-    let _ = settings.movie_proxy;
-    let _ = settings.live_proxy;
 }
 
 fn validate_rtmp_settings(settings: &RtmpRuntimeSettings) -> crate::Result<()> {
@@ -1400,8 +1363,6 @@ pub struct PublicSettings {
     pub enable_guest: bool,
     pub enable_email: bool,
     pub enable_webauthn: bool,
-    pub movie_proxy: bool,
-    pub live_proxy: bool,
     pub ts_disguised_as_png: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_publish_host: Option<String>,
@@ -1430,8 +1391,6 @@ impl PublicSettings {
             enable_guest: true,
             enable_email: false,
             enable_webauthn: false,
-            movie_proxy: true,
-            live_proxy: true,
             ts_disguised_as_png: false,
             custom_publish_host: None,
             email_whitelist_enabled: false,

@@ -50,7 +50,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         release) target_profile_dir=release ;; \
         *) echo "Unsupported SYNCTV_CARGO_BUILD_PROFILE: $SYNCTV_CARGO_BUILD_PROFILE" >&2; exit 1 ;; \
     esac; \
-    build_flags="--profile $SYNCTV_CARGO_BUILD_PROFILE --bin synctv"; \
+    build_flags="--profile $SYNCTV_CARGO_BUILD_PROFILE"; \
+    build_flags="$build_flags --config 'build.rustflags=[\"-Clink-arg=-Wl,-z,pack-relative-relocs\"]'"; \
     if [ -n "$SYNCTV_CARGO_BUILD_ARGS" ]; then \
         build_flags="$build_flags $SYNCTV_CARGO_BUILD_ARGS"; \
     fi; \
@@ -60,8 +61,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     if [ -n "$SYNCTV_BUILD_FEATURES" ]; then \
         build_flags="$build_flags --features $SYNCTV_BUILD_FEATURES"; \
     fi; \
-    cargo +nightly build $build_flags && \
-    cp "/app/target/$target_profile_dir/synctv" /tmp/synctv
+    cargo +nightly build $build_flags --bin synctv && \
+    cp "target/$target_profile_dir/synctv" /synctv
 
 # Stage 2: Runtime image
 FROM debian:trixie-slim
@@ -92,7 +93,7 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder \
     --chown=synctv:synctv \
-    /tmp/synctv /app/synctv
+    /synctv /app/synctv
 
 # Execute the binary in the final image so ABI/runtime dependency mismatches
 # fail the image build for every target platform.

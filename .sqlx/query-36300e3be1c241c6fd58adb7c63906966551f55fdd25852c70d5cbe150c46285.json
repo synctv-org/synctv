@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO playback_source_metadata (\n                room_id,\n                media_id,\n                playlist_id,\n                target_hash,\n                is_live,\n                duration_status\n            )\n            VALUES ($1, $2, $3, $4, FALSE, $5)\n            ON CONFLICT (\n                room_id,\n                COALESCE(media_id, 0),\n                COALESCE(playlist_id, 0),\n                target_hash\n            )\n            DO UPDATE SET is_live = COALESCE(playback_source_metadata.is_live, FALSE),\n                          duration_status = CASE\n                              WHEN playback_source_metadata.is_live IS NULL\n                              THEN EXCLUDED.duration_status\n                              ELSE playback_source_metadata.duration_status\n                          END,\n                          version = CASE\n                              WHEN playback_source_metadata.is_live IS NULL\n                              THEN playback_source_metadata.version + 1\n                              ELSE playback_source_metadata.version\n                          END\n            RETURNING room_id AS \"room_id!: RoomId\",\n                      media_id AS \"media_id?: MediaId\",\n                      playlist_id AS \"playlist_id?: PlaylistId\",\n                      target_hash,\n                      media_name,\n                      playlist_name,\n                      is_live,\n                      duration_seconds,\n                      duration_status AS \"duration_status!: PlaybackDurationStatus\",\n                      duration_source AS \"duration_source?: PlaybackDurationSource\",\n                      duration_error,\n                      next_retry_at,\n                      created_at,\n                      updated_at,\n                      version\n            ",
+  "query": "\n            SELECT room_id AS \"room_id!: RoomId\",\n                   media_id AS \"media_id?: MediaId\",\n                   playlist_id AS \"playlist_id?: PlaylistId\",\n                   target_hash,\n                   media_name,\n                   playlist_name,\n                   playback_kind AS \"playback_kind!: PlaybackKind\",\n                   duration_seconds,\n                   duration_status AS \"duration_status!: PlaybackDurationStatus\",\n                   duration_source AS \"duration_source?: PlaybackDurationSource\",\n                   duration_error,\n                   next_retry_at,\n                   created_at,\n                   updated_at,\n                   version\n            FROM playback_source_metadata\n            WHERE room_id = $1\n              AND media_id IS NOT DISTINCT FROM $2\n              AND playlist_id IS NOT DISTINCT FROM $3\n              AND target_hash = $4\n            ",
   "describe": {
     "columns": [
       {
@@ -71,12 +71,12 @@
       },
       {
         "ordinal": 6,
-        "name": "is_live",
-        "type_info": "Bool",
+        "name": "playback_kind!: PlaybackKind",
+        "type_info": "Int2",
         "origin": {
           "Table": {
             "table": "playback_source_metadata",
-            "name": "is_live"
+            "name": "playback_kind"
           }
         }
       },
@@ -174,8 +174,7 @@
         "Int8",
         "Int8",
         "Int8",
-        "Text",
-        "Int2"
+        "Text"
       ]
     },
     "nullable": [
@@ -185,7 +184,7 @@
       false,
       true,
       true,
-      true,
+      false,
       true,
       false,
       true,
@@ -196,5 +195,5 @@
       false
     ]
   },
-  "hash": "bdc37ca790d8514b6f8d71ec66d55da590005631032e817e9c26ee86a08b1806"
+  "hash": "36300e3be1c241c6fd58adb7c63906966551f55fdd25852c70d5cbe150c46285"
 }

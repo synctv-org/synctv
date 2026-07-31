@@ -431,3 +431,30 @@ fn variant_object_key(original_object_key: &str, variant_key: &str) -> String {
         None => format!("{original}.{variant_key}.jpg"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use image::{
+        codecs::avif::AvifEncoder, ColorType, GenericImageView, ImageEncoder, ImageReader,
+    };
+
+    #[test]
+    fn avif_uploads_are_decodable_for_variant_processing() {
+        let pixels = [
+            0xff, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+        ];
+        let mut encoded = Vec::new();
+        AvifEncoder::new(&mut encoded)
+            .write_image(&pixels, 2, 2, ColorType::Rgb8.into())
+            .expect("AVIF encoder should accept the fixture");
+
+        let image = ImageReader::new(Cursor::new(encoded))
+            .with_guessed_format()
+            .expect("AVIF format should be detected")
+            .decode()
+            .expect("AVIF uploads should be decodable");
+        assert_eq!(image.dimensions(), (2, 2));
+    }
+}

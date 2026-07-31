@@ -619,9 +619,9 @@ async fn test_settings_viewed_audit_log() {
                     groups: vec![
                         "general".to_string(),
                         "security".to_string(),
-                        "proxy".to_string(),
                         "email".to_string(),
                         "p2p".to_string(),
+                        "rtmp".to_string(),
                     ],
                     ..Default::default()
                 },

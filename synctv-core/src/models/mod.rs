@@ -209,7 +209,8 @@ pub use permission::{
 pub use playback::{
     hash_empty_playback_target, try_hash_playback_target, ClaimedPlaybackDurationProbe,
     PlaybackDurationSource, PlaybackDurationStatus, PlaybackHistoryEntry, PlaybackHistoryPage,
-    PlaybackSourceIdentity, PlaybackSourceMetadata, RoomPlaybackProgress, RoomPlaybackState,
+    PlaybackKind, PlaybackSourceIdentity, PlaybackSourceMetadata, RoomPlaybackProgress,
+    RoomPlaybackState,
 };
 pub use playback_session::{
     EmbyPlaybackSession, FnosPlaybackSession, ProviderPlaybackSession,
@@ -259,17 +260,17 @@ pub use source_config::{
     DirectUrlDanmakuSourceConfig, DirectUrlMediaResourceConfig, DirectUrlMediaSourceConfig,
     DirectUrlSubtitleSourceConfig, DouyinMediaSourceConfig, DouyinPlaylistSourceConfig,
     DouyuMediaSourceConfig, EmbyMediaSourceConfig, EmbyPlaylistSource, EmbyPlaylistSourceConfig,
-    FnosMediaSource, FnosMediaSourceConfig, FnosPlaylistSource, FnosPlaylistSourceConfig,
-    HuyaMediaSourceConfig, LiveProxyMediaSourceConfig, MediaSourceConfig,
+    ExternalLiveSourceConfig, FnosMediaSource, FnosMediaSourceConfig, FnosPlaylistSource,
+    FnosPlaylistSourceConfig, HuyaMediaSourceConfig, LiveProxyMediaSourceConfig, MediaSourceConfig,
     NextcloudMediaSourceConfig, NextcloudPlaylistSource, NextcloudPlaylistSourceConfig,
     PlaylistSourceConfig, QnapMediaSourceConfig, QnapPlaylistSourceConfig, RtmpMediaSourceConfig,
-    SeafileMediaSourceConfig, SeafilePlaylistSource, SeafilePlaylistSourceConfig,
-    SynologyLibraryItemKind, SynologyMediaSource, SynologyMediaSourceConfig,
-    SynologyPlaylistSource, SynologyPlaylistSourceConfig, TikTokMediaSourceConfig,
-    TikTokPlaylistSourceConfig, TrueNasMediaSourceConfig, TrueNasPlaylistSource,
-    TrueNasPlaylistSourceConfig, TwitchMediaSourceConfig, TwitchPlaylistContent,
-    TwitchPlaylistSourceConfig, YoutubeChannelContent, YoutubeMediaSourceConfig,
-    YoutubePlaylistSourceConfig,
+    RtmpStreamMode, RtspTrackSelection, RtspTransport, SeafileMediaSourceConfig,
+    SeafilePlaylistSource, SeafilePlaylistSourceConfig, SynologyLibraryItemKind,
+    SynologyMediaSource, SynologyMediaSourceConfig, SynologyPlaylistSource,
+    SynologyPlaylistSourceConfig, TikTokMediaSourceConfig, TikTokPlaylistSourceConfig,
+    TrueNasMediaSourceConfig, TrueNasPlaylistSource, TrueNasPlaylistSourceConfig,
+    TwitchMediaSourceConfig, TwitchPlaylistContent, TwitchPlaylistSourceConfig,
+    YoutubeChannelContent, YoutubeMediaSourceConfig, YoutubePlaylistSourceConfig,
 };
 pub use user::{
     CreateUserRequest, SignupMethod, UpdateUserRequest, User, UserListQuery, UserListSortBy,

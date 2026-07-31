@@ -1,6 +1,6 @@
 ---
 title: 直播与 HLS/FLV
-description: RTMP、HLS、HTTP-FLV、拉流重试、GOP 缓存和直播存储配置。
+description: RTMP、RTSP、HLS、HTTP-FLV、拉流重试、GOP 缓存和直播存储配置。
 ---
 
 import Diagram from '../../../components/Diagram.astro';
@@ -10,7 +10,7 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 ## 直播配置控制什么？
 
-`livestream` 控制 RTMP 推流/拉流、HLS 分片、HTTP-FLV 连接、直播内存缓存和直播文件存储。
+`livestream` 控制 RTMP 推流、RTMP/RTSP/HTTP-FLV 外部拉流、HLS 分片、HTTP-FLV 连接、直播内存缓存和直播文件存储。
 
 如果你只使用点播媒体 Provider，这一页大部分配置可以保持默认。
 
@@ -26,6 +26,7 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 />
 
 - **RTMP ingest**： 推流端通过 RTMP 连接进入，认证阶段会把 publisher 注册到本节点或共享 registry。
+- **RTSP ingest**： 外部 RTSP 源通过 DESCRIBE/SETUP/PLAY 拉取，经过 RTP 解包后进入同一个 StreamHub。
 - **StreamHub**： 直播包在进程内分发给 FLV session、HLS remuxer 和内部拉流/代理逻辑。
 - **HTTP-FLV**： 适合低延迟观看。客户端保持长连接，服务端持续写 FLV chunk，并通过写超时保护慢客户端。
 - **HLS**： 适合通用播放器和 CDN/对象存储形态。延迟更高，但对客户端兼容性和多副本扩展更友好。
@@ -38,8 +39,67 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 | HLS | 播放器兼容性强，天然按 playlist/segment 拉取，可配共享存储 | 延迟高于 FLV，需要管理分片存储 | 移动端、通用播放器、多副本、对象存储 |
 
 <Aside type="note">
-RTMP 在当前设计中主要是推流入口，不作为播放器拉流协议。播放端优先使用 HTTP-FLV 或 HLS。
+RTMP 是推流入口，播放端使用 SyncTV 生成的 HLS 或 HTTP-FLV 链接。两种输出都跟随当前直播边缘，房间同步以实时播放状态为准。
 </Aside>
+
+## RTSP 外部源
+
+RTSP 外部源使用显式协议配置。每个媒体条目对应一个独立拉流会话，多个媒体条目可以并行拉取多个摄像头或流媒体服务器；每个节点默认最多运行 100 个外部流。
+
+```json
+{
+  "provider": "liveProxy",
+  "source": {
+    "protocol": "rtsp",
+    "url": "rtsp://camera.example/live",
+    "transport": "tcp",
+    "videoTrack": { "mode": "firstCompatible" },
+    "audioTrack": { "mode": "firstCompatible" }
+  }
+}
+```
+
+可用设置：
+
+| 字段 | 值 | 含义 |
+| --- | --- | --- |
+| `transport` | `tcp` / `udp` | TCP 使用 interleaved RTP；UDP 适合可控局域网 |
+| `videoTrack` | `firstCompatible` / `index` / `disabled` | 选择 H.264/H.265 视频轨道 |
+| `audioTrack` | `firstCompatible` / `index` / `disabled` | 选择 AAC 音频轨道 |
+
+指定 SDP 中第 2 个视频轨道并关闭音频：
+
+```json
+{
+  "videoTrack": { "mode": "index", "index": 1 },
+  "audioTrack": { "mode": "disabled" }
+}
+```
+
+Basic 和 Digest 认证可使用 RTSP URL userinfo，例如 `rtsp://user:password@camera.example/live`。日志会移除 userinfo、query 和 fragment；部署侧应通过受控配置入口管理包含凭据的 source config。
+
+RTSP 输入支持 H.264、H.265 和 AAC。SyncTV 将它们转换为 AVC/HEVC/AAC FLV tag，HTTP-FLV 与 HLS 沿用现有直播交付、集群注册、跨节点 relay、空闲清理和断线重试链路。
+
+## 外部 RTMP 源
+
+外部 RTMP 源通过 `mode` 控制转发的媒体类型。RTMP 消息本身按音频和视频分类，mode 负责过滤消息类型，不涉及 RTSP 的轨道编号选择。
+
+```json
+{
+  "provider": "liveProxy",
+  "source": {
+    "protocol": "rtmp",
+    "url": "rtmp://origin.example/live/stream",
+    "mode": "default"
+  }
+}
+```
+
+`mode` 可取 `default`（音频和视频）、`videoOnly`（只转发视频）或 `audioOnly`（只转发音频）。外部 RTMP 拉流在拉流会话中过滤，SyncTV 管理的 RTMP 推流在认证后的 server session 中过滤，HTTP-FLV 和 HLS 会得到同一份筛选后的 Live StreamHub 数据。
+
+RTSP 的 `videoTrack` 与 `audioTrack` 至少需要启用一项。双 disabled 配置会在添加媒体时被拒绝；具体轨道编号与编码兼容性在 RTSP SDP 建立连接时继续校验。
+
+RTSP、外部 RTMP 与内部 RTMP 推流都进入同一个 Live StreamHub。SyncTV 为它们生成 HLS 和 HTTP-FLV；HLS playlist 使用短滑动窗口，TS 分片随窗口淘汰，任意时间跳转与持久录制属于当前产品范围之外。
 
 ## HLS backend 的架构选择
 
@@ -100,6 +160,17 @@ OBS 推流地址通常类似：
 ```text
 rtmp://your-domain:1935/live/<stream-key>
 ```
+
+RTMP provider 的媒体 source config 也支持相同的 `mode` 字段：
+
+```json
+{
+  "provider": "rtmp",
+  "mode": "audioOnly"
+}
+```
+
+该配置决定进入 StreamHub 的音视频类型，播放端继续使用 SyncTV 生成的 HLS 或 HTTP-FLV 地址。
 
 如果服务器已经有其他 RTMP 服务占用 1935，可以改成别的端口。
 

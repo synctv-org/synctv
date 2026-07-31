@@ -1,6 +1,7 @@
 use super::super::prelude::*;
 use super::{
-    ProviderBoundCredentialArgs, ProviderServiceInstanceArgs, ProviderServiceRemoteActorArgs,
+    ProviderBoundCredentialArgs, ProviderCredentialCommandArgs, ProviderServiceInstanceArgs,
+    ProviderServiceRemoteActorArgs,
 };
 
 #[derive(Debug, Args)]
@@ -20,7 +21,7 @@ pub enum ProviderAlistSubcommand {
     /// Show the current Alist account info for a saved bind
     Me(ProviderAlistGetMeArgs),
     /// Remove a saved Alist bind
-    Logout(ProviderAlistLogoutArgs),
+    Logout(ProviderCredentialCommandArgs),
     /// List saved Alist binds for a user
     Binds(ProviderAlistBindsArgs),
 }
@@ -38,7 +39,7 @@ pub struct ProviderAlistLoginArgs {
 
     /// Alist server base URL
     #[arg(long)]
-    pub host: String,
+    pub server_endpoint: String,
 
     /// Alist account username used for the remote login
     #[arg(long = "account-username", value_name = "ACCOUNT_USERNAME")]
@@ -123,15 +124,6 @@ pub struct ProviderAlistSearchArgs {
 
 #[derive(Debug, Args)]
 pub struct ProviderAlistGetMeArgs {
-    #[command(flatten)]
-    pub access: ProviderServiceRemoteActorArgs,
-
-    #[command(flatten)]
-    pub bind: ProviderBoundCredentialArgs,
-}
-
-#[derive(Debug, Args)]
-pub struct ProviderAlistLogoutArgs {
     #[command(flatten)]
     pub access: ProviderServiceRemoteActorArgs,
 

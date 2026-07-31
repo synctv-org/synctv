@@ -1,6 +1,6 @@
 use super::super::prelude::*;
 use super::{
-    ProviderBoundCredentialArgs, ProviderServiceInstanceArgs, ProviderServiceRemoteActorArgs,
+    ProviderCredentialCommandArgs, ProviderServiceInstanceArgs, ProviderServiceRemoteActorArgs,
 };
 
 #[derive(Debug, Args)]
@@ -16,7 +16,7 @@ pub enum ProviderTikTokSubcommand {
     /// List saved TikTok binds for an app user
     Binds(ProviderTikTokBindsArgs),
     /// Remove a saved TikTok bind
-    Unbind(ProviderTikTokUnbindArgs),
+    Unbind(ProviderCredentialCommandArgs),
     /// Resolve a TikTok video, live room, or short link
     Resolve(ProviderTikTokResolveArgs),
     /// Resolve a TikTok profile name to its stable secUid
@@ -58,15 +58,6 @@ pub struct ProviderTikTokBindsArgs {
 
     #[command(flatten)]
     pub instance: ProviderServiceInstanceArgs,
-}
-
-#[derive(Debug, Args)]
-pub struct ProviderTikTokUnbindArgs {
-    #[command(flatten)]
-    pub access: ProviderServiceRemoteActorArgs,
-
-    #[command(flatten)]
-    pub bind: ProviderBoundCredentialArgs,
 }
 
 #[derive(Debug, Args)]

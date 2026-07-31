@@ -1,13 +1,13 @@
 //! `PostgreSQL` test container helpers
 
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use chrono::{Datelike, NaiveDate};
+use sha2::{Digest as _, Sha256};
 use sqlx::postgres::{PgConnectOptions, PgConnection, PgPoolOptions, PgSslMode};
 use sqlx::Connection as _;
 use sqlx::PgPool;
@@ -21,8 +21,9 @@ use tokio::sync::OnceCell;
 use url::Url;
 
 use crate::docker::{
-    acquire_run_lock, candidate_endpoints_for_host, cleanup_orphaned_run_lock_files,
-    cleanup_orphaned_testcontainers, current_test_run_id as docker_current_test_run_id,
+    acquire_run_lock, active_run_ids, candidate_endpoints_for_host,
+    cleanup_orphaned_run_lock_files, cleanup_orphaned_testcontainers,
+    current_test_run_id as docker_current_test_run_id,
     current_test_run_id_from as docker_current_test_run_id_from,
     docker_named_container_belongs_to_current_run, docker_port_candidates, ensure_docker_image,
     host_address_family, run_has_active_lock, sanitize_container_name,
@@ -52,10 +53,15 @@ const DEFAULT_TEST_POOL_MAX_CONNECTIONS: u32 = 8;
 const MIN_TEST_POOL_MAX_CONNECTIONS: u32 = 1;
 const TEST_POOL_MAX_CONNECTIONS_ENV: &str = "SYNCTV_TEST_PG_POOL_MAX_CONNECTIONS";
 const ADMIN_DATABASE: &str = "postgres";
+const TEST_DATABASE_DDL_LOCK_KEY: i64 = 0x5359_4e43_5456_4444;
 const TEMPLATE_DATABASE_PREFIX: &str = "synctv_template";
 const TEST_DATABASE_PREFIX: &str = "synctv_test";
 const MAX_DATABASE_IDENTIFIER_LEN: usize = 63;
 const DATABASE_NAME_RANDOM_LEN: usize = 10;
+const TEST_DATABASE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
+const TEST_DATABASE_CLEANUP_RETRY_INTERVAL: Duration = Duration::from_millis(25);
+const POSTGRES_RUN_READY_MARKER_PREFIX: &str = "synctv-postgres-ready-";
+const POSTGRES_RUN_READY_MARKER_SUFFIX: &str = ".marker";
 const POSTGRES_EPHEMERAL_TUNING_ARGS: &[&str] = &[
     "-c",
     "fsync=off",
@@ -68,9 +74,11 @@ const POSTGRES_EPHEMERAL_TUNING_ARGS: &[&str] = &[
     "-c",
     "max_wal_senders=0",
     "-c",
-    "checkpoint_timeout=1h",
+    "checkpoint_timeout=30s",
     "-c",
-    "max_wal_size=8GB",
+    "max_wal_size=256MB",
+    "-c",
+    "min_wal_size=80MB",
     "-c",
     "autovacuum=off",
     "-c",
@@ -116,7 +124,6 @@ fn postgres_ephemeral_tuning_args() -> impl Iterator<Item = &'static str> {
 }
 
 static SHARED_POSTGRES: OnceCell<Arc<SharedPostgresServer>> = OnceCell::const_new();
-static TEST_DATABASE_COUNTER: AtomicU64 = AtomicU64::new(1);
 static TEMPLATE_CLONE_SEMAPHORE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
 static EMBEDDED_MIGRATIONS_FINGERPRINT: LazyLock<String> =
     LazyLock::new(embedded_migrations_fingerprint);
@@ -136,9 +143,10 @@ struct SharedPostgresServer {
     // on one of those, its IO driver dies when the test finishes, causing
     // subsequent tests to see "A Tokio 1.x context was found, but it is
     // being shutdown."  Keeping a dedicated runtime alive prevents this.
-    pool_runtime: tokio::runtime::Runtime,
+    _pool_runtime: tokio::runtime::Runtime,
     host: String,
     port: u16,
+    #[allow(dead_code)]
     admin_pool: PgPool,
     template_database: String,
     _run_lock: ProcessLock,
@@ -146,28 +154,29 @@ struct SharedPostgresServer {
 
 /// Database lease backed by a shared PostgreSQL test container.
 ///
-/// The underlying container is started once per test process and kept alive for
-/// the duration of that process. Each lease gets its own isolated database
-/// cloned from a pre-migrated template database.
+/// The lease prevents concurrent cleanup from targeting a live cloned database.
+/// Cleanup waits for application connections to close and uses PostgreSQL's DDL
+/// lock before dropping the database.
 pub struct TestContainer {
     shared: Arc<SharedPostgresServer>,
     database_name: String,
+    _database_lease: ProcessLock,
     cleaned_up: bool,
 }
 
 /// Isolated PostgreSQL test database with an open pool.
 ///
-/// The `container` field owns cleanup for the leased database. Keep the
-/// fixture alive for at least as long as code uses `pool`.
+/// Keep the fixture alive for at least as long as code uses `pool`.
 pub struct TestDatabase {
-    pub container: TestContainer,
     pub pool: PgPool,
+    pub container: TestContainer,
 }
 
 impl TestDatabase {
     pub async fn cleanup(self) {
-        self.pool.close().await;
-        self.container.cleanup().await;
+        let Self { pool, container } = self;
+        pool.close().await;
+        container.cleanup().await;
     }
 }
 
@@ -181,31 +190,18 @@ impl SharedPostgresServer {
             .database(database_name)
             .ssl_mode(PgSslMode::Disable)
     }
-
-    async fn drop_database(&self, database_name: &str) {
-        if database_name == self.template_database || database_name == ADMIN_DATABASE {
-            return;
-        }
-
-        let sql = format!(
-            "DROP DATABASE IF EXISTS {} WITH (FORCE)",
-            quote_identifier(database_name)
-        );
-
-        if let Err(err) = sqlx::query(trusted_dynamic_sql(sql))
-            .execute(&self.admin_pool)
-            .await
-        {
-            eprintln!("warning: failed to drop postgres test database {database_name}: {err}");
-        }
-    }
 }
 
 impl TestContainer {
-    const fn new(shared: Arc<SharedPostgresServer>, database_name: String) -> Self {
+    const fn new(
+        shared: Arc<SharedPostgresServer>,
+        database_name: String,
+        database_lease: ProcessLock,
+    ) -> Self {
         Self {
             shared,
             database_name,
+            _database_lease: database_lease,
             cleaned_up: false,
         }
     }
@@ -216,9 +212,12 @@ impl TestContainer {
     }
 
     pub async fn cleanup(mut self) {
-        if !self.cleaned_up {
-            self.shared.drop_database(&self.database_name).await;
-            self.cleaned_up = true;
+        self.cleaned_up = true;
+        if let Err(error) = drop_test_database_when_idle(&self.shared, &self.database_name).await {
+            eprintln!(
+                "warning: test database {} cleanup deferred: {error}",
+                self.database_name
+            );
         }
     }
 
@@ -229,18 +228,18 @@ impl TestContainer {
             return;
         }
 
-        let database = quote_identifier(&self.database_name);
-        let drop_sql = format!("DROP DATABASE IF EXISTS {database} WITH (FORCE)");
-        sqlx::query(trusted_dynamic_sql(drop_sql))
-            .execute(&self.shared.admin_pool)
+        let mut connection =
+            PgConnection::connect_with(&self.shared.connect_options(&self.database_name))
+                .await
+                .expect("direct test database connection for empty recreation should succeed");
+        sqlx::query("DROP SCHEMA public CASCADE")
+            .execute(&mut connection)
             .await
-            .expect("test database should be dropped before empty recreation");
-
-        let create_sql = format!("CREATE DATABASE {database}");
-        sqlx::query(trusted_dynamic_sql(create_sql))
-            .execute(&self.shared.admin_pool)
+            .expect("test database public schema should be dropped before empty recreation");
+        sqlx::query("CREATE SCHEMA public")
+            .execute(&mut connection)
             .await
-            .expect("test database should be recreated empty");
+            .expect("test database public schema should be recreated empty");
     }
 
     pub fn host(&self) -> String {
@@ -265,7 +264,33 @@ impl Drop for TestContainer {
         self.cleaned_up = true;
         let shared = Arc::clone(&self.shared);
         let database_name = self.database_name.clone();
-        spawn_best_effort_database_cleanup(shared, database_name);
+
+        // Test functions frequently rely on implicit fixture teardown.  Run
+        // the asynchronous PostgreSQL cleanup on an independent runtime and
+        // wait for it here, after the associated pool has been dropped.
+        let cleanup_result = std::thread::scope(|scope| {
+            scope
+                .spawn(move || {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("test database cleanup runtime should build")
+                        .block_on(drop_test_database_when_idle(&shared, &database_name))
+                })
+                .join()
+        });
+
+        match cleanup_result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => eprintln!(
+                "warning: test database {} cleanup deferred: {error}",
+                self.database_name
+            ),
+            Err(_) => eprintln!(
+                "warning: test database {} cleanup thread panicked; it will be reclaimed by the next test run",
+                self.database_name
+            ),
+        }
     }
 }
 
@@ -708,6 +733,49 @@ fn postgres_data_volume_name(container_name: &str) -> String {
     format!("{container_name}-data")
 }
 
+fn postgres_run_ready_marker_path(run_id: &str) -> std::path::PathBuf {
+    crate::test_temp_dir().join(format!(
+        "{POSTGRES_RUN_READY_MARKER_PREFIX}{run_id}{POSTGRES_RUN_READY_MARKER_SUFFIX}"
+    ))
+}
+
+fn postgres_run_ready_marker_exists(run_id: &str) -> bool {
+    postgres_run_ready_marker_path(run_id).is_file()
+}
+
+fn mark_postgres_run_ready(run_id: &str) {
+    std::fs::write(postgres_run_ready_marker_path(run_id), [])
+        .unwrap_or_else(|error| panic!("failed to mark postgres test run {run_id} ready: {error}"));
+}
+
+fn cleanup_orphaned_postgres_run_ready_markers(current_run_id: &str) {
+    let Ok(entries) = std::fs::read_dir(crate::test_temp_dir()) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(run_id) = file_name
+            .strip_prefix(POSTGRES_RUN_READY_MARKER_PREFIX)
+            .and_then(|value| value.strip_suffix(POSTGRES_RUN_READY_MARKER_SUFFIX))
+        else {
+            continue;
+        };
+        if run_id == current_run_id || run_has_active_lock("postgres", run_id) {
+            continue;
+        }
+        if let Err(error) = std::fs::remove_file(&path) {
+            eprintln!(
+                "warning: failed to remove orphaned postgres ready marker {}: {error}",
+                path.display()
+            );
+        }
+    }
+}
+
 fn run_id_from_postgres_data_volume(volume_name: &str) -> Option<String> {
     volume_name
         .strip_prefix("synctv-pg-shared-")?
@@ -761,15 +829,12 @@ fn build_test_database_name(requested_db_name: &str, label: &str) -> String {
     let base = sanitize_database_component(requested_db_name);
     let label = sanitize_database_component(label);
     let test_label = sanitize_database_component(&current_test_label());
-    let counter = TEST_DATABASE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let suffix = format!(
-        "{}_{}",
-        counter,
-        synctv_common::snanoid!(DATABASE_NAME_RANDOM_LEN).to_lowercase()
-    );
+    let run_owner = test_database_run_owner(&current_test_run_id());
+    let suffix = synctv_common::snanoid!(DATABASE_NAME_RANDOM_LEN).to_lowercase();
     let prefix = format!(
-        "{}_{}_{}_",
+        "{}_{}_{}_{}_",
         sanitize_database_component(TEST_DATABASE_PREFIX),
+        run_owner,
         base,
         label
     );
@@ -787,6 +852,35 @@ fn build_test_database_name(requested_db_name: &str, label: &str) -> String {
     }
 
     format!("{stem}_{suffix}")
+}
+
+fn test_database_lease_name(database_name: &str) -> String {
+    format!("postgres-database-{database_name}")
+}
+
+fn test_database_run_owner(run_id: &str) -> String {
+    let digest = Sha256::digest(run_id.as_bytes());
+    hex::encode(digest).chars().take(12).collect()
+}
+
+fn test_database_owner(database_name: &str) -> Option<&str> {
+    database_name
+        .strip_prefix(&format!("{TEST_DATABASE_PREFIX}_"))?
+        .split_once('_')
+        .map(|(owner, _)| owner)
+}
+
+fn belongs_to_active_foreign_test_run(database_name: &str) -> bool {
+    let Some(owner) = test_database_owner(database_name) else {
+        // Databases without an owner namespace predate the isolation protocol.
+        // Retaining them is safer than inferring ownership from a display label.
+        return true;
+    };
+    let current_owner = test_database_run_owner(&current_test_run_id());
+    owner != current_owner
+        && active_run_ids("postgres")
+            .iter()
+            .any(|run_id| test_database_run_owner(run_id) == owner)
 }
 
 #[cfg(test)]
@@ -894,25 +988,156 @@ async fn recreate_template_database(
         .expect("template database should be marked reusable");
 }
 
-async fn init_shared_postgres_server() -> SharedPostgresServer {
-    let run_id = current_test_run_id();
-    let run_lock = acquire_run_lock("postgres", &run_id);
-    cleanup_orphaned_testcontainers("synctv-pg-", "postgres", &run_id);
-    cleanup_orphaned_postgres_data_volumes(&run_id);
-    cleanup_orphaned_run_lock_files("synctv-postgres-run-");
-    cleanup_orphaned_run_lock_files("synctv-postgres-startup-");
+async fn test_database_has_active_connections(
+    admin_connection: &mut PgConnection,
+    database_name: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        r"
+        SELECT EXISTS(
+            SELECT 1
+            FROM pg_stat_activity
+            WHERE datname = $1 AND pid <> pg_backend_pid()
+        )
+        ",
+    )
+    .bind(database_name)
+    .fetch_one(admin_connection)
+    .await
+}
 
-    // Serialize first creation per nextest run so concurrent worker processes
-    // observe the same reusable container instead of each creating their own.
-    let lock_name = format!("postgres-startup-{run_id}");
-    let _startup_lock = tokio::task::spawn_blocking(move || loop {
-        if let Some(lock) = ProcessLock::try_acquire(&lock_name) {
+async fn try_drop_test_database_if_idle(
+    shared: &SharedPostgresServer,
+    database_name: &str,
+) -> Result<bool, String> {
+    if database_name == shared.template_database || database_name == ADMIN_DATABASE {
+        return Ok(true);
+    }
+
+    let mut admin_connection = PgConnection::connect_with(&shared.connect_options(ADMIN_DATABASE))
+        .await
+        .map_err(|error| format!("failed to connect to the admin database: {error}"))?;
+    if test_database_has_active_connections(&mut admin_connection, database_name)
+        .await
+        .map_err(|error| format!("failed to inspect active connections: {error}"))?
+    {
+        return Ok(false);
+    }
+
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(TEST_DATABASE_DDL_LOCK_KEY)
+        .execute(&mut admin_connection)
+        .await
+        .map_err(|error| format!("failed to acquire the database DDL lock: {error}"))?;
+
+    let dropped = if test_database_has_active_connections(&mut admin_connection, database_name)
+        .await
+        .map_err(|error| {
+            format!("failed to recheck active connections under the DDL lock: {error}")
+        })? {
+        false
+    } else {
+        let drop_sql = format!(
+            "DROP DATABASE IF EXISTS {}",
+            quote_identifier(database_name)
+        );
+        sqlx::query(trusted_dynamic_sql(drop_sql))
+            .execute(&mut admin_connection)
+            .await
+            .map_err(|error| format!("failed to drop the idle test database: {error}"))?;
+        true
+    };
+    let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(TEST_DATABASE_DDL_LOCK_KEY)
+        .execute(&mut admin_connection)
+        .await;
+
+    Ok(dropped)
+}
+
+async fn drop_test_database_when_idle(
+    shared: &SharedPostgresServer,
+    database_name: &str,
+) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + TEST_DATABASE_CLEANUP_TIMEOUT;
+    loop {
+        if try_drop_test_database_if_idle(shared, database_name).await? {
+            return Ok(());
+        }
+
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "active connections remained for {TEST_DATABASE_CLEANUP_TIMEOUT:?}"
+            ));
+        }
+        tokio::time::sleep(TEST_DATABASE_CLEANUP_RETRY_INTERVAL).await;
+    }
+}
+
+async fn cleanup_idle_test_databases(shared: &SharedPostgresServer) {
+    let mut admin_connection =
+        match PgConnection::connect_with(&shared.connect_options(ADMIN_DATABASE)).await {
+            Ok(connection) => connection,
+            Err(error) => {
+                eprintln!("warning: failed to inspect stale test databases: {error}");
+                return;
+            }
+        };
+    let database_names = match sqlx::query_scalar::<_, String>(
+        "SELECT datname FROM pg_database WHERE datname LIKE $1 ORDER BY datname",
+    )
+    .bind(format!("{TEST_DATABASE_PREFIX}_%"))
+    .fetch_all(&mut admin_connection)
+    .await
+    {
+        Ok(database_names) => database_names,
+        Err(error) => {
+            eprintln!("warning: failed to list stale test databases: {error}");
+            return;
+        }
+    };
+    drop(admin_connection);
+
+    for database_name in database_names {
+        if belongs_to_active_foreign_test_run(&database_name) {
+            continue;
+        }
+        let Some(database_lease) =
+            ProcessLock::try_acquire(&test_database_lease_name(&database_name))
+        else {
+            continue;
+        };
+        if let Err(error) = try_drop_test_database_if_idle(shared, &database_name).await {
+            eprintln!("warning: failed to reclaim stale test database {database_name}: {error}");
+        }
+        drop(database_lease);
+    }
+}
+
+async fn acquire_process_lock(name: String) -> ProcessLock {
+    tokio::task::spawn_blocking(move || loop {
+        if let Some(lock) = ProcessLock::try_acquire(&name) {
             return lock;
         }
         std::thread::sleep(Duration::from_millis(100));
     })
     .await
-    .expect("postgres startup lock task should not panic");
+    .expect("postgres process lock task should not panic")
+}
+
+async fn init_shared_postgres_server() -> SharedPostgresServer {
+    let run_id = current_test_run_id();
+    let run_lock = acquire_run_lock("postgres", &run_id);
+    cleanup_orphaned_testcontainers("synctv-pg-", "postgres", &run_id);
+    cleanup_orphaned_postgres_data_volumes(&run_id);
+    cleanup_orphaned_postgres_run_ready_markers(&run_id);
+    cleanup_orphaned_run_lock_files("synctv-postgres-run-");
+    cleanup_orphaned_run_lock_files("synctv-postgres-startup-");
+
+    // Serialize first creation per nextest run so concurrent worker processes
+    // observe the same reusable container instead of each creating their own.
+    let _startup_lock = acquire_process_lock(format!("postgres-startup-{run_id}")).await;
+    let initialize_run = !postgres_run_ready_marker_exists(&run_id);
 
     let container_name = shared_container_name();
     let (postgres, host, port) = if let Some((host, port)) =
@@ -1007,9 +1232,13 @@ async fn init_shared_postgres_server() -> SharedPostgresServer {
     .await
     .expect("pool initialization thread should not panic");
 
+    if initialize_run {
+        mark_postgres_run_ready(&run_id);
+    }
+
     SharedPostgresServer {
         _container: postgres.map(std::mem::ManuallyDrop::new),
-        pool_runtime,
+        _pool_runtime: pool_runtime,
         host,
         port,
         admin_pool,
@@ -1028,7 +1257,9 @@ async fn shared_postgres_server() -> Arc<SharedPostgresServer> {
 
 async fn provision_test_database(requested_db_name: &str, label: &str) -> TestContainer {
     let shared = shared_postgres_server().await;
+    cleanup_idle_test_databases(&shared).await;
     let database_name = build_test_database_name(requested_db_name, label);
+    let database_lease = acquire_process_lock(test_database_lease_name(&database_name)).await;
     let create_sql = format!(
         "CREATE DATABASE {} TEMPLATE {}",
         quote_identifier(&database_name),
@@ -1047,20 +1278,24 @@ async fn provision_test_database(requested_db_name: &str, label: &str) -> TestCo
         .await
         .expect("direct postgres admin connection for template clone should succeed");
 
-    sqlx::query(trusted_dynamic_sql(create_sql))
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(TEST_DATABASE_DDL_LOCK_KEY)
         .execute(&mut admin_connection)
         .await
+        .expect("test database DDL lock should be acquired");
+    let create_result = sqlx::query(trusted_dynamic_sql(create_sql))
+        .execute(&mut admin_connection)
+        .await;
+    let unlock_result = sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(TEST_DATABASE_DDL_LOCK_KEY)
+        .execute(&mut admin_connection)
+        .await;
+    create_result
+        .and(unlock_result)
         .expect("test database creation from template should succeed");
     drop(clone_permit);
 
-    TestContainer::new(shared, database_name)
-}
-
-fn spawn_best_effort_database_cleanup(shared: Arc<SharedPostgresServer>, database_name: String) {
-    let handle = shared.pool_runtime.handle().clone();
-    handle.spawn(async move {
-        shared.drop_database(&database_name).await;
-    });
+    TestContainer::new(shared, database_name, database_lease)
 }
 
 /// Creates a `PostgreSQL` test container and connection pool
@@ -1068,13 +1303,12 @@ fn spawn_best_effort_database_cleanup(shared: Arc<SharedPostgresServer>, databas
 /// This function:
 /// 1. Starts a shared `PostgreSQL` Docker container once per test process
 /// 2. Creates an isolated database cloned from a migrated template
-/// 3. Creates a connection pool to that per-test database
+/// 3. Creates a connection pool to that database
 ///
 /// # Returns
 ///
-/// A tuple of (database lease, pool). The lease keeps cleanup ownership for
-/// the isolated database while the shared container stays alive for other
-/// tests in the same process.
+/// A tuple of (database lease, pool). The lease keeps the database available
+/// through the test while the shared container stays alive for the run.
 pub async fn create_test_pool() -> (TestContainer, PgPool) {
     create_test_pool_with_db_and_label("synctv_test", "pool").await
 }
@@ -1114,7 +1348,7 @@ pub async fn create_test_database_with_options_and_label(
     let (container, pool) =
         create_test_pool_with_options_and_label(db_name, label, max_connections, acquire_timeout)
             .await;
-    TestDatabase { container, pool }
+    TestDatabase { pool, container }
 }
 
 pub async fn create_test_pool_with_db_and_label(
@@ -1213,6 +1447,16 @@ mod tests {
             cmd.windows(2)
                 .any(|pair| pair == ["-c", "max_wal_senders=0"]),
             "wal_level=minimal requires wal senders to be disabled: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair == ["-c", "checkpoint_timeout=30s"]),
+            "test postgres should checkpoint often enough to reclaim clone WAL: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair == ["-c", "max_wal_size=256MB"]),
+            "test postgres should bound clone WAL storage: {cmd:?}"
         );
         assert!(
             cmd.windows(2).any(|pair| pair == ["-c", "autovacuum=off"]),
@@ -1363,10 +1607,53 @@ mod tests {
     #[test]
     fn build_test_database_name_preserves_requested_prefix() {
         let name = build_test_database_name("auth_service", "rate-limiter");
+        let owner = test_database_run_owner(&current_test_run_id());
 
         assert!(
-            name.starts_with("synctv_test_auth_service_rate_limiter"),
+            name.starts_with(&format!("synctv_test_{owner}_auth_service_rate_limiter")),
             "database name should preserve requested base and label for debugging: {name}"
+        );
+    }
+
+    #[test]
+    fn test_database_name_includes_its_run_owner() {
+        let name = build_test_database_name("synctv_test", "pool");
+
+        assert_eq!(
+            test_database_owner(&name),
+            Some(test_database_run_owner(&current_test_run_id()).as_str()),
+            "database names must carry an unambiguous owner namespace for safe cleanup: {name}"
+        );
+    }
+
+    #[test]
+    fn active_foreign_test_databases_are_retained() {
+        let foreign_run_id = format!("foreign-run-{}", synctv_common::snanoid!(8).to_lowercase());
+        let foreign_owner = test_database_run_owner(&foreign_run_id);
+        let database_name = format!("{TEST_DATABASE_PREFIX}_{foreign_owner}_fixture");
+        let lock = acquire_run_lock("postgres", &foreign_run_id);
+
+        assert!(
+            belongs_to_active_foreign_test_run(&database_name),
+            "an active foreign run must retain its databases"
+        );
+
+        drop(lock);
+
+        assert!(
+            !belongs_to_active_foreign_test_run(&database_name),
+            "a database from a completed run becomes eligible for idle cleanup"
+        );
+    }
+
+    #[test]
+    fn test_database_lease_name_is_shared_between_runs() {
+        let database_name = "synctv_test_0123456789ab_fixture";
+
+        assert_eq!(
+            test_database_lease_name(database_name),
+            format!("postgres-database-{database_name}"),
+            "all runs must contend on the same database lease"
         );
     }
 
@@ -1677,7 +1964,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
-    async fn cleanup_drops_cloned_database() {
+    async fn cleanup_reclaims_an_idle_cloned_database() {
         let (db, _url) = create_test_database_url_with_label("synctv_test", "cleanup").await;
         let shared = shared_postgres_server().await;
         let database_name = db.database_name().to_string();
@@ -1691,7 +1978,27 @@ mod tests {
 
         assert!(
             !database_exists(&shared.admin_pool, &database_name).await,
-            "cleanup should drop the cloned database"
+            "cleanup should reclaim an idle cloned database"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn drop_reclaims_an_idle_cloned_database() {
+        let (db, _url) = create_test_database_url_with_label("synctv_test", "drop").await;
+        let shared = shared_postgres_server().await;
+        let database_name = db.database_name().to_string();
+
+        assert!(
+            database_exists(&shared.admin_pool, &database_name).await,
+            "cloned database should exist before drop"
+        );
+
+        drop(db);
+
+        assert!(
+            !database_exists(&shared.admin_pool, &database_name).await,
+            "drop should reclaim an idle cloned database"
         );
     }
 }

@@ -2136,7 +2136,7 @@ async fn wait_for_room_stream_total(
 ) -> Value {
     wait_for_remote_cli_json(
         server,
-        &["room", "stream", "list", "--room-id", room_id],
+        &["room", "stream", "list", room_id],
         "wait for room stream total",
         |response| response["total"].as_i64().unwrap_or(0) == expected_total,
     )
@@ -2597,8 +2597,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
         .to_string();
     assert_eq!(room_create_body["name"], "CLI managed room");
 
-    let playlist_list =
-        run_synctv_remote_cli(&server, &["playlist", "list", "--room-id", &room_id]).await;
+    let playlist_list = run_synctv_remote_cli(&server, &["playlist", "list", &room_id]).await;
     assert!(
         playlist_list.status.success(),
         "playlist list via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -2611,7 +2610,6 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
         &[
             "media",
             "add",
-            "--room-id",
             &room_id,
             "--username",
             BOOTSTRAP_ROOT_USERNAME,
@@ -2642,9 +2640,8 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
         &[
             "media",
             "add-url",
-            "https://cdn.example.com/cli-e2e-second.mp4",
-            "--room-id",
             &room_id,
+            "https://cdn.example.com/cli-e2e-second.mp4",
             "--username",
             BOOTSTRAP_ROOT_USERNAME,
             "--name",
@@ -2670,7 +2667,6 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
         &[
             "media",
             "move",
-            "--room-id",
             &room_id,
             "--before-media-id",
             &media_one_id,
@@ -4000,7 +3996,6 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
             "room",
             "member",
             "set-permissions",
-            "--room-id",
             &room_id,
             &member_username,
             "--role",
@@ -4050,7 +4045,6 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
             "room",
             "member",
             "kick",
-            "--room-id",
             &room_id,
             "--user-id",
             &joined_subject_user_id,
@@ -4134,7 +4128,6 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         &[
             "playlist",
             "create",
-            "--room-id",
             &room_id,
             "--username",
             &member_username,
@@ -4153,7 +4146,6 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         &[
             "playlist",
             "create",
-            "--room-id",
             &room_id,
             "--username",
             &member_username,
@@ -4172,7 +4164,6 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         &[
             "playlist",
             "update",
-            "--room-id",
             &room_id,
             &playlist_alpha_id,
             "--name",
@@ -4188,7 +4179,6 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         &[
             "playlist",
             "move",
-            "--room-id",
             &room_id,
             &playlist_beta_id,
             "--before-playlist-id",
@@ -4199,12 +4189,9 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
     .await;
     assert_eq!(moved_playlist["id"], playlist_beta_id);
 
-    let listed_playlists = run_synctv_remote_cli_json(
-        &server,
-        &["playlist", "list", "--room-id", &room_id],
-        "list playlists",
-    )
-    .await;
+    let listed_playlists =
+        run_synctv_remote_cli_json(&server, &["playlist", "list", &room_id], "list playlists")
+            .await;
     let listed_playlists_array = listed_playlists["playlists"]
         .as_array()
         .expect("playlist list should return playlists array");
@@ -4214,7 +4201,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
 
     let fetched_playlist = run_synctv_remote_cli_json(
         &server,
-        &["playlist", "get", "--room-id", &room_id, &playlist_alpha_id],
+        &["playlist", "get", &room_id, &playlist_alpha_id],
         "get playlist",
     )
     .await;
@@ -4228,9 +4215,8 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         &[
             "media",
             "add-url",
-            "https://cdn.example.com/cli-room-one.mp4",
-            "--room-id",
             &room_id,
+            "https://cdn.example.com/cli-room-one.mp4",
             "--username",
             &member_username,
             "--playlist-id",
@@ -4251,9 +4237,8 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         &[
             "media",
             "add-url",
-            "https://cdn.example.com/cli-room-two.mp4",
-            "--room-id",
             &room_id,
+            "https://cdn.example.com/cli-room-two.mp4",
             "--username",
             &member_username,
             "--name",
@@ -4267,12 +4252,8 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         .expect("second media add should return id")
         .to_string();
 
-    let root_media = run_synctv_remote_cli_json(
-        &server,
-        &["media", "list", "--room-id", &room_id],
-        "list root media",
-    )
-    .await;
+    let root_media =
+        run_synctv_remote_cli_json(&server, &["media", "list", &room_id], "list root media").await;
     assert!(
         root_media["media"]
             .as_array()
@@ -4287,7 +4268,6 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         &[
             "media",
             "update",
-            "--room-id",
             &room_id,
             &media_two_id,
             "--name",
@@ -4303,7 +4283,6 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         &[
             "media",
             "move",
-            "--room-id",
             &room_id,
             "--media-id",
             &media_two_id,
@@ -4322,7 +4301,6 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         &[
             "media",
             "list",
-            "--room-id",
             &room_id,
             "--playlist-id",
             &playlist_alpha_id,
@@ -4343,7 +4321,6 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
             "room",
             "playback",
             "start",
-            "--room-id",
             &room_id,
             "--media-id",
             &media_one_id,
@@ -4366,7 +4343,6 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
             "room",
             "playback",
             "start",
-            "--room-id",
             &room_id,
             "--media-id",
             &media_one_id,
@@ -4383,7 +4359,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
 
     let playback_state = run_synctv_remote_cli_json(
         &server,
-        &["room", "playback", "get", "--room-id", &room_id],
+        &["room", "playback", "get", &room_id],
         "get room playback",
     )
     .await;
@@ -4396,7 +4372,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
 
     let stopped_playback = run_synctv_remote_cli_json(
         &server,
-        &["room", "playback", "stop", "--room-id", &room_id],
+        &["room", "playback", "stop", &room_id],
         "stop room playback",
     )
     .await;
@@ -4407,7 +4383,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
 
     let playback_after_stop = run_synctv_remote_cli_json(
         &server,
-        &["room", "playback", "get", "--room-id", &room_id],
+        &["room", "playback", "get", &room_id],
         "get room playback after stop",
     )
     .await;
@@ -4417,7 +4393,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
 
     let deleted_media = run_synctv_remote_cli_json(
         &server,
-        &["media", "delete", "--room-id", &room_id, &media_two_id],
+        &["media", "delete", &room_id, &media_two_id],
         "delete media",
     )
     .await;
@@ -4425,13 +4401,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
 
     let deleted_playlist = run_synctv_remote_cli_json(
         &server,
-        &[
-            "playlist",
-            "delete",
-            "--room-id",
-            &room_id,
-            &playlist_beta_id,
-        ],
+        &["playlist", "delete", &room_id, &playlist_beta_id],
         "delete playlist",
     )
     .await;
@@ -4589,9 +4559,8 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
         &[
             "media",
             "add-url",
-            "https://cdn.example.com/cli-stream-source.mp4",
-            "--room-id",
             &room_id,
+            "https://cdn.example.com/cli-stream-source.mp4",
             "--username",
             &owner_username,
             "--name",
@@ -4651,7 +4620,6 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
             "room",
             "stream",
             "list",
-            "--room-id",
             &room_id,
             "--search",
             &media_id,
@@ -4881,9 +4849,8 @@ async fn full_stack_cli_management_actor_state_constraints_reject_invalid_room_o
         &[
             "media",
             "add-url",
-            "https://cdn.example.com/cli-actor-constraint.mp4",
-            "--room-id",
             &room_id,
+            "https://cdn.example.com/cli-actor-constraint.mp4",
             "--username",
             &owner_username,
             "--name",
@@ -5015,7 +4982,6 @@ async fn full_stack_cli_management_actor_membership_constraints_gate_playlist_an
         &[
             "playlist",
             "create",
-            "--room-id",
             &room_id,
             "--username",
             &outsider_username,
@@ -5034,9 +5000,8 @@ async fn full_stack_cli_management_actor_membership_constraints_gate_playlist_an
         &[
             "media",
             "add-url",
-            "https://cdn.example.com/cli-membership-outsider.mp4",
-            "--room-id",
             &room_id,
+            "https://cdn.example.com/cli-membership-outsider.mp4",
             "--username",
             &outsider_username,
             "--name",
@@ -5063,7 +5028,6 @@ async fn full_stack_cli_management_actor_membership_constraints_gate_playlist_an
         &[
             "playlist",
             "create",
-            "--room-id",
             &room_id,
             "--username",
             &outsider_username,
@@ -5083,9 +5047,8 @@ async fn full_stack_cli_management_actor_membership_constraints_gate_playlist_an
         &[
             "media",
             "add-url",
-            "https://cdn.example.com/cli-membership-joined.mp4",
-            "--room-id",
             &room_id,
+            "https://cdn.example.com/cli-membership-joined.mp4",
             "--username",
             &outsider_username,
             "--playlist-id",
@@ -5247,7 +5210,7 @@ async fn full_stack_cli_provider_create_rejects_unsupported_provider_type() {
     let provider_add = run_synctv_remote_cli(
         &server,
         &[
-            "provider",
+            "provider-instance",
             "create",
             &provider_name,
             "http://127.0.0.1:59999",
@@ -5281,7 +5244,7 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
     let provider_add = run_synctv_remote_cli(
         &server,
         &[
-            "provider",
+            "provider-instance",
             "create",
             &provider_name,
             &server.provider_probe_endpoint,
@@ -5312,8 +5275,11 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
         .expect("provider list should serialize")
     );
 
-    let provider_list_filtered =
-        run_synctv_remote_cli(&server, &["provider", "list", "--provider-type", "alist"]).await;
+    let provider_list_filtered = run_synctv_remote_cli(
+        &server,
+        &["provider-instance", "list", "--provider-type", "alist"],
+    )
+    .await;
     assert!(
         provider_list_filtered.status.success(),
         "remote provider list via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -5332,7 +5298,7 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
     );
 
     let provider_reconnect =
-        run_synctv_remote_cli(&server, &["provider", "reconnect", &provider_name]).await;
+        run_synctv_remote_cli(&server, &["provider-instance", "reconnect", &provider_name]).await;
     assert!(
         provider_reconnect.status.success(),
         "remote provider reconnect via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -5341,7 +5307,7 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
     );
 
     let provider_disable =
-        run_synctv_remote_cli(&server, &["provider", "disable", &provider_name]).await;
+        run_synctv_remote_cli(&server, &["provider-instance", "disable", &provider_name]).await;
     assert!(
         provider_disable.status.success(),
         "remote provider disable via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -5355,7 +5321,7 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
         .unwrap_or(false));
 
     let provider_enable =
-        run_synctv_remote_cli(&server, &["provider", "enable", &provider_name]).await;
+        run_synctv_remote_cli(&server, &["provider-instance", "enable", &provider_name]).await;
     assert!(
         provider_enable.status.success(),
         "remote provider enable via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -5398,7 +5364,7 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
     );
 
     let provider_delete =
-        run_synctv_remote_cli(&server, &["provider", "delete", &provider_name]).await;
+        run_synctv_remote_cli(&server, &["provider-instance", "delete", &provider_name]).await;
     assert!(
         provider_delete.status.success(),
         "remote provider delete via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -7191,9 +7157,8 @@ async fn full_stack_grpc_message_stream_watch_playback_receives_initial_and_futu
         &[
             "media",
             "add-url",
-            "https://cdn.example.com/grpc-watch-playback-one.mp4",
-            "--room-id",
             &room_id,
+            "https://cdn.example.com/grpc-watch-playback-one.mp4",
             "--username",
             &owner_username,
             "--name",
@@ -7212,9 +7177,8 @@ async fn full_stack_grpc_message_stream_watch_playback_receives_initial_and_futu
         &[
             "media",
             "add-url",
-            "https://cdn.example.com/grpc-watch-playback-two.mp4",
-            "--room-id",
             &room_id,
+            "https://cdn.example.com/grpc-watch-playback-two.mp4",
             "--username",
             &owner_username,
             "--name",
@@ -7234,7 +7198,6 @@ async fn full_stack_grpc_message_stream_watch_playback_receives_initial_and_futu
             "room",
             "playback",
             "start",
-            "--room-id",
             &room_id,
             "--media-id",
             &media_one_id,
@@ -7281,7 +7244,6 @@ async fn full_stack_grpc_message_stream_watch_playback_receives_initial_and_futu
             "room",
             "playback",
             "start",
-            "--room-id",
             &room_id,
             "--media-id",
             &media_two_id,
@@ -7511,9 +7473,8 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
         &[
             "media",
             "add-url",
-            "https://cdn.example.com/grpc-watch-playlist-items-one.mp4",
-            "--room-id",
             &room_id,
+            "https://cdn.example.com/grpc-watch-playlist-items-one.mp4",
             "--username",
             &owner_username,
             "--name",
@@ -7980,9 +7941,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &[
             "media",
             "add-url",
-            "https://cdn.example.com/ws-room-media-one.mp4",
-            "--room-id",
             &room_id,
+            "https://cdn.example.com/ws-room-media-one.mp4",
             "--username",
             &owner_username,
             "--name",
@@ -8015,9 +7975,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &[
             "media",
             "add-url",
-            "https://cdn.example.com/ws-room-media-two.mp4",
-            "--room-id",
             &room_id,
+            "https://cdn.example.com/ws-room-media-two.mp4",
             "--username",
             &owner_username,
             "--name",
@@ -8050,7 +8009,6 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &[
             "media",
             "update",
-            "--room-id",
             &room_id,
             &media_two_id,
             "--name",
@@ -8078,7 +8036,6 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &[
             "media",
             "move",
-            "--room-id",
             &room_id,
             "--media-id",
             &media_two_id,
@@ -8107,7 +8064,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
 
     let _ = run_synctv_remote_cli_json(
         &server,
-        &["media", "delete", "--room-id", &room_id, &media_two_id],
+        &["media", "delete", &room_id, &media_two_id],
         "delete room media for websocket test",
     )
     .await;
@@ -8172,7 +8129,6 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
             "room",
             "member",
             "set-permissions",
-            "--room-id",
             &room_id,
             &member_username,
             "--role",
@@ -8206,7 +8162,6 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
             "room",
             "playback",
             "start",
-            "--room-id",
             &room_id,
             "--media-id",
             &media_one_id,
@@ -8420,7 +8375,6 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
         &[
             "playlist",
             "create",
-            "--room-id",
             &room_id,
             "--username",
             &owner_username,
@@ -8454,7 +8408,6 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
         &[
             "playlist",
             "update",
-            "--room-id",
             &room_id,
             &playlist_id,
             "--name",
@@ -8479,7 +8432,7 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
 
     let _ = run_synctv_remote_cli_json(
         &server,
-        &["playlist", "delete", "--room-id", &room_id, &playlist_id],
+        &["playlist", "delete", &room_id, &playlist_id],
         "delete realtime playlist",
     )
     .await;
@@ -8517,9 +8470,8 @@ async fn full_stack_websocket_watch_playback_receives_initial_and_future_updates
         &[
             "media",
             "add-url",
-            "https://cdn.example.com/ws-watch-playback-one.mp4",
-            "--room-id",
             &room_id,
+            "https://cdn.example.com/ws-watch-playback-one.mp4",
             "--username",
             &owner_username,
             "--name",
@@ -8538,9 +8490,8 @@ async fn full_stack_websocket_watch_playback_receives_initial_and_future_updates
         &[
             "media",
             "add-url",
-            "https://cdn.example.com/ws-watch-playback-two.mp4",
-            "--room-id",
             &room_id,
+            "https://cdn.example.com/ws-watch-playback-two.mp4",
             "--username",
             &owner_username,
             "--name",
@@ -8560,7 +8511,6 @@ async fn full_stack_websocket_watch_playback_receives_initial_and_future_updates
             "room",
             "playback",
             "start",
-            "--room-id",
             &room_id,
             "--media-id",
             &media_one_id,
@@ -8588,7 +8538,6 @@ async fn full_stack_websocket_watch_playback_receives_initial_and_future_updates
             "room",
             "playback",
             "start",
-            "--room-id",
             &room_id,
             "--media-id",
             &media_two_id,
@@ -8791,9 +8740,8 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
         &[
             "media",
             "add-url",
-            "https://cdn.example.com/ws-watch-playlist-items-one.mp4",
-            "--room-id",
             &room_id,
+            "https://cdn.example.com/ws-watch-playlist-items-one.mp4",
             "--username",
             &owner_username,
             "--name",

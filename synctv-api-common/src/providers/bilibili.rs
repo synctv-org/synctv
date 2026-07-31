@@ -1414,9 +1414,7 @@ mod tests {
         let response = provider_ok(
             api.logout(
                 &synctv_core::models::UserId::new(),
-                synctv_proto::providers::bilibili::LogoutRequest {
-                    instance_name: String::new(),
-                },
+                synctv_proto::providers::bilibili::LogoutRequest {},
             )
             .await,
         )?;

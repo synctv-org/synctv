@@ -571,7 +571,6 @@ fn cli_parses_room_playback_patch_commands() {
         "room",
         "playback",
         "pause",
-        "--room-id",
         "room-1",
         "--version",
         "7",
@@ -594,7 +593,6 @@ fn cli_parses_room_playback_patch_commands() {
         "room",
         "playback",
         "seek",
-        "--room-id",
         "room-1",
         "--position",
         "42.5",
@@ -614,14 +612,7 @@ fn cli_parses_room_playback_patch_commands() {
     }
 
     let speed = Cli::parse_from([
-        "synctv",
-        "room",
-        "playback",
-        "speed",
-        "--room-id",
-        "room-1",
-        "--speed",
-        "1.25",
+        "synctv", "room", "playback", "speed", "room-1", "--speed", "1.25",
     ]);
     match speed.command {
         Commands::Room(RoomCommand {
@@ -1324,7 +1315,6 @@ fn cli_parses_room_chat_search() {
         "room",
         "chat",
         "search",
-        "--room-id",
         "room_abc",
         "--username",
         "alice",
@@ -1365,7 +1355,6 @@ fn cli_rejects_conflicting_room_chat_sender_filters() {
         "room",
         "chat",
         "search",
-        "--room-id",
         "room_abc",
         "--username",
         "alice",
@@ -1391,7 +1380,6 @@ fn root_global_flags_propagate_to_room_chat_search() {
         "room",
         "chat",
         "search",
-        "--room-id",
         "room_abc",
         "--username",
         "alice",
@@ -2193,9 +2181,8 @@ fn cli_parses_playlist_create_for_room_scope() {
         "synctv",
         "playlist",
         "create",
-        "Favorites",
-        "--room-id",
         "room-123",
+        "Favorites",
         "--username",
         "alice",
         "--parent-id",
@@ -2234,7 +2221,6 @@ fn cli_parses_playlist_list_dynamic_only_as_bare_true_flag() {
         "synctv",
         "playlist",
         "list",
-        "--room-id",
         "room-123",
         "--dynamic-only",
         "--availability",
@@ -2258,14 +2244,7 @@ fn cli_parses_playlist_list_dynamic_only_as_bare_true_flag() {
 
 #[test]
 fn cli_rejects_playlist_create_without_actor_user() {
-    let result = Cli::try_parse_from([
-        "synctv",
-        "playlist",
-        "create",
-        "Favorites",
-        "--room-id",
-        "room-123",
-    ]);
+    let result = Cli::try_parse_from(["synctv", "playlist", "create", "Favorites", "room-123"]);
     assert!(
         result.is_err(),
         "playlist create must require --username or --user-id"
@@ -2278,9 +2257,8 @@ fn cli_parses_media_add_url_for_room_scope() {
         "synctv",
         "media",
         "add-url",
-        "https://cdn.example.com/video.mp4",
-        "--room-id",
         "room-123",
+        "https://cdn.example.com/video.mp4",
         "--username",
         "alice",
         "--playlist-id",
@@ -2310,7 +2288,6 @@ fn cli_parses_media_add_for_room_scope() {
         "synctv",
         "media",
         "add",
-        "--room-id",
         "room-123",
         "--username",
         "alice",
@@ -2346,14 +2323,7 @@ fn cli_parses_media_add_for_room_scope() {
 #[test]
 fn cli_parses_media_update() {
     let cli = Cli::parse_from([
-        "synctv",
-        "media",
-        "update",
-        "--room-id",
-        "room-123",
-        "media-1",
-        "--name",
-        "Renamed",
+        "synctv", "media", "update", "room-123", "media-1", "--name", "Renamed",
     ]);
     match cli.command {
         Commands::Media(MediaCommand {
@@ -2374,7 +2344,6 @@ fn cli_rejects_media_add_without_actor_user() {
         "synctv",
         "media",
         "add",
-        "--room-id",
         "room-123",
         "--source-provider",
         "direct-url",
@@ -2394,7 +2363,6 @@ fn cli_rejects_snake_case_source_provider_values() {
             "synctv",
             "media",
             "add",
-            "--room-id",
             "room-123",
             "--username",
             "alice",
@@ -2413,7 +2381,6 @@ fn cli_rejects_media_add_without_source_provider() {
         "synctv",
         "media",
         "add",
-        "--room-id",
         "room-123",
         "--username",
         "alice",
@@ -2429,7 +2396,6 @@ fn cli_parses_media_list_availability_filter() {
         "synctv",
         "media",
         "list",
-        "--room-id",
         "room-123",
         "--availability",
         "unavailable",
@@ -2455,7 +2421,6 @@ fn cli_parses_media_move_for_room_scope() {
         "synctv",
         "media",
         "move",
-        "--room-id",
         "room-123",
         "--before-media-id",
         "media-2",
@@ -2482,7 +2447,6 @@ fn cli_parses_media_add_with_provider_source() {
         "synctv",
         "media",
         "add",
-        "--room-id",
         "room-123",
         "--username",
         "alice",
@@ -2521,7 +2485,6 @@ fn cli_parses_media_move_after_anchor() {
         "synctv",
         "media",
         "move",
-        "--room-id",
         "room-123",
         "--after-media-id",
         "media-b",
@@ -2548,7 +2511,6 @@ fn cli_parses_media_move_with_hyphen_prefixed_media_id() {
         "synctv",
         "media",
         "move",
-        "--room-id",
         "room-123",
         "--before-media-id",
         "media-1",
@@ -2575,7 +2537,6 @@ fn cli_parses_media_move_without_anchor_as_append() {
         "synctv",
         "media",
         "move",
-        "--room-id",
         "room-123",
         "--media-id",
         "media-1",
@@ -2600,7 +2561,6 @@ fn cli_parses_media_move_batch_to_playlist() {
         "synctv",
         "media",
         "move",
-        "--room-id",
         "room-123",
         "--to-playlist-id",
         "playlist-9",
@@ -2633,7 +2593,6 @@ fn cli_parses_media_move_all_from_scope() {
         "synctv",
         "media",
         "move",
-        "--room-id",
         "room-123",
         "--all-from-scope",
         "--from-playlist-id",
@@ -2661,7 +2620,6 @@ fn cli_rejects_media_move_from_playlist_without_all_from_scope() {
         "synctv",
         "media",
         "move",
-        "--room-id",
         "room-123",
         "--from-playlist-id",
         "playlist-src",
@@ -2680,7 +2638,6 @@ fn cli_parses_media_move_without_consuming_trailing_global_output_flag() {
         "synctv",
         "media",
         "move",
-        "--room-id",
         "room-123",
         "--before-media-id",
         "media-2",
@@ -2750,10 +2707,10 @@ fn normalized_provider_types_maps_cli_values() {
 }
 
 #[test]
-fn cli_parses_provider_create_with_remote_auth() {
+fn cli_parses_provider_instance_create_with_remote_auth() {
     let cli = Cli::parse_from([
         "synctv",
-        "provider",
+        "provider-instance",
         "create",
         "alist-edge",
         "https://provider.example.com:50051",
@@ -2770,12 +2727,11 @@ fn cli_parses_provider_create_with_remote_auth() {
         "provider-secret-12345678901234567890",
     ]);
     match cli.command {
-        Commands::Provider(ProviderCommand {
-            command: ProviderSubcommand::Create(args),
-            ..
+        Commands::ProviderInstance(ProviderInstanceCommand {
+            command: ProviderInstanceSubcommand::Create(args),
         }) => {
             assert_eq!(args.name, "alist-edge");
-            assert_eq!(args.provider_endpoint, "https://provider.example.com:50051");
+            assert_eq!(args.instance_endpoint, "https://provider.example.com:50051");
             assert_eq!(
                 args.providers,
                 vec![CliSourceProvider::Alist, CliSourceProvider::Emby]
@@ -2793,13 +2749,13 @@ fn cli_parses_provider_create_with_remote_auth() {
 }
 
 #[test]
-fn cli_parses_provider_update_with_optional_fields() {
+fn cli_parses_provider_instance_update_with_optional_fields() {
     let cli = Cli::parse_from([
         "synctv",
-        "provider",
+        "provider-instance",
         "update",
         "alist-edge",
-        "--provider-endpoint",
+        "--instance-endpoint",
         "https://provider-v2.example.com:50052",
         "--provider",
         "alist",
@@ -2811,13 +2767,12 @@ fn cli_parses_provider_update_with_optional_fields() {
         "false",
     ]);
     match cli.command {
-        Commands::Provider(ProviderCommand {
-            command: ProviderSubcommand::Update(args),
-            ..
+        Commands::ProviderInstance(ProviderInstanceCommand {
+            command: ProviderInstanceSubcommand::Update(args),
         }) => {
             assert_eq!(args.name, "alist-edge");
             assert_eq!(
-                args.provider_endpoint.as_deref(),
+                args.instance_endpoint.as_deref(),
                 Some("https://provider-v2.example.com:50052")
             );
             assert_eq!(args.providers, vec![CliSourceProvider::Alist]);
@@ -2830,12 +2785,11 @@ fn cli_parses_provider_update_with_optional_fields() {
 }
 
 #[test]
-fn cli_parses_provider_list_boolean_filters_as_bare_true_flags() {
-    let cli = Cli::parse_from(["synctv", "provider", "list", "--enabled", "--tls"]);
+fn cli_parses_provider_instance_list_boolean_filters_as_bare_true_flags() {
+    let cli = Cli::parse_from(["synctv", "provider-instance", "list", "--enabled", "--tls"]);
     match cli.command {
-        Commands::Provider(ProviderCommand {
-            command: ProviderSubcommand::List(args),
-            ..
+        Commands::ProviderInstance(ProviderInstanceCommand {
+            command: ProviderInstanceSubcommand::List(args),
         }) => {
             assert_eq!(args.enabled, Some(true));
             assert_eq!(args.tls, Some(true));
@@ -2845,12 +2799,11 @@ fn cli_parses_provider_list_boolean_filters_as_bare_true_flags() {
 }
 
 #[test]
-fn cli_parses_provider_available_command() {
-    let cli = Cli::parse_from(["synctv", "provider", "available"]);
+fn cli_parses_provider_instance_available_command() {
+    let cli = Cli::parse_from(["synctv", "provider-instance", "available"]);
     match cli.command {
-        Commands::Provider(ProviderCommand {
-            command: ProviderSubcommand::Available(_),
-            ..
+        Commands::ProviderInstance(ProviderInstanceCommand {
+            command: ProviderInstanceSubcommand::Available(_),
         }) => {}
         other => panic!("unexpected command parsed: {other:?}"),
     }
@@ -2869,19 +2822,18 @@ fn cli_parses_provider_backends_command() {
 }
 
 #[test]
-fn cli_parses_provider_update_boolean_flags_as_bare_true_flags() {
+fn cli_parses_provider_instance_update_boolean_flags_as_bare_true_flags() {
     let cli = Cli::parse_from([
         "synctv",
-        "provider",
+        "provider-instance",
         "update",
         "alist-edge",
         "--tls",
         "--insecure-tls",
     ]);
     match cli.command {
-        Commands::Provider(ProviderCommand {
-            command: ProviderSubcommand::Update(args),
-            ..
+        Commands::ProviderInstance(ProviderInstanceCommand {
+            command: ProviderInstanceSubcommand::Update(args),
         }) => {
             assert_eq!(args.tls, Some(true));
             assert_eq!(args.insecure_tls, Some(true));
@@ -2891,23 +2843,23 @@ fn cli_parses_provider_update_boolean_flags_as_bare_true_flags() {
 }
 
 #[test]
-fn cli_provider_create_help_disambiguates_provider_endpoint_from_management_endpoint() {
+fn cli_provider_instance_create_help_shows_instance_and_management_endpoints() {
     let mut command = Cli::command();
     let provider = command
-        .find_subcommand_mut("provider")
-        .expect("provider subcommand should exist");
+        .find_subcommand_mut("provider-instance")
+        .expect("provider-instance subcommand should exist");
     let provider_create = provider
         .find_subcommand_mut("create")
-        .expect("provider create subcommand should exist");
+        .expect("provider-instance create subcommand should exist");
     let mut help = Vec::new();
     provider_create
         .write_long_help(&mut help)
-        .expect("provider create help should render");
-    let help = String::from_utf8(help).expect("provider create help should be utf-8");
+        .expect("provider-instance create help should render");
+    let help = String::from_utf8(help).expect("provider-instance create help should be utf-8");
 
     assert!(
-        help.contains("<PROVIDER_ENDPOINT>"),
-        "provider create help should expose provider endpoint positional name: {help}"
+        help.contains("<ENDPOINT>"),
+        "provider-instance create help should expose the instance endpoint: {help}"
     );
     assert!(
         help.contains("--endpoint <ENDPOINT>"),
@@ -2943,10 +2895,10 @@ fn cli_user_batch_ban_help_uses_singular_user_id_metavar() {
 }
 
 #[test]
-fn cli_parses_provider_list_with_filter() {
+fn cli_parses_provider_instance_list_with_filter() {
     let cli = Cli::parse_from([
         "synctv",
-        "provider",
+        "provider-instance",
         "list",
         "--page",
         "2",
@@ -2966,9 +2918,8 @@ fn cli_parses_provider_list_with_filter() {
         "asc",
     ]);
     match cli.command {
-        Commands::Provider(ProviderCommand {
-            command: ProviderSubcommand::List(args),
-            ..
+        Commands::ProviderInstance(ProviderInstanceCommand {
+            command: ProviderInstanceSubcommand::List(args),
         }) => {
             assert_eq!(args.page, 2);
             assert_eq!(args.page_size, 10);
@@ -2984,24 +2935,172 @@ fn cli_parses_provider_list_with_filter() {
 }
 
 #[test]
-fn cli_provider_update_help_uses_provider_type_metavar() {
+fn cli_provider_instance_update_help_uses_provider_type_metavar() {
     let mut command = Cli::command();
     let provider = command
-        .find_subcommand_mut("provider")
-        .expect("provider subcommand should exist");
+        .find_subcommand_mut("provider-instance")
+        .expect("provider-instance subcommand should exist");
     let update = provider
         .find_subcommand_mut("update")
-        .expect("provider update subcommand should exist");
+        .expect("provider-instance update subcommand should exist");
     let mut help = Vec::new();
     update
         .write_long_help(&mut help)
-        .expect("provider update help should render");
-    let help = String::from_utf8(help).expect("provider update help should be utf-8");
+        .expect("provider-instance update help should render");
+    let help = String::from_utf8(help).expect("provider-instance update help should be utf-8");
 
     assert!(
         help.contains("--provider <PROVIDER_TYPE>"),
-        "provider update help should use provider type metavar: {help}"
+        "provider-instance update help should use provider type metavar: {help}"
     );
+}
+
+fn assert_provider_command_tree_uses_explicit_arguments(command: &mut clap::Command, path: &str) {
+    for child in command.get_subcommands_mut() {
+        let child_path = format!("{path} {}", child.get_name());
+        let mut help = Vec::new();
+        child
+            .write_long_help(&mut help)
+            .unwrap_or_else(|error| panic!("{child_path} help should render: {error}"));
+        let help = String::from_utf8(help)
+            .unwrap_or_else(|error| panic!("{child_path} help should be utf-8: {error}"));
+
+        assert!(
+            !help.contains("--request-json") && !help.contains("--request-file"),
+            "{child_path} must expose explicit command arguments: {help}"
+        );
+        assert_provider_command_tree_uses_explicit_arguments(child, &child_path);
+    }
+}
+
+#[test]
+fn cli_provider_commands_use_explicit_arguments() {
+    let mut command = Cli::command();
+    command.clone().debug_assert();
+
+    let provider = command
+        .find_subcommand_mut("provider")
+        .expect("provider subcommand should exist");
+
+    assert_provider_command_tree_uses_explicit_arguments(provider, "synctv provider");
+}
+
+#[test]
+fn cli_provider_service_logins_distinguish_actor_and_account_identity() {
+    for arguments in [
+        vec![
+            "synctv",
+            "provider",
+            "cloudreve",
+            "login",
+            "--username",
+            "alice",
+            "--server-endpoint",
+            "https://cloudreve.example",
+            "--account-email",
+            "alice@example.com",
+            "--password",
+            "secret",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "fnos",
+            "login",
+            "--username",
+            "alice",
+            "--server-endpoint",
+            "https://fnos.example",
+            "--account-username",
+            "nas-alice",
+            "--password",
+            "secret",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "nextcloud",
+            "login",
+            "--username",
+            "alice",
+            "--server-endpoint",
+            "https://nextcloud.example",
+            "--account-username",
+            "cloud-alice",
+            "--app-password",
+            "secret",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "qnap",
+            "login",
+            "--username",
+            "alice",
+            "--server-endpoint",
+            "https://qnap.example",
+            "--account-username",
+            "nas-alice",
+            "--password",
+            "secret",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "seafile",
+            "login",
+            "--username",
+            "alice",
+            "--server-endpoint",
+            "https://seafile.example",
+            "--account-username",
+            "files-alice",
+            "--password",
+            "secret",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "synology",
+            "login",
+            "--username",
+            "alice",
+            "--server-endpoint",
+            "https://synology.example",
+            "--account-username",
+            "nas-alice",
+            "--password",
+            "secret",
+        ],
+    ] {
+        assert!(
+            Cli::try_parse_from(arguments).is_ok(),
+            "provider login should accept distinct actor and account identity"
+        );
+    }
+}
+
+#[test]
+fn cli_provider_binds_defaults_to_the_default_instance() {
+    let cli = Cli::parse_from([
+        "synctv",
+        "provider",
+        "youtube",
+        "binds",
+        "--user-id",
+        "user-1",
+    ]);
+    let Commands::Provider(ProviderCommand {
+        command:
+            ProviderSubcommand::Youtube(ProviderYoutubeCommand {
+                command: ProviderYoutubeSubcommand::Binds(args),
+            }),
+    }) = cli.command
+    else {
+        panic!("unexpected command parsed")
+    };
+
+    assert_eq!(args.instance.instance_name, None);
 }
 
 #[test]
@@ -3013,7 +3112,7 @@ fn cli_parses_provider_alist_login() {
         "login",
         "--username",
         "alice",
-        "--host",
+        "--server-endpoint",
         "https://alist.example.com",
         "--account-username",
         "alist-user",
@@ -3034,7 +3133,7 @@ fn cli_parses_provider_alist_login() {
                 }),
         }) => {
             assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
-            assert_eq!(args.host, "https://alist.example.com");
+            assert_eq!(args.server_endpoint, "https://alist.example.com");
             assert_eq!(args.account_username, "alist-user");
             assert_eq!(args.password.as_deref(), Some("secret"));
             assert_eq!(args.otp_code.as_deref(), Some("123456"));
@@ -3176,7 +3275,7 @@ fn cli_parses_provider_emby_login_with_api_key() {
         "login",
         "--username",
         "alice",
-        "--host",
+        "--server-endpoint",
         "https://emby.example.com",
         "--account-username",
         "emby-user",
@@ -3193,7 +3292,7 @@ fn cli_parses_provider_emby_login_with_api_key() {
                 }),
         }) => {
             assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
-            assert_eq!(args.host, "https://emby.example.com");
+            assert_eq!(args.server_endpoint, "https://emby.example.com");
             assert_eq!(args.account_username, "emby-user");
             assert_eq!(args.password, None);
             assert_eq!(args.api_key.as_deref(), Some("emby-api-key"));
@@ -3212,7 +3311,7 @@ fn cli_parses_provider_emby_login_with_password() {
         "login",
         "--username",
         "alice",
-        "--host",
+        "--server-endpoint",
         "https://emby.example.com",
         "--account-username",
         "emby-user",
@@ -3313,7 +3412,7 @@ fn cli_rejects_provider_alist_login_without_credential() {
         "login",
         "--username",
         "alice",
-        "--host",
+        "--server-endpoint",
         "https://alist.example.com",
         "--account-username",
         "alist-user",
@@ -3334,7 +3433,7 @@ fn cli_rejects_provider_emby_login_without_credential() {
         "login",
         "--username",
         "alice",
-        "--host",
+        "--server-endpoint",
         "https://emby.example.com",
         "--account-username",
         "emby-user",
@@ -3355,7 +3454,7 @@ fn cli_rejects_provider_emby_login_with_both_password_and_api_key() {
         "login",
         "--username",
         "alice",
-        "--host",
+        "--server-endpoint",
         "https://emby.example.com",
         "--account-username",
         "emby-user",
@@ -3581,8 +3680,7 @@ fn cli_parses_provider_bilibili_me_logout_and_binds() {
                     command: ProviderBilibiliSubcommand::Logout(args),
                 }),
         }) => {
-            assert_eq!(args.access.actor.user_id.as_deref(), Some("user-1"));
-            assert_eq!(args.instance.instance_name, None);
+            assert_eq!(args.actor.user_id.as_deref(), Some("user-1"));
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
@@ -3608,6 +3706,193 @@ fn cli_parses_provider_bilibili_me_logout_and_binds() {
             assert_eq!(args.instance.instance_name.as_deref(), Some("bili-main"));
         }
         other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_rejects_instance_name_for_credential_removal_commands() {
+    let commands = [
+        vec![
+            "synctv",
+            "provider",
+            "alist",
+            "logout",
+            "--username",
+            "alice",
+            "--server-id",
+            "alist-1",
+            "--instance-name",
+            "alist-main",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "emby",
+            "logout",
+            "--username",
+            "alice",
+            "--server-id",
+            "emby-1",
+            "--instance-name",
+            "emby-main",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "bilibili",
+            "logout",
+            "--username",
+            "alice",
+            "--instance-name",
+            "bilibili-main",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "cloudreve",
+            "logout",
+            "--username",
+            "alice",
+            "--server-id",
+            "cloudreve-1",
+            "--instance-name",
+            "cloudreve-main",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "fnos",
+            "logout",
+            "--username",
+            "alice",
+            "--server-id",
+            "fnos-1",
+            "--instance-name",
+            "fnos-main",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "nextcloud",
+            "logout",
+            "--username",
+            "alice",
+            "--server-id",
+            "nextcloud-1",
+            "--instance-name",
+            "nextcloud-main",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "qnap",
+            "logout",
+            "--username",
+            "alice",
+            "--server-id",
+            "qnap-1",
+            "--instance-name",
+            "qnap-main",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "seafile",
+            "logout",
+            "--username",
+            "alice",
+            "--server-id",
+            "seafile-1",
+            "--instance-name",
+            "seafile-main",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "synology",
+            "logout",
+            "--username",
+            "alice",
+            "--server-id",
+            "synology-1",
+            "--instance-name",
+            "synology-main",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "truenas",
+            "logout",
+            "--username",
+            "alice",
+            "--server-id",
+            "truenas-1",
+            "--instance-name",
+            "truenas-main",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "douyin",
+            "unbind",
+            "--username",
+            "alice",
+            "--server-id",
+            "douyin-1",
+            "--instance-name",
+            "douyin-main",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "tiktok",
+            "unbind",
+            "--username",
+            "alice",
+            "--server-id",
+            "tiktok-1",
+            "--instance-name",
+            "tiktok-main",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "twitch",
+            "unbind",
+            "--username",
+            "alice",
+            "--server-id",
+            "twitch-1",
+            "--instance-name",
+            "twitch-main",
+        ],
+        vec![
+            "synctv",
+            "provider",
+            "youtube",
+            "unbind",
+            "--username",
+            "alice",
+            "--server-id",
+            "youtube-1",
+            "--instance-name",
+            "youtube-main",
+        ],
+    ];
+
+    for arguments in commands {
+        let error = Cli::try_parse_from(arguments.iter().copied())
+            .expect_err("credential removal commands must reject --instance-name");
+        assert!(
+            error.to_string().contains("--instance-name"),
+            "unexpected parse error: {error}"
+        );
+
+        Cli::try_parse_from(arguments[..arguments.len() - 2].iter().copied()).unwrap_or_else(
+            |error| {
+                panic!("credential removal command should parse without --instance-name: {error}")
+            },
+        );
     }
 }
 
@@ -3705,7 +3990,6 @@ fn cli_parses_playlist_provider_alist() {
         "playlist",
         "provider",
         "alist",
-        "--room-id",
         "room-1",
         "--username",
         "alice",
@@ -3742,7 +4026,6 @@ fn cli_parses_playlist_provider_emby() {
         "playlist",
         "provider",
         "emby",
-        "--room-id",
         "room-1",
         "--user-id",
         "user-1",
@@ -3779,7 +4062,6 @@ fn cli_parses_media_provider_alist() {
         "media",
         "provider",
         "alist",
-        "--room-id",
         "room-1",
         "--username",
         "alice",
@@ -3820,7 +4102,6 @@ fn cli_parses_media_provider_emby() {
         "media",
         "provider",
         "emby",
-        "--room-id",
         "room-1",
         "--user-id",
         "user-1",
@@ -3859,7 +4140,6 @@ fn cli_parses_media_provider_bilibili_pgc() {
         "provider",
         "bilibili",
         "pgc",
-        "--room-id",
         "room-1",
         "--user-id",
         "user-1",
@@ -3901,7 +4181,6 @@ fn cli_parses_media_provider_bilibili_live() {
         "provider",
         "bilibili",
         "live",
-        "--room-id",
         "room-1",
         "--username",
         "alice",
@@ -3937,7 +4216,6 @@ fn cli_parses_media_provider_bilibili_video() {
         "provider",
         "bilibili",
         "video",
-        "--room-id",
         "room-1",
         "--username",
         "alice",
@@ -3970,10 +4248,10 @@ fn cli_parses_media_provider_bilibili_video() {
 }
 
 #[test]
-fn cli_parses_provider_list_query_flags() {
+fn cli_parses_provider_instance_list_query_flags() {
     let cli = Cli::parse_from([
         "synctv",
-        "provider",
+        "provider-instance",
         "list",
         "--page",
         "2",
@@ -3993,9 +4271,8 @@ fn cli_parses_provider_list_query_flags() {
         "asc",
     ]);
     match cli.command {
-        Commands::Provider(ProviderCommand {
-            command: ProviderSubcommand::List(args),
-            ..
+        Commands::ProviderInstance(ProviderInstanceCommand {
+            command: ProviderInstanceSubcommand::List(args),
         }) => {
             assert_eq!(args.page, 2);
             assert_eq!(args.page_size, 25);
@@ -4112,7 +4389,6 @@ fn cli_parses_room_member_permissions_subcommand() {
         "room",
         "member",
         "set-permissions",
-        "--room-id",
         "room-1",
         "alice",
         "--role",
@@ -4144,7 +4420,6 @@ fn cli_parses_room_member_add_display_fields() {
         "room",
         "member",
         "add",
-        "--room-id",
         "room-1",
         "alice",
         "--role",
@@ -4180,7 +4455,6 @@ fn cli_parses_room_member_set_remark_name_subcommand() {
         "room",
         "member",
         "set-remark-name",
-        "--room-id",
         "room-1",
         "--user-id",
         "user-9",
@@ -4210,7 +4484,6 @@ fn cli_parses_room_member_set_display_tag_subcommand() {
         "room",
         "member",
         "set-display-tag",
-        "--room-id",
         "room-1",
         "--user-id",
         "user-9",
@@ -4240,7 +4513,6 @@ fn cli_parses_room_member_permission_names() {
         "room",
         "member",
         "set-permissions",
-        "--room-id",
         "room-1",
         "alice",
         "--added-permissions",
@@ -4279,7 +4551,6 @@ fn cli_accepts_send_chat_messages_permission_name() {
         "room",
         "member",
         "set-permissions",
-        "--room-id",
         "room-1",
         "alice",
         "--removed-permissions",
@@ -4308,7 +4579,6 @@ fn cli_rejects_unknown_room_member_permission_name() {
         "room",
         "member",
         "set-permissions",
-        "--room-id",
         "room-1",
         "alice",
         "--added-permissions",
@@ -4328,7 +4598,6 @@ fn cli_rejects_unknown_room_member_permission_bitmask() {
         "room",
         "member",
         "set-permissions",
-        "--room-id",
         "room-1",
         "alice",
         "--added-permissions",
@@ -4392,7 +4661,6 @@ fn cli_parses_room_member_kick_with_explicit_user_id() {
         "room",
         "member",
         "kick",
-        "--room-id",
         "room-1",
         "--user-id",
         "user-9",
@@ -4422,7 +4690,6 @@ fn cli_parses_room_playback_start_with_media_id() {
         "room",
         "playback",
         "start",
-        "--room-id",
         "room-1",
         "--media-id",
         "media-1",
@@ -4451,7 +4718,6 @@ fn cli_parses_optional_room_playback_actor() {
         "room",
         "playback",
         "start",
-        "--room-id",
         "room-1",
         "--media-id",
         "media-1",
@@ -4480,7 +4746,6 @@ fn cli_parses_room_playback_get_with_profile_flags() {
         "room",
         "playback",
         "get",
-        "--room-id",
         "room-1",
         "--stream",
         "transcode",
@@ -5064,7 +5329,6 @@ fn cli_accepts_room_stream_list_query_flags() {
         "room",
         "stream",
         "list",
-        "--room-id",
         "room-1",
         "--page",
         "2",
@@ -5091,7 +5355,6 @@ fn cli_parses_room_stream_kick_subcommand() {
         "room",
         "stream",
         "kick",
-        "--room-id",
         "room-1",
         "--media-id",
         "media-1",

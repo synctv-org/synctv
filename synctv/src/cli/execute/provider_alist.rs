@@ -12,7 +12,7 @@ pub(super) async fn execute_provider_alist(command: ProviderAlistCommand) -> Res
                 management_proto::AlistLoginRequest {
                     actor: Some(actor_user_id),
                     request: Some(synctv_proto::providers::alist::LoginRequest {
-                        host: args.host,
+                        host: args.server_endpoint,
                         username: args.account_username,
                         credential: Some(credential),
                         otp_code: args.otp_code.unwrap_or_default(),
@@ -91,8 +91,7 @@ pub(super) async fn execute_provider_alist(command: ProviderAlistCommand) -> Res
                 management_proto::AlistLogoutRequest {
                     actor: Some(actor_user_id),
                     request: Some(synctv_proto::providers::alist::LogoutRequest {
-                        server_id: args.bind.server_id,
-                        instance_name: provider_service_instance_name(&args.bind.instance),
+                        server_id: args.server_id,
                     }),
                 }
             )?;

@@ -300,7 +300,7 @@ impl RemoteProviderManager {
 
         if !Self::requires_remote_connection(&config) {
             return Err(crate::Error::InvalidInput(format!(
-                "Instance '{name}' is local-only and does not support remote reconnect"
+                "Instance '{name}' does not declare any providers and cannot reconnect"
             )));
         }
 

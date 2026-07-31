@@ -43,8 +43,7 @@ pub(super) async fn execute_provider_tiktok(command: ProviderTikTokCommand) -> R
                 management_proto::TikTokUnbindRequest {
                     actor: Some(actor_user_id),
                     request: Some(synctv_proto::providers::tiktok::UnbindRequest {
-                        server_id: args.bind.server_id,
-                        instance_name: provider_service_instance_name(&args.bind.instance),
+                        server_id: args.server_id,
                     }),
                 }
             )?;

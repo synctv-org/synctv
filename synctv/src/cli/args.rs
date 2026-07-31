@@ -109,6 +109,8 @@ pub enum Commands {
     /// Media lifecycle operations within a room
     Media(MediaCommand),
     /// Remote media provider instance lifecycle management
+    ProviderInstance(ProviderInstanceCommand),
+    /// Media provider service operations
     Provider(ProviderCommand),
     /// Runtime settings management through the management endpoint
     Settings(SettingsCommand),
@@ -251,7 +253,7 @@ pub struct RoomScopedRemoteArgs {
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
 
-    #[arg(long, allow_hyphen_values = true)]
+    #[arg(value_name = "ROOM_ID", allow_hyphen_values = true)]
     pub room_id: String,
 }
 

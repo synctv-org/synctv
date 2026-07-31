@@ -55,6 +55,25 @@ fn prost_config() -> tonic_prost_build::Config {
     );
     config.extern_path(".synctv.provider.emby", "::synctv_proto::providers::emby");
     config.extern_path(".synctv.provider.rtmp", "::synctv_proto::providers::rtmp");
+    for provider in [
+        "acfun",
+        "cctv",
+        "cloudreve",
+        "douyu",
+        "fnos",
+        "huya",
+        "nextcloud",
+        "qnap",
+        "seafile",
+        "synology",
+        "truenas",
+        "youtube",
+    ] {
+        config.extern_path(
+            format!(".synctv.provider.{provider}"),
+            format!("::synctv_proto::providers::{provider}"),
+        );
+    }
     config
 }
 
@@ -312,6 +331,25 @@ fn build_pbjson(out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     );
     builder.extern_path(".synctv.provider.emby", "::synctv_proto::providers::emby");
     builder.extern_path(".synctv.provider.rtmp", "::synctv_proto::providers::rtmp");
+    for provider in [
+        "acfun",
+        "cctv",
+        "cloudreve",
+        "douyu",
+        "fnos",
+        "huya",
+        "nextcloud",
+        "qnap",
+        "seafile",
+        "synology",
+        "truenas",
+        "youtube",
+    ] {
+        builder.extern_path(
+            format!(".synctv.provider.{provider}"),
+            format!("::synctv_proto::providers::{provider}"),
+        );
+    }
     builder.register_descriptors(&descriptor_set)?;
     builder.build(&[".synctv.management"])?;
     stricten_pbjson_serde_files(out_dir)?;

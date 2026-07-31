@@ -525,18 +525,13 @@ pub(crate) async fn logout(
     State(state): State<AppState>,
     Json(req): Json<LogoutRequest>,
 ) -> AppResult<Json<synctv_proto::providers::fnos::LogoutResponse>> {
-    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.fnos_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
         request_meta,
         EndpointRateLimitCategory::Auth,
         move |_control, authenticated| {
-            async move {
-                api.logout(authenticated.user_id, req, instance_name.as_deref())
-                    .await
-            }
-            .boxed()
+            async move { api.logout(authenticated.user_id, req).await }.boxed()
         },
     )
     .await

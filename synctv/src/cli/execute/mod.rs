@@ -28,9 +28,28 @@ const MANAGEMENT_UNARY_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const MANAGEMENT_STOP_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 macro_rules! management_unary_call {
-    ($session:expr, $operation:literal, $method:ident, $request:expr) => {{
+    ($session:expr, $operation:expr, $method:ident, $request:expr) => {{
         let mut client = $session.management_client();
         management_unary_response($operation, client.$method($request)).await
+    }};
+}
+
+macro_rules! provider_call {
+    ($args:expr, $method:ident, $wrapper:ident, $request:expr) => {{
+        let access = &$args.access;
+        let remote = &access.remote;
+        let (session, actor) = connect_provider_actor_access(access).await?;
+        let request = $request;
+        let response = management_unary_call!(
+            session,
+            stringify!($method),
+            $method,
+            management_proto::$wrapper {
+                actor: Some(actor),
+                request: Some(request),
+            }
+        )?;
+        remote.print_output(&response)
     }};
 }
 
@@ -46,7 +65,9 @@ mod provider_alist;
 mod provider_bilibili;
 mod provider_douyin;
 mod provider_emby;
+mod provider_instance;
 mod provider_rtmp;
+mod provider_services;
 mod provider_tiktok;
 mod provider_twitch;
 mod review;
@@ -72,7 +93,9 @@ use provider_alist::execute_provider_alist;
 use provider_bilibili::execute_provider_bilibili;
 use provider_douyin::execute_provider_douyin;
 use provider_emby::execute_provider_emby;
+use provider_instance::execute_provider_instance;
 use provider_rtmp::execute_provider_rtmp;
+use provider_services::*;
 use provider_tiktok::execute_provider_tiktok;
 use provider_twitch::execute_provider_twitch;
 use review::execute_review;
@@ -90,7 +113,6 @@ use user::execute_user;
 pub(in crate::cli) use db::{database_summary, DatabaseCliOutput};
 #[cfg(test)]
 pub(in crate::cli) use serve::switch_process_working_dir_to_data_dir;
-#[cfg(test)]
 #[cfg(test)]
 pub(in crate::cli) use stop::{
     stop_stream_disconnect_can_be_treated_as_success, stop_stream_end_can_be_treated_as_success,
@@ -111,6 +133,9 @@ pub async fn execute(cli: Cli) -> Result<()> {
         Commands::Playlist(playlist) => execute_playlist(playlist).await,
         Commands::Media(media) => execute_media(media).await,
         Commands::Provider(provider) => execute_provider(provider).await,
+        Commands::ProviderInstance(provider_instance) => {
+            execute_provider_instance(provider_instance).await
+        }
         Commands::Settings(settings) => execute_settings(settings).await,
         Commands::System(system) => execute_system(system).await,
         Commands::SliceCache(slice_cache) => execute_slice_cache(slice_cache).await,
@@ -142,6 +167,9 @@ pub(in crate::cli) fn apply_root_global_overrides(mut cli: Cli) -> Cli {
         Commands::Ban(command) => merge_ban_command_globals(command, &root),
         Commands::Playlist(command) => merge_playlist_command_globals(command, &root),
         Commands::Media(command) => merge_media_command_globals(command, &root),
+        Commands::ProviderInstance(command) => {
+            merge_provider_instance_command_globals(command, &root);
+        }
         Commands::Provider(command) => merge_provider_command_globals(command, &root),
         Commands::Settings(command) => merge_settings_command_globals(command, &root),
         Commands::System(command) => merge_system_command_globals(command, &root),
@@ -373,17 +401,10 @@ fn merge_media_command_globals(command: &mut MediaCommand, root: &GlobalConfigAr
     }
 }
 
+#[allow(clippy::match_same_arms)]
 fn merge_provider_command_globals(command: &mut ProviderCommand, root: &GlobalConfigArgs) {
     match &mut command.command {
-        ProviderSubcommand::Available(args) => merge_remote_access_args(&mut args.remote, root),
         ProviderSubcommand::Backends(args) => merge_remote_access_args(&mut args.remote, root),
-        ProviderSubcommand::List(args) => merge_remote_access_args(&mut args.remote, root),
-        ProviderSubcommand::Create(args) => merge_remote_access_args(&mut args.remote, root),
-        ProviderSubcommand::Update(args) => merge_remote_access_args(&mut args.remote, root),
-        ProviderSubcommand::Delete(args) => merge_remote_access_args(&mut args.remote, root),
-        ProviderSubcommand::Reconnect(args) => merge_remote_access_args(&mut args.remote, root),
-        ProviderSubcommand::Enable(args) => merge_remote_access_args(&mut args.remote, root),
-        ProviderSubcommand::Disable(args) => merge_remote_access_args(&mut args.remote, root),
         ProviderSubcommand::Alist(command) => match &mut command.command {
             ProviderAlistSubcommand::Login(args) => {
                 merge_remote_access_args(&mut args.access.remote, root);
@@ -444,9 +465,27 @@ fn merge_provider_command_globals(command: &mut ProviderCommand, root: &GlobalCo
                 merge_remote_access_args(&mut args.access.remote, root);
             }
             ProviderBilibiliSubcommand::Logout(args) => {
-                merge_remote_access_args(&mut args.access.remote, root);
+                merge_remote_access_args(&mut args.remote, root);
             }
             ProviderBilibiliSubcommand::Binds(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderBilibiliSubcommand::LiveAreas(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderBilibiliSubcommand::FavoriteFolders(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderBilibiliSubcommand::FollowedPgc(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderBilibiliSubcommand::History(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderBilibiliSubcommand::PgcTimeline(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderBilibiliSubcommand::PgcSeasons(args) => {
                 merge_remote_access_args(&mut args.access.remote, root);
             }
         },
@@ -503,6 +542,21 @@ fn merge_provider_command_globals(command: &mut ProviderCommand, root: &GlobalCo
             ProviderTwitchSubcommand::Items(args) => {
                 merge_remote_access_args(&mut args.access.remote, root);
             }
+            ProviderTwitchSubcommand::FollowedLive(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderTwitchSubcommand::CategoryStreams(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderTwitchSubcommand::TopCategories(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderTwitchSubcommand::SearchLive(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderTwitchSubcommand::Schedule(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
         },
         ProviderSubcommand::Rtmp(command) => match &mut command.command {
             ProviderRtmpSubcommand::CreatePublishKey(args) => {
@@ -512,6 +566,224 @@ fn merge_provider_command_globals(command: &mut ProviderCommand, root: &GlobalCo
                 merge_remote_access_args(&mut args.remote, root);
             }
         },
+        ProviderSubcommand::Acfun(command) => match &mut command.command {
+            ProviderAcfunSubcommand::Resolve(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+        ProviderSubcommand::Cctv(command) => match &mut command.command {
+            ProviderCctvSubcommand::Resolve(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+        ProviderSubcommand::Douyu(command) => match &mut command.command {
+            ProviderDouyuSubcommand::Resolve(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+        ProviderSubcommand::Huya(command) => match &mut command.command {
+            ProviderHuyaSubcommand::Resolve(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+        ProviderSubcommand::Youtube(command) => match &mut command.command {
+            ProviderYoutubeSubcommand::Bind(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderYoutubeSubcommand::Binds(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderYoutubeSubcommand::Unbind(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderYoutubeSubcommand::Resolve(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+        ProviderSubcommand::Cloudreve(command) => match &mut command.command {
+            ProviderCloudreveSubcommand::Login(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderCloudreveSubcommand::List(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderCloudreveSubcommand::Search(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderCloudreveSubcommand::Me(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderCloudreveSubcommand::Logout(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderCloudreveSubcommand::Binds(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+        ProviderSubcommand::Fnos(command) => match &mut command.command {
+            ProviderFnosSubcommand::Login(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderFnosSubcommand::List(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderFnosSubcommand::Libraries(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderFnosSubcommand::Items(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderFnosSubcommand::SetFavorite(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderFnosSubcommand::SetWatched(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderFnosSubcommand::ServerInfo(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderFnosSubcommand::Logout(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderFnosSubcommand::Binds(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+        ProviderSubcommand::Nextcloud(command) => match &mut command.command {
+            ProviderNextcloudSubcommand::Login(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderNextcloudSubcommand::StartLoginFlow(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderNextcloudSubcommand::PollLoginFlow(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderNextcloudSubcommand::List(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderNextcloudSubcommand::Favorites(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderNextcloudSubcommand::Logout(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderNextcloudSubcommand::Binds(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+        ProviderSubcommand::Qnap(command) => match &mut command.command {
+            ProviderQnapSubcommand::Login(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderQnapSubcommand::List(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderQnapSubcommand::Capabilities(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderQnapSubcommand::Logout(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderQnapSubcommand::Binds(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+        ProviderSubcommand::Seafile(command) => match &mut command.command {
+            ProviderSeafileSubcommand::Login(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderSeafileSubcommand::UnlockLibrary(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderSeafileSubcommand::Repositories(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderSeafileSubcommand::List(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderSeafileSubcommand::Starred(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderSeafileSubcommand::Logout(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderSeafileSubcommand::Binds(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+        ProviderSubcommand::Synology(command) => match &mut command.command {
+            ProviderSynologySubcommand::Login(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderSynologySubcommand::Files(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderSynologySubcommand::Libraries(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderSynologySubcommand::Movies(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderSynologySubcommand::TvShows(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderSynologySubcommand::Episodes(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderSynologySubcommand::HomeVideos(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderSynologySubcommand::Recordings(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderSynologySubcommand::Logout(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderSynologySubcommand::Binds(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+        ProviderSubcommand::Truenas(command) => match &mut command.command {
+            ProviderTruenasSubcommand::Login(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderTruenasSubcommand::List(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderTruenasSubcommand::Logout(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderTruenasSubcommand::Binds(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+    }
+}
+
+fn merge_provider_instance_command_globals(
+    command: &mut ProviderInstanceCommand,
+    root: &GlobalConfigArgs,
+) {
+    match &mut command.command {
+        ProviderInstanceSubcommand::Available(args) => {
+            merge_remote_access_args(&mut args.remote, root);
+        }
+        ProviderInstanceSubcommand::List(args) => {
+            merge_remote_access_args(&mut args.remote, root);
+        }
+        ProviderInstanceSubcommand::Create(args) => {
+            merge_remote_access_args(&mut args.remote, root);
+        }
+        ProviderInstanceSubcommand::Update(args) => {
+            merge_remote_access_args(&mut args.remote, root);
+        }
+        ProviderInstanceSubcommand::Delete(args)
+        | ProviderInstanceSubcommand::Reconnect(args)
+        | ProviderInstanceSubcommand::Enable(args)
+        | ProviderInstanceSubcommand::Disable(args) => {
+            merge_remote_access_args(&mut args.remote, root);
+        }
     }
 }
 

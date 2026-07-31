@@ -113,19 +113,17 @@ pub(super) async fn execute_provider_bilibili(command: ProviderBilibiliCommand) 
             args.access.remote.print_output(&response)
         }
         ProviderBilibiliSubcommand::Logout(args) => {
-            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let (session, actor_user_id) = connect_provider_actor_access(&args).await?;
             let response = management_unary_call!(
                 session,
                 "bilibili logout",
                 bilibili_logout,
                 management_proto::BilibiliLogoutRequest {
                     actor: Some(actor_user_id),
-                    request: Some(synctv_proto::providers::bilibili::LogoutRequest {
-                        instance_name: provider_service_instance_name(&args.instance),
-                    }),
+                    request: Some(synctv_proto::providers::bilibili::LogoutRequest {}),
                 }
             )?;
-            args.access.remote.print_output(&response)
+            args.remote.print_output(&response)
         }
         ProviderBilibiliSubcommand::Binds(args) => {
             let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
@@ -142,5 +140,107 @@ pub(super) async fn execute_provider_bilibili(command: ProviderBilibiliCommand) 
             )?;
             args.access.remote.print_output(&response)
         }
+        ProviderBilibiliSubcommand::LiveAreas(args) => execute_bilibili_live_areas(args).await,
+        ProviderBilibiliSubcommand::FavoriteFolders(args) => {
+            execute_bilibili_favorite_folders(args).await
+        }
+        ProviderBilibiliSubcommand::FollowedPgc(args) => execute_bilibili_followed_pgc(args).await,
+        ProviderBilibiliSubcommand::History(args) => execute_bilibili_history(args).await,
+        ProviderBilibiliSubcommand::PgcTimeline(args) => execute_bilibili_pgc_timeline(args).await,
+        ProviderBilibiliSubcommand::PgcSeasons(args) => execute_bilibili_pgc_seasons(args).await,
     }
+}
+
+pub(crate) async fn execute_bilibili_live_areas(
+    args: ProviderBilibiliListLiveAreasArgs,
+) -> Result<()> {
+    provider_call!(
+        args,
+        bilibili_list_live_areas,
+        BilibiliListLiveAreasRequest,
+        synctv_proto::providers::bilibili::ListLiveAreasRequest {
+            instance_name: provider_service_instance_name(&args.instance)
+        }
+    )
+}
+
+pub(crate) async fn execute_bilibili_favorite_folders(
+    args: ProviderBilibiliFavoriteFoldersArgs,
+) -> Result<()> {
+    provider_call!(
+        args,
+        bilibili_list_favorite_folders,
+        BilibiliListFavoriteFoldersRequest,
+        synctv_proto::providers::bilibili::ListFavoriteFoldersRequest {
+            instance_name: provider_service_instance_name(&args.instance)
+        }
+    )
+}
+
+pub(crate) async fn execute_bilibili_followed_pgc(
+    args: ProviderBilibiliFollowedPgcArgs,
+) -> Result<()> {
+    provider_call!(
+        args,
+        bilibili_list_followed_pgc,
+        BilibiliListFollowedPgcRequest,
+        synctv_proto::providers::bilibili::ListFollowedPgcRequest {
+            instance_name: provider_service_instance_name(&args.instance),
+            r#type: args.r#type.to_proto(),
+            page: args.page,
+            page_size: args.page_size
+        }
+    )
+}
+
+pub(crate) async fn execute_bilibili_history(args: ProviderBilibiliHistoryArgs) -> Result<()> {
+    provider_call!(
+        args,
+        bilibili_list_history,
+        BilibiliListHistoryRequest,
+        synctv_proto::providers::bilibili::ListHistoryRequest {
+            r#type: args.r#type.to_proto(),
+            cursor: args.cursor,
+            page_size: args.page_size,
+            instance_name: provider_service_instance_name(&args.instance)
+        }
+    )
+}
+
+pub(crate) async fn execute_bilibili_pgc_timeline(
+    args: ProviderBilibiliPgcTimelineArgs,
+) -> Result<()> {
+    provider_call!(
+        args,
+        bilibili_list_pgc_timeline,
+        BilibiliListPgcTimelineRequest,
+        synctv_proto::providers::bilibili::ListPgcTimelineRequest {
+            r#type: args.r#type.to_proto(),
+            before_days: args.before_days,
+            after_days: args.after_days,
+            instance_name: provider_service_instance_name(&args.instance)
+        }
+    )
+}
+
+pub(crate) async fn execute_bilibili_pgc_seasons(
+    args: ProviderBilibiliPgcSeasonsArgs,
+) -> Result<()> {
+    provider_call!(
+        args,
+        bilibili_list_pgc_seasons,
+        BilibiliListPgcSeasonsRequest,
+        synctv_proto::providers::bilibili::ListPgcSeasonsRequest {
+            r#type: args.r#type.to_proto(),
+            page: args.page,
+            page_size: args.page_size,
+            order: args.order.to_proto(),
+            ascending: args.ascending,
+            finished: args.finished,
+            area: args.area,
+            year: args.year,
+            style_id: args.style_id,
+            instance_name: provider_service_instance_name(&args.instance)
+        }
+    )
 }

@@ -25,3 +25,22 @@ pub struct ProviderBoundCredentialArgs {
     #[command(flatten)]
     pub instance: ProviderServiceInstanceArgs,
 }
+
+#[derive(Debug, Clone, Args)]
+pub struct ProviderBoundCredentialInstanceCommandArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub bind: ProviderBoundCredentialArgs,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ProviderCredentialCommandArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    /// Stored provider credential server identifier
+    #[arg(long)]
+    pub server_id: String,
+}

@@ -339,10 +339,7 @@ impl FnosApiImpl {
         &self,
         user_id: UserId,
         req: LogoutRequest,
-        requested_instance_name: Option<&str>,
     ) -> Result<LogoutResponse, ProviderError> {
-        let (_, stored_instance_name) = self.provider.server_info(user_id, &req.server_id).await?;
-        resolve_bound_instance_name(requested_instance_name, stored_instance_name.as_deref())?;
         let success = self
             .provider
             .delete_credential(user_id, &req.server_id)

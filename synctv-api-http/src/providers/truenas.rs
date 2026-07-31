@@ -55,14 +55,22 @@ user_post!(
     EndpointRateLimitCategory::Read,
     list
 );
-user_post!(
-    logout,
-    "/api/providers/truenas/logout",
-    LogoutRequest,
-    synctv_proto::providers::truenas::LogoutResponse,
-    EndpointRateLimitCategory::Write,
-    logout
-);
+
+#[cfg_attr(feature = "openapi", utoipa::path(post, path = "/api/providers/truenas/logout", tag = "Provider", request_body = LogoutRequest, responses((status = 200, body = synctv_proto::providers::truenas::LogoutResponse)), security(("bearer_auth" = []))))]
+pub(crate) async fn logout(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<LogoutRequest>,
+) -> AppResult<Json<synctv_proto::providers::truenas::LogoutResponse>> {
+    let api = state.shared_api_runtime.truenas_api.clone();
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |_control, auth| async move { api.logout(auth.user_id, req).await }.boxed(),
+    )
+    .await
+}
 
 #[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/providers/truenas/binds", tag = "Provider", responses((status = 200, body = GetBindsResponse)), security(("bearer_auth" = []))))]
 pub(crate) async fn binds(

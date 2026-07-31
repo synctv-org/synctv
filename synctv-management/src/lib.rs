@@ -186,9 +186,24 @@ mod tests {
         let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let admin_runtime = std::fs::read_to_string(manifest_dir.join("src/admin_runtime.rs"))
             .expect("admin runtime source should be readable");
-        let provider_runtime =
-            std::fs::read_to_string(manifest_dir.join("src/provider_runtime.rs"))
-                .expect("provider runtime source should be readable");
+        let provider_runtime_dir = manifest_dir.join("src/provider_runtime");
+        assert!(
+            provider_runtime_dir.is_dir(),
+            "provider runtime contracts should be split by provider"
+        );
+        let provider_runtime = std::fs::read_dir(provider_runtime_dir)
+            .expect("provider runtime source directory should be readable")
+            .map(|entry| entry.expect("provider runtime directory entry should be readable"))
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "rs")
+            })
+            .map(|entry| std::fs::read_to_string(entry.path()))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("provider runtime source files should be readable")
+            .join("\n");
 
         assert!(admin_runtime.contains("query: ListUsersQuery"));
         assert!(admin_runtime.contains("query: GetUserQuery"));

@@ -12,16 +12,6 @@ impl RemoteProviderManager {
     ) -> crate::Result<()> {
         validate_provider_instance_name(&config.name).map_err(crate::Error::InvalidInput)?;
         config.parse_timeout().map_err(crate::Error::Internal)?;
-        for provider in &config.providers {
-            if !Self::is_supported_remote_provider(provider.as_str()) {
-                return Err(crate::Error::InvalidInput(format!(
-                    "Remote provider instance '{}' declares unsupported provider '{}'; supported providers are: {}",
-                    config.name,
-                    provider,
-                    Self::SUPPORTED_REMOTE_PROVIDERS.join(", ")
-                )));
-            }
-        }
         if Self::requires_remote_connection(config) {
             validate_endpoint_ssrf(&config.endpoint, ssrf_guard)
                 .map_err(|error| Self::map_remote_transport_validation_error(&error))?;
@@ -82,14 +72,6 @@ impl RemoteProviderManager {
     }
 
     pub(super) fn requires_remote_connection(config: &ProviderInstance) -> bool {
-        config
-            .providers
-            .iter()
-            .any(|provider| Self::is_supported_remote_provider(provider.as_str()))
-    }
-
-    fn is_supported_remote_provider(provider: &str) -> bool {
-        let trimmed = provider.trim();
-        Self::SUPPORTED_REMOTE_PROVIDERS.contains(&trimmed)
+        !config.providers.is_empty()
     }
 }

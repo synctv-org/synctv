@@ -446,7 +446,6 @@ mod tests {
                 &synctv_core::models::UserId::new(),
                 synctv_proto::providers::alist::LogoutRequest {
                     server_id: String::new(),
-                    instance_name: String::new(),
                 },
             )
             .await,

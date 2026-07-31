@@ -479,8 +479,599 @@ mod tests {
     #[cfg(unix)]
     #[tonic::async_trait]
     impl ManagementService for TestManagementService {
-        type StopServerStream =
-            Pin<Box<dyn tokio_stream::Stream<Item = Result<StopServerEvent, Status>> + Send>>;
+        type StopServerStream = Pin<
+            Box<dyn tokio_stream::Stream<Item = Result<StopServerEvent, Status>> + Send + 'static>,
+        >;
+
+        async fn acfun_resolve(
+            &self,
+            _: Request<synctv_management::proto::AcfunResolveRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::acfun::ResolveResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn cctv_resolve(
+            &self,
+            _: Request<synctv_management::proto::CctvResolveRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::cctv::ResolveResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn douyu_resolve(
+            &self,
+            _: Request<synctv_management::proto::DouyuResolveRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::douyu::ResolveResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn huya_resolve(
+            &self,
+            _: Request<synctv_management::proto::HuyaResolveRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::huya::ResolveResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn youtube_bind(
+            &self,
+            _: Request<synctv_management::proto::YoutubeBindRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::youtube::BindResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn youtube_get_binds(
+            &self,
+            _: Request<synctv_management::proto::YoutubeGetBindsRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::youtube::GetBindsResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn youtube_unbind(
+            &self,
+            _: Request<synctv_management::proto::YoutubeUnbindRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::youtube::UnbindResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn youtube_resolve(
+            &self,
+            _: Request<synctv_management::proto::YoutubeResolveRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::youtube::ResolveResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn cloudreve_login(
+            &self,
+            _: Request<synctv_management::proto::CloudreveLoginRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::cloudreve::LoginResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn cloudreve_list(
+            &self,
+            _: Request<synctv_management::proto::CloudreveListRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::cloudreve::ListResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn cloudreve_search(
+            &self,
+            _: Request<synctv_management::proto::CloudreveSearchRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::cloudreve::SearchResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn cloudreve_get_me(
+            &self,
+            _: Request<synctv_management::proto::CloudreveGetMeRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::cloudreve::GetMeResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn cloudreve_logout(
+            &self,
+            _: Request<synctv_management::proto::CloudreveLogoutRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::cloudreve::LogoutResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn cloudreve_get_binds(
+            &self,
+            _: Request<synctv_management::proto::CloudreveGetBindsRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::cloudreve::GetBindsResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn fnos_login(
+            &self,
+            _: Request<synctv_management::proto::FnosLoginRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::fnos::LoginResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn fnos_list(
+            &self,
+            _: Request<synctv_management::proto::FnosListRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::fnos::ListResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn fnos_list_media_libraries(
+            &self,
+            _: Request<synctv_management::proto::FnosListMediaLibrariesRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::fnos::ListMediaLibrariesResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn fnos_list_media_items(
+            &self,
+            _: Request<synctv_management::proto::FnosListMediaItemsRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::fnos::ListMediaItemsResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn fnos_set_favorite(
+            &self,
+            _: Request<synctv_management::proto::FnosSetFavoriteRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::fnos::SetFavoriteResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn fnos_set_watched(
+            &self,
+            _: Request<synctv_management::proto::FnosSetWatchedRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::fnos::SetWatchedResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn fnos_get_server_info(
+            &self,
+            _: Request<synctv_management::proto::FnosGetServerInfoRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::fnos::GetServerInfoResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn fnos_logout(
+            &self,
+            _: Request<synctv_management::proto::FnosLogoutRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::fnos::LogoutResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn fnos_get_binds(
+            &self,
+            _: Request<synctv_management::proto::FnosGetBindsRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::fnos::GetBindsResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn nextcloud_login(
+            &self,
+            _: Request<synctv_management::proto::NextcloudLoginRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::nextcloud::LoginResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn nextcloud_start_login_flow(
+            &self,
+            _: Request<synctv_management::proto::NextcloudStartLoginFlowRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::nextcloud::StartLoginFlowResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn nextcloud_poll_login_flow(
+            &self,
+            _: Request<synctv_management::proto::NextcloudPollLoginFlowRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::nextcloud::LoginResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn nextcloud_list(
+            &self,
+            _: Request<synctv_management::proto::NextcloudListRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::nextcloud::ListResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn nextcloud_list_favorites(
+            &self,
+            _: Request<synctv_management::proto::NextcloudListFavoritesRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::nextcloud::ListResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn nextcloud_logout(
+            &self,
+            _: Request<synctv_management::proto::NextcloudLogoutRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::nextcloud::LogoutResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn nextcloud_get_binds(
+            &self,
+            _: Request<synctv_management::proto::NextcloudGetBindsRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::nextcloud::GetBindsResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn qnap_login(
+            &self,
+            _: Request<synctv_management::proto::QnapLoginRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::qnap::LoginResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn qnap_list(
+            &self,
+            _: Request<synctv_management::proto::QnapListRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::qnap::ListResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn qnap_get_capabilities(
+            &self,
+            _: Request<synctv_management::proto::QnapGetCapabilitiesRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::qnap::GetCapabilitiesResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn qnap_logout(
+            &self,
+            _: Request<synctv_management::proto::QnapLogoutRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::qnap::LogoutResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn qnap_get_binds(
+            &self,
+            _: Request<synctv_management::proto::QnapGetBindsRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::qnap::GetBindsResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn seafile_login(
+            &self,
+            _: Request<synctv_management::proto::SeafileLoginRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::seafile::LoginResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn seafile_unlock_library(
+            &self,
+            _: Request<synctv_management::proto::SeafileUnlockLibraryRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::seafile::UnlockLibraryResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn seafile_list_repositories(
+            &self,
+            _: Request<synctv_management::proto::SeafileListRepositoriesRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::seafile::ListResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn seafile_list(
+            &self,
+            _: Request<synctv_management::proto::SeafileListRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::seafile::ListResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn seafile_list_starred(
+            &self,
+            _: Request<synctv_management::proto::SeafileListStarredRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::seafile::ListResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn seafile_logout(
+            &self,
+            _: Request<synctv_management::proto::SeafileLogoutRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::seafile::LogoutResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn seafile_get_binds(
+            &self,
+            _: Request<synctv_management::proto::SeafileGetBindsRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::seafile::GetBindsResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn synology_login(
+            &self,
+            _: Request<synctv_management::proto::SynologyLoginRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::synology::LoginResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn synology_list_files(
+            &self,
+            _: Request<synctv_management::proto::SynologyListFilesRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::synology::ListFilesResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn synology_list_libraries(
+            &self,
+            _: Request<synctv_management::proto::SynologyListLibrariesRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::synology::ListLibrariesResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn synology_list_movies(
+            &self,
+            _: Request<synctv_management::proto::SynologyListMoviesRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::synology::ListVideoItemsResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn synology_list_tv_shows(
+            &self,
+            _: Request<synctv_management::proto::SynologyListTvShowsRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::synology::ListVideoItemsResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn synology_list_episodes(
+            &self,
+            _: Request<synctv_management::proto::SynologyListEpisodesRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::synology::ListVideoItemsResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn synology_list_home_videos(
+            &self,
+            _: Request<synctv_management::proto::SynologyListHomeVideosRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::synology::ListVideoItemsResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn synology_list_tv_recordings(
+            &self,
+            _: Request<synctv_management::proto::SynologyListTvRecordingsRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::synology::ListVideoItemsResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn synology_logout(
+            &self,
+            _: Request<synctv_management::proto::SynologyLogoutRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::synology::LogoutResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn synology_get_binds(
+            &self,
+            _: Request<synctv_management::proto::SynologyGetBindsRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::synology::GetBindsResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn truenas_login(
+            &self,
+            _: Request<synctv_management::proto::TruenasLoginRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::truenas::LoginResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn truenas_list(
+            &self,
+            _: Request<synctv_management::proto::TruenasListRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::truenas::ListResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn truenas_logout(
+            &self,
+            _: Request<synctv_management::proto::TruenasLogoutRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::truenas::LogoutResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn truenas_get_binds(
+            &self,
+            _: Request<synctv_management::proto::TruenasGetBindsRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::truenas::GetBindsResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
+        async fn bilibili_list_live_areas(
+            &self,
+            _: Request<synctv_management::proto::BilibiliListLiveAreasRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::bilibili::ListLiveAreasResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn bilibili_list_favorite_folders(
+            &self,
+            _: Request<synctv_management::proto::BilibiliListFavoriteFoldersRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::bilibili::ListFavoriteFoldersResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn bilibili_list_followed_pgc(
+            &self,
+            _: Request<synctv_management::proto::BilibiliListFollowedPgcRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::bilibili::ListFollowedPgcResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn bilibili_list_history(
+            &self,
+            _: Request<synctv_management::proto::BilibiliListHistoryRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::bilibili::ListHistoryResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn bilibili_list_pgc_timeline(
+            &self,
+            _: Request<synctv_management::proto::BilibiliListPgcTimelineRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::bilibili::ListPgcTimelineResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn bilibili_list_pgc_seasons(
+            &self,
+            _: Request<synctv_management::proto::BilibiliListPgcSeasonsRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::bilibili::ListPgcSeasonsResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn twitch_list_followed_live(
+            &self,
+            _: Request<synctv_management::proto::TwitchListFollowedLiveRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::twitch::ListFollowedLiveResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn twitch_list_category_streams(
+            &self,
+            _: Request<synctv_management::proto::TwitchListCategoryStreamsRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::twitch::ListCategoryStreamsResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn twitch_list_top_categories(
+            &self,
+            _: Request<synctv_management::proto::TwitchListTopCategoriesRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::twitch::ListTopCategoriesResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn twitch_search_live_channels(
+            &self,
+            _: Request<synctv_management::proto::TwitchSearchLiveChannelsRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::twitch::SearchLiveChannelsResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn twitch_list_schedule(
+            &self,
+            _: Request<synctv_management::proto::TwitchListScheduleRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::twitch::ListScheduleResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
 
         async fn get_service_state(
             &self,
@@ -1390,7 +1981,12 @@ mod tests {
         async fn stop_server(
             &self,
             _: Request<StopServerRequest>,
-        ) -> std::result::Result<Response<Self::StopServerStream>, Status> {
+        ) -> std::result::Result<
+            Response<
+                Pin<Box<dyn tokio_stream::Stream<Item = Result<StopServerEvent, Status>> + Send>>,
+            >,
+            Status,
+        > {
             Ok(Response::new(Box::pin(stream::empty())))
         }
     }

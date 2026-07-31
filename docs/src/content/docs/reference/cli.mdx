@@ -316,17 +316,17 @@ synctv room settings reset <ROOM_ID>
 synctv room member list <ROOM_ID>
 synctv room member add <ROOM_ID> alice
 synctv room member set-permissions <ROOM_ID> alice --role admin
-synctv room member kick --room-id <ROOM_ID> alice --kick-cooldown-seconds 300
+synctv room member kick <ROOM_ID> alice --kick-cooldown-seconds 300
 ```
 
 播放控制：
 
 ```bash
 synctv room playback get <ROOM_ID>
-synctv room playback start --room-id <ROOM_ID> --media-id <MEDIA_ID>
+synctv room playback start <ROOM_ID> --media-id <MEDIA_ID>
 synctv room playback play <ROOM_ID>
 synctv room playback pause <ROOM_ID>
-synctv room playback seek --room-id <ROOM_ID> --position 60
+synctv room playback seek <ROOM_ID> --position 60
 synctv room playback speed <ROOM_ID> --speed 1.25
 synctv room playback stop <ROOM_ID>
 ```
@@ -368,9 +368,9 @@ synctv ban list
 ```bash
 synctv playlist list <ROOM_ID>
 synctv playlist get <ROOM_ID> <PLAYLIST_ID>
-synctv playlist create --room-id <ROOM_ID> --username alice "周末片单"
-synctv playlist update --room-id <ROOM_ID> <PLAYLIST_ID> --name "新标题"
-synctv playlist move --room-id <ROOM_ID> <PLAYLIST_ID> --after-playlist-id <OTHER_PLAYLIST_ID>
+synctv playlist create <ROOM_ID> --username alice "周末片单"
+synctv playlist update <ROOM_ID> <PLAYLIST_ID> --name "新标题"
+synctv playlist move <ROOM_ID> <PLAYLIST_ID> --after-playlist-id <OTHER_PLAYLIST_ID>
 synctv playlist delete <ROOM_ID> <PLAYLIST_ID>
 ```
 
@@ -378,10 +378,10 @@ synctv playlist delete <ROOM_ID> <PLAYLIST_ID>
 
 ```bash
 synctv media list <ROOM_ID>
-synctv media add-url --room-id <ROOM_ID> --username alice "https://example.com/video.mp4" --name "视频"
-synctv media add --room-id <ROOM_ID> --username alice --source-provider direct-url --source-config-json '{"medias":[{"url":"https://example.com/video.mp4"}]}' --name "视频"
-synctv media update --room-id <ROOM_ID> <MEDIA_ID> --name "新名称"
-synctv media move --room-id <ROOM_ID> <MEDIA_ID> --after-media-id <OTHER_MEDIA_ID>
+synctv media add-url <ROOM_ID> --username alice "https://example.com/video.mp4" --name "视频"
+synctv media add <ROOM_ID> --username alice --source-provider direct-url --source-config-json '{"medias":[{"url":"https://example.com/video.mp4"}]}' --name "视频"
+synctv media update <ROOM_ID> <MEDIA_ID> --name "新名称"
+synctv media move <ROOM_ID> <MEDIA_ID> --after-media-id <OTHER_MEDIA_ID>
 synctv media delete <ROOM_ID> <MEDIA_ID>
 ```
 
@@ -399,47 +399,49 @@ synctv media provider bilibili live <ROOM_ID> ...
 
 具体参数以 `--help` 输出为准。
 
+参数约定：房间 ID、资源地址等命令主目标使用位置参数；筛选条件、可选的关联 ID、Provider instance 绑定和连接设置使用明确的 `--kebab-case` 选项。
+
 ## Provider 管理
 
 Provider 实例管理：
 
 ```bash
-synctv provider available
+synctv provider-instance available
 synctv provider backends alist
-synctv provider list
-synctv provider create <NAME> <PROVIDER_ENDPOINT> --provider alist
-synctv provider update <NAME> --provider-endpoint <PROVIDER_ENDPOINT> --provider alist
-synctv provider enable <NAME>
-synctv provider disable <NAME>
-synctv provider reconnect <NAME>
-synctv provider delete <NAME>
+synctv provider-instance list
+synctv provider-instance create <NAME> <ENDPOINT> --provider alist
+synctv provider-instance update <NAME> --instance-endpoint <ENDPOINT>
+synctv provider-instance enable <NAME>
+synctv provider-instance disable <NAME>
+synctv provider-instance reconnect <NAME>
+synctv provider-instance delete <NAME>
 ```
 
 Alist 服务操作：
 
 ```bash
-synctv provider alist login --username alice --host https://alist.example --account-username alice --password 'pass' --instance-name alist-main
-synctv provider alist list --username alice --path / --instance-name alist-main
-synctv provider alist search --username alice --keyword movie --instance-name alist-main
-synctv provider alist me --username alice --instance-name alist-main
+synctv provider alist login --username alice --server-endpoint https://alist.example --account-username alice --password 'pass' --instance-name alist-main
+synctv provider alist list --username alice --server-id <SERVER_ID> --path / --instance-name alist-main
+synctv provider alist search --username alice --server-id <SERVER_ID> --parent / --keywords movie --instance-name alist-main
+synctv provider alist me --username alice --server-id <SERVER_ID> --instance-name alist-main
 synctv provider alist binds --username alice
-synctv provider alist logout --username alice --instance-name alist-main
+synctv provider alist logout --username alice --server-id <SERVER_ID>
 ```
 
 Emby 服务操作：
 
 ```bash
-synctv provider emby login --username alice --host https://emby.example --account-username alice --password 'pass' --instance-name emby-main
-synctv provider emby list --username alice --instance-name emby-main
-synctv provider emby me --username alice --instance-name emby-main
+synctv provider emby login --username alice --server-endpoint https://emby.example --account-username alice --password 'pass' --instance-name emby-main
+synctv provider emby list --username alice --server-id <SERVER_ID> --path / --instance-name emby-main
+synctv provider emby me --username alice --server-id <SERVER_ID> --instance-name emby-main
 synctv provider emby binds --username alice
-synctv provider emby logout --username alice --instance-name emby-main
+synctv provider emby logout --username alice --server-id <SERVER_ID>
 ```
 
 Bilibili 服务操作：
 
 ```bash
-synctv provider bilibili parse "https://www.bilibili.com/video/..."
+synctv provider bilibili parse "https://www.bilibili.com/video/..." --username alice
 synctv provider bilibili login-qr --username alice --instance-name bilibili-main
 synctv provider bilibili check-qr --username alice --key <KEY> --instance-name bilibili-main
 synctv provider bilibili start-sms-login --username alice --instance-name bilibili-main
@@ -447,15 +449,43 @@ synctv provider bilibili send-sms --username alice --phone 13800000000 --session
 synctv provider bilibili login-sms --username alice --session-token <UPDATED_SESSION_TOKEN> --code 123456
 synctv provider bilibili me --username alice --instance-name bilibili-main
 synctv provider bilibili binds --username alice
-synctv provider bilibili logout --username alice --instance-name bilibili-main
+synctv provider bilibili logout --username alice
 ```
 
 RTMP：
 
 ```bash
-synctv provider rtmp create-publish-key --username alice --room-id <ROOM_ID> <MEDIA_ID>
-synctv provider rtmp info --username alice --room-id <ROOM_ID> <MEDIA_ID>
+synctv provider rtmp create-publish-key --room-id <ROOM_ID> <MEDIA_ID> --username alice
+synctv provider rtmp get-stream-info --room-id <ROOM_ID> <MEDIA_ID>
 ```
+
+Provider 服务操作：
+
+```bash
+synctv provider acfun resolve <RESOURCE> --username alice
+synctv provider cctv resolve <RESOURCE> --username alice
+synctv provider douyu resolve <RESOURCE> --username alice
+synctv provider huya resolve <RESOURCE> --username alice
+synctv provider youtube resolve <RESOURCE> --username alice
+synctv provider youtube unbind --server-id <SERVER_ID> --username alice
+synctv provider cloudreve login --username alice --server-endpoint https://cloudreve.example --account-email alice@example.com --password <PASSWORD>
+synctv provider fnos login --username alice --server-endpoint https://fnos.example --account-username nas-alice --password <PASSWORD>
+synctv provider nextcloud login --username alice --server-endpoint https://nextcloud.example --account-username cloud-alice --app-password <APP_PASSWORD>
+synctv provider qnap login --username alice --server-endpoint https://qnap.example --account-username nas-alice --password <PASSWORD>
+synctv provider seafile login --username alice --server-endpoint https://seafile.example --account-username files-alice --password <PASSWORD>
+synctv provider synology login --username alice --server-endpoint https://synology.example --account-username nas-alice --password <PASSWORD>
+synctv provider cloudreve me --server-id <SERVER_ID> --username alice
+synctv provider cloudreve logout --server-id <SERVER_ID> --username alice
+synctv provider nextcloud logout --server-id <SERVER_ID> --username alice
+synctv provider qnap capabilities --server-id <SERVER_ID> --username alice
+synctv provider seafile logout --server-id <SERVER_ID> --username alice
+synctv provider synology logout --server-id <SERVER_ID> --username alice
+synctv provider truenas logout --server-id <SERVER_ID> --username alice
+synctv provider cloudreve list --username alice --server-id <SERVER_ID> --path /
+synctv provider synology movies --username alice --server-id <SERVER_ID> --library-id 1
+```
+
+`--username`、`--user-id` 与 `--email` 用于选择 SyncTV 操作者。登录命令通过 `--server-endpoint` 指定 Provider 账号服务器，并使用 `--account-username` 或 `--account-email` 指定 Provider 账号。
 
 ## Runtime settings
 

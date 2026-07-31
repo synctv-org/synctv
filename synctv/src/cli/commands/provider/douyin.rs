@@ -1,6 +1,6 @@
 use super::super::prelude::*;
 use super::{
-    ProviderBoundCredentialArgs, ProviderServiceInstanceArgs, ProviderServiceRemoteActorArgs,
+    ProviderCredentialCommandArgs, ProviderServiceInstanceArgs, ProviderServiceRemoteActorArgs,
 };
 
 #[derive(Debug, Args)]
@@ -16,7 +16,7 @@ pub enum ProviderDouyinSubcommand {
     /// List saved Douyin binds for an app user
     Binds(ProviderDouyinBindsArgs),
     /// Remove a saved Douyin bind
-    Unbind(ProviderDouyinUnbindArgs),
+    Unbind(ProviderCredentialCommandArgs),
     /// Resolve a Douyin video, live room, or short link
     Resolve(ProviderDouyinResolveArgs),
     /// List an author's video posts using Douyin cursor pagination
@@ -45,15 +45,6 @@ pub struct ProviderDouyinBindsArgs {
 
     #[command(flatten)]
     pub instance: ProviderServiceInstanceArgs,
-}
-
-#[derive(Debug, Args)]
-pub struct ProviderDouyinUnbindArgs {
-    #[command(flatten)]
-    pub access: ProviderServiceRemoteActorArgs,
-
-    #[command(flatten)]
-    pub bind: ProviderBoundCredentialArgs,
 }
 
 #[derive(Debug, Args)]

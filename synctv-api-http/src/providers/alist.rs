@@ -302,7 +302,6 @@ pub(crate) async fn logout(
 ) -> AppResult<Json<synctv_proto::providers::alist::LogoutResponse>> {
     tracing::info!("Alist logout request");
 
-    provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.alist_api.clone();
     execute_provider_user_endpoint(
         &state,

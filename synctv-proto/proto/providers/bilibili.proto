@@ -296,7 +296,6 @@ message UserInfoResponse {
 
 // Logout request
 message LogoutRequest {
-  string instance_name = 1; // Optional provider instance name
 }
 
 // Logout response

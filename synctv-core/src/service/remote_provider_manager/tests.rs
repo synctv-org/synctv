@@ -85,17 +85,19 @@ fn validate_config_rejects_invalid_provider_instance_name() {
 }
 
 #[test]
-fn validate_config_rejects_unsupported_provider_type() {
+fn validate_config_accepts_every_source_provider_type() {
     let mut config = remote_instance("http://provider.example.com:50051");
-    config.providers = vec![SourceProvider::DirectUrl];
 
-    let err = RemoteProviderManager::validate_config(&config)
-        .expect_err("unsupported remote provider types must be rejected");
-
-    assert!(
-        err.to_string().contains("unsupported provider"),
-        "unexpected error: {err}"
-    );
+    for provider in SourceProvider::ALL {
+        config.providers = vec![*provider];
+        ok(
+            RemoteProviderManager::validate_config(&config),
+            &format!(
+                "{} should be accepted by remote instances",
+                provider.as_str()
+            ),
+        );
+    }
 }
 
 #[test]

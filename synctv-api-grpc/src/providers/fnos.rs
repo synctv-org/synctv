@@ -205,14 +205,13 @@ impl FnosProviderService for FnosProviderGrpcService {
     ) -> Result<Response<LogoutResponse>, Status> {
         let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
-        let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
         self.request_executor
             .execute_user(
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |authenticated| async move {
-                    api.logout(authenticated.user_id, req, instance_name.as_deref())
+                    api.logout(authenticated.user_id, req)
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },

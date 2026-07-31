@@ -75,7 +75,6 @@ message GetMeResponse {
 // Logout request
 message LogoutRequest {
   string server_id = 1 [(buf.validate.field).string.min_len = 1]; // Which credential to unbind
-  string instance_name = 2; // Optional provider instance name
 }
 
 // Logout response

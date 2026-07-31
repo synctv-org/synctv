@@ -391,9 +391,27 @@ mod tests {
             (SourceProvider::Rtmp, 5, "rtmp"),
             (SourceProvider::LiveProxy, 6, "live_proxy"),
             (SourceProvider::Cloudreve, 7, "cloudreve"),
+            (SourceProvider::Twitch, 8, "twitch"),
+            (SourceProvider::Huya, 9, "huya"),
+            (SourceProvider::Douyu, 10, "douyu"),
+            (SourceProvider::Douyin, 11, "douyin"),
+            (SourceProvider::AcFun, 12, "acfun"),
+            (SourceProvider::Cctv, 13, "cctv"),
+            (SourceProvider::Fnos, 14, "fnos"),
+            (SourceProvider::Qnap, 15, "qnap"),
+            (SourceProvider::Synology, 16, "synology"),
+            (SourceProvider::Nextcloud, 17, "nextcloud"),
+            (SourceProvider::Seafile, 18, "seafile"),
+            (SourceProvider::TrueNas, 19, "truenas"),
+            (SourceProvider::Youtube, 20, "youtube"),
+            (SourceProvider::TikTok, 21, "tiktok"),
         ];
 
-        for (provider, code, name) in PROVIDERS {
+        assert_eq!(SourceProvider::ALL.len(), PROVIDERS.len());
+        for ((provider, code, name), listed_provider) in
+            PROVIDERS.iter().zip(SourceProvider::ALL.iter())
+        {
+            assert_eq!(provider, listed_provider);
             assert_eq!(provider.as_i16(), *code);
             assert_eq!(i16::from(*provider), *code);
             assert_eq!(SourceProvider::try_from(*code), Ok(*provider));

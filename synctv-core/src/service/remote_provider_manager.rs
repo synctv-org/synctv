@@ -11,7 +11,6 @@
 // their local connection cache even across restarts and transient disconnects.
 
 use crate::cache::CacheInvalidationRuntime;
-use crate::provider::{AlistProvider, BilibiliProvider, EmbyProvider};
 use crate::repository::ProviderInstanceRepository;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -113,12 +112,6 @@ impl std::fmt::Debug for RemoteProviderManager {
 }
 
 impl RemoteProviderManager {
-    const SUPPORTED_REMOTE_PROVIDERS: &'static [&'static str] = &[
-        AlistProvider::NAME,
-        EmbyProvider::NAME,
-        BilibiliProvider::NAME,
-    ];
-
     /// Create a new `RemoteProviderManager` without shared durable invalidation.
     #[must_use]
     pub fn new(repository: Arc<ProviderInstanceRepository>) -> Self {
@@ -233,7 +226,7 @@ impl RemoteProviderManager {
         for config in configs {
             if !Self::requires_remote_connection(&config) {
                 tracing::debug!(
-                    "Skipping remote connection pre-warm for local-only provider instance: {}",
+                    "Skipping remote connection pre-warm for provider instance with no declared providers: {}",
                     config.name
                 );
                 continue;

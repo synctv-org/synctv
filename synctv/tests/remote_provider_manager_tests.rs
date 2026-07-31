@@ -1924,21 +1924,24 @@ async fn scenario_update_remote_instances_validate_jwt_secret() {
     assert_ne!(fetched.timeout, "2s");
     assert_eq!(fetched.jwt_secret, None);
 
-    let mut local_missing_secret = make_test_instance("test-instance-local-to-remote-update");
-    local_missing_secret.providers = vec![SourceProvider::LiveProxy];
-    local_missing_secret.jwt_secret = None;
+    let mut provider_change_missing_secret =
+        make_test_instance("test-instance-provider-change-missing-secret");
+    provider_change_missing_secret.providers = vec![SourceProvider::LiveProxy];
+    provider_change_missing_secret.jwt_secret = None;
 
-    repo.create(&local_missing_secret)
+    repo.create(&provider_change_missing_secret)
         .await
-        .checked("local-only row should persist without jwt_secret");
+        .checked("legacy invalid row should persist without jwt_secret");
 
-    let mut local_to_remote_missing_secret = local_missing_secret.clone();
-    local_to_remote_missing_secret.providers = vec![SourceProvider::Bilibili];
+    let mut changed_provider_missing_secret = provider_change_missing_secret.clone();
+    changed_provider_missing_secret.providers = vec![SourceProvider::Bilibili];
 
-    let result = manager.update(local_to_remote_missing_secret.clone()).await;
+    let result = manager
+        .update(changed_provider_missing_secret.clone())
+        .await;
     assert!(
         result.is_err(),
-        "updating a local-only instance into a remote-capable one without jwt_secret must fail"
+        "changing the declared provider must still reject a missing jwt_secret"
     );
 
     let error_message = result.failed("missing secret should fail").to_string();
@@ -1948,7 +1951,7 @@ async fn scenario_update_remote_instances_validate_jwt_secret() {
     );
 
     let persisted = repo
-        .get_by_name(&local_to_remote_missing_secret.name)
+        .get_by_name(&changed_provider_missing_secret.name)
         .await
         .checked("lookup should succeed")
         .checked("instance should still exist");
@@ -1996,24 +1999,26 @@ async fn scenario_update_remote_instances_validate_jwt_secret() {
         "failed update must preserve the existing valid jwt_secret"
     );
 
-    let mut local_invalid_secret =
-        make_test_instance("test-instance-local-to-remote-invalid-secret");
-    local_invalid_secret.providers = vec![SourceProvider::LiveProxy];
-    local_invalid_secret.jwt_secret = None;
-    local_invalid_secret.enabled = false;
+    let mut provider_change_invalid_secret =
+        make_test_instance("test-instance-provider-change-invalid-secret");
+    provider_change_invalid_secret.providers = vec![SourceProvider::LiveProxy];
+    provider_change_invalid_secret.jwt_secret = None;
+    provider_change_invalid_secret.enabled = false;
 
-    repo.create(&local_invalid_secret)
+    repo.create(&provider_change_invalid_secret)
         .await
-        .checked("local-only row should persist without jwt_secret");
+        .checked("legacy invalid row should persist without jwt_secret");
 
-    let mut local_to_remote_invalid_secret = local_invalid_secret.clone();
-    local_to_remote_invalid_secret.providers = vec![SourceProvider::Bilibili];
-    local_to_remote_invalid_secret.jwt_secret = Some("shared\nsecret".to_string());
+    let mut changed_provider_invalid_secret = provider_change_invalid_secret.clone();
+    changed_provider_invalid_secret.providers = vec![SourceProvider::Bilibili];
+    changed_provider_invalid_secret.jwt_secret = Some("shared\nsecret".to_string());
 
-    let result = manager.update(local_to_remote_invalid_secret.clone()).await;
+    let result = manager
+        .update(changed_provider_invalid_secret.clone())
+        .await;
     assert!(
         result.is_err(),
-        "updating a local-only instance into a remote-capable one with invalid jwt_secret must fail"
+        "changing the declared provider must still reject an invalid jwt_secret"
     );
 
     let error = result.failed("invalid secret should fail");
@@ -2024,7 +2029,7 @@ async fn scenario_update_remote_instances_validate_jwt_secret() {
     );
 
     let persisted = repo
-        .get_by_name(&local_to_remote_invalid_secret.name)
+        .get_by_name(&changed_provider_invalid_secret.name)
         .await
         .checked("lookup should succeed")
         .checked("instance should still exist");
@@ -2646,46 +2651,51 @@ async fn scenario_add_remote_instances_validate_jwt_secret() {
     );
 }
 
-async fn scenario_add_instance_rejects_local_only_providers() {
+async fn scenario_add_instance_accepts_all_provider_types() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo));
+    let manager = RemoteProviderManager::new_with_address_overrides(
+        Arc::new(repo),
+        None,
+        HashMap::from([(
+            "all-providers.test.localhost".to_string(),
+            SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, health_addr.port())),
+        )]),
+    );
 
     let now = Utc::now();
     let instance = ProviderInstance {
-        name: "test-local-only-instance".to_string(),
-        endpoint: "http://localhost:50051".to_string(),
-        comment: Some("local-only provider instance".to_string()),
-        jwt_secret: None,
+        name: "test-all-provider-types-instance".to_string(),
+        endpoint: format!("http://all-providers.test.localhost:{}", health_addr.port()),
+        comment: Some("all provider types".to_string()),
+        jwt_secret: Some("remote-provider-test-secret".to_string()),
         custom_ca: None,
         timeout: "1s".to_string(),
         tls: false,
         insecure_tls: false,
-        providers: vec![SourceProvider::DirectUrl, SourceProvider::Rtmp],
+        providers: SourceProvider::ALL.to_vec(),
         enabled: true,
         created_at: now,
         updated_at: now,
     };
 
-    let err = manager
+    manager
         .add(instance.clone())
         .await
-        .failed("local-only provider names must not be accepted as remote provider instances");
-    assert!(
-        err.to_string().contains("unsupported provider"),
-        "unexpected error: {err}"
-    );
+        .checked("every source provider type should be accepted by remote instances");
 
     let fetched = provider_repo(&infra.pool)
         .get_by_name(&instance.name)
         .await
-        .checked("lookup should succeed");
-    assert!(
-        fetched.is_none(),
-        "rejected unsupported provider instances must not be persisted"
-    );
+        .checked("lookup should succeed")
+        .checked("accepted provider instance should be persisted");
+    assert_eq!(fetched.providers, SourceProvider::ALL);
+
+    abort_test_task(health_handle).await;
 }
 
 async fn scenario_add_unreachable_remote_instance_fails_connectivity_validation() {
@@ -3272,9 +3282,9 @@ async fn test_add_remote_instances_validate_jwt_secret() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_add_instance_rejects_local_only_providers() {
+async fn test_add_instance_accepts_all_provider_types() {
     install_rustls_provider_once();
-    scenario_add_instance_rejects_local_only_providers().await;
+    scenario_add_instance_accepts_all_provider_types().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

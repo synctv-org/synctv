@@ -12,7 +12,7 @@ pub(super) async fn execute_provider_emby(command: ProviderEmbyCommand) -> Resul
                 management_proto::EmbyLoginRequest {
                     actor: Some(actor_user_id),
                     request: Some(synctv_proto::providers::emby::LoginRequest {
-                        host: args.host,
+                        host: args.server_endpoint,
                         username: args.account_username,
                         credential: Some(credential),
                         instance_name: provider_service_instance_name(&args.instance),
@@ -66,8 +66,7 @@ pub(super) async fn execute_provider_emby(command: ProviderEmbyCommand) -> Resul
                 management_proto::EmbyLogoutRequest {
                     actor: Some(actor_user_id),
                     request: Some(synctv_proto::providers::emby::LogoutRequest {
-                        server_id: args.bind.server_id,
-                        instance_name: provider_service_instance_name(&args.bind.instance),
+                        server_id: args.server_id,
                     }),
                 }
             )?;

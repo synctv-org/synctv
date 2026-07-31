@@ -753,7 +753,6 @@ pub(crate) async fn logout(
 ) -> AppResult<Json<synctv_proto::providers::bilibili::LogoutResponse>> {
     tracing::info!("Bilibili logout request");
 
-    provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.bilibili_api.clone();
     execute_provider_user_endpoint(
         &state,

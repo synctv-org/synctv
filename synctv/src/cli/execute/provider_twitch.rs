@@ -44,8 +44,7 @@ pub(super) async fn execute_provider_twitch(command: ProviderTwitchCommand) -> R
                 management_proto::TwitchUnbindRequest {
                     actor: Some(actor_user_id),
                     request: Some(synctv_proto::providers::twitch::UnbindRequest {
-                        server_id: args.bind.server_id,
-                        instance_name: provider_service_instance_name(&args.bind.instance),
+                        server_id: args.server_id,
                     }),
                 }
             )?;
@@ -86,5 +85,87 @@ pub(super) async fn execute_provider_twitch(command: ProviderTwitchCommand) -> R
             )?;
             args.access.remote.print_output(&response)
         }
+        ProviderTwitchSubcommand::FollowedLive(args) => execute_twitch_followed_live(args).await,
+        ProviderTwitchSubcommand::CategoryStreams(args) => {
+            execute_twitch_category_streams(args).await
+        }
+        ProviderTwitchSubcommand::TopCategories(args) => execute_twitch_top_categories(args).await,
+        ProviderTwitchSubcommand::SearchLive(args) => execute_twitch_search_live(args).await,
+        ProviderTwitchSubcommand::Schedule(args) => execute_twitch_schedule(args).await,
     }
+}
+
+pub(crate) async fn execute_twitch_followed_live(
+    args: ProviderTwitchFollowedLiveArgs,
+) -> Result<()> {
+    provider_call!(
+        args,
+        twitch_list_followed_live,
+        TwitchListFollowedLiveRequest,
+        synctv_proto::providers::twitch::ListFollowedLiveRequest {
+            cursor: args.cursor,
+            page_size: args.page_size,
+            instance_name: provider_service_instance_name(&args.instance)
+        }
+    )
+}
+
+pub(crate) async fn execute_twitch_category_streams(
+    args: ProviderTwitchCategoryStreamsArgs,
+) -> Result<()> {
+    provider_call!(
+        args,
+        twitch_list_category_streams,
+        TwitchListCategoryStreamsRequest,
+        synctv_proto::providers::twitch::ListCategoryStreamsRequest {
+            category_id: args.category_id,
+            category_name: args.category_name,
+            cursor: args.cursor,
+            page_size: args.page_size,
+            instance_name: provider_service_instance_name(&args.instance)
+        }
+    )
+}
+
+pub(crate) async fn execute_twitch_top_categories(
+    args: ProviderTwitchTopCategoriesArgs,
+) -> Result<()> {
+    provider_call!(
+        args,
+        twitch_list_top_categories,
+        TwitchListTopCategoriesRequest,
+        synctv_proto::providers::twitch::ListTopCategoriesRequest {
+            cursor: args.cursor,
+            page_size: args.page_size,
+            instance_name: provider_service_instance_name(&args.instance)
+        }
+    )
+}
+
+pub(crate) async fn execute_twitch_search_live(args: ProviderTwitchSearchLiveArgs) -> Result<()> {
+    provider_call!(
+        args,
+        twitch_search_live_channels,
+        TwitchSearchLiveChannelsRequest,
+        synctv_proto::providers::twitch::SearchLiveChannelsRequest {
+            query: args.query,
+            cursor: args.cursor,
+            page_size: args.page_size,
+            instance_name: provider_service_instance_name(&args.instance)
+        }
+    )
+}
+
+pub(crate) async fn execute_twitch_schedule(args: ProviderTwitchScheduleArgs) -> Result<()> {
+    provider_call!(
+        args,
+        twitch_list_schedule,
+        TwitchListScheduleRequest,
+        synctv_proto::providers::twitch::ListScheduleRequest {
+            broadcaster_id: args.broadcaster_id,
+            cursor: args.cursor,
+            page_size: args.page_size,
+            instance_name: provider_service_instance_name(&args.instance)
+        }
+    )
 }

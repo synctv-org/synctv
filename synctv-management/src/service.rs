@@ -91,14 +91,16 @@ use crate::proto::{
     TwitchListChannelItemsRequest, TwitchResolveRequest, TwitchUnbindRequest,
 };
 use crate::provider_runtime::{
-    AddProviderInstanceCommand, AlistListQuery, AlistLoginCommand, AlistLoginCredential,
-    AlistRuntime, AlistSearchQuery, BilibiliCheckQrQuery, BilibiliLoginQrCommand,
-    BilibiliLoginSmsCommand, BilibiliLogoutCommand, BilibiliParseQuery, BilibiliRuntime,
-    BilibiliSendSmsCommand, BilibiliStartSmsLoginCommand, BilibiliUserInfoQuery, DouyinRuntime,
-    EmbyListQuery, EmbyLoginCommand, EmbyLoginCredential, EmbyRuntime,
-    ListAvailableProviderInstancesQuery, ListProviderBackendsQuery, ProviderCommonRuntime,
-    ProviderCredentialServerQuery, ProviderInstanceNameCommand, TikTokRuntime, TwitchRuntime,
-    UpdateProviderInstanceCommand,
+    AcfunRuntime, AddProviderInstanceCommand, AlistListQuery, AlistLoginCommand,
+    AlistLoginCredential, AlistRuntime, AlistSearchQuery, BilibiliCheckQrQuery,
+    BilibiliLoginQrCommand, BilibiliLoginSmsCommand, BilibiliLogoutCommand, BilibiliParseQuery,
+    BilibiliRuntime, BilibiliSendSmsCommand, BilibiliStartSmsLoginCommand, BilibiliUserInfoQuery,
+    CctvRuntime, CloudreveRuntime, DouyinRuntime, DouyuRuntime, EmbyListQuery, EmbyLoginCommand,
+    EmbyLoginCredential, EmbyRuntime, FnosRuntime, HuyaRuntime,
+    ListAvailableProviderInstancesQuery, ListProviderBackendsQuery, NextcloudRuntime,
+    ProviderCommonRuntime, ProviderCredentialServerQuery, ProviderInstanceNameCommand, QnapRuntime,
+    SeafileRuntime, SynologyRuntime, TikTokRuntime, TruenasRuntime, TwitchRuntime,
+    UpdateProviderInstanceCommand, YoutubeRuntime,
 };
 use crate::request_context::RequestContext;
 use crate::server::ManagementRuntimeSettings;
@@ -127,6 +129,8 @@ use synctv_realtime::fanout::{
     RoomCacheFanoutService,
 };
 
+mod provider_rpc;
+
 struct ValidatedManagementUser {
     user_id: UserId,
     role: CoreUserRole,
@@ -151,6 +155,18 @@ pub struct ManagementServiceImpl {
     user_service: Arc<UserService>,
     admin_api: Arc<dyn AdminRuntime>,
     provider_common_api: Arc<dyn ProviderCommonRuntime>,
+    acfun_api: Arc<dyn AcfunRuntime>,
+    cctv_api: Arc<dyn CctvRuntime>,
+    cloudreve_api: Arc<dyn CloudreveRuntime>,
+    douyu_api: Arc<dyn DouyuRuntime>,
+    fnos_api: Arc<dyn FnosRuntime>,
+    huya_api: Arc<dyn HuyaRuntime>,
+    nextcloud_api: Arc<dyn NextcloudRuntime>,
+    qnap_api: Arc<dyn QnapRuntime>,
+    seafile_api: Arc<dyn SeafileRuntime>,
+    synology_api: Arc<dyn SynologyRuntime>,
+    truenas_api: Arc<dyn TruenasRuntime>,
+    youtube_api: Arc<dyn YoutubeRuntime>,
     chat_service: Option<Arc<ChatService>>,
     clock: Arc<dyn synctv_core::Clock>,
     room_service: Arc<RoomService>,
@@ -177,6 +193,18 @@ pub struct ManagementServiceDependencies {
     pub admin_api: Arc<dyn AdminRuntime>,
     pub public_id_codec: Arc<PublicIdCodec>,
     pub provider_common_api: Arc<dyn ProviderCommonRuntime>,
+    pub acfun_api: Arc<dyn AcfunRuntime>,
+    pub cctv_api: Arc<dyn CctvRuntime>,
+    pub cloudreve_api: Arc<dyn CloudreveRuntime>,
+    pub douyu_api: Arc<dyn DouyuRuntime>,
+    pub fnos_api: Arc<dyn FnosRuntime>,
+    pub huya_api: Arc<dyn HuyaRuntime>,
+    pub nextcloud_api: Arc<dyn NextcloudRuntime>,
+    pub qnap_api: Arc<dyn QnapRuntime>,
+    pub seafile_api: Arc<dyn SeafileRuntime>,
+    pub synology_api: Arc<dyn SynologyRuntime>,
+    pub truenas_api: Arc<dyn TruenasRuntime>,
+    pub youtube_api: Arc<dyn YoutubeRuntime>,
     pub chat_service: Option<Arc<ChatService>>,
     pub clock: Arc<dyn synctv_core::Clock>,
     pub room_service: Arc<RoomService>,
@@ -205,6 +233,18 @@ impl ManagementServiceImpl {
             admin_api,
             public_id_codec,
             provider_common_api,
+            acfun_api,
+            cctv_api,
+            cloudreve_api,
+            douyu_api,
+            fnos_api,
+            huya_api,
+            nextcloud_api,
+            qnap_api,
+            seafile_api,
+            synology_api,
+            truenas_api,
+            youtube_api,
             chat_service,
             clock,
             room_service,
@@ -229,6 +269,18 @@ impl ManagementServiceImpl {
             user_service,
             admin_api,
             provider_common_api,
+            acfun_api,
+            cctv_api,
+            cloudreve_api,
+            douyu_api,
+            fnos_api,
+            huya_api,
+            nextcloud_api,
+            qnap_api,
+            seafile_api,
+            synology_api,
+            truenas_api,
+            youtube_api,
             chat_service,
             clock,
             room_service,
@@ -1129,6 +1181,477 @@ impl ManagementServiceImpl {
 impl ManagementService for ManagementServiceImpl {
     type StopServerStream =
         Pin<Box<dyn Stream<Item = Result<StopServerEvent, Status>> + Send + 'static>>;
+
+    async fn acfun_resolve(
+        &self,
+        request: Request<crate::proto::AcfunResolveRequest>,
+    ) -> Result<Response<synctv_proto::providers::acfun::ResolveResponse>, Status> {
+        self.provider_acfun_resolve(request).await
+    }
+
+    async fn cctv_resolve(
+        &self,
+        request: Request<crate::proto::CctvResolveRequest>,
+    ) -> Result<Response<synctv_proto::providers::cctv::ResolveResponse>, Status> {
+        self.provider_cctv_resolve(request).await
+    }
+
+    async fn douyu_resolve(
+        &self,
+        request: Request<crate::proto::DouyuResolveRequest>,
+    ) -> Result<Response<synctv_proto::providers::douyu::ResolveResponse>, Status> {
+        self.provider_douyu_resolve(request).await
+    }
+
+    async fn huya_resolve(
+        &self,
+        request: Request<crate::proto::HuyaResolveRequest>,
+    ) -> Result<Response<synctv_proto::providers::huya::ResolveResponse>, Status> {
+        self.provider_huya_resolve(request).await
+    }
+
+    async fn youtube_bind(
+        &self,
+        request: Request<crate::proto::YoutubeBindRequest>,
+    ) -> Result<Response<synctv_proto::providers::youtube::BindResponse>, Status> {
+        self.provider_youtube_bind(request).await
+    }
+
+    async fn youtube_get_binds(
+        &self,
+        request: Request<crate::proto::YoutubeGetBindsRequest>,
+    ) -> Result<Response<synctv_proto::providers::youtube::GetBindsResponse>, Status> {
+        self.provider_youtube_get_binds(request).await
+    }
+
+    async fn youtube_unbind(
+        &self,
+        request: Request<crate::proto::YoutubeUnbindRequest>,
+    ) -> Result<Response<synctv_proto::providers::youtube::UnbindResponse>, Status> {
+        self.provider_youtube_unbind(request).await
+    }
+
+    async fn youtube_resolve(
+        &self,
+        request: Request<crate::proto::YoutubeResolveRequest>,
+    ) -> Result<Response<synctv_proto::providers::youtube::ResolveResponse>, Status> {
+        self.provider_youtube_resolve(request).await
+    }
+
+    async fn cloudreve_login(
+        &self,
+        request: Request<crate::proto::CloudreveLoginRequest>,
+    ) -> Result<Response<synctv_proto::providers::cloudreve::LoginResponse>, Status> {
+        self.provider_cloudreve_login(request).await
+    }
+
+    async fn cloudreve_list(
+        &self,
+        request: Request<crate::proto::CloudreveListRequest>,
+    ) -> Result<Response<synctv_proto::providers::cloudreve::ListResponse>, Status> {
+        self.provider_cloudreve_list(request).await
+    }
+
+    async fn cloudreve_search(
+        &self,
+        request: Request<crate::proto::CloudreveSearchRequest>,
+    ) -> Result<Response<synctv_proto::providers::cloudreve::SearchResponse>, Status> {
+        self.provider_cloudreve_search(request).await
+    }
+
+    async fn cloudreve_get_me(
+        &self,
+        request: Request<crate::proto::CloudreveGetMeRequest>,
+    ) -> Result<Response<synctv_proto::providers::cloudreve::GetMeResponse>, Status> {
+        self.provider_cloudreve_get_me(request).await
+    }
+
+    async fn cloudreve_logout(
+        &self,
+        request: Request<crate::proto::CloudreveLogoutRequest>,
+    ) -> Result<Response<synctv_proto::providers::cloudreve::LogoutResponse>, Status> {
+        self.provider_cloudreve_logout(request).await
+    }
+
+    async fn cloudreve_get_binds(
+        &self,
+        request: Request<crate::proto::CloudreveGetBindsRequest>,
+    ) -> Result<Response<synctv_proto::providers::cloudreve::GetBindsResponse>, Status> {
+        self.provider_cloudreve_get_binds(request).await
+    }
+
+    async fn fnos_login(
+        &self,
+        request: Request<crate::proto::FnosLoginRequest>,
+    ) -> Result<Response<synctv_proto::providers::fnos::LoginResponse>, Status> {
+        self.provider_fnos_login(request).await
+    }
+
+    async fn fnos_list(
+        &self,
+        request: Request<crate::proto::FnosListRequest>,
+    ) -> Result<Response<synctv_proto::providers::fnos::ListResponse>, Status> {
+        self.provider_fnos_list(request).await
+    }
+
+    async fn fnos_list_media_libraries(
+        &self,
+        request: Request<crate::proto::FnosListMediaLibrariesRequest>,
+    ) -> Result<Response<synctv_proto::providers::fnos::ListMediaLibrariesResponse>, Status> {
+        self.provider_fnos_list_media_libraries(request).await
+    }
+
+    async fn fnos_list_media_items(
+        &self,
+        request: Request<crate::proto::FnosListMediaItemsRequest>,
+    ) -> Result<Response<synctv_proto::providers::fnos::ListMediaItemsResponse>, Status> {
+        self.provider_fnos_list_media_items(request).await
+    }
+
+    async fn fnos_set_favorite(
+        &self,
+        request: Request<crate::proto::FnosSetFavoriteRequest>,
+    ) -> Result<Response<synctv_proto::providers::fnos::SetFavoriteResponse>, Status> {
+        self.provider_fnos_set_favorite(request).await
+    }
+
+    async fn fnos_set_watched(
+        &self,
+        request: Request<crate::proto::FnosSetWatchedRequest>,
+    ) -> Result<Response<synctv_proto::providers::fnos::SetWatchedResponse>, Status> {
+        self.provider_fnos_set_watched(request).await
+    }
+
+    async fn fnos_get_server_info(
+        &self,
+        request: Request<crate::proto::FnosGetServerInfoRequest>,
+    ) -> Result<Response<synctv_proto::providers::fnos::GetServerInfoResponse>, Status> {
+        self.provider_fnos_get_server_info(request).await
+    }
+
+    async fn fnos_logout(
+        &self,
+        request: Request<crate::proto::FnosLogoutRequest>,
+    ) -> Result<Response<synctv_proto::providers::fnos::LogoutResponse>, Status> {
+        self.provider_fnos_logout(request).await
+    }
+
+    async fn fnos_get_binds(
+        &self,
+        request: Request<crate::proto::FnosGetBindsRequest>,
+    ) -> Result<Response<synctv_proto::providers::fnos::GetBindsResponse>, Status> {
+        self.provider_fnos_get_binds(request).await
+    }
+
+    async fn nextcloud_login(
+        &self,
+        request: Request<crate::proto::NextcloudLoginRequest>,
+    ) -> Result<Response<synctv_proto::providers::nextcloud::LoginResponse>, Status> {
+        self.provider_nextcloud_login(request).await
+    }
+
+    async fn nextcloud_start_login_flow(
+        &self,
+        request: Request<crate::proto::NextcloudStartLoginFlowRequest>,
+    ) -> Result<Response<synctv_proto::providers::nextcloud::StartLoginFlowResponse>, Status> {
+        self.provider_nextcloud_start_login_flow(request).await
+    }
+
+    async fn nextcloud_poll_login_flow(
+        &self,
+        request: Request<crate::proto::NextcloudPollLoginFlowRequest>,
+    ) -> Result<Response<synctv_proto::providers::nextcloud::LoginResponse>, Status> {
+        self.provider_nextcloud_poll_login_flow(request).await
+    }
+
+    async fn nextcloud_list(
+        &self,
+        request: Request<crate::proto::NextcloudListRequest>,
+    ) -> Result<Response<synctv_proto::providers::nextcloud::ListResponse>, Status> {
+        self.provider_nextcloud_list(request).await
+    }
+
+    async fn nextcloud_list_favorites(
+        &self,
+        request: Request<crate::proto::NextcloudListFavoritesRequest>,
+    ) -> Result<Response<synctv_proto::providers::nextcloud::ListResponse>, Status> {
+        self.provider_nextcloud_list_favorites(request).await
+    }
+
+    async fn nextcloud_logout(
+        &self,
+        request: Request<crate::proto::NextcloudLogoutRequest>,
+    ) -> Result<Response<synctv_proto::providers::nextcloud::LogoutResponse>, Status> {
+        self.provider_nextcloud_logout(request).await
+    }
+
+    async fn nextcloud_get_binds(
+        &self,
+        request: Request<crate::proto::NextcloudGetBindsRequest>,
+    ) -> Result<Response<synctv_proto::providers::nextcloud::GetBindsResponse>, Status> {
+        self.provider_nextcloud_get_binds(request).await
+    }
+
+    async fn qnap_login(
+        &self,
+        request: Request<crate::proto::QnapLoginRequest>,
+    ) -> Result<Response<synctv_proto::providers::qnap::LoginResponse>, Status> {
+        self.provider_qnap_login(request).await
+    }
+
+    async fn qnap_list(
+        &self,
+        request: Request<crate::proto::QnapListRequest>,
+    ) -> Result<Response<synctv_proto::providers::qnap::ListResponse>, Status> {
+        self.provider_qnap_list(request).await
+    }
+
+    async fn qnap_get_capabilities(
+        &self,
+        request: Request<crate::proto::QnapGetCapabilitiesRequest>,
+    ) -> Result<Response<synctv_proto::providers::qnap::GetCapabilitiesResponse>, Status> {
+        self.provider_qnap_get_capabilities(request).await
+    }
+
+    async fn qnap_logout(
+        &self,
+        request: Request<crate::proto::QnapLogoutRequest>,
+    ) -> Result<Response<synctv_proto::providers::qnap::LogoutResponse>, Status> {
+        self.provider_qnap_logout(request).await
+    }
+
+    async fn qnap_get_binds(
+        &self,
+        request: Request<crate::proto::QnapGetBindsRequest>,
+    ) -> Result<Response<synctv_proto::providers::qnap::GetBindsResponse>, Status> {
+        self.provider_qnap_get_binds(request).await
+    }
+
+    async fn seafile_login(
+        &self,
+        request: Request<crate::proto::SeafileLoginRequest>,
+    ) -> Result<Response<synctv_proto::providers::seafile::LoginResponse>, Status> {
+        self.provider_seafile_login(request).await
+    }
+
+    async fn seafile_unlock_library(
+        &self,
+        request: Request<crate::proto::SeafileUnlockLibraryRequest>,
+    ) -> Result<Response<synctv_proto::providers::seafile::UnlockLibraryResponse>, Status> {
+        self.provider_seafile_unlock_library(request).await
+    }
+
+    async fn seafile_list_repositories(
+        &self,
+        request: Request<crate::proto::SeafileListRepositoriesRequest>,
+    ) -> Result<Response<synctv_proto::providers::seafile::ListResponse>, Status> {
+        self.provider_seafile_list_repositories(request).await
+    }
+
+    async fn seafile_list(
+        &self,
+        request: Request<crate::proto::SeafileListRequest>,
+    ) -> Result<Response<synctv_proto::providers::seafile::ListResponse>, Status> {
+        self.provider_seafile_list(request).await
+    }
+
+    async fn seafile_list_starred(
+        &self,
+        request: Request<crate::proto::SeafileListStarredRequest>,
+    ) -> Result<Response<synctv_proto::providers::seafile::ListResponse>, Status> {
+        self.provider_seafile_list_starred(request).await
+    }
+
+    async fn seafile_logout(
+        &self,
+        request: Request<crate::proto::SeafileLogoutRequest>,
+    ) -> Result<Response<synctv_proto::providers::seafile::LogoutResponse>, Status> {
+        self.provider_seafile_logout(request).await
+    }
+
+    async fn seafile_get_binds(
+        &self,
+        request: Request<crate::proto::SeafileGetBindsRequest>,
+    ) -> Result<Response<synctv_proto::providers::seafile::GetBindsResponse>, Status> {
+        self.provider_seafile_get_binds(request).await
+    }
+
+    async fn synology_login(
+        &self,
+        request: Request<crate::proto::SynologyLoginRequest>,
+    ) -> Result<Response<synctv_proto::providers::synology::LoginResponse>, Status> {
+        self.provider_synology_login(request).await
+    }
+
+    async fn synology_list_files(
+        &self,
+        request: Request<crate::proto::SynologyListFilesRequest>,
+    ) -> Result<Response<synctv_proto::providers::synology::ListFilesResponse>, Status> {
+        self.provider_synology_list_files(request).await
+    }
+
+    async fn synology_list_libraries(
+        &self,
+        request: Request<crate::proto::SynologyListLibrariesRequest>,
+    ) -> Result<Response<synctv_proto::providers::synology::ListLibrariesResponse>, Status> {
+        self.provider_synology_list_libraries(request).await
+    }
+
+    async fn synology_list_movies(
+        &self,
+        request: Request<crate::proto::SynologyListMoviesRequest>,
+    ) -> Result<Response<synctv_proto::providers::synology::ListVideoItemsResponse>, Status> {
+        self.provider_synology_list_movies(request).await
+    }
+
+    async fn synology_list_tv_shows(
+        &self,
+        request: Request<crate::proto::SynologyListTvShowsRequest>,
+    ) -> Result<Response<synctv_proto::providers::synology::ListVideoItemsResponse>, Status> {
+        self.provider_synology_list_tv_shows(request).await
+    }
+
+    async fn synology_list_episodes(
+        &self,
+        request: Request<crate::proto::SynologyListEpisodesRequest>,
+    ) -> Result<Response<synctv_proto::providers::synology::ListVideoItemsResponse>, Status> {
+        self.provider_synology_list_episodes(request).await
+    }
+
+    async fn synology_list_home_videos(
+        &self,
+        request: Request<crate::proto::SynologyListHomeVideosRequest>,
+    ) -> Result<Response<synctv_proto::providers::synology::ListVideoItemsResponse>, Status> {
+        self.provider_synology_list_home_videos(request).await
+    }
+
+    async fn synology_list_tv_recordings(
+        &self,
+        request: Request<crate::proto::SynologyListTvRecordingsRequest>,
+    ) -> Result<Response<synctv_proto::providers::synology::ListVideoItemsResponse>, Status> {
+        self.provider_synology_list_tv_recordings(request).await
+    }
+
+    async fn synology_logout(
+        &self,
+        request: Request<crate::proto::SynologyLogoutRequest>,
+    ) -> Result<Response<synctv_proto::providers::synology::LogoutResponse>, Status> {
+        self.provider_synology_logout(request).await
+    }
+
+    async fn synology_get_binds(
+        &self,
+        request: Request<crate::proto::SynologyGetBindsRequest>,
+    ) -> Result<Response<synctv_proto::providers::synology::GetBindsResponse>, Status> {
+        self.provider_synology_get_binds(request).await
+    }
+
+    async fn truenas_login(
+        &self,
+        request: Request<crate::proto::TruenasLoginRequest>,
+    ) -> Result<Response<synctv_proto::providers::truenas::LoginResponse>, Status> {
+        self.provider_truenas_login(request).await
+    }
+
+    async fn truenas_list(
+        &self,
+        request: Request<crate::proto::TruenasListRequest>,
+    ) -> Result<Response<synctv_proto::providers::truenas::ListResponse>, Status> {
+        self.provider_truenas_list(request).await
+    }
+
+    async fn truenas_logout(
+        &self,
+        request: Request<crate::proto::TruenasLogoutRequest>,
+    ) -> Result<Response<synctv_proto::providers::truenas::LogoutResponse>, Status> {
+        self.provider_truenas_logout(request).await
+    }
+
+    async fn truenas_get_binds(
+        &self,
+        request: Request<crate::proto::TruenasGetBindsRequest>,
+    ) -> Result<Response<synctv_proto::providers::truenas::GetBindsResponse>, Status> {
+        self.provider_truenas_get_binds(request).await
+    }
+
+    async fn bilibili_list_live_areas(
+        &self,
+        request: Request<crate::proto::BilibiliListLiveAreasRequest>,
+    ) -> Result<Response<synctv_proto::providers::bilibili::ListLiveAreasResponse>, Status> {
+        self.provider_bilibili_list_live_areas(request).await
+    }
+
+    async fn bilibili_list_favorite_folders(
+        &self,
+        request: Request<crate::proto::BilibiliListFavoriteFoldersRequest>,
+    ) -> Result<Response<synctv_proto::providers::bilibili::ListFavoriteFoldersResponse>, Status>
+    {
+        self.provider_bilibili_list_favorite_folders(request).await
+    }
+
+    async fn bilibili_list_followed_pgc(
+        &self,
+        request: Request<crate::proto::BilibiliListFollowedPgcRequest>,
+    ) -> Result<Response<synctv_proto::providers::bilibili::ListFollowedPgcResponse>, Status> {
+        self.provider_bilibili_list_followed_pgc(request).await
+    }
+
+    async fn bilibili_list_history(
+        &self,
+        request: Request<crate::proto::BilibiliListHistoryRequest>,
+    ) -> Result<Response<synctv_proto::providers::bilibili::ListHistoryResponse>, Status> {
+        self.provider_bilibili_list_history(request).await
+    }
+
+    async fn bilibili_list_pgc_timeline(
+        &self,
+        request: Request<crate::proto::BilibiliListPgcTimelineRequest>,
+    ) -> Result<Response<synctv_proto::providers::bilibili::ListPgcTimelineResponse>, Status> {
+        self.provider_bilibili_list_pgc_timeline(request).await
+    }
+
+    async fn bilibili_list_pgc_seasons(
+        &self,
+        request: Request<crate::proto::BilibiliListPgcSeasonsRequest>,
+    ) -> Result<Response<synctv_proto::providers::bilibili::ListPgcSeasonsResponse>, Status> {
+        self.provider_bilibili_list_pgc_seasons(request).await
+    }
+
+    async fn twitch_list_followed_live(
+        &self,
+        request: Request<crate::proto::TwitchListFollowedLiveRequest>,
+    ) -> Result<Response<synctv_proto::providers::twitch::ListFollowedLiveResponse>, Status> {
+        self.provider_twitch_list_followed_live(request).await
+    }
+
+    async fn twitch_list_category_streams(
+        &self,
+        request: Request<crate::proto::TwitchListCategoryStreamsRequest>,
+    ) -> Result<Response<synctv_proto::providers::twitch::ListCategoryStreamsResponse>, Status>
+    {
+        self.provider_twitch_list_category_streams(request).await
+    }
+
+    async fn twitch_list_top_categories(
+        &self,
+        request: Request<crate::proto::TwitchListTopCategoriesRequest>,
+    ) -> Result<Response<synctv_proto::providers::twitch::ListTopCategoriesResponse>, Status> {
+        self.provider_twitch_list_top_categories(request).await
+    }
+
+    async fn twitch_search_live_channels(
+        &self,
+        request: Request<crate::proto::TwitchSearchLiveChannelsRequest>,
+    ) -> Result<Response<synctv_proto::providers::twitch::SearchLiveChannelsResponse>, Status> {
+        self.provider_twitch_search_live_channels(request).await
+    }
+
+    async fn twitch_list_schedule(
+        &self,
+        request: Request<crate::proto::TwitchListScheduleRequest>,
+    ) -> Result<Response<synctv_proto::providers::twitch::ListScheduleResponse>, Status> {
+        self.provider_twitch_list_schedule(request).await
+    }
 
     async fn list_users(
         &self,
@@ -3122,739 +3645,252 @@ impl ManagementService for ManagementServiceImpl {
         &self,
         request: Request<AlistLoginRequest>,
     ) -> Result<Response<alist_proto::LoginResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_classified_result(
-            self.alist_api
-                .login(
-                    &actor_user_id,
-                    Self::alist_login_command(provider_request),
-                    instance_name.as_deref(),
-                )
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_alist_login(request).await
     }
 
     async fn alist_list(
         &self,
         request: Request<AlistListRequest>,
     ) -> Result<Response<alist_proto::ListResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_classified_result(
-            self.alist_api
-                .list(
-                    &actor_user_id,
-                    AlistListQuery {
-                        server_id: provider_request.server_id,
-                        path: provider_request.path,
-                        password: provider_request.password,
-                        page: provider_request.page,
-                        per_page: provider_request.per_page,
-                        refresh: provider_request.refresh,
-                    },
-                    instance_name.as_deref(),
-                )
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_alist_list(request).await
     }
 
     async fn alist_search(
         &self,
         request: Request<AlistSearchRequest>,
     ) -> Result<Response<alist_proto::SearchResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_classified_result(
-            self.alist_api
-                .search(
-                    &actor_user_id,
-                    AlistSearchQuery {
-                        server_id: provider_request.server_id,
-                        parent: provider_request.parent,
-                        keywords: provider_request.keywords,
-                        scope: provider_request.scope,
-                        page: provider_request.page,
-                        per_page: provider_request.per_page,
-                        password: provider_request.password,
-                    },
-                    instance_name.as_deref(),
-                )
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_alist_search(request).await
     }
 
     async fn alist_get_me(
         &self,
         request: Request<AlistGetMeRequest>,
     ) -> Result<Response<alist_proto::GetMeResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_classified_result(
-            self.alist_api
-                .get_me(
-                    &actor_user_id,
-                    ProviderCredentialServerQuery {
-                        server_id: provider_request.server_id,
-                    },
-                    instance_name.as_deref(),
-                )
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_alist_get_me(request).await
     }
 
     async fn alist_logout(
         &self,
         request: Request<AlistLogoutRequest>,
     ) -> Result<Response<alist_proto::LogoutResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let response = map_classified_result(
-            self.alist_api
-                .logout(
-                    &actor_user_id,
-                    ProviderCredentialServerQuery {
-                        server_id: provider_request.server_id,
-                    },
-                )
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_alist_logout(request).await
     }
 
     async fn alist_get_binds(
         &self,
         request: Request<AlistGetBindsRequest>,
     ) -> Result<Response<alist_proto::GetBindsResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_api_result(
-            self.alist_api
-                .get_binds(&actor_user_id, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_alist_get_binds(request).await
     }
 
     async fn emby_login(
         &self,
         request: Request<EmbyLoginRequest>,
     ) -> Result<Response<emby_proto::LoginResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_classified_result(
-            self.emby_api
-                .login(
-                    &actor_user_id,
-                    Self::emby_login_command(provider_request),
-                    instance_name.as_deref(),
-                )
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_emby_login(request).await
     }
 
     async fn emby_list(
         &self,
         request: Request<EmbyListRequest>,
     ) -> Result<Response<emby_proto::ListResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_classified_result(
-            self.emby_api
-                .list(
-                    &actor_user_id,
-                    EmbyListQuery {
-                        server_id: provider_request.server_id,
-                        path: provider_request.path,
-                        start_index: provider_request.start_index,
-                        limit: provider_request.limit,
-                        search_term: provider_request.search_term,
-                    },
-                    instance_name.as_deref(),
-                )
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_emby_list(request).await
     }
 
     async fn emby_get_me(
         &self,
         request: Request<EmbyGetMeRequest>,
     ) -> Result<Response<emby_proto::GetMeResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_classified_result(
-            self.emby_api
-                .get_me(
-                    &actor_user_id,
-                    ProviderCredentialServerQuery {
-                        server_id: provider_request.server_id,
-                    },
-                    instance_name.as_deref(),
-                )
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_emby_get_me(request).await
     }
 
     async fn emby_logout(
         &self,
         request: Request<EmbyLogoutRequest>,
     ) -> Result<Response<emby_proto::LogoutResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let response = map_classified_result(
-            self.emby_api
-                .logout(
-                    &actor_user_id,
-                    ProviderCredentialServerQuery {
-                        server_id: provider_request.server_id,
-                    },
-                )
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_emby_logout(request).await
     }
 
     async fn emby_get_binds(
         &self,
         request: Request<EmbyGetBindsRequest>,
     ) -> Result<Response<emby_proto::GetBindsResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_api_result(
-            self.emby_api
-                .get_binds(&actor_user_id, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_emby_get_binds(request).await
     }
 
     async fn douyin_bind(
         &self,
         request: Request<DouyinBindRequest>,
     ) -> Result<Response<douyin_proto::BindResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, mut provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        provider_request.instance_name.clear();
-        let response = map_classified_result(
-            self.douyin_api
-                .bind(&actor_user_id, provider_request, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_douyin_bind(request).await
     }
 
     async fn douyin_get_binds(
         &self,
         request: Request<DouyinGetBindsRequest>,
     ) -> Result<Response<douyin_proto::GetBindsResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_classified_result(
-            self.douyin_api
-                .get_binds(&actor_user_id, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_douyin_get_binds(request).await
     }
 
     async fn douyin_unbind(
         &self,
         request: Request<DouyinUnbindRequest>,
     ) -> Result<Response<douyin_proto::UnbindResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let response = map_classified_result(
-            self.douyin_api
-                .unbind(&actor_user_id, provider_request)
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_douyin_unbind(request).await
     }
 
     async fn douyin_resolve(
         &self,
         request: Request<DouyinResolveRequest>,
     ) -> Result<Response<douyin_proto::ResolveResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, mut provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        provider_request.instance_name.clear();
-        let response = map_classified_result(
-            self.douyin_api
-                .resolve(&actor_user_id, provider_request, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_douyin_resolve(request).await
     }
 
     async fn douyin_list_user_posts(
         &self,
         request: Request<DouyinListUserPostsRequest>,
     ) -> Result<Response<douyin_proto::ListUserPostsResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, mut provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        provider_request.instance_name.clear();
-        let response = map_classified_result(
-            self.douyin_api
-                .list_user_posts(&actor_user_id, provider_request, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_douyin_list_user_posts(request).await
     }
 
     async fn tik_tok_bind(
         &self,
         request: Request<TikTokBindRequest>,
     ) -> Result<Response<tiktok_proto::BindResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, mut provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        provider_request.instance_name.clear();
-        let response = map_classified_result(
-            self.tiktok_api
-                .bind(&actor_user_id, provider_request, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_tik_tok_bind(request).await
     }
 
     async fn tik_tok_get_binds(
         &self,
         request: Request<TikTokGetBindsRequest>,
     ) -> Result<Response<tiktok_proto::GetBindsResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_classified_result(
-            self.tiktok_api
-                .get_binds(&actor_user_id, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_tik_tok_get_binds(request).await
     }
 
     async fn tik_tok_unbind(
         &self,
         request: Request<TikTokUnbindRequest>,
     ) -> Result<Response<tiktok_proto::UnbindResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let response = map_classified_result(
-            self.tiktok_api
-                .unbind(&actor_user_id, provider_request)
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_tik_tok_unbind(request).await
     }
 
     async fn tik_tok_resolve(
         &self,
         request: Request<TikTokResolveRequest>,
     ) -> Result<Response<tiktok_proto::ResolveResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, mut provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        provider_request.instance_name.clear();
-        let response = map_classified_result(
-            self.tiktok_api
-                .resolve(&actor_user_id, provider_request, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_tik_tok_resolve(request).await
     }
 
     async fn tik_tok_get_user(
         &self,
         request: Request<TikTokGetUserRequest>,
     ) -> Result<Response<tiktok_proto::GetUserResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, mut provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        provider_request.instance_name.clear();
-        let response = map_classified_result(
-            self.tiktok_api
-                .get_user(&actor_user_id, provider_request, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_tik_tok_get_user(request).await
     }
 
     async fn tik_tok_list_user_posts(
         &self,
         request: Request<TikTokListUserPostsRequest>,
     ) -> Result<Response<tiktok_proto::ListUserPostsResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, mut provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        provider_request.instance_name.clear();
-        let response = map_classified_result(
-            self.tiktok_api
-                .list_user_posts(&actor_user_id, provider_request, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_tik_tok_list_user_posts(request).await
     }
 
     async fn twitch_bind(
         &self,
         request: Request<TwitchBindRequest>,
     ) -> Result<Response<twitch_proto::BindResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, mut provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        provider_request.instance_name.clear();
-        let response = map_classified_result(
-            self.twitch_api
-                .bind(&actor_user_id, provider_request, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_twitch_bind(request).await
     }
 
     async fn twitch_get_binds(
         &self,
         request: Request<TwitchGetBindsRequest>,
     ) -> Result<Response<twitch_proto::GetBindsResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_classified_result(
-            self.twitch_api
-                .get_binds(&actor_user_id, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_twitch_get_binds(request).await
     }
 
     async fn twitch_unbind(
         &self,
         request: Request<TwitchUnbindRequest>,
     ) -> Result<Response<twitch_proto::UnbindResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let response = map_classified_result(
-            self.twitch_api
-                .unbind(&actor_user_id, provider_request)
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_twitch_unbind(request).await
     }
 
     async fn twitch_resolve(
         &self,
         request: Request<TwitchResolveRequest>,
     ) -> Result<Response<twitch_proto::ResolveResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, mut provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        provider_request.instance_name.clear();
-        let response = map_classified_result(
-            self.twitch_api
-                .resolve(&actor_user_id, provider_request, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_twitch_resolve(request).await
     }
 
     async fn twitch_list_channel_items(
         &self,
         request: Request<TwitchListChannelItemsRequest>,
     ) -> Result<Response<twitch_proto::ListChannelItemsResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, mut provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        provider_request.instance_name.clear();
-        let response = map_classified_result(
-            self.twitch_api
-                .list_channel_items(&actor_user_id, provider_request, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_twitch_list_channel_items(request).await
     }
 
     async fn bilibili_parse(
         &self,
         request: Request<BilibiliParseRequest>,
     ) -> Result<Response<bilibili_proto::ParseResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_classified_result(
-            self.bilibili_api
-                .parse(
-                    &actor_user_id,
-                    BilibiliParseQuery {
-                        url: provider_request.url,
-                    },
-                    instance_name.as_deref(),
-                )
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_bilibili_parse(request).await
     }
 
     async fn bilibili_login_qr(
         &self,
         request: Request<BilibiliLoginQrRequest>,
     ) -> Result<Response<bilibili_proto::QrCodeResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (_actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_classified_result(
-            self.bilibili_api
-                .login_qr(BilibiliLoginQrCommand, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_bilibili_login_qr(request).await
     }
 
     async fn bilibili_check_qr(
         &self,
         request: Request<BilibiliCheckQrRequest>,
     ) -> Result<Response<bilibili_proto::QrStatusResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_classified_result(
-            self.bilibili_api
-                .check_qr(
-                    &actor_user_id,
-                    BilibiliCheckQrQuery {
-                        key: provider_request.key,
-                    },
-                    instance_name.as_deref(),
-                )
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_bilibili_check_qr(request).await
     }
 
     async fn bilibili_start_sms_login(
         &self,
         request: Request<BilibiliStartSmsLoginRequest>,
     ) -> Result<Response<bilibili_proto::StartSmsLoginResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (_actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_classified_result(
-            self.bilibili_api
-                .start_sms_login(BilibiliStartSmsLoginCommand, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_bilibili_start_sms_login(request).await
     }
 
     async fn bilibili_send_sms(
         &self,
         request: Request<BilibiliSendSmsRequest>,
     ) -> Result<Response<bilibili_proto::SendSmsResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (_actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let response = map_classified_result(
-            self.bilibili_api
-                .send_sms(BilibiliSendSmsCommand {
-                    session_token: provider_request.session_token,
-                    phone: provider_request.phone,
-                    validate: provider_request.validate,
-                })
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_bilibili_send_sms(request).await
     }
 
     async fn bilibili_login_sms(
         &self,
         request: Request<BilibiliLoginSmsRequest>,
     ) -> Result<Response<bilibili_proto::LoginSmsResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let response = map_classified_result(
-            self.bilibili_api
-                .login_sms(
-                    &actor_user_id,
-                    BilibiliLoginSmsCommand {
-                        session_token: provider_request.session_token,
-                        code: provider_request.code,
-                    },
-                )
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_bilibili_login_sms(request).await
     }
 
     async fn bilibili_get_user_info(
         &self,
         request: Request<BilibiliGetUserInfoRequest>,
     ) -> Result<Response<bilibili_proto::UserInfoResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_classified_result(
-            self.bilibili_api
-                .get_user_info(
-                    &actor_user_id,
-                    BilibiliUserInfoQuery,
-                    instance_name.as_deref(),
-                )
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_bilibili_get_user_info(request).await
     }
 
     async fn bilibili_logout(
         &self,
         request: Request<BilibiliLogoutRequest>,
     ) -> Result<Response<bilibili_proto::LogoutResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, _provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let response = map_classified_result(
-            self.bilibili_api
-                .logout(&actor_user_id, BilibiliLogoutCommand)
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_bilibili_logout(request).await
     }
 
     async fn bilibili_get_binds(
         &self,
         request: Request<BilibiliGetBindsRequest>,
     ) -> Result<Response<bilibili_proto::GetBindsResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
-            .resolve_client_actor_and_request(req.actor, req.request)
-            .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_api_result(
-            self.bilibili_api
-                .get_binds(&actor_user_id, instance_name.as_deref())
-                .await,
-        )?;
-        Ok(Response::new(response))
+        self.provider_bilibili_get_binds(request).await
     }
 
     async fn list_available_provider_instances(

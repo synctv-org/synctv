@@ -271,7 +271,6 @@ impl SynologyApiImpl {
         &self,
         user_id: UserId,
         req: LogoutRequest,
-        _instance_name: Option<&str>,
     ) -> Result<LogoutResponse, ProviderError> {
         let success = self
             .provider

@@ -6,13 +6,25 @@ import "proto/admin.proto";
 import "proto/client.proto";
 import "proto/common.proto";
 import "proto/providers/alist.proto";
+import "proto/providers/acfun.proto";
 import "proto/providers/bilibili.proto";
+import "proto/providers/cctv.proto";
+import "proto/providers/cloudreve.proto";
 import "proto/providers/common.proto";
 import "proto/providers/douyin.proto";
+import "proto/providers/douyu.proto";
 import "proto/providers/tiktok.proto";
 import "proto/providers/twitch.proto";
 import "proto/providers/emby.proto";
+import "proto/providers/fnos.proto";
+import "proto/providers/huya.proto";
+import "proto/providers/nextcloud.proto";
+import "proto/providers/qnap.proto";
 import "proto/providers/rtmp.proto";
+import "proto/providers/seafile.proto";
+import "proto/providers/synology.proto";
+import "proto/providers/truenas.proto";
+import "proto/providers/youtube.proto";
 import "proto/source_config.proto";
 
 service ManagementService {
@@ -111,6 +123,73 @@ service ManagementService {
     rpc BilibiliGetUserInfo(BilibiliGetUserInfoRequest) returns (synctv.provider.bilibili.UserInfoResponse);
     rpc BilibiliLogout(BilibiliLogoutRequest) returns (synctv.provider.bilibili.LogoutResponse);
     rpc BilibiliGetBinds(BilibiliGetBindsRequest) returns (synctv.provider.bilibili.GetBindsResponse);
+    rpc AcfunResolve(AcfunResolveRequest) returns (synctv.provider.acfun.ResolveResponse);
+    rpc CctvResolve(CctvResolveRequest) returns (synctv.provider.cctv.ResolveResponse);
+    rpc DouyuResolve(DouyuResolveRequest) returns (synctv.provider.douyu.ResolveResponse);
+    rpc HuyaResolve(HuyaResolveRequest) returns (synctv.provider.huya.ResolveResponse);
+    rpc YoutubeBind(YoutubeBindRequest) returns (synctv.provider.youtube.BindResponse);
+    rpc YoutubeGetBinds(YoutubeGetBindsRequest) returns (synctv.provider.youtube.GetBindsResponse);
+    rpc YoutubeUnbind(YoutubeUnbindRequest) returns (synctv.provider.youtube.UnbindResponse);
+    rpc YoutubeResolve(YoutubeResolveRequest) returns (synctv.provider.youtube.ResolveResponse);
+    rpc CloudreveLogin(CloudreveLoginRequest) returns (synctv.provider.cloudreve.LoginResponse);
+    rpc CloudreveList(CloudreveListRequest) returns (synctv.provider.cloudreve.ListResponse);
+    rpc CloudreveSearch(CloudreveSearchRequest) returns (synctv.provider.cloudreve.SearchResponse);
+    rpc CloudreveGetMe(CloudreveGetMeRequest) returns (synctv.provider.cloudreve.GetMeResponse);
+    rpc CloudreveLogout(CloudreveLogoutRequest) returns (synctv.provider.cloudreve.LogoutResponse);
+    rpc CloudreveGetBinds(CloudreveGetBindsRequest) returns (synctv.provider.cloudreve.GetBindsResponse);
+    rpc FnosLogin(FnosLoginRequest) returns (synctv.provider.fnos.LoginResponse);
+    rpc FnosList(FnosListRequest) returns (synctv.provider.fnos.ListResponse);
+    rpc FnosListMediaLibraries(FnosListMediaLibrariesRequest) returns (synctv.provider.fnos.ListMediaLibrariesResponse);
+    rpc FnosListMediaItems(FnosListMediaItemsRequest) returns (synctv.provider.fnos.ListMediaItemsResponse);
+    rpc FnosSetFavorite(FnosSetFavoriteRequest) returns (synctv.provider.fnos.SetFavoriteResponse);
+    rpc FnosSetWatched(FnosSetWatchedRequest) returns (synctv.provider.fnos.SetWatchedResponse);
+    rpc FnosGetServerInfo(FnosGetServerInfoRequest) returns (synctv.provider.fnos.GetServerInfoResponse);
+    rpc FnosLogout(FnosLogoutRequest) returns (synctv.provider.fnos.LogoutResponse);
+    rpc FnosGetBinds(FnosGetBindsRequest) returns (synctv.provider.fnos.GetBindsResponse);
+    rpc NextcloudLogin(NextcloudLoginRequest) returns (synctv.provider.nextcloud.LoginResponse);
+    rpc NextcloudStartLoginFlow(NextcloudStartLoginFlowRequest) returns (synctv.provider.nextcloud.StartLoginFlowResponse);
+    rpc NextcloudPollLoginFlow(NextcloudPollLoginFlowRequest) returns (synctv.provider.nextcloud.LoginResponse);
+    rpc NextcloudList(NextcloudListRequest) returns (synctv.provider.nextcloud.ListResponse);
+    rpc NextcloudListFavorites(NextcloudListFavoritesRequest) returns (synctv.provider.nextcloud.ListResponse);
+    rpc NextcloudLogout(NextcloudLogoutRequest) returns (synctv.provider.nextcloud.LogoutResponse);
+    rpc NextcloudGetBinds(NextcloudGetBindsRequest) returns (synctv.provider.nextcloud.GetBindsResponse);
+    rpc QnapLogin(QnapLoginRequest) returns (synctv.provider.qnap.LoginResponse);
+    rpc QnapList(QnapListRequest) returns (synctv.provider.qnap.ListResponse);
+    rpc QnapGetCapabilities(QnapGetCapabilitiesRequest) returns (synctv.provider.qnap.GetCapabilitiesResponse);
+    rpc QnapLogout(QnapLogoutRequest) returns (synctv.provider.qnap.LogoutResponse);
+    rpc QnapGetBinds(QnapGetBindsRequest) returns (synctv.provider.qnap.GetBindsResponse);
+    rpc SeafileLogin(SeafileLoginRequest) returns (synctv.provider.seafile.LoginResponse);
+    rpc SeafileUnlockLibrary(SeafileUnlockLibraryRequest) returns (synctv.provider.seafile.UnlockLibraryResponse);
+    rpc SeafileListRepositories(SeafileListRepositoriesRequest) returns (synctv.provider.seafile.ListResponse);
+    rpc SeafileList(SeafileListRequest) returns (synctv.provider.seafile.ListResponse);
+    rpc SeafileListStarred(SeafileListStarredRequest) returns (synctv.provider.seafile.ListResponse);
+    rpc SeafileLogout(SeafileLogoutRequest) returns (synctv.provider.seafile.LogoutResponse);
+    rpc SeafileGetBinds(SeafileGetBindsRequest) returns (synctv.provider.seafile.GetBindsResponse);
+    rpc SynologyLogin(SynologyLoginRequest) returns (synctv.provider.synology.LoginResponse);
+    rpc SynologyListFiles(SynologyListFilesRequest) returns (synctv.provider.synology.ListFilesResponse);
+    rpc SynologyListLibraries(SynologyListLibrariesRequest) returns (synctv.provider.synology.ListLibrariesResponse);
+    rpc SynologyListMovies(SynologyListMoviesRequest) returns (synctv.provider.synology.ListVideoItemsResponse);
+    rpc SynologyListTvShows(SynologyListTvShowsRequest) returns (synctv.provider.synology.ListVideoItemsResponse);
+    rpc SynologyListEpisodes(SynologyListEpisodesRequest) returns (synctv.provider.synology.ListVideoItemsResponse);
+    rpc SynologyListHomeVideos(SynologyListHomeVideosRequest) returns (synctv.provider.synology.ListVideoItemsResponse);
+    rpc SynologyListTvRecordings(SynologyListTvRecordingsRequest) returns (synctv.provider.synology.ListVideoItemsResponse);
+    rpc SynologyLogout(SynologyLogoutRequest) returns (synctv.provider.synology.LogoutResponse);
+    rpc SynologyGetBinds(SynologyGetBindsRequest) returns (synctv.provider.synology.GetBindsResponse);
+    rpc TruenasLogin(TruenasLoginRequest) returns (synctv.provider.truenas.LoginResponse);
+    rpc TruenasList(TruenasListRequest) returns (synctv.provider.truenas.ListResponse);
+    rpc TruenasLogout(TruenasLogoutRequest) returns (synctv.provider.truenas.LogoutResponse);
+    rpc TruenasGetBinds(TruenasGetBindsRequest) returns (synctv.provider.truenas.GetBindsResponse);
+    rpc BilibiliListLiveAreas(BilibiliListLiveAreasRequest) returns (synctv.provider.bilibili.ListLiveAreasResponse);
+    rpc BilibiliListFavoriteFolders(BilibiliListFavoriteFoldersRequest) returns (synctv.provider.bilibili.ListFavoriteFoldersResponse);
+    rpc BilibiliListFollowedPgc(BilibiliListFollowedPgcRequest) returns (synctv.provider.bilibili.ListFollowedPgcResponse);
+    rpc BilibiliListHistory(BilibiliListHistoryRequest) returns (synctv.provider.bilibili.ListHistoryResponse);
+    rpc BilibiliListPgcTimeline(BilibiliListPgcTimelineRequest) returns (synctv.provider.bilibili.ListPgcTimelineResponse);
+    rpc BilibiliListPgcSeasons(BilibiliListPgcSeasonsRequest) returns (synctv.provider.bilibili.ListPgcSeasonsResponse);
+    rpc TwitchListFollowedLive(TwitchListFollowedLiveRequest) returns (synctv.provider.twitch.ListFollowedLiveResponse);
+    rpc TwitchListCategoryStreams(TwitchListCategoryStreamsRequest) returns (synctv.provider.twitch.ListCategoryStreamsResponse);
+    rpc TwitchListTopCategories(TwitchListTopCategoriesRequest) returns (synctv.provider.twitch.ListTopCategoriesResponse);
+    rpc TwitchSearchLiveChannels(TwitchSearchLiveChannelsRequest) returns (synctv.provider.twitch.SearchLiveChannelsResponse);
+    rpc TwitchListSchedule(TwitchListScheduleRequest) returns (synctv.provider.twitch.ListScheduleResponse);
 
     rpc ListPlaylists(ListPlaylistsRequest) returns (synctv.client.ListPlaylistsResponse);
     rpc GetPlaylist(GetPlaylistRequest) returns (synctv.client.GetPlaylistResponse);
@@ -168,6 +247,341 @@ service ManagementService {
     // Lifecycle
     // =========================
     rpc StopServer(StopServerRequest) returns (stream StopServerEvent);
+}
+
+message AcfunResolveRequest {
+    UserRef actor = 1;
+    synctv.provider.acfun.ResolveRequest request = 2;
+}
+
+message CctvResolveRequest {
+    UserRef actor = 1;
+    synctv.provider.cctv.ResolveRequest request = 2;
+}
+
+message DouyuResolveRequest {
+    UserRef actor = 1;
+    synctv.provider.douyu.ResolveRequest request = 2;
+}
+
+message HuyaResolveRequest {
+    UserRef actor = 1;
+    synctv.provider.huya.ResolveRequest request = 2;
+}
+
+message YoutubeBindRequest {
+    UserRef actor = 1;
+    synctv.provider.youtube.BindRequest request = 2;
+}
+
+message YoutubeGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.youtube.GetBindsRequest request = 2;
+}
+
+message YoutubeUnbindRequest {
+    UserRef actor = 1;
+    synctv.provider.youtube.UnbindRequest request = 2;
+}
+
+message YoutubeResolveRequest {
+    UserRef actor = 1;
+    synctv.provider.youtube.ResolveRequest request = 2;
+}
+
+message CloudreveLoginRequest {
+    UserRef actor = 1;
+    synctv.provider.cloudreve.LoginRequest request = 2;
+}
+
+message CloudreveListRequest {
+    UserRef actor = 1;
+    synctv.provider.cloudreve.ListRequest request = 2;
+}
+
+message CloudreveSearchRequest {
+    UserRef actor = 1;
+    synctv.provider.cloudreve.SearchRequest request = 2;
+}
+
+message CloudreveGetMeRequest {
+    UserRef actor = 1;
+    synctv.provider.cloudreve.GetMeRequest request = 2;
+}
+
+message CloudreveLogoutRequest {
+    UserRef actor = 1;
+    synctv.provider.cloudreve.LogoutRequest request = 2;
+}
+
+message CloudreveGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.cloudreve.GetBindsRequest request = 2;
+}
+
+message FnosLoginRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.LoginRequest request = 2;
+}
+
+message FnosListRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.ListRequest request = 2;
+}
+
+message FnosListMediaLibrariesRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.ListMediaLibrariesRequest request = 2;
+}
+
+message FnosListMediaItemsRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.ListMediaItemsRequest request = 2;
+}
+
+message FnosSetFavoriteRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.SetFavoriteRequest request = 2;
+}
+
+message FnosSetWatchedRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.SetWatchedRequest request = 2;
+}
+
+message FnosGetServerInfoRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.GetServerInfoRequest request = 2;
+}
+
+message FnosLogoutRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.LogoutRequest request = 2;
+}
+
+message FnosGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.GetBindsRequest request = 2;
+}
+
+message NextcloudLoginRequest {
+    UserRef actor = 1;
+    synctv.provider.nextcloud.LoginRequest request = 2;
+}
+
+message NextcloudStartLoginFlowRequest {
+    UserRef actor = 1;
+    synctv.provider.nextcloud.StartLoginFlowRequest request = 2;
+}
+
+message NextcloudPollLoginFlowRequest {
+    UserRef actor = 1;
+    synctv.provider.nextcloud.PollLoginFlowRequest request = 2;
+}
+
+message NextcloudListRequest {
+    UserRef actor = 1;
+    synctv.provider.nextcloud.ListRequest request = 2;
+}
+
+message NextcloudListFavoritesRequest {
+    UserRef actor = 1;
+    synctv.provider.nextcloud.ListFavoritesRequest request = 2;
+}
+
+message NextcloudLogoutRequest {
+    UserRef actor = 1;
+    synctv.provider.nextcloud.LogoutRequest request = 2;
+}
+
+message NextcloudGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.nextcloud.GetBindsRequest request = 2;
+}
+
+message QnapLoginRequest {
+    UserRef actor = 1;
+    synctv.provider.qnap.LoginRequest request = 2;
+}
+
+message QnapListRequest {
+    UserRef actor = 1;
+    synctv.provider.qnap.ListRequest request = 2;
+}
+
+message QnapGetCapabilitiesRequest {
+    UserRef actor = 1;
+    synctv.provider.qnap.GetCapabilitiesRequest request = 2;
+}
+
+message QnapLogoutRequest {
+    UserRef actor = 1;
+    synctv.provider.qnap.LogoutRequest request = 2;
+}
+
+message QnapGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.qnap.GetBindsRequest request = 2;
+}
+
+message SeafileLoginRequest {
+    UserRef actor = 1;
+    synctv.provider.seafile.LoginRequest request = 2;
+}
+
+message SeafileUnlockLibraryRequest {
+    UserRef actor = 1;
+    synctv.provider.seafile.UnlockLibraryRequest request = 2;
+}
+
+message SeafileListRepositoriesRequest {
+    UserRef actor = 1;
+    synctv.provider.seafile.ListRepositoriesRequest request = 2;
+}
+
+message SeafileListRequest {
+    UserRef actor = 1;
+    synctv.provider.seafile.ListRequest request = 2;
+}
+
+message SeafileListStarredRequest {
+    UserRef actor = 1;
+    synctv.provider.seafile.ListStarredRequest request = 2;
+}
+
+message SeafileLogoutRequest {
+    UserRef actor = 1;
+    synctv.provider.seafile.LogoutRequest request = 2;
+}
+
+message SeafileGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.seafile.GetBindsRequest request = 2;
+}
+
+message SynologyLoginRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.LoginRequest request = 2;
+}
+
+message SynologyListFilesRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.ListFilesRequest request = 2;
+}
+
+message SynologyListLibrariesRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.ListLibrariesRequest request = 2;
+}
+
+message SynologyListMoviesRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.ListMoviesRequest request = 2;
+}
+
+message SynologyListTvShowsRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.ListTvShowsRequest request = 2;
+}
+
+message SynologyListEpisodesRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.ListEpisodesRequest request = 2;
+}
+
+message SynologyListHomeVideosRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.ListHomeVideosRequest request = 2;
+}
+
+message SynologyListTvRecordingsRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.ListTvRecordingsRequest request = 2;
+}
+
+message SynologyLogoutRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.LogoutRequest request = 2;
+}
+
+message SynologyGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.GetBindsRequest request = 2;
+}
+
+message TruenasLoginRequest {
+    UserRef actor = 1;
+    synctv.provider.truenas.LoginRequest request = 2;
+}
+
+message TruenasListRequest {
+    UserRef actor = 1;
+    synctv.provider.truenas.ListRequest request = 2;
+}
+
+message TruenasLogoutRequest {
+    UserRef actor = 1;
+    synctv.provider.truenas.LogoutRequest request = 2;
+}
+
+message TruenasGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.truenas.GetBindsRequest request = 2;
+}
+
+message BilibiliListLiveAreasRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.ListLiveAreasRequest request = 2;
+}
+
+message BilibiliListFavoriteFoldersRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.ListFavoriteFoldersRequest request = 2;
+}
+
+message BilibiliListFollowedPgcRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.ListFollowedPgcRequest request = 2;
+}
+
+message BilibiliListHistoryRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.ListHistoryRequest request = 2;
+}
+
+message BilibiliListPgcTimelineRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.ListPgcTimelineRequest request = 2;
+}
+
+message BilibiliListPgcSeasonsRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.ListPgcSeasonsRequest request = 2;
+}
+
+message TwitchListFollowedLiveRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.ListFollowedLiveRequest request = 2;
+}
+
+message TwitchListCategoryStreamsRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.ListCategoryStreamsRequest request = 2;
+}
+
+message TwitchListTopCategoriesRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.ListTopCategoriesRequest request = 2;
+}
+
+message TwitchSearchLiveChannelsRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.SearchLiveChannelsRequest request = 2;
+}
+
+message TwitchListScheduleRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.ListScheduleRequest request = 2;
 }
 
 enum ShutdownMode {

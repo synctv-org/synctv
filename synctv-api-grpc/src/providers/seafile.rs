@@ -155,14 +155,13 @@ impl SeafileProviderService for SeafileProviderGrpcService {
     ) -> Result<Response<LogoutResponse>, Status> {
         let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
-        let instance = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
         self.request_executor
             .execute_user(
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |auth| async move {
-                    api.logout(auth.user_id, req, instance.as_deref())
+                    api.logout(auth.user_id, req)
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },

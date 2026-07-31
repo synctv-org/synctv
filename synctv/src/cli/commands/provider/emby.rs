@@ -1,6 +1,7 @@
 use super::super::prelude::*;
 use super::{
-    ProviderBoundCredentialArgs, ProviderServiceInstanceArgs, ProviderServiceRemoteActorArgs,
+    ProviderBoundCredentialArgs, ProviderCredentialCommandArgs, ProviderServiceInstanceArgs,
+    ProviderServiceRemoteActorArgs,
 };
 
 #[derive(Debug, Args)]
@@ -18,7 +19,7 @@ pub enum ProviderEmbySubcommand {
     /// Show the current Emby-compatible account info for a saved bind
     Me(ProviderEmbyGetMeArgs),
     /// Remove a saved Emby-compatible bind
-    Logout(ProviderEmbyLogoutArgs),
+    Logout(ProviderCredentialCommandArgs),
     /// List saved Emby-compatible binds for a user
     Binds(ProviderEmbyBindsArgs),
 }
@@ -36,7 +37,7 @@ pub struct ProviderEmbyLoginArgs {
 
     /// Emby/Jellyfin server base URL
     #[arg(long)]
-    pub host: String,
+    pub server_endpoint: String,
 
     /// Target Emby/Jellyfin account username to bind
     #[arg(long)]
@@ -95,15 +96,6 @@ pub struct ProviderEmbyListArgs {
 
 #[derive(Debug, Args)]
 pub struct ProviderEmbyGetMeArgs {
-    #[command(flatten)]
-    pub access: ProviderServiceRemoteActorArgs,
-
-    #[command(flatten)]
-    pub bind: ProviderBoundCredentialArgs,
-}
-
-#[derive(Debug, Args)]
-pub struct ProviderEmbyLogoutArgs {
     #[command(flatten)]
     pub access: ProviderServiceRemoteActorArgs,
 

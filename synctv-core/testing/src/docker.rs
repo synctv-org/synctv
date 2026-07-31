@@ -12,6 +12,8 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::GenericImage;
 use tokio::sync::{Semaphore, SemaphorePermit};
 
+const DOCKER_CLI_INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub(crate) const TEST_RUN_LABEL: &str = "synctv.test.run_id";
 const DOCKER_IMAGE_PULL_LOCK_PREFIX: &str = "docker-image-pull";
 const IMAGE_PULL_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -145,6 +147,26 @@ pub(crate) fn run_has_active_lock(service: &str, run_id: &str) -> bool {
     false
 }
 
+pub(crate) fn active_run_ids(service: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(crate::test_temp_dir()) else {
+        return Vec::new();
+    };
+
+    let prefix = format!("synctv-{service}-run-");
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let file_name = path.file_name()?.to_str()?;
+            let suffix = file_name.strip_prefix(&prefix)?.strip_suffix(".lock")?;
+            let (run_id, _process_id) = suffix.rsplit_once('-')?;
+            ProcessLock::try_acquire_path(&path)
+                .is_none()
+                .then(|| run_id.to_string())
+        })
+        .collect()
+}
+
 pub(crate) fn cleanup_error_indicates_missing_container(err: &str) -> bool {
     let err = err.to_ascii_lowercase();
     err.contains("no such container") || err.contains("not found")
@@ -217,16 +239,53 @@ fn docker_image_missing_error(error: &str) -> bool {
 }
 
 async fn docker_image_inspect(descriptor: &str) -> Result<bool, String> {
-    let client = docker_client_instance()
-        .await
-        .map_err(|error| format!("failed to connect to Docker: {error}"))?;
+    let client = match docker_client_instance().await {
+        Ok(client) => client,
+        Err(error) => {
+            return docker_cli_image_inspect(descriptor)
+                .await
+                .map_err(|cli_error| {
+                    format!(
+                        "failed to connect to Docker: {error}; Docker CLI fallback failed: {cli_error}"
+                    )
+                });
+        }
+    };
 
     match client.inspect_image(descriptor).await {
         Ok(_) => Ok(true),
         Err(error) if docker_image_missing_error(&error.to_string()) => Ok(false),
-        Err(error) => Err(format!(
-            "failed to inspect Docker image `{descriptor}`: {error}"
-        )),
+        Err(error) => match docker_cli_image_inspect(descriptor).await {
+            Ok(found) => Ok(found),
+            Err(cli_error) => Err(format!(
+                "failed to inspect Docker image `{descriptor}`: {error}; Docker CLI fallback failed: {cli_error}"
+            )),
+        },
+    }
+}
+
+async fn docker_cli_image_inspect(descriptor: &str) -> Result<bool, String> {
+    let mut command = tokio::process::Command::new("docker");
+    command
+        .args(["image", "inspect", descriptor])
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(DOCKER_CLI_INSPECT_TIMEOUT, command.output())
+        .await
+        .map_err(|_| {
+            format!("docker image inspect timed out after {DOCKER_CLI_INSPECT_TIMEOUT:?}")
+        })?
+        .map_err(|error| format!("failed to execute docker image inspect: {error}"))?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if docker_image_missing_error(&stderr) {
+        Ok(false)
+    } else {
+        Err(format!(
+            "docker image inspect exited with {}: {stderr}",
+            output.status
+        ))
     }
 }
 

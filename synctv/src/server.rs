@@ -28,8 +28,10 @@ use synctv_core::{
 };
 use synctv_management::lifecycle::{ManagementLifecycleController, ShutdownMode};
 use synctv_management::provider_runtime::{
-    AlistRuntime, BilibiliRuntime, DouyinRuntime, EmbyRuntime, ProviderCommonRuntime,
-    TikTokRuntime, TwitchRuntime,
+    AcfunRuntime, AlistRuntime, BilibiliRuntime, CctvRuntime, CloudreveRuntime, DouyinRuntime,
+    DouyuRuntime, EmbyRuntime, FnosRuntime, HuyaRuntime, NextcloudRuntime, ProviderCommonRuntime,
+    QnapRuntime, SeafileRuntime, SynologyRuntime, TikTokRuntime, TruenasRuntime, TwitchRuntime,
+    YoutubeRuntime,
 };
 use synctv_management::server::{spawn_management_server, ManagementServerConfig};
 use synctv_realtime::fanout::{RealtimeEventService, RealtimeFanoutService};
@@ -40,9 +42,13 @@ use crate::app_config::{AppConfig as Config, MetricsTlsConfig};
 use crate::bootstrap::cluster::ClusterNodeActivator;
 use crate::bootstrap::DatabasePools;
 use crate::management_runtime::{
-    ManagementAdminRuntime, ManagementAlistRuntime, ManagementBilibiliRuntime,
-    ManagementDouyinRuntime, ManagementEmbyRuntime, ManagementProviderCommonRuntime,
-    ManagementTikTokRuntime, ManagementTwitchRuntime,
+    ManagementAcfunRuntime, ManagementAdminRuntime, ManagementAlistRuntime,
+    ManagementBilibiliRuntime, ManagementCctvRuntime, ManagementCloudreveRuntime,
+    ManagementDouyinRuntime, ManagementDouyuRuntime, ManagementEmbyRuntime, ManagementFnosRuntime,
+    ManagementHuyaRuntime, ManagementNextcloudRuntime, ManagementProviderCommonRuntime,
+    ManagementQnapRuntime, ManagementSeafileRuntime, ManagementSynologyRuntime,
+    ManagementTikTokRuntime, ManagementTruenasRuntime, ManagementTwitchRuntime,
+    ManagementYoutubeRuntime,
 };
 use crate::path_util::absolute_display_path;
 use crate::resource_options::api_runtime_settings;
@@ -687,12 +693,24 @@ async fn build_proxy_slice_cache(
 struct ManagementApiHandles {
     admin: Arc<dyn synctv_management::admin_runtime::AdminRuntime>,
     provider_common: Arc<dyn ProviderCommonRuntime>,
+    acfun: Arc<dyn AcfunRuntime>,
     alist: Arc<dyn AlistRuntime>,
     bilibili: Arc<dyn BilibiliRuntime>,
+    cctv: Arc<dyn CctvRuntime>,
+    cloudreve: Arc<dyn CloudreveRuntime>,
     emby: Arc<dyn EmbyRuntime>,
     douyin: Arc<dyn DouyinRuntime>,
+    douyu: Arc<dyn DouyuRuntime>,
+    fnos: Arc<dyn FnosRuntime>,
+    huya: Arc<dyn HuyaRuntime>,
+    nextcloud: Arc<dyn NextcloudRuntime>,
+    qnap: Arc<dyn QnapRuntime>,
+    seafile: Arc<dyn SeafileRuntime>,
+    synology: Arc<dyn SynologyRuntime>,
     tiktok: Arc<dyn TikTokRuntime>,
+    truenas: Arc<dyn TruenasRuntime>,
     twitch: Arc<dyn TwitchRuntime>,
+    youtube: Arc<dyn YoutubeRuntime>,
 }
 
 fn management_apis_from_http_state(
@@ -708,21 +726,53 @@ fn management_apis_from_http_state(
         provider_common: Arc::new(ManagementProviderCommonRuntime::new(
             shared_runtime.provider_common_api.clone(),
         )),
+        acfun: Arc::new(ManagementAcfunRuntime::new(
+            shared_runtime.acfun_playback_provider_service.clone(),
+        )),
         alist: Arc::new(ManagementAlistRuntime::new(
             shared_runtime.alist_api.clone(),
         )),
         bilibili: Arc::new(ManagementBilibiliRuntime::new(
             shared_runtime.bilibili_api.clone(),
         )),
+        cctv: Arc::new(ManagementCctvRuntime::new(
+            shared_runtime.cctv_playback_provider_service.clone(),
+        )),
+        cloudreve: Arc::new(ManagementCloudreveRuntime::new(
+            shared_runtime.cloudreve_api.clone(),
+        )),
         emby: Arc::new(ManagementEmbyRuntime::new(shared_runtime.emby_api.clone())),
         douyin: Arc::new(ManagementDouyinRuntime::new(
             shared_runtime.douyin_api.clone(),
         )),
+        douyu: Arc::new(ManagementDouyuRuntime::new(
+            shared_runtime.douyu_playback_provider_service.clone(),
+        )),
+        fnos: Arc::new(ManagementFnosRuntime::new(shared_runtime.fnos_api.clone())),
+        huya: Arc::new(ManagementHuyaRuntime::new(
+            shared_runtime.huya_playback_provider_service.clone(),
+        )),
+        nextcloud: Arc::new(ManagementNextcloudRuntime::new(
+            shared_runtime.nextcloud_api.clone(),
+        )),
+        qnap: Arc::new(ManagementQnapRuntime::new(shared_runtime.qnap_api.clone())),
+        seafile: Arc::new(ManagementSeafileRuntime::new(
+            shared_runtime.seafile_api.clone(),
+        )),
+        synology: Arc::new(ManagementSynologyRuntime::new(
+            shared_runtime.synology_api.clone(),
+        )),
         tiktok: Arc::new(ManagementTikTokRuntime::new(
             shared_runtime.tiktok_api.clone(),
         )),
+        truenas: Arc::new(ManagementTruenasRuntime::new(
+            shared_runtime.truenas_api.clone(),
+        )),
         twitch: Arc::new(ManagementTwitchRuntime::new(
             shared_runtime.twitch_api.clone(),
+        )),
+        youtube: Arc::new(ManagementYoutubeRuntime::new(
+            shared_runtime.youtube_api.clone(),
         )),
     })
 }
@@ -2867,6 +2917,18 @@ impl SyncTvServer {
                 .public_id_codec
                 .clone(),
             provider_common_api: management_apis.provider_common,
+            acfun_api: management_apis.acfun,
+            cctv_api: management_apis.cctv,
+            cloudreve_api: management_apis.cloudreve,
+            douyu_api: management_apis.douyu,
+            fnos_api: management_apis.fnos,
+            huya_api: management_apis.huya,
+            nextcloud_api: management_apis.nextcloud,
+            qnap_api: management_apis.qnap,
+            seafile_api: management_apis.seafile,
+            synology_api: management_apis.synology,
+            truenas_api: management_apis.truenas,
+            youtube_api: management_apis.youtube,
             chat_service: Some(self.services.chat_service.clone()),
             clock: shared_client_api.clock.clone(),
             room_service: self.services.room_service.clone(),

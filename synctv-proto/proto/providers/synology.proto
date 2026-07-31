@@ -172,7 +172,6 @@ message ListVideoItemsResponse {
 
 message LogoutRequest {
   string server_id = 1 [(buf.validate.field).string.min_len = 1];
-  string instance_name = 2;
 }
 
 message LogoutResponse {

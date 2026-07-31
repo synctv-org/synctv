@@ -364,7 +364,6 @@ mod tests {
                 &synctv_core::models::UserId::new(),
                 synctv_proto::providers::emby::LogoutRequest {
                     server_id: String::new(),
-                    instance_name: String::new(),
                 },
             )
             .await,

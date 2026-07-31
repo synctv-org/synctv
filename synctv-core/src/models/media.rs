@@ -117,6 +117,30 @@ impl FromStr for SourceProvider {
 }
 
 impl SourceProvider {
+    pub const ALL: &'static [Self] = &[
+        Self::DirectUrl,
+        Self::Bilibili,
+        Self::Alist,
+        Self::Emby,
+        Self::Rtmp,
+        Self::LiveProxy,
+        Self::Cloudreve,
+        Self::Twitch,
+        Self::Huya,
+        Self::Douyu,
+        Self::Douyin,
+        Self::AcFun,
+        Self::Cctv,
+        Self::Fnos,
+        Self::Qnap,
+        Self::Synology,
+        Self::Nextcloud,
+        Self::Seafile,
+        Self::TrueNas,
+        Self::Youtube,
+        Self::TikTok,
+    ];
+
     #[must_use]
     pub const fn as_i16(self) -> i16 {
         match self {

@@ -5,7 +5,18 @@ on:
     inputs:
       release-tag:
         description: "Release tag, for example v0.2.0"
-        required: true
+        required: false
+        default: ""
+        type: string
+      channel:
+        description: "Development channel, for example next"
+        required: false
+        default: ""
+        type: string
+      image-tag:
+        description: "Image tag produced by the calling Docker workflow"
+        required: false
+        default: ""
         type: string
     secrets:
       token:
@@ -45,11 +56,16 @@ jobs:
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
+      - name: Validate source chart
+        run: make validate-helm
+
       - name: Read chart metadata
         id: chart
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.release-tag }}
+          CHANNEL: ${{ inputs.channel }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
           GHCR_REPOSITORY: ${{ github.repository }}
           HELM_OCI_NAMESPACE: ${{ vars.HELM_OCI_NAMESPACE || secrets.HELM_OCI_NAMESPACE }}
           DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME }}
@@ -65,18 +81,48 @@ jobs:
             exit 1
           fi
 
-          tag_version="${RELEASE_TAG#v}"
-          if [ "$chart_version" != "$tag_version" ]; then
-            echo "Chart version ($chart_version) must match release tag ($tag_version)." >&2
+          if [ -n "$RELEASE_TAG" ] && [ -n "$CHANNEL" ]; then
+            echo "release-tag and channel are mutually exclusive." >&2
             exit 1
           fi
-          if [ "$app_version" != "$tag_version" ]; then
-            echo "Chart appVersion ($app_version) must match release tag ($tag_version)." >&2
+          if [ -z "$RELEASE_TAG" ] && [ -z "$CHANNEL" ]; then
+            echo "Either release-tag or channel is required." >&2
             exit 1
           fi
-          if [ "$cargo_version" != "$tag_version" ]; then
-            echo "Cargo workspace version ($cargo_version) must match release tag ($tag_version)." >&2
+
+          if [ "$chart_version" != "$cargo_version" ] || [ "$app_version" != "$cargo_version" ]; then
+            echo "Source chart version ($chart_version), appVersion ($app_version), and Cargo workspace version ($cargo_version) must match." >&2
             exit 1
+          fi
+
+          if [ -n "$RELEASE_TAG" ]; then
+            tag_version="${RELEASE_TAG#v}"
+            if [ "$chart_version" != "$tag_version" ]; then
+              echo "Chart version ($chart_version) must match release tag ($tag_version)." >&2
+              exit 1
+            fi
+            publish_version="$chart_version"
+            publish_app_version="$app_version"
+            publish_image_tag="${IMAGE_TAG:-$tag_version}"
+          else
+            if ! [[ "$CHANNEL" =~ ^[0-9A-Za-z-]+$ ]]; then
+              echo "Development channel must contain only letters, digits, and hyphens." >&2
+              exit 1
+            fi
+            if ! [[ "$IMAGE_TAG" =~ ^[0-9A-Za-z_][0-9A-Za-z._-]{0,127}$ ]]; then
+              echo "Development image-tag must be a valid OCI image tag." >&2
+              exit 1
+            fi
+
+            short_sha="${GITHUB_SHA::7}"
+            version_suffix="$CHANNEL.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}.g$short_sha"
+            if [[ "$chart_version" == *-* ]]; then
+              publish_version="$chart_version.$version_suffix"
+            else
+              publish_version="$chart_version-$version_suffix"
+            fi
+            publish_app_version="$IMAGE_TAG"
+            publish_image_tag="$IMAGE_TAG"
           fi
 
           repo="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
@@ -96,8 +142,9 @@ jobs:
 
           {
             echo "name=$chart_name"
-            echo "version=$chart_version"
-            echo "app_version=$app_version"
+            echo "version=$publish_version"
+            echo "app_version=$publish_app_version"
+            echo "image_tag=$publish_image_tag"
             echo "dockerhub_username=$DOCKERHUB_USERNAME"
             echo 'oci_repos<<EOF'
             if [ -n "$HELM_OCI_NAMESPACE" ]; then
@@ -111,24 +158,56 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
-      - name: Set release image repository
+      - name: Set published chart and image metadata
         env:
+          PUBLISH_CHART_VERSION: ${{ steps.chart.outputs.version }}
+          PUBLISH_APP_VERSION: ${{ steps.chart.outputs.app_version }}
           PUBLISH_IMAGE_REPOSITORY: ${{ github.repository }}
+          PUBLISH_IMAGE_TAG: ${{ steps.chart.outputs.image_tag }}
         run: |
           ruby <<'RUBY'
           require "yaml"
 
-          path = "helm/synctv/values.yaml"
-          values = YAML.load_file(path)
+          chart_path = "helm/synctv/Chart.yaml"
+          chart = YAML.load_file(chart_path)
+          chart["version"] = ENV.fetch("PUBLISH_CHART_VERSION")
+          chart["appVersion"] = ENV.fetch("PUBLISH_APP_VERSION")
+          File.write(chart_path, YAML.dump(chart))
+
+          values_path = "helm/synctv/values.yaml"
+          values = YAML.load_file(values_path)
           image = values.fetch("image")
           image["registry"] = "ghcr.io"
           image["repository"] = ENV.fetch("PUBLISH_IMAGE_REPOSITORY").downcase
-          File.write(path, YAML.dump(values))
-          puts "OCI release image: #{image['registry']}/#{image['repository']}"
+          image["tag"] = ENV.fetch("PUBLISH_IMAGE_TAG")
+          File.write(values_path, YAML.dump(values))
+          puts "OCI chart version: #{chart['version']}"
+          puts "OCI chart default image: #{image['registry']}/#{image['repository']}:#{image['tag']}"
           RUBY
 
-      - name: Validate chart
-        run: make validate-helm
+      - name: Validate published chart
+        env:
+          PUBLISH_IMAGE_REPOSITORY: ${{ github.repository }}
+          PUBLISH_IMAGE_TAG: ${{ steps.chart.outputs.image_tag }}
+        run: |
+          helm lint ./helm/synctv
+          rendered_image="$(helm template synctv ./helm/synctv --namespace synctv | ruby -ryaml -e '
+            YAML.load_stream(STDIN.read).compact.each do |document|
+              next unless document["kind"] == "Deployment"
+              containers = document.dig("spec", "template", "spec", "containers") || []
+              container = containers.find { |item| item["name"] == "synctv" }
+              if container
+                puts container.fetch("image")
+                exit
+              end
+            end
+            abort "SyncTV Deployment image was not rendered"
+          ')"
+          expected_image="ghcr.io/${PUBLISH_IMAGE_REPOSITORY,,}:$PUBLISH_IMAGE_TAG"
+          if [ "$rendered_image" != "$expected_image" ]; then
+            echo "Rendered image ($rendered_image) must match published image ($expected_image)." >&2
+            exit 1
+          fi
 
       - name: Package chart
         run: |

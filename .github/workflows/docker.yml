@@ -24,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       meta-images: ${{ steps.meta-images.outputs.value }}
+      image-tag: ${{ steps.meta-images.outputs.image-tag }}
     steps:
       - name: Build image metadata inputs
         id: meta-images
@@ -33,6 +34,7 @@ jobs:
           DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY || secrets.DOCKERHUB_REPOSITORY }}
           DEFAULT_REPOSITORY_NAME: ${{ github.event.repository.name }}
         run: |
+          image_tag="sha-${GITHUB_SHA::7}"
           if [ -n "$DOCKERHUB_REPOSITORY" ]; then
             case "$DOCKERHUB_REPOSITORY" in
               */*)
@@ -46,6 +48,7 @@ jobs:
             dockerhub_repository="$DOCKERHUB_USERNAME/$DEFAULT_REPOSITORY_NAME"
           fi
           {
+            echo "image-tag=$image_tag"
             echo 'value<<EOF'
             echo "ghcr.io/$GHCR_REPOSITORY"
             if [ -n "$dockerhub_repository" ]; then
@@ -89,7 +92,7 @@ jobs:
         type=ref,event=tag
         type=semver,pattern={{version}}
         type=semver,pattern={{major}}.{{minor}}
-        type=sha
+        type=raw,value=${{ needs.docker-prepare.outputs.image-tag }}
     secrets:
       registry-auths: |
         - registry: ghcr.io
@@ -98,3 +101,23 @@ jobs:
         ${{ (vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME) != '' && format('- registry: docker.io
           username: {0}
           password: {1}', vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME, secrets.DOCKERHUB_PASSWORD) || '' }}
+
+  helm:
+    name: Publish next Helm Chart
+    if: github.event_name == 'push' && github.ref == 'refs/heads/next'
+    needs:
+      - docker-prepare
+      - docker-build
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/helm.yml
+    with:
+      channel: next
+      image-tag: ${{ needs.docker-prepare.outputs.image-tag }}
+    secrets:
+      token: ${{ secrets.GITHUB_TOKEN }}
+      HELM_OCI_NAMESPACE: ${{ secrets.HELM_OCI_NAMESPACE }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_REPOSITORY: ${{ secrets.DOCKERHUB_REPOSITORY }}
+      DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}

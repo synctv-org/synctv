@@ -148,6 +148,13 @@ Return the gRPC service name
 {{- end }}
 
 {{/*
+Return the health service name
+*/}}
+{{- define "synctv.healthServiceName" -}}
+{{- include "synctv.nameWithSuffix" (list (include "synctv.fullname" .) "health") }}
+{{- end }}
+
+{{/*
 Return the RTMP service name
 */}}
 {{- define "synctv.rtmpServiceName" -}}

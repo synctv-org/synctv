@@ -37,7 +37,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "synctv.fullname" . }}-health
+  name: {{ include "synctv.healthServiceName" . }}
   labels:
     {{- include "synctv.labels" . | nindent 4 }}
     app.kubernetes.io/component: health

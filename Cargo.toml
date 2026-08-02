@@ -102,6 +102,8 @@ tonic-types = "=0.14.6"
 tonic-build = "=0.14.6"
 tonic-prost = "=0.14.6"
 tonic-prost-build = "=0.14.6"
+# Workspace build scripts use this path explicitly. prost-protovalidate-types
+# still invokes protoc from PATH, so build environments also install protoc.
 protoc-bin-vendored = "=3.2.0"
 prost = "=0.14.4"
 prost-types = "=0.14.4"

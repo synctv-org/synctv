@@ -54,7 +54,7 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y nasm libclang-dev
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
 
       - name: Validate source chart
         run: make validate-helm

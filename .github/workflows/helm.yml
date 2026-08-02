@@ -115,7 +115,7 @@ jobs:
             fi
 
             short_sha="${GITHUB_SHA::7}"
-            version_suffix="$CHANNEL.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}.g$short_sha"
+            version_suffix="sha-$short_sha"
             if [[ "$chart_version" == *-* ]]; then
               publish_version="$chart_version.$version_suffix"
             else

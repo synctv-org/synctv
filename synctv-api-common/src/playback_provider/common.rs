@@ -989,13 +989,9 @@ fn build_hls_playlist_path(
     generation_id: &str,
     signed_query: &str,
 ) -> String {
-    let query_suffix = if signed_query.is_empty() {
-        String::new()
-    } else {
-        format!("?{signed_query}")
-    };
     format!(
-        "/api/playback-providers/{route_provider}/{version}/hls/{generation_id}/index.m3u8{query_suffix}"
+        "/api/playback-providers/{route_provider}/{version}/hls/{generation_id}/index.m3u8{}",
+        hls_query_suffix(signed_query)
     )
 }
 
@@ -1006,15 +1002,18 @@ fn build_hls_segment_path(
     segment_name: &str,
     signed_query: &str,
 ) -> String {
-    let query_suffix = if signed_query.is_empty() {
+    format!(
+        "/api/playback-providers/{route_provider}/{version}/hls/{generation_id}/{segment_name}{}",
+        hls_query_suffix(signed_query)
+    )
+}
+
+fn hls_query_suffix(signed_query: &str) -> String {
+    if signed_query.is_empty() {
         String::new()
     } else {
         format!("?{signed_query}")
-    };
-
-    format!(
-        "/api/playback-providers/{route_provider}/{version}/hls/{generation_id}/{segment_name}{query_suffix}"
-    )
+    }
 }
 
 fn normalize_hls_segment_name(

@@ -477,25 +477,6 @@ impl StreamRegistryTrait for TestStreamRegistry {
             .collect())
     }
 
-    async fn validate_lease(
-        &self,
-        room_id: &str,
-        media_id: &str,
-        generation_id: &str,
-        lease_epoch: u64,
-    ) -> Result<bool> {
-        validate_stream_ids(room_id, media_id)?;
-        let publishers = self.publishers.lock().await;
-        let key = (room_id.to_string(), media_id.to_string());
-
-        match publishers.get(&key) {
-            Some(info) => {
-                Ok(info.generation_id == generation_id && info.lease_epoch == lease_epoch)
-            }
-            None => Ok(false),
-        }
-    }
-
     async fn cleanup_all_generations_for_node(&self, node_id: &str) -> Result<()> {
         let mut publishers = self.publishers.lock().await;
         let removed = publishers

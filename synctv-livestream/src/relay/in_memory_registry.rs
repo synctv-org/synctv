@@ -74,6 +74,25 @@ impl InMemoryStreamRegistry {
                 .remove(&(room_id, media_id, generation_id));
         }
     }
+
+    fn owns_active_lease(
+        state: &InMemoryRegistryState,
+        stream_key: &StreamKey,
+        generation_key: &GenerationKey,
+        generation_id: &str,
+        expected_lease_epoch: u64,
+    ) -> bool {
+        state
+            .active_generations
+            .get(stream_key)
+            .is_some_and(|active| {
+                active == generation_id
+                    && state
+                        .generations
+                        .get(generation_key)
+                        .is_some_and(|record| record.generation.lease_epoch == expected_lease_epoch)
+            })
+    }
 }
 
 impl Default for InMemoryStreamRegistry {
@@ -189,13 +208,13 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
             media_id.to_string(),
             generation_id.to_string(),
         );
-        let owns_lease = state.active_generations.get(&key).is_some_and(|active| {
-            active == generation_id
-                && state
-                    .generations
-                    .get(&generation_key)
-                    .is_some_and(|record| record.generation.lease_epoch == expected_lease_epoch)
-        });
+        let owns_lease = Self::owns_active_lease(
+            &state,
+            &key,
+            &generation_key,
+            generation_id,
+            expected_lease_epoch,
+        );
         if owns_lease {
             state.active_generations.remove(&key);
             state.generations.remove(&generation_key);
@@ -220,13 +239,13 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
             media_id.to_string(),
             generation_id.to_string(),
         );
-        let owns_lease = state.active_generations.get(&key).is_some_and(|active| {
-            active == generation_id
-                && state
-                    .generations
-                    .get(&generation_key)
-                    .is_some_and(|record| record.generation.lease_epoch == expected_lease_epoch)
-        });
+        let owns_lease = Self::owns_active_lease(
+            &state,
+            &key,
+            &generation_key,
+            generation_id,
+            expected_lease_epoch,
+        );
         if !owns_lease {
             return Ok(());
         }
@@ -361,21 +380,6 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
             })
             .map(|((room_id, media_id), _)| (room_id.clone(), media_id.clone()))
             .collect())
-    }
-
-    async fn validate_lease(
-        &self,
-        room_id: &str,
-        media_id: &str,
-        generation_id: &str,
-        lease_epoch: u64,
-    ) -> Result<bool> {
-        Ok(self
-            .get_active_generation(room_id, media_id)
-            .await?
-            .is_some_and(|generation| {
-                generation.generation_id == generation_id && generation.lease_epoch == lease_epoch
-            }))
     }
 
     async fn cleanup_all_generations_for_node(&self, node_id: &str) -> Result<()> {

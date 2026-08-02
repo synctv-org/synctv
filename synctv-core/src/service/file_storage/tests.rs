@@ -387,6 +387,7 @@ async fn upsert_limit_test_upload_session(
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn pending_upload_session_limit_is_atomic_and_allows_existing_session_updates() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = FileStorageRepository::new(pool.clone());
@@ -719,6 +720,7 @@ async fn routed_storage_accepts_empty_submitted_file_references_without_reposito
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn routed_database_storage_reads_objects_from_token_backend() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -810,6 +812,7 @@ async fn routed_database_storage_reads_objects_from_token_backend() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_default_zstd_compresses_blob_and_returns_original_payload() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool.clone()));
@@ -945,6 +948,7 @@ async fn database_storage_default_zstd_compresses_blob_and_returns_original_payl
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_rejects_parts_above_database_part_cap() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1003,6 +1007,7 @@ async fn database_storage_rejects_parts_above_database_part_cap() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_lz4_compresses_blob_and_returns_original_payload() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool.clone()));
@@ -1099,6 +1104,7 @@ async fn database_storage_lz4_compresses_blob_and_returns_original_payload() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_generates_useful_image_variants() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1190,6 +1196,7 @@ async fn database_storage_generates_useful_image_variants() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn image_processing_rejects_actual_dimensions_over_policy() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1272,6 +1279,7 @@ async fn image_processing_rejects_actual_dimensions_over_policy() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn large_image_finalization_probes_dimensions_before_variant_size_guard() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1346,6 +1354,7 @@ async fn large_image_finalization_probes_dimensions_before_variant_size_guard() 
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn audio_processing_records_actual_duration_and_bitrate() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1413,6 +1422,7 @@ async fn audio_processing_records_actual_duration_and_bitrate() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn audio_processing_rejects_actual_duration_over_policy() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1490,6 +1500,7 @@ async fn audio_processing_rejects_actual_duration_over_policy() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn derived_image_variants_follow_original_cleanup_lifecycle() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1583,6 +1594,7 @@ async fn derived_image_variants_follow_original_cleanup_lifecycle() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_rejects_checksum_reuse_when_existing_mime_violates_policy() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1618,6 +1630,7 @@ async fn database_storage_rejects_checksum_reuse_when_existing_mime_violates_pol
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_allows_checksum_reuse_when_existing_mime_matches_policy() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1651,6 +1664,7 @@ async fn database_storage_allows_checksum_reuse_when_existing_mime_matches_polic
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_strips_upload_token_from_prepared_files() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1728,6 +1742,7 @@ async fn database_storage_strips_upload_token_from_prepared_files() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_strips_ownership_proof_from_prepared_files() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1811,6 +1826,7 @@ async fn database_storage_strips_ownership_proof_from_prepared_files() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_instant_upload_proof_state_is_scoped_to_reference() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1999,6 +2015,7 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_delete_uses_configured_backend_name() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool.clone()));
@@ -2061,6 +2078,7 @@ async fn database_storage_delete_uses_configured_backend_name() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_schedules_reference_delete_before_physical_cleanup() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool.clone()));
@@ -2193,6 +2211,7 @@ async fn database_storage_schedules_reference_delete_before_physical_cleanup() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn deleting_file_object_cannot_be_reused_or_referenced() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool.clone()));
@@ -2264,6 +2283,7 @@ async fn deleting_file_object_cannot_be_reused_or_referenced() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn insert_reference_blocks_delete_claim_until_reference_is_counted() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool.clone()));
@@ -2331,6 +2351,7 @@ async fn insert_reference_blocks_delete_claim_until_reference_is_counted() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_deletes_unreferenced_object_without_reference_row() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -2413,6 +2434,7 @@ fn s3_public_url_requires_public_base_url() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn pending_file_object_is_not_reused_but_can_be_cleaned_up() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -2468,6 +2490,7 @@ async fn pending_file_object_is_not_reused_but_can_be_cleaned_up() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn pending_file_object_becomes_reusable_after_validation() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -2520,6 +2543,7 @@ async fn pending_file_object_becomes_reusable_after_validation() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn validated_file_reuse_is_scoped_to_the_object_namespace() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = FileStorageRepository::new(pool);
@@ -2571,6 +2595,7 @@ async fn validated_file_reuse_is_scoped_to_the_object_namespace() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_skips_compression_below_threshold() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool.clone()));
@@ -2651,6 +2676,7 @@ async fn database_storage_skips_compression_below_threshold() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_skips_low_savings_compression() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool.clone()));
@@ -2731,6 +2757,7 @@ async fn database_storage_skips_low_savings_compression() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_resumable_upload_completes_after_all_parts() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -2934,6 +2961,7 @@ async fn database_storage_resumable_upload_completes_after_all_parts() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_cleans_expired_partial_upload_session() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -3043,6 +3071,7 @@ async fn database_storage_cleans_expired_partial_upload_session() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_streams_completed_blob_parts_without_single_buffer() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -3137,6 +3166,7 @@ async fn database_storage_streams_completed_blob_parts_without_single_buffer() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_resumable_fingerprint_is_scoped_to_uploader_and_scope() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -3219,6 +3249,7 @@ async fn database_storage_resumable_fingerprint_is_scoped_to_uploader_and_scope(
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_multipart_stores_manifest_identity() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool.clone()));
@@ -3319,6 +3350,7 @@ async fn database_storage_multipart_stores_manifest_identity() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_range_reads_from_permanent_blob_parts() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -3411,6 +3443,7 @@ async fn database_storage_range_reads_from_permanent_blob_parts() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn s3_storage_multipart_session_returns_native_part_urls() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -3491,6 +3524,7 @@ async fn s3_storage_multipart_session_returns_native_part_urls() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn s3_storage_single_object_session_uses_backend_proxy_upload() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -3609,6 +3643,7 @@ async fn s3_storage_single_object_session_uses_backend_proxy_upload() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn s3_storage_streams_range_from_backend_proxy_path() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -3712,6 +3747,7 @@ async fn s3_storage_streams_range_from_backend_proxy_path() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn s3_storage_multipart_completion_uses_part_manifest_digest() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -3840,6 +3876,7 @@ async fn s3_storage_multipart_completion_uses_part_manifest_digest() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn s3_storage_store_upload_accepts_server_mediated_parts() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -3960,6 +3997,7 @@ async fn s3_storage_store_upload_accepts_server_mediated_parts() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn s3_storage_rejects_part_outside_declared_manifest() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -4038,6 +4076,7 @@ async fn s3_storage_rejects_part_outside_declared_manifest() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn s3_storage_server_mediated_upload_is_bound_to_session_key() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -4169,6 +4208,7 @@ async fn s3_storage_server_mediated_upload_is_bound_to_session_key() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn s3_storage_multipart_completion_rejects_manifest_mismatch() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -4320,6 +4360,7 @@ async fn s3_public_constructor_requires_repository_for_upload_session() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn s3_multipart_completion_uses_all_recorded_parts() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool.clone()));

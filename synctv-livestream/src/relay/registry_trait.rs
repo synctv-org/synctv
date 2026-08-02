@@ -187,7 +187,14 @@ pub trait StreamRegistryTrait: Send + Sync {
         media_id: &str,
         generation_id: &str,
         lease_epoch: u64,
-    ) -> Result<bool>;
+    ) -> Result<bool> {
+        Ok(self
+            .get_active_generation(room_id, media_id)
+            .await?
+            .is_some_and(|generation| {
+                generation.generation_id == generation_id && generation.lease_epoch == lease_epoch
+            }))
+    }
 
     /// Clean up all publisher registrations for a specific node.
     /// Used when a node restarts to remove stale entries from Redis.
@@ -325,16 +332,6 @@ impl StreamRegistryTrait for StreamRegistry {
         user_id: &str,
     ) -> Result<Vec<(String, String)>> {
         StreamRegistry::get_user_publishers_for_room(self, room_id, user_id).await
-    }
-
-    async fn validate_lease(
-        &self,
-        room_id: &str,
-        media_id: &str,
-        generation_id: &str,
-        lease_epoch: u64,
-    ) -> Result<bool> {
-        Self::validate_lease(self, room_id, media_id, generation_id, lease_epoch).await
     }
 
     async fn cleanup_all_generations_for_node(&self, node_id: &str) -> Result<()> {

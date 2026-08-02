@@ -220,20 +220,25 @@ impl LiveStreamingInfrastructure {
         Vec::new()
     }
 
+    async fn filter_local_registry_streams(
+        &self,
+        registry_streams: Vec<(String, String)>,
+    ) -> Vec<(String, String)> {
+        let mut local_streams = Vec::with_capacity(registry_streams.len());
+        for (room_id, media_id) in registry_streams {
+            if self
+                .registry_stream_owned_by_local_node(&room_id, &media_id)
+                .await
+            {
+                local_streams.push((room_id, media_id));
+            }
+        }
+        local_streams
+    }
+
     async fn local_registry_user_publishers(&self, user_id: &str) -> Vec<(String, String)> {
         match self.registry.get_user_publishers(user_id).await {
-            Ok(registry_streams) => {
-                let mut local_streams = Vec::new();
-                for (room_id, media_id) in registry_streams {
-                    if self
-                        .registry_stream_owned_by_local_node(&room_id, &media_id)
-                        .await
-                    {
-                        local_streams.push((room_id, media_id));
-                    }
-                }
-                local_streams
-            }
+            Ok(registry_streams) => self.filter_local_registry_streams(registry_streams).await,
             Err(error) => Self::handle_registry_error(&error, &format!("user_id={user_id}")),
         }
     }
@@ -248,18 +253,7 @@ impl LiveStreamingInfrastructure {
             .get_user_publishers_for_room(room_id, user_id)
             .await
         {
-            Ok(registry_streams) => {
-                let mut local_streams = Vec::new();
-                for (stream_room_id, media_id) in registry_streams {
-                    if self
-                        .registry_stream_owned_by_local_node(&stream_room_id, &media_id)
-                        .await
-                    {
-                        local_streams.push((stream_room_id, media_id));
-                    }
-                }
-                local_streams
-            }
+            Ok(registry_streams) => self.filter_local_registry_streams(registry_streams).await,
             Err(error) => Self::handle_registry_error(
                 &error,
                 &format!("room_id={room_id}, user_id={user_id}"),
@@ -831,54 +825,46 @@ impl HlsStreamingApi {
         let is_local = infrastructure.is_local_publisher_node(&generation.node_id);
         let wait_for_ready = generation.ended_at.is_none();
 
-        if is_local {
-            Ok(Self::generate_playlist_local(
-                infrastructure,
-                room_id,
-                media_id,
-                generation_id,
-                wait_for_ready,
-                url_generator,
-            )
-            .await)
-        } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
-            let cluster_address = generation
-                .validate_cluster_address()
-                .map_err(|e| anyhow::anyhow!("Cannot proxy HLS for {room_id}/{media_id}: {e}"))?;
+        if !is_local {
+            if let Some(hls_proxy) = &infrastructure.hls_proxy {
+                let cluster_address = generation.validate_cluster_address().map_err(|e| {
+                    anyhow::anyhow!("Cannot proxy HLS for {room_id}/{media_id}: {e}")
+                })?;
 
-            let sample_url = url_generator("__PLACEHOLDER__");
-            let (segment_url_base, segment_url_suffix) =
-                sample_url.rsplit_once("__PLACEHOLDER__").map_or_else(
-                    || (String::new(), String::new()),
-                    |(base, suffix)| (base.to_string(), suffix.to_string()),
-                );
+                let sample_url = url_generator("__PLACEHOLDER__");
+                let (segment_url_base, segment_url_suffix) =
+                    sample_url.rsplit_once("__PLACEHOLDER__").map_or_else(
+                        || (String::new(), String::new()),
+                        |(base, suffix)| (base.to_string(), suffix.to_string()),
+                    );
 
-            let playlist = hls_proxy
-                .get_playlist(
-                    crate::grpc::HlsRelayRoute::new(
-                        cluster_address,
-                        room_id,
-                        media_id,
-                        generation_id,
-                        generation.lease_epoch,
-                    ),
-                    &segment_url_base,
-                    &segment_url_suffix,
-                )
-                .await?;
+                let playlist = hls_proxy
+                    .get_playlist(
+                        crate::grpc::HlsRelayRoute::new(
+                            cluster_address,
+                            room_id,
+                            media_id,
+                            generation_id,
+                            generation.lease_epoch,
+                        ),
+                        &segment_url_base,
+                        &segment_url_suffix,
+                    )
+                    .await?;
 
-            Ok(playlist)
-        } else {
-            Ok(Self::generate_playlist_local(
-                infrastructure,
-                room_id,
-                media_id,
-                generation_id,
-                wait_for_ready,
-                url_generator,
-            )
-            .await)
+                return Ok(playlist);
+            }
         }
+
+        Ok(Self::generate_playlist_local(
+            infrastructure,
+            room_id,
+            media_id,
+            generation_id,
+            wait_for_ready,
+            url_generator,
+        )
+        .await)
     }
 
     async fn generate_playlist_local<F>(
@@ -952,39 +938,39 @@ impl HlsStreamingApi {
 
         let is_local = infrastructure.is_local_publisher_node(&publisher_info.node_id);
 
-        if is_local
-            || infrastructure
+        if !is_local
+            && !infrastructure
                 .hls_storage_backend
                 .supports_cross_node_read()
         {
-            Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
-        } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
-            let cluster_address = publisher_info.validate_cluster_address().map_err(|e| {
-                anyhow::anyhow!("Cannot proxy HLS segment for {room_id}/{media_id}: {e}")
-            })?;
+            if let Some(hls_proxy) = &infrastructure.hls_proxy {
+                let cluster_address = publisher_info.validate_cluster_address().map_err(|e| {
+                    anyhow::anyhow!("Cannot proxy HLS segment for {room_id}/{media_id}: {e}")
+                })?;
 
-            let segment = hls_proxy
-                .get_segment(
-                    crate::grpc::HlsRelayRoute::new(
-                        cluster_address,
-                        room_id,
-                        media_id,
-                        generation_id,
-                        publisher_info.lease_epoch,
-                    ),
-                    segment_name,
-                )
-                .await?;
+                let segment = hls_proxy
+                    .get_segment(
+                        crate::grpc::HlsRelayRoute::new(
+                            cluster_address,
+                            room_id,
+                            media_id,
+                            generation_id,
+                            publisher_info.lease_epoch,
+                        ),
+                        segment_name,
+                    )
+                    .await?;
 
-            segment.ok_or_else(|| {
-                StreamError::StreamNotFound(format!(
-                    "segment {segment_name} for {room_id}/{media_id} on publisher node"
-                ))
-                .into()
-            })
-        } else {
-            Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
+                return segment.ok_or_else(|| {
+                    StreamError::StreamNotFound(format!(
+                        "segment {segment_name} for {room_id}/{media_id} on publisher node"
+                    ))
+                    .into()
+                });
+            }
         }
+
+        Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
     }
 
     async fn get_segment_local(

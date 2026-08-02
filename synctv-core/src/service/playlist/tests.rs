@@ -513,6 +513,7 @@ async fn validate_dynamic_playlist_source_rejects_oversized_config_before_provid
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn validate_dynamic_playlist_source_runs_provider_validation() {
     let providers_manager = test_builtin_providers_manager().await;
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
@@ -548,6 +549,7 @@ async fn validate_dynamic_playlist_source_runs_provider_validation() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn validate_dynamic_playlist_source_rejects_missing_credential_dependency() {
     let providers_manager = test_alist_dependency_check_providers_manager().await;
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
@@ -587,6 +589,7 @@ async fn validate_dynamic_playlist_source_rejects_missing_credential_dependency(
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn validate_dynamic_playlist_source_allows_missing_optional_credential_dependency() {
     let providers_manager = test_alist_dependency_check_providers_manager().await;
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
@@ -619,6 +622,7 @@ async fn validate_dynamic_playlist_source_allows_missing_optional_credential_dep
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn validate_dynamic_playlist_source_passes_creator_as_credential_owner() {
     CREDENTIAL_OWNER_VALIDATION_CALLS.store(0, Ordering::Relaxed);
     let providers_manager = test_credential_check_providers_manager().await;

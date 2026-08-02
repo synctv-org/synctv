@@ -67,24 +67,8 @@ impl RtmpPublisher {
     ) -> Result<Self> {
         let app_name = app_name.into();
         let stream_name = stream_name.into();
-        let stream = TcpStream::connect(address).await?;
-        let io: SharedIo = Arc::new(Mutex::new(Box::new(TcpIO::new(stream))));
-        complete_client_handshake(&io).await?;
-
-        let mut control =
-            ProtocolControlMessagesWriter::new(AsyncBytesWriter::new(Arc::clone(&io)));
-        control
-            .write_set_chunk_size(synctv_xiu::rtmp::chunk::define::CHUNK_SIZE)
-            .await?;
-
-        let mut connection = NetConnection::new(Arc::clone(&io));
-        let mut properties = ConnectProperties::new(app_name.clone());
-        properties.tc_url = Some(format!("rtmp://{address}/{app_name}"));
-        properties.flash_ver = Some("SyncTV test publisher".to_string());
-        connection.write_connect(&1.0, &properties).await?;
-        connection.write_create_stream(&2.0).await?;
-
-        let mut stream_writer = NetStreamWriter::new(Arc::clone(&io));
+        let (io, mut stream_writer) =
+            connect_rtmp_session(address, &app_name, "SyncTV test publisher").await?;
         stream_writer
             .write_publish(&3.0, &stream_name, &"live".to_string())
             .await?;
@@ -163,24 +147,8 @@ impl RtmpPlayer {
     ) -> Result<Self> {
         let app_name = app_name.into();
         let stream_name = stream_name.into();
-        let stream = TcpStream::connect(address).await?;
-        let io: SharedIo = Arc::new(Mutex::new(Box::new(TcpIO::new(stream))));
-        complete_client_handshake(&io).await?;
-
-        let mut control =
-            ProtocolControlMessagesWriter::new(AsyncBytesWriter::new(Arc::clone(&io)));
-        control
-            .write_set_chunk_size(synctv_xiu::rtmp::chunk::define::CHUNK_SIZE)
-            .await?;
-
-        let mut connection = NetConnection::new(Arc::clone(&io));
-        let mut properties = ConnectProperties::new(app_name.clone());
-        properties.tc_url = Some(format!("rtmp://{address}/{app_name}"));
-        properties.flash_ver = Some("SyncTV test player".to_string());
-        connection.write_connect(&1.0, &properties).await?;
-        connection.write_create_stream(&2.0).await?;
-
-        let mut stream_writer = NetStreamWriter::new(Arc::clone(&io));
+        let (io, mut stream_writer) =
+            connect_rtmp_session(address, &app_name, "SyncTV test player").await?;
         stream_writer
             .write_play(&3.0, &stream_name, &-2.0, &-1.0, &true)
             .await?;
@@ -259,6 +227,30 @@ impl RtmpPlayer {
 
         Ok(media)
     }
+}
+
+async fn connect_rtmp_session(
+    address: SocketAddr,
+    app_name: &str,
+    flash_ver: &str,
+) -> Result<(SharedIo, NetStreamWriter)> {
+    let stream = TcpStream::connect(address).await?;
+    let io: SharedIo = Arc::new(Mutex::new(Box::new(TcpIO::new(stream))));
+    complete_client_handshake(&io).await?;
+
+    let mut control = ProtocolControlMessagesWriter::new(AsyncBytesWriter::new(Arc::clone(&io)));
+    control
+        .write_set_chunk_size(synctv_xiu::rtmp::chunk::define::CHUNK_SIZE)
+        .await?;
+
+    let mut connection = NetConnection::new(Arc::clone(&io));
+    let mut properties = ConnectProperties::new(app_name.to_string());
+    properties.tc_url = Some(format!("rtmp://{address}/{app_name}"));
+    properties.flash_ver = Some(flash_ver.to_string());
+    connection.write_connect(&1.0, &properties).await?;
+    connection.write_create_stream(&2.0).await?;
+
+    Ok((Arc::clone(&io), NetStreamWriter::new(Arc::clone(&io))))
 }
 
 async fn complete_client_handshake(io: &SharedIo) -> Result<()> {

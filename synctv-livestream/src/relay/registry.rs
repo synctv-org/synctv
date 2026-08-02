@@ -1051,24 +1051,6 @@ impl StreamRegistry {
             .collect())
     }
 
-    /// Validate that the given lease_epoch matches the current publisher's lease_epoch.
-    /// Returns Ok(true) if the lease_epoch is valid, Ok(false) if stale/invalid.
-    /// Used by pull streams to detect split-brain scenarios.
-    pub async fn validate_lease(
-        &self,
-        room_id: &str,
-        media_id: &str,
-        generation_id: &str,
-        lease_epoch: u64,
-    ) -> Result<bool> {
-        Ok(self
-            .get_active_generation(room_id, media_id)
-            .await?
-            .is_some_and(|generation| {
-                generation.generation_id == generation_id && generation.lease_epoch == lease_epoch
-            }))
-    }
-
     /// Clean up publisher registrations tracked by the node reverse index.
     /// Epoch validation protects newer publishers for the same stream.
     pub async fn cleanup_all_generations_for_node(&self, node_id: &str) -> Result<()> {

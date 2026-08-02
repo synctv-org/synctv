@@ -33,6 +33,7 @@ fn media_added_outbox_event(
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_insert_many_writes_resource_events_and_only_enqueued_outbox_rows() {
     let (_container, pool) = create_test_pool().await;
     let repo = RealtimeOutboxRepository::new(pool.clone());

@@ -735,6 +735,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_check_redis_health_status_reports_not_configured_without_connection() -> TestResult
     {
         let state = test_app_state();
@@ -757,6 +758,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_readiness_includes_webrtc_status() -> TestResult {
         let state = test_app_state();
         let response = readiness_check(State(state)).await.into_response();
@@ -785,6 +787,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_prometheus_metrics_rejects_missing_auth_when_token_configured() {
         let response = prometheus_metrics(State(metrics_test_state("secret")), HeaderMap::new())
             .await
@@ -794,6 +797,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_prometheus_metrics_accepts_matching_bearer_token() {
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer secret"));
@@ -806,6 +810,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_prometheus_metrics_accepts_matching_basic_auth() {
         let mut state = test_app_state();
         Arc::make_mut(&mut state.router_options).runtime_settings = Arc::new({
@@ -831,6 +836,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_metrics_router_exposes_metrics_endpoint() -> TestResult {
         let app = create_metrics_router().with_state(metrics_test_state("secret"));
 

@@ -1055,21 +1055,36 @@ impl TestServer {
     }
 }
 
-async fn wait_for_playlist(
+async fn wait_for_playlist_matching<F>(
     server: &TestServer,
-) -> Arc<parking_lot::RwLock<synctv_xiu::hls::StreamProcessorState>> {
+    matches: F,
+    timeout_message: &str,
+) -> Arc<parking_lot::RwLock<synctv_xiu::hls::StreamProcessorState>>
+where
+    F: Fn(&synctv_xiu::hls::StreamProcessorState) -> bool,
+{
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(state) = server.registry.iter().find_map(|entry| {
             let state = entry.value().read();
-            (state.app_name == APP && state.stream_name == STREAM)
-                .then(|| Arc::clone(entry.value()))
+            matches(&state).then(|| Arc::clone(entry.value()))
         }) {
             return state;
         }
-        assert!(Instant::now() < deadline, "HLS handler did not register");
+        assert!(Instant::now() < deadline, "{timeout_message}");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+async fn wait_for_playlist(
+    server: &TestServer,
+) -> Arc<parking_lot::RwLock<synctv_xiu::hls::StreamProcessorState>> {
+    wait_for_playlist_matching(
+        server,
+        |state| state.app_name == APP && state.stream_name == STREAM,
+        "HLS handler did not register",
+    )
+    .await
 }
 
 async fn subscribe_frames(
@@ -1605,23 +1620,16 @@ async fn wait_for_playlist_generation(
     server: &TestServer,
     previous_generation_id: Option<synctv_xiu::streamhub::utils::Uuid>,
 ) -> Arc<parking_lot::RwLock<synctv_xiu::hls::StreamProcessorState>> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Some(state) = server.registry.iter().find_map(|entry| {
-            let state = entry.value().read();
-            (state.app_name == APP
+    wait_for_playlist_matching(
+        server,
+        |state| {
+            state.app_name == APP
                 && state.stream_name == STREAM
-                && previous_generation_id != Some(state.generation_id))
-            .then(|| Arc::clone(entry.value()))
-        }) {
-            return state;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "HLS generation did not register a new publisher owner"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+                && previous_generation_id != Some(state.generation_id)
+        },
+        "HLS generation did not register a new publisher owner",
+    )
+    .await
 }
 
 async fn send_hls_gops(

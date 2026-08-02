@@ -3336,6 +3336,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_grpc_watch_chat_events_receives_live_send_event() -> TestResult {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
         let user_repo = UserRepository::new(pool.clone());

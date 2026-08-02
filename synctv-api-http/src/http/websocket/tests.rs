@@ -720,6 +720,7 @@ fn test_room_not_found_maps_to_not_found_error_during_websocket_prepare() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_load_websocket_username_fails_closed_on_storage_error() {
     let state = crate::http::tests::test_app_state();
     state.user_service.pool().close().await;
@@ -1056,6 +1057,7 @@ async fn test_failed_upgrade_cleanup_releases_reserved_capacity_without_presence
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_failed_upgrade_cleanup_leaves_consumed_ticket_spent() -> TestResult {
     let state = crate::http::tests::test_app_state();
     let ws_ticket_service = state.ws_ticket_service.clone();
@@ -1117,6 +1119,7 @@ async fn test_failed_upgrade_cleanup_leaves_consumed_ticket_spent() -> TestResul
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fails() -> TestResult
 {
     let state = crate::http::tests::test_app_state();
@@ -1175,6 +1178,7 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fa
 }
 
 #[tokio::test(start_paused = true)]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_commit_websocket_upgrade_releases_reservation_when_timeout_cancels_commit(
 ) -> TestResult {
     let state = crate::http::tests::test_app_state();

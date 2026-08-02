@@ -245,10 +245,11 @@ impl<S: ManagedStream> StreamPool<S> {
         debug!("Stopped all managed streams ({} removed)", keys.len());
     }
 
-    async fn remove_and_stop(&self, stream_key: &str) -> Option<Arc<S>> {
-        let (_, stream) = self.streams.remove(stream_key)?;
+    async fn remove_and_stop(&self, stream_key: &str) {
+        let Some((_, stream)) = self.streams.remove(stream_key) else {
+            return;
+        };
         stream.stop_managed().await;
-        Some(stream)
     }
 
     pub(crate) async fn remove_if_same_and_stop(
@@ -276,12 +277,7 @@ impl<S: ManagedStream> StreamPool<S> {
         {
             if stream.lifecycle().is_healthy().await {
                 if !stream.lifecycle().try_increment_subscriber_count() {
-                    if let Some((_, removed)) = self
-                        .streams
-                        .remove_if(stream_key, |_, current| Arc::ptr_eq(current, &stream))
-                    {
-                        removed.stop_managed().await;
-                    }
+                    self.remove_if_same_and_stop(stream_key, &stream).await;
                     return None;
                 }
 
@@ -292,12 +288,7 @@ impl<S: ManagedStream> StreamPool<S> {
 
                 stream.lifecycle().decrement_subscriber_count();
             }
-            if let Some((_, removed)) = self
-                .streams
-                .remove_if(stream_key, |_, current| Arc::ptr_eq(current, &stream))
-            {
-                removed.stop_managed().await;
-            }
+            self.remove_if_same_and_stop(stream_key, &stream).await;
         }
         None
     }

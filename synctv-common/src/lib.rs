@@ -18,7 +18,7 @@ fn default_crypto_provider() -> rustls::crypto::CryptoProvider {
         rustls::crypto::aws_lc_rs::default_provider()
     }
 
-    #[cfg(feature = "tls-ring")]
+    #[cfg(all(not(feature = "tls-aws-lc"), feature = "tls-ring"))]
     {
         rustls::crypto::ring::default_provider()
     }

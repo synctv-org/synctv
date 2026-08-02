@@ -2712,6 +2712,7 @@ async fn test_start_cancels_and_cleans_up_when_admin_notification_send_fails() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_handle_client_message_sends_millisecond_heartbeat_ack() {
     let event_service = test_realtime_manager("test_run_after_join_records_heartbeat").await;
     let connection_service = test_connection_manager();
@@ -2746,6 +2747,7 @@ async fn test_handle_client_message_sends_millisecond_heartbeat_ack() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_cached_room_subscription_delivers_pre_run_chat_event_after_explicit_observe() {
     let message_sender = RecordingMessageSender::new();
     let fixture = create_start_handler_fixture(
@@ -2836,6 +2838,7 @@ async fn test_cached_room_subscription_delivers_pre_run_chat_event_after_explici
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_observe_chat_events_replays_single_event_after_sequence() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let event_service = test_realtime_manager("test_chat_event_replay_after_sequence").await;
@@ -2948,6 +2951,7 @@ async fn test_observe_chat_events_replays_single_event_after_sequence() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_observe_chat_events_replays_events_after_sequence() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let event_service = test_realtime_manager("test_chat_event_replay_after_sequence").await;
@@ -3051,6 +3055,7 @@ async fn test_observe_chat_events_replays_events_after_sequence() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_run_after_join_filters_chat_events_until_explicit_observe() {
     let event_service = test_realtime_manager("test_run_after_join_filters_chat_events").await;
     let connection_service = test_connection_manager();
@@ -3096,6 +3101,7 @@ async fn test_run_after_join_filters_chat_events_until_explicit_observe() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_observe_chat_events_requires_view_chat_history_permission_for_member() {
     let sender = RecordingMessageSender::new();
     let fixture =
@@ -5140,6 +5146,7 @@ async fn test_observe_playlist_items_without_cursor_sends_snapshot_immediately()
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_observed_playlist_items_batch_coalesces_identical_snapshot_loads() {
     let message_sender = RecordingMessageSender::new();
     let snapshot_service =
@@ -5233,6 +5240,7 @@ async fn test_observed_playlist_items_batch_coalesces_identical_snapshot_loads()
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_resource_observations_are_bounded_per_connection() {
     let sender = RecordingMessageSender::new();
     let event_service = test_realtime_manager("resource_observation_limit").await;
@@ -5388,6 +5396,7 @@ fn test_room_member_events_filter_self_and_permission_only_changes() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_observe_playlist_items_requires_inner_request() {
     let sender = RecordingMessageSender::new();
     let snapshot_service =
@@ -5445,6 +5454,7 @@ async fn test_observe_playlist_items_requires_inner_request() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_observed_playlist_items_refresh_flag_is_not_persisted() {
     let message_sender = RecordingMessageSender::new();
     let handler = test_message_handler(
@@ -5503,6 +5513,7 @@ async fn test_observed_playlist_items_refresh_flag_is_not_persisted() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_resource_event_send_failure_propagates_and_removes_observation() {
     let message_sender = FailingMessageSender::fail_after(2);
     let handler = test_message_handler(
@@ -5693,6 +5704,7 @@ async fn test_other_subscriber_send_failure_does_not_fail_refresh_caller() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_stale_refresh_after_unobserve_does_not_send_resource_event() {
     let message_sender = RecordingMessageSender::new();
     let handler = test_message_handler(
@@ -5769,6 +5781,7 @@ async fn test_stale_refresh_after_unobserve_does_not_send_resource_event() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_stale_refresh_failure_after_unobserve_does_not_send_observe_error() {
     let message_sender = RecordingMessageSender::new();
     let handler = test_message_handler(
@@ -5843,6 +5856,7 @@ async fn test_stale_refresh_failure_after_unobserve_does_not_send_observe_error(
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_observed_playlist_items_singleflight_coalesces_concurrent_connection_loads() {
     let snapshot_service = SlowPlaylistItemsSnapshotService::new(
         empty_playlist_items_response("items-v1"),
@@ -5914,6 +5928,7 @@ async fn test_observed_playlist_items_singleflight_coalesces_concurrent_connecti
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_room_event_refresh_without_durable_cursor_refreshes_best_effort() {
     let snapshot_service =
         MutablePlaylistItemsSnapshotService::new(empty_playlist_items_response("items-v1"));
@@ -6279,6 +6294,7 @@ async fn test_media_resource_hub_refresh_dedupe_tracks_subscription_generation()
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_observed_room_settings_singleflight_coalesces_cross_user_loads() {
     let snapshot_service = SlowRoomSettingsSnapshotService::new(
         crate::impls::room_settings_snapshot::RoomSettingsSnapshot {
@@ -6342,6 +6358,7 @@ async fn test_observed_room_settings_singleflight_coalesces_cross_user_loads() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_observe_resource_does_not_reuse_completed_evaluation_across_invalidation() {
     let message_sender = RecordingMessageSender::new();
     let handler = test_message_handler(
@@ -6776,6 +6793,7 @@ async fn test_observed_room_settings_receive_future_updates() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_run_after_join_cleans_up_when_admin_notification_send_fails() {
     let event_service = test_realtime_manager("test_run_after_join_admin_failure").await;
     let connection_service = test_connection_manager();
@@ -6808,6 +6826,7 @@ async fn test_run_after_join_cleans_up_when_admin_notification_send_fails() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_run_after_join_cleans_up_when_backpressure_error_send_fails() {
     let event_service = test_realtime_manager("test_run_after_join_backpressure_failure").await;
     let connection_service = test_connection_manager();
@@ -7673,6 +7692,7 @@ fn test_guest_policy_backend_error_remains_transient() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_guest_token_blacklist_disconnects_live_guest() {
     let event_service = test_realtime_manager("guest_token_blacklist_disconnects_live_guest").await;
     let connection_service = test_connection_manager();
@@ -7714,6 +7734,7 @@ async fn test_guest_token_blacklist_disconnects_live_guest() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_guest_chat_is_rejected_even_if_permission_bits_include_chat() {
     let event_service = test_realtime_manager("guest_chat_rejected").await;
     let connection_service = test_connection_manager();
@@ -7747,6 +7768,7 @@ async fn test_guest_chat_is_rejected_even_if_permission_bits_include_chat() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_guest_chat_with_client_id_is_rejected() {
     let event_service = test_realtime_manager("guest_chat_client_id_rejected").await;
     let connection_service = test_connection_manager();
@@ -7780,6 +7802,7 @@ async fn test_guest_chat_with_client_id_is_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_guest_playlist_observation_is_rejected_even_if_permission_bits_include_browse_library(
 ) {
     let event_service = test_realtime_manager("guest_playlist_observe_rejected").await;
@@ -7806,6 +7829,7 @@ async fn test_guest_playlist_observation_is_rejected_even_if_permission_bits_inc
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_webrtc_command_joins_without_resource_observation() {
     let fixture = create_start_handler_fixture(
         "webrtc_command_joins_without_observe",
@@ -7855,6 +7879,7 @@ fn webrtc_join_exposes_client_operation_id_for_rejection_correlation() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_webrtc_media_swarm_membership_has_an_independent_voice_lifecycle() {
     let sender = RecordingMessageSender::new();
     let fixture = create_start_handler_fixture("media_swarm_voice_lifecycle", sender.clone()).await;
@@ -7980,6 +8005,7 @@ async fn test_webrtc_media_swarm_membership_has_an_independent_voice_lifecycle()
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_room_capabilities_reject_new_voice_and_media_sessions() {
     let fixture = create_start_handler_fixture(
         "disabled_room_realtime_capabilities",
@@ -8042,6 +8068,7 @@ async fn test_room_capabilities_reject_new_voice_and_media_sessions() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_room_capability_change_ends_active_voice_and_media_sessions() {
     let fixture = create_start_handler_fixture(
         "room_realtime_capability_shutdown",
@@ -8114,6 +8141,7 @@ async fn test_room_capability_change_ends_active_voice_and_media_sessions() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_permission_revocation_ends_active_voice_and_media_sessions() {
     let fixture = create_start_handler_fixture(
         "room_realtime_permission_revocation",
@@ -8180,6 +8208,7 @@ async fn test_permission_revocation_ends_active_voice_and_media_sessions() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_room_capability_change_serializes_with_an_in_flight_join() {
     let fixture = create_start_handler_fixture(
         "room_capability_join_race",
@@ -8240,6 +8269,7 @@ async fn test_room_capability_change_serializes_with_an_in_flight_join() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_guest_self_room_member_snapshot_exposes_effective_permissions() {
     let fixture = create_start_handler_fixture(
         "guest_self_room_member_snapshot",
@@ -8316,6 +8346,7 @@ async fn test_guest_self_room_member_snapshot_exposes_effective_permissions() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_voice_and_p2p_media_permissions_are_independent() {
     let voice_fixture = create_start_handler_fixture(
         "webrtc_voice_only_permission",
@@ -8437,6 +8468,7 @@ async fn test_voice_and_p2p_media_permissions_are_independent() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_webrtc_media_swarm_membership_validates_id_and_ticket_scope() {
     let fixture = create_start_handler_fixture(
         "webrtc_media_swarm_membership_validation",
@@ -8493,6 +8525,7 @@ async fn test_webrtc_media_swarm_membership_validates_id_and_ticket_scope() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_media_signaling_requires_both_connections_in_the_same_swarm() {
     let fixture = create_start_handler_fixture(
         "webrtc_media_signal_membership",
@@ -8569,6 +8602,7 @@ async fn test_media_signaling_requires_both_connections_in_the_same_swarm() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_webrtc_signaling_to_a_disconnected_target_is_a_successful_noop() {
     let fixture = create_start_handler_fixture(
         "webrtc_disconnected_target_noop",
@@ -8671,6 +8705,7 @@ async fn test_webrtc_signaling_to_a_disconnected_target_is_a_successful_noop() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_webrtc_disconnected_recipient_still_requires_a_complete_address() {
     let fixture = create_start_handler_fixture(
         "webrtc_disconnected_recipient_format",
@@ -8788,6 +8823,7 @@ fn test_user_left_delivery_local_presence_still_wins_when_distributed_check_fail
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_guest_cleanup_broadcasts_guest_left() {
     let event_service = test_realtime_manager("guest_cleanup_broadcasts_left").await;
     let connection_service = test_connection_manager();
@@ -8847,6 +8883,7 @@ async fn test_guest_cleanup_broadcasts_guest_left() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_guest_webrtc_recipient_validation_uses_public_guest_actor_id() {
     let event_service = test_realtime_manager("guest_webrtc_recipient").await;
     let connection_service = test_connection_manager();
@@ -8991,6 +9028,7 @@ fn test_realtime_join_error_into_string_preserves_message() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_pre_join_after_registration_fails_closed_when_membership_revalidation_unavailable() {
     let event_service =
         test_realtime_manager("test_pre_join_membership_revalidation_unavailable").await;
@@ -9601,6 +9639,7 @@ fn test_watch_admin_event_matches_access_revocation_events() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_resource_watch_prepare_enforces_room_connection_limit_and_releases_on_cancel() {
     let (container, pool) = synctv_core_testing::create_test_pool().await;
     let room_service = test_room_service(pool.clone());
@@ -9707,6 +9746,7 @@ async fn test_resource_watch_prepare_enforces_room_connection_limit_and_releases
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_resource_watch_prepare_rejects_missing_observe_resource_before_subscription() {
     let (container, pool) = synctv_core_testing::create_test_pool().await;
     let room_service = test_room_service(pool.clone());
@@ -9782,6 +9822,7 @@ async fn test_resource_watch_prepare_rejects_missing_observe_resource_before_sub
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_resource_watch_chat_events_requires_view_chat_history_permission() {
     let (container, pool) = synctv_core_testing::create_test_pool().await;
     let room_service = test_room_service(pool.clone());

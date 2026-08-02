@@ -2963,6 +2963,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn favorite_room_requires_current_membership() -> TestResult {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let user_service =
@@ -3000,6 +3001,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn room_update_response_preserves_favorite_state() -> TestResult {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let user_service =
@@ -3034,6 +3036,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn leaving_room_removes_favorite_room() -> TestResult {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let user_service =
@@ -3548,6 +3551,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn chat_pin_event_response_preserves_optional_message_username() -> TestResult {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let user_service =

@@ -551,6 +551,7 @@ fn test_chat_search_query(
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn chat_search_filters_by_user_and_paginates_matches() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let user_repository = Arc::new(UserRepository::new(pool.clone()));
@@ -839,6 +840,7 @@ fn read_state_allows_forward_event_on_same_message() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn username_lookup_falls_back_to_database_and_populates_cache() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let user_repository = Arc::new(UserRepository::new(pool.clone()));
@@ -1031,6 +1033,7 @@ async fn disabled_file_storage_rejects_prepared_images() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_file_storage_roundtrips_uploaded_object() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let user_repository = Arc::new(UserRepository::new(pool.clone()));
@@ -1224,6 +1227,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_file_storage_rejects_checksum_mismatch() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let user_repository = Arc::new(UserRepository::new(pool.clone()));
@@ -1311,6 +1315,7 @@ async fn database_file_storage_rejects_checksum_mismatch() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn image_upload_session_requires_checksum() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1344,6 +1349,7 @@ async fn image_upload_session_requires_checksum() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn s3_file_storage_rejects_tampered_upload_session_image() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1415,6 +1421,7 @@ fn test_s3_file_storage_config() -> S3FileStorageConfig {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn s3_file_storage_creates_resumable_upload_session() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1505,6 +1512,7 @@ async fn s3_file_storage_creates_resumable_upload_session() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn image_upload_sessions_resume_pending_session_for_reused_client_ids() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1570,6 +1578,7 @@ async fn image_upload_sessions_resume_pending_session_for_reused_client_ids() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn s3_file_storage_reuses_registered_object_with_ownership_proof() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1730,6 +1739,7 @@ async fn s3_file_storage_rejects_unexpected_backend_on_send() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn metadata_only_attachment_token_is_stripped_before_persistence() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache =
@@ -1858,6 +1868,7 @@ async fn metadata_only_attachment_token_is_stripped_before_persistence() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn attachment_message_does_not_require_inline_content_reference() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache =
@@ -1947,6 +1958,7 @@ async fn attachment_message_does_not_require_inline_content_reference() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn visible_chat_attachment_can_be_reused_without_uploading_bytes() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let user_repository = Arc::new(UserRepository::new(pool.clone()));
@@ -2088,6 +2100,7 @@ async fn visible_chat_attachment_can_be_reused_without_uploading_bytes() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn chat_attachment_reuse_token_requires_source_room_visibility() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let user_repository = Arc::new(UserRepository::new(pool.clone()));
@@ -2245,6 +2258,7 @@ async fn chat_attachment_reuse_token_requires_source_room_visibility() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn chat_mentions_must_point_to_inline_at_token() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache =
@@ -2359,6 +2373,7 @@ async fn chat_mentions_must_point_to_inline_at_token() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn custom_file_storage_can_normalize_attachment_metadata() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache = UsernameCache::local_only("test:chat:image:".to_string(), 100, 60);
@@ -2451,6 +2466,7 @@ async fn custom_file_storage_can_normalize_attachment_metadata() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn deleting_attachment_message_releases_attachment_objects() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache =
@@ -2559,6 +2575,7 @@ async fn deleting_attachment_message_releases_attachment_objects() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn cleanup_all_rooms_releases_attachment_objects() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache =
@@ -2662,6 +2679,7 @@ async fn cleanup_all_rooms_releases_attachment_objects() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn concurrent_idempotent_send_returns_existing_created_event() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache =
@@ -2786,6 +2804,7 @@ async fn concurrent_idempotent_send_returns_existing_created_event() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn concurrent_same_edit_returns_existing_edit_event() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache =
@@ -2910,6 +2929,7 @@ async fn concurrent_same_edit_returns_existing_edit_event() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn concurrent_same_delete_returns_existing_delete_event() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache =
@@ -3033,6 +3053,7 @@ async fn concurrent_same_delete_returns_existing_delete_event() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn chat_reactions_update_history_and_emit_reaction_events() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache = UsernameCache::local_only("test:chat:reactions:".to_string(), 100, 60);
@@ -3280,6 +3301,7 @@ async fn chat_reactions_update_history_and_emit_reaction_events() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn pinned_chat_messages_list_and_emit_state_events() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache = UsernameCache::local_only("test:chat:pins:".to_string(), 100, 60);
@@ -3530,6 +3552,7 @@ async fn pinned_chat_messages_list_and_emit_state_events() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn pinning_chat_message_respects_runtime_room_pin_limit() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let runtime_settings_store = Arc::new(RuntimeSettingsStore::new_for_tests());
@@ -3661,6 +3684,7 @@ async fn pinning_chat_message_respects_runtime_room_pin_limit() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn read_state_tracks_unread_count_and_stays_monotonic() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache = UsernameCache::local_only("test:chat:read-state:".to_string(), 100, 60);
@@ -3863,6 +3887,7 @@ async fn read_state_tracks_unread_count_and_stays_monotonic() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn message_context_returns_messages_around_anchor_in_chronological_order() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache = UsernameCache::local_only("test:chat:context:".to_string(), 100, 60);
@@ -3953,6 +3978,7 @@ async fn message_context_returns_messages_around_anchor_in_chronological_order()
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn chat_text_validation_rejects_whitespace_send_and_edit() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache =

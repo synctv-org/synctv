@@ -2477,6 +2477,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_request_context_uses_trusted_proxy_headers_for_audit_ip() -> TestResult {
         let mut state = crate::http::tests::test_app_state();
         {
@@ -2508,6 +2509,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_request_context_ignores_forwarded_headers_from_untrusted_proxy() -> TestResult {
         let state = crate::http::tests::test_app_state();
 
@@ -2532,6 +2534,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_require_admin_api_error() -> TestResult {
         let mut state = crate::http::tests::test_app_state();
         Arc::make_mut(&mut state.shared_api_runtime).admin_api = None;

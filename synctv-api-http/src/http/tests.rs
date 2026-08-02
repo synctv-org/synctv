@@ -1319,6 +1319,7 @@ async fn test_start_proxy_cache_lifecycle_starts_even_when_runtime_toggle_is_off
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
     let database = http_test_database();
     let pool = database.pool.clone();
@@ -1654,6 +1655,7 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_playback_patch_route_is_reachable_via_project_router() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -1686,6 +1688,7 @@ async fn test_playback_patch_route_is_reachable_via_project_router() -> TestResu
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_api_root_redirects_to_configured_project_url() -> TestResult {
     let mut state = test_app_state();
     Arc::make_mut(&mut Arc::make_mut(&mut state.router_options).runtime_settings)
@@ -1707,6 +1710,7 @@ async fn test_api_root_redirects_to_configured_project_url() -> TestResult {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_native_passkey_association_documents_are_served_from_config() -> TestResult {
     let mut state = test_app_state();
     let server =
@@ -1783,6 +1787,7 @@ async fn test_native_passkey_association_documents_are_served_from_config() -> T
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_playback_navigation_routes_are_reachable_via_project_router() -> TestResult {
     synctv_core::install_process_crypto_provider();
     for (method, uri, body) in [
@@ -1806,6 +1811,7 @@ async fn test_playback_navigation_routes_are_reachable_via_project_router() -> T
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_chat_message_patch_route_is_reachable_via_project_router() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -1840,6 +1846,7 @@ async fn test_chat_message_patch_route_is_reachable_via_project_router() -> Test
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_chat_message_delete_route_is_reachable_via_project_router() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -2204,6 +2211,7 @@ async fn test_chat_events_sse_unknown_last_event_id_returns_bad_request() -> Tes
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_public_and_authenticated_room_discovery_routes_are_separate() -> TestResult {
     synctv_core::install_process_crypto_provider();
     let public_app = register_all_routes().with_state(test_app_state());
@@ -2235,6 +2243,7 @@ async fn test_public_and_authenticated_room_discovery_routes_are_separate() -> T
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_public_time_route_echoes_client_timestamp_without_auth() -> TestResult {
     let state = test_app_state();
     let clock = state.shared_api_runtime.client_api.clock.clone();
@@ -2273,6 +2282,7 @@ async fn test_public_time_route_echoes_client_timestamp_without_auth() -> TestRe
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_opaque_login_routes_are_registered() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -2301,6 +2311,7 @@ async fn test_opaque_login_routes_are_registered() -> TestResult {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_password_email_and_totp_auth_routes_are_registered() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -2334,6 +2345,7 @@ async fn test_password_email_and_totp_auth_routes_are_registered() -> TestResult
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_passkey_login_routes_fail_closed_when_service_missing() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -2363,6 +2375,7 @@ async fn test_passkey_login_routes_fail_closed_when_service_missing() -> TestRes
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_account_security_routes_are_registered_and_require_authentication() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -2456,6 +2469,7 @@ async fn test_account_security_routes_are_registered_and_require_authentication(
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_member_approval_routes_are_reachable_via_project_router() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -2504,6 +2518,7 @@ async fn test_member_approval_routes_are_reachable_via_project_router() -> TestR
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_oauth2_unlink_route_is_reachable() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -2520,6 +2535,7 @@ async fn test_oauth2_unlink_route_is_reachable() -> TestResult {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_oauth2_unlink_provider_path_rejects_non_canonical_case() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -2537,6 +2553,7 @@ async fn test_oauth2_unlink_provider_path_rejects_non_canonical_case() -> TestRe
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_delete_all_read_notifications_route_is_reachable() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -2553,6 +2570,7 @@ async fn test_delete_all_read_notifications_route_is_reachable() -> TestResult {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_main_router_does_not_expose_metrics_endpoint() -> TestResult {
     let mut state = test_app_state();
     Arc::make_mut(&mut state.router_options).runtime_settings = Arc::new({
@@ -2572,6 +2590,7 @@ async fn test_main_router_does_not_expose_metrics_endpoint() -> TestResult {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_provider_login_routes_reject_invalid_tokens_before_rate_limiting() -> TestResult {
     let state =
         test_app_state_with_rate_limits(synctv_api_common::api_runtime::RequestRateLimitSettings {
@@ -2616,6 +2635,7 @@ async fn test_provider_login_routes_reject_invalid_tokens_before_rate_limiting()
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_auth_login_malformed_json_still_consumes_auth_rate_limit_bucket() -> TestResult {
     let state =
         test_app_state_with_rate_limits(synctv_api_common::api_runtime::RequestRateLimitSettings {
@@ -2654,6 +2674,7 @@ async fn test_auth_login_malformed_json_still_consumes_auth_rate_limit_bucket() 
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_bilibili_me_route_requires_post() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -2675,6 +2696,7 @@ async fn test_bilibili_me_route_requires_post() -> TestResult {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_ticket_route_uses_write_rate_limit_tier() -> TestResult {
     let state = test_app_state_with_websocket_runtime(
         synctv_api_common::api_runtime::RequestRateLimitSettings {
@@ -2719,6 +2741,7 @@ async fn test_ticket_route_uses_write_rate_limit_tier() -> TestResult {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_provider_proxy_routes_use_streaming_rate_limit_tier() -> TestResult {
     let state =
         test_app_state_with_rate_limits(synctv_api_common::api_runtime::RequestRateLimitSettings {
@@ -2755,6 +2778,7 @@ async fn test_provider_proxy_routes_use_streaming_rate_limit_tier() -> TestResul
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_direct_url_manifest_and_resource_routes_are_reachable() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -2791,6 +2815,7 @@ async fn test_direct_url_manifest_and_resource_routes_are_reachable() -> TestRes
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_transport_layers_preserve_shared_http_metadata_without_global_timeout() -> TestResult
 {
     let state = test_app_state();
@@ -2839,6 +2864,7 @@ async fn test_transport_layers_preserve_shared_http_metadata_without_global_time
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn json_compression_is_enabled_without_compressing_media_responses() -> TestResult {
     let state = test_app_state();
     let app = apply_global_layers(
@@ -2902,6 +2928,7 @@ async fn json_compression_is_enabled_without_compressing_media_responses() -> Te
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_streaming_proxy_routes_preserve_options_preflight() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -3345,6 +3372,7 @@ fn test_build_cors_layer_rejects_configured_origin_with_path() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_provider_common_routes_rate_limit_invalid_tokens_before_authentication() -> TestResult
 {
     let state =
@@ -3388,6 +3416,7 @@ async fn test_provider_common_routes_rate_limit_invalid_tokens_before_authentica
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_provider_management_routes_do_not_consume_outer_read_bucket() -> TestResult {
     let state =
         test_app_state_with_rate_limits(synctv_api_common::api_runtime::RequestRateLimitSettings {
@@ -3433,6 +3462,7 @@ async fn test_provider_management_routes_do_not_consume_outer_read_bucket() -> T
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_ticket_routes_use_write_rate_limit_tier() -> TestResult {
     let state = test_app_state_with_websocket_runtime(
         synctv_api_common::api_runtime::RequestRateLimitSettings {
@@ -3473,6 +3503,7 @@ async fn test_ticket_routes_use_write_rate_limit_tier() -> TestResult {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_ticket_route_fails_closed_when_websocket_runtime_is_unavailable() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -3495,6 +3526,7 @@ async fn test_ticket_route_fails_closed_when_websocket_runtime_is_unavailable() 
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_websocket_route_fails_closed_when_runtime_is_unavailable_before_upgrade_checks(
 ) -> TestResult {
     let state = test_app_state();
@@ -3517,6 +3549,7 @@ async fn test_websocket_route_fails_closed_when_runtime_is_unavailable_before_up
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_websocket_ticket_runtime_gate_does_not_leak_to_other_write_routes() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -3539,6 +3572,7 @@ async fn test_websocket_ticket_runtime_gate_does_not_leak_to_other_write_routes(
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_rtmp_publish_key_routes_are_reachable_under_api() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -3564,6 +3598,7 @@ async fn test_rtmp_publish_key_routes_are_reachable_under_api() -> TestResult {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_oauth2_routes_fail_closed_when_service_missing() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -3581,6 +3616,7 @@ async fn test_oauth2_routes_fail_closed_when_service_missing() -> TestResult {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_optional_user_execution_rejects_invalid_authorization_header() -> TestResult {
     let state = test_app_state();
     let request_meta = synctv_api_common::impls::RequestMetadata::new(
@@ -3614,6 +3650,7 @@ async fn test_optional_user_execution_rejects_invalid_authorization_header() -> 
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_http_request_metadata_rejects_non_utf8_authorization_header() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -3635,6 +3672,7 @@ async fn test_http_request_metadata_rejects_non_utf8_authorization_header() -> T
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_http_request_metadata_rejects_non_utf8_user_agent_header() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -3656,6 +3694,7 @@ async fn test_http_request_metadata_rejects_non_utf8_user_agent_header() -> Test
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_notification_routes_fail_closed_when_service_missing() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -3681,6 +3720,7 @@ async fn test_notification_routes_fail_closed_when_service_missing() -> TestResu
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_live_provider_routes_remain_registered_when_infrastructure_missing() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
@@ -3698,6 +3738,7 @@ async fn test_live_provider_routes_remain_registered_when_infrastructure_missing
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_websocket_routes_fail_closed_when_dependencies_missing() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);

@@ -750,6 +750,7 @@ async fn opaque_login_outcome(
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_start_login_reports_account_primary_methods() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(&pool);
@@ -854,6 +855,7 @@ async fn test_start_login_reports_account_primary_methods() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_login_session_has_one_atomic_confirmation_claim() {
     let (_container, pool) = create_test_pool().await;
     let service = Arc::new(create_user_service(&pool));
@@ -887,6 +889,7 @@ async fn test_login_session_has_one_atomic_confirmation_claim() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_opaque_challenge_keeps_identified_login_session_reusable() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(&pool);

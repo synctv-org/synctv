@@ -105,6 +105,13 @@ impl HlsProxyClient {
     /// Default maximum total byte size for the segment cache (512 MB).
     const DEFAULT_MAX_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
+    /// Moka's capacity is measured in bytes for both HLS caches.
+    fn cache_weight(key_len: usize, value_len: usize) -> u32 {
+        let total = key_len.saturating_add(value_len);
+        u32::try_from(total.min(usize::try_from(u32::MAX).unwrap_or(usize::MAX)))
+            .unwrap_or(u32::MAX)
+    }
+
     /// Create a new HLS proxy client.
     ///
     /// # Arguments
@@ -122,13 +129,7 @@ impl HlsProxyClient {
             .time_to_live(segment_cache_ttl)
             .max_capacity(segment_cache_max_bytes)
             .weigher(|key: &String, value: &Bytes| -> u32 {
-                // Weight each entry by key + value byte size (capped at u32::MAX).
-                // With a weigher, moka treats `max_capacity` as the total weight
-                // limit (in bytes here), not the entry count.
-                // Include key size for more accurate memory accounting.
-                let total = key.len().saturating_add(value.len());
-                u32::try_from(total.min(usize::try_from(u32::MAX).unwrap_or(usize::MAX)))
-                    .unwrap_or(u32::MAX)
+                Self::cache_weight(key.len(), value.len())
             })
             .build();
         // A final playlist must remain usable for the whole retained HLS
@@ -139,9 +140,7 @@ impl HlsProxyClient {
             .time_to_live(final_playlist_cache_ttl)
             .max_capacity(8 * 1024 * 1024)
             .weigher(|key: &String, value: &String| -> u32 {
-                let total = key.len().saturating_add(value.len());
-                u32::try_from(total.min(usize::try_from(u32::MAX).unwrap_or(usize::MAX)))
-                    .unwrap_or(u32::MAX)
+                Self::cache_weight(key.len(), value.len())
             })
             .build();
 
@@ -376,22 +375,14 @@ impl HlsProxyClient {
         lease_epoch: u64,
         segment_name: &str,
     ) -> String {
-        let mut key = String::with_capacity(
-            room_id
-                .len()
-                .saturating_add(media_id.len())
-                .saturating_add(generation_id.len())
-                .saturating_add(segment_name.len())
-                .saturating_add(64),
+        let mut key = Self::build_cache_key_prefix(
+            room_id,
+            media_id,
+            generation_id,
+            lease_epoch,
+            segment_name.len(),
         );
-        let _ = write!(
-            key,
-            "|{}:{room_id}|{}:{media_id}|pub|{}:{generation_id}|lease_epoch|{lease_epoch}|seg|{}:{segment_name}",
-            room_id.len(),
-            media_id.len(),
-            generation_id.len(),
-            segment_name.len()
-        );
+        let _ = write!(key, "seg|{}:{segment_name}", segment_name.len());
         key
     }
 
@@ -405,23 +396,48 @@ impl HlsProxyClient {
         segment_url_base: &str,
         segment_url_suffix: &str,
     ) -> String {
+        let mut key = Self::build_cache_key_prefix(
+            room_id,
+            media_id,
+            generation_id,
+            lease_epoch,
+            segment_url_base
+                .len()
+                .saturating_add(segment_url_suffix.len())
+                .saturating_add(32),
+        );
+        let _ = write!(
+            key,
+            "playlist|{}:{segment_url_base}|{}:{segment_url_suffix}",
+            segment_url_base.len(),
+            segment_url_suffix.len(),
+        );
+        key
+    }
+
+    #[inline]
+    #[must_use]
+    fn build_cache_key_prefix(
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        lease_epoch: u64,
+        suffix_len: usize,
+    ) -> String {
         let mut key = String::with_capacity(
             room_id
                 .len()
                 .saturating_add(media_id.len())
                 .saturating_add(generation_id.len())
-                .saturating_add(segment_url_base.len())
-                .saturating_add(segment_url_suffix.len())
-                .saturating_add(96),
+                .saturating_add(suffix_len)
+                .saturating_add(64),
         );
         let _ = write!(
             key,
-            "|{}:{room_id}|{}:{media_id}|pub|{}:{generation_id}|lease_epoch|{lease_epoch}|playlist|{}:{segment_url_base}|{}:{segment_url_suffix}",
+            "|{}:{room_id}|{}:{media_id}|pub|{}:{generation_id}|lease_epoch|{lease_epoch}|",
             room_id.len(),
             media_id.len(),
             generation_id.len(),
-            segment_url_base.len(),
-            segment_url_suffix.len(),
         );
         key
     }

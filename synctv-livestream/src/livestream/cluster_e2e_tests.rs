@@ -243,10 +243,15 @@ async fn wait_for_publisher(
     }
 }
 
-async fn wait_for_remote_playlist(
+async fn wait_for_remote_playlist_until<F>(
     infrastructure: &crate::LiveStreamingInfrastructure,
     generation_id: &str,
-) -> Result<String> {
+    ready: F,
+    timeout_message: &str,
+) -> Result<String>
+where
+    F: Fn(&str) -> bool,
+{
     let deadline = Instant::now() + Duration::from_secs(5);
     let segment_url_base = format!("/cluster-hls/{generation_id}/");
     loop {
@@ -259,44 +264,39 @@ async fn wait_for_remote_playlist(
         )
         .await?
         {
-            if playlist.contains("#EXTINF:") {
+            if ready(&playlist) {
                 return Ok(playlist);
             }
         }
-        anyhow::ensure!(
-            Instant::now() < deadline,
-            "remote HLS playlist was not generated"
-        );
+        anyhow::ensure!(Instant::now() < deadline, "{timeout_message}");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+async fn wait_for_remote_playlist(
+    infrastructure: &crate::LiveStreamingInfrastructure,
+    generation_id: &str,
+) -> Result<String> {
+    wait_for_remote_playlist_until(
+        infrastructure,
+        generation_id,
+        |playlist| playlist.contains("#EXTINF:"),
+        "remote HLS playlist was not generated",
+    )
+    .await
 }
 
 async fn wait_for_remote_endlist(
     infrastructure: &crate::LiveStreamingInfrastructure,
     generation_id: &str,
 ) -> Result<String> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let segment_url_base = format!("/cluster-hls/{generation_id}/");
-    loop {
-        if let Some(playlist) = HlsStreamingApi::generate_playlist_simple(
-            infrastructure,
-            ROOM,
-            MEDIA,
-            generation_id,
-            &segment_url_base,
-        )
-        .await?
-        {
-            if playlist.contains("#EXT-X-ENDLIST") {
-                return Ok(playlist);
-            }
-        }
-        anyhow::ensure!(
-            Instant::now() < deadline,
-            "remote HLS playlist did not expose EXT-X-ENDLIST after unregister"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    wait_for_remote_playlist_until(
+        infrastructure,
+        generation_id,
+        |playlist| playlist.contains("#EXT-X-ENDLIST"),
+        "remote HLS playlist did not expose EXT-X-ENDLIST after unregister",
+    )
+    .await
 }
 
 async fn wait_for_registry_absent(

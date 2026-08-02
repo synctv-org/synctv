@@ -3093,6 +3093,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn management_server_reuses_shared_http_app_state_instances() {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let config = Arc::new(Config::default());

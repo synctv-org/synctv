@@ -2,6 +2,7 @@
 FROM rust:slim-trixie AS builder
 
 # Install build dependencies
+# protobuf-compiler is shared by workspace and dependency build scripts
 # build-essential, perl, cmake needed for vendored builds (xiu/opus dependencies)
 # curl needed for utoipa-swagger-ui to download assets
 RUN apt-get update && apt-get install -y \

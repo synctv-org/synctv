@@ -848,9 +848,8 @@ fn configure_well_known_types(config: &mut tonic_prost_build::Config) {
     config.extern_path(".google.protobuf.FieldMask", "crate::FieldMask");
 }
 
-fn build_main_protos(protoc: PathBuf, out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn build_main_protos(out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut prost_config = tonic_prost_build::Config::new();
-    prost_config.protoc_executable(protoc);
     configure_well_known_types(&mut prost_config);
     prost_reflect_build::Builder::new()
         .descriptor_pool("crate::DESCRIPTOR_POOL")
@@ -932,12 +931,8 @@ fn build_main_protos(protoc: PathBuf, out_dir: &Path) -> Result<(), Box<dyn std:
     Ok(())
 }
 
-fn build_provider_protos(
-    protoc: PathBuf,
-    out_dir: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn build_provider_protos(out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut prost_config = tonic_prost_build::Config::new();
-    prost_config.protoc_executable(protoc);
     configure_well_known_types(&mut prost_config);
     prost_config.extern_path(".synctv.source_config", "crate::source_config");
     prost_reflect_build::Builder::new()
@@ -1004,12 +999,8 @@ fn build_provider_protos(
     Ok(())
 }
 
-fn build_playback_provider_protos(
-    protoc: PathBuf,
-    out_dir: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn build_playback_provider_protos(out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut prost_config = tonic_prost_build::Config::new();
-    prost_config.protoc_executable(protoc);
     configure_well_known_types(&mut prost_config);
     prost_reflect_build::Builder::new()
         .descriptor_pool("crate::PLAYBACK_PROVIDER_DESCRIPTOR_POOL")
@@ -1040,46 +1031,45 @@ fn build_playback_provider_protos(
     Ok(())
 }
 
-fn prepare_build() -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
-    let protoc = protoc_bin_vendored::protoc_bin_path()?;
+fn prepare_build() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let out_dir = build_out_dir()?;
     // Cargo resolves relative rerun paths against the package manifest directory,
     // while the thin proto crates run this helper from the shared synctv-proto
     // directory. Emit absolute paths so Cargo watches the files we actually read.
     let proto_dir = fs::canonicalize("proto")?;
     emit_proto_rerun_if_changed(&proto_dir)?;
-    Ok((protoc, out_dir))
+    Ok(out_dir)
 }
 
 pub fn build_main_crate() -> Result<(), Box<dyn std::error::Error>> {
-    let (protoc, out_dir) = prepare_build()?;
+    let out_dir = prepare_build()?;
     let main_out_dir = out_dir.join("main");
     fs::create_dir_all(&main_out_dir)?;
     println!(
         "cargo:rustc-env=SYNCTV_PROTO_MAIN_OUT_DIR={}",
         main_out_dir.display()
     );
-    build_main_protos(protoc, &main_out_dir)
+    build_main_protos(&main_out_dir)
 }
 
 pub fn build_providers_crate() -> Result<(), Box<dyn std::error::Error>> {
-    let (protoc, out_dir) = prepare_build()?;
+    let out_dir = prepare_build()?;
     let provider_out_dir = out_dir.join("providers");
     fs::create_dir_all(&provider_out_dir)?;
     println!(
         "cargo:rustc-env=SYNCTV_PROTO_PROVIDERS_OUT_DIR={}",
         provider_out_dir.display()
     );
-    build_provider_protos(protoc, &provider_out_dir)
+    build_provider_protos(&provider_out_dir)
 }
 
 pub fn build_playback_provider_crate() -> Result<(), Box<dyn std::error::Error>> {
-    let (protoc, out_dir) = prepare_build()?;
+    let out_dir = prepare_build()?;
     let playback_provider_out_dir = out_dir.join("playback_provider");
     fs::create_dir_all(&playback_provider_out_dir)?;
     println!(
         "cargo:rustc-env=SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR={}",
         playback_provider_out_dir.display()
     );
-    build_playback_provider_protos(protoc, &playback_provider_out_dir)
+    build_playback_provider_protos(&playback_provider_out_dir)
 }

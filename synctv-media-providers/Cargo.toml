@@ -119,7 +119,6 @@ workspace = true
 
 [build-dependencies]
 tonic-prost-build.workspace = true
-protoc-bin-vendored.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

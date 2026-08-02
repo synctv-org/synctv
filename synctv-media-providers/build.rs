@@ -27,7 +27,6 @@ fn build_proto_out_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let protoc = protoc_bin_vendored::protoc_bin_path()?;
     let proto_out_dir = build_proto_out_dir()?;
     fs::create_dir_all(&proto_out_dir)?;
     println!(
@@ -35,8 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         proto_out_dir.display()
     );
 
-    let mut prost_config = tonic_prost_build::Config::new();
-    prost_config.protoc_executable(&protoc);
+    let prost_config = tonic_prost_build::Config::new();
 
     tonic_prost_build::configure()
         .build_server(true)
@@ -58,16 +56,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut acfun_files = proto_files_in("proto/acfun/im.basic")?;
     acfun_files.extend(proto_files_in("proto/acfun/zt.live.interactive")?);
     let mut acfun_config = tonic_prost_build::Config::new();
-    acfun_config
-        .protoc_executable(&protoc)
-        .out_dir(&proto_out_dir)
-        .compile_protos(
-            &acfun_files,
-            &[
-                PathBuf::from("proto/acfun/im.basic"),
-                PathBuf::from("proto/acfun/zt.live.interactive"),
-            ],
-        )?;
+    acfun_config.out_dir(&proto_out_dir).compile_protos(
+        &acfun_files,
+        &[
+            PathBuf::from("proto/acfun/im.basic"),
+            PathBuf::from("proto/acfun/zt.live.interactive"),
+        ],
+    )?;
 
     println!("cargo:rerun-if-changed=proto/alist.proto");
     println!("cargo:rerun-if-changed=proto/bilibili.proto");

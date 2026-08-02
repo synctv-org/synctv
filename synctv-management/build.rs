@@ -6,11 +6,9 @@ use prost_types::{DescriptorProto, FileDescriptorSet};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=proto/management.proto");
 
-    let protoc = protoc_bin_vendored::protoc_bin_path()?;
     let out_dir = std::env::var("OUT_DIR")?;
     let out_dir = Path::new(&out_dir);
-    let mut prost_config = prost_config();
-    prost_config.protoc_executable(protoc);
+    let prost_config = prost_config();
     tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)

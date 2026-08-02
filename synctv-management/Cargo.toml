@@ -67,4 +67,3 @@ pbjson-build.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 tonic-prost-build.workspace = true
-protoc-bin-vendored.workspace = true

@@ -23,9 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("cargo:rerun-if-changed=proto/cluster.proto");
 
-    let protoc = protoc_bin_vendored::protoc_bin_path()?;
-    let mut prost_config = tonic_prost_build::Config::new();
-    prost_config.protoc_executable(protoc);
+    let prost_config = tonic_prost_build::Config::new();
 
     tonic_prost_build::configure()
         .build_server(true)

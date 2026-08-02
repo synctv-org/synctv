@@ -8,7 +8,6 @@ publish = false
 
 [dependencies]
 tonic-prost-build.workspace = true
-protoc-bin-vendored.workspace = true
 prost-reflect-build.workspace = true
 pbjson-build.workspace = true
 prost.workspace = true

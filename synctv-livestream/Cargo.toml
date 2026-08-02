@@ -115,7 +115,6 @@ workspace = true
 
 [build-dependencies]
 tonic-prost-build.workspace = true
-protoc-bin-vendored.workspace = true
 
 [dev-dependencies]
 synctv-core-testing = { workspace = true, features = ["streaming"] }

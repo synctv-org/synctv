@@ -997,24 +997,6 @@ impl ServerSession {
             return Err(e.into());
         }
 
-        let mut netstream = NetStreamWriter::new(Arc::clone(&self.io));
-        if let Err(e) = netstream
-            .write_on_status(transaction_id, "status", "NetStream.Publish.Start", "")
-            .await
-        {
-            tracing::error!(
-                "Failed to send NetStream.Publish.Start after successful auth, cleaning up: {}",
-                e
-            );
-            cleanup_auth().await;
-            return Err(e.into());
-        }
-        tracing::info!(
-            "[ S->C ] [NetStream.Publish.Start]  app_name: {}, stream_name: {}",
-            self.app_name,
-            self.stream_name
-        );
-
         if let Err(e) = self
             .common
             .publish_to_stream_hub(
@@ -1034,6 +1016,25 @@ impl ServerSession {
         }
 
         self.is_publishing = true;
+
+        let mut netstream = NetStreamWriter::new(Arc::clone(&self.io));
+        if let Err(error) = netstream
+            .write_on_status(transaction_id, "status", "NetStream.Publish.Start", "")
+            .await
+        {
+            tracing::error!(
+                "Failed to confirm StreamHub publication to the RTMP publisher: {error}"
+            );
+            if let Err(cleanup_error) = self.teardown_active_stream().await {
+                tracing::warn!(%cleanup_error, "RTMP publication cleanup failed after confirmation error");
+            }
+            return Err(error.into());
+        }
+        tracing::info!(
+            "[ S->C ] [NetStream.Publish.Start]  app_name: {}, stream_name: {}",
+            self.app_name,
+            self.stream_name
+        );
 
         // Notify publisher start via callback
         if let Some(cb) = &self.callbacks.on_publisher_start {

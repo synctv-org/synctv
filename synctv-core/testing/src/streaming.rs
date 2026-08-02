@@ -9,6 +9,7 @@ use synctv_xiu::{
         bytes_writer::AsyncBytesWriter,
         net_io::{TNetIO, TcpIO},
     },
+    flv::amf0::Amf0ValueType,
     rtmp::{
         chunk::{
             errors::UnpackErrorValue,
@@ -16,7 +17,10 @@ use synctv_xiu::{
             unpacketizer::{ChunkUnpacketizer, UnpackResult},
         },
         handshake::{define::ClientHandshakeState, handshake_client::SimpleHandshakeClient},
-        messages::define::msg_type_id,
+        messages::{
+            define::{msg_type_id, RtmpMessageData},
+            parser::MessageParser,
+        },
         netconnection::writer::{ConnectProperties, NetConnection},
         netstream::writer::NetStreamWriter,
         protocol_control_messages::writer::ProtocolControlMessagesWriter,
@@ -65,13 +69,36 @@ impl RtmpPublisher {
         app_name: impl Into<String>,
         stream_name: impl Into<String>,
     ) -> Result<Self> {
-        let app_name = app_name.into();
-        let stream_name = stream_name.into();
+        Self::connect_inner(address, app_name.into(), stream_name.into(), true).await
+    }
+
+    /// Sends a publish request and returns before the server accepts it.
+    ///
+    /// Rejection-path tests use this to exercise sessions that never receive
+    /// `NetStream.Publish.Start`.
+    pub async fn connect_unconfirmed(
+        address: SocketAddr,
+        app_name: impl Into<String>,
+        stream_name: impl Into<String>,
+    ) -> Result<Self> {
+        Self::connect_inner(address, app_name.into(), stream_name.into(), false).await
+    }
+
+    async fn connect_inner(
+        address: SocketAddr,
+        app_name: String,
+        stream_name: String,
+        wait_for_confirmation: bool,
+    ) -> Result<Self> {
         let (io, mut stream_writer) =
             connect_rtmp_session(address, &app_name, "SyncTV test publisher").await?;
         stream_writer
             .write_publish(&3.0, &stream_name, &"live".to_string())
             .await?;
+
+        if wait_for_confirmation {
+            wait_for_publish_start(&io, Duration::from_secs(5)).await?;
+        }
 
         let media = Common::new(
             Some(ChunkPacketizer::new(Arc::clone(&io))),
@@ -81,8 +108,6 @@ impl RtmpPublisher {
             None,
         );
 
-        // Let the server install the publication before the first media packet.
-        tokio::time::sleep(Duration::from_millis(20)).await;
         Ok(Self { io, media })
     }
 
@@ -135,6 +160,74 @@ impl RtmpPublisher {
         drop(self.media);
         drop(self.io);
         Ok(())
+    }
+}
+
+async fn wait_for_publish_start(io: &SharedIo, timeout: Duration) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut unpacketizer = ChunkUnpacketizer::new();
+
+    loop {
+        let remaining = deadline
+            .checked_duration_since(tokio::time::Instant::now())
+            .ok_or_else(|| anyhow::anyhow!("RTMP publish confirmation timed out"))?;
+        let data = io.lock().await.read_timeout(remaining).await?;
+        unpacketizer.extend_data(&data)?;
+
+        loop {
+            let chunks = match unpacketizer.read_chunks() {
+                Ok(UnpackResult::Chunks(chunks)) => chunks,
+                Ok(_) => continue,
+                Err(error)
+                    if matches!(
+                        error.value,
+                        UnpackErrorValue::CannotParse | UnpackErrorValue::MessageTooLarge(_, _)
+                    ) =>
+                {
+                    return Err(error.into());
+                }
+                Err(_) => break,
+            };
+
+            for chunk in chunks {
+                if chunk.message_header.msg_type_id == msg_type_id::SET_CHUNK_SIZE {
+                    anyhow::ensure!(chunk.payload.len() >= 4, "truncated RTMP Set Chunk Size");
+                    let chunk_size = u32::from_be_bytes([
+                        chunk.payload[0],
+                        chunk.payload[1],
+                        chunk.payload[2],
+                        chunk.payload[3],
+                    ]) & 0x7fff_ffff;
+                    unpacketizer.update_max_chunk_size(usize::try_from(chunk_size)?);
+                    continue;
+                }
+
+                if chunk.message_header.msg_type_id != msg_type_id::COMMAND_AMF0
+                    && chunk.message_header.msg_type_id != msg_type_id::COMMAND_AMF3
+                {
+                    continue;
+                }
+                let Some(RtmpMessageData::Amf0Command(command)) =
+                    MessageParser::new(chunk).parse()?
+                else {
+                    continue;
+                };
+                if command.command_name != Amf0ValueType::UTF8String("onStatus".to_string()) {
+                    continue;
+                }
+                let Some(Amf0ValueType::Object(status)) = command.others.first() else {
+                    continue;
+                };
+                let Some(Amf0ValueType::UTF8String(code)) = status.get("code") else {
+                    continue;
+                };
+                anyhow::ensure!(
+                    code == "NetStream.Publish.Start",
+                    "RTMP publish rejected with status {code}"
+                );
+                return Ok(());
+            }
+        }
     }
 }
 

@@ -2653,7 +2653,7 @@ async fn duplicate_rtmp_publisher_cannot_replace_active_stream() -> Result<()> {
     first.send_video(0, true).await?;
     first.send_video(1, true).await?;
 
-    let mut duplicate = RtmpPublisher::connect(server.address, APP, STREAM).await?;
+    let mut duplicate = RtmpPublisher::connect_unconfirmed(server.address, APP, STREAM).await?;
     let duplicate_marker = [0x17, 0x01, 0, 0, 0, 0, 0, 0, 4, 0x65, 0xaa, 0xbb, 0xcc];
     let _ = duplicate.send_raw_video(2, &duplicate_marker).await;
     tokio::time::sleep(Duration::from_millis(30)).await;
@@ -2701,7 +2701,7 @@ async fn rejected_publish_releases_session_and_same_key_can_publish_next() -> Re
     });
     let server = start_rtmp_hub_server_with_auth(Some(auth)).await?;
 
-    let rejected = RtmpPublisher::connect(server.address, APP, STREAM).await?;
+    let rejected = RtmpPublisher::connect_unconfirmed(server.address, APP, STREAM).await?;
     let deadline = Instant::now() + Duration::from_secs(2);
     while publish_attempts.load(Ordering::SeqCst) < 1 {
         anyhow::ensure!(

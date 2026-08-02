@@ -327,6 +327,14 @@ impl FrameDataReceiver {
             Self::Unbounded(receiver) => receiver.recv().await,
         }
     }
+
+    pub fn try_recv(&mut self) -> Result<FrameData, mpsc::error::TryRecvError> {
+        match self {
+            Self::Bounded(receiver) => receiver.try_recv(),
+            Self::Budgeted { receiver } => receiver.try_recv().map(|item| item.data),
+            Self::Unbounded(receiver) => receiver.try_recv(),
+        }
+    }
 }
 
 fn frame_data_bytes(data: &FrameData) -> usize {

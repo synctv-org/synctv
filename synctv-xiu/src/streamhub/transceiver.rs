@@ -327,6 +327,17 @@ impl StreamDataTransceiver {
                         }
                     }
                     _ = exit.recv() => {
+                        while let Ok(data) = receiver.try_recv() {
+                            if let Err(error) = Self::receive_frame_data(
+                                Some(data),
+                                &context,
+                                &mut cached_snapshot,
+                                &mut cached_gen,
+                            ).await {
+                                tracing::warn!(%error, "buffered publisher frame rejected during shutdown");
+                                break;
+                            }
+                        }
                         break;
                     }
                 }
@@ -413,6 +424,17 @@ impl StreamDataTransceiver {
                         ).await;
                     }
                     _ = exit.recv() => {
+                        while let Ok(data) = receiver.try_recv() {
+                            Self::receive_packet_data(
+                                Some(data),
+                                &packet_senders,
+                                &generation,
+                                &mut cached_snapshot,
+                                &mut cached_gen,
+                                &statistics_data,
+                                publisher_activity.as_deref(),
+                            ).await;
+                        }
                         break;
                     }
                 }
@@ -744,7 +766,6 @@ impl StreamDataTransceiver {
         let event_result = event_handle
             .await
             .map_err(|error| map_task_join_error("event loop", &error));
-        tasks.abort_all();
 
         let mut first_error = event_result.err();
         while let Some(join_result) = tasks.join_next().await {

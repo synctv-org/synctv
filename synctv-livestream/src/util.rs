@@ -8,6 +8,9 @@ const MAX_STREAM_ID_COMPONENT_LEN: usize = 128;
 const MAX_HLS_SEGMENT_NAME_LEN: usize = 256;
 const MAX_HLS_SEGMENT_URL_PART_LEN: usize = 2048;
 
+#[cfg(test)]
+pub(crate) const TEST_GENERATION_ID: &str = "00000000-0000-4000-8000-000000000001";
+
 /// Shared validation logic for stream identifiers and segment names.
 fn validate_identifier_common(value: &str, field: &str, max_len: usize) -> anyhow::Result<()> {
     if value.is_empty() {
@@ -66,6 +69,13 @@ pub fn validate_hls_segment_name(segment_name: &str) -> anyhow::Result<()> {
     validate_identifier_common(segment_name, "segment_name", MAX_HLS_SEGMENT_NAME_LEN)
 }
 
+/// Validate the immutable StreamHub publication ID carried by HLS URLs.
+pub(crate) fn validate_stream_generation_id(generation_id: &str) -> anyhow::Result<()> {
+    uuid::Uuid::parse_str(generation_id)
+        .map(|_| ())
+        .map_err(|error| anyhow::anyhow!("invalid HLS generation_id: {error}"))
+}
+
 /// Validate the segment URL prefix embedded into remote HLS playlists.
 pub(crate) fn validate_hls_segment_url_base(segment_url_base: &str) -> anyhow::Result<()> {
     validate_hls_segment_url_part(segment_url_base, "segment_url_base")
@@ -103,8 +113,7 @@ pub(crate) fn unix_now_secs() -> u64 {
 /// Delays for `initial_ms * 2^(attempt-1)` capped at `max_ms`, with +/- 25% jitter
 /// to prevent thundering herd on retry storms.
 pub(crate) async fn backoff(attempt: u32, initial_ms: u64, max_ms: u64) {
-    let base = initial_ms.saturating_mul(1u64 << attempt.min(16));
-    let capped = base.min(max_ms);
+    let capped = backoff_base_ms(attempt, initial_ms, max_ms);
     // Add jitter: +/- 25% using proper RNG
     let jitter_range = capped / 4;
     let random_offset = if jitter_range > 0 {
@@ -114,6 +123,11 @@ pub(crate) async fn backoff(attempt: u32, initial_ms: u64, max_ms: u64) {
     };
     let delay = (capped.saturating_sub(jitter_range) + random_offset).min(max_ms);
     tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+}
+
+fn backoff_base_ms(attempt: u32, initial_ms: u64, max_ms: u64) -> u64 {
+    let exponent = attempt.saturating_sub(1).min(16);
+    initial_ms.saturating_mul(1u64 << exponent).min(max_ms)
 }
 
 /// Best-effort spawn that does nothing when no Tokio runtime is available.
@@ -186,5 +200,14 @@ mod tests {
         assert!(validate_hls_segment_url_base("/api/live/\n#EXT-X-ENDLIST").is_err());
         assert!(validate_hls_segment_url_suffix(".png?sig=abc").is_ok());
         assert!(validate_hls_segment_url_suffix(".ts\r\n#EXT-X-ENDLIST").is_err());
+    }
+
+    #[test]
+    fn backoff_base_starts_at_initial_delay_and_saturates() {
+        assert_eq!(backoff_base_ms(0, 1_000, 30_000), 1_000);
+        assert_eq!(backoff_base_ms(1, 1_000, 30_000), 1_000);
+        assert_eq!(backoff_base_ms(2, 1_000, 30_000), 2_000);
+        assert_eq!(backoff_base_ms(6, 1_000, 30_000), 30_000);
+        assert_eq!(backoff_base_ms(u32::MAX, 1_000, 30_000), 30_000);
     }
 }

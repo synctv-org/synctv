@@ -4,8 +4,9 @@ use axum::{
 };
 use futures::FutureExt;
 use synctv_proto::playback_provider::live_proxy::{
-    GetLiveProxyFlvStreamRequest, GetLiveProxyHlsPlaylistRequest, GetLiveProxyHlsSegmentRequest,
-    LiveProxyFlvStreamResponse, LiveProxyHlsPlaylistResponse, LiveProxyHlsSegmentResponse,
+    GetLiveProxyFlvStreamRequest, GetLiveProxyHlsMasterRequest, GetLiveProxyHlsPlaylistRequest,
+    GetLiveProxyHlsSegmentRequest, LiveProxyFlvStreamResponse, LiveProxyHlsMasterResponse,
+    LiveProxyHlsPlaylistResponse, LiveProxyHlsSegmentResponse,
 };
 
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
@@ -23,7 +24,15 @@ pub struct LiveProxyVersionPath {
 #[serde(rename_all = "camelCase")]
 pub struct LiveProxySegmentPath {
     pub version: String,
+    pub generation_id: String,
     pub segment_name: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveProxyPlaylistPath {
+    pub version: String,
+    pub generation_id: String,
 }
 
 impl PlaybackProviderHttpResponse for LiveProxyFlvStreamResponse {
@@ -33,6 +42,12 @@ impl PlaybackProviderHttpResponse for LiveProxyFlvStreamResponse {
 }
 
 impl PlaybackProviderHttpResponse for LiveProxyHlsPlaylistResponse {
+    fn chunk(self) -> Option<synctv_proto::playback_provider::common::StreamChunk> {
+        self.chunk
+    }
+}
+
+impl PlaybackProviderHttpResponse for LiveProxyHlsMasterResponse {
     fn chunk(self) -> Option<synctv_proto::playback_provider::common::StreamChunk> {
         self.chunk
     }
@@ -147,7 +162,7 @@ async fn live_proxy_flv_stream(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/live-proxy/{version}/hls-playlist",
+        path = "/api/playback-providers/live-proxy/{version}/hls-master",
         tag = "LiveProxy Playback Provider",
         params(
             ("version" = String, Path),
@@ -157,14 +172,71 @@ async fn live_proxy_flv_stream(
             ("exp" = i64, Query)
         ),
         responses(
-            (status = 200, description = "LiveProxy HLS playlist"),
+            (status = 200, description = "LiveProxy HLS master playlist"),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
+        )
+    )
+)]
+pub async fn get_live_proxy_hls_master(
+    Path(path): Path<LiveProxyVersionPath>,
+    State(state): State<AppState>,
+    request_meta: RequestMetadata,
+    raw_query: RawQuery,
+) -> AppResult<axum::response::Response> {
+    let query_string = query(raw_query);
+    let (sig, uid, rid, exp) =
+        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let req = GetLiveProxyHlsMasterRequest {
+        version: path.version,
+        sig,
+        uid,
+        rid,
+        exp,
+    };
+    let state_for_stream = state.clone();
+    stream_http_response::<LiveProxyHlsMasterResponse, _>(
+        state,
+        request_meta,
+        Method::GET,
+        move |request_control| {
+            let state = state_for_stream;
+            async move {
+                synctv_api_common::playback_provider::live_proxy::get_live_proxy_hls_master(
+                    live_proxy_deps(&state, Some(&request_control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        },
+    )
+    .await
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/playback-providers/live-proxy/{version}/hls/{generationId}/index.m3u8",
+        tag = "LiveProxy Playback Provider",
+        params(
+            ("version" = String, Path),
+            ("generationId" = String, Path),
+            ("sig" = String, Query),
+            ("uid" = String, Query),
+            ("rid" = String, Query),
+            ("exp" = i64, Query)
+        ),
+        responses(
+            (status = 200, description = "LiveProxy HLS generation playlist"),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
 pub async fn get_live_proxy_hls_playlist(
-    Path(path): Path<LiveProxyVersionPath>,
+    Path(path): Path<LiveProxyPlaylistPath>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     raw_query: RawQuery,
@@ -174,6 +246,7 @@ pub async fn get_live_proxy_hls_playlist(
         signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
     let req = GetLiveProxyHlsPlaylistRequest {
         version: path.version,
+        generation_id: path.generation_id,
         sig,
         uid,
         rid,
@@ -203,10 +276,11 @@ pub async fn get_live_proxy_hls_playlist(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/live-proxy/{version}/hls-segments/{segmentName}",
+        path = "/api/playback-providers/live-proxy/{version}/hls/{generationId}/{segmentName}",
         tag = "LiveProxy Playback Provider",
         params(
             ("version" = String, Path),
+            ("generationId" = String, Path),
             ("segmentName" = String, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
@@ -241,10 +315,11 @@ pub fn get_live_proxy_hls_segment(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/live-proxy/{version}/hls-segments/{segmentName}",
+        path = "/api/playback-providers/live-proxy/{version}/hls/{generationId}/{segmentName}",
         tag = "LiveProxy Playback Provider",
         params(
             ("version" = String, Path),
+            ("generationId" = String, Path),
             ("segmentName" = String, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
@@ -287,6 +362,7 @@ async fn live_proxy_hls_segment(
         signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
     let req = GetLiveProxyHlsSegmentRequest {
         version: path.version,
+        generation_id: path.generation_id,
         segment_name: path.segment_name,
         sig,
         uid,

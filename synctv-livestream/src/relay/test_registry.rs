@@ -1,16 +1,21 @@
-use super::registry::PublisherInfo;
+use super::registry::StreamGeneration;
 use super::registry_trait::{
-    ActivePublisherEntry, PublisherRefreshOutcome, PublisherRefreshRequest, StreamRegistryTrait,
+    ActiveStreamGeneration, LeaseRefreshOutcome, LeaseRefreshRequest, StreamRegistryTrait,
 };
 use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::util::{validate_stream_id_component, validate_stream_ids};
 
+type GenerationKey = (String, String, String);
+
 #[derive(Debug, Clone)]
 pub struct TestStreamRegistry {
     publishers: std::sync::Arc<
-        tokio::sync::Mutex<std::collections::HashMap<(String, String), PublisherInfo>>,
+        tokio::sync::Mutex<std::collections::HashMap<(String, String), StreamGeneration>>,
+    >,
+    generations: std::sync::Arc<
+        tokio::sync::Mutex<std::collections::HashMap<GenerationKey, StreamGeneration>>,
     >,
     epoch_counters:
         std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<(String, String), u64>>>,
@@ -20,10 +25,11 @@ pub struct TestStreamRegistry {
     block_batch_refresh: std::sync::Arc<std::sync::atomic::AtomicBool>,
     batch_refresh_started: std::sync::Arc<tokio::sync::Semaphore>,
     batch_refresh_release: std::sync::Arc<tokio::sync::Semaphore>,
-    unregister_if_epoch_matches_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    list_active_publishers_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    fail_get_publisher: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    fail_refresh_publisher_ttl_with_response_error: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    unregister_if_lease_matches_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    list_active_generations_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    fail_get_active_generation: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fail_refresh_generation_lease_with_response_error:
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TestStreamRegistry {
@@ -33,6 +39,9 @@ impl TestStreamRegistry {
             publishers: std::sync::Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
+            generations: std::sync::Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             epoch_counters: std::sync::Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -42,14 +51,16 @@ impl TestStreamRegistry {
             block_batch_refresh: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             batch_refresh_started: std::sync::Arc::new(tokio::sync::Semaphore::new(0)),
             batch_refresh_release: std::sync::Arc::new(tokio::sync::Semaphore::new(0)),
-            unregister_if_epoch_matches_call_count: std::sync::Arc::new(
+            unregister_if_lease_matches_call_count: std::sync::Arc::new(
                 std::sync::atomic::AtomicUsize::new(0),
             ),
-            list_active_publishers_call_count: std::sync::Arc::new(
+            list_active_generations_call_count: std::sync::Arc::new(
                 std::sync::atomic::AtomicUsize::new(0),
             ),
-            fail_get_publisher: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            fail_refresh_publisher_ttl_with_response_error: std::sync::Arc::new(
+            fail_get_active_generation: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
+            fail_refresh_generation_lease_with_response_error: std::sync::Arc::new(
                 std::sync::atomic::AtomicBool::new(false),
             ),
         }
@@ -57,10 +68,24 @@ impl TestStreamRegistry {
 
     #[must_use]
     pub fn with_publishers(
-        publishers: std::collections::HashMap<(String, String), PublisherInfo>,
+        publishers: std::collections::HashMap<(String, String), StreamGeneration>,
     ) -> Self {
+        let generations = publishers
+            .iter()
+            .map(|((room_id, media_id), generation)| {
+                (
+                    (
+                        room_id.clone(),
+                        media_id.clone(),
+                        generation.generation_id.clone(),
+                    ),
+                    generation.clone(),
+                )
+            })
+            .collect();
         Self {
             publishers: std::sync::Arc::new(tokio::sync::Mutex::new(publishers)),
+            generations: std::sync::Arc::new(tokio::sync::Mutex::new(generations)),
             epoch_counters: std::sync::Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -70,14 +95,16 @@ impl TestStreamRegistry {
             block_batch_refresh: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             batch_refresh_started: std::sync::Arc::new(tokio::sync::Semaphore::new(0)),
             batch_refresh_release: std::sync::Arc::new(tokio::sync::Semaphore::new(0)),
-            unregister_if_epoch_matches_call_count: std::sync::Arc::new(
+            unregister_if_lease_matches_call_count: std::sync::Arc::new(
                 std::sync::atomic::AtomicUsize::new(0),
             ),
-            list_active_publishers_call_count: std::sync::Arc::new(
+            list_active_generations_call_count: std::sync::Arc::new(
                 std::sync::atomic::AtomicUsize::new(0),
             ),
-            fail_get_publisher: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            fail_refresh_publisher_ttl_with_response_error: std::sync::Arc::new(
+            fail_get_active_generation: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
+            fail_refresh_generation_lease_with_response_error: std::sync::Arc::new(
                 std::sync::atomic::AtomicBool::new(false),
             ),
         }
@@ -90,7 +117,7 @@ impl TestStreamRegistry {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Get the count of `refresh_publisher_ttl` calls.
+    /// Get the count of `refresh_generation_lease` calls.
     #[must_use]
     pub fn refresh_call_count(&self) -> usize {
         self.refresh_call_count
@@ -122,29 +149,29 @@ impl TestStreamRegistry {
         self.batch_refresh_release.add_permits(1);
     }
 
-    /// Get the count of `unregister_publisher_if_epoch_matches` calls.
+    /// Get the count of `deactivate_generation_if_lease_matches` calls.
     #[must_use]
-    pub fn unregister_if_epoch_matches_call_count(&self) -> usize {
-        self.unregister_if_epoch_matches_call_count
+    pub fn unregister_if_lease_matches_call_count(&self) -> usize {
+        self.unregister_if_lease_matches_call_count
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Get the count of `list_active_publishers` calls.
+    /// Get the count of `list_active_generations` calls.
     #[must_use]
-    pub fn list_active_publishers_call_count(&self) -> usize {
-        self.list_active_publishers_call_count
+    pub fn list_active_generations_call_count(&self) -> usize {
+        self.list_active_generations_call_count
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Set whether `get_publisher` should fail (simulates Redis failure)
-    pub fn set_fail_get_publisher(&self, fail: bool) {
-        self.fail_get_publisher
+    /// Set whether `get_active_generation` should fail (simulates Redis failure)
+    pub fn set_fail_get_active_generation(&self, fail: bool) {
+        self.fail_get_active_generation
             .store(fail, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// Set whether `refresh_publisher_ttl` should fail with a non-I/O Redis error.
-    pub fn set_fail_refresh_publisher_ttl_with_response_error(&self, fail: bool) {
-        self.fail_refresh_publisher_ttl_with_response_error
+    /// Set whether `refresh_generation_lease` should fail with a non-I/O Redis error.
+    pub fn set_fail_refresh_generation_lease_with_response_error(&self, fail: bool) {
+        self.fail_refresh_generation_lease_with_response_error
             .store(fail, std::sync::atomic::Ordering::SeqCst);
     }
 }
@@ -157,59 +184,73 @@ impl Default for TestStreamRegistry {
 
 #[async_trait]
 impl StreamRegistryTrait for TestStreamRegistry {
-    async fn try_register_publisher(
+    async fn try_activate_generation(
         &self,
         room_id: &str,
         media_id: &str,
         node_id: &str,
         user_id: &str,
         cluster_address: &str,
+        generation_id: &str,
     ) -> Result<bool> {
         self.register_call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         validate_stream_ids(room_id, media_id)?;
+        crate::util::validate_stream_generation_id(generation_id)?;
         let mut publishers = self.publishers.lock().await;
         let mut epoch_counters = self.epoch_counters.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
 
         if let std::collections::hash_map::Entry::Vacant(entry) = publishers.entry(key.clone()) {
-            // Increment epoch counter
-            let epoch = epoch_counters.entry(key).or_insert(0);
-            *epoch += 1;
+            // Increment lease_epoch counter
+            let lease_epoch = epoch_counters.entry(key.clone()).or_insert(0);
+            *lease_epoch += 1;
 
-            entry.insert(PublisherInfo {
+            let generation = StreamGeneration {
                 node_id: node_id.to_string(),
                 cluster_address: cluster_address.to_string(),
                 app_name: "live".to_string(),
                 user_id: user_id.to_string(),
                 started_at: synctv_core::SystemClock.now(),
-                epoch: *epoch,
-            });
+                ended_at: None,
+                lease_epoch: *lease_epoch,
+                generation_id: generation_id.to_string(),
+            };
+            entry.insert(generation.clone());
+            self.generations.lock().await.insert(
+                (
+                    room_id.to_string(),
+                    media_id.to_string(),
+                    generation_id.to_string(),
+                ),
+                generation,
+            );
             Ok(true)
         } else {
             Ok(false)
         }
     }
 
-    async fn refresh_publisher_ttl(
+    async fn refresh_generation_lease(
         &self,
         room_id: &str,
         media_id: &str,
+        generation_id: &str,
         user_id: &str,
         node_id: &str,
-        expected_epoch: u64,
-    ) -> Result<PublisherRefreshOutcome> {
+        expected_lease_epoch: u64,
+    ) -> Result<LeaseRefreshOutcome> {
         validate_stream_ids(room_id, media_id)?;
         self.refresh_call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self
-            .fail_refresh_publisher_ttl_with_response_error
+            .fail_refresh_generation_lease_with_response_error
             .load(std::sync::atomic::Ordering::SeqCst)
         {
             let redis_error = redis::RedisError::from((
                 redis::ErrorKind::Client,
-                "simulated Redis client error in refresh_publisher_ttl",
+                "simulated Redis client error in refresh_generation_lease",
             ));
             return Err(anyhow::Error::new(redis_error));
         }
@@ -217,23 +258,24 @@ impl StreamRegistryTrait for TestStreamRegistry {
         Ok(
             match publishers.get(&(room_id.to_string(), media_id.to_string())) {
                 Some(publisher)
-                    if (!user_id.is_empty() && publisher.user_id != user_id)
+                    if publisher.generation_id != generation_id
+                        || (!user_id.is_empty() && publisher.user_id != user_id)
                         || (!node_id.is_empty() && publisher.node_id != node_id)
-                        || publisher.epoch != expected_epoch =>
+                        || publisher.lease_epoch != expected_lease_epoch =>
                 {
-                    PublisherRefreshOutcome::OwnershipChanged
+                    LeaseRefreshOutcome::OwnershipChanged
                 }
-                Some(_) => PublisherRefreshOutcome::Refreshed,
-                None => PublisherRefreshOutcome::Missing,
+                Some(_) => LeaseRefreshOutcome::Refreshed,
+                None => LeaseRefreshOutcome::Missing,
             },
         )
     }
 
-    async fn refresh_publishers_ttl(
+    async fn refresh_generation_leases(
         &self,
         node_id: &str,
-        requests: &[PublisherRefreshRequest],
-    ) -> Result<Vec<PublisherRefreshOutcome>> {
+        requests: &[LeaseRefreshRequest],
+    ) -> Result<Vec<LeaseRefreshOutcome>> {
         if self
             .block_batch_refresh
             .load(std::sync::atomic::Ordering::SeqCst)
@@ -253,12 +295,13 @@ impl StreamRegistryTrait for TestStreamRegistry {
         let mut outcomes = Vec::with_capacity(requests.len());
         for request in requests {
             outcomes.push(
-                self.refresh_publisher_ttl(
+                self.refresh_generation_lease(
                     &request.room_id,
                     &request.media_id,
+                    &request.generation_id,
                     &request.user_id,
                     node_id,
-                    request.expected_epoch,
+                    request.expected_lease_epoch,
                 )
                 .await?,
             );
@@ -266,44 +309,108 @@ impl StreamRegistryTrait for TestStreamRegistry {
         Ok(outcomes)
     }
 
-    async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {
+    async fn deactivate_current_generation(&self, room_id: &str, media_id: &str) -> Result<()> {
         validate_stream_ids(room_id, media_id)?;
-        let mut publishers = self.publishers.lock().await;
-        publishers.remove(&(room_id.to_string(), media_id.to_string()));
-        Ok(())
-    }
-
-    async fn unregister_publisher_if_epoch_matches(
-        &self,
-        room_id: &str,
-        media_id: &str,
-        expected_epoch: u64,
-    ) -> Result<()> {
-        validate_stream_ids(room_id, media_id)?;
-        self.unregister_if_epoch_matches_call_count
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let mut publishers = self.publishers.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
-        if publishers
-            .get(&key)
-            .is_some_and(|publisher| publisher.epoch == expected_epoch)
-        {
-            publishers.remove(&key);
+        if let Some(generation) = publishers.remove(&key) {
+            self.generations
+                .lock()
+                .await
+                .remove(&(key.0, key.1, generation.generation_id));
         }
         Ok(())
     }
 
-    async fn get_publisher(&self, room_id: &str, media_id: &str) -> Result<Option<PublisherInfo>> {
+    async fn deactivate_generation_if_lease_matches(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        expected_lease_epoch: u64,
+    ) -> Result<()> {
+        validate_stream_ids(room_id, media_id)?;
+        self.unregister_if_lease_matches_call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut publishers = self.publishers.lock().await;
+        let key = (room_id.to_string(), media_id.to_string());
+        if publishers.get(&key).is_some_and(|publisher| {
+            publisher.generation_id == generation_id
+                && publisher.lease_epoch == expected_lease_epoch
+        }) {
+            publishers.remove(&key);
+            self.generations
+                .lock()
+                .await
+                .remove(&(key.0, key.1, generation_id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn deactivate_generation_preserving_hls_if_lease_matches(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        expected_lease_epoch: u64,
+    ) -> Result<()> {
+        validate_stream_ids(room_id, media_id)?;
+        self.unregister_if_lease_matches_call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut publishers = self.publishers.lock().await;
+        let key = (room_id.to_string(), media_id.to_string());
+        if publishers.get(&key).is_some_and(|publisher| {
+            publisher.generation_id == generation_id
+                && publisher.lease_epoch == expected_lease_epoch
+        }) {
+            if let Some(mut generation) = publishers.remove(&key) {
+                generation.ended_at = Some(synctv_core::SystemClock.now());
+                self.generations
+                    .lock()
+                    .await
+                    .insert((key.0, key.1, generation_id.to_string()), generation);
+            }
+        }
+        Ok(())
+    }
+
+    async fn get_active_generation(
+        &self,
+        room_id: &str,
+        media_id: &str,
+    ) -> Result<Option<StreamGeneration>> {
         validate_stream_ids(room_id, media_id)?;
         if self
-            .fail_get_publisher
+            .fail_get_active_generation
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            return Err(anyhow::anyhow!("Simulated Redis failure in get_publisher"));
+            return Err(anyhow::anyhow!(
+                "Simulated Redis failure in get_active_generation"
+            ));
         }
         let publishers = self.publishers.lock().await;
         Ok(publishers
             .get(&(room_id.to_string(), media_id.to_string()))
+            .cloned())
+    }
+
+    async fn get_generation(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+    ) -> Result<Option<StreamGeneration>> {
+        validate_stream_ids(room_id, media_id)?;
+        crate::util::validate_stream_generation_id(generation_id)?;
+        Ok(self
+            .generations
+            .lock()
+            .await
+            .get(&(
+                room_id.to_string(),
+                media_id.to_string(),
+                generation_id.to_string(),
+            ))
             .cloned())
     }
 
@@ -313,24 +420,24 @@ impl StreamRegistryTrait for TestStreamRegistry {
         Ok(publishers.contains_key(&(room_id.to_string(), media_id.to_string())))
     }
 
-    async fn list_active_publishers(&self) -> Result<Vec<ActivePublisherEntry>> {
-        self.list_active_publishers_call_count
+    async fn list_active_generations(&self) -> Result<Vec<ActiveStreamGeneration>> {
+        self.list_active_generations_call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self
-            .fail_get_publisher
+            .fail_get_active_generation
             .load(std::sync::atomic::Ordering::SeqCst)
         {
             return Err(anyhow::anyhow!(
-                "Simulated Redis failure in list_active_publishers"
+                "Simulated Redis failure in list_active_generations"
             ));
         }
         let publishers = self.publishers.lock().await;
         Ok(publishers
             .iter()
-            .map(|((room_id, media_id), publisher)| ActivePublisherEntry {
+            .map(|((room_id, media_id), publisher)| ActiveStreamGeneration {
                 room_id: room_id.clone(),
                 media_id: media_id.clone(),
-                publisher: publisher.clone(),
+                generation: publisher.clone(),
             })
             .collect())
     }
@@ -370,30 +477,46 @@ impl StreamRegistryTrait for TestStreamRegistry {
             .collect())
     }
 
-    async fn validate_epoch(&self, room_id: &str, media_id: &str, epoch: u64) -> Result<bool> {
+    async fn validate_lease(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        lease_epoch: u64,
+    ) -> Result<bool> {
         validate_stream_ids(room_id, media_id)?;
         let publishers = self.publishers.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
 
         match publishers.get(&key) {
-            Some(info) => Ok(info.epoch == epoch),
+            Some(info) => {
+                Ok(info.generation_id == generation_id && info.lease_epoch == lease_epoch)
+            }
             None => Ok(false),
         }
     }
 
-    async fn cleanup_all_publishers_for_node(&self, node_id: &str) -> Result<()> {
+    async fn cleanup_all_generations_for_node(&self, node_id: &str) -> Result<()> {
         let mut publishers = self.publishers.lock().await;
-        publishers.retain(|_, info| info.node_id != node_id);
+        let removed = publishers
+            .extract_if(|_, info| info.node_id == node_id)
+            .map(|((room_id, media_id), info)| (room_id, media_id, info.generation_id))
+            .collect::<Vec<_>>();
+        let mut generations = self.generations.lock().await;
+        for key in removed {
+            generations.remove(&key);
+        }
         Ok(())
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::TEST_GENERATION_ID;
 
     type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
-    fn require_publisher(publisher: Option<PublisherInfo>) -> Result<PublisherInfo> {
+    fn require_publisher(publisher: Option<StreamGeneration>) -> Result<StreamGeneration> {
         publisher.ok_or_else(|| anyhow::anyhow!("publisher should exist"))
     }
 
@@ -402,7 +525,14 @@ mod tests {
         let registry = TestStreamRegistry::new();
 
         let error = registry
-            .try_register_publisher("room:1", "media", "node1", "user1", "10.0.0.1:50051")
+            .try_activate_generation(
+                "room:1",
+                "media",
+                "node1",
+                "user1",
+                "10.0.0.1:50051",
+                TEST_GENERATION_ID,
+            )
             .await
             .expect_err("ambiguous room id must be rejected");
         assert!(error.to_string().contains("room_id"));
@@ -419,19 +549,21 @@ mod tests {
         let mut publishers = std::collections::HashMap::new();
         publishers.insert(
             ("room1".to_string(), "media1".to_string()),
-            PublisherInfo {
+            StreamGeneration {
                 node_id: "node1".to_string(),
                 cluster_address: String::new(),
                 app_name: "live".to_string(),
                 user_id: String::new(),
                 started_at: synctv_core::SystemClock.now(),
-                epoch: 1,
+                ended_at: None,
+                lease_epoch: 1,
+                generation_id: TEST_GENERATION_ID.to_string(),
             },
         );
 
         let registry = TestStreamRegistry::with_publishers(publishers);
 
-        let result = registry.get_publisher("room1", "media1").await?;
+        let result = registry.get_active_generation("room1", "media1").await?;
         assert_eq!(require_publisher(result)?.node_id, "node1");
         Ok(())
     }
@@ -441,62 +573,149 @@ mod tests {
         let registry = TestStreamRegistry::new();
 
         registry
-            .try_register_publisher("room1", "media1", "node1", "", "localhost:50051")
+            .try_activate_generation(
+                "room1",
+                "media1",
+                "node1",
+                "",
+                "localhost:50051",
+                TEST_GENERATION_ID,
+            )
             .await?;
-        let info = require_publisher(registry.get_publisher("room1", "media1").await?)?;
-        assert_eq!(info.epoch, 1);
-
-        registry.unregister_publisher("room1", "media1").await?;
+        let info = require_publisher(registry.get_active_generation("room1", "media1").await?)?;
+        assert_eq!(info.lease_epoch, 1);
 
         registry
-            .try_register_publisher("room1", "media1", "node2", "", "localhost:50052")
+            .deactivate_current_generation("room1", "media1")
             .await?;
-        let info = require_publisher(registry.get_publisher("room1", "media1").await?)?;
-        assert_eq!(info.epoch, 2);
+
+        registry
+            .try_activate_generation(
+                "room1",
+                "media1",
+                "node2",
+                "",
+                "localhost:50052",
+                TEST_GENERATION_ID,
+            )
+            .await?;
+        let info = require_publisher(registry.get_active_generation("room1", "media1").await?)?;
+        assert_eq!(info.lease_epoch, 2);
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_registry_validate_epoch() -> TestResult {
+    async fn preserving_deactivation_keeps_exact_generation() -> TestResult {
+        let registry = TestStreamRegistry::new();
+        registry
+            .try_activate_generation(
+                "room1",
+                "media1",
+                "node1",
+                "",
+                "localhost:50051",
+                TEST_GENERATION_ID,
+            )
+            .await?;
+        let first = require_publisher(registry.get_active_generation("room1", "media1").await?)?;
+
+        registry
+            .deactivate_generation_preserving_hls_if_lease_matches(
+                "room1",
+                "media1",
+                TEST_GENERATION_ID,
+                first.lease_epoch,
+            )
+            .await?;
+        assert!(registry
+            .get_active_generation("room1", "media1")
+            .await?
+            .is_none());
+        assert_eq!(
+            require_publisher(
+                registry
+                    .get_generation("room1", "media1", TEST_GENERATION_ID)
+                    .await?,
+            )?
+            .lease_epoch,
+            first.lease_epoch
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_registry_validate_lease() -> TestResult {
         let registry = TestStreamRegistry::new();
 
         registry
-            .try_register_publisher("room1", "media1", "node1", "", "localhost:50051")
+            .try_activate_generation(
+                "room1",
+                "media1",
+                "node1",
+                "",
+                "localhost:50051",
+                TEST_GENERATION_ID,
+            )
             .await?;
-        let info = require_publisher(registry.get_publisher("room1", "media1").await?)?;
+        let info = require_publisher(registry.get_active_generation("room1", "media1").await?)?;
 
         let valid = registry
-            .validate_epoch("room1", "media1", info.epoch)
+            .validate_lease("room1", "media1", TEST_GENERATION_ID, info.lease_epoch)
             .await?;
         assert!(valid);
 
-        let valid = registry.validate_epoch("room1", "media1", 999).await?;
+        let valid = registry
+            .validate_lease("room1", "media1", TEST_GENERATION_ID, 999)
+            .await?;
         assert!(!valid);
 
-        let valid = registry.validate_epoch("nonexistent", "media", 1).await?;
+        let valid = registry
+            .validate_lease("nonexistent", "media", TEST_GENERATION_ID, 1)
+            .await?;
         assert!(!valid);
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_registry_cleanup_all_publishers_for_node() -> TestResult {
+    async fn test_registry_cleanup_all_generations_for_node() -> TestResult {
         let registry = TestStreamRegistry::new();
 
         registry
-            .try_register_publisher("room1", "media1", "node1", "", "localhost:50051")
+            .try_activate_generation(
+                "room1",
+                "media1",
+                "node1",
+                "",
+                "localhost:50051",
+                TEST_GENERATION_ID,
+            )
             .await?;
         registry
-            .try_register_publisher("room1", "media2", "node1", "", "localhost:50051")
+            .try_activate_generation(
+                "room1",
+                "media2",
+                "node1",
+                "",
+                "localhost:50051",
+                TEST_GENERATION_ID,
+            )
             .await?;
         registry
-            .try_register_publisher("room2", "media1", "node2", "", "localhost:50052")
+            .try_activate_generation(
+                "room2",
+                "media1",
+                "node2",
+                "",
+                "localhost:50052",
+                TEST_GENERATION_ID,
+            )
             .await?;
 
         assert!(registry.is_stream_active("room1", "media1").await?);
         assert!(registry.is_stream_active("room1", "media2").await?);
         assert!(registry.is_stream_active("room2", "media1").await?);
 
-        registry.cleanup_all_publishers_for_node("node1").await?;
+        registry.cleanup_all_generations_for_node("node1").await?;
 
         assert!(!registry.is_stream_active("room1", "media1").await?);
         assert!(!registry.is_stream_active("room1", "media2").await?);

@@ -96,29 +96,29 @@ async fn test_proxy_m3u8_rewrites_and_returns() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_zstd_encoding_preserved() {
-    // zstd is NOT auto-decompressed by reqwest, so the proxy should
-    // preserve the content-encoding header for it.
     let server = MockServer::start().await;
+    let body = b"zstd-encoded-data";
     Mock::given(method("GET"))
         .and(path("/zstd"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_bytes(b"zstd-encoded-data".to_vec())
+                .set_body_bytes(body.to_vec())
                 .insert_header("content-encoding", "zstd")
                 .insert_header("content-type", "application/octet-stream"),
         )
         .mount(&server)
         .await;
 
-    let resp = test_client()
+    let client =
+        synctv_proxy::build_proxy_http_client(synctv_common::ssrf::SsrfGuard::disabled()).unwrap();
+    let resp = client
         .get(format!("{}/zstd", server.uri()))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    let ce = resp.headers().get("content-encoding");
-    assert!(ce.is_some());
-    assert_eq!(ce.unwrap().to_str().unwrap(), "zstd");
+    assert_eq!(resp.headers()["content-encoding"], "zstd");
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), body);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

@@ -136,14 +136,14 @@ For multi-replica deployments, also confirm:
 - All replicas share the same PostgreSQL database.
 - All replicas share the same Redis and `redis.key_prefix`.
 - WebSocket tickets must be cross-node capable, not node-local memory only.
-- Local HLS backends use publisher-node proxying. `shared_file` serves TS segments from the current node's shared mount, and OSS provides object-storage-backed segment storage.
+- Local HLS backends use publisher-node proxying. `shared_file` serves TS segments from the current node's shared mount, and S3 provides object-storage-backed segment storage.
 - Kubernetes termination grace period is longer than `server.shutdown_drain_timeout_seconds`.
 
 For the full runtime design, discovery modes, leader election, and clustered livestreaming boundaries, see [Cluster Configuration](../../configuration/cluster/).
 
 ## Livestream Model
 
-The livestream path is separate from the on-demand proxy path. RTMP is the publishing entrypoint; HTTP-FLV serves low-latency playback; HLS remuxing produces playlists and segments into the selected `memory`, `file`, or `oss` backend. In multi-replica deployments, the publisher owner is exposed through a shared registry; today non-publisher nodes read playlists and segments through the HLS gRPC proxy to the publisher node. Shared filesystem storage or OSS is a storage and recovery boundary, not a signal that non-publisher nodes bypass the publisher and read segments directly.
+The livestream path is separate from the on-demand proxy path. RTMP is the publishing entrypoint; HTTP-FLV serves low-latency playback; HLS remuxing produces playlists and segments into the selected `memory`, `file`, or `s3` backend. In multi-replica deployments, the publisher owner is exposed through a shared registry; today non-publisher nodes read playlists and segments through the HLS gRPC proxy to the publisher node. Shared filesystem storage or S3 is a storage and recovery boundary, not a signal that non-publisher nodes bypass the publisher and read segments directly.
 
 For the RTMP/StreamHub/HTTP-FLV/HLS pipeline, backend selection, and clustered livestreaming failure boundaries, see [Livestream Configuration](../../configuration/livestream/).
 
@@ -155,5 +155,5 @@ Kubernetes multi-replica topology:
   light={kubernetesTopologyLight}
   dark={kubernetesTopologyDark}
   alt="Kubernetes multi-replica topology showing HTTP Ingress, gRPC Ingress, separate Services, multiple SyncTV pods, PostgreSQL, Redis, HLS backend or publisher-node proxy, and external media providers."
-  caption="Kubernetes multi-replica deployments should split HTTP and gRPC Services/Ingresses and connect every pod to the same PostgreSQL and Redis backends. Local HLS backends use publisher-node proxying; shared_file lets the current node read TS segments from a shared path, and OSS provides object-storage-backed segments."
+  caption="Kubernetes multi-replica deployments should split HTTP and gRPC Services/Ingresses and connect every pod to the same PostgreSQL and Redis backends. Local HLS backends use publisher-node proxying; shared_file lets the current node read TS segments from a shared path, and S3 provides object-storage-backed segments."
 />

@@ -10,10 +10,8 @@
 //!
 //! Ongoing TTL renewal is handled by `PublisherManager::maintain_heartbeats()`.
 //!
-//! On unpublish:
-//! 1. Unregisters the publisher from Redis
-//! 2. Removes the user→stream mapping from the local `StreamTracker`
-//! 3. Removes the per-user Redis key `rtmp:user_stream:{user_id}`
+//! On unpublish, PublisherManager owns the registry transition while this
+//! callback removes user tracking and emits the stopped lifecycle event.
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -23,7 +21,6 @@ use std::sync::{
 use async_trait::async_trait;
 use dashmap::DashMap;
 use percent_encoding::percent_decode_str;
-use std::collections::VecDeque;
 use synctv_adapter::PublicIdCodec;
 use synctv_core::{
     models::{MediaId, Room, RoomId, RoomStatus, UserId, UserStatus},
@@ -35,6 +32,7 @@ use synctv_livestream::{StreamRegistryTrait, StreamTracker, PUBLISHER_TTL_SECS};
 use synctv_xiu::rtmp::auth::{
     AuthCallback, AuthPublishRewrite, RtmpStreamMode as XiuRtmpStreamMode,
 };
+use synctv_xiu::streamhub::utils::Uuid;
 
 const STREAMHUB_RESTARTING_MESSAGE: &str = "StreamHub is restarting, please retry in a few seconds";
 
@@ -238,8 +236,10 @@ fn publish_stream_lifecycle_event(
 
 #[derive(Debug, Clone)]
 struct PendingPublishCleanup {
-    epoch: u64,
+    lease_epoch: u64,
     user_id: UserId,
+    room_id: String,
+    media_id: String,
 }
 
 #[derive(Clone)]
@@ -250,7 +250,7 @@ struct PublisherCleanupRuntime {
     cluster_address: String,
     stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
     user_stream_index: Arc<dyn UserStreamIndex>,
-    pending_publish_cleanups: Arc<DashMap<(String, String), VecDeque<PendingPublishCleanup>>>,
+    pending_publish_cleanups: Arc<DashMap<Uuid, PendingPublishCleanup>>,
 }
 
 struct PublisherCleanupRuntimeConfig {
@@ -275,11 +275,6 @@ impl PublisherCleanupRuntime {
         }
     }
 }
-
-/// Maximum number of pending publish cleanup entries retained per (room, media) key.
-/// This bounds memory growth under pathological retry scenarios while allowing
-/// a small number of retries to preserve their epoch fences.
-const MAX_PENDING_PUBLISH_CLEANUPS: usize = 3;
 
 /// RTMP authentication implementation for `SyncTV`
 ///
@@ -361,63 +356,40 @@ impl SyncTvRtmpAuth {
 impl PublisherCleanupRuntime {
     fn remember_pending_publish_cleanup(
         &self,
-        room_id: &str,
-        media_id: &str,
+        generation_id: Uuid,
         attempt: PendingPublishCleanup,
     ) {
-        let mut deque = self
-            .pending_publish_cleanups
-            .entry((room_id.to_string(), media_id.to_string()))
-            .or_default();
-        if deque.len() >= MAX_PENDING_PUBLISH_CLEANUPS {
-            deque.pop_front();
-        }
-        deque.push_back(attempt);
-    }
-
-    fn peek_pending_publish_cleanup(
-        &self,
-        room_id: &str,
-        media_id: &str,
-    ) -> Option<PendingPublishCleanup> {
-        self.pending_publish_cleanups
-            .get(&(room_id.to_string(), media_id.to_string()))
-            .and_then(|attempts| attempts.front().cloned())
-    }
-
-    fn consume_pending_publish_cleanup(
-        &self,
-        room_id: &str,
-        media_id: &str,
-    ) -> Option<PendingPublishCleanup> {
-        let key = (room_id.to_string(), media_id.to_string());
-        self.pending_publish_cleanups
-            .get_mut(&key)
-            .and_then(|mut attempts| {
-                let attempt = attempts.pop_front();
-                let empty = attempts.is_empty();
-                drop(attempts);
-                if empty {
-                    self.pending_publish_cleanups.remove(&key);
-                }
-                attempt
-            })
+        self.pending_publish_cleanups.insert(generation_id, attempt);
     }
 
     fn resolve_publish_cleanup(
         &self,
+        generation_id: Uuid,
         room_id: &str,
         media_id: &str,
         context: &'static str,
     ) -> Option<PendingPublishCleanup> {
-        if let Some(attempt) = self.peek_pending_publish_cleanup(room_id, media_id) {
+        let Some(attempt) = self.pending_publish_cleanups.get(&generation_id) else {
+            tracing::warn!(
+                generation_id = %generation_id,
+                room_id = %room_id,
+                media_id = %media_id,
+                "Skipping {context} cleanup because the publication generation is unknown"
+            );
+            return None;
+        };
+        let attempt = attempt.clone();
+        if attempt.room_id == room_id && attempt.media_id == media_id {
             return Some(attempt);
         }
 
         tracing::warn!(
+            generation_id = %generation_id,
             room_id = %room_id,
             media_id = %media_id,
-            "Skipping {context} cleanup because no in-memory publish fence is available"
+            expected_room_id = %attempt.room_id,
+            expected_media_id = %attempt.media_id,
+            "Skipping {context} cleanup because the publication identity does not match"
         );
 
         None
@@ -427,29 +399,41 @@ impl PublisherCleanupRuntime {
         &self,
         room_id: &str,
         media_id: &str,
+        generation_id: Uuid,
     ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
-        self.registry
-            .get_publisher(room_id, media_id)
+        let generation = self
+            .registry
+            .get_active_generation(room_id, media_id)
             .await
-            .map_err(|e| format!("Failed to fetch publisher epoch after registration: {e}"))?
-            .ok_or_else(|| {
+            .map_err(|e| format!("Failed to fetch publisher lease_epoch after registration: {e}"))?
+            .ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> {
                 format!(
-                    "Publisher registration disappeared before epoch capture: room={room_id}, media={media_id}"
+                    "Publisher registration disappeared before lease_epoch capture: room={room_id}, media={media_id}"
                 )
                 .into()
-            })
-            .map(|publisher| publisher.epoch)
+            })?;
+
+        if generation.generation_id != generation_id.to_string() {
+            return Err(format!(
+                "Publisher generation changed before lease_epoch capture: room={room_id}, media={media_id}, expected={generation_id}, actual={}",
+                generation.generation_id
+            )
+            .into());
+        }
+
+        Ok(generation.lease_epoch)
     }
 
     async fn cleanup_publisher_if_current_attempt(
         &self,
         room_id: &str,
         media_id: &str,
-        expected_epoch: u64,
+        generation_id: Uuid,
+        expected_lease_epoch: u64,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         let current = self
             .registry
-            .get_publisher(room_id, media_id)
+            .get_active_generation(room_id, media_id)
             .await
             .map_err(|e| format!("Failed to inspect current publisher before cleanup: {e}"))?;
 
@@ -457,18 +441,25 @@ impl PublisherCleanupRuntime {
             return Ok(true);
         };
 
-        if current.epoch != expected_epoch {
+        if current.generation_id != generation_id.to_string()
+            || current.lease_epoch != expected_lease_epoch
+        {
             return Ok(false);
         }
 
         self.registry
-            .unregister_publisher_if_epoch_matches(room_id, media_id, expected_epoch)
+            .deactivate_generation_if_lease_matches(
+                room_id,
+                media_id,
+                &generation_id.to_string(),
+                expected_lease_epoch,
+            )
             .await
-            .map_err(|e| format!("Failed to unregister publisher with epoch fence: {e}"))?;
+            .map_err(|e| format!("Failed to unregister publisher with lease_epoch fence: {e}"))?;
 
         let remaining = self
             .registry
-            .get_publisher(room_id, media_id)
+            .get_active_generation(room_id, media_id)
             .await
             .map_err(|e| format!("Failed to inspect current publisher after cleanup: {e}"))?;
 
@@ -494,15 +485,17 @@ impl PublisherCleanupRuntime {
     async fn register_and_start_ttl(
         &self,
         validated: &ValidatedPublish,
+        generation_id: Uuid,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let registered = self
             .registry
-            .try_register_publisher(
+            .try_activate_generation(
                 &validated.room_id.to_string(),
                 &validated.media_id.to_string(),
                 &self.node_id,
                 &validated.user_id.to_string(),
                 &self.cluster_address,
+                &generation_id.to_string(),
             )
             .await
             .map_err(|e| format!("Failed to register publisher in Redis: {e}"))?;
@@ -519,11 +512,12 @@ impl PublisherCleanupRuntime {
             .lookup_registered_epoch(
                 &validated.room_id.to_string(),
                 &validated.media_id.to_string(),
+                generation_id,
             )
             .await?;
 
         tracing::info!(
-            "Publisher authenticated and registered: user={}, room={}, media={}, node={}, auth={}, epoch={}",
+            "Publisher authenticated and registered: user={}, room={}, media={}, node={}, auth={}, lease_epoch={}",
             validated.user_id,
             validated.room_id,
             validated.media_id,
@@ -551,9 +545,10 @@ impl PublisherCleanupRuntime {
             );
             if let Err(unreg_err) = self
                 .registry
-                .unregister_publisher_if_epoch_matches(
+                .deactivate_generation_if_lease_matches(
                     &validated.room_id.to_string(),
                     &validated.media_id.to_string(),
+                    &generation_id.to_string(),
                     registered_epoch,
                 )
                 .await
@@ -587,58 +582,37 @@ impl PublisherCleanupRuntime {
         }
 
         self.remember_pending_publish_cleanup(
-            &validated.room_id.to_string(),
-            &validated.media_id.to_string(),
+            generation_id,
             PendingPublishCleanup {
-                epoch: registered_epoch,
+                lease_epoch: registered_epoch,
                 user_id: validated.user_id,
+                room_id: validated.room_id.to_string(),
+                media_id: validated.media_id.to_string(),
             },
         );
 
         Ok(())
     }
 
-    async fn cleanup_on_unpublish(&self, room_id: &str, media_id: &str) {
-        let Some(attempt) = self.resolve_publish_cleanup(room_id, media_id, "on_unpublish") else {
+    async fn cleanup_on_unpublish(&self, generation_id: Uuid, room_id: &str, media_id: &str) {
+        let Some(attempt) =
+            self.resolve_publish_cleanup(generation_id, room_id, media_id, "on_unpublish")
+        else {
             return;
         };
-
-        let should_cleanup = match self
-            .cleanup_publisher_if_current_attempt(room_id, media_id, attempt.epoch)
-            .await
-        {
-            Ok(should_cleanup) => should_cleanup,
-            Err(e) => {
-                tracing::error!(
-                    room_id = %room_id,
-                    media_id = %media_id,
-                    epoch = attempt.epoch,
-                    "Failed to fence publisher cleanup on unpublish; keeping pending cleanup for retry: {}",
-                    e
-                );
-                return;
-            }
-        };
-
-        if !should_cleanup {
-            let _ = self.consume_pending_publish_cleanup(room_id, media_id);
-            tracing::info!(
-                room_id = %room_id,
-                media_id = %media_id,
-                epoch = attempt.epoch,
-                "Ignoring stale on_unpublish cleanup for superseded publisher epoch"
-            );
-            return;
-        }
-
-        let _ = self.consume_pending_publish_cleanup(room_id, media_id);
-        let tracked_user = self.user_stream_tracker.remove_stream(room_id, media_id);
+        self.pending_publish_cleanups.remove(&generation_id);
+        let tracked_user = self
+            .user_stream_tracker
+            .get_stream_user(room_id, media_id)
+            .filter(|tracked_user| tracked_user == &attempt.user_id.to_string())
+            .and_then(|_| self.user_stream_tracker.remove_stream(room_id, media_id));
         tracing::info!(
+            generation_id = %generation_id,
             user_id = %attempt.user_id,
             room_id = %room_id,
             media_id = %media_id,
             had_tracker_entry = tracked_user.is_some(),
-            "Publisher unpublished, fenced cleanup completed"
+            "Publisher authentication state cleaned after unpublish"
         );
 
         self.delete_user_stream_key(attempt.user_id, "unpublish")
@@ -656,19 +630,31 @@ impl PublisherCleanupRuntime {
         }
     }
 
-    async fn cleanup_on_publish_rollback(&self, room_id: &str, media_id: &str) {
+    async fn cleanup_on_publish_rollback(
+        &self,
+        generation_id: Uuid,
+        room_id: &str,
+        media_id: &str,
+    ) {
         tracing::warn!(
             room_id = %room_id,
             media_id = %media_id,
             "Rolling back publisher registration due to StreamHub failure"
         );
 
-        let Some(attempt) = self.resolve_publish_cleanup(room_id, media_id, "rollback") else {
+        let Some(attempt) =
+            self.resolve_publish_cleanup(generation_id, room_id, media_id, "rollback")
+        else {
             return;
         };
 
         let should_cleanup = match self
-            .cleanup_publisher_if_current_attempt(room_id, media_id, attempt.epoch)
+            .cleanup_publisher_if_current_attempt(
+                room_id,
+                media_id,
+                generation_id,
+                attempt.lease_epoch,
+            )
             .await
         {
             Ok(should_cleanup) => should_cleanup,
@@ -676,27 +662,33 @@ impl PublisherCleanupRuntime {
                 tracing::warn!(
                     room_id = %room_id,
                     media_id = %media_id,
-                    epoch = attempt.epoch,
+                    lease_epoch = attempt.lease_epoch,
                     error = %e,
-                    "Failed to rollback publisher registration with epoch fence; keeping pending cleanup for retry"
+                    "Failed to rollback publisher registration with lease_epoch fence; keeping pending cleanup for retry"
                 );
                 return;
             }
         };
 
         if !should_cleanup {
-            let _ = self.consume_pending_publish_cleanup(room_id, media_id);
+            self.pending_publish_cleanups.remove(&generation_id);
             tracing::info!(
                 room_id = %room_id,
                 media_id = %media_id,
-                epoch = attempt.epoch,
-                "Ignoring stale rollback cleanup for superseded publisher epoch"
+                lease_epoch = attempt.lease_epoch,
+                "Ignoring stale rollback cleanup for superseded publisher lease_epoch"
             );
             return;
         }
 
-        let _ = self.consume_pending_publish_cleanup(room_id, media_id);
-        let _ = self.user_stream_tracker.remove_stream(room_id, media_id);
+        self.pending_publish_cleanups.remove(&generation_id);
+        if self
+            .user_stream_tracker
+            .get_stream_user(room_id, media_id)
+            .is_some_and(|tracked_user| tracked_user == attempt.user_id.to_string())
+        {
+            let _ = self.user_stream_tracker.remove_stream(room_id, media_id);
+        }
         self.delete_user_stream_key(attempt.user_id, "rollback")
             .await;
 
@@ -712,6 +704,7 @@ impl PublisherCleanupRuntime {
 impl AuthCallback for SyncTvRtmpAuth {
     async fn on_publish(
         &self,
+        generation_id: Uuid,
         app_name: &str,
         stream_name: &str,
         query: Option<&str>,
@@ -731,7 +724,7 @@ impl AuthCallback for SyncTvRtmpAuth {
 
         // Phase 2: Register in Redis, track mapping, emit event, spawn TTL renewal
         self.publisher_cleanup
-            .register_and_start_ttl(&validated)
+            .register_and_start_ttl(&validated, generation_id)
             .await?;
 
         // Phase 3: Return rewrite so StreamHub uses canonical (room_id, media_id)
@@ -772,9 +765,15 @@ impl AuthCallback for SyncTvRtmpAuth {
         );
     }
 
-    async fn on_unpublish(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
+    async fn on_unpublish(
+        &self,
+        generation_id: Uuid,
+        app_name: &str,
+        stream_name: &str,
+        _query: Option<&str>,
+    ) {
         self.publisher_cleanup
-            .cleanup_on_unpublish(app_name, stream_name)
+            .cleanup_on_unpublish(generation_id, app_name, stream_name)
             .await;
     }
 
@@ -786,9 +785,15 @@ impl AuthCallback for SyncTvRtmpAuth {
     /// 1. Unregister publisher from Redis
     /// 2. Remove user->stream mapping from local tracker
     /// 3. Remove per-user `rtmp:user_stream:{user_id}` Redis key
-    async fn on_publish_rollback(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
+    async fn on_publish_rollback(
+        &self,
+        generation_id: Uuid,
+        app_name: &str,
+        stream_name: &str,
+        _query: Option<&str>,
+    ) {
         self.publisher_cleanup
-            .cleanup_on_publish_rollback(app_name, stream_name)
+            .cleanup_on_publish_rollback(generation_id, app_name, stream_name)
             .await;
     }
 }
@@ -1042,97 +1047,136 @@ mod tests {
         Arc,
     };
     use synctv_livestream::{
-        local_stream_registry, ActivePublisherEntry, PublisherInfo, PublisherRefreshOutcome,
+        local_stream_registry, ActiveStreamGeneration, LeaseRefreshOutcome, StreamGeneration,
         StreamRegistryTrait,
     };
 
     struct FlakyUnregisterRegistry {
         inner: Arc<dyn StreamRegistryTrait>,
-        fail_unregister_if_epoch_matches_times: AtomicUsize,
+        fail_unregister_if_lease_matches_times: AtomicUsize,
     }
 
     impl FlakyUnregisterRegistry {
         fn new(inner: Arc<dyn StreamRegistryTrait>) -> Self {
             Self {
                 inner,
-                fail_unregister_if_epoch_matches_times: AtomicUsize::new(0),
+                fail_unregister_if_lease_matches_times: AtomicUsize::new(0),
             }
         }
 
-        fn set_fail_unregister_if_epoch_matches_times(&self, times: usize) {
-            self.fail_unregister_if_epoch_matches_times
+        fn set_fail_unregister_if_lease_matches_times(&self, times: usize) {
+            self.fail_unregister_if_lease_matches_times
                 .store(times, Ordering::SeqCst);
         }
     }
 
     #[async_trait::async_trait]
     impl StreamRegistryTrait for FlakyUnregisterRegistry {
-        async fn try_register_publisher(
+        async fn try_activate_generation(
             &self,
             room_id: &str,
             media_id: &str,
             node_id: &str,
             user_id: &str,
             cluster_address: &str,
+            generation_id: &str,
         ) -> anyhow::Result<bool> {
             self.inner
-                .try_register_publisher(room_id, media_id, node_id, user_id, cluster_address)
+                .try_activate_generation(
+                    room_id,
+                    media_id,
+                    node_id,
+                    user_id,
+                    cluster_address,
+                    generation_id,
+                )
                 .await
         }
 
-        async fn refresh_publisher_ttl(
+        async fn refresh_generation_lease(
             &self,
             room_id: &str,
             media_id: &str,
+            generation_id: &str,
             user_id: &str,
             node_id: &str,
-            expected_epoch: u64,
-        ) -> anyhow::Result<PublisherRefreshOutcome> {
+            expected_lease_epoch: u64,
+        ) -> anyhow::Result<LeaseRefreshOutcome> {
             self.inner
-                .refresh_publisher_ttl(room_id, media_id, user_id, node_id, expected_epoch)
+                .refresh_generation_lease(
+                    room_id,
+                    media_id,
+                    generation_id,
+                    user_id,
+                    node_id,
+                    expected_lease_epoch,
+                )
                 .await
         }
 
-        async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> anyhow::Result<()> {
-            self.inner.unregister_publisher(room_id, media_id).await
-        }
-
-        async fn unregister_publisher_if_epoch_matches(
+        async fn deactivate_current_generation(
             &self,
             room_id: &str,
             media_id: &str,
-            expected_epoch: u64,
+        ) -> anyhow::Result<()> {
+            self.inner
+                .deactivate_current_generation(room_id, media_id)
+                .await
+        }
+
+        async fn deactivate_generation_if_lease_matches(
+            &self,
+            room_id: &str,
+            media_id: &str,
+            generation_id: &str,
+            expected_lease_epoch: u64,
         ) -> anyhow::Result<()> {
             let remaining_failures = self
-                .fail_unregister_if_epoch_matches_times
+                .fail_unregister_if_lease_matches_times
                 .load(Ordering::SeqCst);
             if remaining_failures > 0 {
-                self.fail_unregister_if_epoch_matches_times
+                self.fail_unregister_if_lease_matches_times
                     .fetch_sub(1, Ordering::SeqCst);
                 return Err(anyhow::anyhow!(
-                    "simulated Redis failure in unregister_publisher_if_epoch_matches"
+                    "simulated Redis failure in deactivate_generation_if_lease_matches"
                 ));
             }
 
             self.inner
-                .unregister_publisher_if_epoch_matches(room_id, media_id, expected_epoch)
+                .deactivate_generation_if_lease_matches(
+                    room_id,
+                    media_id,
+                    generation_id,
+                    expected_lease_epoch,
+                )
                 .await
         }
 
-        async fn get_publisher(
+        async fn get_active_generation(
             &self,
             room_id: &str,
             media_id: &str,
-        ) -> anyhow::Result<Option<PublisherInfo>> {
-            self.inner.get_publisher(room_id, media_id).await
+        ) -> anyhow::Result<Option<StreamGeneration>> {
+            self.inner.get_active_generation(room_id, media_id).await
+        }
+
+        async fn get_generation(
+            &self,
+            room_id: &str,
+            media_id: &str,
+            generation_id: &str,
+        ) -> anyhow::Result<Option<StreamGeneration>> {
+            self.inner
+                .get_generation(room_id, media_id, generation_id)
+                .await
         }
 
         async fn is_stream_active(&self, room_id: &str, media_id: &str) -> anyhow::Result<bool> {
             self.inner.is_stream_active(room_id, media_id).await
         }
 
-        async fn list_active_publishers(&self) -> anyhow::Result<Vec<ActivePublisherEntry>> {
-            self.inner.list_active_publishers().await
+        async fn list_active_generations(&self) -> anyhow::Result<Vec<ActiveStreamGeneration>> {
+            self.inner.list_active_generations().await
         }
 
         async fn list_streams_for_room(&self, room_id: &str) -> anyhow::Result<Vec<String>> {
@@ -1156,17 +1200,20 @@ mod tests {
                 .await
         }
 
-        async fn validate_epoch(
+        async fn validate_lease(
             &self,
             room_id: &str,
             media_id: &str,
-            epoch: u64,
+            generation_id: &str,
+            lease_epoch: u64,
         ) -> anyhow::Result<bool> {
-            self.inner.validate_epoch(room_id, media_id, epoch).await
+            self.inner
+                .validate_lease(room_id, media_id, generation_id, lease_epoch)
+                .await
         }
 
-        async fn cleanup_all_publishers_for_node(&self, node_id: &str) -> anyhow::Result<()> {
-            self.inner.cleanup_all_publishers_for_node(node_id).await
+        async fn cleanup_all_generations_for_node(&self, node_id: &str) -> anyhow::Result<()> {
+            self.inner.cleanup_all_generations_for_node(node_id).await
         }
     }
 
@@ -1284,303 +1331,274 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delayed_unpublish_does_not_remove_newer_registration() {
-        let registry = synctv_livestream::local_stream_registry();
+    async fn unpublish_cleans_auth_state_and_leaves_registry_active() {
+        let registry = local_stream_registry();
         let runtime = make_publisher_cleanup_runtime(registry.clone());
-
-        let room_id = "101";
-        let media_id = "201";
-        let second_user_id = "302";
+        let generation_id = Uuid::new();
 
         runtime
-            .register_and_start_ttl(&validated_publish(room_id, media_id, "301"))
+            .register_and_start_ttl(&validated_publish("101", "201", "301"), generation_id)
             .await
-            .expect("first publish registration should succeed");
-
-        let first_epoch = registry
-            .get_publisher(room_id, media_id)
-            .await
-            .expect("first publisher lookup should succeed")
-            .expect("first publisher should exist")
-            .epoch;
-
-        registry
-            .unregister_publisher_if_epoch_matches(room_id, media_id, first_epoch)
-            .await
-            .expect("test setup should remove first publisher");
-
+            .expect("publish registration should succeed");
         runtime
-            .register_and_start_ttl(&validated_publish(room_id, media_id, second_user_id))
-            .await
-            .expect("second publish registration should succeed");
+            .cleanup_on_unpublish(generation_id, "101", "201")
+            .await;
 
-        runtime.cleanup_on_unpublish(room_id, media_id).await;
-
-        let current = registry
-            .get_publisher(room_id, media_id)
+        assert!(registry
+            .is_stream_active("101", "201")
             .await
-            .expect("publisher lookup should succeed after stale unpublish")
-            .expect("stale unpublish must not remove the replacement publisher");
-        assert_eq!(current.user_id, second_user_id);
+            .expect("publisher activity lookup should succeed"));
         assert_eq!(
-            runtime
-                .user_stream_tracker
-                .get_stream_user(room_id, media_id),
-            Some(second_user_id.to_string()),
-            "stale unpublish must not remove the replacement stream tracker entry"
+            runtime.user_stream_tracker.get_stream_user("101", "201"),
+            None
         );
+        assert!(!runtime
+            .pending_publish_cleanups
+            .contains_key(&generation_id));
     }
 
     #[tokio::test]
-    async fn test_delayed_unpublish_preserves_newer_rollback_fence() {
-        let registry = synctv_livestream::local_stream_registry();
+    async fn unpublish_then_manager_cleanup_keeps_exact_generation() {
+        let registry = local_stream_registry();
         let runtime = make_publisher_cleanup_runtime(registry.clone());
-
-        let room_id = "102";
-        let media_id = "202";
+        let generation_id = Uuid::new();
 
         runtime
-            .register_and_start_ttl(&validated_publish(room_id, media_id, "303"))
+            .register_and_start_ttl(&validated_publish("102", "202", "302"), generation_id)
             .await
-            .expect("first publish registration should succeed");
+            .expect("publish registration should succeed");
+        let lease_epoch = registry
+            .get_active_generation("102", "202")
+            .await
+            .expect("publisher lookup should succeed")
+            .expect("publisher should exist")
+            .lease_epoch;
 
-        let first_epoch = registry
-            .get_publisher(room_id, media_id)
+        runtime
+            .cleanup_on_unpublish(generation_id, "102", "202")
+            .await;
+        registry
+            .deactivate_generation_preserving_hls_if_lease_matches(
+                "102",
+                "202",
+                &generation_id.to_string(),
+                lease_epoch,
+            )
             .await
-            .expect("first publisher lookup should succeed")
-            .expect("first publisher should exist")
-            .epoch;
+            .expect("PublisherManager cleanup should succeed");
+
+        let ended = registry
+            .get_generation("102", "202", &generation_id.to_string())
+            .await
+            .expect("ended route lookup should succeed")
+            .expect("exact ended route should remain");
+        assert_eq!(ended.generation_id, generation_id.to_string());
+    }
+
+    #[tokio::test]
+    async fn manager_cleanup_then_unpublish_keeps_exact_generation() {
+        let registry = local_stream_registry();
+        let runtime = make_publisher_cleanup_runtime(registry.clone());
+        let generation_id = Uuid::new();
+
+        runtime
+            .register_and_start_ttl(&validated_publish("103", "203", "303"), generation_id)
+            .await
+            .expect("publish registration should succeed");
+        let lease_epoch = registry
+            .get_active_generation("103", "203")
+            .await
+            .expect("publisher lookup should succeed")
+            .expect("publisher should exist")
+            .lease_epoch;
 
         registry
-            .unregister_publisher_if_epoch_matches(room_id, media_id, first_epoch)
+            .deactivate_generation_preserving_hls_if_lease_matches(
+                "103",
+                "203",
+                &generation_id.to_string(),
+                lease_epoch,
+            )
             .await
-            .expect("test setup should remove first publisher");
-
+            .expect("PublisherManager cleanup should succeed");
         runtime
-            .register_and_start_ttl(&validated_publish(room_id, media_id, "304"))
-            .await
-            .expect("second publish registration should succeed");
-
-        runtime.cleanup_on_unpublish(room_id, media_id).await;
-        runtime.cleanup_on_publish_rollback(room_id, media_id).await;
-
-        assert!(
-            !registry
-                .is_stream_active(room_id, media_id)
-                .await
-                .expect("publisher activity lookup should succeed"),
-            "stale unpublish must not consume the newer rollback fence"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_delayed_rollback_does_not_remove_newer_registration() {
-        let registry = synctv_livestream::local_stream_registry();
-        let runtime = make_publisher_cleanup_runtime(registry.clone());
-
-        let room_id = "103";
-        let media_id = "203";
-        let second_user_id = "306";
-
-        runtime
-            .register_and_start_ttl(&validated_publish(room_id, media_id, "305"))
-            .await
-            .expect("first publish registration should succeed");
-
-        let first_epoch = registry
-            .get_publisher(room_id, media_id)
-            .await
-            .expect("first publisher lookup should succeed")
-            .expect("first publisher should exist")
-            .epoch;
-
-        registry
-            .unregister_publisher_if_epoch_matches(room_id, media_id, first_epoch)
-            .await
-            .expect("test setup should remove first publisher");
-
-        runtime
-            .register_and_start_ttl(&validated_publish(room_id, media_id, second_user_id))
-            .await
-            .expect("second publish registration should succeed");
-
-        runtime.cleanup_on_publish_rollback(room_id, media_id).await;
-
-        let current = registry
-            .get_publisher(room_id, media_id)
-            .await
-            .expect("publisher lookup should succeed after stale rollback")
-            .expect("stale rollback must not remove the replacement publisher");
-        assert_eq!(current.user_id, second_user_id);
-    }
-
-    #[tokio::test]
-    async fn test_unpublish_retry_preserves_fence_until_cleanup_succeeds() {
-        let registry = Arc::new(FlakyUnregisterRegistry::new(local_stream_registry()));
-        let runtime = make_publisher_cleanup_runtime(registry.clone());
-
-        let room_id = "104";
-        let media_id = "204";
-
-        runtime
-            .register_and_start_ttl(&validated_publish(room_id, media_id, "307"))
-            .await
-            .expect("publish registration should succeed");
-
-        registry.set_fail_unregister_if_epoch_matches_times(1);
-
-        runtime.cleanup_on_unpublish(room_id, media_id).await;
-        assert!(
-            registry
-                .is_stream_active(room_id, media_id)
-                .await
-                .expect("publisher activity lookup should succeed after failed cleanup"),
-            "failed cleanup attempt should leave publisher registered for retry"
-        );
-
-        runtime.cleanup_on_unpublish(room_id, media_id).await;
-        assert!(
-            !registry
-                .is_stream_active(room_id, media_id)
-                .await
-                .expect("publisher activity lookup should succeed after retry"),
-            "retry must still have access to the fenced cleanup and remove the stale publisher"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_publish_rollback_retry_preserves_fence_until_cleanup_succeeds() {
-        let registry = Arc::new(FlakyUnregisterRegistry::new(local_stream_registry()));
-        let runtime = make_publisher_cleanup_runtime(registry.clone());
-
-        let room_id = "105";
-        let media_id = "205";
-
-        runtime
-            .register_and_start_ttl(&validated_publish(room_id, media_id, "308"))
-            .await
-            .expect("publish registration should succeed");
-
-        registry.set_fail_unregister_if_epoch_matches_times(1);
-
-        runtime.cleanup_on_publish_rollback(room_id, media_id).await;
-        assert!(
-            registry
-                .is_stream_active(room_id, media_id)
-                .await
-                .expect("publisher activity lookup should succeed after failed rollback"),
-            "failed rollback attempt should leave publisher registered for retry"
-        );
-
-        runtime.cleanup_on_publish_rollback(room_id, media_id).await;
-        assert!(
-            !registry
-                .is_stream_active(room_id, media_id)
-                .await
-                .expect("publisher activity lookup should succeed after rollback retry"),
-            "rollback retry must still have access to the fenced cleanup and remove the stale publisher"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_unpublish_without_in_memory_fence_does_not_guess_cleanup_target() {
-        let registry = synctv_livestream::local_stream_registry();
-        let runtime = make_publisher_cleanup_runtime(registry.clone());
-        let restarted_runtime = make_publisher_cleanup_runtime(registry.clone());
-
-        let room_id = "106";
-        let media_id = "206";
-        let user_id = "309";
-
-        runtime
-            .register_and_start_ttl(&validated_publish(room_id, media_id, user_id))
-            .await
-            .expect("publish registration should succeed");
-
-        restarted_runtime
-            .cleanup_on_unpublish(room_id, media_id)
+            .cleanup_on_unpublish(generation_id, "103", "203")
             .await;
 
-        assert!(
-            registry
-                .is_stream_active(room_id, media_id)
-                .await
-                .expect("publisher activity lookup should succeed after restarted unpublish"),
-            "restarted unpublish must not guess a cleanup epoch from the live publisher"
+        let ended = registry
+            .get_generation("103", "203", &generation_id.to_string())
+            .await
+            .expect("ended route lookup should succeed")
+            .expect("exact ended route should remain");
+        assert_eq!(ended.generation_id, generation_id.to_string());
+        assert_eq!(
+            runtime.user_stream_tracker.get_stream_user("103", "203"),
+            None
         );
     }
 
     #[tokio::test]
-    async fn test_publish_rollback_without_in_memory_fence_does_not_guess_cleanup_target() {
-        let registry = synctv_livestream::local_stream_registry();
+    async fn delayed_unpublish_only_cleans_its_exact_generation() {
+        let registry = local_stream_registry();
         let runtime = make_publisher_cleanup_runtime(registry.clone());
-        let restarted_runtime = make_publisher_cleanup_runtime(registry.clone());
-
-        let room_id = "107";
-        let media_id = "207";
-        let user_id = "310";
+        let old_generation_id = Uuid::new();
+        let new_generation_id = Uuid::new();
 
         runtime
-            .register_and_start_ttl(&validated_publish(room_id, media_id, user_id))
+            .register_and_start_ttl(&validated_publish("104", "204", "304"), old_generation_id)
             .await
-            .expect("publish registration should succeed");
-
-        restarted_runtime
-            .cleanup_on_publish_rollback(room_id, media_id)
-            .await;
-
-        assert!(
-            registry
-                .is_stream_active(room_id, media_id)
-                .await
-                .expect("publisher activity lookup should succeed after restarted rollback"),
-            "restarted rollback must not guess a cleanup epoch from the live publisher"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_restarted_unpublish_does_not_remove_replacement_publisher() {
-        let registry = synctv_livestream::local_stream_registry();
-        let runtime = make_publisher_cleanup_runtime(registry.clone());
-        let restarted_runtime = make_publisher_cleanup_runtime(registry.clone());
-
-        let room_id = "108";
-        let media_id = "208";
-        let first_user_id = "311";
-        let second_user_id = "312";
-
-        runtime
-            .register_and_start_ttl(&validated_publish(room_id, media_id, first_user_id))
+            .expect("old publish registration should succeed");
+        let old_epoch = registry
+            .get_active_generation("104", "204")
             .await
-            .expect("first publish registration should succeed");
-
-        let first_epoch = registry
-            .get_publisher(room_id, media_id)
-            .await
-            .expect("first publisher lookup should succeed")
-            .expect("first publisher should exist")
-            .epoch;
-
+            .expect("old publisher lookup should succeed")
+            .expect("old publisher should exist")
+            .lease_epoch;
         registry
-            .unregister_publisher_if_epoch_matches(room_id, media_id, first_epoch)
+            .deactivate_generation_if_lease_matches(
+                "104",
+                "204",
+                &old_generation_id.to_string(),
+                old_epoch,
+            )
             .await
-            .expect("test setup should remove first publisher");
+            .expect("test setup should remove old publisher");
+        runtime
+            .register_and_start_ttl(&validated_publish("104", "204", "305"), new_generation_id)
+            .await
+            .expect("replacement registration should succeed");
 
         runtime
-            .register_and_start_ttl(&validated_publish(room_id, media_id, second_user_id))
-            .await
-            .expect("second publish registration should succeed");
-
-        restarted_runtime
-            .cleanup_on_unpublish(room_id, media_id)
+            .cleanup_on_unpublish(old_generation_id, "104", "204")
             .await;
 
         let current = registry
-            .get_publisher(room_id, media_id)
+            .get_active_generation("104", "204")
             .await
-            .expect("publisher lookup should succeed after restarted stale unpublish")
-            .expect("restarted stale unpublish must not remove the replacement publisher");
-        assert_eq!(current.user_id, second_user_id);
+            .expect("publisher lookup should succeed")
+            .expect("replacement publisher should remain");
+        assert_eq!(current.generation_id, new_generation_id.to_string());
+        assert_eq!(
+            runtime.user_stream_tracker.get_stream_user("104", "204"),
+            Some("305".to_string())
+        );
+        assert!(runtime
+            .pending_publish_cleanups
+            .contains_key(&new_generation_id));
+    }
+
+    #[tokio::test]
+    async fn delayed_rollback_does_not_remove_newer_registration() {
+        let registry = local_stream_registry();
+        let runtime = make_publisher_cleanup_runtime(registry.clone());
+        let old_generation_id = Uuid::new();
+        let new_generation_id = Uuid::new();
+
+        runtime
+            .register_and_start_ttl(&validated_publish("105", "205", "306"), old_generation_id)
+            .await
+            .expect("old publish registration should succeed");
+        let old_epoch = registry
+            .get_active_generation("105", "205")
+            .await
+            .expect("old publisher lookup should succeed")
+            .expect("old publisher should exist")
+            .lease_epoch;
+        registry
+            .deactivate_generation_if_lease_matches(
+                "105",
+                "205",
+                &old_generation_id.to_string(),
+                old_epoch,
+            )
+            .await
+            .expect("test setup should remove old publisher");
+        runtime
+            .register_and_start_ttl(&validated_publish("105", "205", "307"), new_generation_id)
+            .await
+            .expect("replacement registration should succeed");
+
+        runtime
+            .cleanup_on_publish_rollback(old_generation_id, "105", "205")
+            .await;
+
+        let current = registry
+            .get_active_generation("105", "205")
+            .await
+            .expect("publisher lookup should succeed")
+            .expect("replacement publisher should remain");
+        assert_eq!(current.generation_id, new_generation_id.to_string());
+        assert!(runtime
+            .pending_publish_cleanups
+            .contains_key(&new_generation_id));
+    }
+
+    #[tokio::test]
+    async fn publish_rollback_retry_preserves_exact_generation_fence() {
+        let registry = Arc::new(FlakyUnregisterRegistry::new(local_stream_registry()));
+        let runtime = make_publisher_cleanup_runtime(registry.clone());
+        let generation_id = Uuid::new();
+
+        runtime
+            .register_and_start_ttl(&validated_publish("106", "206", "308"), generation_id)
+            .await
+            .expect("publish registration should succeed");
+        registry.set_fail_unregister_if_lease_matches_times(1);
+
+        runtime
+            .cleanup_on_publish_rollback(generation_id, "106", "206")
+            .await;
+        assert!(registry
+            .is_stream_active("106", "206")
+            .await
+            .expect("publisher activity lookup should succeed"));
+        assert!(runtime
+            .pending_publish_cleanups
+            .contains_key(&generation_id));
+
+        runtime
+            .cleanup_on_publish_rollback(generation_id, "106", "206")
+            .await;
+        assert!(!registry
+            .is_stream_active("106", "206")
+            .await
+            .expect("publisher activity lookup should succeed"));
+        assert!(!runtime
+            .pending_publish_cleanups
+            .contains_key(&generation_id));
+    }
+
+    #[tokio::test]
+    async fn unknown_generation_callbacks_leave_current_publisher_untouched() {
+        let registry = local_stream_registry();
+        let runtime = make_publisher_cleanup_runtime(registry.clone());
+        let generation_id = Uuid::new();
+        let unknown_generation_id = Uuid::new();
+
+        runtime
+            .register_and_start_ttl(&validated_publish("107", "207", "309"), generation_id)
+            .await
+            .expect("publish registration should succeed");
+        runtime
+            .cleanup_on_unpublish(unknown_generation_id, "107", "207")
+            .await;
+        runtime
+            .cleanup_on_publish_rollback(unknown_generation_id, "107", "207")
+            .await;
+
+        let current = registry
+            .get_active_generation("107", "207")
+            .await
+            .expect("publisher lookup should succeed")
+            .expect("current publisher should remain");
+        assert_eq!(current.generation_id, generation_id.to_string());
+        assert_eq!(
+            runtime.user_stream_tracker.get_stream_user("107", "207"),
+            Some("309".to_string())
+        );
+        assert!(runtime
+            .pending_publish_cleanups
+            .contains_key(&generation_id));
     }
 
     fn validated_publish(room_id: &str, media_id: &str, user_id: &str) -> ValidatedPublish {

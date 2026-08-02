@@ -7,7 +7,7 @@ package synctv.stream;
 // are handled directly via Redis.
 service StreamRelayService {
     // Pull RTMP stream from publisher node (server streaming)
-    // This is the only cross-node RPC - used by Puller to pull stream from Publisher
+    // Live-frame relay used by a puller on another node.
     rpc PullRtmpStream(PullRtmpStreamRequest) returns (stream RtmpPacket);
 
     // Get HLS M3U8 playlist from publisher node (proxy for non-publisher nodes)
@@ -22,16 +22,15 @@ service StreamRelayService {
 message PullRtmpStreamRequest {
     string room_id = 1;
     string media_id = 2;
+    // Immutable identity of the source publication being relayed.
+    string generation_id = 3;
+    // Ownership fencing token for the source publication.
+    uint64 expected_lease_epoch = 4;
     // When true, this is a reconnection after a transient failure.
     // The server should prioritize sending cached GOP frames for fast recovery.
     // (StreamHub already does this automatically, but this flag allows the server
     // to log reconnection events and apply reconnection-specific optimizations.)
-    bool is_reconnect = 3;
-    // Publisher fencing token observed by the caller when it discovered the
-    // publisher. The serving node must reject the request if its current
-    // publisher epoch differs, preventing stale cross-node relay after a
-    // republish or ownership change.
-    uint64 expected_epoch = 4;
+    bool is_reconnect = 5;
 }
 
 // RTMP packet with timestamp
@@ -53,12 +52,12 @@ enum FrameType {
 message GetHlsPlaylistRequest {
     string room_id = 1;
     string media_id = 2;
+    string generation_id = 3;
+    uint64 expected_lease_epoch = 4;
     // URL prefix and suffix around each HLS segment name in generated M3U8.
     // Example: prefix="/api/.../segment/", suffix=".png?sig=..."
-    string segment_url_base = 3;
-    string segment_url_suffix = 4;
-    // Publisher fencing token observed by the proxying node.
-    uint64 expected_epoch = 5;
+    string segment_url_base = 5;
+    string segment_url_suffix = 6;
 }
 
 message GetHlsPlaylistResponse {
@@ -69,9 +68,10 @@ message GetHlsPlaylistResponse {
 message GetHlsSegmentRequest {
     string room_id = 1;
     string media_id = 2;
-    string segment_name = 3;
+    string generation_id = 3;
+    string segment_name = 4;
     // Publisher fencing token observed by the proxying node.
-    uint64 expected_epoch = 4;
+    uint64 expected_lease_epoch = 5;
 }
 
 message GetHlsSegmentResponse {

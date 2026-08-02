@@ -29,6 +29,12 @@ enum SourceProvider {
   SOURCE_PROVIDER_TIKTOK = 21;
 }
 
+enum PlaybackKind {
+  PLAYBACK_KIND_UNSPECIFIED = 0;
+  PLAYBACK_KIND_REGULAR = 1;
+  PLAYBACK_KIND_LIVE = 2;
+}
+
 message DirectUrlMediaResourceConfig {
   string name = 1;
   string url = 2;
@@ -58,7 +64,7 @@ message DirectUrlMediaSourceConfig {
   optional uint32 default_subtitle_index = 4;
   repeated DirectUrlDanmakuSourceConfig danmakus = 5;
   optional uint32 default_danmaku_index = 6;
-  optional bool is_live = 7;
+  optional PlaybackKind playback_kind = 7 [(buf.validate.field).enum.defined_only = true];
   optional double duration_seconds = 8;
   optional bool prefer_proxy = 9;
   optional bool proxy_only = 10;

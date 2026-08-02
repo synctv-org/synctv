@@ -38,7 +38,7 @@ The default installation deploys:
 - Redis 8
 
 These database services are internal-only and are not exposed outside the cluster. For temporary external access, prefer `kubectl port-forward`.
-The chart defaults to single-replica mode with `config.cluster.enabled=false`. Scaling beyond one replica requires cluster mode; the chart fails rendering for `replicaCount > 1` or `autoscaling.maxReplicas > 1` unless `config.cluster.enabled=true`. Local HLS backends work through publisher-node gRPC proxying, while `shared_file` with a real shared filesystem (`persistence.hls.existingClaim`) or `oss` with S3-compatible object storage is recommended for production HLS traffic.
+The chart defaults to single-replica mode with `config.cluster.enabled=false`. Scaling beyond one replica requires cluster mode; the chart fails rendering for `replicaCount > 1` or `autoscaling.maxReplicas > 1` unless `config.cluster.enabled=true`. Local HLS backends work through publisher-node gRPC proxying, while `shared_file` with a real shared filesystem (`persistence.hls.existingClaim`) or `s3` with S3-compatible object storage is recommended for production HLS traffic.
 Set `safety.allowStandaloneReplicas=true` only when you intentionally want multiple independent standalone pods.
 
 Install the released OCI chart:
@@ -331,10 +331,10 @@ When using `existingSecret`, provide these keys with current names:
 - `SYNCTV_MANAGEMENT_AUTH_TOKEN` when `config.management.transport=tcp`
 - `SYNCTV_METRICS_AUTH_BEARER_TOKEN` when `metrics.enabled=true` and `metrics.auth.mode=bearer_token`
 - `SYNCTV_METRICS_AUTH_BASIC_USERNAME` and `SYNCTV_METRICS_AUTH_BASIC_PASSWORD` when `metrics.enabled=true` and `metrics.auth.mode=basic`
-- `SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID` when `config.livestream.hlsStorage.type=oss`
-- `SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY` when `config.livestream.hlsStorage.type=oss`
+- `SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID` when `config.livestream.hlsStorage.type=s3`
+- `SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY` when `config.livestream.hlsStorage.type=s3`
 
-HLS storage rendering fails fast for invalid combinations: `hlsStorage.type=file/shared_file` requires a non-empty `hlsStorage.path`, and `hlsStorage.type=shared_file` requires `persistence.hls.existingClaim` so `emptyDir` is not mistaken for shared storage. Cluster mode can use `memory` or local `file` through publisher-node HLS proxying, but `shared_file` or OSS is the recommended production model.
+HLS storage rendering fails fast for invalid combinations: `hlsStorage.type=file/shared_file` requires a non-empty `hlsStorage.path`, and `hlsStorage.type=shared_file` requires `persistence.hls.existingClaim` so `emptyDir` is not mistaken for shared storage. Cluster mode can use `memory` or local `file` through publisher-node HLS proxying, but `shared_file` or S3 is the recommended production model.
 
 ## Verify the Deployment
 
@@ -588,7 +588,7 @@ alerting:
 - [ ] Keep `secrets.security.credentialEncryptionKey` and `secrets.security.opaqueServerSetupSecret` stable
 - [ ] Configure ingress and enable TLS when exposing SyncTV outside the cluster
 - [ ] Set appropriate resource limits
-- [ ] Choose the HLS model before enabling autoscaling: publisher-node proxy for small deployments, or shared_file/OSS for production traffic
+- [ ] Choose the HLS model before enabling autoscaling: publisher-node proxy for small deployments, or shared_file/S3 for production traffic
 - [ ] Enable `config.cluster.enabled=true` before using multiple replicas or autoscaling beyond one pod
 - [ ] Enable autoscaling (HPA)
 - [ ] Configure pod disruption budget

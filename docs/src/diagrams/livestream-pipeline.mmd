@@ -4,7 +4,7 @@ flowchart LR
   Hub[StreamHub<br/>live packets]
   FLV[HTTP-FLV session<br/>low latency]
   Remux[HLS remuxer<br/>segments + playlist state]
-  Storage[(HLS storage<br/>memory / file / OSS)]
+  Storage[(HLS storage<br/>memory / file / S3)]
   Playlist[HLS playlist route]
   Segment[HLS segment route]
   Viewer[Viewer client]

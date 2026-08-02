@@ -21,7 +21,7 @@ Livestreaming includes ingest, realtime packet distribution, FLV playback, HLS r
 <Diagram
   light={livestreamPipelineLight}
   dark={livestreamPipelineDark}
-  alt="SyncTV livestream pipeline showing RTMP ingest entering StreamHub, splitting into HTTP-FLV and HLS remuxer paths, and HLS playlist/segment routes reading from memory, file, or OSS storage."
+  alt="SyncTV livestream pipeline showing RTMP ingest entering StreamHub, splitting into HTTP-FLV and HLS remuxer paths, and HLS playlist/segment routes reading from memory, file, or S3 storage."
   caption="Livestream data enters through RTMP and StreamHub, then splits by playback protocol: HTTP-FLV streams low-latency chunks, while HLS remuxing writes playlist and segment state to the selected HLS backend."
 />
 
@@ -125,9 +125,9 @@ Do not configure shared storage as `file`; if every replica can read and write t
 Typical choices: NFS, RWX PVCs, or CSI shared volumes. Do not configure `emptyDir`, `/tmp`, or node-local disks as `shared_file`.
 
   </TabItem>
-  <TabItem label="oss" icon="cloud-download">
+  <TabItem label="s3" icon="cloud-download">
 
-`oss` stores segments in S3-compatible object storage. It gives Kubernetes and cross-node deployments an explicit shared-storage boundary.
+`s3` stores segments in S3-compatible object storage. It gives Kubernetes and cross-node deployments an explicit shared-storage boundary.
 
 Typical choices: AWS S3, MinIO, Cloudflare R2, or compatible services. Configure endpoint, bucket, access key, and secret key.
 
@@ -140,7 +140,7 @@ Typical choices: AWS S3, MinIO, Cloudflare R2, or compatible services. Configure
 1. A publisher connects through RTMP to any SyncTV node.
 2. After authentication, that node registers `room_id/media_id -> node_id/api_address` in the publisher registry. In cluster mode, the registry uses Redis.
 3. The local StreamHub receives live packets. HTTP-FLV can subscribe directly, and the HLS remuxer keeps producing segments.
-4. HLS segments are written to the selected `memory`, `file`, `shared_file`, or `oss` backend.
+4. HLS segments are written to the selected `memory`, `file`, `shared_file`, or `s3` backend.
 5. If a viewer request lands on a non-publisher node, that node uses the shared registry to locate the publisher owner. HTTP-FLV uses cross-node relay; HLS playlist/segment reads can be proxied to the publisher node through the HLS gRPC proxy.
 6. With `shared_file`, TS segment requests are read by the current node from the shared path. Local backends still use publisher-node HLS gRPC proxying for remote playlist/segment reads.
 </Steps>
@@ -229,14 +229,14 @@ Allowed values:
 | `memory` | Keep HLS segments in process memory | Single replica, temporary livestreams, development |
 | `file` | Write HLS segments to this node's `livestream.hls_storage.path` | Single-replica file storage or small multi-replica deployments with publisher-node proxying |
 | `shared_file` | Write HLS segments to a shared `livestream.hls_storage.path` visible to every replica | Multi-replica shared filesystem; TS segments are read by the current node from the shared path |
-| `oss` | Write HLS segments to S3-compatible object storage | Multi-replica Kubernetes or cross-node storage |
+| `s3` | Write HLS segments to S3-compatible object storage | Multi-replica Kubernetes or cross-node storage |
 
-Canonical values are `memory`, `file`, `shared_file`, and `oss`.
+Canonical values are `memory`, `file`, `shared_file`, and `s3`.
 
 Cluster mode can use `memory` or `file`. Non-publisher nodes read playlist/segment data from the publisher node through the HLS gRPC proxy. This is acceptable for small deployments or validation environments; high-traffic production HLS should use either:
 
 - `shared_file` with `hls_storage.path` mounted from a filesystem all replicas can read and write. `.ts` requests are served by the current node from that shared path.
-- `oss` with `livestream.hls_storage.*` configured.
+- `s3` with `livestream.hls_storage.*` configured.
 
 `livestream.hls_storage.memory_max_mb` default: `0`, which means the built-in default is used.
 
@@ -275,12 +275,12 @@ Effective path:
 
 ### S3-Compatible Object Storage
 
-When `hls_storage.type=oss`, SyncTV stores HLS segments in S3-compatible object storage:
+When `hls_storage.type=s3`, SyncTV stores HLS segments in S3-compatible object storage:
 
 ```yaml
 livestream:
   hls_storage:
-    type: "oss"
+    type: "s3"
     endpoint: "https://s3.example.com"
     bucket: "synctv-hls"
     region: "auto"
@@ -296,7 +296,7 @@ export SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY="..."
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `livestream.hls_storage.endpoint` | `""` | S3/OSS endpoint such as AWS S3, MinIO, Cloudflare R2, or a compatible service |
+| `livestream.hls_storage.endpoint` | `""` | S3-compatible endpoint such as AWS S3, MinIO, Cloudflare R2, or a compatible service |
 | `livestream.hls_storage.bucket` | `""` | Bucket used for HLS segments |
 | `livestream.hls_storage.access_key_id` | `""` | Access key ID; supports `access_key_id_file` |
 | `livestream.hls_storage.secret_access_key` | `""` | Secret access key; supports `secret_access_key_file` |

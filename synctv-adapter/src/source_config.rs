@@ -542,7 +542,24 @@ fn direct_url_media_source_config_from_proto(
     config: source_config_proto::DirectUrlMediaSourceConfig,
 ) -> AdapterResult<synctv_core::models::DirectUrlMediaSourceConfig> {
     Ok(synctv_core::models::DirectUrlMediaSourceConfig {
-        is_live: config.is_live,
+        playback_kind: config
+            .playback_kind
+            .map(|kind| {
+                match source_config_proto::PlaybackKind::try_from(kind)
+                    .map_err(|_| invalid_source_config("direct_url playback_kind is invalid"))?
+                {
+                    source_config_proto::PlaybackKind::Regular => {
+                        Ok(synctv_core::models::PlaybackKind::Regular)
+                    }
+                    source_config_proto::PlaybackKind::Live => {
+                        Ok(synctv_core::models::PlaybackKind::Live)
+                    }
+                    source_config_proto::PlaybackKind::Unspecified => Err(invalid_source_config(
+                        "direct_url playback_kind must be regular or live",
+                    )),
+                }
+            })
+            .transpose()?,
         duration_seconds: config.duration_seconds,
         prefer_proxy: config.prefer_proxy,
         proxy_only: config.proxy_only == Some(true),

@@ -11,8 +11,10 @@ pub use crate::impls::source_provider::{
 
 fn playback_kind_to_proto(kind: synctv_core::models::PlaybackKind) -> i32 {
     match kind {
-        synctv_core::models::PlaybackKind::Regular => client_proto::PlaybackKind::Regular as i32,
-        synctv_core::models::PlaybackKind::Live => client_proto::PlaybackKind::Live as i32,
+        synctv_core::models::PlaybackKind::Regular => {
+            source_config_proto::PlaybackKind::Regular as i32
+        }
+        synctv_core::models::PlaybackKind::Live => source_config_proto::PlaybackKind::Live as i32,
     }
 }
 
@@ -1499,7 +1501,14 @@ fn direct_url_media_source_config_to_proto(
     config: synctv_core::models::DirectUrlMediaSourceConfig,
 ) -> source_config_proto::DirectUrlMediaSourceConfig {
     source_config_proto::DirectUrlMediaSourceConfig {
-        is_live: config.is_live,
+        playback_kind: config.playback_kind.map(|kind| match kind {
+            synctv_core::models::PlaybackKind::Regular => {
+                source_config_proto::PlaybackKind::Regular as i32
+            }
+            synctv_core::models::PlaybackKind::Live => {
+                source_config_proto::PlaybackKind::Live as i32
+            }
+        }),
         duration_seconds: config.duration_seconds,
         prefer_proxy: config.prefer_proxy,
         proxy_only: config.proxy_only.then_some(true),
@@ -3926,7 +3935,7 @@ fn playback_media_url(
             "flv-stream".to_string(),
             "flv-stream".to_string(),
         ),
-        PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::HlsPlaylist {
+        PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::HlsMaster {
             version,
             expires_at,
             ..
@@ -3934,8 +3943,8 @@ fn playback_media_url(
             "rtmp",
             version.clone(),
             *expires_at,
-            "hls-playlist".to_string(),
-            "hls-playlist".to_string(),
+            "hls-master".to_string(),
+            "hls-master".to_string(),
         ),
         PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::FlvStream {
             version,
@@ -3948,7 +3957,7 @@ fn playback_media_url(
             "flv-stream".to_string(),
             "flv-stream".to_string(),
         ),
-        PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::HlsPlaylist {
+        PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::HlsMaster {
             version,
             expires_at,
             ..
@@ -3956,8 +3965,8 @@ fn playback_media_url(
             synctv_core::provider::LiveProxyProvider::NAME,
             version.clone(),
             *expires_at,
-            "hls-playlist".to_string(),
-            "hls-playlist".to_string(),
+            "hls-master".to_string(),
+            "hls-master".to_string(),
         ),
         PlaybackMediaProvider::Twitch(PlaybackTwitchMedia::Proxy {
             version,
@@ -5084,7 +5093,7 @@ mod playback_conversion_tests {
                 format: "m3u8".to_string(),
                 expire_at: None,
                 metadata: None,
-                provider: PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::HlsPlaylist {
+                provider: PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::HlsMaster {
                     version: "live v1".to_string(),
                     expires_at,
                     room_id,
@@ -5100,7 +5109,7 @@ mod playback_conversion_tests {
         assert!(
             media
                 .url
-                .starts_with("/api/playback-providers/live-proxy/live%20v1/hls-playlist?"),
+                .starts_with("/api/playback-providers/live-proxy/live%20v1/hls-master?"),
             "unexpected live-proxy URL: {}",
             media.url
         );
@@ -5109,7 +5118,7 @@ mod playback_conversion_tests {
                 signed_query(&media.url),
                 synctv_core::provider::LiveProxyProvider::NAME,
                 "live v1",
-                "hls-playlist",
+                "hls-master",
             )
             .expect("signature should use internal provider name");
         assert_eq!(

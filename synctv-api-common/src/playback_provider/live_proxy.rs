@@ -2,17 +2,18 @@ use futures::StreamExt;
 use synctv_core::provider::{ExecutionControl, PlaybackTransportAction};
 use synctv_core::service::LiveProxyPlaybackProviderService;
 use synctv_proto::playback_provider::live_proxy::{
-    GetLiveProxyFlvStreamRequest, GetLiveProxyHlsPlaylistRequest, GetLiveProxyHlsSegmentRequest,
-    LiveProxyFlvStreamResponse, LiveProxyHlsPlaylistResponse, LiveProxyHlsSegmentResponse,
+    GetLiveProxyFlvStreamRequest, GetLiveProxyHlsMasterRequest, GetLiveProxyHlsPlaylistRequest,
+    GetLiveProxyHlsSegmentRequest, LiveProxyFlvStreamResponse, LiveProxyHlsMasterResponse,
+    LiveProxyHlsPlaylistResponse, LiveProxyHlsSegmentResponse,
 };
 
 use super::common::{
-    get_live_hls_playlist_chunks, get_live_hls_segment_chunks, live_flv_access_from_claims,
-    playback_transport_action_to_chunk_stream, stream_live_flv_chunks,
+    get_live_hls_master_chunks, get_live_hls_playlist_chunks, get_live_hls_segment_chunks,
+    live_flv_access_from_claims, playback_transport_action_to_chunk_stream, stream_live_flv_chunks,
     verify_playback_provider_access_with_deps, HasLivePlaybackFields,
-    HasPlaybackProviderAccessFields, LiveFlvChunksRequest, LiveHlsPlaylistChunksRequest,
-    LiveHlsSegmentChunksRequest, LivePlaybackApiRuntime, PlaybackProviderAccessRequest,
-    PlaybackProviderApiRuntime, PlaybackTransportExecutorDeps,
+    HasPlaybackProviderAccessFields, LiveFlvChunksRequest, LiveHlsMasterChunksRequest,
+    LiveHlsPlaylistChunksRequest, LiveHlsSegmentChunksRequest, LivePlaybackApiRuntime,
+    PlaybackProviderAccessRequest, PlaybackProviderApiRuntime, PlaybackTransportExecutorDeps,
 };
 use crate::impls::ApiError;
 
@@ -32,6 +33,9 @@ pub type LiveProxyHlsPlaylistResponseStream = std::pin::Pin<
     Box<
         dyn futures::Stream<Item = Result<LiveProxyHlsPlaylistResponse, ApiError>> + Send + 'static,
     >,
+>;
+pub type LiveProxyHlsMasterResponseStream = std::pin::Pin<
+    Box<dyn futures::Stream<Item = Result<LiveProxyHlsMasterResponse, ApiError>> + Send + 'static>,
 >;
 pub type LiveProxyHlsSegmentResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<LiveProxyHlsSegmentResponse, ApiError>> + Send + 'static>,
@@ -79,6 +83,51 @@ pub async fn get_live_proxy_flv_stream(
     })))
 }
 
+pub async fn get_live_proxy_hls_master(
+    deps: LiveProxyPlaybackProviderDeps<'_>,
+    req: GetLiveProxyHlsMasterRequest,
+) -> Result<LiveProxyHlsMasterResponseStream, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    let signature_user_id = req.uid.clone();
+    let signature_room_id = req.rid.clone();
+    let signature_expires_at = req.exp;
+    let action = resolve_live_proxy_hls_master_action(&deps, req).await?;
+    let stream = match action {
+        PlaybackTransportAction::LiveHlsMaster {
+            provider_name,
+            room_id,
+            media_id,
+            version,
+        } => {
+            if provider_name != PROVIDER {
+                return Err(ApiError::Internal(
+                    "LiveProxy HLS master action resolved with unexpected provider".to_string(),
+                ));
+            }
+            let external_source = deps.live_proxy_source(&room_id, &media_id).await;
+            get_live_hls_master_chunks(
+                deps.live_deps(),
+                LiveHlsMasterChunksRequest {
+                    provider_name: PROVIDER.to_string(),
+                    room_id,
+                    media_id,
+                    version,
+                    signature_user_id,
+                    signature_room_id,
+                    signature_expires_at,
+                    route_provider: "live-proxy".to_string(),
+                    external_source,
+                },
+            )
+            .await?
+        }
+        other => playback_transport_action_to_chunk_stream(deps.chunk_deps(), other, false).await?,
+    };
+    Ok(Box::pin(stream.map(|chunk| {
+        chunk.map(|chunk| LiveProxyHlsMasterResponse { chunk: Some(chunk) })
+    })))
+}
+
 pub async fn get_live_proxy_hls_playlist(
     deps: LiveProxyPlaybackProviderDeps<'_>,
     req: GetLiveProxyHlsPlaylistRequest,
@@ -94,13 +143,13 @@ pub async fn get_live_proxy_hls_playlist(
             room_id,
             media_id,
             version,
+            generation_id,
         } => {
             if provider_name != PROVIDER {
                 return Err(ApiError::Internal(
                     "LiveProxy HLS playlist action resolved with unexpected provider".to_string(),
                 ));
             }
-            let external_source = deps.live_proxy_source(&room_id, &media_id).await;
             get_live_hls_playlist_chunks(
                 deps.live_deps(),
                 LiveHlsPlaylistChunksRequest {
@@ -108,11 +157,11 @@ pub async fn get_live_proxy_hls_playlist(
                     room_id,
                     media_id,
                     version,
+                    generation_id,
                     signature_user_id,
                     signature_room_id,
                     signature_expires_at,
                     route_provider: "live-proxy".to_string(),
-                    external_source,
                 },
             )
             .await?
@@ -136,6 +185,7 @@ pub async fn get_live_proxy_hls_segment(
             provider_name,
             room_id,
             media_id,
+            generation_id,
             segment_name,
             disguised_as_png: _,
         } => {
@@ -144,14 +194,13 @@ pub async fn get_live_proxy_hls_segment(
                     "LiveProxy HLS segment action resolved with unexpected provider".to_string(),
                 ));
             }
-            let external_source = deps.live_proxy_source(&room_id, &media_id).await;
             get_live_hls_segment_chunks(
                 deps.live_deps(),
                 LiveHlsSegmentChunksRequest {
                     room_id,
                     media_id,
+                    generation_id,
                     segment_name,
-                    external_source,
                     head,
                 },
             )
@@ -188,15 +237,15 @@ async fn resolve_live_proxy_flv_stream_action(
         .map_err(ApiError::from)
 }
 
-async fn resolve_live_proxy_hls_playlist_action(
+async fn resolve_live_proxy_hls_master_action(
     deps: &LiveProxyPlaybackProviderDeps<'_>,
-    req: GetLiveProxyHlsPlaylistRequest,
+    req: GetLiveProxyHlsMasterRequest,
 ) -> Result<PlaybackTransportAction, ApiError> {
     let (store, _) = verify_live_proxy_access(
         deps,
         PlaybackProviderAccessRequest {
             version: &req.version,
-            resource: "hls-playlist".to_string(),
+            resource: "hls-master".to_string(),
             signature: &req.sig,
             user_id: &req.uid,
             room_id: &req.rid,
@@ -206,7 +255,35 @@ async fn resolve_live_proxy_hls_playlist_action(
     )
     .await?;
     deps.playback_provider_service
-        .hls_playlist_action(&req.version, store, deps.request_control)
+        .hls_master_action(&req.version, store, deps.request_control)
+        .await
+        .map_err(ApiError::from)
+}
+
+async fn resolve_live_proxy_hls_playlist_action(
+    deps: &LiveProxyPlaybackProviderDeps<'_>,
+    req: GetLiveProxyHlsPlaylistRequest,
+) -> Result<PlaybackTransportAction, ApiError> {
+    let (store, _) = verify_live_proxy_access(
+        deps,
+        PlaybackProviderAccessRequest {
+            version: &req.version,
+            resource: format!("hls/{}/index.m3u8", req.generation_id),
+            signature: &req.sig,
+            user_id: &req.uid,
+            room_id: &req.rid,
+            expires_at: req.exp,
+            target_url: None,
+        },
+    )
+    .await?;
+    deps.playback_provider_service
+        .hls_playlist_action(
+            &req.version,
+            &req.generation_id,
+            store,
+            deps.request_control,
+        )
         .await
         .map_err(ApiError::from)
 }
@@ -219,7 +296,7 @@ async fn resolve_live_proxy_hls_segment_action(
         deps,
         PlaybackProviderAccessRequest {
             version: &req.version,
-            resource: format!("hls-segments/{}", req.segment_name),
+            resource: format!("hls/{}/{}", req.generation_id, req.segment_name),
             signature: &req.sig,
             user_id: &req.uid,
             room_id: &req.rid,
@@ -229,7 +306,13 @@ async fn resolve_live_proxy_hls_segment_action(
     )
     .await?;
     deps.playback_provider_service
-        .hls_segment_action(&req.version, &req.segment_name, store, deps.request_control)
+        .hls_segment_action(
+            &req.version,
+            &req.generation_id,
+            &req.segment_name,
+            store,
+            deps.request_control,
+        )
         .await
         .map_err(ApiError::from)
 }

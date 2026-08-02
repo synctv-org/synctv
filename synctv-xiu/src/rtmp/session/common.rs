@@ -67,6 +67,78 @@ fn usize_to_u32_saturating(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 
+fn invalid_enhanced_video_data(reason: impl Into<String>) -> SessionError {
+    SessionError {
+        value: SessionErrorValue::InvalidEnhancedVideoData(reason.into()),
+    }
+}
+
+fn normalize_enhanced_video_data(data: &mut BytesMut) -> Result<bool, SessionError> {
+    const EX_HEADER: u8 = 0x80;
+    const PACKET_TYPE_SEQUENCE_START: u8 = 0;
+    const PACKET_TYPE_CODED_FRAMES: u8 = 1;
+    const PACKET_TYPE_SEQUENCE_END: u8 = 2;
+    const PACKET_TYPE_CODED_FRAMES_X: u8 = 3;
+    const PACKET_TYPE_METADATA: u8 = 4;
+
+    let Some(&flags) = data.first() else {
+        return Err(invalid_enhanced_video_data("empty video message"));
+    };
+    if flags & EX_HEADER == 0 {
+        return Ok(true);
+    }
+    if data.len() < 5 {
+        return Err(invalid_enhanced_video_data(
+            "extended header is shorter than the FourCC",
+        ));
+    }
+
+    let packet_type = flags & 0x0f;
+    let frame_type = (flags >> 4) & 0x07;
+    let codec_id = match &data[1..5] {
+        b"avc1" => crate::flv::define::AvcCodecId::H264 as u8,
+        b"hvc1" | b"hev1" => crate::flv::define::AvcCodecId::HEVC as u8,
+        fourcc => {
+            tracing::warn!(fourcc = ?fourcc, "dropping unsupported enhanced RTMP video codec");
+            return Ok(false);
+        }
+    };
+
+    let legacy_packet_type = match packet_type {
+        PACKET_TYPE_SEQUENCE_START => crate::flv::define::avc_packet_type::AVC_SEQHDR,
+        PACKET_TYPE_CODED_FRAMES | PACKET_TYPE_CODED_FRAMES_X => {
+            crate::flv::define::avc_packet_type::AVC_NALU
+        }
+        PACKET_TYPE_SEQUENCE_END => crate::flv::define::avc_packet_type::AVC_EOS,
+        PACKET_TYPE_METADATA => return Ok(false),
+        unsupported => {
+            return Err(invalid_enhanced_video_data(format!(
+                "packet type {unsupported} is unsupported"
+            )));
+        }
+    };
+
+    let mut normalized = BytesMut::with_capacity(data.len());
+    normalized.extend_from_slice(&[frame_type << 4 | codec_id, legacy_packet_type]);
+    match packet_type {
+        PACKET_TYPE_CODED_FRAMES => {
+            if data.len() < 8 {
+                return Err(invalid_enhanced_video_data(
+                    "coded frame is missing its composition time",
+                ));
+            }
+            normalized.extend_from_slice(&data[5..]);
+        }
+        PACKET_TYPE_SEQUENCE_START | PACKET_TYPE_SEQUENCE_END | PACKET_TYPE_CODED_FRAMES_X => {
+            normalized.extend_from_slice(&[0, 0, 0]);
+            normalized.extend_from_slice(&data[5..]);
+        }
+        _ => unreachable!("enhanced RTMP packet type was validated above"),
+    }
+    *data = normalized;
+    Ok(true)
+}
+
 fn try_send_prior(
     sender: &FrameDataSender,
     data: FrameData,
@@ -142,6 +214,11 @@ impl Common {
             audio_timestamps: VecDeque::with_capacity(MAX_AUDIO_FRAMES_PER_SECOND),
             metadata_timestamps: VecDeque::with_capacity(MAX_METADATA_FRAMES_PER_SECOND),
         }
+    }
+
+    #[must_use]
+    pub const fn session_id(&self) -> Uuid {
+        self.session_id
     }
 
     // Check per-track frame rate limit before accepting new frame.
@@ -333,12 +410,14 @@ impl Common {
         data: &mut BytesMut,
         timestamp: u32,
     ) -> Result<(), SessionError> {
+        if !normalize_enhanced_video_data(data)? {
+            return Ok(());
+        }
         if !self.accept_frame_with_rate_limit(FrameType::Video) {
             return Ok(());
         }
 
         let frame = data.split().freeze();
-        self.stream_handler.save_video_data(&frame, timestamp)?;
         let channel_data = FrameData::Video {
             timestamp,
             data: frame,
@@ -357,7 +436,6 @@ impl Common {
         }
 
         let frame = data.split().freeze();
-        self.stream_handler.save_audio_data(&frame, timestamp)?;
         let channel_data = FrameData::Audio {
             timestamp,
             data: frame,
@@ -376,7 +454,6 @@ impl Common {
         }
 
         let frame = data.split().freeze();
-        self.stream_handler.save_metadata(&frame, timestamp);
         let channel_data = FrameData::MetaData {
             timestamp,
             data: frame,
@@ -566,6 +643,7 @@ impl Common {
                 app_name: app_name.clone(),
                 stream_name: stream_name.clone(),
             },
+            generation_id: self.session_id,
         };
 
         match send_event_with_backpressure_timeout(&self.event_producer, unpublish_event).await {
@@ -604,7 +682,6 @@ impl Common {
 /// - Concurrent reads from different subscribers
 /// - Video and audio saves to proceed in parallel (except for GOP)
 /// - Metadata reads without blocking frame processing
-#[derive(Default)]
 pub struct RtmpStreamHandler {
     /// Cached sequence headers, metadata, and GOPs shared by publisher and subscribers.
     pub cache: RwLock<Option<Arc<SplitCache>>>,
@@ -612,9 +689,9 @@ pub struct RtmpStreamHandler {
 
 impl RtmpStreamHandler {
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            cache: RwLock::new(None),
+            cache: RwLock::new(Some(Arc::new(SplitCache::new(2, None, None)))),
         }
     }
 
@@ -659,8 +736,31 @@ impl RtmpStreamHandler {
     }
 }
 
+impl Default for RtmpStreamHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl TStreamHandler for RtmpStreamHandler {
+    fn save_frame_data(&self, frame: &FrameData) -> Result<(), StreamHubError> {
+        let result = match frame {
+            FrameData::Video { timestamp, data } => self.save_video_data(data, *timestamp),
+            FrameData::Audio { timestamp, data } => self.save_audio_data(data, *timestamp),
+            FrameData::MetaData { timestamp, data } => {
+                self.save_metadata(data, *timestamp);
+                return Ok(());
+            }
+            FrameData::MediaInfo { .. } => return Ok(()),
+        };
+        result.map_err(|error| StreamHubError {
+            value: StreamHubErrorValue::InternalTaskError(format!(
+                "publisher frame cache rejected media: {error}"
+            )),
+        })
+    }
+
     async fn send_prior_data(
         &self,
         data_sender: DataSender,
@@ -773,7 +873,7 @@ mod tests {
     }
 
     fn assert_unpublish_event(event: StreamHubEvent, expected_app: &str, expected_stream: &str) {
-        let StreamHubEvent::UnPublish { identifier } = event else {
+        let StreamHubEvent::UnPublish { identifier, .. } = event else {
             panic!("expected unpublish event, got {event:?}");
         };
         assert_rtmp_identifier(identifier, expected_app, expected_stream);
@@ -788,6 +888,44 @@ mod tests {
     fn remote_addr_to_string_formats_present_address() {
         let addr = "127.0.0.1:1935".parse().expect("valid socket address");
         assert_eq!(remote_addr_to_string(Some(addr)), "127.0.0.1:1935");
+    }
+
+    #[test]
+    fn enhanced_hevc_sequence_start_is_normalized_to_legacy_hvcc() {
+        let mut data = BytesMut::from(&b"\x90hvc1\x01\x02\x03"[..]);
+        assert!(normalize_enhanced_video_data(&mut data).expect("valid sequence start"));
+        assert_eq!(&data[..], b"\x1c\x00\x00\x00\x00\x01\x02\x03");
+    }
+
+    #[test]
+    fn enhanced_hevc_coded_frames_x_is_normalized_with_zero_composition_time() {
+        let mut data = BytesMut::from(&b"\xa3hvc1\x00\x00\x00\x02\x26\x01"[..]);
+        assert!(normalize_enhanced_video_data(&mut data).expect("valid coded frame"));
+        assert_eq!(&data[..], b"\x2c\x01\x00\x00\x00\x00\x00\x00\x02\x26\x01");
+    }
+
+    #[test]
+    fn enhanced_hevc_coded_frames_preserves_signed_composition_time_bytes() {
+        let mut data = BytesMut::from(&b"\x91hev1\xff\xff\xfe\x00\x00\x00\x02\x26\x01"[..]);
+        assert!(normalize_enhanced_video_data(&mut data).expect("valid coded frame"));
+        assert_eq!(&data[..], b"\x1c\x01\xff\xff\xfe\x00\x00\x00\x02\x26\x01");
+    }
+
+    #[test]
+    fn enhanced_video_rejects_truncated_and_unknown_packet_types() {
+        let truncated = normalize_enhanced_video_data(&mut BytesMut::from(&b"\x90hvc"[..]))
+            .expect_err("truncated FourCC must fail");
+        assert!(matches!(
+            truncated.value,
+            SessionErrorValue::InvalidEnhancedVideoData(_)
+        ));
+
+        let unknown = normalize_enhanced_video_data(&mut BytesMut::from(&b"\x96hvc1"[..]))
+            .expect_err("multitrack packet must fail until multitrack is supported");
+        assert!(matches!(
+            unknown.value,
+            SessionErrorValue::InvalidEnhancedVideoData(_)
+        ));
     }
 
     #[test]
@@ -814,6 +952,7 @@ mod tests {
                     app_name: "live".to_string(),
                     stream_name: "blocker".to_string(),
                 },
+                generation_id: Uuid::new(),
             })
             .expect("prefill event channel");
 
@@ -880,6 +1019,7 @@ mod tests {
                     app_name: "live".to_string(),
                     stream_name: "blocker".to_string(),
                 },
+                generation_id: Uuid::new(),
             })
             .expect("prefill event channel");
 

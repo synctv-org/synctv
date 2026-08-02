@@ -3,12 +3,10 @@ use super::define::{
     PubDataType, SubDataType, SubscriberInfo,
 };
 use tokio::sync::mpsc;
-
 pub(crate) fn build_frame_data_channel() -> (FrameDataSender, FrameDataReceiver) {
-    let (sender, receiver) = mpsc::channel(define::FRAME_DATA_CHANNEL_CAPACITY);
-    (
-        FrameDataSender::bounded(sender),
-        FrameDataReceiver::bounded(receiver),
+    FrameDataSender::budgeted(
+        define::FRAME_DATA_CHANNEL_CAPACITY,
+        define::FRAME_DATA_CHANNEL_MAX_BYTES,
     )
 }
 

@@ -335,7 +335,7 @@ mod tests {
                         default_subtitle_index: None,
                         danmakus: Vec::new(),
                         default_danmaku_index: None,
-                        is_live: None,
+                        playback_kind: None,
                         duration_seconds: None,
                         prefer_proxy: None,
                         proxy_only: None,

@@ -83,7 +83,9 @@ pub(super) async fn execute_media(media_command: MediaCommand) -> Result<()> {
                         default_subtitle_index: None,
                         danmakus: Vec::new(),
                         default_danmaku_index: None,
-                        is_live: Some(false),
+                        playback_kind: Some(
+                            synctv_proto::source_config::PlaybackKind::Regular as i32,
+                        ),
                         duration_seconds: None,
                         prefer_proxy: Some(false),
                         proxy_only: None,

@@ -1244,7 +1244,7 @@ pub enum PlaybackRtmpMedia {
         room_id: RoomId,
         media_id: MediaId,
     },
-    HlsPlaylist {
+    HlsMaster {
         version: String,
         expires_at: i64,
         room_id: RoomId,
@@ -1265,7 +1265,7 @@ pub enum PlaybackLiveProxyMedia {
         room_id: RoomId,
         media_id: MediaId,
     },
-    HlsPlaylist {
+    HlsMaster {
         version: String,
         expires_at: i64,
         room_id: RoomId,

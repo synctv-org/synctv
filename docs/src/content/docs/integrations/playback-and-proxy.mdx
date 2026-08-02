@@ -103,7 +103,7 @@ WebRTC 和直播不是普通点播 proxy：
 | WebRTC | 为语音聊天和 P2P 媒体分发提供独立会话，依赖 ICE/STUN/TURN 配置及对应的 `use_voice_chat`、`use_p2p_media` 权限 |
 | RTMP 推流 | 推流入口，通常由主播或房间管理员使用 |
 | HTTP-FLV | 低延迟直播播放路径，受长连接和客户端慢速读取影响 |
-| HLS | playlist/segment 文件路径，多副本需要本地 proxy、共享文件或 OSS backend |
+| HLS | playlist/segment 文件路径，多副本需要本地 proxy、共享文件或 S3 backend |
 
 WebRTC 配置见 [WebRTC 配置](../../configuration/webrtc/)，直播见 [直播配置](../../configuration/livestream/)。
 
@@ -115,5 +115,5 @@ WebRTC 配置见 [WebRTC 配置](../../configuration/webrtc/)，直播见 [直�
 | seek 后失败 | Range 或 slice cache | 上游 `Accept-Ranges`、`Content-Range`、proxy 日志 |
 | 只有浏览器失败 | CORS 或 header 限制 | 选择 proxy，检查浏览器 Network |
 | 只有代理失败 | SyncTV 到上游网络或 header | 服务端网络、DNS、proxy header |
-| 多副本直播偶发失败 | HLS 存储模型 | publisher 节点、共享存储、OSS 或 gRPC proxy |
+| 多副本直播偶发失败 | HLS 存储模型 | publisher 节点、共享存储、S3 或 gRPC proxy |
 | 播放 URL 一段时间后失效 | `expires_at` | 订阅或重新拉取播放信息 |

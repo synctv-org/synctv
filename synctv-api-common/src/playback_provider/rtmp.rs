@@ -2,17 +2,18 @@ use futures::StreamExt;
 use synctv_core::provider::{ExecutionControl, PlaybackTransportAction};
 use synctv_core::service::RtmpPlaybackProviderService;
 use synctv_proto::playback_provider::rtmp::{
-    GetRtmpFlvStreamRequest, GetRtmpHlsPlaylistRequest, GetRtmpHlsSegmentRequest,
-    RtmpFlvStreamResponse, RtmpHlsPlaylistResponse, RtmpHlsSegmentResponse,
+    GetRtmpFlvStreamRequest, GetRtmpHlsMasterRequest, GetRtmpHlsPlaylistRequest,
+    GetRtmpHlsSegmentRequest, RtmpFlvStreamResponse, RtmpHlsMasterResponse,
+    RtmpHlsPlaylistResponse, RtmpHlsSegmentResponse,
 };
 
 use super::common::{
-    get_live_hls_playlist_chunks, get_live_hls_segment_chunks, live_flv_access_from_claims,
-    playback_transport_action_to_chunk_stream, stream_live_flv_chunks,
+    get_live_hls_master_chunks, get_live_hls_playlist_chunks, get_live_hls_segment_chunks,
+    live_flv_access_from_claims, playback_transport_action_to_chunk_stream, stream_live_flv_chunks,
     verify_playback_provider_access_with_deps, HasLivePlaybackFields,
-    HasPlaybackProviderAccessFields, LiveFlvChunksRequest, LiveHlsPlaylistChunksRequest,
-    LiveHlsSegmentChunksRequest, LivePlaybackApiRuntime, PlaybackProviderAccessRequest,
-    PlaybackProviderApiRuntime, PlaybackTransportExecutorDeps,
+    HasPlaybackProviderAccessFields, LiveFlvChunksRequest, LiveHlsMasterChunksRequest,
+    LiveHlsPlaylistChunksRequest, LiveHlsSegmentChunksRequest, LivePlaybackApiRuntime,
+    PlaybackProviderAccessRequest, PlaybackProviderApiRuntime, PlaybackTransportExecutorDeps,
 };
 use crate::impls::ApiError;
 
@@ -30,6 +31,9 @@ pub type RtmpFlvStreamResponseStream = std::pin::Pin<
 >;
 pub type RtmpHlsPlaylistResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<RtmpHlsPlaylistResponse, ApiError>> + Send + 'static>,
+>;
+pub type RtmpHlsMasterResponseStream = std::pin::Pin<
+    Box<dyn futures::Stream<Item = Result<RtmpHlsMasterResponse, ApiError>> + Send + 'static>,
 >;
 pub type RtmpHlsSegmentResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<RtmpHlsSegmentResponse, ApiError>> + Send + 'static>,
@@ -76,6 +80,50 @@ pub async fn get_rtmp_flv_stream(
     })))
 }
 
+pub async fn get_rtmp_hls_master(
+    deps: RtmpPlaybackProviderDeps<'_>,
+    req: GetRtmpHlsMasterRequest,
+) -> Result<RtmpHlsMasterResponseStream, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    let signature_user_id = req.uid.clone();
+    let signature_room_id = req.rid.clone();
+    let signature_expires_at = req.exp;
+    let action = resolve_rtmp_hls_master_action(&deps, req).await?;
+    let stream = match action {
+        PlaybackTransportAction::LiveHlsMaster {
+            provider_name,
+            room_id,
+            media_id,
+            version,
+        } => {
+            if provider_name != PROVIDER {
+                return Err(ApiError::Internal(
+                    "RTMP HLS master action resolved with unexpected provider".to_string(),
+                ));
+            }
+            get_live_hls_master_chunks(
+                deps.live_deps(),
+                LiveHlsMasterChunksRequest {
+                    provider_name: PROVIDER.to_string(),
+                    room_id,
+                    media_id,
+                    version,
+                    signature_user_id,
+                    signature_room_id,
+                    signature_expires_at,
+                    route_provider: "rtmp".to_string(),
+                    external_source: None,
+                },
+            )
+            .await?
+        }
+        other => playback_transport_action_to_chunk_stream(deps.chunk_deps(), other, false).await?,
+    };
+    Ok(Box::pin(stream.map(|chunk| {
+        chunk.map(|chunk| RtmpHlsMasterResponse { chunk: Some(chunk) })
+    })))
+}
+
 pub async fn get_rtmp_hls_playlist(
     deps: RtmpPlaybackProviderDeps<'_>,
     req: GetRtmpHlsPlaylistRequest,
@@ -91,6 +139,7 @@ pub async fn get_rtmp_hls_playlist(
             room_id,
             media_id,
             version,
+            generation_id,
         } => {
             if provider_name != PROVIDER {
                 return Err(ApiError::Internal(
@@ -104,11 +153,11 @@ pub async fn get_rtmp_hls_playlist(
                     room_id,
                     media_id,
                     version,
+                    generation_id,
                     signature_user_id,
                     signature_room_id,
                     signature_expires_at,
                     route_provider: "rtmp".to_string(),
-                    external_source: None,
                 },
             )
             .await?
@@ -132,6 +181,7 @@ pub async fn get_rtmp_hls_segment(
             provider_name,
             room_id,
             media_id,
+            generation_id,
             segment_name,
             disguised_as_png: _,
         } => {
@@ -145,8 +195,8 @@ pub async fn get_rtmp_hls_segment(
                 LiveHlsSegmentChunksRequest {
                     room_id,
                     media_id,
+                    generation_id,
                     segment_name,
-                    external_source: None,
                     head,
                 },
             )
@@ -183,15 +233,15 @@ async fn resolve_rtmp_flv_stream_action(
         .map_err(ApiError::from)
 }
 
-async fn resolve_rtmp_hls_playlist_action(
+async fn resolve_rtmp_hls_master_action(
     deps: &RtmpPlaybackProviderDeps<'_>,
-    req: GetRtmpHlsPlaylistRequest,
+    req: GetRtmpHlsMasterRequest,
 ) -> Result<PlaybackTransportAction, ApiError> {
     let (store, _) = verify_rtmp_access(
         deps,
         PlaybackProviderAccessRequest {
             version: &req.version,
-            resource: "hls-playlist".to_string(),
+            resource: "hls-master".to_string(),
             signature: &req.sig,
             user_id: &req.uid,
             room_id: &req.rid,
@@ -201,7 +251,35 @@ async fn resolve_rtmp_hls_playlist_action(
     )
     .await?;
     deps.playback_provider_service
-        .hls_playlist_action(&req.version, store, deps.request_control)
+        .hls_master_action(&req.version, store, deps.request_control)
+        .await
+        .map_err(ApiError::from)
+}
+
+async fn resolve_rtmp_hls_playlist_action(
+    deps: &RtmpPlaybackProviderDeps<'_>,
+    req: GetRtmpHlsPlaylistRequest,
+) -> Result<PlaybackTransportAction, ApiError> {
+    let (store, _) = verify_rtmp_access(
+        deps,
+        PlaybackProviderAccessRequest {
+            version: &req.version,
+            resource: format!("hls/{}/index.m3u8", req.generation_id),
+            signature: &req.sig,
+            user_id: &req.uid,
+            room_id: &req.rid,
+            expires_at: req.exp,
+            target_url: None,
+        },
+    )
+    .await?;
+    deps.playback_provider_service
+        .hls_playlist_action(
+            &req.version,
+            &req.generation_id,
+            store,
+            deps.request_control,
+        )
         .await
         .map_err(ApiError::from)
 }
@@ -214,7 +292,7 @@ async fn resolve_rtmp_hls_segment_action(
         deps,
         PlaybackProviderAccessRequest {
             version: &req.version,
-            resource: format!("hls-segments/{}", req.segment_name),
+            resource: format!("hls/{}/{}", req.generation_id, req.segment_name),
             signature: &req.sig,
             user_id: &req.uid,
             room_id: &req.rid,
@@ -224,7 +302,13 @@ async fn resolve_rtmp_hls_segment_action(
     )
     .await?;
     deps.playback_provider_service
-        .hls_segment_action(&req.version, &req.segment_name, store, deps.request_control)
+        .hls_segment_action(
+            &req.version,
+            &req.generation_id,
+            &req.segment_name,
+            store,
+            deps.request_control,
+        )
         .await
         .map_err(ApiError::from)
 }

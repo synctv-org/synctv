@@ -29,7 +29,7 @@ Before production, verify long-lived secrets, PostgreSQL backups, Redis, Ingress
 | Redis | Production configuration; required for multiple replicas | Every replica uses the same Redis instance and a unique key prefix |
 | Secrets | Existing Secret or controlled secret management | OPAQUE and credential keys remain stable across releases |
 | HTTP/gRPC Ingress | Separate HTTP and gRPC Ingresses | gRPC Ingress needs its own backend protocol |
-| HLS storage | Publisher-node proxy for small scale, RWX/OSS for high traffic | All replicas share the same storage view |
+| HLS storage | Publisher-node proxy for small scale, RWX/S3 for high traffic | All replicas share the same storage view |
 | metrics | Private scraping with authentication | `/metrics` stays on a controlled network |
 
 Minimal production values skeleton:
@@ -210,7 +210,7 @@ Add these keys for enabled features:
 - `SYNCTV_MANAGEMENT_AUTH_TOKEN` when management uses TCP
 - `SYNCTV_METRICS_AUTH_BEARER_TOKEN` when `metrics.enabled=true` and `metrics.auth.mode=bearer_token`
 - `SYNCTV_METRICS_AUTH_BASIC_USERNAME` and `SYNCTV_METRICS_AUTH_BASIC_PASSWORD` when `metrics.enabled=true` and `metrics.auth.mode=basic`
-- `SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID` and `SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY` when `config.livestream.hlsStorage.type=oss`
+- `SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID` and `SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY` when `config.livestream.hlsStorage.type=s3`
 
 Secrets are injected as environment variables, and running Pods retain the values read at startup. Change the checksum together with an external Secret update:
 
@@ -300,7 +300,7 @@ redis:
 
 External PostgreSQL requires `SYNCTV_DATABASE_PASSWORD` through `existingSecret` or `secrets.database.password`. External Redis password injection is optional; provide `SYNCTV_REDIS_PASSWORD` only when the external Redis requires authentication.
 
-When `networkPolicy.enabled=true`, external PostgreSQL/Redis and outbound HTTP/HTTPS egress use `ipBlock` CIDRs instead of chart-managed Pod labels. These rules are fail-closed by default: external PostgreSQL or Redis mode requires `networkPolicy.externalPostgresqlCIDRs` / `networkPolicy.externalRedisCIDRs`, or `networkPolicy.allowAnyExternalDatabaseEgress=true`; outbound OAuth, media-provider HTTP, HLS OSS, and S3-compatible object storage endpoints require `networkPolicy.externalHttpCIDRs` or `networkPolicy.allowAnyExternalHttpEgress=true`.
+When `networkPolicy.enabled=true`, external PostgreSQL/Redis and outbound HTTP/HTTPS egress use `ipBlock` CIDRs instead of chart-managed Pod labels. These rules are fail-closed by default: external PostgreSQL or Redis mode requires `networkPolicy.externalPostgresqlCIDRs` / `networkPolicy.externalRedisCIDRs`, or `networkPolicy.allowAnyExternalDatabaseEgress=true`; outbound OAuth, media-provider HTTP, HLS S3, and S3-compatible object storage endpoints require `networkPolicy.externalHttpCIDRs` or `networkPolicy.allowAnyExternalHttpEgress=true`.
 
 Application Services, the PDB, and the app NetworkPolicy select only pods with `app.kubernetes.io/component=app`. Chart-managed PostgreSQL and Redis keep their own component labels and receive dependency-specific ingress policies when NetworkPolicy ingress isolation is enabled, so enabling NetworkPolicy does not route API traffic to dependency pods or isolate the dependencies from SyncTV itself.
 
@@ -329,7 +329,7 @@ The Deployment mounts `/data`. The default is `emptyDir`, which is appropriate f
 
 ## HLS With Multiple Replicas
 
-The chart does not enable cluster mode by default. Multi-replica HLS can start with publisher-node HLS proxying; high-traffic production deployments should use `shared_file` or OSS. In `shared_file`, TS segments are read by the current node from the shared path.
+The chart does not enable cluster mode by default. Multi-replica HLS can start with publisher-node HLS proxying; high-traffic production deployments should use `shared_file` or S3. In `shared_file`, TS segments are read by the current node from the shared path.
 
 Local backend example:
 
@@ -362,12 +362,12 @@ persistence:
 
 Helm rejects these combinations during rendering:
 
-- `hlsStorage.type` is not `memory`, `file`, `shared_file`, or `oss`.
+- `hlsStorage.type` is not `memory`, `file`, `shared_file`, or `s3`.
 - `hlsStorage.type=file/shared_file` with an empty `hlsStorage.path`.
 - `hlsStorage.type=file/shared_file` in Kubernetes with a non-absolute `hlsStorage.path`.
 - `hlsStorage.type=shared_file` without `persistence.hls.existingClaim`, so `emptyDir` cannot be mistaken for shared storage.
 
-OSS example:
+S3 example:
 
 ```yaml
 config:
@@ -375,7 +375,7 @@ config:
     enabled: true
   livestream:
     hlsStorage:
-      type: "oss"
+      type: "s3"
       endpoint: "https://s3.example.com"
       bucket: "synctv-hls"
       basePath: "synctv/hls/"

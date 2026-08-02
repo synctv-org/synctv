@@ -41,7 +41,7 @@ pub enum StreamError {
     #[error("Internal error: {0}")]
     Internal(String),
 
-    #[error("Stale epoch (split-brain detected): {0}")]
+    #[error("Stale lease_epoch (split-brain detected): {0}")]
     StaleEpoch(String),
 
     #[error("Connection failed: {0}")]

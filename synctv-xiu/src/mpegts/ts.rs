@@ -77,6 +77,11 @@ impl TsMuxer {
         self.bytes_writer.extract_current_bytes()
     }
 
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bytes_writer.get_current_bytes().is_empty()
+    }
+
     pub fn write(
         &mut self,
         pid: u16,

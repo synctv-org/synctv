@@ -398,7 +398,7 @@ livestream:
   # When exceeded, the oldest GOP is evicted even if gop_cache_size hasn't
   # been reached. Default: 100 MB. Set to 0 to use the built-in default (500 MB).
   gop_cache_max_memory_mb: 100
-  # HLS segment storage. type: memory, file, shared_file, or oss.
+  # HLS segment storage. type: memory, file, shared_file, or s3.
   # Use shared_file only when path is mounted from storage visible to every replica.
   hls_storage:
     type: "memory"
@@ -406,7 +406,7 @@ livestream:
     memory_max_mb: 0
     # For type=file or shared_file:
     # path: "livestream/hls"
-    # For type=oss:
+    # For type=s3:
     # endpoint: "https://s3.example.com"
     # access_key_id_file: "/run/secrets/hls_storage_access_key_id"
     # secret_access_key_file: "/run/secrets/hls_storage_secret_access_key"

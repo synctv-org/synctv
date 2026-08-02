@@ -58,6 +58,8 @@ pub enum SessionErrorValue {
     InvalidAmf0ValueCount,
     #[error("invalid AMF0 value type")]
     InvalidAmf0ValueType,
+    #[error("invalid enhanced RTMP video data: {0}")]
+    InvalidEnhancedVideoData(String),
     #[error("stream hub event send error")]
     StreamHubEventSendErr,
     #[error("none frame data sender error")]

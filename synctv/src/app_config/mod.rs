@@ -777,7 +777,7 @@ pub enum HlsStorageBackend {
     Memory,
     File,
     SharedFile,
-    Oss,
+    S3,
 }
 
 impl std::str::FromStr for HlsStorageBackend {
@@ -788,9 +788,9 @@ impl std::str::FromStr for HlsStorageBackend {
             "memory" => Ok(Self::Memory),
             "file" => Ok(Self::File),
             "shared_file" => Ok(Self::SharedFile),
-            "oss" => Ok(Self::Oss),
+            "s3" => Ok(Self::S3),
             _ => Err(config::ConfigError::Message(format!(
-                "livestream HLS storage type '{value}' must be one of: memory, file, shared_file, oss"
+                "livestream HLS storage type '{value}' must be one of: memory, file, shared_file, s3"
             ))),
         }
     }
@@ -802,7 +802,7 @@ pub enum HlsStorageConfig {
     Memory(HlsMemoryStorageConfig),
     File(HlsFileStorageConfig),
     SharedFile(HlsFileStorageConfig),
-    Oss(HlsOssConfig),
+    S3(HlsS3Config),
 }
 
 impl Default for HlsStorageConfig {
@@ -822,11 +822,11 @@ impl HlsStorageConfig {
             (HlsStorageBackend::SharedFile, Self::File(config) | Self::SharedFile(config)) => {
                 Self::SharedFile(config)
             }
-            (HlsStorageBackend::Oss, Self::Oss(config)) => Self::Oss(config),
+            (HlsStorageBackend::S3, Self::S3(config)) => Self::S3(config),
             (HlsStorageBackend::Memory, _) => Self::Memory(HlsMemoryStorageConfig::default()),
             (HlsStorageBackend::File, _) => Self::File(HlsFileStorageConfig::default()),
             (HlsStorageBackend::SharedFile, _) => Self::SharedFile(HlsFileStorageConfig::default()),
-            (HlsStorageBackend::Oss, _) => Self::Oss(HlsOssConfig::default()),
+            (HlsStorageBackend::S3, _) => Self::S3(HlsS3Config::default()),
         }
     }
 
@@ -836,7 +836,7 @@ impl HlsStorageConfig {
             Self::Memory(_) => HlsStorageBackend::Memory,
             Self::File(_) => HlsStorageBackend::File,
             Self::SharedFile(_) => HlsStorageBackend::SharedFile,
-            Self::Oss(_) => HlsStorageBackend::Oss,
+            Self::S3(_) => HlsStorageBackend::S3,
         }
     }
 
@@ -865,17 +865,17 @@ impl HlsStorageConfig {
     }
 
     #[must_use]
-    pub const fn oss(&self) -> Option<&HlsOssConfig> {
+    pub const fn s3(&self) -> Option<&HlsS3Config> {
         match self {
-            Self::Oss(config) => Some(config),
+            Self::S3(config) => Some(config),
             _ => None,
         }
     }
 
     #[must_use]
-    pub const fn oss_mut(&mut self) -> Option<&mut HlsOssConfig> {
+    pub const fn s3_mut(&mut self) -> Option<&mut HlsS3Config> {
         match self {
-            Self::Oss(config) => Some(config),
+            Self::S3(config) => Some(config),
             _ => None,
         }
     }
@@ -905,7 +905,7 @@ pub struct HlsFileStorageConfig {
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
-pub struct HlsOssConfig {
+pub struct HlsS3Config {
     pub endpoint: String,
     pub access_key_id: String,
     pub secret_access_key: String,
@@ -914,7 +914,7 @@ pub struct HlsOssConfig {
     pub base_path: String,
 }
 
-impl Default for HlsOssConfig {
+impl Default for HlsS3Config {
     fn default() -> Self {
         Self {
             endpoint: String::new(),
@@ -927,9 +927,9 @@ impl Default for HlsOssConfig {
     }
 }
 
-impl std::fmt::Debug for HlsOssConfig {
+impl std::fmt::Debug for HlsS3Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HlsOssConfig")
+        f.debug_struct("HlsS3Config")
             .field("endpoint", &self.endpoint)
             .field("access_key_id", &"<redacted>")
             .field("secret_access_key", &"<redacted>")

@@ -1361,12 +1361,17 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/rtmp/{version}/hls-playlist",
+            "/api/playback-providers/rtmp/{version}/hls-master",
+            get(crate::providers::playback_provider::rtmp::get_rtmp_hls_master)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/rtmp/{version}/hls/{generationId}/index.m3u8",
             get(crate::providers::playback_provider::rtmp::get_rtmp_hls_playlist)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/rtmp/{version}/hls-segments/{segmentName}",
+            "/api/playback-providers/rtmp/{version}/hls/{generationId}/{segmentName}",
             get(crate::providers::playback_provider::rtmp::get_rtmp_hls_segment)
                 .head(crate::providers::playback_provider::rtmp::head_rtmp_hls_segment)
                 .options(providers::playback_provider_options_preflight),
@@ -1378,12 +1383,17 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/live-proxy/{version}/hls-playlist",
+            "/api/playback-providers/live-proxy/{version}/hls-master",
+            get(crate::providers::playback_provider::live_proxy::get_live_proxy_hls_master)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/live-proxy/{version}/hls/{generationId}/index.m3u8",
             get(crate::providers::playback_provider::live_proxy::get_live_proxy_hls_playlist)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/live-proxy/{version}/hls-segments/{segmentName}",
+            "/api/playback-providers/live-proxy/{version}/hls/{generationId}/{segmentName}",
             get(crate::providers::playback_provider::live_proxy::get_live_proxy_hls_segment)
                 .head(crate::providers::playback_provider::live_proxy::head_live_proxy_hls_segment)
                 .options(providers::playback_provider_options_preflight),

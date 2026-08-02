@@ -2,13 +2,13 @@
 // Supports multiple storage backends:
 // - FileStorage: Local filesystem (default)
 // - MemoryStorage: In-memory (for testing/caching)
-// - OssStorage: Object storage (S3/Aliyun OSS/etc)
+// - S3Storage: S3-compatible object storage
 // Based on xiu's HLS implementation but with pluggable storage
 
 pub mod file;
 pub mod memory;
-#[cfg(feature = "oss")]
-pub mod oss;
+#[cfg(feature = "s3")]
+pub mod s3;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -61,7 +61,7 @@ pub(crate) fn minute_bucket_is_expired(bucket: &str, older_than: Duration) -> bo
     bucket_end_secs <= cutoff
 }
 
-#[cfg(feature = "oss")]
+#[cfg(feature = "s3")]
 pub(crate) fn path_leaf(path: &str) -> Option<&str> {
     path.trim_end_matches('/').rsplit('/').next()
 }
@@ -186,8 +186,8 @@ pub trait HlsStorage: Send + Sync {
     /// Get public URL for direct access (async)
     ///
     /// Use cases:
-    /// - **OSS Storage with CDN**: Return CDN URL
-    /// - **OSS Storage without CDN**: Generate temporary presigned URL with expiration
+    /// - **S3 Storage with CDN**: Return CDN URL
+    /// - **S3 Storage without CDN**: Generate temporary presigned URL with expiration
     /// - **File/Memory Storage**: Return None, let HTTP layer generate local URLs
     ///
     /// # Returns
@@ -204,14 +204,14 @@ pub enum StorageBackend {
     File,
     /// In-memory storage (for testing/caching)
     Memory,
-    /// Object storage (S3/OSS/etc)
-    Oss,
+    /// S3-compatible object storage
+    S3,
 }
 
 pub use file::FileStorage;
 pub use memory::MemoryStorage;
-#[cfg(feature = "oss")]
-pub use oss::{OssConfig, OssStorage};
+#[cfg(feature = "s3")]
+pub use s3::{S3Config, S3Storage};
 
 #[cfg(test)]
 mod tests {

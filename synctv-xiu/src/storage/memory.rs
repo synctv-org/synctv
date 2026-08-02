@@ -1,7 +1,7 @@
 // In-memory storage backend for HLS
 // Useful for:
 // - Testing without filesystem I/O
-// - Temporary caching before OSS upload
+// - Temporary caching before S3 upload
 // - Short-lived streams that don't need persistence
 // Note: Data is lost on server restart
 // Memory Safety:
@@ -12,8 +12,8 @@
 //   writers (write/delete/eviction) get exclusive access.  This eliminates the
 //   previous `tokio::sync::Mutex` bottleneck where every read blocked behind
 //   writes.
-// Eviction uses a BTreeMap index keyed by sequence number for O(log N) oldest
-// lookup instead of scanning all entries.
+// Eviction uses a BTreeMap index keyed by sequence number. Capacity pressure
+// scans entries oldest-first while skipping each stream's protected working set.
 
 use super::{validate_component, validate_storage_key, HlsStorage};
 use async_trait::async_trait;
@@ -27,6 +27,9 @@ use std::time::Duration;
 const DEFAULT_MAX_MEMORY_BYTES: usize = 512 * 1024 * 1024;
 /// Default max keys: 10,000
 const DEFAULT_MAX_KEYS: usize = 10_000;
+/// Keep one segment beyond the public playlist window so a client that fetched
+/// the previous playlist can still request its oldest segment while refreshing.
+pub const DEFAULT_PROTECTED_SEGMENTS_PER_STREAM: usize = 7;
 struct Entry {
     data: Bytes,
     seq: u64,
@@ -59,12 +62,15 @@ pub struct MemoryStorage {
     inner: std::sync::Arc<parking_lot::RwLock<MemoryStorageInner>>,
     max_memory_bytes: usize,
     max_keys: usize,
+    min_segments_per_stream: usize,
 }
 
 struct MemoryStorageInner {
     /// Primary map: key -> entry
     data: HashMap<StorageKey, Entry>,
-    /// Time-ordered index: (seq, key) for O(log N) eviction of oldest entry
+    /// Number of retained segments per `(app, stream)` for capacity fencing.
+    stream_counts: HashMap<(String, String), usize>,
+    /// Time-ordered index used to plan oldest-first capacity eviction.
     time_index: BTreeMap<u64, StorageKey>,
     /// Running total of data bytes for O(1) memory usage queries
     total_bytes: usize,
@@ -79,6 +85,7 @@ impl MemoryStorageInner {
     fn new() -> Self {
         Self {
             data: std::collections::HashMap::new(),
+            stream_counts: HashMap::new(),
             time_index: BTreeMap::new(),
             total_bytes: 0,
             next_seq: 0,
@@ -90,21 +97,16 @@ impl MemoryStorageInner {
         if let Some(entry) = self.data.remove(key) {
             self.total_bytes -= entry.data.len();
             self.time_index.remove(&entry.seq);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Evict the oldest entry by sequence number. Returns true if evicted.
-    fn evict_oldest(&mut self) -> bool {
-        // BTreeMap iteration starts at the smallest key (oldest seq)
-        let Some((&seq, _)) = self.time_index.iter().next() else {
-            return false;
-        };
-        if let Some(key) = self.time_index.remove(&seq) {
-            if let Some(entry) = self.data.remove(&key) {
-                self.total_bytes -= entry.data.len();
+            let stream_id = (key.app.clone(), key.stream.clone());
+            let remove_stream = if let Some(count) = self.stream_counts.get_mut(&stream_id) {
+                *count -= 1;
+                *count == 0
+            } else {
+                debug_assert!(false, "stored entry must have a stream count");
+                false
+            };
+            if remove_stream {
+                self.stream_counts.remove(&stream_id);
             }
             true
         } else {
@@ -112,45 +114,82 @@ impl MemoryStorageInner {
         }
     }
 
-    /// Evict entries until we're under limits for the incoming data.
-    fn evict_if_needed(
-        &mut self,
+    /// Plan evictions without mutating storage. This keeps writes atomic when
+    /// the configured limits cannot accommodate another protected segment.
+    fn plan_evictions(
+        &self,
+        incoming_key: &StorageKey,
         incoming_bytes: usize,
         max_keys: usize,
         max_memory_bytes: usize,
-    ) -> usize {
-        let mut evicted = 0;
+        min_segments_per_stream: usize,
+    ) -> Option<Vec<StorageKey>> {
+        let replaced = self.data.get(incoming_key);
+        let mut key_count = self
+            .data
+            .len()
+            .saturating_sub(usize::from(replaced.is_some()));
+        let mut total_bytes = self
+            .total_bytes
+            .saturating_sub(replaced.map_or(0, |entry| entry.data.len()));
 
-        if max_keys > 0 {
-            while self.data.len() >= max_keys {
-                if self.evict_oldest() {
-                    evicted += 1;
-                } else {
-                    break;
-                }
+        let fits = |keys: usize, bytes: usize| {
+            (max_keys == 0 || keys.saturating_add(1) <= max_keys)
+                && (max_memory_bytes == 0
+                    || bytes.saturating_add(incoming_bytes) <= max_memory_bytes)
+        };
+        if fits(key_count, total_bytes) {
+            return Some(Vec::new());
+        }
+
+        let incoming_stream = (&incoming_key.app, &incoming_key.stream);
+        let mut planned_stream_evictions = HashMap::<(String, String), usize>::new();
+        let mut evictions = Vec::new();
+        for key in self.time_index.values() {
+            if key == incoming_key {
+                continue;
+            }
+
+            let stream_id = (key.app.clone(), key.stream.clone());
+            let is_incoming_stream =
+                stream_id.0 == *incoming_stream.0 && stream_id.1 == *incoming_stream.1;
+            let stored_count = self
+                .stream_counts
+                .get(&stream_id)
+                .copied()
+                .unwrap_or_default();
+            let count = stored_count
+                .saturating_sub(usize::from(is_incoming_stream && replaced.is_some()))
+                .saturating_sub(
+                    planned_stream_evictions
+                        .get(&stream_id)
+                        .copied()
+                        .unwrap_or_default(),
+                );
+            let can_evict = if is_incoming_stream {
+                count >= min_segments_per_stream
+            } else {
+                count > min_segments_per_stream
+            };
+            if !can_evict {
+                continue;
+            }
+
+            let entry = self
+                .data
+                .get(key)
+                .expect("time index must reference an existing memory storage entry");
+            key_count -= 1;
+            total_bytes -= entry.data.len();
+            *planned_stream_evictions.entry(stream_id).or_default() += 1;
+            evictions.push(key.clone());
+
+            if fits(key_count, total_bytes) {
+                return Some(evictions);
             }
         }
 
-        if max_memory_bytes > 0 {
-            while self.total_bytes + incoming_bytes > max_memory_bytes {
-                if self.evict_oldest() {
-                    evicted += 1;
-                } else {
-                    break;
-                }
-            }
-        }
-
-        if evicted > 0 {
-            tracing::debug!(
-                evicted = evicted,
-                keys = self.data.len(),
-                memory_bytes = self.total_bytes,
-                "Evicted old entries from memory storage"
-            );
-        }
-
-        evicted
+        None
     }
 }
 
@@ -162,6 +201,7 @@ impl MemoryStorage {
             inner: std::sync::Arc::new(parking_lot::RwLock::new(MemoryStorageInner::new())),
             max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,
             max_keys: DEFAULT_MAX_KEYS,
+            min_segments_per_stream: DEFAULT_PROTECTED_SEGMENTS_PER_STREAM,
         }
     }
 
@@ -172,10 +212,29 @@ impl MemoryStorage {
     /// * `max_keys` - Maximum number of keys (0 = unlimited)
     #[must_use]
     pub fn with_limits(max_memory_bytes: usize, max_keys: usize) -> Self {
+        Self::with_limits_and_stream_reserve(
+            max_memory_bytes,
+            max_keys,
+            DEFAULT_PROTECTED_SEGMENTS_PER_STREAM,
+        )
+    }
+
+    /// Create memory storage with explicit limits and a per-stream reserve.
+    ///
+    /// Entries among the newest `min_segments_per_stream` objects of each
+    /// stream are protected from capacity eviction. A write returns an error
+    /// when the hard global limits cannot fit the protected working sets.
+    #[must_use]
+    pub fn with_limits_and_stream_reserve(
+        max_memory_bytes: usize,
+        max_keys: usize,
+        min_segments_per_stream: usize,
+    ) -> Self {
         Self {
             inner: std::sync::Arc::new(parking_lot::RwLock::new(MemoryStorageInner::new())),
             max_memory_bytes,
             max_keys,
+            min_segments_per_stream,
         }
     }
 
@@ -186,6 +245,7 @@ impl MemoryStorage {
             inner: std::sync::Arc::new(parking_lot::RwLock::new(MemoryStorageInner::new())),
             max_memory_bytes: 0,
             max_keys: 0,
+            min_segments_per_stream: DEFAULT_PROTECTED_SEGMENTS_PER_STREAM,
         }
     }
 
@@ -205,6 +265,7 @@ impl MemoryStorage {
     pub fn clear(&self) {
         let mut inner = self.inner.write();
         inner.data.clear();
+        inner.stream_counts.clear();
         inner.time_index.clear();
         inner.total_bytes = 0;
         drop(inner);
@@ -237,17 +298,44 @@ impl HlsStorage for MemoryStorage {
 
         let mut inner = self.inner.write();
 
-        // If key already exists, remove the old entry first
-        inner.remove(&key);
+        let evictions = inner
+            .plan_evictions(
+                &key,
+                size,
+                self.max_keys,
+                self.max_memory_bytes,
+                self.min_segments_per_stream,
+            )
+            .ok_or_else(|| {
+                Error::other(format!(
+                    "Memory storage capacity cannot fit {app}/{stream}/{name} without evicting protected playlist segments"
+                ))
+            })?;
 
-        // Evict old entries if needed
-        inner.evict_if_needed(size, self.max_keys, self.max_memory_bytes);
+        // The complete plan is known to fit, so mutations below cannot leave a
+        // failed overwrite half-applied.
+        inner.remove(&key);
+        for eviction in &evictions {
+            inner.remove(eviction);
+        }
+        if !evictions.is_empty() {
+            tracing::debug!(
+                evicted = evictions.len(),
+                keys = inner.data.len(),
+                memory_bytes = inner.total_bytes,
+                "Evicted old entries from memory storage"
+            );
+        }
 
         let seq = inner.next_seq;
         inner.next_seq += 1;
         let write_time = std::time::Instant::now();
         inner.total_bytes += size;
         inner.time_index.insert(seq, key.clone());
+        *inner
+            .stream_counts
+            .entry((key.app.clone(), key.stream.clone()))
+            .or_default() += 1;
         inner.data.insert(
             key.clone(),
             Entry {
@@ -374,11 +462,9 @@ impl HlsStorage for MemoryStorage {
 
     async fn list_streams(&self) -> Result<Vec<(String, String)>> {
         let inner = self.inner.read();
-        let mut streams = std::collections::HashSet::new();
-        for key in inner.data.keys() {
-            streams.insert((key.app.clone(), key.stream.clone()));
-        }
-        Ok(streams.into_iter().collect())
+        let mut streams = inner.stream_counts.keys().cloned().collect::<Vec<_>>();
+        streams.sort();
+        Ok(streams)
     }
 
     async fn count_stream_segments(&self, app: &str, stream: &str) -> Result<usize> {
@@ -386,10 +472,10 @@ impl HlsStorage for MemoryStorage {
         validate_component(stream, "stream")?;
         let inner = self.inner.read();
         Ok(inner
-            .data
-            .keys()
-            .filter(|key| key.app == app && key.stream == stream)
-            .count())
+            .stream_counts
+            .get(&(app.to_owned(), stream.to_owned()))
+            .copied()
+            .unwrap_or_default())
     }
 
     async fn delete_oldest_stream_segments(
@@ -451,7 +537,7 @@ impl HlsStorage for MemoryStorage {
         // increasing, we can stop as soon as we encounter a non-expired entry.
         // This is O(K log N) where K is the number of expired entries, instead
         // of the previous O(N) scan over all entries.
-        let expired_seqs: Vec<u64> = inner
+        let expired_keys: Vec<StorageKey> = inner
             .time_index
             .iter()
             .take_while(|(_, key)| {
@@ -460,22 +546,19 @@ impl HlsStorage for MemoryStorage {
                     .get(key)
                     .is_some_and(|entry| entry.write_time < cutoff)
             })
-            .map(|(&seq, _)| seq)
+            .map(|(_, key)| key.clone())
             .collect();
 
         let mut deleted = 0;
-        for seq in expired_seqs {
-            if let Some(key) = inner.time_index.remove(&seq) {
-                if let Some(entry) = inner.data.remove(&key) {
-                    inner.total_bytes -= entry.data.len();
-                    deleted += 1;
-                    tracing::trace!(
-                        "Deleted expired key from memory: {}/{}/{}",
-                        key.app,
-                        key.stream,
-                        key.name
-                    );
-                }
+        for key in expired_keys {
+            if inner.remove(&key) {
+                deleted += 1;
+                tracing::trace!(
+                    "Deleted expired key from memory: {}/{}/{}",
+                    key.app,
+                    key.stream,
+                    key.name
+                );
             }
         }
 
@@ -497,6 +580,25 @@ impl HlsStorage for MemoryStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_protected_budget_covers_playlist_and_refresh_grace() {
+        let mut playlist = crate::hls::HlsPlaylist::new();
+        for sequence in 0..DEFAULT_PROTECTED_SEGMENTS_PER_STREAM + 2 {
+            playlist.push_segment(crate::hls::SegmentInfo {
+                sequence: u64::try_from(sequence).unwrap(),
+                duration_ms: 10_000,
+                started_at_ms: 0,
+                ts_name: format!("segment_{sequence}"),
+                discontinuity: false,
+            });
+        }
+
+        assert_eq!(
+            DEFAULT_PROTECTED_SEGMENTS_PER_STREAM,
+            playlist.segments.len() + 1
+        );
+    }
 
     #[tokio::test]
     async fn test_memory_storage_write_read() {
@@ -586,7 +688,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_storage_key_limit_eviction() {
-        let storage = MemoryStorage::with_limits(0, 3);
+        let storage = MemoryStorage::with_limits_and_stream_reserve(0, 3, 1);
 
         storage
             .write("a", "b", "key1", Bytes::from_static(b"data1"))
@@ -614,7 +716,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_storage_memory_limit_eviction() {
-        let storage = MemoryStorage::with_limits(15, 0);
+        let storage = MemoryStorage::with_limits_and_stream_reserve(15, 0, 1);
 
         storage
             .write("a", "b", "key1", Bytes::from_static(b"12345"))
@@ -681,6 +783,281 @@ mod tests {
 
         let data = storage.read("a", "b", "key1").await.unwrap();
         assert_eq!(data, Bytes::from_static(b"world!"));
+    }
+
+    #[tokio::test]
+    async fn capacity_eviction_preserves_other_stream_playlist_segments() {
+        let window = DEFAULT_PROTECTED_SEGMENTS_PER_STREAM - 1;
+        let storage = MemoryStorage::with_limits(0, window * 2 + 1);
+
+        // Stream A is deliberately older in the global index. A global LRU
+        // would evict its public playlist while stream B keeps publishing.
+        for index in 0..window {
+            storage
+                .write(
+                    "live",
+                    "stream_a",
+                    &format!("a_{index}"),
+                    Bytes::from_static(b"a"),
+                )
+                .await
+                .unwrap();
+        }
+        for index in 0..window {
+            storage
+                .write(
+                    "live",
+                    "stream_b",
+                    &format!("b_{index}"),
+                    Bytes::from_static(b"b"),
+                )
+                .await
+                .unwrap();
+        }
+
+        // The first extra segment consumes the one-segment client refresh
+        // reserve. The next write evicts stream B's own oldest stale segment.
+        storage
+            .write(
+                "live",
+                "stream_b",
+                &format!("b_{window}"),
+                Bytes::from_static(b"b"),
+            )
+            .await
+            .unwrap();
+        storage
+            .write(
+                "live",
+                "stream_b",
+                &format!("b_{}", window + 1),
+                Bytes::from_static(b"b"),
+            )
+            .await
+            .unwrap();
+
+        for index in 0..window {
+            assert!(storage
+                .exists("live", "stream_a", &format!("a_{index}"))
+                .await
+                .unwrap());
+        }
+        assert!(!storage.exists("live", "stream_b", "b_0").await.unwrap());
+        for index in 1..=window + 1 {
+            assert!(storage
+                .exists("live", "stream_b", &format!("b_{index}"))
+                .await
+                .unwrap());
+        }
+        assert_eq!(storage.key_count(), window * 2 + 1);
+    }
+
+    #[tokio::test]
+    async fn capacity_exhaustion_rejects_write_and_preserves_public_playlists() {
+        let window = DEFAULT_PROTECTED_SEGMENTS_PER_STREAM - 1;
+        let storage = MemoryStorage::with_limits(0, window * 2);
+
+        for stream in ["stream_a", "stream_b"] {
+            for index in 0..window {
+                storage
+                    .write(
+                        "live",
+                        stream,
+                        &format!("{stream}_{index}"),
+                        Bytes::from_static(b"segment"),
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let error = storage
+            .write(
+                "live",
+                "stream_b",
+                &format!("stream_b_{window}"),
+                Bytes::from_static(b"segment"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Other);
+        assert!(error.to_string().contains("protected playlist segments"));
+
+        for stream in ["stream_a", "stream_b"] {
+            for index in 0..window {
+                assert!(storage
+                    .exists("live", stream, &format!("{stream}_{index}"))
+                    .await
+                    .unwrap());
+            }
+        }
+        assert_eq!(storage.key_count(), window * 2);
+    }
+
+    #[tokio::test]
+    async fn byte_limit_evicts_from_publishing_stream_before_other_stream() {
+        let storage = MemoryStorage::with_limits_and_stream_reserve(12, 0, 2);
+        for name in ["a_0", "a_1"] {
+            storage
+                .write("live", "stream_a", name, Bytes::from_static(b"aaa"))
+                .await
+                .unwrap();
+        }
+        for name in ["b_0", "b_1"] {
+            storage
+                .write("live", "stream_b", name, Bytes::from_static(b"bbb"))
+                .await
+                .unwrap();
+        }
+
+        storage
+            .write("live", "stream_b", "b_2", Bytes::from_static(b"bbb"))
+            .await
+            .unwrap();
+
+        assert!(storage.exists("live", "stream_a", "a_0").await.unwrap());
+        assert!(storage.exists("live", "stream_a", "a_1").await.unwrap());
+        assert!(!storage.exists("live", "stream_b", "b_0").await.unwrap());
+        assert!(storage.exists("live", "stream_b", "b_1").await.unwrap());
+        assert!(storage.exists("live", "stream_b", "b_2").await.unwrap());
+        assert_eq!(storage.memory_usage(), 12);
+    }
+
+    #[tokio::test]
+    async fn failed_overwrite_keeps_previous_entry_and_accounting() {
+        let storage = MemoryStorage::with_limits(10, 0);
+        storage
+            .write("live", "stream", "first", Bytes::from_static(b"12345"))
+            .await
+            .unwrap();
+        storage
+            .write("live", "stream", "second", Bytes::from_static(b"67890"))
+            .await
+            .unwrap();
+
+        let error = storage
+            .write("live", "stream", "first", Bytes::from_static(b"12345678"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Other);
+        assert_eq!(
+            storage.read("live", "stream", "first").await.unwrap(),
+            Bytes::from_static(b"12345")
+        );
+        assert_eq!(storage.key_count(), 2);
+        assert_eq!(storage.memory_usage(), 10);
+    }
+
+    #[tokio::test]
+    async fn cleanup_updates_stream_reserves_before_later_eviction() {
+        let storage = MemoryStorage::with_limits_and_stream_reserve(0, 2, 1);
+        storage
+            .write("live", "stream_a", "expired", Bytes::from_static(b"old"))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert_eq!(storage.cleanup(Duration::from_millis(5)).await.unwrap(), 1);
+        assert!(storage.list_streams().await.unwrap().is_empty());
+        assert_eq!(
+            storage
+                .count_stream_segments("live", "stream_a")
+                .await
+                .unwrap(),
+            0
+        );
+        storage
+            .write("live", "stream_a", "fresh", Bytes::from_static(b"a"))
+            .await
+            .unwrap();
+        storage
+            .write("live", "stream_b", "first", Bytes::from_static(b"b1"))
+            .await
+            .unwrap();
+        storage
+            .write("live", "stream_b", "second", Bytes::from_static(b"b2"))
+            .await
+            .unwrap();
+
+        assert!(storage.exists("live", "stream_a", "fresh").await.unwrap());
+        assert!(!storage.exists("live", "stream_b", "first").await.unwrap());
+        assert!(storage.exists("live", "stream_b", "second").await.unwrap());
+        assert_eq!(storage.key_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn memory_stream_listing_is_sorted_and_deduplicated() {
+        let storage = MemoryStorage::unlimited();
+        for (app, stream, name) in [
+            ("app_b", "stream_z", "one"),
+            ("app_a", "stream_b", "two"),
+            ("app_a", "stream_a", "three"),
+            ("app_a", "stream_a", "four"),
+        ] {
+            storage
+                .write(app, stream, name, Bytes::from_static(b"segment"))
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            storage.list_streams().await.unwrap(),
+            vec![
+                ("app_a".to_string(), "stream_a".to_string()),
+                ("app_a".to_string(), "stream_b".to_string()),
+                ("app_b".to_string(), "stream_z".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_stream_writes_retain_each_stream_working_set() {
+        const STREAMS: usize = 8;
+        const SEGMENTS: usize = 20;
+        let reserve = DEFAULT_PROTECTED_SEGMENTS_PER_STREAM;
+        let storage = MemoryStorage::with_limits(0, STREAMS * reserve);
+
+        let tasks = (0..STREAMS).map(|stream_index| {
+            let storage = storage.clone();
+            tokio::spawn(async move {
+                let stream = format!("stream_{stream_index}");
+                for segment_index in 0..SEGMENTS {
+                    storage
+                        .write(
+                            "live",
+                            &stream,
+                            &format!("segment_{segment_index:02}"),
+                            Bytes::from(vec![u8::try_from(stream_index).unwrap(); 16]),
+                        )
+                        .await
+                        .unwrap();
+                    tokio::task::yield_now().await;
+                }
+            })
+        });
+        futures::future::join_all(tasks)
+            .await
+            .into_iter()
+            .for_each(|result| result.unwrap());
+
+        assert_eq!(storage.key_count(), STREAMS * reserve);
+        assert_eq!(storage.memory_usage(), STREAMS * reserve * 16);
+        for stream_index in 0..STREAMS {
+            let stream = format!("stream_{stream_index}");
+            assert_eq!(
+                storage
+                    .count_stream_segments("live", &stream)
+                    .await
+                    .unwrap(),
+                reserve
+            );
+            for segment_index in (SEGMENTS - reserve)..SEGMENTS {
+                assert!(storage
+                    .exists("live", &stream, &format!("segment_{segment_index:02}"))
+                    .await
+                    .unwrap());
+            }
+        }
     }
 
     #[tokio::test]

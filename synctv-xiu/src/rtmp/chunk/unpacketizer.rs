@@ -81,6 +81,11 @@ pub struct ChunkUnpacketizer {
     /// are automatically evicted, avoiding the random-eviction problem
     /// of the previous HashMap-based pruning approach.
     chunk_message_headers: lru::LruCache<u32, ChunkMessageHeader>,
+    /// Partially assembled messages keyed by chunk stream ID. RTMP permits
+    /// chunks from different streams to be interleaved on one connection.
+    in_progress_chunks: lru::LruCache<u32, ChunkInfo>,
+    /// Aggregate payload bytes held by `in_progress_chunks`.
+    in_progress_payload_bytes: usize,
     chunk_read_state: ChunkReadState,
     msg_header_read_state: MessageHeaderReadState,
     max_chunk_size: usize,
@@ -102,6 +107,8 @@ impl ChunkUnpacketizer {
             reader: BytesReader::new(BytesMut::new()),
             current_chunk_info: ChunkInfo::default(),
             chunk_message_headers: lru::LruCache::new(MAX_CACHED_CHUNK_HEADERS),
+            in_progress_chunks: lru::LruCache::new(MAX_CACHED_CHUNK_HEADERS),
+            in_progress_payload_bytes: 0,
             chunk_read_state: ChunkReadState::ReadBasicHeader,
             msg_header_read_state: MessageHeaderReadState::ReadTimeStamp,
             max_chunk_size: define::INIT_CHUNK_SIZE as usize,
@@ -115,6 +122,8 @@ impl ChunkUnpacketizer {
     /// Call this when the connection is closed or when memory usage is a concern
     pub fn clear_cached_headers(&mut self) {
         self.chunk_message_headers.clear();
+        self.in_progress_chunks.clear();
+        self.in_progress_payload_bytes = 0;
     }
 
     pub fn extend_data(&mut self, data: &[u8]) -> Result<(), UnpackError> {
@@ -153,7 +162,10 @@ impl ChunkUnpacketizer {
                     }
                 }
                 Err(err) => {
-                    if matches!(err.value, UnpackErrorValue::CannotParse) {
+                    if matches!(
+                        err.value,
+                        UnpackErrorValue::CannotParse | UnpackErrorValue::MessageTooLarge(_, _)
+                    ) {
                         return Err(err);
                     }
                     break;
@@ -205,34 +217,39 @@ impl ChunkUnpacketizer {
     /// IDs 2-63 use one byte, 64-319 use two bytes, and 64-65599 can use
     /// three bytes.
     pub fn read_basic_header(&mut self) -> Result<UnpackResult, UnpackError> {
-        let byte = self.reader.read_u8()?;
+        // Validate the complete basic header before consuming any bytes. A TCP
+        // read can end between the two extended-CSID bytes.
+        let byte = self.reader.advance_u8()?;
 
         let format_id = (byte >> 6) & 0b0000_0011;
-        let mut csid = u32::from(byte & 0b0011_1111);
+        let encoded_csid = byte & 0b0011_1111;
+        let basic_header_len = match encoded_csid {
+            0 => 2,
+            1 => 3,
+            _ => 1,
+        };
+        self.reader.advance_bytes(basic_header_len)?;
+        self.reader.read_u8()?;
 
-        match csid {
-            0 => {
-                if self.reader.is_empty() {
-                    return Ok(UnpackResult::NotEnoughBytes);
-                }
-                csid = 64;
-                csid += u32::from(self.reader.read_u8()?);
-            }
-            1 => {
-                if self.reader.is_empty() {
-                    return Ok(UnpackResult::NotEnoughBytes);
-                }
-                csid = 64;
-                csid += u32::from(self.reader.read_u8()?);
-                csid += u32::from(self.reader.read_u8()?) * 256;
-            }
-            _ => {}
+        let csid = match encoded_csid {
+            0 => 64 + u32::from(self.reader.read_u8()?),
+            1 => 64 + u32::from(self.reader.read_u16::<LittleEndian>()?),
+            _ => u32::from(encoded_csid),
+        };
+
+        if let Some(partial) = self.in_progress_chunks.pop(&csid) {
+            self.in_progress_payload_bytes = self
+                .in_progress_payload_bytes
+                .saturating_sub(partial.payload.len());
+            self.current_chunk_info = partial;
         }
 
         // Restore the cached message header when the chunk stream changes.
         // RTMP chunks may omit repeated header fields, so each chunk stream ID
         // keeps its own previous header context.
-        if csid != self.current_chunk_info.basic_header.chunk_stream_id {
+        if csid != self.current_chunk_info.basic_header.chunk_stream_id
+            || self.current_chunk_info.payload.is_empty()
+        {
             tracing::trace!(
                 "read_basic_header, chunk stream id update, new: {}, old:{}, byte: {}",
                 csid,
@@ -476,6 +493,16 @@ impl ChunkUnpacketizer {
         };
 
         let remaining_mut = self.current_chunk_info.payload.remaining_mut();
+        let total_after_read = self
+            .in_progress_payload_bytes
+            .saturating_add(self.current_chunk_info.payload.len())
+            .saturating_add(need_read_length);
+        if total_after_read > MAX_MESSAGE_SIZE {
+            return Err(UnpackError {
+                value: UnpackErrorValue::MessageTooLarge(total_after_read, MAX_MESSAGE_SIZE),
+            });
+        }
+
         if need_read_length > remaining_mut {
             let additional = need_read_length - remaining_mut;
             self.current_chunk_info.payload.reserve(additional);
@@ -514,6 +541,20 @@ impl ChunkUnpacketizer {
             return Ok(UnpackResult::ChunkInfo(chunk_info));
         }
 
+        let csid = self.current_chunk_info.basic_header.chunk_stream_id;
+        let partial = ChunkInfo {
+            basic_header: self.current_chunk_info.basic_header.clone(),
+            message_header: self.current_chunk_info.message_header.clone(),
+            payload: std::mem::take(&mut self.current_chunk_info.payload),
+        };
+        self.in_progress_payload_bytes = self
+            .in_progress_payload_bytes
+            .saturating_add(partial.payload.len());
+        if let Some((_, replaced)) = self.in_progress_chunks.push(csid, partial) {
+            self.in_progress_payload_bytes = self
+                .in_progress_payload_bytes
+                .saturating_sub(replaced.payload.len());
+        }
         self.chunk_read_state = ChunkReadState::ReadBasicHeader;
 
         Ok(UnpackResult::Success)
@@ -526,7 +567,27 @@ mod tests {
     use super::ChunkInfo;
     use super::ChunkUnpacketizer;
     use super::UnpackResult;
+    use crate::rtmp::chunk::errors::UnpackErrorValue;
     use bytes::BytesMut;
+
+    fn type0_chunk(csid_header: &[u8], msg_length: u32, msg_type: u8, payload: &[u8]) -> Vec<u8> {
+        let mut chunk = Vec::with_capacity(csid_header.len() + 11 + payload.len());
+        chunk.extend_from_slice(csid_header);
+        chunk.extend_from_slice(&[0, 0, 0]);
+        let length = msg_length.to_be_bytes();
+        chunk.extend_from_slice(&length[1..]);
+        chunk.push(msg_type);
+        chunk.extend_from_slice(&1_u32.to_le_bytes());
+        chunk.extend_from_slice(payload);
+        chunk
+    }
+
+    fn expect_chunks(result: UnpackResult) -> Vec<ChunkInfo> {
+        match result {
+            UnpackResult::Chunks(chunks) => chunks,
+            other => panic!("expected completed chunks, got {other:?}"),
+        }
+    }
 
     #[test]
     fn test_set_chunk_size() {
@@ -558,5 +619,83 @@ mod tests {
             UnpackResult::ChunkInfo(expected),
             "set chunk size packet should unpack into the expected RTMP chunk"
         );
+    }
+
+    #[test]
+    fn three_byte_basic_header_survives_tcp_split_between_extended_csid_bytes() {
+        // CSID 320 is encoded as marker 1 followed by (320 - 64) in
+        // little-endian order: 0x00, 0x01.
+        let chunk = type0_chunk(&[0x01, 0x00, 0x01], 1, 9, &[0xaa]);
+        let mut unpacker = ChunkUnpacketizer::new();
+
+        unpacker.extend_data(&chunk[..2]).unwrap();
+        let partial = unpacker.read_chunks().unwrap_err();
+        assert!(matches!(partial.value, UnpackErrorValue::EmptyChunks));
+
+        unpacker.extend_data(&chunk[2..]).unwrap();
+        let chunks = expect_chunks(unpacker.read_chunks().unwrap());
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].basic_header.chunk_stream_id, 320);
+        assert_eq!(chunks[0].payload.as_ref(), &[0xaa]);
+    }
+
+    #[test]
+    fn interleaved_chunk_streams_reassemble_independent_messages() {
+        let mut wire = type0_chunk(&[0x05], 8, 9, &[1, 2, 3, 4]);
+        wire.extend(type0_chunk(&[0x04], 4, 8, &[0xa1, 0xa2, 0xa3, 0xa4]));
+        wire.extend_from_slice(&[0xc5, 5, 6, 7, 8]);
+
+        let mut unpacker = ChunkUnpacketizer::new();
+        unpacker.update_max_chunk_size(4);
+        unpacker.extend_data(&wire).unwrap();
+
+        let chunks = expect_chunks(unpacker.read_chunks().unwrap());
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].basic_header.chunk_stream_id, 4);
+        assert_eq!(chunks[0].payload.as_ref(), &[0xa1, 0xa2, 0xa3, 0xa4]);
+        assert_eq!(chunks[1].basic_header.chunk_stream_id, 5);
+        assert_eq!(chunks[1].payload.as_ref(), &[1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn oversized_declared_message_length_is_rejected_before_payload_allocation() {
+        let declared = (super::MAX_MESSAGE_SIZE + 1) as u32;
+        let chunk = type0_chunk(&[0x03], declared, 9, &[]);
+        let mut unpacker = ChunkUnpacketizer::new();
+        unpacker.extend_data(&chunk).unwrap();
+
+        let error = unpacker.read_chunks().unwrap_err();
+        assert!(matches!(
+            error.value,
+            UnpackErrorValue::MessageTooLarge(actual, limit)
+                if actual == declared as usize && limit == super::MAX_MESSAGE_SIZE
+        ));
+        assert_eq!(unpacker.current_chunk_info.payload.capacity(), 0);
+    }
+
+    #[test]
+    fn every_tcp_split_of_a_multichunk_message_reassembles_exact_payload() {
+        let mut wire = type0_chunk(&[0x05], 8, 9, &[1, 2, 3, 4]);
+        wire.extend_from_slice(&[0xc5, 5, 6, 7, 8]);
+
+        for split in 1..wire.len() {
+            let mut unpacker = ChunkUnpacketizer::new();
+            unpacker.update_max_chunk_size(4);
+            unpacker.extend_data(&wire[..split]).unwrap();
+            let _ = unpacker.read_chunks();
+            unpacker.extend_data(&wire[split..]).unwrap();
+
+            let chunks = expect_chunks(
+                unpacker
+                    .read_chunks()
+                    .unwrap_or_else(|error| panic!("split {split} failed: {error}")),
+            );
+            assert_eq!(chunks.len(), 1, "split {split}");
+            assert_eq!(
+                chunks[0].payload.as_ref(),
+                &[1, 2, 3, 4, 5, 6, 7, 8],
+                "split {split}"
+            );
+        }
     }
 }

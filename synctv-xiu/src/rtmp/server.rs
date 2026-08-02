@@ -102,7 +102,7 @@ impl RtmpServer {
         };
 
         let local_addr = listener.local_addr()?;
-        let session_tracker = tokio_util::task::TaskTracker::new();
+        let mut session_tasks = tokio::task::JoinSet::new();
         let forced_session_shutdown = CancellationToken::new();
 
         tracing::info!("Rtmp server listening on tcp://{local_addr}");
@@ -120,7 +120,7 @@ impl RtmpServer {
                         Arc::clone(&self.callbacks),
                     );
                     let force_shutdown = forced_session_shutdown.child_token();
-                    session_tracker.spawn(async move {
+                    session_tasks.spawn(async move {
                         tokio::select! {
                             result = session.run() => {
                                 if let Err(err) = result {
@@ -165,20 +165,20 @@ impl RtmpServer {
         }
 
         // Stop accepting new connections; wait for existing sessions with timeout
-        session_tracker.close();
-        if tokio::time::timeout(self.shutdown_grace_period, session_tracker.wait())
+        let graceful_wait = async { while session_tasks.join_next().await.is_some() {} };
+        if tokio::time::timeout(self.shutdown_grace_period, graceful_wait)
             .await
             .is_err()
         {
             tracing::warn!("RTMP shutdown grace period expired, aborting lingering sessions");
             forced_session_shutdown.cancel();
-            match tokio::time::timeout(Duration::from_secs(1), session_tracker.wait()).await {
-                Ok(()) => {
-                    tracing::info!("RTMP sessions stopped after forced shutdown");
-                }
-                Err(_) => {
-                    tracing::error!("RTMP sessions did not stop within forced shutdown timeout");
-                }
+            let forced_wait = async { while session_tasks.join_next().await.is_some() {} };
+            if let Ok(()) = tokio::time::timeout(Duration::from_secs(1), forced_wait).await {
+                tracing::info!("RTMP sessions stopped after forced shutdown");
+            } else {
+                tracing::error!("RTMP sessions did not stop within forced shutdown timeout");
+                session_tasks.abort_all();
+                while session_tasks.join_next().await.is_some() {}
             }
         }
 

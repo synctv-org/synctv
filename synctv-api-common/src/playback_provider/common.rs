@@ -301,7 +301,7 @@ pub struct LiveFlvChunksRequest {
     pub head: bool,
 }
 
-pub struct LiveHlsPlaylistChunksRequest {
+pub struct LiveHlsMasterChunksRequest {
     pub provider_name: String,
     pub room_id: RoomId,
     pub media_id: MediaId,
@@ -313,11 +313,23 @@ pub struct LiveHlsPlaylistChunksRequest {
     pub external_source: Option<synctv_core::models::LiveProxyMediaSourceConfig>,
 }
 
+pub struct LiveHlsPlaylistChunksRequest {
+    pub provider_name: String,
+    pub room_id: RoomId,
+    pub media_id: MediaId,
+    pub version: String,
+    pub generation_id: String,
+    pub signature_user_id: String,
+    pub signature_room_id: String,
+    pub signature_expires_at: i64,
+    pub route_provider: String,
+}
+
 pub struct LiveHlsSegmentChunksRequest {
     pub room_id: RoomId,
     pub media_id: MediaId,
+    pub generation_id: String,
     pub segment_name: String,
-    pub external_source: Option<synctv_core::models::LiveProxyMediaSourceConfig>,
     pub head: bool,
 }
 
@@ -440,9 +452,9 @@ pub async fn stream_live_flv_chunks(
     Ok(Box::pin(ReceiverStream::new(rx_wrapped)))
 }
 
-pub async fn get_live_hls_playlist_chunks(
+pub async fn get_live_hls_master_chunks(
     deps: LivePlaybackDeps<'_>,
-    req: LiveHlsPlaylistChunksRequest,
+    req: LiveHlsMasterChunksRequest,
 ) -> Result<PlaybackProviderChunkStream, ApiError> {
     let room_id_key = req.room_id.to_string();
     let media_id_key = req.media_id.to_string();
@@ -450,18 +462,67 @@ pub async fn get_live_hls_playlist_chunks(
         room_id = %req.room_id,
         media_id = %req.media_id,
         provider = %req.provider_name,
-        "HLS playlist request"
+        "HLS master playlist request"
     );
 
     let infrastructure = deps.live_streaming_infrastructure.ok_or_else(|| {
         ApiError::ServiceUnavailable("Live streaming service is unavailable".to_string())
     })?;
-    let segment_disguised_as_png = live_segments_disguised_as_png(deps.runtime_settings_store)?;
-    let playlist = synctv_livestream::HlsStreamingApi::generate_playlist_with_pull(
+    let generation = synctv_livestream::HlsStreamingApi::resolve_active_generation_with_pull(
         infrastructure,
         &room_id_key,
         &media_id_key,
         req.external_source.as_ref(),
+    )
+    .await
+    .map_err(|error| crate::impls::map_livestream_backend_error(error.as_ref()))?;
+
+    let Some(generation) = generation else {
+        return Err(ApiError::NotFound(
+            "Live stream is not currently available".to_string(),
+        ));
+    };
+    let claims = ProxyUrlClaims {
+        provider: req.provider_name,
+        version: req.version.clone(),
+        resource: format!("hls/{}/index.m3u8", generation.generation_id),
+        room_id: req.signature_room_id,
+        user_id: req.signature_user_id,
+        expires_at: req.signature_expires_at,
+        target_url: None,
+    };
+    let signed_query = deps.proxy_signing_key.build_signed_query(&claims);
+    let playlist_url = build_hls_playlist_path(
+        &req.route_provider,
+        &req.version,
+        &generation.generation_id,
+        &signed_query,
+    );
+    let content =
+        format!("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=8000000\n{playlist_url}\n");
+
+    Ok(direct_chunk_stream(
+        content,
+        "application/vnd.apple.mpegurl",
+        200,
+        false,
+    ))
+}
+
+pub async fn get_live_hls_playlist_chunks(
+    deps: LivePlaybackDeps<'_>,
+    req: LiveHlsPlaylistChunksRequest,
+) -> Result<PlaybackProviderChunkStream, ApiError> {
+    let infrastructure = deps.live_streaming_infrastructure.ok_or_else(|| {
+        ApiError::ServiceUnavailable("Live streaming service is unavailable".to_string())
+    })?;
+    let segment_disguised_as_png = live_segments_disguised_as_png(deps.runtime_settings_store)?;
+    let generation_id = req.generation_id.clone();
+    let playlist = synctv_livestream::HlsStreamingApi::generate_playlist(
+        infrastructure,
+        &req.room_id.to_string(),
+        &req.media_id.to_string(),
+        &generation_id,
         |ts_name| {
             let extension = if segment_disguised_as_png {
                 "png"
@@ -472,7 +533,7 @@ pub async fn get_live_hls_playlist_chunks(
             let claims = ProxyUrlClaims {
                 provider: req.provider_name.clone(),
                 version: req.version.clone(),
-                resource: format!("hls-segments/{segment_name}"),
+                resource: format!("hls/{generation_id}/{segment_name}"),
                 room_id: req.signature_room_id.clone(),
                 user_id: req.signature_user_id.clone(),
                 expires_at: req.signature_expires_at,
@@ -482,6 +543,7 @@ pub async fn get_live_hls_playlist_chunks(
             build_hls_segment_path(
                 &req.route_provider,
                 &req.version,
+                &generation_id,
                 &segment_name,
                 &signed_query,
             )
@@ -492,7 +554,7 @@ pub async fn get_live_hls_playlist_chunks(
 
     let Some(content) = playlist else {
         return Err(ApiError::NotFound(
-            "Live stream is not currently available".to_string(),
+            "HLS generation is unavailable".to_string(),
         ));
     };
 
@@ -525,12 +587,12 @@ pub async fn get_live_hls_segment_chunks(
     let infrastructure = deps.live_streaming_infrastructure.ok_or_else(|| {
         ApiError::ServiceUnavailable("Live streaming service is unavailable".to_string())
     })?;
-    let ts_data = synctv_livestream::HlsStreamingApi::get_segment_with_pull(
+    let ts_data = synctv_livestream::HlsStreamingApi::get_segment(
         infrastructure,
         &req.room_id.to_string(),
         &req.media_id.to_string(),
+        &req.generation_id,
         validated_name,
-        req.external_source.as_ref(),
     )
     .await
     .map_err(|error| crate::impls::map_livestream_backend_error(error.as_ref()))?;
@@ -766,6 +828,7 @@ pub async fn playback_transport_action_to_chunk_stream(
             status,
         } => Ok(direct_chunk_stream(body, &content_type, status, head)),
         PlaybackTransportAction::LiveFlv { .. }
+        | PlaybackTransportAction::LiveHlsMaster { .. }
         | PlaybackTransportAction::LiveHlsPlaylist { .. }
         | PlaybackTransportAction::LiveHlsSegment { .. } => Err(ApiError::Internal(
             "live stream actions are executed by RTMP and LiveProxy playback provider impls"
@@ -920,9 +983,26 @@ fn live_segments_disguised_as_png(
     })
 }
 
+fn build_hls_playlist_path(
+    route_provider: &str,
+    version: &str,
+    generation_id: &str,
+    signed_query: &str,
+) -> String {
+    let query_suffix = if signed_query.is_empty() {
+        String::new()
+    } else {
+        format!("?{signed_query}")
+    };
+    format!(
+        "/api/playback-providers/{route_provider}/{version}/hls/{generation_id}/index.m3u8{query_suffix}"
+    )
+}
+
 fn build_hls_segment_path(
     route_provider: &str,
     version: &str,
+    generation_id: &str,
     segment_name: &str,
     signed_query: &str,
 ) -> String {
@@ -933,7 +1013,7 @@ fn build_hls_segment_path(
     };
 
     format!(
-        "/api/playback-providers/{route_provider}/{version}/hls-segments/{segment_name}{query_suffix}"
+        "/api/playback-providers/{route_provider}/{version}/hls/{generation_id}/{segment_name}{query_suffix}"
     )
 }
 

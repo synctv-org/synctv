@@ -21,7 +21,7 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 <Diagram
   light={livestreamPipelineLight}
   dark={livestreamPipelineDark}
-  alt="SyncTV 直播流水线图，展示 RTMP 推流进入 StreamHub，分发到 HTTP-FLV 与 HLS remuxer，HLS 写入 memory/file/OSS 存储后由 playlist 和 segment 路由读取。"
+  alt="SyncTV 直播流水线图，展示 RTMP 推流进入 StreamHub，分发到 HTTP-FLV 与 HLS remuxer，HLS 写入 memory/file/S3 存储后由 playlist 和 segment 路由读取。"
   caption="直播数据先进入 RTMP/StreamHub，再按播放协议分流：HTTP-FLV 直接面向低延迟播放，HLS remuxer 生成 playlist/segment 并写入选择的 HLS backend。"
 />
 
@@ -125,9 +125,9 @@ RTSP、外部 RTMP 与内部 RTMP 推流都进入同一个 Live StreamHub。Sync
 典型选择：NFS、RWX PVC、CSI 共享卷。不要把 `emptyDir`、`/tmp` 或节点本地盘配置成 `shared_file`。
 
   </TabItem>
-  <TabItem label="oss" icon="cloud-download">
+  <TabItem label="s3" icon="cloud-download">
 
-`oss` 使用 S3 兼容对象存储保存分片。它是 Kubernetes 多副本和跨节点部署中更明确的共享边界。
+`s3` 使用 S3 兼容对象存储保存分片。它是 Kubernetes 多副本和跨节点部署中更明确的共享边界。
 
 典型选择：AWS S3、MinIO、Cloudflare R2 或兼容服务。需要配置 endpoint、bucket、access key 和 secret key。
 
@@ -140,7 +140,7 @@ RTSP、外部 RTMP 与内部 RTMP 推流都进入同一个 Live StreamHub。Sync
 1. Publisher 通过 RTMP 连接到任意一个 SyncTV 节点。
 2. 认证通过后，节点把 `room_id/media_id -> node_id/api_address` 注册到 publisher registry。集群模式下 registry 使用 Redis。
 3. 本节点 StreamHub 开始接收直播包；HTTP-FLV 可以直接从本节点订阅，HLS remuxer 持续生成分片。
-4. HLS 分片写入 `memory`、`file`、`shared_file` 或 `oss` backend。
+4. HLS 分片写入 `memory`、`file`、`shared_file` 或 `s3` backend。
 5. 观众请求如果落到非 publisher 节点，该节点通过共享 registry 找到 publisher owner。HTTP-FLV 走跨节点拉流/relay；HLS playlist/segment 可以通过 HLS gRPC proxy 从 publisher 节点读取。
 6. `shared_file` 的 TS 分片请求由当前节点从共享路径读取；本地 backend 仍使用 publisher-node HLS gRPC proxy 读取远端 playlist/segment。
 </Steps>
@@ -268,14 +268,14 @@ GOP 是视频编码中的一组帧。GOP 缓存可以让新连接的观众更快
 | `memory` | HLS 分片保存在当前进程内存里 | 单副本、临时直播、开发环境 |
 | `file` | HLS 分片写入当前节点的 `livestream.hls_storage.path` | 单副本文件存储，或小规模多副本 publisher-node proxy |
 | `shared_file` | HLS 分片写入所有副本共享的 `livestream.hls_storage.path` | 多副本共享文件系统，TS 分片由当前节点从共享路径读取 |
-| `oss` | HLS 分片写入 S3 兼容对象存储 | 多副本、Kubernetes、跨节点共享 |
+| `s3` | HLS 分片写入 S3 兼容对象存储 | 多副本、Kubernetes、跨节点共享 |
 
-规范值是 `memory`、`file`、`shared_file`、`oss`。
+规范值是 `memory`、`file`、`shared_file`、`s3`。
 
 集群模式可以使用 `memory` 或 `file`。非 publisher 节点会通过 HLS gRPC proxy 到 publisher 节点读取 playlist/segment。这个模式适合小规模部署或验证环境；生产高并发 HLS 推荐使用：
 
 - `shared_file`，并且 `hls_storage.path` 是所有副本可读写的共享文件系统。`.ts` 请求会由当前节点直接从共享路径读取。
-- `oss`，并配置 `livestream.hls_storage.*`。
+- `s3`，并配置 `livestream.hls_storage.*`。
 
 ### `livestream.hls_storage.memory_max_mb`
 
@@ -318,14 +318,14 @@ livestream:
 /var/lib/synctv/livestream/hls
 ```
 
-### `livestream.hls_storage.*` for OSS
+### `livestream.hls_storage.*` for S3
 
-当 `hls_storage.type=oss` 时，SyncTV 使用 S3 兼容对象存储保存 HLS 分片。
+当 `hls_storage.type=s3` 时，SyncTV 使用 S3 兼容对象存储保存 HLS 分片。
 
 ```yaml
 livestream:
   hls_storage:
-    type: "oss"
+    type: "s3"
     endpoint: "https://s3.example.com"
     bucket: "synctv-hls"
     region: "auto"
@@ -343,7 +343,7 @@ export SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY="..."
 
 | 字段 | 默认值 | 作用 |
 | --- | --- | --- |
-| `livestream.hls_storage.endpoint` | `""` | S3/OSS endpoint，例如 AWS S3、MinIO、Cloudflare R2 或兼容服务的 endpoint |
+| `livestream.hls_storage.endpoint` | `""` | S3-compatible endpoint，例如 AWS S3、MinIO、Cloudflare R2 或兼容服务的 endpoint |
 | `livestream.hls_storage.bucket` | `""` | 存储 HLS 分片的 bucket |
 | `livestream.hls_storage.access_key_id` | `""` | Access key ID，支持 `access_key_id_file` |
 | `livestream.hls_storage.secret_access_key` | `""` | Secret access key，支持 `secret_access_key_file` |

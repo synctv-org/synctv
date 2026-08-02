@@ -310,6 +310,24 @@ fn request_targets_grpc_transport(
     Ok(media_type.starts_with("application/grpc"))
 }
 
+fn relay_cancellation_token(
+    mut shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
+) -> tokio_util::sync::CancellationToken {
+    let token = tokio_util::sync::CancellationToken::new();
+    let Some(mut shutdown_rx) = shutdown_rx.take() else {
+        return token;
+    };
+
+    let token_for_task = token.clone();
+    tokio::spawn(async move {
+        if !*shutdown_rx.borrow() {
+            let _ = shutdown_rx.changed().await;
+        }
+        token_for_task.cancel();
+    });
+    token
+}
+
 async fn grpc_transport_only_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
@@ -2146,7 +2164,7 @@ async fn build_axum_router_with_health(
             let relay_service = live_infra.relay_service(
                 cluster_node_id.clone(),
                 runtime_settings.cluster.secret.clone(),
-                tokio_util::sync::CancellationToken::new(),
+                relay_cancellation_token(shutdown_rx.clone()),
             );
 
             let relay_interceptor =
@@ -2286,10 +2304,11 @@ mod tests {
     use super::{
         build_fallback_http_app_state, cluster_node_id, extract_client_ip,
         grpc_service_registration_plan, grpc_unary_request_timeout, map_api_error,
-        set_registered_grpc_services_not_serving, set_registered_grpc_services_serving,
-        should_register_cluster_grpc_service, should_register_email_service,
-        should_register_livestream_relay_service, validate_cluster_grpc_runtime_requirements,
-        wait_for_grpc_shutdown, FallbackHttpAppStateDeps, GrpcHealthRegistrationState,
+        relay_cancellation_token, set_registered_grpc_services_not_serving,
+        set_registered_grpc_services_serving, should_register_cluster_grpc_service,
+        should_register_email_service, should_register_livestream_relay_service,
+        validate_cluster_grpc_runtime_requirements, wait_for_grpc_shutdown,
+        FallbackHttpAppStateDeps, GrpcHealthRegistrationState,
     };
     use crate::grpc::{ClientServiceImpl, ClientServiceOptions};
     use std::net::SocketAddr;
@@ -2323,6 +2342,7 @@ mod tests {
     use synctv_realtime::fanout::{
         RealtimeDeliveryOutcome, RealtimeDeliveryRequirement, RealtimeEventService, RealtimeMetrics,
     };
+
     use synctv_realtime::sync::ConnectionRuntime;
     use synctv_realtime::sync::{ConnectionLimits, ConnectionManager, RealtimeManager};
     use tokio_stream::StreamExt;
@@ -2332,6 +2352,21 @@ mod tests {
 
     fn test_error(message: impl Into<String>) -> anyhow::Error {
         anyhow::anyhow!(message.into())
+    }
+
+    #[tokio::test]
+    async fn relay_cancellation_tracks_grpc_shutdown_signal() {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let token = relay_cancellation_token(Some(shutdown_rx));
+
+        assert!(!token.is_cancelled());
+        shutdown_tx
+            .send(true)
+            .expect("shutdown receiver should remain alive");
+        tokio::time::timeout(Duration::from_secs(1), token.cancelled())
+            .await
+            .expect("relay cancellation should follow gRPC shutdown");
+        assert!(token.is_cancelled());
     }
 
     fn make_chat_watch_user(username: &str) -> User {

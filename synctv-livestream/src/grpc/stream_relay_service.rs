@@ -5,7 +5,7 @@ use synctv_xiu::hls::StreamRegistry as HlsStreamRegistry;
 use synctv_xiu::streamhub::{
     define::{NotifyInfo, StreamHubEvent, StreamHubEventSender, SubscribeType, SubscriberInfo},
     errors::StreamHubErrorValue,
-    send_event_with_backpressure_timeout,
+    send_event_with_backpressure_timeout, spawn_event_delivery_with_backpressure_timeout,
     stream::StreamIdentifier,
     utils::Uuid,
 };
@@ -19,11 +19,12 @@ use super::proto::{
     stream_relay_service_server, FrameType, GetHlsPlaylistRequest, GetHlsPlaylistResponse,
     GetHlsSegmentRequest, GetHlsSegmentResponse, PullRtmpStreamRequest, RtmpPacket,
 };
+use crate::livestream::external_publish_manager::ExternalPublishManager;
 use crate::livestream::SegmentManager;
 use crate::relay::StreamRegistryTrait;
 use crate::util::{
     validate_hls_segment_name, validate_hls_segment_url_base, validate_hls_segment_url_suffix,
-    validate_stream_ids,
+    validate_stream_generation_id, validate_stream_ids,
 };
 
 type ResponseStream = Pin<Box<dyn Stream<Item = Result<RtmpPacket, Status>> + Send>>;
@@ -31,6 +32,40 @@ type ResponseStream = Pin<Box<dyn Stream<Item = Result<RtmpPacket, Status>> + Se
 /// Metadata key for cluster authentication shared secret
 const AUTH_SECRET_METADATA_KEY: &str = "x-cluster-secret";
 const STREAM_HUB_SUBSCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+struct RelaySubscriptionGuard {
+    event_sender: StreamHubEventSender,
+    subscriber_id: Uuid,
+    room_id: String,
+    media_id: String,
+    active: bool,
+}
+
+impl Drop for RelaySubscriptionGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+
+        let sub_info = SubscriberInfo {
+            id: self.subscriber_id,
+            sub_type: SubscribeType::RtmpPull,
+            sub_data_type: synctv_xiu::streamhub::define::SubDataType::Frame,
+            notify_info: NotifyInfo {
+                request_url: String::new(),
+                remote_addr: String::new(),
+            },
+        };
+        let event = StreamHubEvent::UnSubscribe {
+            identifier: StreamIdentifier::Rtmp {
+                app_name: self.room_id.clone(),
+                stream_name: self.media_id.clone(),
+            },
+            info: sub_info,
+        };
+        spawn_event_delivery_with_backpressure_timeout(self.event_sender.clone(), event);
+    }
+}
 
 fn map_streamhub_enqueue_error(error: synctv_xiu::streamhub::errors::StreamHubError) -> Status {
     match error.value {
@@ -57,6 +92,11 @@ fn validate_relay_hls_segment_name(segment_name: &str) -> Result<(), Status> {
         .map_err(|error| Status::invalid_argument(format!("invalid HLS segment name: {error}")))
 }
 
+fn validate_relay_generation_id(generation_id: &str) -> Result<(), Status> {
+    validate_stream_generation_id(generation_id)
+        .map_err(|error| Status::invalid_argument(format!("invalid generation_id: {error}")))
+}
+
 fn validate_relay_segment_url_base(segment_url_base: &str) -> Result<(), Status> {
     validate_hls_segment_url_base(segment_url_base)
         .map_err(|error| Status::invalid_argument(format!("invalid HLS segment URL base: {error}")))
@@ -68,10 +108,10 @@ fn validate_relay_segment_url_suffix(segment_url_suffix: &str) -> Result<(), Sta
     })
 }
 
-fn require_expected_epoch(expected_epoch: u64) -> Result<(), Status> {
-    if expected_epoch == 0 {
+fn require_expected_lease_epoch(expected_lease_epoch: u64) -> Result<(), Status> {
+    if expected_lease_epoch == 0 {
         return Err(Status::invalid_argument(
-            "expected_epoch is required for stream relay fencing",
+            "expected_lease_epoch is required for stream relay fencing",
         ));
     }
     Ok(())
@@ -150,6 +190,7 @@ pub struct StreamRelayServiceImpl {
     segment_manager: Option<Arc<SegmentManager>>,
     /// HLS stream registry for M3U8 generation (optional, only on HLS-enabled nodes)
     hls_stream_registry: Option<HlsStreamRegistry>,
+    external_publish_manager: Option<Arc<ExternalPublishManager>>,
 }
 
 impl StreamRelayServiceImpl {
@@ -168,6 +209,7 @@ impl StreamRelayServiceImpl {
             cancel_token,
             segment_manager: None,
             hls_stream_registry: None,
+            external_publish_manager: None,
         }
     }
 
@@ -196,6 +238,15 @@ impl StreamRelayServiceImpl {
         self
     }
 
+    #[must_use]
+    pub(crate) fn with_external_publish_manager(
+        mut self,
+        external_publish_manager: Arc<ExternalPublishManager>,
+    ) -> Self {
+        self.external_publish_manager = Some(external_publish_manager);
+        self
+    }
+
     /// Authenticate a gRPC request using the cluster shared secret.
     /// Uses constant-time comparison to prevent timing attacks.
     #[allow(clippy::result_large_err)]
@@ -221,17 +272,18 @@ impl StreamRelayServiceImpl {
         }
     }
 
-    async fn verify_local_publisher_epoch(
+    async fn verify_local_active_generation(
         &self,
         room_id: &str,
         media_id: &str,
-        expected_epoch: u64,
+        expected_generation_id: &str,
+        expected_lease_epoch: u64,
     ) -> Result<(), Status> {
-        require_expected_epoch(expected_epoch)?;
+        require_expected_lease_epoch(expected_lease_epoch)?;
 
         let publisher_info = self
             .registry
-            .get_publisher(room_id, media_id)
+            .get_active_generation(room_id, media_id)
             .await
             .map_err(|error| {
                 tracing::error!(%error, room_id, media_id, "Failed to get publisher");
@@ -239,6 +291,52 @@ impl StreamRelayServiceImpl {
             })?
             .ok_or_else(|| Status::not_found("No active publisher for this media"))?;
 
+        self.verify_local_route(
+            room_id,
+            media_id,
+            expected_generation_id,
+            expected_lease_epoch,
+            &publisher_info,
+        )
+    }
+
+    async fn verify_local_hls_generation(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        expected_lease_epoch: u64,
+    ) -> Result<crate::relay::StreamGeneration, Status> {
+        require_expected_lease_epoch(expected_lease_epoch)?;
+
+        let publisher_info = self
+            .registry
+            .get_generation(room_id, media_id, generation_id)
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, room_id, media_id, "Failed to get HLS route");
+                Status::internal("Failed to get HLS route")
+            })?
+            .ok_or_else(|| Status::not_found("No active or ended HLS route for this media"))?;
+
+        self.verify_local_route(
+            room_id,
+            media_id,
+            generation_id,
+            expected_lease_epoch,
+            &publisher_info,
+        )?;
+        Ok(publisher_info)
+    }
+
+    fn verify_local_route(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        expected_generation_id: &str,
+        expected_lease_epoch: u64,
+        publisher_info: &crate::relay::StreamGeneration,
+    ) -> Result<(), Status> {
         if publisher_info.node_id != self.node_id {
             return Err(Status::failed_precondition(format!(
                 "This node ({}) is not the publisher (publisher is {})",
@@ -246,10 +344,17 @@ impl StreamRelayServiceImpl {
             )));
         }
 
-        if publisher_info.epoch != expected_epoch {
+        if publisher_info.generation_id != expected_generation_id {
             return Err(Status::failed_precondition(format!(
-                "Publisher epoch mismatch for {room_id}/{media_id}: expected {}, current {}",
-                expected_epoch, publisher_info.epoch
+                "Publisher generation mismatch for {room_id}/{media_id}: expected {expected_generation_id}, current {}",
+                publisher_info.generation_id
+            )));
+        }
+
+        if publisher_info.lease_epoch != expected_lease_epoch {
+            return Err(Status::failed_precondition(format!(
+                "Publisher lease_epoch mismatch for {room_id}/{media_id}: expected {}, current {}",
+                expected_lease_epoch, publisher_info.lease_epoch
             )));
         }
 
@@ -273,13 +378,20 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
 
         let req = request.into_inner();
         validate_relay_stream_ids(&req.room_id, &req.media_id)?;
-        self.verify_local_publisher_epoch(&req.room_id, &req.media_id, req.expected_epoch)
-            .await?;
+        validate_relay_generation_id(&req.generation_id)?;
+        self.verify_local_active_generation(
+            &req.room_id,
+            &req.media_id,
+            &req.generation_id,
+            req.expected_lease_epoch,
+        )
+        .await?;
         info!(
             room_id = req.room_id,
             media_id = req.media_id,
+            generation_id = req.generation_id,
             is_reconnect = req.is_reconnect,
-            expected_epoch = req.expected_epoch,
+            expected_lease_epoch = req.expected_lease_epoch,
             "PullRtmpStream request (service-to-service internal call)"
         );
 
@@ -302,9 +414,11 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         };
 
         let (event_result_sender, event_result_receiver) = tokio::sync::oneshot::channel();
-        let subscribe_event = StreamHubEvent::Subscribe {
+        let subscribe_event = StreamHubEvent::SubscribeWithGeneration {
             identifier,
             info: sub_info,
+            expected_generation_id: Uuid::parse_str(&req.generation_id)
+                .map_err(|_| Status::invalid_argument("generation_id must be a UUID"))?,
             result_sender: event_result_sender,
         };
 
@@ -328,6 +442,39 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
                     tracing::error!("Subscribe failed: {e}");
                     Status::internal("Stream subscription failed")
                 })?;
+
+        // The RPC may be cancelled or fail any of the remaining setup checks after
+        // StreamHub has accepted the subscription. Keep an async drop guard armed
+        // until the forwarding task owns cleanup.
+        let mut subscription_guard = RelaySubscriptionGuard {
+            event_sender: self.stream_hub_event_sender.clone(),
+            subscriber_id,
+            room_id: req.room_id.clone(),
+            media_id: req.media_id.clone(),
+            active: true,
+        };
+
+        // The registry can change while StreamHub processes the event. A
+        // second lease check fences a subscriber that was accepted just
+        // before unpublish/republish completed on the publisher node.
+        if let Err(status) = self
+            .verify_local_active_generation(
+                &req.room_id,
+                &req.media_id,
+                &req.generation_id,
+                req.expected_lease_epoch,
+            )
+            .await
+        {
+            Self::unsubscribe_from_hub(
+                self.stream_hub_event_sender.clone(),
+                subscriber_id,
+                req.room_id.clone(),
+                req.media_id.clone(),
+            )
+            .await;
+            return Err(status);
+        }
 
         let frame_receiver = subscribe_result
             .0
@@ -355,6 +502,8 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
             .await;
         });
 
+        subscription_guard.active = false;
+
         let output_stream = ReceiverStream::new(rx);
         Ok(Response::new(
             Box::pin(output_stream) as Self::PullRtmpStreamStream
@@ -371,26 +520,46 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
 
         let req = request.into_inner();
         validate_relay_stream_ids(&req.room_id, &req.media_id)?;
+        validate_relay_generation_id(&req.generation_id)?;
         validate_relay_segment_url_base(&req.segment_url_base)?;
         validate_relay_segment_url_suffix(&req.segment_url_suffix)?;
-        self.verify_local_publisher_epoch(&req.room_id, &req.media_id, req.expected_epoch)
+        let generation = self
+            .verify_local_hls_generation(
+                &req.room_id,
+                &req.media_id,
+                &req.generation_id,
+                req.expected_lease_epoch,
+            )
             .await?;
         tracing::debug!(
             room_id = req.room_id,
             media_id = req.media_id,
-            expected_epoch = req.expected_epoch,
+            expected_lease_epoch = req.expected_lease_epoch,
             "GetHlsPlaylist request"
         );
+        let _activity_guard = if let Some(manager) = &self.external_publish_manager {
+            manager
+                .subscribe_active_generation(&req.room_id, &req.media_id, &req.generation_id)
+                .await
+        } else {
+            None
+        };
 
         let hls_registry = self
             .hls_stream_registry
             .as_ref()
             .ok_or_else(|| Status::unavailable("HLS not enabled on this node"))?;
 
-        // Registry key format: "room_id/media_id" (matches remuxer's app_name/stream_name)
-        let stream_key = format!("{}/{}", req.room_id, req.media_id);
+        let stream_state = crate::api::livestream::find_hls_generation_state(
+            hls_registry,
+            &req.room_id,
+            &req.media_id,
+            &req.generation_id,
+            generation.ended_at.is_none(),
+        )
+        .await;
 
-        let response = match hls_registry.get(&stream_key) {
+        let response = match stream_state {
             Some(stream_state) => {
                 let state = stream_state.read();
                 let segment_url_base = req.segment_url_base;
@@ -422,16 +591,29 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
 
         let req = request.into_inner();
         validate_relay_stream_ids(&req.room_id, &req.media_id)?;
+        validate_relay_generation_id(&req.generation_id)?;
         validate_relay_hls_segment_name(&req.segment_name)?;
-        self.verify_local_publisher_epoch(&req.room_id, &req.media_id, req.expected_epoch)
-            .await?;
+        self.verify_local_hls_generation(
+            &req.room_id,
+            &req.media_id,
+            &req.generation_id,
+            req.expected_lease_epoch,
+        )
+        .await?;
         tracing::debug!(
             room_id = req.room_id,
             media_id = req.media_id,
             segment_name = req.segment_name,
-            expected_epoch = req.expected_epoch,
+            expected_lease_epoch = req.expected_lease_epoch,
             "GetHlsSegment request"
         );
+        let _activity_guard = if let Some(manager) = &self.external_publish_manager {
+            manager
+                .subscribe_active_generation(&req.room_id, &req.media_id, &req.generation_id)
+                .await
+        } else {
+            None
+        };
 
         let segment_manager = self
             .segment_manager
@@ -511,6 +693,8 @@ impl StreamRelayServiceImpl {
 mod tests {
     use super::*;
     use crate::grpc::proto::stream_relay_service_server::StreamRelayService;
+    use crate::livestream::managed_stream::ManagedStream as _;
+    use crate::util::TEST_GENERATION_ID;
     use bytes::Bytes;
     use synctv_xiu::streamhub::define::{DataReceiver, StreamHubEvent};
     use synctv_xiu::streamhub::stream::StreamIdentifier;
@@ -531,11 +715,19 @@ mod tests {
 
     async fn register_test_publisher(
         registry: &Arc<dyn crate::relay::StreamRegistryTrait>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<synctv_xiu::streamhub::utils::Uuid> {
+        let generation_id = synctv_xiu::streamhub::utils::Uuid::new();
         registry
-            .try_register_publisher("room1", "media1", "test-node", "", "127.0.0.1:50051")
+            .try_activate_generation(
+                "room1",
+                "media1",
+                "test-node",
+                "",
+                "127.0.0.1:50051",
+                &generation_id.to_string(),
+            )
             .await?;
-        Ok(())
+        Ok(generation_id)
     }
 
     async fn recv_event(
@@ -675,10 +867,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn relay_subscription_guard_unsubscribes_when_setup_is_cancelled() -> TestResult {
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
+        let subscriber_id = Uuid::new();
+        let guard = RelaySubscriptionGuard {
+            event_sender: event_tx,
+            subscriber_id,
+            room_id: "room-cancel".to_string(),
+            media_id: "media-cancel".to_string(),
+            active: true,
+        };
+        drop(guard);
+
+        let event = timeout(Duration::from_secs(1), event_rx.recv())
+            .await?
+            .ok_or_else(|| test_error("cancelled relay setup must enqueue unsubscribe"))?;
+        let StreamHubEvent::UnSubscribe { identifier, info } = event else {
+            return Err(test_error("expected relay setup rollback unsubscribe"));
+        };
+        assert_eq!(info.id, subscriber_id);
+        assert_eq!(
+            identifier,
+            StreamIdentifier::Rtmp {
+                app_name: "room-cancel".to_string(),
+                stream_name: "media-cancel".to_string(),
+            }
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_pull_rtmp_stream_times_out_when_streamhub_subscription_never_completes(
     ) -> TestResult {
         let registry = crate::relay::local_stream_registry();
-        register_test_publisher(&registry).await?;
+        let generation_id = register_test_publisher(&registry).await?;
 
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
         let service = StreamRelayServiceImpl::new(
@@ -692,8 +914,9 @@ mod tests {
         let mut request = Request::new(PullRtmpStreamRequest {
             room_id: "room1".to_string(),
             media_id: "media1".to_string(),
+            generation_id: generation_id.to_string(),
             is_reconnect: false,
-            expected_epoch: 1,
+            expected_lease_epoch: 1,
         });
         attach_test_auth(&mut request)?;
         let service_task = tokio::spawn(async move { service.pull_rtmp_stream(request).await });
@@ -703,7 +926,7 @@ mod tests {
             "event channel should receive subscribe request",
         )
         .await?;
-        let StreamHubEvent::Subscribe { .. } = event else {
+        let StreamHubEvent::SubscribeWithGeneration { .. } = event else {
             return Err(test_error("expected subscribe event"));
         };
 
@@ -734,8 +957,9 @@ mod tests {
         let mut request = Request::new(PullRtmpStreamRequest {
             room_id: "room:1".to_string(),
             media_id: "media1".to_string(),
+            generation_id: TEST_GENERATION_ID.to_string(),
             is_reconnect: false,
-            expected_epoch: 1,
+            expected_lease_epoch: 1,
         });
         attach_test_auth(&mut request)?;
 
@@ -763,9 +987,10 @@ mod tests {
         let mut request = Request::new(GetHlsPlaylistRequest {
             room_id: "room1".to_string(),
             media_id: "media1".to_string(),
+            generation_id: TEST_GENERATION_ID.to_string(),
             segment_url_base: "/segments/\n#EXT-X-ENDLIST".to_string(),
             segment_url_suffix: ".ts".to_string(),
-            expected_epoch: 1,
+            expected_lease_epoch: 1,
         });
         attach_test_auth(&mut request)?;
 
@@ -793,9 +1018,10 @@ mod tests {
         let mut request = Request::new(GetHlsPlaylistRequest {
             room_id: "room1".to_string(),
             media_id: "media1".to_string(),
+            generation_id: TEST_GENERATION_ID.to_string(),
             segment_url_base: "/segments/".to_string(),
             segment_url_suffix: ".ts\n#EXT-X-ENDLIST".to_string(),
-            expected_epoch: 1,
+            expected_lease_epoch: 1,
         });
         attach_test_auth(&mut request)?;
 
@@ -810,7 +1036,7 @@ mod tests {
     #[tokio::test]
     async fn test_relay_preserves_hls_playlist_segment_url_suffix() -> TestResult {
         let registry = crate::relay::local_stream_registry();
-        register_test_publisher(&registry).await?;
+        let generation_id = register_test_publisher(&registry).await?;
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
         let hls_registry = Arc::new(dashmap::DashMap::new());
         let mut playlist = synctv_xiu::hls::HlsPlaylist::new();
@@ -822,13 +1048,13 @@ mod tests {
             discontinuity: false,
         });
         hls_registry.insert(
-            "room1/media1".to_string(),
+            synctv_xiu::hls::generation_registry_key("room1", "media1", &generation_id.to_string()),
             Arc::new(parking_lot::RwLock::new(
                 synctv_xiu::hls::StreamProcessorState {
                     app_name: "room1".to_string(),
                     stream_name: "media1".to_string(),
                     playlist,
-                    created_at: std::time::Instant::now(),
+                    generation_id,
                     marked_for_cleanup: false,
                     cleanup_segment_names: Vec::new(),
                 },
@@ -846,9 +1072,10 @@ mod tests {
         let mut request = Request::new(GetHlsPlaylistRequest {
             room_id: "room1".to_string(),
             media_id: "media1".to_string(),
+            generation_id: generation_id.to_string(),
             segment_url_base: "/api/live/segment/".to_string(),
             segment_url_suffix: ".png?sig=abc&rid=room1".to_string(),
-            expected_epoch: 1,
+            expected_lease_epoch: 1,
         });
         attach_test_auth(&mut request)?;
 
@@ -862,6 +1089,95 @@ mod tests {
             "playlist must preserve signed query and disguised extension: {}",
             response.playlist
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remote_hls_playlist_poll_refreshes_external_stream_activity() -> TestResult {
+        let registry = crate::relay::local_stream_registry();
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(8);
+        let manager = Arc::new(ExternalPublishManager::with_timeouts(
+            registry.clone(),
+            "test-node".to_string(),
+            "127.0.0.1:50051".to_string(),
+            event_tx.clone(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+            60,
+            300,
+        )?);
+        let (stream, generation_id) = manager.install_running_test_stream(
+            "room1",
+            "media1",
+            synctv_core::models::ExternalLiveSourceConfig::HttpFlv {
+                url: "http://127.0.0.1/live.flv".to_string(),
+            },
+        );
+        let generation_id_string = generation_id.to_string();
+        assert!(
+            registry
+                .try_activate_generation(
+                    "room1",
+                    "media1",
+                    "test-node",
+                    "",
+                    "127.0.0.1:50051",
+                    &generation_id_string,
+                )
+                .await?
+        );
+
+        let mut playlist = synctv_xiu::hls::HlsPlaylist::new();
+        playlist.push_segment(synctv_xiu::hls::SegmentInfo {
+            sequence: 0,
+            duration_ms: 1_000,
+            started_at_ms: 0,
+            ts_name: "seg001".to_string(),
+            discontinuity: false,
+        });
+        let hls_registry = Arc::new(dashmap::DashMap::new());
+        hls_registry.insert(
+            synctv_xiu::hls::generation_registry_key("room1", "media1", &generation_id_string),
+            Arc::new(parking_lot::RwLock::new(
+                synctv_xiu::hls::StreamProcessorState {
+                    app_name: "room1".to_string(),
+                    stream_name: "media1".to_string(),
+                    playlist,
+                    generation_id,
+                    marked_for_cleanup: false,
+                    cleanup_segment_names: Vec::new(),
+                },
+            )),
+        );
+        let service = StreamRelayServiceImpl::new(
+            registry,
+            "test-node".to_string(),
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_cluster_secret("cluster-secret")
+        .with_external_publish_manager(manager)
+        .with_hls_stream_registry(hls_registry);
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while stream.lifecycle().last_active_elapsed_secs() == 0 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await?;
+        let mut request = Request::new(GetHlsPlaylistRequest {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            generation_id: generation_id_string,
+            segment_url_base: "/segments/".to_string(),
+            segment_url_suffix: ".ts".to_string(),
+            expected_lease_epoch: 1,
+        });
+        attach_test_auth(&mut request)?;
+
+        let response = service.get_hls_playlist(request).await?.into_inner();
+        assert!(response.found);
+        assert_eq!(stream.lifecycle().last_active_elapsed_secs(), 0);
+        assert_eq!(stream.lifecycle().subscriber_count(), 0);
         Ok(())
     }
 
@@ -885,8 +1201,9 @@ mod tests {
         let mut request = Request::new(GetHlsSegmentRequest {
             room_id: "room1".to_string(),
             media_id: "media1".to_string(),
+            generation_id: TEST_GENERATION_ID.to_string(),
             segment_name: "../secret".to_string(),
-            expected_epoch: 1,
+            expected_lease_epoch: 1,
         });
         attach_test_auth(&mut request)?;
 
@@ -899,9 +1216,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_relay_rejects_stale_expected_epoch_before_streamhub_work() -> TestResult {
+    async fn test_relay_rejects_stale_expected_lease_epoch_before_streamhub_work() -> TestResult {
         let registry = crate::relay::local_stream_registry();
-        register_test_publisher(&registry).await?;
+        let generation_id = register_test_publisher(&registry).await?;
 
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
         let service = StreamRelayServiceImpl::new(
@@ -915,38 +1232,77 @@ mod tests {
         let mut request = Request::new(PullRtmpStreamRequest {
             room_id: "room1".to_string(),
             media_id: "media1".to_string(),
+            generation_id: generation_id.to_string(),
             is_reconnect: false,
-            expected_epoch: 999,
+            expected_lease_epoch: 999,
         });
         attach_test_auth(&mut request)?;
 
         let status = expect_status(
             service.pull_rtmp_stream(request).await,
-            "stale epoch must fail closed",
+            "stale lease_epoch must fail closed",
         )?;
         assert_eq!(status.code(), tonic::Code::FailedPrecondition);
         assert!(
             event_rx.try_recv().is_err(),
-            "stale epoch must be rejected before StreamHub subscription"
+            "stale lease_epoch must be rejected before StreamHub subscription"
         );
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_hls_playlist_rejects_stale_expected_epoch_before_registry_read() -> TestResult {
+    async fn test_relay_rejects_stale_generation_before_streamhub_work() -> TestResult {
         let registry = crate::relay::local_stream_registry();
-        register_test_publisher(&registry).await?;
+        let active_generation_id = register_test_publisher(&registry).await?;
+        let stale_generation_id = synctv_xiu::streamhub::utils::Uuid::new();
+        assert_ne!(stale_generation_id, active_generation_id);
+
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
+        let service = StreamRelayServiceImpl::new(
+            registry,
+            "test-node".to_string(),
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_cluster_secret("cluster-secret");
+
+        let mut request = Request::new(PullRtmpStreamRequest {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            generation_id: stale_generation_id.to_string(),
+            expected_lease_epoch: 1,
+            is_reconnect: true,
+        });
+        attach_test_auth(&mut request)?;
+
+        let status = expect_status(
+            service.pull_rtmp_stream(request).await,
+            "stale generation must fail closed",
+        )?;
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert!(
+            event_rx.try_recv().is_err(),
+            "stale generation must be rejected before StreamHub subscription"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_hls_playlist_rejects_stale_expected_lease_epoch_before_registry_read(
+    ) -> TestResult {
+        let registry = crate::relay::local_stream_registry();
+        let generation_id = register_test_publisher(&registry).await?;
 
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
         let hls_registry = Arc::new(dashmap::DashMap::new());
         hls_registry.insert(
-            "room1/media1".to_string(),
+            synctv_xiu::hls::generation_registry_key("room1", "media1", &generation_id.to_string()),
             Arc::new(parking_lot::RwLock::new(
                 synctv_xiu::hls::StreamProcessorState {
                     app_name: "room1".to_string(),
                     stream_name: "media1".to_string(),
                     playlist: synctv_xiu::hls::HlsPlaylist::new(),
-                    created_at: std::time::Instant::now(),
+                    generation_id,
                     marked_for_cleanup: false,
                     cleanup_segment_names: Vec::new(),
                 },
@@ -964,15 +1320,16 @@ mod tests {
         let mut request = Request::new(GetHlsPlaylistRequest {
             room_id: "room1".to_string(),
             media_id: "media1".to_string(),
+            generation_id: generation_id.to_string(),
             segment_url_base: "/segments/".to_string(),
             segment_url_suffix: ".ts".to_string(),
-            expected_epoch: 999,
+            expected_lease_epoch: 999,
         });
         attach_test_auth(&mut request)?;
 
         let status = expect_status(
             service.get_hls_playlist(request).await,
-            "stale epoch must fail closed",
+            "stale lease_epoch must fail closed",
         )?;
         assert_eq!(status.code(), tonic::Code::FailedPrecondition);
         Ok(())
@@ -981,11 +1338,11 @@ mod tests {
     #[tokio::test]
     async fn test_pull_rtmp_stream_waits_for_temporarily_full_streamhub_queue() -> TestResult {
         let registry = crate::relay::local_stream_registry();
-        register_test_publisher(&registry).await?;
+        let generation_id = register_test_publisher(&registry).await?;
 
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
         event_tx
-            .try_send(StreamHubEvent::UnPublish {
+            .try_send(StreamHubEvent::ForceUnPublish {
                 identifier: StreamIdentifier::Rtmp {
                     app_name: "prefill".to_string(),
                     stream_name: "prefill".to_string(),
@@ -1004,8 +1361,9 @@ mod tests {
         let mut request = Request::new(PullRtmpStreamRequest {
             room_id: "room1".to_string(),
             media_id: "media1".to_string(),
+            generation_id: generation_id.to_string(),
             is_reconnect: false,
-            expected_epoch: 1,
+            expected_lease_epoch: 1,
         });
         attach_test_auth(&mut request)?;
         let service_task = tokio::spawn(async move { service.pull_rtmp_stream(request).await });
@@ -1014,14 +1372,14 @@ mod tests {
             .recv()
             .await
             .ok_or_else(|| test_error("prefill event should be present"))?;
-        assert!(matches!(blocked, StreamHubEvent::UnPublish { .. }));
+        assert!(matches!(blocked, StreamHubEvent::ForceUnPublish { .. }));
 
         let event = recv_event(
             &mut event_rx,
             "event channel should receive subscribe request",
         )
         .await?;
-        let StreamHubEvent::Subscribe { result_sender, .. } = event else {
+        let StreamHubEvent::SubscribeWithGeneration { result_sender, .. } = event else {
             return Err(test_error("expected subscribe event"));
         };
 
@@ -1047,11 +1405,11 @@ mod tests {
     #[tokio::test]
     async fn test_pull_rtmp_stream_maps_full_streamhub_queue_to_resource_exhausted() -> TestResult {
         let registry = crate::relay::local_stream_registry();
-        register_test_publisher(&registry).await?;
+        let generation_id = register_test_publisher(&registry).await?;
 
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
         event_tx
-            .try_send(StreamHubEvent::UnPublish {
+            .try_send(StreamHubEvent::ForceUnPublish {
                 identifier: StreamIdentifier::Rtmp {
                     app_name: "prefill".to_string(),
                     stream_name: "prefill".to_string(),
@@ -1070,8 +1428,9 @@ mod tests {
         let mut request = Request::new(PullRtmpStreamRequest {
             room_id: "room1".to_string(),
             media_id: "media1".to_string(),
+            generation_id: generation_id.to_string(),
             is_reconnect: false,
-            expected_epoch: 1,
+            expected_lease_epoch: 1,
         });
         attach_test_auth(&mut request)?;
 
@@ -1086,7 +1445,7 @@ mod tests {
     #[tokio::test]
     async fn test_pull_rtmp_stream_maps_closed_streamhub_queue_to_unavailable() -> TestResult {
         let registry = crate::relay::local_stream_registry();
-        register_test_publisher(&registry).await?;
+        let generation_id = register_test_publisher(&registry).await?;
 
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(1);
         drop(event_rx);
@@ -1102,8 +1461,9 @@ mod tests {
         let mut request = Request::new(PullRtmpStreamRequest {
             room_id: "room1".to_string(),
             media_id: "media1".to_string(),
+            generation_id: generation_id.to_string(),
             is_reconnect: false,
-            expected_epoch: 1,
+            expected_lease_epoch: 1,
         });
         attach_test_auth(&mut request)?;
 

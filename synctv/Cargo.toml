@@ -176,7 +176,7 @@ tikv-jemallocator = { workspace = true, optional = true }
 [dev-dependencies]
 synctv-common = { workspace = true, default-features = false }
 synctv-core = { workspace = true, default-features = false, features = ["test-support"] }
-synctv-core-testing.workspace = true
+synctv-core-testing = { workspace = true, features = ["streaming"] }
 base64.workspace = true
 tonic-health.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

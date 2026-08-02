@@ -1,26 +1,14 @@
-use std::sync::Arc;
-use synctv_xiu::rtmp::session::common::RtmpStreamHandler;
-use synctv_xiu::streamhub::{
-    define::{
-        FrameData, FrameDataSender, NotifyInfo, PublishType, PublisherInfo, StreamHubEvent,
-        StreamHubEventSender,
-    },
-    send_event_with_backpressure_timeout_for,
-    stream::StreamIdentifier,
-    utils::Uuid,
-};
-use tokio::sync::oneshot;
+use synctv_xiu::streamhub::define::{FrameData, FrameDataSender};
 use tonic::codec::CompressionEncoding;
 use tonic::metadata::{Ascii, MetadataValue};
 use tonic::Request;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use super::connection_pool::GrpcConnectionPool;
 use super::proto::{stream_relay_service_client::StreamRelayServiceClient, PullRtmpStreamRequest};
 
 const STREAM_MESSAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const FRAME_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const STREAMHUB_EVENT_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 async fn timeout_stream_message<T, E>(
     timeout: std::time::Duration,
@@ -61,13 +49,15 @@ async fn send_frame_with_backpressure(
         .map_err(|_| anyhow::anyhow!("Local relay stream channel closed"))
 }
 /// gRPC Stream Puller
-/// Pulls RTMP stream from remote Publisher node via gRPC and publishes to local `StreamHub`
+/// Pulls one RTMP relay session from a remote publisher and forwards frames to
+/// an existing local `StreamHub` publication.
 pub(crate) struct GrpcStreamPuller {
     room_id: String,
     media_id: String,
     publisher_node_addr: String,
-    expected_epoch: u64,
-    stream_hub_event_sender: StreamHubEventSender,
+    generation_id: String,
+    expected_lease_epoch: u64,
+    is_reconnect: bool,
     /// Cluster authentication secret (attached as x-cluster-secret metadata)
     cluster_secret: Option<String>,
     /// Shared connection pool for reusing gRPC channels to publisher nodes
@@ -88,16 +78,18 @@ impl GrpcStreamPuller {
         room_id: String,
         media_id: String,
         publisher_node_addr: String,
-        expected_epoch: u64,
-        stream_hub_event_sender: StreamHubEventSender,
+        generation_id: String,
+        expected_lease_epoch: u64,
         connection_pool: GrpcConnectionPool,
+        is_reconnect: bool,
     ) -> Self {
         Self {
             room_id,
             media_id,
             publisher_node_addr,
-            expected_epoch,
-            stream_hub_event_sender,
+            generation_id,
+            expected_lease_epoch,
+            is_reconnect,
             cluster_secret: None,
             connection_pool,
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
@@ -140,37 +132,20 @@ impl GrpcStreamPuller {
             .map_err(|_| anyhow::anyhow!("Invalid cluster secret format"))
     }
 
-    /// Run one pull session: publish locally, connect to the remote publisher,
-    /// forward frames, then unpublish from the local `StreamHub`.
-    pub(crate) async fn run(mut self) -> anyhow::Result<()> {
+    /// Run one remote pull session using a local publication owned by `PullStream`.
+    pub(crate) async fn run(self, data_sender: &FrameDataSender) -> anyhow::Result<()> {
         info!(
             room_id = %self.room_id,
             media_id = %self.media_id,
             publisher = %self.publisher_node_addr,
-            expected_epoch = self.expected_epoch,
+            generation_id = %self.generation_id,
+            expected_lease_epoch = self.expected_lease_epoch,
             "Starting gRPC stream puller"
         );
 
         self.cluster_secret_metadata()?;
 
-        // Publish to local StreamHub to get a frame data sender for this pull session.
-        let data_sender = match self.publish_to_local_stream_hub().await {
-            Ok(sender) => sender,
-            Err(e) => {
-                error!(
-                    room_id = %self.room_id,
-                    "Failed to publish to local StreamHub: {e}"
-                );
-                return Err(anyhow::anyhow!("Failed to publish to local StreamHub: {e}"));
-            }
-        };
-
-        let result = self.connect_and_stream(&data_sender).await;
-
-        // Always clean up local StreamHub publication before returning
-        if let Err(e) = self.unpublish_from_local_stream_hub().await {
-            warn!("Failed to unpublish from local StreamHub: {e}");
-        }
+        let result = self.connect_and_stream(data_sender).await;
 
         match result {
             Ok(()) => {
@@ -222,8 +197,9 @@ impl GrpcStreamPuller {
         let mut request = Request::new(PullRtmpStreamRequest {
             room_id: self.room_id.clone(),
             media_id: self.media_id.clone(),
-            is_reconnect: false,
-            expected_epoch: self.expected_epoch,
+            generation_id: self.generation_id.clone(),
+            expected_lease_epoch: self.expected_lease_epoch,
+            is_reconnect: self.is_reconnect,
         });
 
         request
@@ -300,92 +276,12 @@ impl GrpcStreamPuller {
 
         Ok(())
     }
-
-    /// Publish to local `StreamHub` (similar to xiu `ClientSession::publish_to_stream_hub`)
-    async fn publish_to_local_stream_hub(&mut self) -> anyhow::Result<FrameDataSender> {
-        let publisher_id = Uuid::new();
-
-        let publisher_info = PublisherInfo {
-            id: publisher_id,
-            pub_type: PublishType::RtmpRelay, // Using RtmpRelay for inter-node streaming
-            pub_data_type: synctv_xiu::streamhub::define::PubDataType::Frame,
-            notify_info: NotifyInfo {
-                request_url: format!(
-                    "grpc://{}/{}/{}",
-                    self.publisher_node_addr, self.room_id, self.media_id
-                ),
-                remote_addr: self.publisher_node_addr.clone(),
-            },
-        };
-
-        // Use canonical (room_id, media_id) format matching RTMP publish identifier
-        let identifier = StreamIdentifier::Rtmp {
-            app_name: self.room_id.clone(),
-            stream_name: self.media_id.clone(),
-        };
-
-        let stream_handler = Arc::new(RtmpStreamHandler::new());
-
-        let (event_result_sender, event_result_receiver) = oneshot::channel();
-        let publish_event = StreamHubEvent::Publish {
-            identifier,
-            info: publisher_info,
-            stream_handler,
-            result_sender: event_result_sender,
-        };
-
-        send_event_with_backpressure_timeout_for(
-            &self.stream_hub_event_sender,
-            publish_event,
-            STREAMHUB_EVENT_SEND_TIMEOUT,
-        )
-        .await
-        .map_err(|error| anyhow::anyhow!("Failed to send publish event: {error}"))?;
-
-        let result = event_result_receiver
-            .await
-            .map_err(|_| anyhow::anyhow!("Publish result channel closed"))?
-            .map_err(|e| anyhow::anyhow!("Publish failed: {e}"))?;
-
-        let data_sender = result
-            .0
-            .ok_or_else(|| anyhow::anyhow!("No data sender from publish result"))?;
-
-        info!("Successfully published to local StreamHub");
-        Ok(data_sender)
-    }
-
-    /// Unpublish from local `StreamHub`
-    async fn unpublish_from_local_stream_hub(&mut self) -> anyhow::Result<()> {
-        let identifier = StreamIdentifier::Rtmp {
-            app_name: self.room_id.clone(),
-            stream_name: self.media_id.clone(),
-        };
-
-        let unpublish_event = StreamHubEvent::UnPublish { identifier };
-
-        if let Err(e) = send_event_with_backpressure_timeout_for(
-            &self.stream_hub_event_sender,
-            unpublish_event,
-            STREAMHUB_EVENT_SEND_TIMEOUT,
-        )
-        .await
-        {
-            warn!(
-                room_id = %self.room_id,
-                media_id = %self.media_id,
-                "Failed to send unpublish event to StreamHub: {}",
-                e
-            );
-        }
-
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::TEST_GENERATION_ID;
     use std::time::Duration;
     use tokio::sync::mpsc;
 
@@ -398,16 +294,16 @@ mod tests {
     const TEST_STREAM_MESSAGE_TIMEOUT: Duration = Duration::from_millis(50);
     #[tokio::test]
     async fn test_puller_with_cluster_secret() {
-        let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
         let pool = GrpcConnectionPool::with_defaults();
 
         let puller = GrpcStreamPuller::new(
             "room".to_string(),
             "media".to_string(),
             "node:50051".to_string(),
+            TEST_GENERATION_ID.to_string(),
             7,
-            stream_hub_event_sender,
             pool,
+            false,
         )
         .with_cluster_secret(Some("test-secret".to_string()));
 
@@ -416,16 +312,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_puller_rejects_missing_cluster_secret() {
-        let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
         let pool = GrpcConnectionPool::with_defaults();
 
         let puller = GrpcStreamPuller::new(
             "room".to_string(),
             "media".to_string(),
             "node:50051".to_string(),
+            TEST_GENERATION_ID.to_string(),
             7,
-            stream_hub_event_sender,
             pool,
+            false,
         );
 
         let error = puller
@@ -440,16 +336,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_puller_rejects_empty_cluster_secret() {
-        let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
         let pool = GrpcConnectionPool::with_defaults();
 
         let puller = GrpcStreamPuller::new(
             "room".to_string(),
             "media".to_string(),
             "node:50051".to_string(),
+            TEST_GENERATION_ID.to_string(),
             7,
-            stream_hub_event_sender,
             pool,
+            false,
         )
         .with_cluster_secret(Some(String::new()));
 
@@ -470,7 +366,6 @@ mod tests {
     /// 2. The pool is shared (not cloned) across multiple pullers
     #[tokio::test]
     async fn test_puller_uses_shared_connection_pool() {
-        let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
         let pool = GrpcConnectionPool::with_defaults();
 
         // Create two pullers with the same pool
@@ -478,18 +373,20 @@ mod tests {
             "room1".to_string(),
             "media1".to_string(),
             "node1:50051".to_string(),
+            TEST_GENERATION_ID.to_string(),
             7,
-            stream_hub_event_sender.clone(),
             pool.clone(),
+            false,
         );
 
         let puller2 = GrpcStreamPuller::new(
             "room2".to_string(),
             "media2".to_string(),
             "node2:50051".to_string(),
+            TEST_GENERATION_ID.to_string(),
             8,
-            stream_hub_event_sender,
             pool.clone(),
+            true,
         );
 
         // Both pullers should have empty pools initially
@@ -539,65 +436,6 @@ mod tests {
             data_receiver.try_recv().is_err(),
             "timed out send must not enqueue an extra frame"
         );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_publish_to_local_stream_hub_waits_for_backpressure_instead_of_failing_immediately(
-    ) -> TestResult {
-        let (stream_hub_event_sender, mut stream_hub_event_receiver) = mpsc::channel(1);
-        stream_hub_event_sender
-            .send(StreamHubEvent::UnPublish {
-                identifier: StreamIdentifier::Rtmp {
-                    app_name: "occupied".to_string(),
-                    stream_name: "occupied".to_string(),
-                },
-            })
-            .await?;
-
-        let release_handle = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            stream_hub_event_receiver
-                .recv()
-                .await
-                .ok_or_else(|| test_error("occupied event should be drained"))?;
-            if let Some(StreamHubEvent::Publish { result_sender, .. }) =
-                stream_hub_event_receiver.recv().await
-            {
-                let (data_sender, _) = mpsc::channel(4);
-                result_sender
-                    .send(Ok((
-                        Some(FrameDataSender::bounded(data_sender)),
-                        None,
-                        None,
-                    )))
-                    .map_err(|_| test_error("publish result receiver should be alive"))?;
-                Ok(())
-            } else {
-                Err(test_error(
-                    "expected publish event after backpressure cleared",
-                ))
-            }
-        });
-
-        let mut puller = GrpcStreamPuller::new(
-            "room".to_string(),
-            "media".to_string(),
-            "publisher:50051".to_string(),
-            7,
-            stream_hub_event_sender,
-            GrpcConnectionPool::with_defaults(),
-        );
-
-        let result =
-            tokio::time::timeout(Duration::from_secs(2), puller.publish_to_local_stream_hub())
-                .await?;
-
-        assert!(
-            result.is_ok(),
-            "publish should succeed after brief backpressure"
-        );
-        release_handle.await??;
         Ok(())
     }
 

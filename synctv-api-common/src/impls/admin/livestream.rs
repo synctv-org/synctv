@@ -29,12 +29,13 @@ impl AdminApiImpl {
             .as_ref()
             .ok_or_else(live_streaming_unavailable_error)?;
 
-        let active_publishers = infrastructure
-            .list_active_publishers()
-            .await
-            .map_err(|error| {
-                ApiError::Internal(format!("Failed to list active streams: {error}"))
-            })?;
+        let active_publishers =
+            infrastructure
+                .list_active_generations()
+                .await
+                .map_err(|error| {
+                    ApiError::Internal(format!("Failed to list active streams: {error}"))
+                })?;
         let room_id = normalize_non_empty_filter(&req.room_id)
             .map(|room_id| crate::impls::proto_validated_room_id(room_id, &self.public_id_codec))
             .transpose()?
@@ -57,18 +58,18 @@ impl AdminApiImpl {
                 }
             }
             if let Some(filter_user) = user_filter.as_deref() {
-                if active_publisher.publisher.user_id != filter_user {
+                if active_publisher.generation.user_id != filter_user {
                     continue;
                 }
             }
 
-            let user_id = if active_publisher.publisher.user_id.is_empty() {
+            let user_id = if active_publisher.generation.user_id.is_empty() {
                 String::new()
             } else {
                 self.public_id_codec
                     .encode_user_id(
                         active_publisher
-                            .publisher
+                            .generation
                             .user_id
                             .parse::<UserId>()
                             .map_err(|error| {
@@ -100,8 +101,8 @@ impl AdminApiImpl {
                     )?)
                     .map_err(ApiError::Internal)?,
                 user_id,
-                node_id: active_publisher.publisher.node_id,
-                started_at: active_publisher.publisher.started_at.timestamp(),
+                node_id: active_publisher.generation.node_id,
+                started_at: active_publisher.generation.started_at.timestamp(),
             };
 
             if let Some(filter_node) = node_filter.as_deref() {

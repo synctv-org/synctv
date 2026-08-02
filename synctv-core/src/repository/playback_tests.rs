@@ -9,7 +9,7 @@ use synctv_core_testing::create_test_pool;
 
 fn direct_url_media_source_config(url: impl Into<String>) -> MediaSourceConfig {
     MediaSourceConfig::DirectUrl(DirectUrlMediaSourceConfig {
-        is_live: None,
+        playback_kind: None,
         duration_seconds: None,
         prefer_proxy: None,
         proxy_only: false,

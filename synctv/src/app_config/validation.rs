@@ -918,28 +918,28 @@ impl AppConfig {
                     );
                 }
             }
-            HlsStorageConfig::Oss(config) => {
+            HlsStorageConfig::S3(config) => {
                 if config.endpoint.trim().is_empty() {
                     errors.push(
-                        "livestream.hls_storage.endpoint must be set when livestream.hls_storage.type='oss'"
+                        "livestream.hls_storage.endpoint must be set when livestream.hls_storage.type='s3'"
                             .to_string(),
                     );
                 }
                 if config.bucket.trim().is_empty() {
                     errors.push(
-                        "livestream.hls_storage.bucket must be set when livestream.hls_storage.type='oss'"
+                        "livestream.hls_storage.bucket must be set when livestream.hls_storage.type='s3'"
                             .to_string(),
                     );
                 }
                 if config.access_key_id.trim().is_empty() {
                     errors.push(
-                        "livestream.hls_storage.access_key_id must be set when livestream.hls_storage.type='oss'"
+                        "livestream.hls_storage.access_key_id must be set when livestream.hls_storage.type='s3'"
                             .to_string(),
                     );
                 }
                 if config.secret_access_key.trim().is_empty() {
                     errors.push(
-                        "livestream.hls_storage.secret_access_key must be set when livestream.hls_storage.type='oss'"
+                        "livestream.hls_storage.secret_access_key must be set when livestream.hls_storage.type='s3'"
                             .to_string(),
                     );
                 }
@@ -1177,7 +1177,7 @@ impl AppConfig {
         // every remote segment request through the publisher node.
         if cluster_mode_active {
             match self.livestream.hls_storage.backend() {
-                HlsStorageBackend::Oss => {}
+                HlsStorageBackend::S3 => {}
                 HlsStorageBackend::SharedFile => {
                     let path = self.livestream.hls_storage.path();
                     let is_obviously_local = path.starts_with("/tmp/")
@@ -1198,14 +1198,14 @@ impl AppConfig {
                 HlsStorageBackend::File => {
                     tracing::warn!(
                         "Cluster mode is enabled with livestream.hls_storage.type='file'. \
-                         HLS remains functional through publisher-node proxying, but shared_file or OSS is recommended for production multi-replica HLS."
+                         HLS remains functional through publisher-node proxying, but shared_file or S3 is recommended for production multi-replica HLS."
                     );
                 }
                 HlsStorageBackend::Memory => {
                     tracing::warn!(
                         "Cluster mode is enabled with livestream.hls_storage.type='memory'. \
                          HLS remains functional through publisher-node proxying, but memory storage is node-local and lost on restart. \
-                         Use livestream.hls_storage.type='shared_file' or 'oss' for production multi-replica HLS."
+                         Use livestream.hls_storage.type='shared_file' or 's3' for production multi-replica HLS."
                     );
                 }
             }
@@ -1216,7 +1216,7 @@ impl AppConfig {
                 "The default HLS storage backend is MemoryStorage, which is node-local. \
                  HLS segments are lost on restart. For production multi-replica HLS, \
                  configure livestream.hls_storage.type='shared_file' with shared filesystem storage \
-                 or livestream.hls_storage.type='oss' with S3-compatible object storage."
+                 or livestream.hls_storage.type='s3' with S3-compatible object storage."
             );
         }
 

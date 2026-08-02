@@ -295,6 +295,11 @@ impl Mpeg4AvcProcessor {
         &mut self,
         bytes_reader: &mut BytesReader,
     ) -> Result<u32, Mpeg4AvcHevcError> {
+        if !(1..=4).contains(&self.mpeg4_avc.nalu_length) {
+            return Err(Mpeg4AvcHevcError {
+                value: MpegErrorValue::InvalidNaluLength(self.mpeg4_avc.nalu_length),
+            });
+        }
         let mut size: u32 = 0;
 
         for _ in 0..self.mpeg4_avc.nalu_length {
@@ -427,5 +432,17 @@ mod tests {
                 available: 0
             }
         ));
+    }
+
+    #[test]
+    fn nalu_before_decoder_configuration_is_rejected() {
+        let mut processor = Mpeg4AvcProcessor::new();
+        let mut reader = BytesReader::new(BytesMut::from(&[0, 0, 0, 1, 0x65][..]));
+
+        let err = processor
+            .h264_mp4toannexb(&mut reader)
+            .expect_err("NALU without an AVC decoder configuration must fail");
+
+        assert!(matches!(err.value, MpegErrorValue::InvalidNaluLength(0)));
     }
 }

@@ -4,7 +4,7 @@ flowchart LR
   Hub[StreamHub<br/>直播包分发]
   FLV[HTTP-FLV 会话<br/>低延迟]
   Remux[HLS remuxer<br/>分片 + playlist 状态]
-  Storage[(HLS 存储<br/>memory / file / OSS)]
+  Storage[(HLS 存储<br/>memory / file / S3)]
   Playlist[HLS playlist 路由]
   Segment[HLS segment 路由]
   Viewer[观看客户端]

@@ -14,7 +14,7 @@ use {
     serde::Serializer,
     std::fmt,
     std::sync::Arc,
-    tokio::sync::{broadcast, mpsc, oneshot},
+    tokio::sync::{broadcast, mpsc, oneshot, OwnedSemaphorePermit, Semaphore},
 };
 
 /// How a consumer subscribes to a stream in `StreamsHub`.
@@ -185,13 +185,46 @@ pub enum FrameTrySendError<T> {
 #[derive(Debug, Clone)]
 pub enum FrameDataSender {
     Bounded(mpsc::Sender<FrameData>),
+    /// Production frame channels use a byte budget in addition to the frame
+    /// count bound. This keeps large keyframes from filling many gigabytes of
+    /// queue memory for a slow subscriber.
+    Budgeted(Arc<BudgetedFrameSender>),
     Unbounded(mpsc::UnboundedSender<FrameData>),
+}
+
+#[derive(Debug)]
+#[doc(hidden)]
+pub struct BudgetedFrameSender {
+    sender: mpsc::Sender<BudgetedFrame>,
+    budget: Arc<Semaphore>,
+    max_bytes: usize,
+}
+
+#[derive(Debug)]
+#[doc(hidden)]
+pub struct BudgetedFrame {
+    data: FrameData,
+    _permit: OwnedSemaphorePermit,
 }
 
 impl FrameDataSender {
     #[must_use]
     pub const fn bounded(sender: mpsc::Sender<FrameData>) -> Self {
         Self::Bounded(sender)
+    }
+
+    pub(crate) fn budgeted(capacity: usize, max_bytes: usize) -> (Self, FrameDataReceiver) {
+        let (sender, receiver) = mpsc::channel(capacity);
+        let budget = Arc::new(Semaphore::new(max_bytes));
+        let channel = Arc::new(BudgetedFrameSender {
+            sender,
+            budget: Arc::clone(&budget),
+            max_bytes,
+        });
+        (
+            Self::Budgeted(channel),
+            FrameDataReceiver::Budgeted { receiver },
+        )
     }
 
     #[must_use]
@@ -208,6 +241,28 @@ impl FrameDataSender {
                     Err(FrameTrySendError::Closed(value))
                 }
             },
+            Self::Budgeted(channel) => {
+                let permits = frame_data_bytes(&value);
+                if permits > channel.max_bytes {
+                    return Err(FrameTrySendError::Full(value));
+                }
+                let permits = u32::try_from(permits).unwrap_or(u32::MAX);
+                let Ok(permit) = channel.budget.clone().try_acquire_many_owned(permits) else {
+                    return Err(FrameTrySendError::Full(value));
+                };
+                match channel.sender.try_send(BudgetedFrame {
+                    data: value,
+                    _permit: permit,
+                }) {
+                    Ok(()) => Ok(()),
+                    Err(mpsc::error::TrySendError::Full(item)) => {
+                        Err(FrameTrySendError::Full(item.data))
+                    }
+                    Err(mpsc::error::TrySendError::Closed(item)) => {
+                        Err(FrameTrySendError::Closed(item.data))
+                    }
+                }
+            }
             Self::Unbounded(sender) => sender
                 .send(value)
                 .map_err(|err| FrameTrySendError::Closed(err.0)),
@@ -220,6 +275,24 @@ impl FrameDataSender {
                 .send(value)
                 .await
                 .map_err(|err| FrameTrySendError::Closed(err.0)),
+            Self::Budgeted(channel) => {
+                let permits = frame_data_bytes(&value);
+                if permits > channel.max_bytes {
+                    return Err(FrameTrySendError::Full(value));
+                }
+                let permits = u32::try_from(permits).unwrap_or(u32::MAX);
+                let Ok(permit) = channel.budget.clone().acquire_many_owned(permits).await else {
+                    return Err(FrameTrySendError::Closed(value));
+                };
+                channel
+                    .sender
+                    .send(BudgetedFrame {
+                        data: value,
+                        _permit: permit,
+                    })
+                    .await
+                    .map_err(|err| FrameTrySendError::Closed(err.0.data))
+            }
             Self::Unbounded(sender) => sender
                 .send(value)
                 .map_err(|err| FrameTrySendError::Closed(err.0)),
@@ -230,6 +303,9 @@ impl FrameDataSender {
 #[derive(Debug)]
 pub enum FrameDataReceiver {
     Bounded(mpsc::Receiver<FrameData>),
+    Budgeted {
+        receiver: mpsc::Receiver<BudgetedFrame>,
+    },
     Unbounded(mpsc::UnboundedReceiver<FrameData>),
 }
 
@@ -247,8 +323,18 @@ impl FrameDataReceiver {
     pub async fn recv(&mut self) -> Option<FrameData> {
         match self {
             Self::Bounded(receiver) => receiver.recv().await,
+            Self::Budgeted { receiver } => receiver.recv().await.map(|item| item.data),
             Self::Unbounded(receiver) => receiver.recv().await,
         }
+    }
+}
+
+fn frame_data_bytes(data: &FrameData) -> usize {
+    match data {
+        FrameData::Video { data, .. }
+        | FrameData::Audio { data, .. }
+        | FrameData::MetaData { data, .. } => data.len(),
+        FrameData::MediaInfo { .. } => 0,
     }
 }
 
@@ -258,6 +344,9 @@ impl FrameDataReceiver {
 /// dropping. 4096 frames ≈ ~160 s at 25 fps, keeping memory bounded while
 /// avoiding silent frame loss under load.
 pub const FRAME_DATA_CHANNEL_CAPACITY: usize = 4096;
+
+/// Maximum total media payload retained by one production frame channel.
+pub const FRAME_DATA_CHANNEL_MAX_BYTES: usize = 32 * 1024 * 1024;
 
 //used to transfer rtp packet data,it includles the following directions:
 // rtsp(publisher)->stream hub->rtsp(subscriber)
@@ -280,6 +369,48 @@ pub const STREAM_HUB_EVENT_CHANNEL_CAPACITY: usize = 4096;
 
 pub type BroadcastEventSender = broadcast::Sender<BroadcastEvent>;
 pub type BroadcastEventReceiver = broadcast::Receiver<BroadcastEvent>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn budgeted_frame_channel_releases_bytes_after_receive() {
+        let (sender, mut receiver) = FrameDataSender::budgeted(4096, 8);
+        let first = FrameData::Video {
+            timestamp: 0,
+            data: Bytes::from_static(b"123456"),
+        };
+        sender
+            .try_send(first)
+            .expect("first frame should fit budget");
+
+        let second = FrameData::Audio {
+            timestamp: 1,
+            data: Bytes::from_static(b"123"),
+        };
+        assert!(matches!(
+            sender.try_send(second),
+            Err(FrameTrySendError::Full(_))
+        ));
+
+        let received = receiver.recv().await.expect("first frame should arrive");
+        assert_eq!(frame_data_bytes(&received), 6);
+
+        sender
+            .try_send(FrameData::Audio {
+                timestamp: 2,
+                data: Bytes::from_static(b"123"),
+            })
+            .expect("released permits should be reusable");
+    }
+}
+
+/// Called when media enters a locally owned publisher transceiver.
+///
+/// The callback runs before subscriber fan-out, so publisher liveness remains
+/// independent from HLS/FLV subscriber availability.
+pub type PublisherActivityCallback = Arc<dyn Fn(&str, &str, Uuid) + Send + Sync>;
 
 pub type TransceiverEventSender = mpsc::UnboundedSender<TransceiverEvent>;
 pub type TransceiverEventReceiver = mpsc::UnboundedReceiver<TransceiverEvent>;
@@ -304,6 +435,10 @@ pub type TransceiverEventExecuteResultSender =
 
 #[async_trait]
 pub trait TStreamHandler: Send + Sync {
+    fn save_frame_data(&self, _frame: &FrameData) -> Result<(), StreamHubError> {
+        Ok(())
+    }
+
     async fn send_prior_data(
         &self,
         sender: DataSender,
@@ -346,6 +481,13 @@ pub enum StreamHubEvent {
         #[serde(skip_serializing)]
         result_sender: SubEventExecuteResultSender,
     },
+    SubscribeWithGeneration {
+        identifier: StreamIdentifier,
+        info: SubscriberInfo,
+        expected_generation_id: Uuid,
+        #[serde(skip_serializing)]
+        result_sender: SubEventExecuteResultSender,
+    },
     UnSubscribe {
         identifier: StreamIdentifier,
         info: SubscriberInfo,
@@ -360,6 +502,10 @@ pub enum StreamHubEvent {
     },
     UnPublish {
         identifier: StreamIdentifier,
+        generation_id: Uuid,
+    },
+    ForceUnPublish {
+        identifier: StreamIdentifier,
     },
 }
 
@@ -373,6 +519,17 @@ impl fmt::Debug for StreamHubEvent {
                 .field("identifier", identifier)
                 .field("info", info)
                 .finish(),
+            Self::SubscribeWithGeneration {
+                identifier,
+                info,
+                expected_generation_id,
+                ..
+            } => f
+                .debug_struct("StreamHubEvent::SubscribeWithGeneration")
+                .field("identifier", identifier)
+                .field("info", info)
+                .field("expected_generation_id", expected_generation_id)
+                .finish(),
             Self::UnSubscribe { identifier, info } => f
                 .debug_struct("StreamHubEvent::UnSubscribe")
                 .field("identifier", identifier)
@@ -385,8 +542,16 @@ impl fmt::Debug for StreamHubEvent {
                 .field("identifier", identifier)
                 .field("info", info)
                 .finish(),
-            Self::UnPublish { identifier } => f
+            Self::UnPublish {
+                identifier,
+                generation_id,
+            } => f
                 .debug_struct("StreamHubEvent::UnPublish")
+                .field("identifier", identifier)
+                .field("generation_id", generation_id)
+                .finish(),
+            Self::ForceUnPublish { identifier } => f
+                .debug_struct("StreamHubEvent::ForceUnPublish")
                 .field("identifier", identifier)
                 .finish(),
         }
@@ -417,9 +582,11 @@ pub enum BroadcastEvent {
     Publish {
         identifier: StreamIdentifier,
         pub_type: PublishType,
+        generation_id: Uuid,
     },
     UnPublish {
         identifier: StreamIdentifier,
+        generation_id: Uuid,
     },
 }
 

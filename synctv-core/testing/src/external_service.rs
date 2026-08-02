@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
+use std::{collections::BTreeMap, iter};
 
 use testcontainers::core::{CmdWaitFor, ExecCommand, ImageExt, IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
@@ -24,6 +25,7 @@ pub struct ExternalServiceRequest {
     image: String,
     tag: String,
     internal_port: u16,
+    additional_ports: Vec<u16>,
     stdout_ready_message: Option<String>,
     user: Option<String>,
     env: Vec<(String, String)>,
@@ -46,12 +48,21 @@ impl ExternalServiceRequest {
             image: image.into(),
             tag: tag.into(),
             internal_port,
+            additional_ports: Vec::new(),
             stdout_ready_message: None,
             user: None,
             env: Vec::new(),
             copied_files: Vec::new(),
             post_start_shell_commands: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_exposed_port(mut self, port: u16) -> Self {
+        if port != self.internal_port && !self.additional_ports.contains(&port) {
+            self.additional_ports.push(port);
+        }
+        self
     }
 
     #[must_use]
@@ -87,10 +98,11 @@ impl ExternalServiceRequest {
 
 /// Running external-service test container.
 pub struct ExternalServiceContainer {
-    _container: ContainerAsync<GenericImage>,
+    container: ContainerAsync<GenericImage>,
     _run_lock: crate::docker::ProcessLock,
     host: String,
     port: u16,
+    mapped_ports: BTreeMap<u16, u16>,
 }
 
 impl ExternalServiceContainer {
@@ -105,8 +117,19 @@ impl ExternalServiceContainer {
     }
 
     #[must_use]
+    pub fn mapped_port(&self, internal_port: u16) -> Option<u16> {
+        self.mapped_ports.get(&internal_port).copied()
+    }
+
+    #[must_use]
     pub fn http_url(&self) -> String {
         format!("http://{}:{}", self.host, self.port)
+    }
+
+    pub async fn logs(&self) -> anyhow::Result<String> {
+        let mut output = self.container.stdout_to_vec().await?;
+        output.extend_from_slice(&self.container.stderr_to_vec().await?);
+        String::from_utf8(output).map_err(Into::into)
     }
 }
 
@@ -161,8 +184,14 @@ pub async fn start_external_service(request: ExternalServiceRequest) -> External
         image = image.with_wait_for(WaitFor::message_on_stdout(message));
     }
 
+    let internal_ports = iter::once(request.internal_port)
+        .chain(request.additional_ports.iter().copied())
+        .collect::<Vec<_>>();
+    image = image.with_exposed_port(request.internal_port.tcp());
+    for port in &request.additional_ports {
+        image = image.with_exposed_port(port.tcp());
+    }
     let mut container_request = image
-        .with_exposed_port(request.internal_port.tcp())
         .with_container_name(container_name.clone())
         .with_label(TEST_RUN_LABEL, run_id);
     if let Some(user) = request.user {
@@ -201,17 +230,25 @@ pub async fn start_external_service(request: ExternalServiceRequest) -> External
             });
     }
 
-    let port = container
-        .get_host_port_ipv4(request.internal_port.tcp())
-        .await
-        .unwrap_or_else(|error| {
-            panic!("Failed to resolve {service} container {container_name} port: {error}")
-        });
+    let mut mapped_ports = BTreeMap::new();
+    for internal_port in internal_ports {
+        let mapped_port = container
+            .get_host_port_ipv4(internal_port.tcp())
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "Failed to resolve {service} container {container_name} port {internal_port}: {error}"
+                )
+            });
+        mapped_ports.insert(internal_port, mapped_port);
+    }
+    let port = mapped_ports[&request.internal_port];
 
     ExternalServiceContainer {
-        _container: container,
+        container,
         _run_lock: run_lock,
         host: "127.0.0.1".to_string(),
         port,
+        mapped_ports,
     }
 }

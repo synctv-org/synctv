@@ -43,7 +43,7 @@ fn direct_url_media_source_config(
         provider: Some(
             synctv_proto::source_config::media_source_config::Provider::DirectUrl(
                 synctv_proto::source_config::DirectUrlMediaSourceConfig {
-                    is_live: None,
+                    playback_kind: None,
                     duration_seconds: None,
                     prefer_proxy: None,
                     proxy_only: None,
@@ -2675,17 +2675,18 @@ fn cli_media_move_help_describes_scope_and_append_semantics() {
         .write_long_help(&mut help)
         .expect("media move help should render");
     let help = String::from_utf8(help).expect("media move help should be utf-8");
+    let normalized_help = help.split_whitespace().collect::<Vec<_>>().join(" ");
 
     assert!(
-        help.contains("--media-id <MEDIA_ID>"),
+        normalized_help.contains("--media-id <MEDIA_ID>"),
         "media move help should expose repeatable --media-id: {help}"
     );
     assert!(
-        help.contains("Target static playlist. Omit to keep media in the current scope"),
+        normalized_help.contains("Target static playlist. Omit to keep media in the current scope"),
         "media move help should explain optional target scope: {help}"
     );
     assert!(
-        help.contains("Omit both anchors to append to the target scope"),
+        normalized_help.contains("Omit both anchors to append to the target scope"),
         "media move help should explain append semantics without anchors: {help}"
     );
 }
@@ -6016,7 +6017,7 @@ fn build_get_playback_cli_output_omits_absolute_urls_for_explicit_endpoint_mode(
                 metadata: None,
                 expires_at: None,
                 duration_seconds: None,
-                playback_kind: synctv_proto::client::PlaybackKind::Regular as i32,
+                playback_kind: synctv_proto::source_config::PlaybackKind::Regular as i32,
                 target: None,
             }),
         },
@@ -6087,7 +6088,7 @@ fn build_get_playback_cli_output_prefers_default_hls_media() {
                 metadata: None,
                 expires_at: None,
                 duration_seconds: None,
-                playback_kind: synctv_proto::client::PlaybackKind::Regular as i32,
+                playback_kind: synctv_proto::source_config::PlaybackKind::Regular as i32,
                 target: None,
             }),
         },

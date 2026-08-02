@@ -7,16 +7,23 @@
 // minute-prefixed segment names into directory/prefix buckets for efficient
 // cleanup.
 // Architecture:
-// - Storage layer: Pure KV storage (FileStorage/MemoryStorage/OssStorage)
+// - Storage layer: Pure KV storage (FileStorage/MemoryStorage/S3Storage)
 // - SegmentManager: Business logic (retention policy, cleanup scheduling)
 // - HLS layer: M3U8 generation and HTTP serving
 
+use crate::hls::playlist::HLS_PLAYLIST_RETENTION_RESERVE;
 use crate::storage::HlsStorage;
 use futures::StreamExt as _;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
 use tokio_util::sync::CancellationToken;
+
+pub const DEFAULT_FINAL_PLAYLIST_GRACE: Duration = Duration::from_mins(1);
+pub const DEFAULT_ENDED_SEGMENT_GRACE: Duration = Duration::from_secs(90);
+pub const DEFAULT_HLS_GENERATION_RETENTION: Duration =
+    DEFAULT_FINAL_PLAYLIST_GRACE.saturating_add(DEFAULT_ENDED_SEGMENT_GRACE);
 
 /// Segment cleanup configuration
 #[derive(Debug, Clone)]
@@ -25,6 +32,11 @@ pub struct CleanupConfig {
     pub interval: Duration,
     /// Delete segments older than this.
     pub retention: Duration,
+    /// Keep the final playlist visible after its publisher ends.
+    pub final_playlist_grace: Duration,
+    /// Keep the exact segments of an ended generation available after the
+    /// playlist window closes.
+    pub ended_segment_grace: Duration,
     /// Maximum number of segments per stream. 0 means unlimited (time-based only).
     /// When exceeded, the oldest segments for that stream are deleted.
     pub max_segments_per_stream: usize,
@@ -35,6 +47,8 @@ impl Default for CleanupConfig {
         Self {
             interval: Duration::from_mins(1),
             retention: Duration::from_mins(3),
+            final_playlist_grace: DEFAULT_FINAL_PLAYLIST_GRACE,
+            ended_segment_grace: DEFAULT_ENDED_SEGMENT_GRACE,
             max_segments_per_stream: 0,
         }
     }
@@ -45,6 +59,12 @@ pub struct SegmentManager {
     storage: Arc<dyn HlsStorage>,
     config: CleanupConfig,
     cleanup_authority: Arc<dyn CleanupAuthority>,
+    generation_cleanup_queue: parking_lot::Mutex<VecDeque<ScheduledGenerationCleanup>>,
+}
+
+struct ScheduledGenerationCleanup {
+    due_at: time::Instant,
+    marked: MarkedStreamCleanup,
 }
 
 /// A stream that has ended and exposed an explicit set of segment names safe to delete.
@@ -53,15 +73,6 @@ pub struct MarkedStreamCleanup {
     pub app_name: String,
     pub stream_name: String,
     pub segment_names: Vec<String>,
-}
-
-/// Trait for checking which streams are marked for cleanup.
-/// Implemented by the stream registry to allow `SegmentManager`
-/// to query cleanup eligibility without tight coupling.
-pub trait StreamCleanupChecker: Send + Sync {
-    /// Returns streams marked for cleanup (handler ended, grace period started)
-    /// together with the exact segment names captured when cleanup was marked.
-    fn get_streams_marked_for_cleanup(&self) -> Vec<MarkedStreamCleanup>;
 }
 
 /// Decides whether this replica should run storage cleanup.
@@ -91,6 +102,23 @@ impl SegmentManager {
             storage,
             config,
             cleanup_authority: Arc::new(AlwaysCleanupAuthority),
+            generation_cleanup_queue: parking_lot::Mutex::new(VecDeque::new()),
+        }
+    }
+
+    /// Return the count limit that preserves every segment that can still be
+    /// named by the live playlist plus the one-refresh reserve.
+    ///
+    /// A configured value below this floor would make count-based cleanup
+    /// delete an object that a client can already have in its playlist. Zero
+    /// keeps count cleanup disabled.
+    fn effective_max_segments_per_stream(&self) -> usize {
+        if self.config.max_segments_per_stream == 0 {
+            0
+        } else {
+            self.config
+                .max_segments_per_stream
+                .max(HLS_PLAYLIST_RETENTION_RESERVE)
         }
     }
 
@@ -114,47 +142,24 @@ impl SegmentManager {
     ) -> tokio::task::JoinHandle<()> {
         let manager = Arc::clone(&self);
         tokio::spawn(async move {
-            manager.run_cleanup_loop(shutdown_token, None).await;
-        })
-    }
-
-    /// Start periodic cleanup task with stream registry for priority cleanup.
-    ///
-    /// The stream registry is used to identify streams marked for cleanup
-    /// (handler ended but still in grace period). These streams can be
-    /// cleaned up earlier based on memory pressure rather than waiting
-    /// for the full grace period.
-    ///
-    /// Returns the `JoinHandle` so callers can wait for graceful shutdown or abort if needed.
-    pub fn start_cleanup_task_with_registry(
-        self: Arc<Self>,
-        shutdown_token: CancellationToken,
-        registry: Arc<dyn StreamCleanupChecker>,
-    ) -> tokio::task::JoinHandle<()> {
-        let manager = Arc::clone(&self);
-        tokio::spawn(async move {
-            manager
-                .run_cleanup_loop(shutdown_token, Some(registry))
-                .await;
+            manager.run_cleanup_loop(shutdown_token).await;
         })
     }
 
     /// Run the cleanup loop until cancelled.
-    async fn run_cleanup_loop(
-        &self,
-        shutdown_token: CancellationToken,
-        registry: Option<Arc<dyn StreamCleanupChecker>>,
-    ) {
+    async fn run_cleanup_loop(&self, shutdown_token: CancellationToken) {
         let mut interval = time::interval(self.config.interval);
+        let effective_retention = self.config.retention.max(self.generation_cleanup_delay());
+        let effective_max_segments = self.effective_max_segments_per_stream();
 
         tracing::info!(
             "Segment cleanup task started: interval={:?}, retention={:?}, max_segments_per_stream={}",
             self.config.interval,
-            self.config.retention,
-            if self.config.max_segments_per_stream == 0 {
+            effective_retention,
+            if effective_max_segments == 0 {
                 "unlimited".to_string()
             } else {
-                self.config.max_segments_per_stream.to_string()
+                effective_max_segments.to_string()
             }
         );
 
@@ -172,46 +177,10 @@ impl SegmentManager {
                 continue;
             }
 
-            // First, clean up streams marked for cleanup (priority cleanup)
-            // This helps reduce memory usage when handlers end but are still
-            // in the 60-second grace period
-            if let Some(ref registry) = registry {
-                let marked_streams = registry.get_streams_marked_for_cleanup();
-                futures::stream::iter(marked_streams)
-                    .for_each_concurrent(Self::CLEANUP_CONCURRENCY, |marked| async move {
-                        match self
-                            .cleanup_marked_stream_segments(
-                                &marked.app_name,
-                                &marked.stream_name,
-                                &marked.segment_names,
-                            )
-                            .await
-                        {
-                            Ok(deleted) => {
-                                if deleted > 0 {
-                                    tracing::info!(
-                                        "Priority cleanup: deleted {} segments for marked stream {}/{}",
-                                        deleted,
-                                        marked.app_name,
-                                        marked.stream_name
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Priority cleanup failed for {}/{}: {}",
-                                    marked.app_name,
-                                    marked.stream_name,
-                                    e
-                                );
-                            }
-                        }
-                    })
-                    .await;
-            }
+            self.cleanup_due_generations().await;
 
             // Enforce per-stream segment count bound (if configured)
-            if self.config.max_segments_per_stream > 0 {
+            if effective_max_segments > 0 {
                 match self.storage.list_streams().await {
                     Ok(streams) => {
                         futures::stream::iter(streams)
@@ -223,7 +192,7 @@ impl SegmentManager {
                                         .delete_oldest_stream_segments(
                                             &app,
                                             &stream,
-                                            self.config.max_segments_per_stream,
+                                            effective_max_segments,
                                         )
                                         .await
                                     {
@@ -233,7 +202,7 @@ impl SegmentManager {
                                                 deleted,
                                                 app,
                                                 stream,
-                                                self.config.max_segments_per_stream
+                                                effective_max_segments
                                             );
                                         }
                                         Err(e) => {
@@ -256,7 +225,7 @@ impl SegmentManager {
                 }
             }
 
-            match self.storage.cleanup(self.config.retention).await {
+            match self.storage.cleanup(effective_retention).await {
                 Ok(deleted) => {
                     if deleted > 0 {
                         tracing::info!("Cleaned up {} expired HLS segments", deleted);
@@ -277,6 +246,114 @@ impl SegmentManager {
         &self.storage
     }
 
+    /// Delay cleanup of one ended publisher generation while retaining its
+    /// exact object names independently from the current stream registry entry.
+    pub fn schedule_generation_cleanup(
+        &self,
+        app_name: String,
+        stream_name: String,
+        segment_names: Vec<String>,
+    ) {
+        if segment_names.is_empty() {
+            return;
+        }
+        self.generation_cleanup_queue
+            .lock()
+            .push_back(ScheduledGenerationCleanup {
+                due_at: time::Instant::now() + self.generation_cleanup_delay(),
+                marked: MarkedStreamCleanup {
+                    app_name,
+                    stream_name,
+                    segment_names,
+                },
+            });
+    }
+
+    #[must_use]
+    pub fn final_playlist_grace(&self) -> Duration {
+        self.config.final_playlist_grace
+    }
+
+    #[must_use]
+    pub fn ended_segment_grace(&self) -> Duration {
+        self.config.ended_segment_grace
+    }
+
+    fn generation_cleanup_delay(&self) -> Duration {
+        self.config
+            .final_playlist_grace
+            .saturating_add(self.config.ended_segment_grace)
+    }
+
+    async fn cleanup_due_generations(&self) -> usize {
+        let now = time::Instant::now();
+        let due = {
+            let mut queue = self.generation_cleanup_queue.lock();
+            let mut due = Vec::new();
+            let mut pending = VecDeque::new();
+            while let Some(cleanup) = queue.pop_front() {
+                if cleanup.due_at <= now {
+                    due.push(cleanup.marked);
+                } else {
+                    pending.push_back(cleanup);
+                }
+            }
+            *queue = pending;
+            due
+        };
+
+        let outcomes = futures::stream::iter(due)
+            .map(|marked| async move {
+                match self
+                    .cleanup_marked_stream_segments(
+                        &marked.app_name,
+                        &marked.stream_name,
+                        &marked.segment_names,
+                    )
+                    .await
+                {
+                    Ok(count) => {
+                        if count > 0 {
+                            tracing::info!(
+                                "Generation cleanup: deleted {} segments for {}/{}",
+                                count,
+                                marked.app_name,
+                                marked.stream_name
+                            );
+                        }
+                        (None, count)
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            "Generation cleanup failed for {}/{}: {}; retrying",
+                            marked.app_name,
+                            marked.stream_name,
+                            error
+                        );
+                        (Some(marked), 0)
+                    }
+                }
+            })
+            .buffer_unordered(Self::CLEANUP_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+        let deleted = outcomes.iter().map(|(_, count)| count).sum();
+        let failed = outcomes
+            .into_iter()
+            .filter_map(|(marked, _)| marked)
+            .collect::<Vec<_>>();
+
+        if !failed.is_empty() {
+            let retry_at = time::Instant::now() + self.config.interval;
+            let mut queue = self.generation_cleanup_queue.lock();
+            queue.extend(failed.into_iter().map(|marked| ScheduledGenerationCleanup {
+                due_at: retry_at,
+                marked,
+            }));
+        }
+        deleted
+    }
+
     /// Cleanup segments older than the configured retention window immediately.
     ///
     /// This uses the same age-based policy as the periodic cleanup loop. It is
@@ -287,38 +364,12 @@ impl SegmentManager {
             tracing::trace!("Skipping HLS segment startup cleanup because this replica is not the cleanup authority");
             return Ok(0);
         }
-        self.storage.cleanup(self.config.retention).await
-    }
-
-    /// Cleanup all segments for a specific stream immediately.
-    ///
-    /// Called when a stream ends (publisher disconnect, idle timeout) to
-    /// immediately free memory rather than waiting for the periodic cleanup cycle.
-    ///
-    /// # Arguments
-    /// * `app_name` - Application/room name (e.g., "room123")
-    /// * `stream_name` - Stream/media name (e.g., "media456")
-    ///
-    /// # Returns
-    /// Number of segments deleted
-    pub async fn cleanup_stream(
-        &self,
-        app_name: &str,
-        stream_name: &str,
-    ) -> std::io::Result<usize> {
-        let deleted = self
+        let generation_deleted = self.cleanup_due_generations().await;
+        let age_deleted = self
             .storage
-            .delete_app_stream(app_name, stream_name)
+            .cleanup(self.config.retention.max(self.generation_cleanup_delay()))
             .await?;
-        if deleted > 0 {
-            tracing::info!(
-                "Cleaned up {} segments for stream {}/{}",
-                deleted,
-                app_name,
-                stream_name
-            );
-        }
-        Ok(deleted)
+        Ok(generation_deleted + age_deleted)
     }
 
     /// Cleanup only the explicitly captured segments for a stream.
@@ -352,6 +403,7 @@ impl SegmentManager {
 mod tests {
     use super::*;
     use crate::storage::MemoryStorage;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     struct NeverCleanupAuthority;
 
@@ -360,18 +412,17 @@ mod tests {
             false
         }
     }
-    use bytes::Bytes;
-    use std::time::Duration;
 
-    struct StaticCleanupChecker {
-        marked: Vec<MarkedStreamCleanup>,
-    }
+    struct ToggleCleanupAuthority(AtomicBool);
 
-    impl StreamCleanupChecker for StaticCleanupChecker {
-        fn get_streams_marked_for_cleanup(&self) -> Vec<MarkedStreamCleanup> {
-            self.marked.clone()
+    impl CleanupAuthority for ToggleCleanupAuthority {
+        fn should_cleanup(&self) -> bool {
+            self.0.load(Ordering::SeqCst)
         }
     }
+    use bytes::Bytes;
+    use std::time::Duration;
+    type TestResult = std::io::Result<()>;
 
     #[tokio::test]
     async fn test_segment_manager_cleanup_expired_skips_without_authority() {
@@ -387,6 +438,8 @@ mod tests {
         let config = CleanupConfig {
             interval: Duration::from_hours(1),
             retention: Duration::from_millis(10),
+            final_playlist_grace: Duration::from_mins(1),
+            ended_segment_grace: Duration::from_mins(1),
             max_segments_per_stream: 0,
         };
         let manager = SegmentManager::new(storage.clone(), config)
@@ -402,55 +455,142 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_priority_cleanup_only_deletes_captured_segments() {
+    async fn generation_queue_waits_for_cleanup_authority_takeover() {
         let storage = Arc::new(MemoryStorage::new());
         storage
-            .write("live", "room_123", "old_seg_0", Bytes::from_static(b"old0"))
+            .write(
+                "live",
+                "room_123",
+                "old_generation",
+                Bytes::from_static(b"old"),
+            )
             .await
             .unwrap();
-        storage
-            .write("live", "room_123", "old_seg_1", Bytes::from_static(b"old1"))
-            .await
-            .unwrap();
-        storage
-            .write("live", "room_123", "new_seg_0", Bytes::from_static(b"new0"))
-            .await
-            .unwrap();
-
-        let manager = Arc::new(SegmentManager::new(
-            storage.clone(),
-            CleanupConfig {
-                interval: Duration::from_millis(10),
-                retention: Duration::from_hours(1),
-                max_segments_per_stream: 0,
-            },
-        ));
-        let checker = Arc::new(StaticCleanupChecker {
-            marked: vec![MarkedStreamCleanup {
-                app_name: "live".to_string(),
-                stream_name: "room_123".to_string(),
-                segment_names: vec!["old_seg_0".to_string(), "old_seg_1".to_string()],
-            }],
-        });
+        let authority = Arc::new(ToggleCleanupAuthority(AtomicBool::new(false)));
+        let manager = Arc::new(
+            SegmentManager::new(
+                storage.clone(),
+                CleanupConfig {
+                    interval: Duration::from_millis(10),
+                    retention: Duration::from_hours(1),
+                    final_playlist_grace: Duration::ZERO,
+                    ended_segment_grace: Duration::ZERO,
+                    max_segments_per_stream: 0,
+                },
+            )
+            .with_cleanup_authority(authority.clone()),
+        );
+        manager.schedule_generation_cleanup(
+            "live".to_string(),
+            "room_123".to_string(),
+            vec!["old_generation".to_string()],
+        );
         let shutdown = CancellationToken::new();
-        let join = manager
-            .clone()
-            .start_cleanup_task_with_registry(shutdown.clone(), checker);
+        let cleanup_task = Arc::clone(&manager).start_cleanup_task(shutdown.clone());
 
         tokio::time::sleep(Duration::from_millis(30)).await;
-        shutdown.cancel();
-        join.await.unwrap();
-
-        assert!(!storage
-            .exists("live", "room_123", "old_seg_0")
-            .await
-            .unwrap());
-        assert!(!storage
-            .exists("live", "room_123", "old_seg_1")
-            .await
-            .unwrap());
         assert!(storage
-            .exists("live", "room_123", "new_seg_0")
+            .exists("live", "room_123", "old_generation")
+            .await
+            .unwrap());
+
+        authority.0.store(true, Ordering::SeqCst);
+        let deadline = time::Instant::now() + Duration::from_secs(1);
+        while storage
+            .exists("live", "room_123", "old_generation")
+            .await
+            .unwrap()
+        {
+            assert!(time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        shutdown.cancel();
+        cleanup_task.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn generation_cleanup_starts_after_playlist_and_segment_grace() {
+        let storage = Arc::new(MemoryStorage::new());
+        storage
+            .write(
+                "live",
+                "room_123",
+                "ended_generation",
+                Bytes::from_static(b"ended"),
+            )
+            .await
+            .unwrap();
+        let manager = SegmentManager::new(
+            storage.clone(),
+            CleanupConfig {
+                interval: Duration::from_secs(1),
+                retention: Duration::from_hours(1),
+                final_playlist_grace: Duration::from_secs(40),
+                ended_segment_grace: Duration::from_secs(60),
+                max_segments_per_stream: 0,
+            },
+        );
+        manager.schedule_generation_cleanup(
+            "live".to_string(),
+            "room_123".to_string(),
+            vec!["ended_generation".to_string()],
+        );
+
+        tokio::time::advance(Duration::from_secs(40)).await;
+        manager.cleanup_due_generations().await;
+        assert!(storage
+            .exists("live", "room_123", "ended_generation")
+            .await
+            .unwrap());
+
+        tokio::time::advance(Duration::from_secs(59)).await;
+        manager.cleanup_due_generations().await;
+        assert!(storage
+            .exists("live", "room_123", "ended_generation")
+            .await
+            .unwrap());
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        manager.cleanup_due_generations().await;
+        assert!(!storage
+            .exists("live", "room_123", "ended_generation")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn manual_cleanup_processes_due_generation_queue() {
+        let storage = Arc::new(MemoryStorage::new());
+        storage
+            .write(
+                "live",
+                "room_123",
+                "ended_generation",
+                Bytes::from_static(b"ended"),
+            )
+            .await
+            .unwrap();
+        let manager = SegmentManager::new(
+            storage.clone(),
+            CleanupConfig {
+                interval: Duration::from_secs(30),
+                retention: Duration::from_hours(1),
+                final_playlist_grace: Duration::from_secs(10),
+                ended_segment_grace: Duration::from_secs(20),
+                max_segments_per_stream: 0,
+            },
+        );
+        manager.schedule_generation_cleanup(
+            "live".to_string(),
+            "room_123".to_string(),
+            vec!["ended_generation".to_string()],
+        );
+
+        tokio::time::advance(Duration::from_secs(30)).await;
+        assert_eq!(manager.cleanup_expired().await.unwrap(), 1);
+        assert!(!storage
+            .exists("live", "room_123", "ended_generation")
             .await
             .unwrap());
     }
@@ -467,6 +607,8 @@ mod tests {
             CleanupConfig {
                 interval: Duration::from_hours(1),
                 retention: Duration::from_hours(1),
+                final_playlist_grace: Duration::from_mins(1),
+                ended_segment_grace: Duration::from_mins(1),
                 max_segments_per_stream: 0,
             },
         );
@@ -611,6 +753,8 @@ mod tests {
         let config = CleanupConfig {
             interval: Duration::from_secs(10),
             retention: Duration::from_mins(1),
+            final_playlist_grace: Duration::from_mins(1),
+            ended_segment_grace: Duration::from_mins(1),
             max_segments_per_stream: 100,
         };
         assert_eq!(config.max_segments_per_stream, 100);
@@ -618,5 +762,70 @@ mod tests {
         // Default should have unlimited segments
         let default_config = CleanupConfig::default();
         assert_eq!(default_config.max_segments_per_stream, 0);
+    }
+
+    #[test]
+    fn count_cleanup_floor_preserves_live_playlist_and_refresh_reserve() {
+        let storage = Arc::new(MemoryStorage::new());
+        let manager = SegmentManager::new(
+            storage,
+            CleanupConfig {
+                max_segments_per_stream: 1,
+                ..CleanupConfig::default()
+            },
+        );
+
+        assert_eq!(
+            manager.effective_max_segments_per_stream(),
+            HLS_PLAYLIST_RETENTION_RESERVE
+        );
+    }
+
+    #[tokio::test]
+    async fn count_cleanup_keeps_a_refreshable_playlist_window() -> TestResult {
+        let storage = Arc::new(MemoryStorage::new());
+        for sequence in 0..=HLS_PLAYLIST_RETENTION_RESERVE {
+            storage
+                .write(
+                    "live",
+                    "room",
+                    &format!("segment_{sequence}"),
+                    Bytes::from_static(b"segment"),
+                )
+                .await?;
+        }
+
+        let manager = Arc::new(SegmentManager::new(
+            storage.clone(),
+            CleanupConfig {
+                interval: Duration::from_millis(10),
+                retention: Duration::from_hours(1),
+                max_segments_per_stream: 1,
+                ..CleanupConfig::default()
+            },
+        ));
+        let shutdown = CancellationToken::new();
+        let task = manager.clone().start_cleanup_task(shutdown.clone());
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if storage.count_stream_segments("live", "room").await?
+                    == HLS_PLAYLIST_RETENTION_RESERVE
+                {
+                    break Ok::<(), std::io::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("count cleanup should reach its safe floor")?;
+
+        shutdown.cancel();
+        task.await.unwrap();
+        assert_eq!(
+            storage.count_stream_segments("live", "room").await?,
+            HLS_PLAYLIST_RETENTION_RESERVE
+        );
+        Ok(())
     }
 }

@@ -27,7 +27,7 @@ use synctv::{
 use synctv_core_testing::{
     connect_test_pool_url, create_test_database_url_with_label,
     postgres_connection_url_with_credentials, start_redis_url_with_label, test_redis_key_prefix,
-    RedisContainer, TestContainer,
+    RedisContainer, RtmpPublisher, TestContainer,
 };
 use synctv_management::proto as management_proto;
 use synctv_media_providers::grpc::alist::{alist_server::AlistServer, MeResp as AlistMeResp};
@@ -4743,6 +4743,568 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
     assert!(!room_stream_info_after_kick["active"]
         .as_bool()
         .unwrap_or(false));
+}
+
+fn absolute_playback_url(api_base_url: &str, raw_url: &str) -> String {
+    if url::Url::parse(raw_url).is_ok() {
+        return raw_url.to_string();
+    }
+
+    url::Url::parse(&format!("{api_base_url}/"))
+        .expect("API base URL should parse")
+        .join(raw_url)
+        .unwrap_or_else(|error| panic!("playback URL should join API base URL: {error}"))
+        .to_string()
+}
+
+fn replace_url_query_parameter(url: &str, name: &str, value: Option<&str>) -> String {
+    let mut parsed = url::Url::parse(url).expect("signed playback URL should parse");
+    let retained = parsed
+        .query_pairs()
+        .filter(|(key, _)| key != name)
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    {
+        let mut query = parsed.query_pairs_mut();
+        query.clear();
+        query.extend_pairs(retained.iter().map(|(key, value)| (key, value)));
+        if let Some(value) = value {
+            query.append_pair(name, value);
+        }
+    }
+    parsed.to_string()
+}
+
+async fn assert_signed_playback_request_is_unauthorized(
+    client: &reqwest::Client,
+    url: &str,
+    context: &str,
+) {
+    let response =
+        client.head(url).send().await.unwrap_or_else(|error| {
+            panic!("{context} request should return HTTP response: {error}")
+        });
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "{context} should reject the signed playback request"
+    );
+}
+
+fn flv_audio_video_tags(body: &[u8]) -> Option<(bool, bool)> {
+    if body.len() < 13 {
+        return None;
+    }
+    assert_eq!(
+        &body[..3],
+        b"FLV",
+        "FLV response should start with a header"
+    );
+
+    let data_offset = u32::from_be_bytes([body[5], body[6], body[7], body[8]]) as usize;
+    if body.len() < data_offset.saturating_add(4) {
+        return None;
+    }
+
+    let mut offset = data_offset + 4;
+    let mut has_audio = false;
+    let mut has_video = false;
+    while body.len() >= offset.saturating_add(15) {
+        let data_size = (usize::from(body[offset + 1]) << 16)
+            | (usize::from(body[offset + 2]) << 8)
+            | usize::from(body[offset + 3]);
+        let tag_size = 11usize
+            .checked_add(data_size)
+            .and_then(|size| size.checked_add(4))
+            .expect("FLV tag size should fit usize");
+        if body.len() < offset.saturating_add(tag_size) {
+            break;
+        }
+
+        match body[offset] {
+            8 => has_audio = true,
+            9 => has_video = true,
+            _ => {}
+        }
+
+        let previous_tag_size_offset = offset + 11 + data_size;
+        let previous_tag_size = u32::from_be_bytes([
+            body[previous_tag_size_offset],
+            body[previous_tag_size_offset + 1],
+            body[previous_tag_size_offset + 2],
+            body[previous_tag_size_offset + 3],
+        ]);
+        assert_eq!(
+            previous_tag_size,
+            u32::try_from(11 + data_size).expect("FLV tag size should fit u32"),
+            "FLV previous-tag-size should describe the complete tag"
+        );
+        offset += tag_size;
+    }
+
+    Some((has_audio, has_video))
+}
+
+async fn read_http_flv_audio_video(client: &reqwest::Client, url: &str) -> Vec<u8> {
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .expect("signed FLV GET should complete response headers");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("video/x-flv")
+    );
+
+    let mut chunks = response.bytes_stream();
+    tokio::time::timeout(Duration::from_secs(10), async move {
+        let mut body = Vec::new();
+        while let Some(chunk) = chunks.next().await {
+            body.extend_from_slice(&chunk.expect("FLV response chunk should be readable"));
+            assert!(
+                body.len() <= 2 * 1024 * 1024,
+                "FLV fixture should find A/V tags within 2 MiB"
+            );
+            if flv_audio_video_tags(&body) == Some((true, true)) {
+                return body;
+            }
+        }
+        panic!("FLV response ended before complete audio and video tags arrived");
+    })
+    .await
+    .expect("FLV response should deliver complete audio and video tags")
+}
+
+async fn wait_for_http_hls_playlist<F>(
+    client: &reqwest::Client,
+    url: &str,
+    context: &str,
+    predicate: F,
+) -> String
+where
+    F: Fn(&str) -> bool,
+{
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let last_observation = match client.get(url).send().await {
+            Ok(response) if response.status() == StatusCode::OK => {
+                assert_eq!(
+                    response
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|value| value.to_str().ok()),
+                    Some("application/vnd.apple.mpegurl")
+                );
+                let body = response
+                    .text()
+                    .await
+                    .expect("HLS playlist body should be readable");
+                if predicate(&body) {
+                    return body;
+                }
+                body
+            }
+            Ok(response) => format!("HTTP {}", response.status()),
+            Err(error) => error.to_string(),
+        };
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {context}; last observation: {last_observation}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn full_stack_public_rtmp_playback_serves_signed_flv_and_hls_over_http() {
+    let server = start_test_server().await;
+    let suffix = unique_test_suffix();
+    let owner_username = format!("http_stream_owner_{suffix}");
+    let owner_email = format!("http-stream-owner-{suffix}@example.com");
+
+    create_cli_user(
+        &server,
+        &owner_username,
+        &owner_email,
+        "HttpStreamOwnerPass12345!",
+        Some("active"),
+        "create HTTP stream owner",
+    )
+    .await;
+
+    let room = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "room",
+            "create",
+            &format!("HTTP Stream Room {suffix}"),
+            "--username",
+            &owner_username,
+        ],
+        "create HTTP stream room",
+    )
+    .await;
+    let room_id = room["id"]
+        .as_str()
+        .expect("HTTP stream room should include id")
+        .to_string();
+
+    let media = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "media",
+            "add",
+            &room_id,
+            "--username",
+            &owner_username,
+            "--source-provider",
+            "rtmp",
+            "--source-config-json",
+            "{\"mode\":1}",
+            "--name",
+            "HTTP RTMP Stream",
+        ],
+        "create RTMP provider media",
+    )
+    .await;
+    let media_id = media["id"]
+        .as_str()
+        .expect("RTMP provider media should include id")
+        .to_string();
+
+    let publish_key = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "provider",
+            "rtmp",
+            "create-publish-key",
+            "--room-id",
+            &room_id,
+            "--username",
+            &owner_username,
+            &media_id,
+        ],
+        "create HTTP playback RTMP publish key",
+    )
+    .await;
+    let rtmp_url = url::Url::parse(
+        publish_key["rtmpUrl"]
+            .as_str()
+            .expect("publish key should include rtmpUrl"),
+    )
+    .expect("RTMP publish URL should parse");
+    let rtmp_address: SocketAddr = format!(
+        "{}:{}",
+        rtmp_url
+            .host_str()
+            .expect("RTMP publish URL should include host"),
+        rtmp_url.port().unwrap_or(1935)
+    )
+    .parse()
+    .expect("test RTMP publish address should be an IP socket address");
+    let app_name = rtmp_url.path().trim_matches('/').to_string();
+    assert!(
+        !app_name.is_empty(),
+        "RTMP publish URL should include app path"
+    );
+    let stream_key = publish_key["streamKey"]
+        .as_str()
+        .expect("publish key should include streamKey")
+        .to_string();
+
+    let mut publisher = RtmpPublisher::connect(rtmp_address, app_name, stream_key)
+        .await
+        .expect("real RTMP publisher should connect");
+    wait_for_room_stream_total(&server, &room_id, 1).await;
+
+    run_synctv_remote_cli_json(
+        &server,
+        &[
+            "room",
+            "playback",
+            "start",
+            &room_id,
+            "--media-id",
+            &media_id,
+            "--email",
+            &owner_email,
+        ],
+        "start RTMP room playback",
+    )
+    .await;
+    let playback = run_synctv_remote_cli_json(
+        &server,
+        &["room", "playback", "get", &room_id],
+        "get signed RTMP playback URLs",
+    )
+    .await;
+    assert_eq!(playback["playback"]["mediaId"], media_id);
+    let flv_url = absolute_playback_url(
+        &server.api_base_url,
+        playback["flvPullUrl"]
+            .as_str()
+            .expect("RTMP playback should include a signed FLV URL"),
+    );
+    let hls_url = absolute_playback_url(
+        &server.api_base_url,
+        playback["hlsPullUrl"]
+            .as_str()
+            .expect("RTMP playback should include a signed HLS URL"),
+    );
+
+    let client = test_http_client();
+    assert_signed_playback_request_is_unauthorized(
+        &client,
+        &replace_url_query_parameter(&flv_url, "sig", Some("tampered-signature")),
+        "tampered FLV signature",
+    )
+    .await;
+    assert_signed_playback_request_is_unauthorized(
+        &client,
+        &replace_url_query_parameter(&flv_url, "exp", Some("1")),
+        "expired FLV signature",
+    )
+    .await;
+    assert_signed_playback_request_is_unauthorized(
+        &client,
+        &replace_url_query_parameter(&flv_url, "uid", None),
+        "FLV signature missing uid",
+    )
+    .await;
+    let stream_after_rejected_signatures = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "provider",
+            "rtmp",
+            "get-stream-info",
+            "--room-id",
+            &room_id,
+            &media_id,
+        ],
+        "confirm stream remains active after rejected playback signatures",
+    )
+    .await;
+    assert_eq!(stream_after_rejected_signatures["active"], true);
+
+    publisher
+        .send_video(0, true)
+        .await
+        .expect("send AVC config");
+    publisher.send_audio(0).await.expect("send AAC config");
+    publisher
+        .send_video(1, true)
+        .await
+        .expect("send first keyframe");
+    publisher
+        .send_audio(1)
+        .await
+        .expect("send first audio frame");
+    publisher
+        .send_video(5_001, false)
+        .await
+        .expect("send first interframe");
+    publisher
+        .send_audio(5_001)
+        .await
+        .expect("send second audio frame");
+    publisher
+        .send_video(10_001, true)
+        .await
+        .expect("close first HLS segment");
+    publisher
+        .send_audio(10_001)
+        .await
+        .expect("send third audio frame");
+    publisher
+        .send_video(15_001, false)
+        .await
+        .expect("send second interframe");
+    publisher
+        .send_audio(15_001)
+        .await
+        .expect("send fourth audio frame");
+    publisher
+        .send_video(20_001, true)
+        .await
+        .expect("close second HLS segment");
+    publisher
+        .send_audio(20_001)
+        .await
+        .expect("send fifth audio frame");
+
+    let flv_head = client
+        .head(&flv_url)
+        .send()
+        .await
+        .expect("signed FLV HEAD should succeed");
+    assert_eq!(flv_head.status(), StatusCode::OK);
+    assert_eq!(
+        flv_head
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("video/x-flv")
+    );
+    assert!(
+        flv_head
+            .bytes()
+            .await
+            .expect("FLV HEAD body should be readable")
+            .is_empty(),
+        "FLV HEAD should return an empty body"
+    );
+    let flv_body = read_http_flv_audio_video(&client, &flv_url).await;
+    assert_eq!(flv_audio_video_tags(&flv_body), Some((true, true)));
+
+    let master_playlist =
+        wait_for_http_hls_playlist(&client, &hls_url, "HLS generation playlist", |body| {
+            body.lines()
+                .any(|line| !line.is_empty() && !line.starts_with('#'))
+        })
+        .await;
+    assert!(master_playlist.starts_with("#EXTM3U"));
+    assert!(master_playlist.contains("#EXT-X-STREAM-INF"));
+    let generation_playlist_path = master_playlist
+        .lines()
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .expect("HLS master playlist should contain a generation playlist URL");
+    assert!(generation_playlist_path.contains("/hls/"));
+    assert!(generation_playlist_path.contains("/index.m3u8"));
+    let generation_id = generation_playlist_path
+        .split("/hls/")
+        .nth(1)
+        .and_then(|suffix| suffix.split('/').next())
+        .filter(|generation_id| !generation_id.is_empty())
+        .expect("HLS generation playlist URL should contain a generation id");
+    let generation_playlist_url =
+        absolute_playback_url(&server.api_base_url, generation_playlist_path);
+
+    let playlist = wait_for_http_hls_playlist(
+        &client,
+        &generation_playlist_url,
+        "HLS media segment",
+        |body| {
+            body.lines()
+                .any(|line| !line.is_empty() && !line.starts_with('#'))
+        },
+    )
+    .await;
+    assert!(playlist.starts_with("#EXTM3U"));
+    let segment_path = playlist
+        .lines()
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .expect("HLS playlist should contain a signed segment URL");
+    assert!(
+        segment_path.contains(&format!("/hls/{generation_id}/")),
+        "HLS media playlist must keep segment requests on the same generation"
+    );
+    let segment_url = absolute_playback_url(&server.api_base_url, segment_path);
+
+    let segment_head = client
+        .head(&segment_url)
+        .send()
+        .await
+        .expect("signed HLS segment HEAD should succeed");
+    assert_eq!(segment_head.status(), StatusCode::OK);
+    assert_eq!(
+        segment_head
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("video/mp2t")
+    );
+    assert_eq!(
+        segment_head
+            .headers()
+            .get(reqwest::header::ACCEPT_RANGES)
+            .and_then(|value| value.to_str().ok()),
+        Some("bytes")
+    );
+    assert!(
+        segment_head
+            .bytes()
+            .await
+            .expect("HLS segment HEAD body should be readable")
+            .is_empty(),
+        "HLS segment HEAD should return an empty body"
+    );
+
+    let segment = client
+        .get(&segment_url)
+        .send()
+        .await
+        .expect("signed HLS segment GET should succeed");
+    assert_eq!(segment.status(), StatusCode::OK);
+    assert_eq!(
+        segment
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("video/mp2t")
+    );
+    let segment = segment
+        .bytes()
+        .await
+        .expect("HLS segment body should be readable");
+    assert!(!segment.is_empty(), "HLS segment should contain TS packets");
+    assert_eq!(
+        segment.len() % 188,
+        0,
+        "TS segment should be packet aligned"
+    );
+    assert!(
+        segment
+            .as_chunks::<188>()
+            .0
+            .iter()
+            .all(|packet| packet[0] == 0x47),
+        "every TS packet should start with the sync byte"
+    );
+
+    let endlist_client = client.clone();
+    let endlist_url = generation_playlist_url;
+    let endlist_task = tokio::spawn(async move {
+        wait_for_http_hls_playlist(&endlist_client, &endlist_url, "final HLS ENDLIST", |body| {
+            body.contains("#EXT-X-ENDLIST")
+        })
+        .await
+    });
+    tokio::task::yield_now().await;
+
+    run_synctv_remote_cli_json(
+        &server,
+        &[
+            "system",
+            "stream",
+            "kick",
+            "--room-id",
+            &room_id,
+            "--media-id",
+            &media_id,
+            "--reason",
+            "http-playback-endlist",
+        ],
+        "kick RTMP stream after HTTP playback checks",
+    )
+    .await;
+    let final_playlist = endlist_task
+        .await
+        .expect("ENDLIST polling task should join");
+    assert!(final_playlist.contains("#EXT-X-ENDLIST"));
+    publisher.close();
+
+    assert_eq!(
+        wait_for_room_stream_total(&server, &room_id, 0).await["total"]
+            .as_i64()
+            .unwrap_or(0),
+        0
+    );
 }
 
 #[tokio::test]

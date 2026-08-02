@@ -772,7 +772,7 @@ pub(crate) fn apply_env_overrides_with(
         HlsStorageConfig::File(config) | HlsStorageConfig::SharedFile(config) => {
             env_override_str("SYNCTV_LIVESTREAM_HLS_STORAGE_PATH", &mut config.path);
         }
-        HlsStorageConfig::Oss(config) => {
+        HlsStorageConfig::S3(config) => {
             env_override_str(
                 "SYNCTV_LIVESTREAM_HLS_STORAGE_ENDPOINT",
                 &mut config.endpoint,
@@ -1282,9 +1282,9 @@ pub(crate) fn resolve_owned_local_paths(
         };
     }
 
-    if let Some(oss) = config.livestream.hls_storage.oss_mut() {
-        let storage_base_path = oss.base_path.trim().trim_start_matches('/');
-        oss.base_path = if storage_base_path.is_empty() {
+    if let Some(s3) = config.livestream.hls_storage.s3_mut() {
+        let storage_base_path = s3.base_path.trim().trim_start_matches('/');
+        s3.base_path = if storage_base_path.is_empty() {
             String::new()
         } else if storage_base_path.ends_with('/') {
             storage_base_path.to_string()

@@ -471,14 +471,14 @@ config:
     pullMaxBackoffMs: 30000
     maxFlvTagSizeBytes: 10485760
     gopCacheMaxMemoryMb: 100
-    ## HLS storage. type values: memory, file, shared_file, oss.
+    ## HLS storage. type values: memory, file, shared_file, s3.
     hlsStorage:
       type: "memory"
       ## For type=memory.
       memoryMaxMb: 0
       ## For type=file or shared_file. Kubernetes deployments require an absolute path.
       path: ""
-      ## For type=oss.
+      ## For type=s3.
       endpoint: ""
       bucket: ""
       region: ""
@@ -523,7 +523,7 @@ config:
   ## ClusterChannelConfig (matches code defaults)
   cluster:
     ## Enable only for multi-replica deployments. Local HLS backends work through
-    ## publisher-node gRPC proxying; shared_file storage or OSS is recommended
+    ## publisher-node gRPC proxying; shared_file storage or S3 is recommended
     ## for production multi-replica HLS traffic.
     enabled: false
     host: "0.0.0.0"
@@ -757,9 +757,9 @@ secrets:
   ## Livestream storage credentials.
   livestream:
     hlsStorage:
-      ## Required when config.livestream.hlsStorage.type=oss.
+      ## Required when config.livestream.hlsStorage.type=s3.
       accessKeyId: ""
-      ## Required when config.livestream.hlsStorage.type=oss.
+      ## Required when config.livestream.hlsStorage.type=s3.
       secretAccessKey: ""
 
 ## ============================================================================

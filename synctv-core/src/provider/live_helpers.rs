@@ -39,13 +39,13 @@ pub(super) fn build_flv_action(
     })
 }
 
-/// Build an HLS playlist playback transport action.
-pub(super) fn build_hls_playlist_action(
+/// Build an HLS master playlist playback transport action.
+pub(super) fn build_hls_master_action(
     provider_name: &str,
     versioned: &VersionedPlayback,
 ) -> Result<PlaybackTransportAction, ProviderError> {
     let (room_id, media_id) = live_ids_from_metadata(versioned)?;
-    Ok(PlaybackTransportAction::LiveHlsPlaylist {
+    Ok(PlaybackTransportAction::LiveHlsMaster {
         provider_name: provider_name.to_string(),
         room_id,
         media_id,
@@ -53,10 +53,27 @@ pub(super) fn build_hls_playlist_action(
     })
 }
 
+/// Build an immutable-generation HLS media playlist playback transport action.
+pub(super) fn build_hls_playlist_action(
+    provider_name: &str,
+    versioned: &VersionedPlayback,
+    generation_id: &str,
+) -> Result<PlaybackTransportAction, ProviderError> {
+    let (room_id, media_id) = live_ids_from_metadata(versioned)?;
+    Ok(PlaybackTransportAction::LiveHlsPlaylist {
+        provider_name: provider_name.to_string(),
+        room_id,
+        media_id,
+        version: versioned.version.clone(),
+        generation_id: generation_id.to_string(),
+    })
+}
+
 /// Build an HLS segment playback transport action.
 pub(super) fn build_hls_segment_action(
     provider_name: &str,
     versioned: &VersionedPlayback,
+    generation_id: &str,
     segment_name: &str,
 ) -> Result<PlaybackTransportAction, ProviderError> {
     let (room_id, media_id) = live_ids_from_metadata(versioned)?;
@@ -64,6 +81,7 @@ pub(super) fn build_hls_segment_action(
         provider_name: provider_name.to_string(),
         room_id,
         media_id,
+        generation_id: generation_id.to_string(),
         segment_name: segment_name.to_string(),
         disguised_as_png: segment_name.ends_with(".png"),
     })

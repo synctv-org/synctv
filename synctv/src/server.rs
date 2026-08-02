@@ -66,7 +66,7 @@ pub struct LivestreamState {
 #[async_trait]
 trait LivestreamShutdown {
     async fn cleanup_local_publishers_for_server(&mut self, timeout: Duration);
-    fn force_shutdown_for_server(&mut self);
+    async fn force_shutdown_for_server(&mut self);
     async fn shutdown_for_server(&mut self, timeout_secs: u64) -> bool;
 }
 
@@ -76,8 +76,8 @@ impl LivestreamShutdown for LivestreamState {
         self.infrastructure.cleanup_local_publishers(timeout).await;
     }
 
-    fn force_shutdown_for_server(&mut self) {
-        self.handle.shutdown();
+    async fn force_shutdown_for_server(&mut self) {
+        self.handle.shutdown_force().await;
     }
 
     async fn shutdown_for_server(&mut self, timeout_secs: u64) -> bool {
@@ -1089,7 +1089,11 @@ where
             warn!(
                 "No livestream shutdown budget remains after publisher cleanup; force-aborting livestream infrastructure"
             );
-            state.force_shutdown_for_server();
+            let _ = tokio::time::timeout(
+                FORCE_SHUTDOWN_COORDINATOR_BUDGET,
+                state.force_shutdown_for_server(),
+            )
+            .await;
             false
         } else if let Ok(graceful) =
             tokio::time::timeout(remaining_budget, state.shutdown_for_server(timeout_secs)).await
@@ -1099,7 +1103,11 @@ where
             warn!(
                 "Livestream infrastructure exceeded the remaining shutdown budget before graceful shutdown could complete"
             );
-            state.force_shutdown_for_server();
+            let _ = tokio::time::timeout(
+                FORCE_SHUTDOWN_COORDINATOR_BUDGET,
+                state.force_shutdown_for_server(),
+            )
+            .await;
             false
         };
         if !graceful {
@@ -3059,7 +3067,7 @@ mod tests {
         media_id: &str,
     ) {
         registry
-            .unregister_publisher(room_id, media_id)
+            .deactivate_current_generation(room_id, media_id)
             .await
             .expect("test unpublish completion should unregister publisher");
         let _ = tracker.remove_stream(room_id, media_id);
@@ -3749,7 +3757,7 @@ mod tests {
         impl LivestreamShutdown for RecordingLivestreamState {
             async fn cleanup_local_publishers_for_server(&mut self, _timeout: Duration) {}
 
-            fn force_shutdown_for_server(&mut self) {}
+            async fn force_shutdown_for_server(&mut self) {}
 
             async fn shutdown_for_server(&mut self, timeout_secs: u64) -> bool {
                 self.called.store(true, Ordering::SeqCst);
@@ -3800,7 +3808,7 @@ mod tests {
         impl LivestreamShutdown for SlowLivestreamState {
             async fn cleanup_local_publishers_for_server(&mut self, _timeout: Duration) {}
 
-            fn force_shutdown_for_server(&mut self) {}
+            async fn force_shutdown_for_server(&mut self) {}
 
             async fn shutdown_for_server(&mut self, _timeout_secs: u64) -> bool {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -3840,7 +3848,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
 
-            fn force_shutdown_for_server(&mut self) {
+            async fn force_shutdown_for_server(&mut self) {
                 self.force_shutdown_called.store(true, Ordering::SeqCst);
             }
 
@@ -3960,12 +3968,13 @@ mod tests {
         let media_id_string = media_id.to_string();
         let registry = synctv_livestream::local_stream_registry();
         registry
-            .try_register_publisher(
+            .try_activate_generation(
                 &room_id_string,
                 &media_id_string,
                 "test-node",
                 "publisher-user",
                 "127.0.0.1:50051",
+                "00000000-0000-4000-8000-000000000001",
             )
             .await
             .expect("publisher should register");
@@ -4016,7 +4025,7 @@ mod tests {
 
         assert!(
             registry
-                .get_publisher(&room_id_string, &media_id_string)
+                .get_active_generation(&room_id_string, &media_id_string)
                 .await
                 .expect("registry lookup should succeed")
                 .is_some(),
@@ -4033,7 +4042,7 @@ mod tests {
 
         assert!(
             registry
-                .get_publisher(&room_id_string, &media_id_string)
+                .get_active_generation(&room_id_string, &media_id_string)
                 .await
                 .expect("registry lookup should succeed")
                 .is_none(),
@@ -4082,22 +4091,24 @@ mod tests {
         let user_id_string = user_id.to_string();
         let registry = synctv_livestream::local_stream_registry();
         registry
-            .try_register_publisher(
+            .try_activate_generation(
                 &room_id_string,
                 &media_id_string,
                 "test-node",
                 "publisher-user",
                 "127.0.0.1:50051",
+                "00000000-0000-4000-8000-000000000001",
             )
             .await
             .expect("room-1 publisher should register");
         registry
-            .try_register_publisher(
+            .try_activate_generation(
                 &other_room_id_string,
                 &other_media_id_string,
                 "test-node",
                 &user_id_string,
                 "127.0.0.1:50051",
+                "00000000-0000-4000-8000-000000000002",
             )
             .await
             .expect("room-2 publisher should register");
@@ -4161,7 +4172,7 @@ mod tests {
 
         assert!(
             registry
-                .get_publisher(&room_id_string, &media_id_string)
+                .get_active_generation(&room_id_string, &media_id_string)
                 .await
                 .expect("registry lookup should succeed")
                 .is_some(),
@@ -4169,7 +4180,7 @@ mod tests {
         );
         assert!(
             registry
-                .get_publisher(&other_room_id_string, &other_media_id_string)
+                .get_active_generation(&other_room_id_string, &other_media_id_string)
                 .await
                 .expect("registry lookup should succeed")
                 .is_some(),
@@ -4180,7 +4191,7 @@ mod tests {
 
         assert!(
             registry
-                .get_publisher(&room_id_string, &media_id_string)
+                .get_active_generation(&room_id_string, &media_id_string)
                 .await
                 .expect("registry lookup should succeed")
                 .is_none(),
@@ -4188,7 +4199,7 @@ mod tests {
         );
         assert!(
             registry
-                .get_publisher(&other_room_id_string, &other_media_id_string)
+                .get_active_generation(&other_room_id_string, &other_media_id_string)
                 .await
                 .expect("registry lookup should succeed")
                 .is_some(),

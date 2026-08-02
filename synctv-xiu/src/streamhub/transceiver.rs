@@ -1,9 +1,9 @@
 use super::{
     define::{
         DataReceiver, DataSender, FrameData, FrameDataReceiver, FrameDataSender, FrameTrySendError,
-        PacketData, PacketDataReceiver, PacketDataSender, StatisticData, StatisticDataReceiver,
-        StatisticDataSender, TStreamHandler, TransceiverEvent, TransceiverEventExecuteResultSender,
-        TransceiverEventReceiver,
+        PacketData, PacketDataReceiver, PacketDataSender, PublisherActivityCallback, StatisticData,
+        StatisticDataReceiver, StatisticDataSender, TStreamHandler, TransceiverEvent,
+        TransceiverEventExecuteResultSender, TransceiverEventReceiver,
     },
     errors::{StreamHubError, StreamHubErrorValue},
     statistics::{self, StatisticsStream},
@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinSet;
+use tokio::time::Instant;
 
 fn map_task_join_error(task_name: &str, error: &tokio::task::JoinError) -> StreamHubError {
     let detail = if error.is_panic() {
@@ -53,6 +54,14 @@ pub(crate) struct ReceiveEventLoopContext {
     pub(crate) packet_generation: Arc<AtomicU64>,
     pub(crate) statistic_sender: StatisticDataSender,
     pub(crate) statistics_data: Arc<Mutex<StatisticsStream>>,
+}
+
+pub(crate) struct FrameDataLoopContext {
+    pub(crate) stream_handler: Arc<dyn TStreamHandler>,
+    pub(crate) frame_senders: Arc<Mutex<HashMap<Uuid, SubscriberDropCounter>>>,
+    pub(crate) generation: Arc<AtomicU64>,
+    pub(crate) statistics_data: Arc<Mutex<StatisticsStream>>,
+    pub(crate) publisher_activity: Option<Arc<PublisherActivityTracker>>,
 }
 
 /// How often to log per-subscriber drop warnings (every N drops).
@@ -104,6 +113,51 @@ pub(crate) struct StreamDataTransceiver {
     statistic_data_receiver: StatisticDataReceiver,
     statistic_data: Arc<Mutex<StatisticsStream>>,
     stream_handler: Arc<dyn TStreamHandler>,
+    identifier: StreamIdentifier,
+    publisher_activity: Option<Arc<PublisherActivityTracker>>,
+}
+
+pub(crate) const PUBLISHER_ACTIVITY_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(10);
+
+pub(crate) struct PublisherActivityTracker {
+    app_name: String,
+    stream_name: String,
+    generation_id: Uuid,
+    callback: PublisherActivityCallback,
+    last_recorded: parking_lot::Mutex<Option<Instant>>,
+}
+
+impl PublisherActivityTracker {
+    fn new(
+        identifier: &StreamIdentifier,
+        generation_id: Uuid,
+        callback: PublisherActivityCallback,
+    ) -> Self {
+        let StreamIdentifier::Rtmp {
+            app_name,
+            stream_name,
+        } = identifier;
+        Self {
+            app_name: app_name.clone(),
+            stream_name: stream_name.clone(),
+            generation_id,
+            callback,
+            last_recorded: parking_lot::Mutex::new(None),
+        }
+    }
+
+    fn record(&self) {
+        let now = Instant::now();
+        let mut last_recorded = self.last_recorded.lock();
+        if last_recorded.is_some_and(|last| now.duration_since(last) < PUBLISHER_ACTIVITY_INTERVAL)
+        {
+            return;
+        }
+        *last_recorded = Some(now);
+        drop(last_recorded);
+        (self.callback)(&self.app_name, &self.stream_name, self.generation_id);
+    }
 }
 
 impl StreamDataTransceiver {
@@ -124,8 +178,23 @@ impl StreamDataTransceiver {
             frame_generation: Arc::new(AtomicU64::new(0)),
             packet_generation: Arc::new(AtomicU64::new(0)),
             stream_handler: handler,
-            statistic_data: Arc::new(Mutex::new(StatisticsStream::new(identifier))),
+            statistic_data: Arc::new(Mutex::new(StatisticsStream::new(identifier.clone()))),
+            identifier,
+            publisher_activity: None,
         }
+    }
+
+    pub(crate) fn with_publisher_activity_callback(
+        mut self,
+        generation_id: Uuid,
+        callback: PublisherActivityCallback,
+    ) -> Self {
+        self.publisher_activity = Some(Arc::new(PublisherActivityTracker::new(
+            &self.identifier,
+            generation_id,
+            callback,
+        )));
+        self
     }
 
     fn fan_out_frame(
@@ -182,16 +251,20 @@ impl StreamDataTransceiver {
 
     pub(crate) async fn receive_frame_data(
         data: Option<FrameData>,
-        frame_senders: &Arc<Mutex<HashMap<Uuid, SubscriberDropCounter>>>,
-        generation: &Arc<AtomicU64>,
+        context: &FrameDataLoopContext,
         cached_snapshot: &mut Vec<(Uuid, FrameDataSender, Arc<AtomicU64>)>,
         cached_gen: &mut u64,
-        statistics_data: &Arc<Mutex<StatisticsStream>>,
-    ) {
+    ) -> Result<(), StreamHubError> {
         if let Some(val) = data {
-            let current_gen = generation.load(Ordering::Acquire);
+            context.stream_handler.save_frame_data(&val)?;
+            if matches!(val, FrameData::Audio { .. } | FrameData::Video { .. }) {
+                if let Some(activity) = &context.publisher_activity {
+                    activity.record();
+                }
+            }
+            let current_gen = context.generation.load(Ordering::Acquire);
             if current_gen != *cached_gen {
-                let guard = frame_senders.lock().await;
+                let guard = context.frame_senders.lock().await;
                 *cached_snapshot = guard
                     .iter()
                     .map(|(id, sc)| (*id, sc.sender.clone(), Arc::clone(&sc.drop_count)))
@@ -201,35 +274,34 @@ impl StreamDataTransceiver {
             }
 
             if cached_snapshot.is_empty() {
-                return;
+                return Ok(());
             }
 
             let closed_ids = Self::fan_out_frame(cached_snapshot, &val);
 
             if !closed_ids.is_empty() {
-                let mut senders = frame_senders.lock().await;
+                let mut senders = context.frame_senders.lock().await;
                 for id in &closed_ids {
                     senders.remove(id);
                     tracing::debug!("Removed closed frame subscriber: {}", id);
                 }
                 drop(senders);
-                generation.fetch_add(1, Ordering::Release);
+                context.generation.fetch_add(1, Ordering::Release);
                 // Force a snapshot rebuild on the next frame by making the
                 // cached generation differ from the bumped global generation.
                 *cached_gen = cached_gen.wrapping_sub(1);
 
-                evict_subscriber_stats(statistics_data, &closed_ids).await;
+                evict_subscriber_stats(&context.statistics_data, &closed_ids).await;
             }
         }
+        Ok(())
     }
 
     fn receive_frame_data_loop(
         mut exit: broadcast::Receiver<()>,
         mut receiver: FrameDataReceiver,
-        frame_senders: Arc<Mutex<HashMap<Uuid, SubscriberDropCounter>>>,
-        generation: Arc<AtomicU64>,
+        context: FrameDataLoopContext,
         event_sender: Option<mpsc::UnboundedSender<TransceiverEvent>>,
-        statistics_data: Arc<Mutex<StatisticsStream>>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut cached_snapshot: Vec<(Uuid, FrameDataSender, Arc<AtomicU64>)> = Vec::new();
@@ -243,14 +315,16 @@ impl StreamDataTransceiver {
                             request_synthetic_unpublish(event_sender.as_ref());
                             break;
                         }
-                        Self::receive_frame_data(
+                        if let Err(error) = Self::receive_frame_data(
                             data,
-                            &frame_senders,
-                            &generation,
+                            &context,
                             &mut cached_snapshot,
                             &mut cached_gen,
-                            &statistics_data,
-                        ).await;
+                        ).await {
+                            tracing::warn!(%error, "publisher frame rejected by stream handler");
+                            request_synthetic_unpublish(event_sender.as_ref());
+                            break;
+                        }
                     }
                     _ = exit.recv() => {
                         break;
@@ -267,8 +341,12 @@ impl StreamDataTransceiver {
         cached_snapshot: &mut Vec<(Uuid, PacketDataSender, Arc<AtomicU64>)>,
         cached_gen: &mut u64,
         statistics_data: &Arc<Mutex<StatisticsStream>>,
+        publisher_activity: Option<&PublisherActivityTracker>,
     ) {
         if let Some(val) = data {
+            if let Some(activity) = publisher_activity {
+                activity.record();
+            }
             let current_gen = generation.load(Ordering::Acquire);
             if current_gen != *cached_gen {
                 let guard = packet_senders.lock().await;
@@ -310,6 +388,7 @@ impl StreamDataTransceiver {
         generation: Arc<AtomicU64>,
         event_sender: Option<mpsc::UnboundedSender<TransceiverEvent>>,
         statistics_data: Arc<Mutex<StatisticsStream>>,
+        publisher_activity: Option<Arc<PublisherActivityTracker>>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut cached_snapshot: Vec<(Uuid, PacketDataSender, Arc<AtomicU64>)> = Vec::new();
@@ -330,6 +409,7 @@ impl StreamDataTransceiver {
                             &mut cached_snapshot,
                             &mut cached_gen,
                             &statistics_data,
+                            publisher_activity.as_deref(),
                         ).await;
                     }
                     _ = exit.recv() => {
@@ -601,13 +681,18 @@ impl StreamDataTransceiver {
         let mut tasks = JoinSet::new();
 
         if let Some(receiver) = self.data_receiver.frame_receiver {
+            let context = FrameDataLoopContext {
+                stream_handler: Arc::clone(&self.stream_handler),
+                frame_senders: Arc::clone(&self.id_to_frame_sender),
+                generation: Arc::clone(&self.frame_generation),
+                statistics_data: Arc::clone(&self.statistic_data),
+                publisher_activity: self.publisher_activity.clone(),
+            };
             let handle = Self::receive_frame_data_loop(
                 tx.subscribe(),
                 receiver,
-                self.id_to_frame_sender.clone(),
-                Arc::clone(&self.frame_generation),
+                context,
                 Some(event_sender.clone()),
-                self.statistic_data.clone(),
             );
             tasks.spawn(async move {
                 handle
@@ -624,6 +709,7 @@ impl StreamDataTransceiver {
                 Arc::clone(&self.packet_generation),
                 Some(event_sender.clone()),
                 self.statistic_data.clone(),
+                self.publisher_activity.clone(),
             );
             tasks.spawn(async move {
                 handle

@@ -10,8 +10,7 @@
 
 use super::registry::HEARTBEAT_INTERVAL_SECS;
 use super::registry_trait::{
-    PublisherRefreshOutcome, PublisherRefreshRequest, StreamRegistryTrait,
-    PUBLISHER_REFRESH_BATCH_SIZE,
+    LeaseRefreshOutcome, LeaseRefreshRequest, StreamRegistryTrait, PUBLISHER_REFRESH_BATCH_SIZE,
 };
 use crate::util::{unix_now_secs, validate_stream_ids};
 use dashmap::DashMap;
@@ -20,6 +19,7 @@ use std::sync::Arc;
 use synctv_xiu::streamhub::{
     define::{BroadcastEventReceiver, StreamHubEvent, StreamHubEventSender},
     stream::StreamIdentifier,
+    utils::Uuid,
 };
 use tokio::sync::{mpsc, oneshot, Notify};
 use tokio::time::{interval, Duration};
@@ -48,7 +48,8 @@ enum PublisherMaintenanceCommand {
 struct PublisherCleanupContext {
     room_id: String,
     media_id: String,
-    epoch: u64,
+    lease_epoch: u64,
+    generation_id: Option<Uuid>,
 }
 
 /// Tracked publisher state including activity timestamp and registration info.
@@ -62,8 +63,11 @@ struct PublisherEntry {
     consecutive_heartbeat_failures: std::sync::atomic::AtomicU32,
     /// User ID from the publisher registration, used for reverse-index TTL refresh.
     user_id: String,
-    /// Publisher epoch captured from the registry when tracking started.
-    epoch: u64,
+    /// Publisher lease_epoch captured from the registry when tracking started.
+    lease_epoch: u64,
+    /// Local StreamHub publication generation. Registry-only reconciliation
+    /// leaves this empty until the next media packet binds the current owner.
+    generation_id: parking_lot::RwLock<Option<Uuid>>,
 }
 
 impl PublisherEntry {
@@ -74,28 +78,50 @@ impl PublisherEntry {
             last_active_secs: AtomicU64::new(unix_now_secs()),
             consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(0),
             user_id: String::new(),
-            epoch: 0,
+            lease_epoch: 0,
+            generation_id: parking_lot::RwLock::new(None),
         }
     }
 
-    fn with_registration(user_id: String, epoch: u64) -> Self {
+    fn with_registration(user_id: String, lease_epoch: u64) -> Self {
         Self {
             last_active_secs: AtomicU64::new(unix_now_secs()),
             consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(0),
             user_id,
-            epoch,
+            lease_epoch,
+            generation_id: parking_lot::RwLock::new(None),
         }
     }
 
-    fn clone_with_registration(&self, user_id: String, epoch: u64) -> Self {
+    fn clone_with_registration(&self, user_id: String, lease_epoch: u64) -> Self {
         Self {
             last_active_secs: AtomicU64::new(self.last_active_secs.load(Ordering::Acquire)),
             consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(
                 self.consecutive_heartbeat_failures.load(Ordering::Acquire),
             ),
             user_id,
-            epoch,
+            lease_epoch,
+            generation_id: parking_lot::RwLock::new(*self.generation_id.read()),
         }
+    }
+
+    fn bind_publisher(&self, generation_id: Uuid) -> bool {
+        let mut current = self.generation_id.write();
+        if let Some(current_id) = *current {
+            current_id == generation_id
+        } else {
+            *current = Some(generation_id);
+            true
+        }
+    }
+
+    fn generation_id(&self) -> Option<Uuid> {
+        *self.generation_id.read()
+    }
+
+    fn owns_generation(&self, generation_id: &str) -> bool {
+        self.generation_id()
+            .is_none_or(|current| current.to_string() == generation_id)
     }
 
     fn touch(&self) {
@@ -208,12 +234,14 @@ impl PublisherManager {
     /// Used by the HLS remuxer for post-lag reconciliation: after a broadcast
     /// lag event, the remuxer queries this list and starts HLS handlers for
     /// any active publishers that don't already have a running handler.
-    pub(crate) fn active_publisher_streams(&self) -> Vec<(String, String)> {
+    pub(crate) fn active_publisher_streams(&self) -> Vec<(String, String, Uuid)> {
         self.active_publishers
             .iter()
             .filter_map(|entry| {
-                parse_publisher_key(entry.key())
-                    .map(|(room_id, media_id)| (room_id.to_string(), media_id.to_string()))
+                let generation_id = entry.value().generation_id()?;
+                parse_publisher_key(entry.key()).map(|(room_id, media_id)| {
+                    (room_id.to_string(), media_id.to_string(), generation_id)
+                })
             })
             .collect()
     }
@@ -224,7 +252,12 @@ impl PublisherManager {
     /// the silent publisher timeout. Without periodic calls to this method,
     /// the publisher will be considered silent after `SILENT_PUBLISHER_TIMEOUT_SECS`
     /// and automatically cleaned up.
-    pub(crate) fn record_publisher_activity(&self, room_id: &str, media_id: &str) {
+    pub(crate) fn record_publisher_activity(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: Uuid,
+    ) {
         let Ok(key) = publisher_key(room_id, media_id) else {
             warn!(
                 room_id = room_id,
@@ -234,7 +267,11 @@ impl PublisherManager {
             return;
         };
         if let Some(entry) = self.active_publishers.get(&key) {
-            entry.touch();
+            if entry.bind_publisher(generation_id) {
+                entry.touch();
+            } else {
+                self.schedule_registry_sync();
+            }
         }
     }
 
@@ -256,7 +293,7 @@ impl PublisherManager {
         if !self.local_node_id.is_empty() {
             match self
                 .registry
-                .cleanup_all_publishers_for_node(&self.local_node_id)
+                .cleanup_all_generations_for_node(&self.local_node_id)
                 .await
             {
                 Ok(()) => {
@@ -388,6 +425,7 @@ impl PublisherManager {
             synctv_xiu::streamhub::define::BroadcastEvent::Publish {
                 identifier,
                 pub_type,
+                generation_id,
             } => {
                 // User RTMP pushes are tracked here because RTMP auth registered
                 // them in Redis before StreamHub publish. ExternalPull streams are
@@ -401,20 +439,67 @@ impl PublisherManager {
                     );
                     return Ok(());
                 }
-                if let Err(e) = self.handle_publish(identifier.clone()).await {
+                if let Err(e) = self
+                    .handle_publish_with_owner(identifier.clone(), generation_id)
+                    .await
+                {
                     error!(
                         error = %e,
                         identifier = ?identifier,
                         "Failed to track publisher for heartbeat maintenance"
                     );
+                    // The publication has already been admitted by StreamHub at this point.
+                    // Stop that exact generation when tracking cannot be established so an
+                    // untracked RTMP publisher cannot remain alive after its Redis lease expires.
+                    self.stop_untracked_publish(identifier, generation_id).await;
                     return Err(e);
                 }
             }
-            synctv_xiu::streamhub::define::BroadcastEvent::UnPublish { identifier } => {
-                self.handle_unpublish(identifier).await?;
+            synctv_xiu::streamhub::define::BroadcastEvent::UnPublish {
+                identifier,
+                generation_id,
+            } => {
+                self.handle_unpublish_with_owner(identifier, generation_id)
+                    .await?;
             }
         }
         Ok(())
+    }
+
+    async fn stop_untracked_publish(&self, identifier: StreamIdentifier, generation_id: Uuid) {
+        match tokio::time::timeout(
+            UNPUBLISH_SEND_TIMEOUT,
+            self.hub_event_sender.send(StreamHubEvent::UnPublish {
+                identifier: identifier.clone(),
+                generation_id,
+            }),
+        )
+        .await
+        {
+            Ok(Ok(())) => {
+                warn!(
+                    identifier = ?identifier,
+                    generation_id = %generation_id,
+                    "Stopped publisher whose heartbeat tracking could not be established"
+                );
+            }
+            Ok(Err(error)) => {
+                error!(
+                    identifier = ?identifier,
+                    generation_id = %generation_id,
+                    %error,
+                    "Failed to stop publisher after heartbeat tracking failure"
+                );
+            }
+            Err(_) => {
+                error!(
+                    identifier = ?identifier,
+                    generation_id = %generation_id,
+                    timeout_secs = UNPUBLISH_SEND_TIMEOUT.as_secs(),
+                    "Timed out stopping publisher after heartbeat tracking failure"
+                );
+            }
+        }
     }
 
     /// Handle Publish event - Track publisher locally for heartbeat maintenance
@@ -423,7 +508,11 @@ impl PublisherManager {
     /// in the authentication phase (`SyncTvRtmpAuth::on_publish`) before the RTMP
     /// session is established. This method only tracks publishers that have already
     /// been successfully authenticated and registered.
-    async fn handle_publish(&self, identifier: StreamIdentifier) -> anyhow::Result<()> {
+    async fn handle_publish_with_owner(
+        &self,
+        identifier: StreamIdentifier,
+        generation_id: Uuid,
+    ) -> anyhow::Result<()> {
         // Extract app_name and stream_name from RTMP identifier
         let StreamIdentifier::Rtmp {
             app_name,
@@ -446,22 +535,41 @@ impl PublisherManager {
         // This publisher has already been registered to Redis in the auth phase.
         // Query registry to get user_id for heartbeat TTL refresh.
         let publisher_key = publisher_key(&room_id, &media_id)?;
-        let entry = match self.registry.get_publisher(&room_id, &media_id).await {
+        let entry = match self
+            .registry
+            .get_active_generation(&room_id, &media_id)
+            .await
+        {
             Ok(Some(info)) => {
+                if info.generation_id != generation_id.to_string() {
+                    warn!(
+                        room_id = %room_id,
+                        media_id = %media_id,
+                        registered_generation_id = %info.generation_id,
+                        event_generation_id = %generation_id,
+                        "Ignoring Publish event from a stale StreamHub generation"
+                    );
+                    return Ok(());
+                }
                 debug!(
-                    "Retrieved publisher info for heartbeat tracking: room={}, media={}, user_id={}, epoch={}",
-                    room_id, media_id, info.user_id, info.epoch
+                    "Retrieved publisher info for heartbeat tracking: room={}, media={}, user_id={}, lease_epoch={}",
+                    room_id, media_id, info.user_id, info.lease_epoch
                 );
-                Arc::new(PublisherEntry::with_registration(info.user_id, info.epoch))
+                let entry = PublisherEntry::with_registration(info.user_id, info.lease_epoch);
+                entry.bind_publisher(generation_id);
+                Arc::new(entry)
             }
             Ok(None) => {
                 // Publisher not in registry (was never registered or already expired).
-                // Skip tracking to avoid sending heartbeats with incorrect ownership.
+                // Fail closed so the caller can stop the already-admitted StreamHub
+                // generation instead of leaving an untracked publisher alive.
                 warn!(
-                    "Publisher not found in registry during tracking (room={}, media={}); skipping heartbeat tracking",
+                    "Publisher not found in registry during tracking (room={}, media={}); rejecting untracked publication",
                     room_id, media_id
                 );
-                return Ok(());
+                return Err(anyhow::anyhow!(
+                    "Publisher registration missing during tracking for room={room_id}, media={media_id}"
+                ));
             }
             Err(e) => {
                 // Fail-closed on Redis failure. If we cannot verify the publisher
@@ -484,7 +592,29 @@ impl PublisherManager {
     }
 
     /// Handle `UnPublish` event - Remove publisher from Redis
+    #[cfg(test)]
     async fn handle_unpublish(&self, identifier: StreamIdentifier) -> anyhow::Result<()> {
+        let StreamIdentifier::Rtmp {
+            ref app_name,
+            ref stream_name,
+        } = identifier;
+        let key = publisher_key(app_name, stream_name)?;
+        let Some(generation_id) = self
+            .active_publishers
+            .get(&key)
+            .and_then(|entry| entry.generation_id())
+        else {
+            return Ok(());
+        };
+        self.handle_unpublish_with_owner(identifier, generation_id)
+            .await
+    }
+
+    async fn handle_unpublish_with_owner(
+        &self,
+        identifier: StreamIdentifier,
+        generation_id: Uuid,
+    ) -> anyhow::Result<()> {
         let StreamIdentifier::Rtmp {
             app_name,
             stream_name,
@@ -501,23 +631,33 @@ impl PublisherManager {
 
         // Look up by composite key (room_id:media_id)
         let publisher_key = publisher_key(&room_id, &media_id)?;
-        if let Some((_, entry)) = self.active_publishers.remove(&publisher_key) {
+        if let Some((_, entry)) = self
+            .active_publishers
+            .remove_if(&publisher_key, |_, entry| {
+                entry.generation_id().is_some_and(|id| id == generation_id)
+            })
+        {
             // Unregister from Redis only if this event still matches the tracked
-            // publisher epoch. A delayed UnPublish for a previous RTMP session
+            // publisher lease_epoch. A delayed UnPublish for a previous RTMP session
             // must not remove a newer publisher that already replaced it.
             if let Err(e) = self
                 .registry
-                .unregister_publisher_if_epoch_matches(&room_id, &media_id, entry.epoch)
+                .deactivate_generation_preserving_hls_if_lease_matches(
+                    &room_id,
+                    &media_id,
+                    &generation_id.to_string(),
+                    entry.lease_epoch,
+                )
                 .await
             {
                 error!(
-                    "Failed to unregister publisher for room {} / media {} with epoch {}: {}",
-                    room_id, media_id, entry.epoch, e
+                    "Failed to unregister publisher for room {} / media {} with lease_epoch {}: {}",
+                    room_id, media_id, entry.lease_epoch, e
                 );
             } else {
                 info!(
-                    "Unregistered publisher for room {} / media {} with epoch {}",
-                    room_id, media_id, entry.epoch
+                    "Unregistered publisher for room {} / media {} with lease_epoch {}",
+                    room_id, media_id, entry.lease_epoch
                 );
             }
         }
@@ -551,31 +691,91 @@ impl PublisherManager {
         let mut removed = 0u32;
         for publisher_key in &snapshot {
             if let Some((room_id, media_id)) = parse_publisher_key(publisher_key) {
-                match self.registry.get_publisher(room_id, media_id).await {
-                    Ok(Some(info)) if info.node_id == self.local_node_id => {
-                        // Publisher still registered to us -- keep it
+                match self.registry.get_active_generation(room_id, media_id).await {
+                    Ok(Some(info))
+                        if info.node_id == self.local_node_id
+                            && self
+                                .active_publishers
+                                .get(publisher_key)
+                                .is_some_and(|entry| {
+                                    entry.owns_generation(&info.generation_id)
+                                }) =>
+                    {
+                        if let Some(mut current) = self.active_publishers.get_mut(publisher_key) {
+                            if current.lease_epoch != info.lease_epoch
+                                || current.user_id != info.user_id
+                            {
+                                *current.value_mut() = Arc::new(
+                                    current.clone_with_registration(info.user_id, info.lease_epoch),
+                                );
+                            }
+                        }
                         trace!(
                             "Reconcile: publisher room={} media={} still active on this node",
                             room_id,
                             media_id
                         );
                     }
-                    Ok(Some(info)) => {
-                        // Publisher was taken over by another node -- remove locally
+                    Ok(Some(info)) if info.node_id == self.local_node_id => {
                         warn!(
-                            "Reconcile: publisher room={} media={} moved to node {}; removing local entry",
+                            room_id,
+                            media_id,
+                            registry_generation_id = info.generation_id,
+                            "Reconcile: a newer generation owns this stream on the local node; removing the stale local generation"
+                        );
+                        if let Some(expected_lease_epoch) = self
+                            .active_publishers
+                            .get(publisher_key)
+                            .map(|entry| entry.lease_epoch)
+                        {
+                            self.cleanup_publisher(
+                                room_id,
+                                media_id,
+                                expected_lease_epoch,
+                                "local stream generation changed during reconciliation",
+                            )
+                            .await;
+                        }
+                        removed += 1;
+                    }
+                    Ok(Some(info)) => {
+                        warn!(
+                            "Reconcile: publisher room={} media={} moved to node {}; cleaning up the stale local generation",
                             room_id, media_id, info.node_id
                         );
-                        self.active_publishers.remove(publisher_key);
+                        if let Some(expected_lease_epoch) = self
+                            .active_publishers
+                            .get(publisher_key)
+                            .map(|entry| entry.lease_epoch)
+                        {
+                            self.cleanup_publisher(
+                                room_id,
+                                media_id,
+                                expected_lease_epoch,
+                                "stream ownership moved to another node during reconciliation",
+                            )
+                            .await;
+                        }
                         removed += 1;
                     }
                     Ok(None) => {
-                        // Publisher no longer exists in registry -- remove locally
                         warn!(
-                            "Reconcile: publisher room={} media={} no longer in registry; removing local entry",
+                            "Reconcile: publisher room={} media={} no longer in registry; cleaning up the stale local generation",
                             room_id, media_id
                         );
-                        self.active_publishers.remove(publisher_key);
+                        if let Some(expected_lease_epoch) = self
+                            .active_publishers
+                            .get(publisher_key)
+                            .map(|entry| entry.lease_epoch)
+                        {
+                            self.cleanup_publisher(
+                                room_id,
+                                media_id,
+                                expected_lease_epoch,
+                                "registry owner disappeared during reconciliation",
+                            )
+                            .await;
+                        }
                         removed += 1;
                     }
                     Err(e) => {
@@ -611,7 +811,7 @@ impl PublisherManager {
     /// `active_publishers`. Without heartbeat maintenance, these publishers
     /// would silently expire from Redis when their TTL runs out.
     async fn reconcile_missing_from_registry(&self) {
-        let active_publishers = match self.registry.list_active_publishers().await {
+        let active_publishers = match self.registry.list_active_generations().await {
             Ok(streams) => streams,
             Err(e) => {
                 error!(
@@ -640,18 +840,33 @@ impl PublisherManager {
             if self.active_publishers.contains_key(&publisher_key) {
                 continue;
             }
-            if publisher.publisher.node_id != self.local_node_id {
+            if publisher.generation.node_id != self.local_node_id {
                 continue;
             }
+
+            let generation_id = match Uuid::parse_str(&publisher.generation.generation_id) {
+                Ok(generation_id) => generation_id,
+                Err(error) => {
+                    warn!(
+                        room_id = %publisher.room_id,
+                        media_id = %publisher.media_id,
+                        generation_id = %publisher.generation.generation_id,
+                        %error,
+                        "Skipping registry publisher with invalid generation ID"
+                    );
+                    continue;
+                }
+            };
 
             info!(
                 "Reconcile (reverse): adding missing publisher room={} media={} to local tracking",
                 publisher.room_id, publisher.media_id
             );
             let entry = Arc::new(PublisherEntry::with_registration(
-                publisher.publisher.user_id,
-                publisher.publisher.epoch,
+                publisher.generation.user_id,
+                publisher.generation.lease_epoch,
             ));
+            entry.bind_publisher(generation_id);
             self.active_publishers.insert(publisher_key, entry);
             added += 1;
         }
@@ -689,12 +904,18 @@ impl PublisherManager {
         room_id: &str,
         media_id: &str,
     ) {
-        match self.registry.get_publisher(room_id, media_id).await {
-            Ok(Some(info)) if info.node_id == self.local_node_id => {
+        let tracked_generation_id = tracked_entry
+            .generation_id()
+            .map(|generation_id| generation_id.to_string());
+        match self.registry.get_active_generation(room_id, media_id).await {
+            Ok(Some(info))
+                if info.node_id == self.local_node_id
+                    && tracked_generation_id.as_deref() == Some(info.generation_id.as_str()) =>
+            {
                 if let Some(mut current) = self.active_publishers.get_mut(publisher_key) {
                     if Arc::ptr_eq(current.value(), tracked_entry) {
                         *current.value_mut() = Arc::new(
-                            tracked_entry.clone_with_registration(info.user_id, info.epoch),
+                            tracked_entry.clone_with_registration(info.user_id, info.lease_epoch),
                         );
                     } else {
                         debug!(
@@ -709,21 +930,37 @@ impl PublisherManager {
                     );
                 }
             }
+            Ok(Some(info)) if info.node_id == self.local_node_id => {
+                warn!(
+                    room_id,
+                    media_id,
+                    tracked_generation_id,
+                    registry_generation_id = info.generation_id,
+                    "Re-registration completed after a newer local generation took ownership; cleaning up only the stale generation"
+                );
+                self.cleanup_publisher(
+                    room_id,
+                    media_id,
+                    tracked_entry.lease_epoch,
+                    "local generation changed during re-registration",
+                )
+                .await;
+            }
             Ok(Some(info)) => {
                 warn!(
-                    "Re-registered publisher for room {} / media {} but registry ownership moved to node {} before local epoch refresh",
+                    "Re-registered publisher for room {} / media {} but registry ownership moved to node {} before local lease_epoch refresh",
                     room_id, media_id, info.node_id
                 );
             }
             Ok(None) => {
                 warn!(
-                    "Re-registered publisher for room {} / media {} but registry entry disappeared before local epoch refresh",
+                    "Re-registered publisher for room {} / media {} but registry entry disappeared before local lease_epoch refresh",
                     room_id, media_id
                 );
             }
             Err(e) => {
                 error!(
-                    "Re-registered publisher for room {} / media {} but failed to refresh local epoch from registry: {}",
+                    "Re-registered publisher for room {} / media {} but failed to refresh local lease_epoch from registry: {}",
                     room_id, media_id, e
                 );
             }
@@ -737,14 +974,23 @@ impl PublisherManager {
         room_id: &str,
         media_id: &str,
     ) {
+        let Some(generation_id) = entry.generation_id() else {
+            warn!(
+                room_id,
+                media_id, "Cannot re-register publisher without a StreamHub generation"
+            );
+            return;
+        };
+        let generation_id = generation_id.to_string();
         match self
             .registry
-            .try_register_publisher(
+            .try_activate_generation(
                 room_id,
                 media_id,
                 &self.local_node_id,
                 &entry.user_id,
                 &self.local_cluster_address,
+                &generation_id,
             )
             .await
         {
@@ -847,17 +1093,27 @@ impl PublisherManager {
 
         for (publisher_key, entry) in &snapshot {
             if let Some((room_id, media_id)) = parse_publisher_key(publisher_key) {
+                let Some(generation_id) = entry.generation_id() else {
+                    warn!(
+                        room_id,
+                        media_id,
+                        "Skipping publisher re-registration without a StreamHub generation"
+                    );
+                    continue;
+                };
+                let generation_id = generation_id.to_string();
                 // Try to register the publisher in registry.
                 // After reconcile_with_registry, only entries owned by us remain,
                 // so we just need to refresh TTL or re-register if expired.
                 match self
                     .registry
-                    .try_register_publisher(
+                    .try_activate_generation(
                         room_id,
                         media_id,
                         &self.local_node_id,
                         &entry.user_id,
                         &self.local_cluster_address,
+                        &generation_id,
                     )
                     .await
                 {
@@ -878,16 +1134,17 @@ impl PublisherManager {
                         // Entry exists in registry - refresh TTL instead
                         match self
                             .registry
-                            .refresh_publisher_ttl(
+                            .refresh_generation_lease(
                                 room_id,
                                 media_id,
+                                &generation_id,
                                 &entry.user_id,
                                 &self.local_node_id,
-                                entry.epoch,
+                                entry.lease_epoch,
                             )
                             .await
                         {
-                            Ok(PublisherRefreshOutcome::Refreshed) => {
+                            Ok(LeaseRefreshOutcome::Refreshed) => {
                                 self.refresh_tracked_registration_after_reregister(
                                     publisher_key,
                                     entry,
@@ -900,7 +1157,7 @@ impl PublisherManager {
                                     room_id, media_id
                                 );
                             }
-                            Ok(PublisherRefreshOutcome::Missing) => {
+                            Ok(LeaseRefreshOutcome::Missing) => {
                                 warn!(
                                     "Publisher room {} / media {} disappeared from registry during re-register TTL refresh",
                                     room_id, media_id
@@ -913,7 +1170,7 @@ impl PublisherManager {
                                 )
                                 .await;
                             }
-                            Ok(PublisherRefreshOutcome::OwnershipChanged) => {
+                            Ok(LeaseRefreshOutcome::OwnershipChanged) => {
                                 warn!(
                                     "Publisher room {} / media {} changed ownership during re-register TTL refresh; cleaning up local publisher",
                                     room_id, media_id
@@ -921,7 +1178,7 @@ impl PublisherManager {
                                 self.cleanup_publisher(
                                     room_id,
                                     media_id,
-                                    entry.epoch,
+                                    entry.lease_epoch,
                                     "publisher ownership changed during restart recovery",
                                 )
                                 .await;
@@ -959,7 +1216,7 @@ impl PublisherManager {
         &self,
         room_id: &str,
         media_id: &str,
-        expected_epoch: u64,
+        expected_lease_epoch: u64,
         reason: &str,
     ) {
         let publisher_key = match publisher_key(room_id, media_id) {
@@ -975,12 +1232,12 @@ impl PublisherManager {
             }
         };
         info!(
-            "Cleaning up publisher room={} media={} epoch={}: {}",
-            room_id, media_id, expected_epoch, reason
+            "Cleaning up publisher room={} media={} lease_epoch={}: {}",
+            room_id, media_id, expected_lease_epoch, reason
         );
 
         // 1. Remove from local tracking only if the current entry is still the
-        // same epoch observed when cleanup was scheduled.
+        // same lease_epoch observed when cleanup was scheduled.
         let Some(entry) = self.active_publishers.get(&publisher_key) else {
             debug!(
                 "Cleanup skipped for room={} media={} because it is no longer tracked",
@@ -988,20 +1245,22 @@ impl PublisherManager {
             );
             return;
         };
-        if entry.epoch != expected_epoch {
+        if entry.lease_epoch != expected_lease_epoch {
             debug!(
-                "Cleanup skipped for room={} media={} because local owner advanced from epoch {} to {}",
-                room_id, media_id, expected_epoch, entry.epoch
+                "Cleanup skipped for room={} media={} because local owner advanced from lease_epoch {} to {}",
+                room_id, media_id, expected_lease_epoch, entry.lease_epoch
             );
             return;
         }
+        let generation_id = entry.generation_id();
         let tracked_entry = Arc::clone(entry.value());
         drop(entry);
-        let Some((_, removed_entry)) = self
-            .active_publishers
-            .remove_if(&publisher_key, |_, current| {
-                Arc::ptr_eq(current, &tracked_entry) && current.epoch == expected_epoch
-            })
+        let Some((_, removed_entry)) =
+            self.active_publishers
+                .remove_if(&publisher_key, |_, current| {
+                    Arc::ptr_eq(current, &tracked_entry)
+                        && current.lease_epoch == expected_lease_epoch
+                })
         else {
             debug!(
                 "Cleanup skipped for room={} media={} because local owner changed before removal",
@@ -1012,28 +1271,44 @@ impl PublisherManager {
         let cleanup = PublisherCleanupContext {
             room_id: room_id.to_string(),
             media_id: media_id.to_string(),
-            epoch: removed_entry.epoch,
+            lease_epoch: removed_entry.lease_epoch,
+            generation_id,
         };
 
-        // 2. Unregister from Redis immediately. The epoch fence protects newer
+        // 2. Unregister from Redis immediately. The lease_epoch fence protects newer
         // publishers from delayed cleanup events.
-        if let Err(e) = self
-            .registry
-            .unregister_publisher_if_epoch_matches(
-                &cleanup.room_id,
-                &cleanup.media_id,
-                cleanup.epoch,
-            )
-            .await
-        {
-            warn!(
-                "Failed to unregister publisher from Redis for room {} / media {} with epoch {}: {}. \
-                 Leaving Redis cleanup to later reconciliation/TTL expiry.",
-                cleanup.room_id, cleanup.media_id, cleanup.epoch, e
-            );
+        if let Some(generation_id) = cleanup.generation_id {
+            if let Err(e) = self
+                .registry
+                .deactivate_generation_preserving_hls_if_lease_matches(
+                    &cleanup.room_id,
+                    &cleanup.media_id,
+                    &generation_id.to_string(),
+                    cleanup.lease_epoch,
+                )
+                .await
+            {
+                warn!(
+                    "Failed to unregister publisher from Redis for room {} / media {} with lease_epoch {}: {}. \
+                     Leaving Redis cleanup to later reconciliation/TTL expiry.",
+                    cleanup.room_id, cleanup.media_id, cleanup.lease_epoch, e
+                );
+            }
         }
 
-        // 3. Send UnPublish to StreamHub so subscribers are notified.
+        // 3. Send UnPublish to StreamHub so subscribers are notified when the
+        // exact local publication generation is known. Registry-only entries
+        // can occur after a StreamHub restart; their lease_epoch-fenced Redis cleanup
+        // above remains valid without guessing a local owner.
+        let Some(generation_id) = cleanup.generation_id else {
+            debug!(
+                room_id = cleanup.room_id,
+                media_id = cleanup.media_id,
+                lease_epoch = cleanup.lease_epoch,
+                "Skipped StreamHub UnPublish because the local publication generation is unknown"
+            );
+            return;
+        };
         // This is a critical control-plane event and must not be silently dropped.
         // Wait briefly for backpressure to clear, then log a hard failure if even
         // the bounded timeout cannot deliver it.
@@ -1045,6 +1320,7 @@ impl PublisherManager {
             UNPUBLISH_SEND_TIMEOUT,
             self.hub_event_sender.send(StreamHubEvent::UnPublish {
                 identifier: identifier.clone(),
+                generation_id,
             }),
         )
         .await
@@ -1070,7 +1346,7 @@ impl PublisherManager {
 
     async fn record_heartbeat_failure(
         &self,
-        request: &PublisherRefreshRequest,
+        request: &LeaseRefreshRequest,
         entry: &Arc<PublisherEntry>,
         failure_reason: &str,
     ) {
@@ -1087,7 +1363,7 @@ impl PublisherManager {
             self.cleanup_publisher(
                 &request.room_id,
                 &request.media_id,
-                entry.epoch,
+                entry.lease_epoch,
                 &format!("heartbeat failed for {failures} consecutive cycles"),
             )
             .await;
@@ -1143,18 +1419,28 @@ impl PublisherManager {
                 self.cleanup_publisher(
                     room_id,
                     media_id,
-                    entry.epoch,
+                    entry.lease_epoch,
                     &format!("silent publisher timeout ({idle_secs}s idle)"),
                 )
                 .await;
                 continue;
             }
 
-            refresh_requests.push(PublisherRefreshRequest {
+            refresh_requests.push(LeaseRefreshRequest {
                 room_id: room_id.to_string(),
                 media_id: media_id.to_string(),
+                generation_id: if let Some(generation_id) = entry.generation_id() {
+                    generation_id.to_string()
+                } else {
+                    warn!(
+                        room_id,
+                        media_id, "Skipping heartbeat for publisher without a bound generation"
+                    );
+                    self.schedule_registry_sync();
+                    continue;
+                },
                 user_id: entry.user_id.clone(),
-                expected_epoch: entry.epoch,
+                expected_lease_epoch: entry.lease_epoch,
             });
             refresh_entries.push(entry);
         }
@@ -1165,7 +1451,7 @@ impl PublisherManager {
         {
             let outcomes = match self
                 .registry
-                .refresh_publishers_ttl(&self.local_node_id, request_batch)
+                .refresh_generation_leases(&self.local_node_id, request_batch)
                 .await
             {
                 Ok(outcomes) if outcomes.len() == request_batch.len() => outcomes,
@@ -1193,7 +1479,7 @@ impl PublisherManager {
 
             for ((request, entry), outcome) in request_batch.iter().zip(entry_batch).zip(outcomes) {
                 match outcome {
-                    PublisherRefreshOutcome::Refreshed => {
+                    LeaseRefreshOutcome::Refreshed => {
                         entry
                             .consecutive_heartbeat_failures
                             .store(0, Ordering::Release);
@@ -1203,7 +1489,7 @@ impl PublisherManager {
                             request.media_id
                         );
                     }
-                    PublisherRefreshOutcome::Missing => {
+                    LeaseRefreshOutcome::Missing => {
                         self.record_heartbeat_failure(
                             request,
                             entry,
@@ -1211,15 +1497,15 @@ impl PublisherManager {
                         )
                         .await;
                     }
-                    PublisherRefreshOutcome::OwnershipChanged => {
+                    LeaseRefreshOutcome::OwnershipChanged => {
                         warn!(
-                            "Publisher room={} media={} no longer matches local owner/epoch; cleaning up immediately",
+                            "Publisher room={} media={} no longer matches local owner/lease_epoch; cleaning up immediately",
                             request.room_id, request.media_id
                         );
                         self.cleanup_publisher(
                             &request.room_id,
                             &request.media_id,
-                            entry.epoch,
+                            entry.lease_epoch,
                             "publisher ownership changed in registry",
                         )
                         .await;

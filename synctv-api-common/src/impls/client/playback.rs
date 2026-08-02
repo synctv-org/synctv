@@ -623,7 +623,7 @@ impl ClientApiImpl {
             metadata: None,
             expires_at: None,
             duration_seconds: None,
-            playback_kind: synctv_proto::client::PlaybackKind::Regular as i32,
+            playback_kind: synctv_proto::source_config::PlaybackKind::Regular as i32,
             target: None,
         })
     }

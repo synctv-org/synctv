@@ -69,7 +69,7 @@ prost-types.workspace = true
 tokio-stream.workspace = true
 
 # Streaming
-synctv-xiu = { workspace = true, default-features = false, features = ["oss"] }
+synctv-xiu = { workspace = true, default-features = false, features = ["s3"] }
 
 # Redis
 redis.workspace = true
@@ -118,7 +118,7 @@ tonic-prost-build.workspace = true
 protoc-bin-vendored.workspace = true
 
 [dev-dependencies]
-synctv-core-testing.workspace = true
+synctv-core-testing = { workspace = true, features = ["streaming"] }
 tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 tempfile.workspace = true

@@ -1,5 +1,7 @@
 use async_trait::async_trait;
 
+use crate::streamhub::utils::Uuid;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RtmpStreamMode {
     #[default]
@@ -32,6 +34,7 @@ pub trait AuthCallback: Send + Sync {
     /// Called when a client publishes (pushes) a stream.
     ///
     /// # Arguments
+    /// * `generation_id` - Stable StreamHub generation for this publication session
     /// * `app_name` - RTMP application name (e.g. `room_id`)
     /// * `stream_name` - Stream name (e.g. JWT token or `media_id`)
     /// * `query` - Optional query string from the RTMP URL
@@ -42,6 +45,7 @@ pub trait AuthCallback: Send + Sync {
     /// * `Err(...)` - Auth failed, reject the publish
     async fn on_publish(
         &self,
+        generation_id: Uuid,
         app_name: &str,
         stream_name: &str,
         query: Option<&str>,
@@ -66,10 +70,17 @@ pub trait AuthCallback: Send + Sync {
     /// Used for cleanup of tracking state (e.g. removing user→stream mappings).
     ///
     /// # Arguments
+    /// * `generation_id` - Stable StreamHub generation passed to `on_publish`
     /// * `app_name` - RTMP application name (e.g. `room_id`)
     /// * `stream_name` - Stream name (e.g. `media_id`)
     /// * `query` - Optional query string from the RTMP URL
-    async fn on_unpublish(&self, _app_name: &str, _stream_name: &str, _query: Option<&str>) {
+    async fn on_unpublish(
+        &self,
+        _generation_id: Uuid,
+        _app_name: &str,
+        _stream_name: &str,
+        _query: Option<&str>,
+    ) {
         // Default: no-op
     }
 
@@ -93,6 +104,7 @@ pub trait AuthCallback: Send + Sync {
     /// unregistering a publisher from a cluster registry.
     ///
     /// # Arguments
+    /// * `generation_id` - Stable StreamHub generation passed to `on_publish`
     /// * `app_name` - RTMP application name (e.g. `room_id`)
     /// * `stream_name` - Stream name (e.g. `media_id`), after any rewrite
     /// * `query` - Optional query string from the RTMP URL
@@ -104,7 +116,13 @@ pub trait AuthCallback: Send + Sync {
     ///
     /// This ensures that any registration done in `on_publish` is cleaned up
     /// immediately rather than waiting for TTL expiry or `on_unpublish`.
-    async fn on_publish_rollback(&self, _app_name: &str, _stream_name: &str, _query: Option<&str>) {
+    async fn on_publish_rollback(
+        &self,
+        _generation_id: Uuid,
+        _app_name: &str,
+        _stream_name: &str,
+        _query: Option<&str>,
+    ) {
         // Default: no-op
     }
 }

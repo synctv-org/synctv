@@ -1,12 +1,12 @@
 // StreamRegistry trait for abstraction and testing
 // This trait allows mocking StreamRegistry in tests without requiring Redis
 
-use super::registry::{PublisherInfo, StreamRegistry};
+use super::registry::{StreamGeneration, StreamRegistry};
 use anyhow::Result;
 use async_trait::async_trait;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PublisherRefreshOutcome {
+pub enum LeaseRefreshOutcome {
     Refreshed,
     Missing,
     OwnershipChanged,
@@ -15,18 +15,19 @@ pub enum PublisherRefreshOutcome {
 pub(crate) const PUBLISHER_REFRESH_BATCH_SIZE: usize = 128;
 
 #[derive(Debug, Clone)]
-pub struct PublisherRefreshRequest {
+pub struct LeaseRefreshRequest {
     pub room_id: String,
     pub media_id: String,
+    pub generation_id: String,
     pub user_id: String,
-    pub expected_epoch: u64,
+    pub expected_lease_epoch: u64,
 }
 
 #[derive(Debug, Clone)]
-pub struct ActivePublisherEntry {
+pub struct ActiveStreamGeneration {
     pub room_id: String,
     pub media_id: String,
-    pub publisher: PublisherInfo,
+    pub generation: StreamGeneration,
 }
 
 /// `StreamRegistry` trait for publisher registration
@@ -37,34 +38,36 @@ pub trait StreamRegistryTrait: Send + Sync {
     /// `user_id` is stored for reverse-index lookups (pass "" if unknown).
     /// `cluster_address` is the advertised cluster listener address of this node
     /// for cross-node proxying.
-    async fn try_register_publisher(
+    async fn try_activate_generation(
         &self,
         room_id: &str,
         media_id: &str,
         node_id: &str,
         user_id: &str,
         cluster_address: &str,
+        generation_id: &str,
     ) -> Result<bool>;
 
     /// Refresh TTL for a publisher (called by heartbeat).
     /// `user_id` and `node_id` are used to also refresh reverse-index TTLs
     /// (pass "" to skip either index).
-    async fn refresh_publisher_ttl(
+    async fn refresh_generation_lease(
         &self,
         room_id: &str,
         media_id: &str,
+        generation_id: &str,
         user_id: &str,
         node_id: &str,
-        expected_epoch: u64,
-    ) -> Result<PublisherRefreshOutcome>;
+        expected_lease_epoch: u64,
+    ) -> Result<LeaseRefreshOutcome>;
 
     /// Refresh a bounded batch of publisher leases, preserving input order.
     /// Redis-backed registries override this with a single pipelined request.
-    async fn refresh_publishers_ttl(
+    async fn refresh_generation_leases(
         &self,
         node_id: &str,
-        requests: &[PublisherRefreshRequest],
-    ) -> Result<Vec<PublisherRefreshOutcome>> {
+        requests: &[LeaseRefreshRequest],
+    ) -> Result<Vec<LeaseRefreshOutcome>> {
         anyhow::ensure!(
             requests.len() <= PUBLISHER_REFRESH_BATCH_SIZE,
             "publisher refresh batch contains {} entries; maximum is {}",
@@ -75,12 +78,13 @@ pub trait StreamRegistryTrait: Send + Sync {
         let mut outcomes = Vec::with_capacity(requests.len());
         for request in requests {
             outcomes.push(
-                self.refresh_publisher_ttl(
+                self.refresh_generation_lease(
                     &request.room_id,
                     &request.media_id,
+                    &request.generation_id,
                     &request.user_id,
                     node_id,
-                    request.expected_epoch,
+                    request.expected_lease_epoch,
                 )
                 .await?,
             );
@@ -89,24 +93,76 @@ pub trait StreamRegistryTrait: Send + Sync {
     }
 
     /// Unregister a publisher unconditionally.
-    async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()>;
+    async fn deactivate_current_generation(&self, room_id: &str, media_id: &str) -> Result<()>;
 
-    /// Unregister a publisher only if the stored epoch matches `expected_epoch`.
-    async fn unregister_publisher_if_epoch_matches(
+    /// Unregister a publisher only if the stored lease_epoch matches `expected_lease_epoch`.
+    async fn deactivate_generation_if_lease_matches(
         &self,
         room_id: &str,
         media_id: &str,
-        expected_epoch: u64,
+        generation_id: &str,
+        expected_lease_epoch: u64,
     ) -> Result<()>;
 
+    /// Release the active publisher while retaining its route for the final HLS generation.
+    async fn deactivate_generation_preserving_hls_if_lease_matches(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        expected_lease_epoch: u64,
+    ) -> Result<()> {
+        self.deactivate_generation_if_lease_matches(
+            room_id,
+            media_id,
+            generation_id,
+            expected_lease_epoch,
+        )
+        .await
+    }
+
     /// Get publisher info for a media in a room
-    async fn get_publisher(&self, room_id: &str, media_id: &str) -> Result<Option<PublisherInfo>>;
+    async fn get_active_generation(
+        &self,
+        room_id: &str,
+        media_id: &str,
+    ) -> Result<Option<StreamGeneration>>;
+
+    /// Get one exact active or retained stream generation.
+    async fn get_generation(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+    ) -> Result<Option<StreamGeneration>>;
 
     /// Check if a stream is active (has a publisher)
     async fn is_stream_active(&self, room_id: &str, media_id: &str) -> Result<bool>;
 
     /// List all active publishers with their current registry snapshot.
-    async fn list_active_publishers(&self) -> Result<Vec<ActivePublisherEntry>>;
+    async fn list_active_generations(&self) -> Result<Vec<ActiveStreamGeneration>>;
+
+    /// Release all active publishers owned by a node while retaining each
+    /// generation long enough for its final HLS playlist to be served.
+    async fn deactivate_all_generations_for_node_preserving_hls(
+        &self,
+        node_id: &str,
+    ) -> Result<()> {
+        let active_generations = self.list_active_generations().await?;
+        for active in active_generations {
+            if active.generation.node_id != node_id {
+                continue;
+            }
+            self.deactivate_generation_preserving_hls_if_lease_matches(
+                &active.room_id,
+                &active.media_id,
+                &active.generation.generation_id,
+                active.generation.lease_epoch,
+            )
+            .await?;
+        }
+        Ok(())
+    }
 
     /// List active streams for a specific room (returns `media_id` values).
     async fn list_streams_for_room(&self, room_id: &str) -> Result<Vec<String>>;
@@ -122,88 +178,137 @@ pub trait StreamRegistryTrait: Send + Sync {
         user_id: &str,
     ) -> Result<Vec<(String, String)>>;
 
-    /// Validate that the given epoch matches the current publisher's epoch.
+    /// Validate that the given lease_epoch matches the current publisher's lease_epoch.
     /// Returns Ok(true) if valid, Ok(false) if stale (split-brain detected).
     /// Used by pull streams to detect if publisher has changed.
-    async fn validate_epoch(&self, room_id: &str, media_id: &str, epoch: u64) -> Result<bool>;
+    async fn validate_lease(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        lease_epoch: u64,
+    ) -> Result<bool>;
 
     /// Clean up all publisher registrations for a specific node.
     /// Used when a node restarts to remove stale entries from Redis.
-    async fn cleanup_all_publishers_for_node(&self, node_id: &str) -> Result<()>;
+    async fn cleanup_all_generations_for_node(&self, node_id: &str) -> Result<()>;
 }
 
 // Implement StreamRegistryTrait for StreamRegistry
 #[async_trait]
 impl StreamRegistryTrait for StreamRegistry {
-    async fn try_register_publisher(
+    async fn try_activate_generation(
         &self,
         room_id: &str,
         media_id: &str,
         node_id: &str,
         user_id: &str,
         cluster_address: &str,
+        generation_id: &str,
     ) -> Result<bool> {
-        Self::try_register_publisher_with_user(
+        Self::try_activate_generation_with_user(
             self,
             room_id,
             media_id,
             node_id,
             user_id,
             cluster_address,
+            generation_id,
         )
         .await
     }
 
-    async fn refresh_publisher_ttl(
+    async fn refresh_generation_lease(
         &self,
         room_id: &str,
         media_id: &str,
+        generation_id: &str,
         user_id: &str,
         node_id: &str,
-        expected_epoch: u64,
-    ) -> Result<PublisherRefreshOutcome> {
-        Self::refresh_publisher_ttl_with_owner(
+        expected_lease_epoch: u64,
+    ) -> Result<LeaseRefreshOutcome> {
+        Self::refresh_generation_lease_with_owner(
             self,
             room_id,
             media_id,
+            generation_id,
             user_id,
             node_id,
-            Some(expected_epoch),
+            Some(expected_lease_epoch),
         )
         .await
     }
 
-    async fn refresh_publishers_ttl(
+    async fn refresh_generation_leases(
         &self,
         node_id: &str,
-        requests: &[PublisherRefreshRequest],
-    ) -> Result<Vec<PublisherRefreshOutcome>> {
-        StreamRegistry::refresh_publishers_ttl(self, node_id, requests).await
+        requests: &[LeaseRefreshRequest],
+    ) -> Result<Vec<LeaseRefreshOutcome>> {
+        StreamRegistry::refresh_generation_leases(self, node_id, requests).await
     }
 
-    async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {
-        StreamRegistry::unregister_publisher(self, room_id, media_id).await
+    async fn deactivate_current_generation(&self, room_id: &str, media_id: &str) -> Result<()> {
+        StreamRegistry::deactivate_current_generation(self, room_id, media_id).await
     }
 
-    async fn unregister_publisher_if_epoch_matches(
+    async fn deactivate_generation_if_lease_matches(
         &self,
         room_id: &str,
         media_id: &str,
-        expected_epoch: u64,
+        generation_id: &str,
+        expected_lease_epoch: u64,
     ) -> Result<()> {
-        Self::unregister_publisher_with_epoch(self, room_id, media_id, Some(expected_epoch)).await
+        Self::deactivate_generation_with_lease(
+            self,
+            room_id,
+            media_id,
+            generation_id,
+            expected_lease_epoch,
+            false,
+        )
+        .await
     }
 
-    async fn get_publisher(&self, room_id: &str, media_id: &str) -> Result<Option<PublisherInfo>> {
-        StreamRegistry::get_publisher(self, room_id, media_id).await
+    async fn deactivate_generation_preserving_hls_if_lease_matches(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        expected_lease_epoch: u64,
+    ) -> Result<()> {
+        Self::deactivate_generation_with_hls_grace(
+            self,
+            room_id,
+            media_id,
+            generation_id,
+            expected_lease_epoch,
+        )
+        .await
+    }
+
+    async fn get_active_generation(
+        &self,
+        room_id: &str,
+        media_id: &str,
+    ) -> Result<Option<StreamGeneration>> {
+        StreamRegistry::get_active_generation(self, room_id, media_id).await
+    }
+
+    async fn get_generation(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+    ) -> Result<Option<StreamGeneration>> {
+        StreamRegistry::get_generation(self, room_id, media_id, generation_id).await
     }
 
     async fn is_stream_active(&self, room_id: &str, media_id: &str) -> Result<bool> {
         StreamRegistry::is_stream_active(self, room_id, media_id).await
     }
 
-    async fn list_active_publishers(&self) -> Result<Vec<ActivePublisherEntry>> {
-        StreamRegistry::list_active_publishers(self).await
+    async fn list_active_generations(&self) -> Result<Vec<ActiveStreamGeneration>> {
+        StreamRegistry::list_active_generations(self).await
     }
 
     async fn list_streams_for_room(&self, room_id: &str) -> Result<Vec<String>> {
@@ -222,11 +327,17 @@ impl StreamRegistryTrait for StreamRegistry {
         StreamRegistry::get_user_publishers_for_room(self, room_id, user_id).await
     }
 
-    async fn validate_epoch(&self, room_id: &str, media_id: &str, epoch: u64) -> Result<bool> {
-        Self::validate_epoch(self, room_id, media_id, epoch).await
+    async fn validate_lease(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        lease_epoch: u64,
+    ) -> Result<bool> {
+        Self::validate_lease(self, room_id, media_id, generation_id, lease_epoch).await
     }
 
-    async fn cleanup_all_publishers_for_node(&self, node_id: &str) -> Result<()> {
-        Self::cleanup_all_publishers_for_node(self, node_id).await
+    async fn cleanup_all_generations_for_node(&self, node_id: &str) -> Result<()> {
+        Self::cleanup_all_generations_for_node(self, node_id).await
     }
 }

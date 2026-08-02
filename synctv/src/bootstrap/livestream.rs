@@ -6,7 +6,7 @@ use synctv_adapter::PublicIdCodec;
 use synctv_core::{RedisConnectionRuntime, SharedStateMode, SharedStateProfile};
 
 use crate::app_config::AppConfig as Config;
-use crate::resource_options::{hls_oss_options, hls_storage_backend};
+use crate::resource_options::{hls_s3_options, hls_storage_backend};
 
 use crate::rtmp_auth;
 use crate::server;
@@ -148,7 +148,7 @@ pub async fn init_livestream(
             hls_memory_max_mb: config.livestream.hls_storage.memory_max_mb(),
             hls_storage_backend: hls_storage_backend(config.livestream.hls_storage.backend()),
             hls_storage_path: config.livestream.hls_storage.path().to_string(),
-            hls_oss: hls_oss_options(&config.livestream.hls_storage),
+            hls_s3: hls_s3_options(&config.livestream.hls_storage),
             ssrf_guard: config.security.ssrf_guard(),
         },
         publisher_registry,

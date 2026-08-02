@@ -194,9 +194,9 @@ fn live_status_for_media_source(
     source_config: &crate::models::MediaSourceConfig,
 ) -> Option<bool> {
     match (provider, source_config) {
-        (SourceProvider::DirectUrl, crate::models::MediaSourceConfig::DirectUrl(config)) => {
-            config.inferred_live_status()
-        }
+        (SourceProvider::DirectUrl, crate::models::MediaSourceConfig::DirectUrl(config)) => config
+            .inferred_playback_kind()
+            .map(PlaybackKind::is_live_edge),
         (SourceProvider::Bilibili, crate::models::MediaSourceConfig::Bilibili(config)) => {
             Some(matches!(config, BilibiliMediaSourceConfig::Live(_)))
         }

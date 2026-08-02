@@ -8,7 +8,7 @@ use futures::{stream, StreamExt as _};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, warn, Instrument};
 
@@ -186,6 +186,7 @@ pub(crate) struct CreationLockGuard {
     key: String,
     creation_locks: Arc<DashMap<String, Arc<CreationLockEntry>>>,
     entry: Arc<CreationLockEntry>,
+    _pool_read_guard: tokio::sync::OwnedRwLockReadGuard<()>,
     _guard: tokio::sync::OwnedMutexGuard<()>,
 }
 
@@ -202,7 +203,8 @@ pub(crate) struct StreamPool<S: ManagedStream> {
     creation_locks: Arc<DashMap<String, Arc<CreationLockEntry>>>,
     pub(crate) cleanup_check_interval: Duration,
     pub(crate) idle_timeout: Duration,
-    cancel_token: CancellationToken,
+    stop_gate: Arc<RwLock<()>>,
+    cleanup_token: Arc<parking_lot::Mutex<CancellationToken>>,
 }
 
 impl<S: ManagedStream> StreamPool<S> {
@@ -215,11 +217,24 @@ impl<S: ManagedStream> StreamPool<S> {
             creation_locks: Arc::new(DashMap::new()),
             cleanup_check_interval,
             idle_timeout,
-            cancel_token: CancellationToken::new(),
+            stop_gate: Arc::new(RwLock::new(())),
+            cleanup_token: Arc::new(parking_lot::Mutex::new(CancellationToken::new())),
         }
     }
 
     pub(crate) async fn stop_all(&self) {
+        // Block both fast-path reuse and per-key creation while the current
+        // generation is being removed. A new generation can be admitted once
+        // the write guard is released.
+        let _stop_guard = self.stop_gate.write().await;
+        let old_cleanup_token = {
+            let mut token = self.cleanup_token.lock();
+            let old = token.clone();
+            *token = CancellationToken::new();
+            old
+        };
+        old_cleanup_token.cancel();
+
         let keys: Vec<String> = self.streams.iter().map(|e| e.key().clone()).collect();
         stream::iter(&keys)
             .for_each_concurrent(Self::STOP_CONCURRENCY, |key| async move {
@@ -253,6 +268,7 @@ impl<S: ManagedStream> StreamPool<S> {
 
     /// Returns a healthy stream with its subscriber count already incremented.
     pub(crate) async fn get_existing(&self, stream_key: &str) -> Option<Arc<S>> {
+        let _pool_read_guard = self.stop_gate.read().await;
         if let Some(stream) = self
             .streams
             .get(stream_key)
@@ -287,6 +303,7 @@ impl<S: ManagedStream> StreamPool<S> {
     }
 
     pub(crate) async fn acquire_creation_lock(&self, stream_key: &str) -> CreationLockGuard {
+        let pool_read_guard = self.stop_gate.clone().read_owned().await;
         let entry = Arc::clone(
             self.creation_locks
                 .entry(stream_key.to_string())
@@ -298,6 +315,7 @@ impl<S: ManagedStream> StreamPool<S> {
             key: stream_key.to_string(),
             creation_locks: Arc::clone(&self.creation_locks),
             entry,
+            _pool_read_guard: pool_read_guard,
             _guard: lock.lock_owned().await,
         }
     }
@@ -318,7 +336,7 @@ impl<S: ManagedStream> StreamPool<S> {
         let streams = Arc::clone(&self.streams);
         let check_interval = self.cleanup_check_interval;
         let idle_timeout = self.idle_timeout;
-        let child_token = self.cancel_token.child_token();
+        let child_token = self.cleanup_token.lock().child_token();
 
         let span = info_span!("stream_cleanup", stream_key = %stream_key);
         tokio::spawn(
@@ -327,13 +345,14 @@ impl<S: ManagedStream> StreamPool<S> {
                     () = child_token.cancelled() => {
                         debug!("Cleanup task cancelled for {} (shutdown)", stream_key);
                     }
-                    result = Self::cleanup_loop(
+                    result = Self::cleanup_loop_with_token(
                         &stream_key,
                         &stream,
                         &streams,
                         check_interval,
                         idle_timeout,
                         &on_idle_cleanup,
+                        &child_token,
                     ) => {
                         if let Err(e) = result {
                             error!("Cleanup task failed for {}: {}", stream_key, e);
@@ -347,13 +366,14 @@ impl<S: ManagedStream> StreamPool<S> {
         );
     }
 
-    async fn cleanup_loop<F>(
+    async fn cleanup_loop_with_token<F>(
         stream_key: &str,
         stream: &Arc<S>,
         streams: &Arc<DashMap<String, Arc<S>>>,
         check_interval: Duration,
         idle_timeout: Duration,
         on_idle_cleanup: &F,
+        cancel_token: &CancellationToken,
     ) -> Result<()>
     where
         F: Fn(&str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
@@ -365,6 +385,18 @@ impl<S: ManagedStream> StreamPool<S> {
 
         loop {
             interval.tick().await;
+
+            // A source task can end independently of an idle viewer cleanup.
+            // Remove the dead instance immediately so its registry/pool state
+            // cannot wait for a future request or the Redis TTL.
+            if !stream.lifecycle().is_running.load(Ordering::Acquire) {
+                tokio::select! {
+                    () = cancel_token.cancelled() => break,
+                    () = on_idle_cleanup(stream_key) => {}
+                }
+                streams.remove_if(stream_key, |_, current| Arc::ptr_eq(current, stream));
+                break;
+            }
 
             if stream.lifecycle().subscriber_count() == 0 {
                 let idle_secs = stream.lifecycle().last_active_elapsed_secs();
@@ -397,9 +429,12 @@ impl<S: ManagedStream> StreamPool<S> {
                         stream_key, idle_secs
                     );
 
-                    on_idle_cleanup(stream_key).await;
+                    tokio::select! {
+                        () = cancel_token.cancelled() => break,
+                        () = on_idle_cleanup(stream_key) => {}
+                    }
 
-                    streams.remove(stream_key);
+                    streams.remove_if(stream_key, |_, current| Arc::ptr_eq(current, stream));
                     stream.stop_managed().await;
                     break;
                 }
@@ -413,7 +448,7 @@ impl<S: ManagedStream> StreamPool<S> {
 
 impl<S: ManagedStream> Drop for StreamPool<S> {
     fn drop(&mut self) {
-        self.cancel_token.cancel();
+        self.cleanup_token.lock().cancel();
 
         for entry in self.streams.iter() {
             entry
@@ -633,6 +668,44 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn stop_all_blocks_new_creation_until_existing_guard_finishes() -> TestResult {
+        let pool: Arc<StreamPool<TestStream>> = Arc::new(StreamPool::new(
+            Duration::from_millis(10),
+            Duration::from_secs(1),
+        ));
+        let first_guard = pool.acquire_creation_lock("room:media").await;
+
+        let stop_pool = Arc::clone(&pool);
+        let stop_task = tokio::spawn(async move {
+            stop_pool.stop_all().await;
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !stop_task.is_finished(),
+            "stop_all should wait for creation"
+        );
+
+        let create_pool = Arc::clone(&pool);
+        let create_task = tokio::spawn(async move {
+            let _guard = create_pool.acquire_creation_lock("room:media").await;
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !create_task.is_finished(),
+            "new creation should remain fenced"
+        );
+
+        drop(first_guard);
+        stop_task
+            .await
+            .map_err(|error| test_error(error.to_string()))?;
+        create_task
+            .await
+            .map_err(|error| test_error(error.to_string()))?;
+        Ok(())
+    }
+
     /// Test that try_claim_for_cleanup succeeds when subscriber count is 0.
     #[tokio::test]
     async fn test_try_claim_for_cleanup_succeeds_with_zero_subscribers() {
@@ -791,6 +864,106 @@ mod tests {
         assert_eq!(cleanup_count.load(Ordering::Acquire), 1);
         assert_eq!(stream.stop_count.load(Ordering::Acquire), 1);
         assert!(!stream.lifecycle().is_healthy().await);
+    }
+
+    #[tokio::test]
+    async fn ended_stream_is_removed_without_waiting_for_a_new_viewer() {
+        let pool: StreamPool<TestStream> =
+            StreamPool::new(Duration::from_millis(10), Duration::from_secs(30));
+        let stream = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            stop_count: AtomicUsize::new(0),
+        });
+        stream.lifecycle().set_running();
+        let cleanup_count = Arc::new(AtomicUsize::new(0));
+        let cleanup_count_for_task = Arc::clone(&cleanup_count);
+        pool.insert_and_cleanup(
+            "room:media".to_string(),
+            Arc::clone(&stream),
+            move |_stream_key| {
+                let cleanup_count = Arc::clone(&cleanup_count_for_task);
+                Box::pin(async move {
+                    cleanup_count.fetch_add(1, Ordering::AcqRel);
+                })
+            },
+        );
+        stream.lifecycle().mark_stopping();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while pool.streams.contains_key("room:media") {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("ended stream should leave the pool");
+        assert_eq!(cleanup_count.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn idle_cleanup_cannot_remove_replacement_stream() -> TestResult {
+        let streams = Arc::new(DashMap::new());
+        let old = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            stop_count: AtomicUsize::new(0),
+        });
+        old.lifecycle.set_running();
+        old.lifecycle.last_active_secs.store(
+            crate::util::unix_now_secs().saturating_sub(10),
+            Ordering::Release,
+        );
+        streams.insert("room:media".to_string(), Arc::clone(&old));
+
+        let replacement = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            stop_count: AtomicUsize::new(0),
+        });
+        replacement.lifecycle.set_running();
+
+        let (cleanup_started_tx, cleanup_started_rx) = tokio::sync::oneshot::channel();
+        let (release_cleanup_tx, release_cleanup_rx) = tokio::sync::oneshot::channel();
+        let cleanup_started_tx = parking_lot::Mutex::new(Some(cleanup_started_tx));
+        let release_cleanup_rx = parking_lot::Mutex::new(Some(release_cleanup_rx));
+        let cleanup = move |_stream_key: &str| {
+            let started = cleanup_started_tx.lock().take();
+            let release = release_cleanup_rx.lock().take();
+            Box::pin(async move {
+                if let Some(started) = started {
+                    let _ = started.send(());
+                }
+                if let Some(release) = release {
+                    let _ = release.await;
+                }
+            }) as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        };
+
+        let old_for_cleanup = Arc::clone(&old);
+        let streams_for_cleanup = Arc::clone(&streams);
+        let cleanup_task = tokio::spawn(async move {
+            let cleanup_token = CancellationToken::new();
+            StreamPool::cleanup_loop_with_token(
+                "room:media",
+                &old_for_cleanup,
+                &streams_for_cleanup,
+                Duration::from_millis(1),
+                Duration::from_secs(1),
+                &cleanup,
+                &cleanup_token,
+            )
+            .await
+        });
+
+        cleanup_started_rx.await?;
+        streams.insert("room:media".to_string(), Arc::clone(&replacement));
+        let _ = release_cleanup_tx.send(());
+        cleanup_task.await??;
+
+        let current = streams
+            .get("room:media")
+            .ok_or_else(|| test_error("replacement stream should remain in the pool"))?;
+        assert!(Arc::ptr_eq(current.value(), &replacement));
+        assert_eq!(replacement.stop_count.load(Ordering::Acquire), 0);
+        assert_eq!(old.stop_count.load(Ordering::Acquire), 1);
+        Ok(())
     }
 
     #[tokio::test]

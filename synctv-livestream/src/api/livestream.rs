@@ -8,7 +8,7 @@ use crate::{
         external_publish_manager::ExternalPublishManager, managed_stream::ManagedStream,
         pull_manager::PullStreamManager, SegmentManager,
     },
-    relay::{ActivePublisherEntry, PublisherInfo, StreamRegistryTrait},
+    relay::{ActiveStreamGeneration, StreamGeneration, StreamRegistryTrait},
 };
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -28,6 +28,33 @@ use tracing::{error, info, warn};
 pub use super::tracker::{StreamSubscriberGuard, StreamTracker};
 
 const KICK_PUBLISHER_EVENT_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const HLS_GENERATION_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const HLS_GENERATION_READY_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(25);
+
+pub(crate) async fn find_hls_generation_state(
+    hls_registry: &HlsStreamRegistry,
+    room_id: &str,
+    media_id: &str,
+    generation_id: &str,
+    wait_for_ready: bool,
+) -> Option<Arc<parking_lot::RwLock<synctv_xiu::hls::StreamProcessorState>>> {
+    let stream_key = synctv_xiu::hls::generation_registry_key(room_id, media_id, generation_id);
+    let deadline = tokio::time::Instant::now() + HLS_GENERATION_READY_TIMEOUT;
+
+    loop {
+        if let Some(state) = hls_registry
+            .get(&stream_key)
+            .map(|entry| Arc::clone(entry.value()))
+        {
+            return Some(state);
+        }
+        if !wait_for_ready || tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(HLS_GENERATION_READY_POLL_INTERVAL).await;
+    }
+}
 
 #[derive(Clone)]
 pub struct LiveStreamingInfrastructure {
@@ -144,7 +171,7 @@ impl LiveStreamingInfrastructure {
 
         send_event_with_backpressure_timeout_for(
             &self.stream_hub_event_sender,
-            StreamHubEvent::UnPublish { identifier },
+            StreamHubEvent::ForceUnPublish { identifier },
             KICK_PUBLISHER_EVENT_SEND_TIMEOUT,
         )
         .await
@@ -158,7 +185,7 @@ impl LiveStreamingInfrastructure {
     }
 
     async fn registry_stream_owned_by_local_node(&self, room_id: &str, media_id: &str) -> bool {
-        match self.registry.get_publisher(room_id, media_id).await {
+        match self.registry.get_active_generation(room_id, media_id).await {
             Ok(Some(publisher)) => self.is_local_publisher_node(&publisher.node_id),
             Ok(None) => false,
             Err(error) => {
@@ -175,7 +202,7 @@ impl LiveStreamingInfrastructure {
 
     pub async fn stream_is_remote(&self, room_id: &str, media_id: &str) -> Result<bool> {
         self.registry
-            .get_publisher(room_id, media_id)
+            .get_active_generation(room_id, media_id)
             .await
             .map(|publisher| {
                 publisher.is_some_and(|publisher| !self.is_local_publisher_node(&publisher.node_id))
@@ -335,12 +362,16 @@ impl LiveStreamingInfrastructure {
     }
 
     /// Publisher ownership is removed later by the RTMP auth/PublisherManager
-    /// unpublish path, which fences cleanup against the publisher epoch. Do not
+    /// unpublish path, which fences cleanup against the publisher lease_epoch. Do not
     /// unregister here: this method only enqueues the control event, and deleting
     /// ownership before StreamHub processes it can let a replacement publisher
     /// register and then be torn down by the delayed unpublish.
     pub async fn kick_stream(&self, room_id: &str, media_id: &str) -> Result<()> {
-        if let Some(publisher) = self.registry.get_publisher(room_id, media_id).await? {
+        if let Some(publisher) = self
+            .registry
+            .get_active_generation(room_id, media_id)
+            .await?
+        {
             if !self.is_local_publisher_node(&publisher.node_id) {
                 warn!(
                     room_id = %room_id,
@@ -392,7 +423,7 @@ impl LiveStreamingInfrastructure {
         // Check Redis for an existing publisher
         let publisher = self
             .registry
-            .get_publisher(room_id, media_id)
+            .get_active_generation(room_id, media_id)
             .await
             .map_err(|e| StreamError::RegistryError(format!("Failed to check publisher: {e}")))?;
 
@@ -402,33 +433,62 @@ impl LiveStreamingInfrastructure {
             if is_local {
                 match self
                     .registry
-                    .validate_epoch(room_id, media_id, publisher_info.epoch)
+                    .validate_lease(
+                        room_id,
+                        media_id,
+                        &publisher_info.generation_id,
+                        publisher_info.lease_epoch,
+                    )
                     .await
                 {
                     Ok(true) => {
                         tracing::debug!(
                             "Epoch {} validated for local publisher {}/{}",
-                            publisher_info.epoch,
+                            publisher_info.lease_epoch,
                             room_id,
                             media_id
                         );
+                        if let Some(source) = external_source {
+                            if let Some(stream) = self
+                                .external_publish_manager
+                                .subscribe_existing(room_id, media_id, source)
+                                .await
+                                .context("Failed to subscribe to local external stream")?
+                            {
+                                return Ok(StreamSubscriberGuard::new(move || {
+                                    stream.decrement_subscriber_count();
+                                }));
+                            }
+
+                            // Redis can outlive a local process or pool entry.
+                            // Re-enter the manager's single-flight creation path
+                            // so the source is restored or replaced atomically.
+                            let stream = self
+                                .external_publish_manager
+                                .get_or_create(room_id, media_id, source)
+                                .await
+                                .context("Failed to restore local external stream")?;
+                            return Ok(StreamSubscriberGuard::new(move || {
+                                stream.decrement_subscriber_count();
+                            }));
+                        }
                         return Ok(StreamSubscriberGuard::new(|| {}));
                     }
                     Ok(false) => {
                         warn!(
                             "Epoch {} is stale for local publisher {}/{}, publisher may have changed",
-                            publisher_info.epoch, room_id, media_id
+                            publisher_info.lease_epoch, room_id, media_id
                         );
                         return Err(anyhow::anyhow!(
-                            "Stale epoch {} for local publisher {}/{}",
-                            publisher_info.epoch,
+                            "Stale lease_epoch {} for local publisher {}/{}",
+                            publisher_info.lease_epoch,
                             room_id,
                             media_id
                         ));
                     }
                     Err(e) => {
                         error!(
-                            "Failed to validate epoch for local publisher {}/{}: {}. \
+                            "Failed to validate lease_epoch for local publisher {}/{}: {}. \
                              Rejecting to prevent potential split-brain.",
                             room_id, media_id, e
                         );
@@ -487,7 +547,8 @@ impl LiveStreamingInfrastructure {
             self.stream_hub_event_sender.clone(),
             cancel_token,
         )
-        .with_cluster_secret(cluster_secret);
+        .with_cluster_secret(cluster_secret)
+        .with_external_publish_manager(Arc::clone(&self.external_publish_manager));
 
         let relay_service = if let Some(segment_manager) = &self.segment_manager {
             relay_service.with_segment_manager(segment_manager.clone())
@@ -506,9 +567,9 @@ impl LiveStreamingInfrastructure {
         &self,
         room_id: &str,
         media_id: &str,
-    ) -> Result<Option<PublisherInfo>> {
+    ) -> Result<Option<StreamGeneration>> {
         self.registry
-            .get_publisher(room_id, media_id)
+            .get_active_generation(room_id, media_id)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get publisher: {e}"))
     }
@@ -527,9 +588,9 @@ impl LiveStreamingInfrastructure {
             .map_err(|e| anyhow::anyhow!("Failed to list room streams: {e}"))
     }
 
-    pub async fn list_active_publishers(&self) -> Result<Vec<ActivePublisherEntry>> {
+    pub async fn list_active_generations(&self) -> Result<Vec<ActiveStreamGeneration>> {
         self.registry
-            .list_active_publishers()
+            .list_active_generations()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to list active streams: {e}"))
     }
@@ -553,7 +614,7 @@ impl LiveStreamingInfrastructure {
         let cleanup_result = tokio::time::timeout(
             cleanup_timeout,
             self.registry
-                .cleanup_all_publishers_for_node(&self.local_node_id),
+                .deactivate_all_generations_for_node_preserving_hls(&self.local_node_id),
         )
         .await;
 
@@ -660,21 +721,24 @@ impl FlvStreamingApi {
 pub struct HlsStreamingApi;
 
 impl HlsStreamingApi {
-    async fn wait_for_playlist<F>(
+    async fn wait_for_active_generation(
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
         media_id: &str,
-        url_generator: &F,
-    ) -> Result<Option<String>>
-    where
-        F: Fn(&str) -> String,
-    {
+    ) -> Result<Option<StreamGeneration>> {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
-            let playlist =
-                Self::generate_playlist(infrastructure, room_id, media_id, url_generator).await?;
-            if playlist.is_some() || tokio::time::Instant::now() >= deadline {
-                return Ok(playlist);
+            let generation = infrastructure
+                .registry
+                .get_active_generation(room_id, media_id)
+                .await
+                .map_err(|error| {
+                    StreamError::RegistryError(format!(
+                        "Failed to resolve active HLS generation: {error}"
+                    ))
+                })?;
+            if generation.is_some() || tokio::time::Instant::now() >= deadline {
+                return Ok(generation);
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
@@ -684,30 +748,55 @@ impl HlsStreamingApi {
         crate::util::validate_hls_segment_name(segment_name)
     }
 
-    /// Start or touch the live stream needed by an HLS request, then generate the playlist.
+    /// Resolve the active generation used by an HLS master playlist.
     ///
     /// For live_proxy media, the external source is lazily pulled even when the
     /// first viewer is an HLS client. The returned guard is kept only for this
     /// request; idle cleanup still owns long-term shutdown.
-    pub async fn generate_playlist_with_pull<F>(
+    pub async fn resolve_active_generation_with_pull(
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
         media_id: &str,
         external_source: Option<&synctv_core::models::LiveProxyMediaSourceConfig>,
-        url_generator: F,
-    ) -> Result<Option<String>>
-    where
-        F: Fn(&str) -> String,
-    {
-        if let Some(source) = external_source {
-            let _guard = infrastructure
-                .ensure_external_pull_stream(room_id, media_id, source)
-                .await?;
-            return Self::wait_for_playlist(infrastructure, room_id, media_id, &url_generator)
-                .await;
+    ) -> Result<Option<StreamGeneration>> {
+        let _guard = if let Some(source) = external_source {
+            let active = infrastructure
+                .registry
+                .get_active_generation(room_id, media_id)
+                .await
+                .map_err(|error| {
+                    StreamError::RegistryError(format!(
+                        "Failed to resolve active HLS publisher: {error}"
+                    ))
+                })?;
+            match active {
+                Some(publisher) if !infrastructure.is_local_publisher_node(&publisher.node_id) => {
+                    None
+                }
+                _ => Some(
+                    infrastructure
+                        .ensure_external_pull_stream(room_id, media_id, source)
+                        .await?,
+                ),
+            }
+        } else {
+            None
+        };
+
+        let generation = infrastructure
+            .registry
+            .get_active_generation(room_id, media_id)
+            .await
+            .map_err(|error| {
+                StreamError::RegistryError(format!(
+                    "Failed to resolve active HLS generation: {error}"
+                ))
+            })?;
+        if generation.is_some() || external_source.is_none() {
+            return Ok(generation);
         }
 
-        Self::generate_playlist(infrastructure, room_id, media_id, url_generator).await
+        Self::wait_for_active_generation(infrastructure, room_id, media_id).await
     }
 
     /// Returns `Ok(Some(playlist))` when a stream is found, `Ok(None)` when
@@ -719,32 +808,41 @@ impl HlsStreamingApi {
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
         media_id: &str,
+        generation_id: &str,
         url_generator: F,
     ) -> Result<Option<String>>
     where
         F: Fn(&str) -> String,
     {
-        let publisher_info = infrastructure
+        let _activity_guard = infrastructure
+            .external_publish_manager
+            .subscribe_active_generation(room_id, media_id, generation_id)
+            .await;
+        let generation = infrastructure
             .registry
-            .get_publisher(room_id, media_id)
+            .get_generation(room_id, media_id, generation_id)
             .await
-            .map_err(|e| StreamError::RegistryError(format!("Failed to check publisher: {e}")))?;
+            .map_err(|e| StreamError::RegistryError(format!("Failed to resolve HLS route: {e}")))?;
 
-        let Some(publisher_info) = publisher_info else {
+        let Some(generation) = generation else {
             return Ok(None);
         };
 
-        let is_local = infrastructure.is_local_publisher_node(&publisher_info.node_id);
+        let is_local = infrastructure.is_local_publisher_node(&generation.node_id);
+        let wait_for_ready = generation.ended_at.is_none();
 
         if is_local {
             Ok(Self::generate_playlist_local(
                 infrastructure,
                 room_id,
                 media_id,
+                generation_id,
+                wait_for_ready,
                 url_generator,
-            ))
+            )
+            .await)
         } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
-            let cluster_address = publisher_info
+            let cluster_address = generation
                 .validate_cluster_address()
                 .map_err(|e| anyhow::anyhow!("Cannot proxy HLS for {room_id}/{media_id}: {e}"))?;
 
@@ -757,12 +855,15 @@ impl HlsStreamingApi {
 
             let playlist = hls_proxy
                 .get_playlist(
-                    cluster_address,
-                    room_id,
-                    media_id,
+                    crate::grpc::HlsRelayRoute::new(
+                        cluster_address,
+                        room_id,
+                        media_id,
+                        generation_id,
+                        generation.lease_epoch,
+                    ),
                     &segment_url_base,
                     &segment_url_suffix,
-                    publisher_info.epoch,
                 )
                 .await?;
 
@@ -772,30 +873,36 @@ impl HlsStreamingApi {
                 infrastructure,
                 room_id,
                 media_id,
+                generation_id,
+                wait_for_ready,
                 url_generator,
-            ))
+            )
+            .await)
         }
     }
 
-    fn generate_playlist_local<F>(
+    async fn generate_playlist_local<F>(
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
         media_id: &str,
+        generation_id: &str,
+        wait_for_ready: bool,
         url_generator: F,
     ) -> Option<String>
     where
         F: Fn(&str) -> String,
     {
         if let Some(hls_registry) = &infrastructure.hls_stream_registry {
-            let stream_key = format!("{room_id}/{media_id}");
-
-            match hls_registry.get(&stream_key) {
-                Some(stream_state) => {
-                    let state = stream_state.read();
-                    Some(state.generate_m3u8(url_generator))
-                }
-                None => None,
-            }
+            let stream_state = find_hls_generation_state(
+                hls_registry,
+                room_id,
+                media_id,
+                generation_id,
+                wait_for_ready,
+            )
+            .await?;
+            let state = stream_state.read();
+            Some(state.generate_m3u8(url_generator))
         } else {
             None
         }
@@ -805,11 +912,16 @@ impl HlsStreamingApi {
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
         media_id: &str,
+        generation_id: &str,
         segment_url_base: &str,
     ) -> Result<Option<String>> {
-        Self::generate_playlist(infrastructure, room_id, media_id, |ts_name| {
-            format!("{segment_url_base}{ts_name}.ts")
-        })
+        Self::generate_playlist(
+            infrastructure,
+            room_id,
+            media_id,
+            generation_id,
+            |ts_name| format!("{segment_url_base}{ts_name}.ts"),
+        )
         .await
     }
 
@@ -818,21 +930,33 @@ impl HlsStreamingApi {
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
         media_id: &str,
+        generation_id: &str,
         segment_name: &str,
     ) -> Result<Bytes> {
+        let _activity_guard = infrastructure
+            .external_publish_manager
+            .subscribe_active_generation(room_id, media_id, generation_id)
+            .await;
         let publisher_info = infrastructure
             .registry
-            .get_publisher(room_id, media_id)
+            .get_generation(room_id, media_id, generation_id)
             .await
-            .map_err(|e| StreamError::RegistryError(format!("Failed to check publisher: {e}")))?;
+            .map_err(|e| StreamError::RegistryError(format!("Failed to resolve HLS route: {e}")))?;
 
         let Some(publisher_info) = publisher_info else {
-            return Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await;
+            return Err(StreamError::StreamNotFound(format!(
+                "HLS generation {generation_id} for {room_id}/{media_id}"
+            ))
+            .into());
         };
 
         let is_local = infrastructure.is_local_publisher_node(&publisher_info.node_id);
 
-        if is_local || infrastructure.hls_storage_backend == HlsStorageBackend::SharedFile {
+        if is_local
+            || infrastructure
+                .hls_storage_backend
+                .supports_cross_node_read()
+        {
             Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
         } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
             let cluster_address = publisher_info.validate_cluster_address().map_err(|e| {
@@ -841,11 +965,14 @@ impl HlsStreamingApi {
 
             let segment = hls_proxy
                 .get_segment(
-                    cluster_address,
-                    room_id,
-                    media_id,
+                    crate::grpc::HlsRelayRoute::new(
+                        cluster_address,
+                        room_id,
+                        media_id,
+                        generation_id,
+                        publisher_info.lease_epoch,
+                    ),
                     segment_name,
-                    publisher_info.epoch,
                 )
                 .await?;
 
@@ -858,26 +985,6 @@ impl HlsStreamingApi {
         } else {
             Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
         }
-    }
-
-    /// Start or touch the live stream needed by an HLS segment request, then read the segment.
-    pub async fn get_segment_with_pull(
-        infrastructure: &LiveStreamingInfrastructure,
-        room_id: &str,
-        media_id: &str,
-        segment_name: &str,
-        external_source: Option<&synctv_core::models::LiveProxyMediaSourceConfig>,
-    ) -> Result<Bytes> {
-        let _guard = if let Some(source) = external_source {
-            Some(
-                infrastructure
-                    .ensure_external_pull_stream(room_id, media_id, source)
-                    .await?,
-            )
-        } else {
-            None
-        };
-        Self::get_segment(infrastructure, room_id, media_id, segment_name).await
     }
 
     async fn get_segment_local(
@@ -910,7 +1017,9 @@ impl HlsStreamingApi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay::{test_registry::TestStreamRegistry, PublisherInfo};
+    use crate::relay::{test_registry::TestStreamRegistry, StreamGeneration};
+    use crate::util::TEST_GENERATION_ID;
+    use synctv_xiu::storage::HlsStorage as _;
     use synctv_xiu::streamhub::define::StreamHubEvent;
 
     type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -927,13 +1036,15 @@ mod tests {
         let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([(
                 ("room1".to_string(), "media1".to_string()),
-                PublisherInfo {
+                StreamGeneration {
                     node_id: publisher_node_id.to_string(),
                     cluster_address: cluster_address.to_string(),
                     app_name: "live".to_string(),
                     user_id: String::new(),
                     started_at: synctv_core::SystemClock.now(),
-                    epoch: 1,
+                    ended_at: None,
+                    lease_epoch: 1,
+                    generation_id: TEST_GENERATION_ID.to_string(),
                 },
             )]),
         ));
@@ -947,17 +1058,17 @@ mod tests {
         )
     }
 
-    async fn recv_unpublish_event(
+    async fn recv_force_unpublish_event(
         event_receiver: &mut mpsc::Receiver<StreamHubEvent>,
     ) -> TestResult {
         let event = event_receiver
             .recv()
             .await
-            .ok_or_else(|| test_error("expected UnPublish event"))?;
+            .ok_or_else(|| test_error("expected ForceUnPublish event"))?;
         match event {
-            StreamHubEvent::UnPublish { .. } => Ok(()),
+            StreamHubEvent::ForceUnPublish { .. } => Ok(()),
             other => Err(test_error(format!(
-                "expected UnPublish event, got {other:?}"
+                "expected ForceUnPublish event, got {other:?}"
             ))),
         }
     }
@@ -975,18 +1086,414 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn active_local_playlist_waits_for_remuxer_generation_state() -> TestResult {
+        let registry = Arc::new(TestStreamRegistry::new());
+        let generation_id = synctv_xiu::streamhub::utils::Uuid::new();
+        let generation_id_string = generation_id.to_string();
+        assert!(
+            registry
+                .try_activate_generation(
+                    "room-ready",
+                    "media-ready",
+                    "node-local",
+                    "",
+                    "127.0.0.1:50051",
+                    &generation_id_string,
+                )
+                .await?
+        );
+        let (event_sender, _event_receiver) = mpsc::channel(8);
+        let hls_registry = Arc::new(dashmap::DashMap::new());
+        let infrastructure = LiveStreamingInfrastructure::new(
+            registry,
+            event_sender,
+            Arc::new(StreamTracker::new()),
+            "node-local".to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )?
+        .with_hls_stream_registry(hls_registry.clone());
+
+        let delayed_registry = hls_registry;
+        let delayed_generation_id = generation_id_string.clone();
+        let insert_task = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let mut playlist = synctv_xiu::hls::HlsPlaylist::new();
+            playlist.push_segment(synctv_xiu::hls::SegmentInfo {
+                sequence: 0,
+                duration_ms: 1_000,
+                started_at_ms: 0,
+                ts_name: "ready-segment".to_string(),
+                discontinuity: false,
+            });
+            delayed_registry.insert(
+                synctv_xiu::hls::generation_registry_key(
+                    "room-ready",
+                    "media-ready",
+                    &delayed_generation_id,
+                ),
+                Arc::new(parking_lot::RwLock::new(
+                    synctv_xiu::hls::StreamProcessorState {
+                        app_name: "room-ready".to_string(),
+                        stream_name: "media-ready".to_string(),
+                        playlist,
+                        generation_id,
+                        marked_for_cleanup: false,
+                        cleanup_segment_names: Vec::new(),
+                    },
+                )),
+            );
+        });
+
+        let playlist = HlsStreamingApi::generate_playlist_simple(
+            &infrastructure,
+            "room-ready",
+            "media-ready",
+            &generation_id_string,
+            "/segments/",
+        )
+        .await?
+        .ok_or_else(|| test_error("active generation should wait for remuxer state"))?;
+        insert_task.await?;
+
+        assert!(playlist.contains("/segments/ready-segment.ts"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ended_local_playlist_remains_available_after_publisher_unregister() -> TestResult {
+        let registry = Arc::new(TestStreamRegistry::new());
+        let generation_id = synctv_xiu::streamhub::utils::Uuid::new();
+        let generation_id_string = generation_id.to_string();
+        assert!(
+            registry
+                .try_activate_generation(
+                    "room1",
+                    "media1",
+                    "node-local",
+                    "",
+                    "127.0.0.1:50051",
+                    &generation_id_string,
+                )
+                .await?
+        );
+        let publisher = registry
+            .get_active_generation("room1", "media1")
+            .await?
+            .ok_or_else(|| test_error("registered publisher should exist"))?;
+        let (event_sender, _event_receiver) = mpsc::channel(64);
+        let mut infrastructure = LiveStreamingInfrastructure::new(
+            registry.clone(),
+            event_sender,
+            Arc::new(StreamTracker::new()),
+            "node-local".to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )?;
+        let hls_registry = Arc::new(dashmap::DashMap::new());
+        let mut playlist = synctv_xiu::hls::HlsPlaylist::new();
+        playlist.mark_ended();
+        hls_registry.insert(
+            synctv_xiu::hls::generation_registry_key("room1", "media1", &generation_id_string),
+            Arc::new(parking_lot::RwLock::new(
+                synctv_xiu::hls::StreamProcessorState {
+                    app_name: "room1".to_string(),
+                    stream_name: "media1".to_string(),
+                    playlist,
+                    generation_id,
+                    marked_for_cleanup: true,
+                    cleanup_segment_names: Vec::new(),
+                },
+            )),
+        );
+        infrastructure = infrastructure.with_hls_stream_registry(hls_registry);
+        infrastructure = infrastructure.with_segment_manager(Arc::new(SegmentManager::new(
+            Arc::new(synctv_xiu::storage::MemoryStorage::new()),
+            crate::livestream::CleanupConfig::default(),
+        )));
+        registry
+            .deactivate_generation_preserving_hls_if_lease_matches(
+                "room1",
+                "media1",
+                &generation_id.to_string(),
+                publisher.lease_epoch,
+            )
+            .await?;
+
+        let playlist = HlsStreamingApi::generate_playlist_simple(
+            &infrastructure,
+            "room1",
+            "media1",
+            &generation_id_string,
+            "/segments/",
+        )
+        .await?
+        .ok_or_else(|| test_error("ended local playlist should remain available"))?;
+
+        assert!(playlist.contains("#EXT-X-ENDLIST"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn final_playlist_expires_before_ended_generation_segments() -> TestResult {
+        let generation_id = synctv_xiu::streamhub::utils::Uuid::new();
+        let generation_id_string = generation_id.to_string();
+        let registry = Arc::new(TestStreamRegistry::new());
+        assert!(
+            registry
+                .try_activate_generation(
+                    "room-grace",
+                    "media-grace",
+                    "node-local",
+                    "",
+                    "127.0.0.1:50051",
+                    &generation_id_string,
+                )
+                .await?
+        );
+        let lease_epoch = registry
+            .get_active_generation("room-grace", "media-grace")
+            .await?
+            .ok_or_else(|| test_error("publisher should exist"))?
+            .lease_epoch;
+
+        let storage = Arc::new(synctv_xiu::storage::MemoryStorage::unlimited());
+        storage
+            .write(
+                "room-grace",
+                "media-grace",
+                "segment001",
+                Bytes::from_static(b"retained-segment"),
+            )
+            .await?;
+        let cleanup_config = crate::livestream::CleanupConfig {
+            interval: std::time::Duration::from_millis(10),
+            retention: std::time::Duration::from_hours(1),
+            final_playlist_grace: std::time::Duration::from_millis(40),
+            ended_segment_grace: std::time::Duration::from_millis(160),
+            max_segments_per_stream: 0,
+        };
+        let segment_manager = Arc::new(SegmentManager::new(storage.clone(), cleanup_config));
+        segment_manager.schedule_generation_cleanup(
+            "room-grace".to_string(),
+            "media-grace".to_string(),
+            vec!["segment001".to_string()],
+        );
+        let cleanup_shutdown = CancellationToken::new();
+        let cleanup_task =
+            Arc::clone(&segment_manager).start_cleanup_task(cleanup_shutdown.clone());
+
+        let mut playlist = synctv_xiu::hls::HlsPlaylist::new();
+        playlist.push_segment(synctv_xiu::hls::SegmentInfo {
+            sequence: 0,
+            duration_ms: 1_000,
+            started_at_ms: 0,
+            ts_name: "segment001".to_string(),
+            discontinuity: false,
+        });
+        playlist.mark_ended();
+        let hls_registry = Arc::new(dashmap::DashMap::new());
+        hls_registry.insert(
+            synctv_xiu::hls::generation_registry_key(
+                "room-grace",
+                "media-grace",
+                &generation_id_string,
+            ),
+            Arc::new(parking_lot::RwLock::new(
+                synctv_xiu::hls::StreamProcessorState {
+                    app_name: "room-grace".to_string(),
+                    stream_name: "media-grace".to_string(),
+                    playlist,
+                    generation_id,
+                    marked_for_cleanup: true,
+                    cleanup_segment_names: vec!["segment001".to_string()],
+                },
+            )),
+        );
+        let (event_sender, _event_receiver) = mpsc::channel(8);
+        let infrastructure = LiveStreamingInfrastructure::new(
+            registry.clone(),
+            event_sender,
+            Arc::new(StreamTracker::new()),
+            "node-local".to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )?
+        .with_hls_stream_registry(hls_registry.clone())
+        .with_segment_manager(segment_manager);
+        registry
+            .deactivate_generation_preserving_hls_if_lease_matches(
+                "room-grace",
+                "media-grace",
+                &generation_id.to_string(),
+                lease_epoch,
+            )
+            .await?;
+
+        let final_playlist = HlsStreamingApi::generate_playlist_simple(
+            &infrastructure,
+            "room-grace",
+            "media-grace",
+            &generation_id_string,
+            "/segments/",
+        )
+        .await?
+        .ok_or_else(|| test_error("final playlist should be visible during its grace period"))?;
+        assert!(final_playlist.contains("#EXT-X-ENDLIST"));
+
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        hls_registry.remove(&synctv_xiu::hls::generation_registry_key(
+            "room-grace",
+            "media-grace",
+            &generation_id_string,
+        ));
+        assert!(HlsStreamingApi::generate_playlist_simple(
+            &infrastructure,
+            "room-grace",
+            "media-grace",
+            &generation_id_string,
+            "/segments/",
+        )
+        .await?
+        .is_none());
+        assert_eq!(
+            HlsStreamingApi::get_segment(
+                &infrastructure,
+                "room-grace",
+                "media-grace",
+                &generation_id_string,
+                "segment001",
+            )
+            .await?,
+            Bytes::from_static(b"retained-segment")
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if HlsStreamingApi::get_segment(
+                    &infrastructure,
+                    "room-grace",
+                    "media-grace",
+                    &generation_id_string,
+                    "segment001",
+                )
+                .await
+                .is_err()
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await?;
+
+        cleanup_shutdown.cancel();
+        cleanup_task.await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn hls_only_live_proxy_playlist_poll_refreshes_local_activity() -> TestResult {
+        let registry = Arc::new(TestStreamRegistry::new());
+        let (event_sender, _event_receiver) = mpsc::channel(8);
+        let mut infrastructure = LiveStreamingInfrastructure::new(
+            registry.clone(),
+            event_sender,
+            Arc::new(StreamTracker::new()),
+            "node-local".to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )?;
+        let source = synctv_core::models::ExternalLiveSourceConfig::HttpFlv {
+            url: "http://127.0.0.1/live.flv".to_string(),
+        };
+        let (stream, generation_id) = infrastructure
+            .external_publish_manager
+            .install_running_test_stream("room-activity", "media-activity", source.clone());
+        let generation_id_string = generation_id.to_string();
+        assert!(
+            registry
+                .try_activate_generation(
+                    "room-activity",
+                    "media-activity",
+                    "node-local",
+                    "",
+                    "127.0.0.1:50051",
+                    &generation_id_string,
+                )
+                .await?
+        );
+
+        let mut playlist = synctv_xiu::hls::HlsPlaylist::new();
+        playlist.push_segment(synctv_xiu::hls::SegmentInfo {
+            sequence: 0,
+            duration_ms: 1_000,
+            started_at_ms: 0,
+            ts_name: "segment001".to_string(),
+            discontinuity: false,
+        });
+        let hls_registry = Arc::new(dashmap::DashMap::new());
+        hls_registry.insert(
+            synctv_xiu::hls::generation_registry_key(
+                "room-activity",
+                "media-activity",
+                &generation_id_string,
+            ),
+            Arc::new(parking_lot::RwLock::new(
+                synctv_xiu::hls::StreamProcessorState {
+                    app_name: "room-activity".to_string(),
+                    stream_name: "media-activity".to_string(),
+                    playlist,
+                    generation_id,
+                    marked_for_cleanup: false,
+                    cleanup_segment_names: Vec::new(),
+                },
+            )),
+        );
+        infrastructure = infrastructure.with_hls_stream_registry(hls_registry);
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while stream.lifecycle().last_active_elapsed_secs() == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await?;
+        let config = synctv_core::models::LiveProxyMediaSourceConfig { source };
+        let active_generation = HlsStreamingApi::resolve_active_generation_with_pull(
+            &infrastructure,
+            "room-activity",
+            "media-activity",
+            Some(&config),
+        )
+        .await?
+        .ok_or_else(|| test_error("active external stream should expose a generation"))?;
+        let playlist = HlsStreamingApi::generate_playlist(
+            &infrastructure,
+            "room-activity",
+            "media-activity",
+            &active_generation.generation_id,
+            |segment| format!("/segments/{}/{segment}.ts", active_generation.generation_id),
+        )
+        .await?
+        .ok_or_else(|| test_error("active external stream should expose a playlist"))?;
+
+        assert!(playlist.contains(&generation_id_string));
+        assert_eq!(stream.lifecycle().last_active_elapsed_secs(), 0);
+        assert_eq!(stream.lifecycle().subscriber_count(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_live_proxy_prefers_registered_remote_publisher_before_external_pull() -> TestResult
     {
         let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([(
                 ("room1".to_string(), "media1".to_string()),
-                PublisherInfo {
+                StreamGeneration {
                     node_id: "node-remote".to_string(),
                     cluster_address: String::new(),
                     app_name: "live".to_string(),
                     user_id: String::new(),
                     started_at: synctv_core::SystemClock.now(),
-                    epoch: 1,
+                    ended_at: None,
+                    lease_epoch: 1,
+                    generation_id: TEST_GENERATION_ID.to_string(),
                 },
             )]),
         ));
@@ -1038,13 +1545,15 @@ mod tests {
 
         let registry = Arc::new(TestStreamRegistry::with_publishers(HashMap::from([(
             ("room1".to_string(), "media1".to_string()),
-            PublisherInfo {
+            StreamGeneration {
                 node_id: "node-local".to_string(),
                 cluster_address: String::new(),
                 app_name: "live".to_string(),
                 user_id: String::new(),
                 started_at: synctv_core::SystemClock.now(),
-                epoch: 1,
+                ended_at: None,
+                lease_epoch: 1,
+                generation_id: TEST_GENERATION_ID.to_string(),
             },
         )])));
 
@@ -1062,7 +1571,7 @@ mod tests {
             .await;
         assert!(
             result.is_ok(),
-            "Local publisher with valid epoch should succeed, got error: {:?}",
+            "Local publisher with valid lease_epoch should succeed, got error: {:?}",
             result.err()
         );
         Ok(())
@@ -1084,28 +1593,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_shared_file_segments_are_read_from_current_node_storage() -> TestResult {
-        let storage: Arc<dyn synctv_xiu::storage::HlsStorage> =
-            Arc::new(synctv_xiu::storage::MemoryStorage::new());
-        storage
-            .write("room1", "media1", "seg1", Bytes::from_static(b"segment"))
+    async fn shared_backends_are_read_directly_on_non_publisher_nodes() -> TestResult {
+        for backend in [HlsStorageBackend::SharedFile, HlsStorageBackend::S3] {
+            let storage: Arc<dyn synctv_xiu::storage::HlsStorage> =
+                Arc::new(synctv_xiu::storage::MemoryStorage::new());
+            storage
+                .write("room1", "media1", "seg1", Bytes::from_static(b"segment"))
+                .await?;
+
+            let segment_manager = Arc::new(SegmentManager::new(
+                storage,
+                crate::livestream::CleanupConfig::default(),
+            ));
+            let infrastructure =
+                make_infrastructure_with_publisher("node-local", "node-remote", "")?
+                    .with_segment_manager(segment_manager)
+                    .with_hls_storage_backend(backend)
+                    .with_hls_proxy(HlsProxyClient::with_defaults(Some(
+                        "cluster-secret".to_string(),
+                    )));
+
+            let segment = HlsStreamingApi::get_segment(
+                &infrastructure,
+                "room1",
+                "media1",
+                TEST_GENERATION_ID,
+                "seg1",
+            )
             .await?;
-
-        let segment_manager = Arc::new(SegmentManager::new(
-            storage,
-            crate::livestream::CleanupConfig::default(),
-        ));
-        let infrastructure = make_infrastructure_with_publisher("node-local", "node-remote", "")?
-            .with_segment_manager(segment_manager)
-            .with_hls_storage_backend(HlsStorageBackend::SharedFile)
-            .with_hls_proxy(HlsProxyClient::with_defaults(Some(
-                "cluster-secret".to_string(),
-            )));
-
-        let segment =
-            HlsStreamingApi::get_segment(&infrastructure, "room1", "media1", "seg1").await?;
-
-        assert_eq!(segment, Bytes::from_static(b"segment"));
+            assert_eq!(
+                segment,
+                Bytes::from_static(b"segment"),
+                "backend={backend:?}"
+            );
+        }
         Ok(())
     }
 
@@ -1114,13 +1635,15 @@ mod tests {
         let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([(
                 ("room1".to_string(), "media1".to_string()),
-                PublisherInfo {
+                StreamGeneration {
                     node_id: "node-local".to_string(),
                     cluster_address: "127.0.0.1:50051".to_string(),
                     app_name: "live".to_string(),
                     user_id: "user1".to_string(),
                     started_at: synctv_core::SystemClock.now(),
-                    epoch: 1,
+                    ended_at: None,
+                    lease_epoch: 1,
+                    generation_id: TEST_GENERATION_ID.to_string(),
                 },
             )]),
         ));
@@ -1157,7 +1680,10 @@ mod tests {
             "tracker entry must remain until UnPublish is accepted"
         );
         assert!(
-            registry.get_publisher("room1", "media1").await?.is_some(),
+            registry
+                .get_active_generation("room1", "media1")
+                .await?
+                .is_some(),
             "registry entry must remain until UnPublish is accepted"
         );
         Ok(())
@@ -1169,13 +1695,15 @@ mod tests {
         let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([(
                 ("room1".to_string(), "media1".to_string()),
-                PublisherInfo {
+                StreamGeneration {
                     node_id: "node-local".to_string(),
                     cluster_address: "127.0.0.1:50051".to_string(),
                     app_name: "live".to_string(),
                     user_id: "user1".to_string(),
                     started_at: synctv_core::SystemClock.now(),
-                    epoch: 1,
+                    ended_at: None,
+                    lease_epoch: 1,
+                    generation_id: TEST_GENERATION_ID.to_string(),
                 },
             )]),
         ));
@@ -1198,7 +1726,7 @@ mod tests {
 
         infrastructure.kick_stream("room1", "media1").await?;
 
-        recv_unpublish_event(&mut event_receiver).await?;
+        recv_force_unpublish_event(&mut event_receiver).await?;
 
         assert_eq!(
             tracker.get_stream_user("room1", "media1").as_deref(),
@@ -1206,8 +1734,11 @@ mod tests {
             "kick_stream must keep tracker entry until StreamHub processes UnPublish"
         );
         assert!(
-            registry.get_publisher("room1", "media1").await?.is_some(),
-            "kick_stream must keep registry entry until epoch-fenced unpublish cleanup"
+            registry
+                .get_active_generation("room1", "media1")
+                .await?
+                .is_some(),
+            "kick_stream must keep registry entry until lease_epoch-fenced unpublish cleanup"
         );
         Ok(())
     }
@@ -1217,19 +1748,21 @@ mod tests {
         let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([(
                 ("room1".to_string(), "media1".to_string()),
-                PublisherInfo {
+                StreamGeneration {
                     node_id: "node-local".to_string(),
                     cluster_address: "127.0.0.1:50051".to_string(),
                     app_name: "live".to_string(),
                     user_id: "user1".to_string(),
                     started_at: synctv_core::SystemClock.now(),
-                    epoch: 1,
+                    ended_at: None,
+                    lease_epoch: 1,
+                    generation_id: TEST_GENERATION_ID.to_string(),
                 },
             )]),
         ));
         let (event_sender, mut event_receiver) = mpsc::channel(1);
         event_sender
-            .try_send(StreamHubEvent::UnPublish {
+            .try_send(StreamHubEvent::ForceUnPublish {
                 identifier: synctv_xiu::streamhub::stream::StreamIdentifier::Rtmp {
                     app_name: "blocked".to_string(),
                     stream_name: "blocked".to_string(),
@@ -1252,13 +1785,13 @@ mod tests {
             .await
             .ok_or_else(|| test_error("expected prefilled event"))?;
         assert!(
-            matches!(blocked, StreamHubEvent::UnPublish { .. }),
-            "expected prefilled UnPublish event, got {blocked:?}"
+            matches!(blocked, StreamHubEvent::ForceUnPublish { .. }),
+            "expected prefilled ForceUnPublish event, got {blocked:?}"
         );
 
         kick.await
             .map_err(|error| test_error(format!("kick task panicked: {error}")))??;
-        recv_unpublish_event(&mut event_receiver).await?;
+        recv_force_unpublish_event(&mut event_receiver).await?;
         Ok(())
     }
 
@@ -1269,24 +1802,28 @@ mod tests {
             std::collections::HashMap::from([
                 (
                     ("room1".to_string(), "media1".to_string()),
-                    PublisherInfo {
+                    StreamGeneration {
                         node_id: "node-local".to_string(),
                         cluster_address: "127.0.0.1:50051".to_string(),
                         app_name: "live".to_string(),
                         user_id: "user1".to_string(),
                         started_at: synctv_core::SystemClock.now(),
-                        epoch: 1,
+                        ended_at: None,
+                        lease_epoch: 1,
+                        generation_id: TEST_GENERATION_ID.to_string(),
                     },
                 ),
                 (
                     ("room2".to_string(), "media2".to_string()),
-                    PublisherInfo {
+                    StreamGeneration {
                         node_id: "node-local".to_string(),
                         cluster_address: "127.0.0.1:50051".to_string(),
                         app_name: "live".to_string(),
                         user_id: "user1".to_string(),
                         started_at: synctv_core::SystemClock.now(),
-                        epoch: 1,
+                        ended_at: None,
+                        lease_epoch: 1,
+                        generation_id: TEST_GENERATION_ID.to_string(),
                     },
                 ),
             ]),
@@ -1316,17 +1853,23 @@ mod tests {
         infrastructure.kick_user_publishers("user1").await;
 
         for _ in 0..2 {
-            recv_unpublish_event(&mut event_receiver).await?;
+            recv_force_unpublish_event(&mut event_receiver).await?;
         }
 
         let remaining_streams = tracker.get_user_streams("user1");
         assert_eq!(remaining_streams.len(), 2);
         assert!(
-            registry.get_publisher("room1", "media1").await?.is_some(),
+            registry
+                .get_active_generation("room1", "media1")
+                .await?
+                .is_some(),
             "kick_user_publishers must keep the first registry entry until unpublish cleanup"
         );
         assert!(
-            registry.get_publisher("room2", "media2").await?.is_some(),
+            registry
+                .get_active_generation("room2", "media2")
+                .await?
+                .is_some(),
             "kick_user_publishers must keep the second registry entry until unpublish cleanup"
         );
         Ok(())
@@ -1338,24 +1881,28 @@ mod tests {
             std::collections::HashMap::from([
                 (
                     ("room1".to_string(), "media1".to_string()),
-                    PublisherInfo {
+                    StreamGeneration {
                         node_id: "node-local".to_string(),
                         cluster_address: "127.0.0.1:50051".to_string(),
                         app_name: "live".to_string(),
                         user_id: "user1".to_string(),
                         started_at: synctv_core::SystemClock.now(),
-                        epoch: 1,
+                        ended_at: None,
+                        lease_epoch: 1,
+                        generation_id: TEST_GENERATION_ID.to_string(),
                     },
                 ),
                 (
                     ("room2".to_string(), "media2".to_string()),
-                    PublisherInfo {
+                    StreamGeneration {
                         node_id: "node-local".to_string(),
                         cluster_address: "127.0.0.1:50051".to_string(),
                         app_name: "live".to_string(),
                         user_id: "user1".to_string(),
                         started_at: synctv_core::SystemClock.now(),
-                        epoch: 1,
+                        ended_at: None,
+                        lease_epoch: 1,
+                        generation_id: TEST_GENERATION_ID.to_string(),
                     },
                 ),
             ]),
@@ -1386,7 +1933,7 @@ mod tests {
             .kick_user_room_publishers("room1", "user1")
             .await;
 
-        recv_unpublish_event(&mut event_receiver).await?;
+        recv_force_unpublish_event(&mut event_receiver).await?;
         assert!(
             event_receiver.try_recv().is_err(),
             "room-scoped kick should only enqueue the room-local publisher"
@@ -1402,11 +1949,17 @@ mod tests {
             "publishers in other rooms must remain tracked"
         );
         assert!(
-            registry.get_publisher("room1", "media1").await?.is_some(),
+            registry
+                .get_active_generation("room1", "media1")
+                .await?
+                .is_some(),
             "target room publisher must remain registered until unpublish cleanup"
         );
         assert!(
-            registry.get_publisher("room2", "media2").await?.is_some(),
+            registry
+                .get_active_generation("room2", "media2")
+                .await?
+                .is_some(),
             "publishers in other rooms must remain registered"
         );
         Ok(())
@@ -1418,24 +1971,28 @@ mod tests {
             std::collections::HashMap::from([
                 (
                     ("room1".to_string(), "media1".to_string()),
-                    PublisherInfo {
+                    StreamGeneration {
                         node_id: "node-local".to_string(),
                         cluster_address: "127.0.0.1:50051".to_string(),
                         app_name: "live".to_string(),
                         user_id: "user1".to_string(),
                         started_at: synctv_core::SystemClock.now(),
-                        epoch: 1,
+                        ended_at: None,
+                        lease_epoch: 1,
+                        generation_id: TEST_GENERATION_ID.to_string(),
                     },
                 ),
                 (
                     ("room2".to_string(), "media2".to_string()),
-                    PublisherInfo {
+                    StreamGeneration {
                         node_id: "node-remote".to_string(),
                         cluster_address: "127.0.0.1:50052".to_string(),
                         app_name: "live".to_string(),
                         user_id: "user1".to_string(),
                         started_at: synctv_core::SystemClock.now(),
-                        epoch: 1,
+                        ended_at: None,
+                        lease_epoch: 1,
+                        generation_id: TEST_GENERATION_ID.to_string(),
                     },
                 ),
             ]),
@@ -1452,17 +2009,23 @@ mod tests {
 
         infrastructure.kick_user_publishers("user1").await;
 
-        recv_unpublish_event(&mut event_receiver).await?;
+        recv_force_unpublish_event(&mut event_receiver).await?;
         assert!(
             event_receiver.try_recv().is_err(),
             "remote publisher must not be kicked by a non-owner replica"
         );
         assert!(
-            registry.get_publisher("room1", "media1").await?.is_some(),
+            registry
+                .get_active_generation("room1", "media1")
+                .await?
+                .is_some(),
             "local publisher must remain registered until its owner processes UnPublish"
         );
         assert!(
-            registry.get_publisher("room2", "media2").await?.is_some(),
+            registry
+                .get_active_generation("room2", "media2")
+                .await?
+                .is_some(),
             "remote publisher must remain registered for its owner node to terminate"
         );
         Ok(())
@@ -1473,13 +2036,15 @@ mod tests {
         let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([(
                 ("room1".to_string(), "media1".to_string()),
-                PublisherInfo {
+                StreamGeneration {
                     node_id: "node-remote".to_string(),
                     cluster_address: "127.0.0.1:50052".to_string(),
                     app_name: "live".to_string(),
                     user_id: "user1".to_string(),
                     started_at: synctv_core::SystemClock.now(),
-                    epoch: 1,
+                    ended_at: None,
+                    lease_epoch: 1,
+                    generation_id: TEST_GENERATION_ID.to_string(),
                 },
             )]),
         ));
@@ -1500,7 +2065,10 @@ mod tests {
             "non-owner replica must not send local UnPublish for remote publisher"
         );
         assert!(
-            registry.get_publisher("room1", "media1").await?.is_some(),
+            registry
+                .get_active_generation("room1", "media1")
+                .await?
+                .is_some(),
             "non-owner replica must not remove remote publisher registry entry"
         );
         Ok(())

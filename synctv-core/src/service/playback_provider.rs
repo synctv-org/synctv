@@ -1451,7 +1451,7 @@ impl RtmpPlaybackProviderService {
             .await
     }
 
-    pub async fn hls_playlist_action(
+    pub async fn hls_master_action(
         &self,
         version: &str,
         store: Arc<dyn ProviderStore>,
@@ -1460,13 +1460,28 @@ impl RtmpPlaybackProviderService {
         self.runtime
             .providers
             .rtmp
-            .get_hls_playlist(Some(&store), version, request_control)
+            .get_hls_master(Some(&store), version, request_control)
+            .await
+    }
+
+    pub async fn hls_playlist_action(
+        &self,
+        version: &str,
+        generation_id: &str,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .rtmp
+            .get_hls_playlist(Some(&store), version, generation_id, request_control)
             .await
     }
 
     pub async fn hls_segment_action(
         &self,
         version: &str,
+        generation_id: &str,
         segment_name: &str,
         store: Arc<dyn ProviderStore>,
         request_control: Option<&ExecutionControl>,
@@ -1474,7 +1489,13 @@ impl RtmpPlaybackProviderService {
         self.runtime
             .providers
             .rtmp
-            .get_hls_segment(Some(&store), version, segment_name, request_control)
+            .get_hls_segment(
+                Some(&store),
+                version,
+                generation_id,
+                segment_name,
+                request_control,
+            )
             .await
     }
 }
@@ -1506,7 +1527,7 @@ impl LiveProxyPlaybackProviderService {
             .await
     }
 
-    pub async fn hls_playlist_action(
+    pub async fn hls_master_action(
         &self,
         version: &str,
         store: Arc<dyn ProviderStore>,
@@ -1515,13 +1536,28 @@ impl LiveProxyPlaybackProviderService {
         self.runtime
             .providers
             .live_proxy
-            .get_hls_playlist(Some(&store), version, request_control)
+            .get_hls_master(Some(&store), version, request_control)
+            .await
+    }
+
+    pub async fn hls_playlist_action(
+        &self,
+        version: &str,
+        generation_id: &str,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .live_proxy
+            .get_hls_playlist(Some(&store), version, generation_id, request_control)
             .await
     }
 
     pub async fn hls_segment_action(
         &self,
         version: &str,
+        generation_id: &str,
         segment_name: &str,
         store: Arc<dyn ProviderStore>,
         request_control: Option<&ExecutionControl>,
@@ -1529,7 +1565,13 @@ impl LiveProxyPlaybackProviderService {
         self.runtime
             .providers
             .live_proxy
-            .get_hls_segment(Some(&store), version, segment_name, request_control)
+            .get_hls_segment(
+                Some(&store),
+                version,
+                generation_id,
+                segment_name,
+                request_control,
+            )
             .await
     }
 

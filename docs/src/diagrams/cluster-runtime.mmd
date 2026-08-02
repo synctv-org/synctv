@@ -14,7 +14,7 @@ flowchart TB
 
   PG[(PostgreSQL<br/>durable state)]
   Redis[(Redis<br/>coordination state)]
-  HLS[(HLS backend<br/>memory / file / OSS)]
+  HLS[(HLS backend<br/>memory / file / S3)]
   HLSProxy[Publisher-node<br/>HLS gRPC proxy]
 
   Client --> HTTP

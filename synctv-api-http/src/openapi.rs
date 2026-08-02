@@ -3,8 +3,8 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::http::{
-    admin, auth, email, health, notifications, oauth2, public, room, room_extra, ticket, user,
-    webrtc, websocket, AppState,
+    admin, auth, email, notifications, oauth2, public, room, room_extra, ticket, user, webrtc,
+    websocket, AppState,
 };
 use crate::providers::{
     acfun, alist, bilibili, cctv, cloudreve, common, douyin, douyu, emby, fnos, huya, nextcloud,
@@ -298,11 +298,13 @@ pub struct GoogleRpcStatusSchema {
         playback_provider_bilibili::watch_bilibili_live_danmaku,
         playback_provider_rtmp::get_rtmp_flv_stream,
         playback_provider_rtmp::head_rtmp_flv_stream,
+        playback_provider_rtmp::get_rtmp_hls_master,
         playback_provider_rtmp::get_rtmp_hls_playlist,
         playback_provider_rtmp::get_rtmp_hls_segment,
         playback_provider_rtmp::head_rtmp_hls_segment,
         playback_provider_live_proxy::get_live_proxy_flv_stream,
         playback_provider_live_proxy::head_live_proxy_flv_stream,
+        playback_provider_live_proxy::get_live_proxy_hls_master,
         playback_provider_live_proxy::get_live_proxy_hls_playlist,
         playback_provider_live_proxy::get_live_proxy_hls_segment,
         playback_provider_live_proxy::head_live_proxy_hls_segment,
@@ -1234,6 +1236,43 @@ mod tests {
             schemas.keys().any(|name| name.contains("youtube")),
             "YouTube protobuf schemas should be registered"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn openapi_documents_generation_scoped_live_hls_contract() -> TestResult {
+        let doc = openapi_json()?;
+
+        for provider in ["rtmp", "live-proxy"] {
+            for path in [
+                format!("/api/playback-providers/{provider}/{{version}}/hls-master"),
+                format!(
+                    "/api/playback-providers/{provider}/{{version}}/hls/{{generationId}}/index.m3u8"
+                ),
+                format!(
+                    "/api/playback-providers/{provider}/{{version}}/hls/{{generationId}}/{{segmentName}}"
+                ),
+            ] {
+                let operation = &doc["paths"][&path]["get"];
+                assert!(operation.is_object(), "GET {path} should be documented");
+                assert!(
+                    operation["responses"]["200"].is_object(),
+                    "GET {path} should document its success response"
+                );
+            }
+            for removed_path in [
+                format!("/api/playback-providers/{provider}/{{version}}/hls-playlist"),
+                format!(
+                    "/api/playback-providers/{provider}/{{version}}/hls-segments/{{segmentName}}"
+                ),
+            ] {
+                assert!(
+                    doc["paths"].get(&removed_path).is_none(),
+                    "removed live HLS path should be absent: {removed_path}"
+                );
+            }
+        }
+
         Ok(())
     }
 

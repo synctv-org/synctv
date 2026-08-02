@@ -15,6 +15,7 @@ use synctv_xiu::streamhub::define::{
     BroadcastEvent, DataSender, PublishType, SubscribeType, TStreamHandler,
 };
 use synctv_xiu::streamhub::errors::StreamHubError;
+use synctv_xiu::streamhub::utils::Uuid;
 
 struct MockHandler;
 
@@ -49,6 +50,7 @@ fn expect_publish_event(
         BroadcastEvent::Publish {
             identifier,
             pub_type,
+            ..
         } => (identifier, pub_type),
         other => panic!("expected publish event, got {other:?}"),
     }
@@ -126,7 +128,13 @@ async fn test_streams_hub_publish_and_subscribe() {
     };
 
     // Publish
-    let result = hub.publish(identifier.clone(), PublishType::RtmpPush, receiver, handler);
+    let result = hub.publish(
+        identifier.clone(),
+        Uuid::new(),
+        PublishType::RtmpPush,
+        receiver,
+        handler,
+    );
     assert!(result.is_ok());
 
     // Duplicate publish should fail
@@ -138,6 +146,7 @@ async fn test_streams_hub_publish_and_subscribe() {
 
     let result2 = hub.publish(
         identifier.clone(),
+        Uuid::new(),
         PublishType::RtmpPush,
         receiver2,
         Arc::new(MockHandler2),
@@ -238,6 +247,7 @@ async fn test_streams_hub_broadcast_event() {
     // Publish should trigger a broadcast event
     hub.publish(
         identifier.clone(),
+        Uuid::new(),
         PublishType::RtmpPush,
         receiver,
         Arc::new(MockHandler),

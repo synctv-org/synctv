@@ -26,7 +26,7 @@ use synctv_core::service::{
     LocalProviderHttpOptions, MediaProvidersOptions, PasskeyServiceOptions,
 };
 use synctv_core::validation::PasswordComplexityOptions;
-use synctv_livestream::{HlsOssOptions, HlsStorageBackend};
+use synctv_livestream::{HlsS3Options, HlsStorageBackend};
 use synctv_management::server::{ManagementRuntimeSettings, ManagementTransport};
 use synctv_realtime::sync::ConnectionLimitsOptions;
 
@@ -513,7 +513,7 @@ fn server_state_hls_storage_backend(
         AppHlsStorageBackend::SharedFile => {
             synctv_core::service::ServerStateHlsStorageBackend::SharedFile
         }
-        AppHlsStorageBackend::Oss => synctv_core::service::ServerStateHlsStorageBackend::Oss,
+        AppHlsStorageBackend::S3 => synctv_core::service::ServerStateHlsStorageBackend::S3,
     }
 }
 
@@ -621,14 +621,14 @@ pub fn hls_storage_backend(backend: AppHlsStorageBackend) -> HlsStorageBackend {
         AppHlsStorageBackend::Memory => HlsStorageBackend::Memory,
         AppHlsStorageBackend::File => HlsStorageBackend::File,
         AppHlsStorageBackend::SharedFile => HlsStorageBackend::SharedFile,
-        AppHlsStorageBackend::Oss => HlsStorageBackend::Oss,
+        AppHlsStorageBackend::S3 => HlsStorageBackend::S3,
     }
 }
 
-pub fn hls_oss_options(storage: &HlsStorageConfig) -> HlsOssOptions {
+pub fn hls_s3_options(storage: &HlsStorageConfig) -> HlsS3Options {
     storage
-        .oss()
-        .map_or_else(HlsOssOptions::default, |config| HlsOssOptions {
+        .s3()
+        .map_or_else(HlsS3Options::default, |config| HlsS3Options {
             endpoint: config.endpoint.clone(),
             access_key_id: config.access_key_id.clone(),
             secret_access_key: config.secret_access_key.clone(),

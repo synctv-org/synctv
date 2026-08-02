@@ -472,21 +472,23 @@ mod tests {
 
         let registry = synctv_livestream::local_stream_registry();
         registry
-            .try_register_publisher(
+            .try_activate_generation(
                 &room_one_key,
                 "media-1",
                 "test-node",
                 &user_id_key,
                 "127.0.0.1:50051",
+                &uuid::Uuid::new_v4().to_string(),
             )
             .await?;
         registry
-            .try_register_publisher(
+            .try_activate_generation(
                 &room_two_key,
                 "media-2",
                 "test-node",
                 &user_id_key,
                 "127.0.0.1:50051",
+                &uuid::Uuid::new_v4().to_string(),
             )
             .await?;
 
@@ -549,21 +551,21 @@ mod tests {
         ));
         assert!(
             registry
-                .get_publisher(&room_one_key, "media-1")
+                .get_active_generation(&room_one_key, "media-1")
                 .await?
                 .is_some(),
             "room-scoped disconnect must not remove publisher ownership before StreamHub processes unpublish"
         );
         assert!(
             registry
-                .get_publisher(&room_two_key, "media-2")
+                .get_active_generation(&room_two_key, "media-2")
                 .await?
                 .is_some(),
             "room-scoped disconnect must preserve publishers from other rooms"
         );
 
         registry
-            .unregister_publisher(&room_one_key, "media-1")
+            .deactivate_current_generation(&room_one_key, "media-1")
             .await?;
         assert!(
             tracker.remove_stream(&room_one_key, "media-1").is_some(),
@@ -572,14 +574,14 @@ mod tests {
 
         assert!(
             registry
-                .get_publisher(&room_one_key, "media-1")
+                .get_active_generation(&room_one_key, "media-1")
                 .await?
                 .is_none(),
             "actual unpublish completion must remove the matching room publisher"
         );
         assert!(
             registry
-                .get_publisher(&room_two_key, "media-2")
+                .get_active_generation(&room_two_key, "media-2")
                 .await?
                 .is_some(),
             "actual unpublish completion must preserve publishers from other rooms"

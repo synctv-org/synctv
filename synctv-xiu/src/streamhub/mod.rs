@@ -19,9 +19,10 @@ use transceiver::StreamDataTransceiver;
 use {
     channels::{build_publisher_data_channel, build_subscriber_data_channel},
     define::{
-        BroadcastEvent, BroadcastEventSender, DataReceiver, DataSender, StatisticDataSender,
-        StreamHubEvent, StreamHubEventReceiver, StreamHubEventSender, SubscriberInfo,
-        TStreamHandler, TransceiverEvent, TransceiverEventSender,
+        BroadcastEvent, BroadcastEventSender, DataReceiver, DataSender, PublisherActivityCallback,
+        StatisticDataSender, StreamHubEvent, StreamHubEventReceiver, StreamHubEventSender,
+        SubEventExecuteResultSender, SubscriberInfo, TStreamHandler, TransceiverEvent,
+        TransceiverEventSender,
     },
     errors::{StreamHubError, StreamHubErrorValue},
     std::any::Any,
@@ -29,6 +30,7 @@ use {
     std::sync::Arc,
     stream::StreamIdentifier,
     tokio::sync::{broadcast, mpsc},
+    utils::Uuid,
 };
 
 fn panic_payload_to_string(panic_payload: &(dyn Any + Send)) -> String {
@@ -46,13 +48,19 @@ fn panic_payload_to_string(panic_payload: &(dyn Any + Send)) -> String {
 
 pub struct StreamsHub {
     //stream identifier to transceiver event sender
-    streams: HashMap<StreamIdentifier, TransceiverEventSender>,
+    streams: HashMap<StreamIdentifier, ActiveStream>,
     //event is consumed in Stream hub, produced from other protocol sessions
     hub_event_receiver: StreamHubEventReceiver,
     //event is produced from other protocol sessions
     hub_event_sender: StreamHubEventSender,
     //broadcast publish/unpublish events to subscribers (HLS remuxer, publisher manager, etc.)
     client_event_sender: BroadcastEventSender,
+    publisher_activity_callback: Option<PublisherActivityCallback>,
+}
+
+struct ActiveStream {
+    generation_id: Uuid,
+    event_sender: TransceiverEventSender,
 }
 
 impl StreamsHub {
@@ -68,7 +76,15 @@ impl StreamsHub {
             hub_event_receiver: event_consumer,
             hub_event_sender: event_producer,
             client_event_sender: client_producer,
+            publisher_activity_callback: None,
         }
+    }
+
+    /// Record media activity at publisher ingress, before subscriber fan-out.
+    #[must_use]
+    pub fn with_publisher_activity_callback(mut self, callback: PublisherActivityCallback) -> Self {
+        self.publisher_activity_callback = Some(callback);
+        self
     }
     /// Run the event loop, returning the exit reason.
     ///
@@ -120,6 +136,7 @@ impl StreamsHub {
 
                     let result = match self.publish(
                         identifier.clone(),
+                        info.id,
                         info.pub_type,
                         receiver,
                         stream_handler,
@@ -138,8 +155,11 @@ impl StreamsHub {
                     }
                 }
 
-                StreamHubEvent::UnPublish { identifier } => {
-                    if let Err(err) = self.unpublish(&identifier) {
+                StreamHubEvent::UnPublish {
+                    identifier,
+                    generation_id,
+                } => {
+                    if let Err(err) = self.unpublish(&identifier, generation_id) {
                         match err.value {
                             StreamHubErrorValue::NoAppName => {
                                 tracing::debug!(
@@ -154,26 +174,40 @@ impl StreamsHub {
                         }
                     }
                 }
+                StreamHubEvent::ForceUnPublish { identifier } => {
+                    if let Err(err) = self.force_unpublish(&identifier) {
+                        if let StreamHubErrorValue::NoAppName = err.value {
+                            tracing::debug!(
+                                "event_loop ForceUnPublish ignored for already-removed stream: {identifier}"
+                            );
+                        } else {
+                            tracing::error!(
+                            "event_loop ForceUnPublish err: {err} with identifier: {identifier}"
+                        );
+                        }
+                    }
+                }
                 StreamHubEvent::Subscribe {
                     identifier,
                     info,
                     result_sender,
                 } => {
-                    let info_clone = info.clone();
-
-                    let (sender, receiver) = build_subscriber_data_channel(&info);
-
-                    let rv = match self.subscribe(&identifier, info_clone, sender).await {
-                        Ok(statistic_data_sender) => Ok((receiver, Some(statistic_data_sender))),
-                        Err(err) => {
-                            tracing::error!("event_loop Subscribe error: {err}");
-                            Err(err)
-                        }
-                    };
-
-                    if result_sender.send(rv).is_err() {
-                        tracing::error!("event_loop Subscribe error: The receiver dropped.");
-                    }
+                    self.handle_subscribe_event(identifier, info, None, result_sender)
+                        .await;
+                }
+                StreamHubEvent::SubscribeWithGeneration {
+                    identifier,
+                    info,
+                    expected_generation_id,
+                    result_sender,
+                } => {
+                    self.handle_subscribe_event(
+                        identifier,
+                        info,
+                        Some(expected_generation_id),
+                        result_sender,
+                    )
+                    .await;
                 }
                 StreamHubEvent::UnSubscribe { identifier, info } => {
                     if let Err(err) = self.unsubscribe(&identifier, info) {
@@ -195,13 +229,55 @@ impl StreamsHub {
         }
     }
 
+    async fn handle_subscribe_event(
+        &mut self,
+        identifier: StreamIdentifier,
+        info: SubscriberInfo,
+        expected_generation_id: Option<Uuid>,
+        result_sender: SubEventExecuteResultSender,
+    ) {
+        if let Some(expected_generation_id) = expected_generation_id {
+            let generation_matches = self
+                .streams
+                .get(&identifier)
+                .is_some_and(|stream| stream.generation_id == expected_generation_id);
+            if !generation_matches {
+                let error = StreamHubError {
+                    value: StreamHubErrorValue::InternalTaskError(
+                        "publisher generation changed before subscription".to_string(),
+                    ),
+                };
+                let _ = result_sender.send(Err(error));
+                return;
+            }
+        }
+
+        let info_clone = info.clone();
+        let (sender, receiver) = build_subscriber_data_channel(&info);
+        let rv = match self.subscribe(&identifier, info_clone, sender).await {
+            Ok(statistic_data_sender) => Ok((receiver, Some(statistic_data_sender))),
+            Err(err) => {
+                tracing::error!("event_loop Subscribe error: {err}");
+                Err(err)
+            }
+        };
+
+        if result_sender.send(rv).is_err() {
+            // The RPC may have timed out or been cancelled after the
+            // transceiver inserted the subscriber. Roll it back immediately.
+            if let Err(error) = self.unsubscribe(&identifier, info) {
+                tracing::debug!("Subscribe rollback failed for {identifier}: {error}");
+            }
+        }
+    }
+
     pub async fn subscribe(
         &mut self,
         identifier: &StreamIdentifier,
         sub_info: SubscriberInfo,
         sender: DataSender,
     ) -> Result<StatisticDataSender, StreamHubError> {
-        if let Some(event_sender) = self.streams.get_mut(identifier) {
+        if let Some(active_stream) = self.streams.get_mut(identifier) {
             let (result_sender, result_receiver) = tokio::sync::oneshot::channel();
             let event = TransceiverEvent::Subscribe {
                 sender,
@@ -209,9 +285,12 @@ impl StreamsHub {
                 result_sender,
             };
             tracing::info!("subscribe stream: {identifier}");
-            event_sender.send(event).map_err(|_| StreamHubError {
-                value: StreamHubErrorValue::SendError,
-            })?;
+            active_stream
+                .event_sender
+                .send(event)
+                .map_err(|_| StreamHubError {
+                    value: StreamHubErrorValue::SendError,
+                })?;
 
             return result_receiver.await?;
         }
@@ -226,12 +305,15 @@ impl StreamsHub {
         identifier: &StreamIdentifier,
         sub_info: SubscriberInfo,
     ) -> Result<(), StreamHubError> {
-        if let Some(producer) = self.streams.get_mut(identifier) {
+        if let Some(active_stream) = self.streams.get_mut(identifier) {
             tracing::info!("unsubscribe stream: {identifier}");
             let event = TransceiverEvent::UnSubscribe { info: sub_info };
-            producer.send(event).map_err(|_| StreamHubError {
-                value: StreamHubErrorValue::SendError,
-            })?;
+            active_stream
+                .event_sender
+                .send(event)
+                .map_err(|_| StreamHubError {
+                    value: StreamHubErrorValue::SendError,
+                })?;
         } else {
             tracing::debug!("unsubscribe ignored for missing stream: {identifier}");
             return Err(StreamHubError {
@@ -246,6 +328,7 @@ impl StreamsHub {
     pub fn publish(
         &mut self,
         identifier: StreamIdentifier,
+        generation_id: Uuid,
         pub_type: define::PublishType,
         receiver: DataReceiver,
         handler: Arc<dyn TStreamHandler>,
@@ -261,8 +344,13 @@ impl StreamsHub {
         };
 
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
-        let transceiver =
+        let mut transceiver =
             StreamDataTransceiver::new(receiver, event_receiver, identifier.clone(), handler);
+        if pub_type == define::PublishType::RtmpPush {
+            if let Some(callback) = self.publisher_activity_callback.clone() {
+                transceiver = transceiver.with_publisher_activity_callback(generation_id, callback);
+            }
+        }
 
         let statistic_data_sender = transceiver.get_statistics_data_sender();
         let identifier_clone = identifier.clone();
@@ -285,7 +373,7 @@ impl StreamsHub {
                 let needs_cleanup = match result {
                     Ok(Ok(())) => {
                         tracing::info!("transceiver run success, identifier: {identifier_clone}");
-                        false
+                        true
                     }
                     Ok(Err(err)) => {
                         tracing::error!(
@@ -306,6 +394,7 @@ impl StreamsHub {
                     if let Err(e) = hub_sender
                         .send(StreamHubEvent::UnPublish {
                             identifier: identifier_for_cleanup.clone(),
+                            generation_id,
                         })
                         .await
                     {
@@ -317,12 +406,16 @@ impl StreamsHub {
             }
         });
 
-        entry.insert(event_sender);
+        entry.insert(ActiveStream {
+            generation_id,
+            event_sender,
+        });
 
         // Always broadcast publish event to listeners (HLS remuxer, publisher manager, etc.)
         let client_event = BroadcastEvent::Publish {
             identifier,
             pub_type,
+            generation_id,
         };
         if let Err(err) = self.client_event_sender.send(client_event) {
             tracing::debug!("broadcast Publish event: no receivers ({err})");
@@ -331,11 +424,29 @@ impl StreamsHub {
         Ok(statistic_data_sender)
     }
 
-    fn unpublish(&mut self, identifier: &StreamIdentifier) -> Result<(), StreamHubError> {
+    fn unpublish(
+        &mut self,
+        identifier: &StreamIdentifier,
+        generation_id: Uuid,
+    ) -> Result<(), StreamHubError> {
+        let Some(active_stream) = self.streams.get(identifier) else {
+            return Err(StreamHubError {
+                value: StreamHubErrorValue::NoAppName,
+            });
+        };
+        if active_stream.generation_id != generation_id {
+            tracing::debug!(
+                %identifier,
+                stale_generation_id = %generation_id,
+                current_generation_id = %active_stream.generation_id,
+                "ignoring stale publisher cleanup"
+            );
+            return Ok(());
+        }
         match self.streams.remove(identifier) {
-            Some(producer) => {
+            Some(active_stream) => {
                 let event = TransceiverEvent::UnPublish {};
-                if producer.send(event).is_err() {
+                if active_stream.event_sender.send(event).is_err() {
                     tracing::warn!(
                         "unpublish: channel already closed for {identifier}; \
                          transceiver has already exited"
@@ -346,6 +457,7 @@ impl StreamsHub {
                 // Broadcast unpublish event to listeners
                 let client_event = BroadcastEvent::UnPublish {
                     identifier: identifier.clone(),
+                    generation_id,
                 };
                 if let Err(err) = self.client_event_sender.send(client_event) {
                     tracing::debug!("broadcast UnPublish event: no receivers ({err})");
@@ -360,6 +472,17 @@ impl StreamsHub {
 
         Ok(())
     }
+
+    fn force_unpublish(&mut self, identifier: &StreamIdentifier) -> Result<(), StreamHubError> {
+        let generation_id = self
+            .streams
+            .get(identifier)
+            .map(|stream| stream.generation_id)
+            .ok_or(StreamHubError {
+                value: StreamHubErrorValue::NoAppName,
+            })?;
+        self.unpublish(identifier, generation_id)
+    }
 }
 
 #[cfg(test)]
@@ -371,11 +494,11 @@ mod tests {
         SubscribeType,
     };
     use crate::streamhub::statistics::StatisticsStream;
-    use crate::streamhub::transceiver::SubscriberDropCounter;
+    use crate::streamhub::transceiver::{SubscriberDropCounter, PUBLISHER_ACTIVITY_INTERVAL};
     use crate::streamhub::utils::Uuid;
     use async_trait::async_trait;
     use std::collections::HashMap;
-    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::{broadcast, oneshot, Mutex};
@@ -481,12 +604,14 @@ mod tests {
         assert!(matches!(
             sender,
             DataSender::Frame {
-                sender: FrameDataSender::Bounded(_)
+                sender: FrameDataSender::Bounded(_) | FrameDataSender::Budgeted(_)
             }
         ));
         assert!(matches!(
             receiver.frame_receiver,
-            Some(define::FrameDataReceiver::Bounded(_))
+            Some(
+                define::FrameDataReceiver::Bounded(_) | define::FrameDataReceiver::Budgeted { .. }
+            )
         ));
     }
 
@@ -503,7 +628,7 @@ mod tests {
                 matches!(
                     sender,
                     DataSender::Frame {
-                        sender: FrameDataSender::Bounded(_)
+                        sender: FrameDataSender::Bounded(_) | FrameDataSender::Budgeted(_)
                     }
                 ),
                 "internal subscriber {sub_type:?} should use bounded sender"
@@ -511,7 +636,10 @@ mod tests {
             assert!(
                 matches!(
                     receiver.frame_receiver,
-                    Some(define::FrameDataReceiver::Bounded(_))
+                    Some(
+                        define::FrameDataReceiver::Bounded(_)
+                            | define::FrameDataReceiver::Budgeted { .. }
+                    )
                 ),
                 "internal subscriber {sub_type:?} should use bounded receiver"
             );
@@ -559,6 +687,7 @@ mod tests {
 
         hub.publish(
             identifier.clone(),
+            Uuid::new(),
             define::PublishType::RtmpPush,
             receiver,
             Arc::new(FailingPriorDataHandler),
@@ -636,6 +765,7 @@ mod tests {
         sender
             .try_send(StreamHubEvent::UnPublish {
                 identifier: test_identifier(),
+                generation_id: Uuid::new(),
             })
             .expect("prefill event channel");
 
@@ -681,6 +811,7 @@ mod tests {
             &sender,
             StreamHubEvent::UnPublish {
                 identifier: test_identifier(),
+                generation_id: Uuid::new(),
             },
         )
         .await
@@ -695,6 +826,7 @@ mod tests {
         sender
             .try_send(StreamHubEvent::UnPublish {
                 identifier: test_identifier(),
+                generation_id: Uuid::new(),
             })
             .expect("prefill event channel");
 
@@ -724,6 +856,7 @@ mod tests {
         let (hub_sender, hub_receiver) = mpsc::channel(8);
         let mut hub = StreamsHub::new(hub_sender.clone(), hub_receiver);
         let identifier = test_identifier();
+        let generation_id = Uuid::new();
 
         let (_frame_sender, frame_receiver) = mpsc::channel(8);
         let receiver = DataReceiver {
@@ -733,6 +866,7 @@ mod tests {
 
         hub.publish(
             identifier.clone(),
+            generation_id,
             define::PublishType::RtmpPush,
             receiver,
             Arc::new(NoopHandler),
@@ -742,12 +876,14 @@ mod tests {
         hub_sender
             .send(StreamHubEvent::UnPublish {
                 identifier: identifier.clone(),
+                generation_id,
             })
             .await
             .expect("first unpublish should enqueue");
         hub_sender
             .send(StreamHubEvent::UnPublish {
                 identifier: identifier.clone(),
+                generation_id,
             })
             .await
             .expect("second unpublish should enqueue");
@@ -763,10 +899,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generation_bound_subscribe_rejects_republished_stream() {
+        let (hub_sender, hub_receiver) = mpsc::channel(8);
+        let mut hub = StreamsHub::new(hub_sender.clone(), hub_receiver);
+        let identifier = test_identifier();
+        let current_generation = Uuid::new();
+        let stale_generation = Uuid::new();
+        let (_frame_sender, frame_receiver) = mpsc::channel(8);
+        let receiver = DataReceiver {
+            frame_receiver: Some(FrameDataReceiver::bounded(frame_receiver)),
+            packet_receiver: None,
+        };
+        hub.publish(
+            identifier.clone(),
+            current_generation,
+            define::PublishType::RtmpPush,
+            receiver,
+            Arc::new(NoopHandler),
+        )
+        .expect("publish should succeed");
+
+        let event_loop = tokio::spawn(async move { hub.event_loop().await });
+        let (result_sender, result_receiver) = oneshot::channel();
+        hub_sender
+            .send(StreamHubEvent::SubscribeWithGeneration {
+                identifier,
+                info: test_subscriber(),
+                expected_generation_id: stale_generation,
+                result_sender,
+            })
+            .await
+            .expect("subscribe should enqueue");
+
+        let result = tokio::time::timeout(Duration::from_secs(1), result_receiver)
+            .await
+            .expect("generation mismatch should return promptly")
+            .expect("event loop should send a result");
+        assert!(result.is_err());
+
+        event_loop.abort();
+        let _ = event_loop.await;
+    }
+
+    #[tokio::test]
     async fn test_event_loop_tolerates_duplicate_unsubscribe_cleanup() {
         let (hub_sender, hub_receiver) = mpsc::channel(8);
         let mut hub = StreamsHub::new(hub_sender.clone(), hub_receiver);
         let identifier = test_identifier();
+        let generation_id = Uuid::new();
         let subscriber = test_subscriber();
         let subscriber_id = subscriber.id;
 
@@ -778,6 +958,7 @@ mod tests {
 
         hub.publish(
             identifier.clone(),
+            generation_id,
             define::PublishType::RtmpPush,
             receiver,
             Arc::new(NoopHandler),
@@ -805,7 +986,7 @@ mod tests {
             })
             .expect("subscriber statistic should enqueue");
 
-        hub.unpublish(&identifier)
+        hub.unpublish(&identifier, generation_id)
             .expect("explicit unpublish should succeed");
 
         hub_sender
@@ -861,18 +1042,24 @@ mod tests {
             );
         }
 
+        let context = transceiver::FrameDataLoopContext {
+            stream_handler: Arc::new(NoopHandler) as Arc<dyn define::TStreamHandler>,
+            frame_senders: Arc::clone(&frame_senders),
+            generation: Arc::clone(&generation),
+            statistics_data: Arc::clone(&statistics_data),
+            publisher_activity: None,
+        };
         StreamDataTransceiver::receive_frame_data(
             Some(FrameData::Video {
                 timestamp: 0,
                 data: bytes::Bytes::from_static(b"frame"),
             }),
-            &frame_senders,
-            &generation,
+            &context,
             &mut cached_snapshot,
             &mut cached_gen,
-            &statistics_data,
         )
-        .await;
+        .await
+        .unwrap();
 
         assert!(
             frame_senders.lock().await.is_empty(),
@@ -888,5 +1075,218 @@ mod tests {
             !stats.subscribers.contains_key(&subscriber_id),
             "closed subscriber statistics entry must be removed to avoid zombie stats"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn publisher_activity_is_recorded_without_subscribers_and_throttled() {
+        let (hub_sender, hub_receiver) = mpsc::channel(8);
+        let activity_count = Arc::new(AtomicUsize::new(0));
+        let callback_count = Arc::clone(&activity_count);
+        let callback: define::PublisherActivityCallback = Arc::new(move |app, stream, _| {
+            assert_eq!(app, "live");
+            assert_eq!(stream, "panic-test");
+            callback_count.fetch_add(1, Ordering::AcqRel);
+        });
+        let mut hub =
+            StreamsHub::new(hub_sender, hub_receiver).with_publisher_activity_callback(callback);
+        let identifier = test_identifier();
+        let (frame_sender, frame_receiver) = mpsc::channel(8);
+
+        hub.publish(
+            identifier,
+            Uuid::new(),
+            define::PublishType::RtmpPush,
+            DataReceiver {
+                frame_receiver: Some(FrameDataReceiver::bounded(frame_receiver)),
+                packet_receiver: None,
+            },
+            Arc::new(NoopHandler),
+        )
+        .expect("publish should succeed");
+
+        frame_sender
+            .send(FrameData::Video {
+                timestamp: 0,
+                data: bytes::Bytes::from_static(b"frame-0"),
+            })
+            .await
+            .expect("first frame should enqueue");
+        tokio::task::yield_now().await;
+        assert_eq!(activity_count.load(Ordering::Acquire), 1);
+
+        frame_sender
+            .send(FrameData::Audio {
+                timestamp: 1,
+                data: bytes::Bytes::from_static(b"audio-0"),
+            })
+            .await
+            .expect("second frame should enqueue");
+        tokio::task::yield_now().await;
+        assert_eq!(activity_count.load(Ordering::Acquire), 1);
+
+        tokio::time::advance(PUBLISHER_ACTIVITY_INTERVAL).await;
+        frame_sender
+            .send(FrameData::Video {
+                timestamp: 10_000,
+                data: bytes::Bytes::from_static(b"frame-1"),
+            })
+            .await
+            .expect("post-throttle frame should enqueue");
+        tokio::task::yield_now().await;
+        assert_eq!(activity_count.load(Ordering::Acquire), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn publisher_activity_survives_hls_subscriber_failure() {
+        let (hub_sender, hub_receiver) = mpsc::channel(8);
+        let activity_count = Arc::new(AtomicUsize::new(0));
+        let callback_count = Arc::clone(&activity_count);
+        let callback: define::PublisherActivityCallback = Arc::new(move |_, _, _| {
+            callback_count.fetch_add(1, Ordering::AcqRel);
+        });
+        let mut hub =
+            StreamsHub::new(hub_sender, hub_receiver).with_publisher_activity_callback(callback);
+        let identifier = test_identifier();
+        let generation_id = Uuid::new();
+        let (frame_sender, frame_receiver) = mpsc::channel(8);
+
+        hub.publish(
+            identifier.clone(),
+            generation_id,
+            define::PublishType::RtmpPush,
+            DataReceiver {
+                frame_receiver: Some(FrameDataReceiver::bounded(frame_receiver)),
+                packet_receiver: None,
+            },
+            Arc::new(NoopHandler),
+        )
+        .expect("publish should succeed");
+
+        let hls_subscriber = test_subscriber_with_type(SubscribeType::RtmpRemux2Hls);
+        let (hls_sender, hls_receiver) = mpsc::channel(1);
+        hub.subscribe(
+            &identifier,
+            hls_subscriber,
+            DataSender::Frame {
+                sender: FrameDataSender::bounded(hls_sender),
+            },
+        )
+        .await
+        .expect("HLS subscriber should attach");
+        drop(hls_receiver);
+
+        frame_sender
+            .send(FrameData::Video {
+                timestamp: 0,
+                data: bytes::Bytes::from_static(b"frame-before-remux-failure"),
+            })
+            .await
+            .expect("frame should enqueue after HLS receiver closes");
+        tokio::task::yield_now().await;
+        assert_eq!(activity_count.load(Ordering::Acquire), 1);
+        assert_eq!(
+            hub.streams
+                .get(&identifier)
+                .map(|stream| stream.generation_id),
+            Some(generation_id)
+        );
+
+        tokio::time::advance(PUBLISHER_ACTIVITY_INTERVAL).await;
+        frame_sender
+            .send(FrameData::Video {
+                timestamp: 10_000,
+                data: bytes::Bytes::from_static(b"frame-after-remux-failure"),
+            })
+            .await
+            .expect("publisher should keep accepting frames");
+        tokio::task::yield_now().await;
+        assert_eq!(activity_count.load(Ordering::Acquire), 2);
+    }
+
+    #[tokio::test]
+    async fn stale_unpublish_does_not_remove_republished_owner() {
+        let (hub_sender, hub_receiver) = mpsc::channel(8);
+        let mut hub = StreamsHub::new(hub_sender, hub_receiver);
+        let identifier = test_identifier();
+        let old_generation_id = Uuid::new();
+        let new_generation_id = Uuid::new();
+        let (old_frame_sender, old_frame_receiver) = mpsc::channel(1);
+
+        hub.publish(
+            identifier.clone(),
+            old_generation_id,
+            define::PublishType::RtmpPush,
+            DataReceiver {
+                frame_receiver: Some(FrameDataReceiver::bounded(old_frame_receiver)),
+                packet_receiver: None,
+            },
+            Arc::new(NoopHandler),
+        )
+        .expect("old publisher should publish");
+        hub.unpublish(&identifier, old_generation_id)
+            .expect("old publisher should unpublish");
+
+        let (new_frame_sender, new_frame_receiver) = mpsc::channel(1);
+        hub.publish(
+            identifier.clone(),
+            new_generation_id,
+            define::PublishType::RtmpPush,
+            DataReceiver {
+                frame_receiver: Some(FrameDataReceiver::bounded(new_frame_receiver)),
+                packet_receiver: None,
+            },
+            Arc::new(NoopHandler),
+        )
+        .expect("replacement publisher should publish");
+
+        hub.unpublish(&identifier, old_generation_id)
+            .expect("stale cleanup should be ignored");
+        assert_eq!(
+            hub.streams
+                .get(&identifier)
+                .map(|stream| stream.generation_id),
+            Some(new_generation_id)
+        );
+
+        drop(old_frame_sender);
+        drop(new_frame_sender);
+    }
+
+    #[tokio::test]
+    async fn force_unpublish_resolves_and_removes_current_owner() {
+        let (hub_sender, hub_receiver) = mpsc::channel(8);
+        let mut hub = StreamsHub::new(hub_sender, hub_receiver);
+        let mut events = hub.get_client_event_consumer();
+        let identifier = test_identifier();
+        let generation_id = Uuid::new();
+        let (frame_sender, frame_receiver) = mpsc::channel(1);
+
+        hub.publish(
+            identifier.clone(),
+            generation_id,
+            define::PublishType::RtmpPush,
+            DataReceiver {
+                frame_receiver: Some(FrameDataReceiver::bounded(frame_receiver)),
+                packet_receiver: None,
+            },
+            Arc::new(NoopHandler),
+        )
+        .expect("publisher should publish");
+        hub.force_unpublish(&identifier)
+            .expect("administrative unpublish should resolve the active owner");
+
+        assert!(!hub.streams.contains_key(&identifier));
+        assert!(matches!(
+            events.recv().await,
+            Ok(BroadcastEvent::Publish { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Ok(BroadcastEvent::UnPublish {
+                generation_id: event_id,
+                ..
+            }) if event_id == generation_id
+        ));
+        drop(frame_sender);
     }
 }

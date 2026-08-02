@@ -3,8 +3,9 @@ use std::sync::Arc;
 use futures::FutureExt;
 use synctv_proto::playback_provider::rtmp::rtmp_playback_provider_service_server::RtmpPlaybackProviderService;
 use synctv_proto::playback_provider::rtmp::{
-    GetRtmpFlvStreamRequest, GetRtmpHlsPlaylistRequest, GetRtmpHlsSegmentRequest,
-    RtmpFlvStreamResponse, RtmpHlsPlaylistResponse, RtmpHlsSegmentResponse,
+    GetRtmpFlvStreamRequest, GetRtmpHlsMasterRequest, GetRtmpHlsPlaylistRequest,
+    GetRtmpHlsSegmentRequest, RtmpFlvStreamResponse, RtmpHlsMasterResponse,
+    RtmpHlsPlaylistResponse, RtmpHlsSegmentResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -36,6 +37,7 @@ impl RtmpPlaybackProviderGrpcService {
 #[allow(clippy::result_large_err)]
 impl RtmpPlaybackProviderService for RtmpPlaybackProviderGrpcService {
     type GetFlvStreamStream = GrpcResponseStream<RtmpFlvStreamResponse>;
+    type GetHlsMasterStream = GrpcResponseStream<RtmpHlsMasterResponse>;
     type GetHlsPlaylistStream = GrpcResponseStream<RtmpHlsPlaylistResponse>;
     type GetHlsSegmentStream = GrpcResponseStream<RtmpHlsSegmentResponse>;
 
@@ -73,6 +75,28 @@ impl RtmpPlaybackProviderService for RtmpPlaybackProviderGrpcService {
             let state = state.clone();
             async move {
                 synctv_api_common::playback_provider::rtmp::get_rtmp_hls_playlist(
+                    rtmp_deps(&state, Some(&request_control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn get_hls_master(
+        &self,
+        request: Request<GetRtmpHlsMasterRequest>,
+    ) -> Result<Response<Self::GetHlsMasterStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+
+        execute_playback_provider_stream(state.clone(), metadata, move |request_control| {
+            let state = state.clone();
+            async move {
+                synctv_api_common::playback_provider::rtmp::get_rtmp_hls_master(
                     rtmp_deps(&state, Some(&request_control)),
                     req,
                 )

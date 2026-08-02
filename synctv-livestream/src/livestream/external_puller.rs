@@ -44,7 +44,7 @@ use synctv_xiu::streamhub::{
 };
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use url::Url;
 
 const MAX_RETRIES: u32 = 10;
@@ -63,6 +63,10 @@ const HTTP_FLV_CHUNK_READ_TIMEOUT: std::time::Duration = std::time::Duration::fr
 const RTSP_FRAME_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const FRAME_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const STREAMHUB_EVENT_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0} source ended and requires reconnect")]
+struct ReconnectRequired(&'static str);
 
 // FLV format constants
 const FLV_HEADER_SIZE: usize = 9;
@@ -191,6 +195,7 @@ pub(crate) struct ExternalStreamPuller {
     rtmp_mode: RtmpStreamMode,
     rtsp_options: Option<(RtspTransport, RtspTrackSelection, RtspTrackSelection)>,
     stream_hub_event_sender: StreamHubEventSender,
+    generation_id: Uuid,
     /// Optional one-shot channel to signal that the first connection succeeded.
     /// Sent once after the first successful publish + connect, then set to `None`.
     confirm_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
@@ -324,6 +329,7 @@ impl ExternalStreamPuller {
             rtmp_mode,
             rtsp_options,
             stream_hub_event_sender,
+            generation_id: Uuid::new(),
             confirm_tx: None,
             http_client: None,
             resolved_addr,
@@ -336,6 +342,12 @@ impl ExternalStreamPuller {
     #[must_use]
     pub(crate) const fn with_max_flv_tag_size_bytes(mut self, max: usize) -> Self {
         self.max_flv_tag_size_bytes = max;
+        self
+    }
+
+    #[must_use]
+    pub(crate) const fn with_generation_id(mut self, generation_id: Uuid) -> Self {
+        self.generation_id = generation_id;
         self
     }
 
@@ -372,111 +384,57 @@ impl ExternalStreamPuller {
             "Starting external stream puller"
         );
 
-        let mut attempt: u32 = 0;
+        if self.cancel_token.is_cancelled() {
+            return Ok(());
+        }
 
+        let (generation_id, data_sender) = match self.publish_to_local_stream_hub().await {
+            Ok(publication) => publication,
+            Err(error) => {
+                if let Some(tx) = self.confirm_tx.take() {
+                    notify_oneshot(
+                        tx,
+                        Err(format!("{error}")),
+                        "external pull startup publish failure",
+                    );
+                }
+                return Err(error);
+            }
+        };
+        let unpublish_guard = UnpublishGuard::new(
+            self.room_id.clone(),
+            self.media_id.clone(),
+            generation_id,
+            self.stream_hub_event_sender.clone(),
+        );
+
+        let result = self.run_upstream_connections(&data_sender).await;
+
+        unpublish_guard.disarm();
+        drop(unpublish_guard);
+        self.unpublish_from_local_stream_hub(generation_id);
+        result
+    }
+
+    async fn run_upstream_connections(&mut self, data_sender: &FrameDataSender) -> Result<()> {
+        let mut attempt = 0_u32;
         loop {
-            // Exit cleanly if cancellation has been requested before starting a new attempt
             if self.cancel_token.is_cancelled() {
-                info!(
-                    room_id = %self.room_id,
-                    media_id = %self.media_id,
-                    "External stream puller cancelled before attempt"
-                );
                 return Ok(());
             }
-
             attempt += 1;
 
-            // Publish to local StreamHub (re-publish on each retry to get a fresh sender)
-            let data_sender = match self.publish_to_local_stream_hub().await {
-                Ok(sender) => sender,
-                Err(e) => {
-                    if let Some(tx) = self.confirm_tx.take() {
-                        notify_oneshot(
-                            tx,
-                            Err(format!("{e}")),
-                            "external pull startup publish failure",
-                        );
-                        error!(
-                            room_id = %self.room_id,
-                            "Failed to publish to local StreamHub: {e}"
-                        );
-                        return Err(e);
-                    }
-
-                    if attempt >= MAX_RETRIES {
-                        error!(
-                            room_id = %self.room_id,
-                            media_id = %self.media_id,
-                            attempt = attempt,
-                            "Gave up after {MAX_RETRIES} retries publishing to local StreamHub: {e}"
-                        );
-                        return Err(anyhow::anyhow!(
-                            "Gave up after {MAX_RETRIES} retries (last error: publish to StreamHub: {e})"
-                        ));
-                    }
-
-                    warn!(
-                        room_id = %self.room_id,
-                        media_id = %self.media_id,
-                        attempt = attempt,
-                        max_retries = MAX_RETRIES,
-                        "External stream publish failed, retrying: {e}"
-                    );
-
-                    tokio::select! {
-                        () = self.cancel_token.cancelled() => {
-                            info!(
-                                room_id = %self.room_id,
-                                media_id = %self.media_id,
-                                "External stream puller cancelled during retry backoff"
-                            );
-                            return Ok(());
-                        }
-                        () = Self::backoff(attempt) => {}
-                    }
-                    continue;
-                }
-            };
-
-            // Create a Drop guard that ensures UnPublish is sent even if this
-            // task is aborted (not just cancelled). The guard is disarmed before
-            // the explicit unpublish call below to prevent double-send.
-            let unpublish_guard = UnpublishGuard::new(
-                self.room_id.clone(),
-                self.media_id.clone(),
-                self.stream_hub_event_sender.clone(),
-            );
-
             let result = match self.source_type {
-                ExternalSourceType::Rtmp => self.connect_and_stream_rtmp(&data_sender).await,
-                ExternalSourceType::Rtsp => self.connect_and_stream_rtsp(&data_sender).await,
-                ExternalSourceType::HttpFlv => self.connect_and_stream_flv(&data_sender).await,
+                ExternalSourceType::Rtmp => self.connect_and_stream_rtmp(data_sender).await,
+                ExternalSourceType::Rtsp => self.connect_and_stream_rtsp(data_sender).await,
+                ExternalSourceType::HttpFlv => self.connect_and_stream_flv(data_sender).await,
             };
             let startup_confirmation_pending = self.confirm_tx.is_some();
+            let reconnect_required = result
+                .as_ref()
+                .is_err_and(|error| error.downcast_ref::<ReconnectRequired>().is_some());
 
-            // If the connection failed on the first attempt and we have a pending
-            // confirm_tx, signal the failure so the caller doesn't wait forever.
-            if let Err(ref e) = result {
-                if let Some(tx) = self.confirm_tx.take() {
-                    notify_oneshot(tx, Err(format!("{e}")), "external pull startup failure");
-                }
-            }
-
-            // Disarm the guard before explicit unpublish to prevent double-send
-            unpublish_guard.disarm();
-            drop(unpublish_guard);
-
-            // Always clean up local StreamHub before retry or exit
-            self.unpublish_from_local_stream_hub();
-
-            // Exit cleanly if cancellation was triggered during streaming
             if self.cancel_token.is_cancelled() {
-                info!(
-                    room_id = %self.room_id,
-                    media_id = %self.media_id,
-                    "External stream puller cancelled after stream ended"
-                );
                 return Ok(());
             }
 
@@ -489,46 +447,40 @@ impl ExternalStreamPuller {
                     );
                     return Ok(());
                 }
-                Err(e) => {
-                    if startup_confirmation_pending {
-                        error!(
-                            room_id = %self.room_id,
-                            media_id = %self.media_id,
-                            "External stream startup failed before first confirmation: {e}"
-                        );
-                        return Err(e);
+                Err(error) => {
+                    if startup_confirmation_pending && !reconnect_required {
+                        if let Some(tx) = self.confirm_tx.take() {
+                            notify_oneshot(
+                                tx,
+                                Err(format!("{error}")),
+                                "external pull startup failure",
+                            );
+                        }
+                        return Err(error);
                     }
 
                     if attempt >= MAX_RETRIES {
-                        error!(
-                            room_id = %self.room_id,
-                            media_id = %self.media_id,
-                            attempt = attempt,
-                            "Gave up after {MAX_RETRIES} retries: {e}"
-                        );
+                        if let Some(tx) = self.confirm_tx.take() {
+                            notify_oneshot(
+                                tx,
+                                Err(format!("{error}")),
+                                "external pull startup retry exhaustion",
+                            );
+                        }
                         return Err(anyhow::anyhow!(
-                            "Gave up after {MAX_RETRIES} retries (last error: {e})"
+                            "Gave up after {MAX_RETRIES} retries (last error: {error})"
                         ));
                     }
 
                     warn!(
                         room_id = %self.room_id,
                         media_id = %self.media_id,
-                        attempt = attempt,
+                        attempt,
                         max_retries = MAX_RETRIES,
-                        "External stream pull failed, retrying: {e}"
+                        "External stream pull failed, retrying: {error}"
                     );
-
-                    // Respect cancellation during backoff
                     tokio::select! {
-                        () = self.cancel_token.cancelled() => {
-                            info!(
-                                room_id = %self.room_id,
-                                media_id = %self.media_id,
-                                "External stream puller cancelled during retry backoff"
-                            );
-                            return Ok(());
-                        }
+                        () = self.cancel_token.cancelled() => return Ok(()),
                         () = Self::backoff(attempt) => {}
                     }
                 }
@@ -704,7 +656,7 @@ impl ExternalStreamPuller {
         let mut session = RtspPullSession::connect(config).await?;
         let (video_track, audio_track) = session.selected_tracks();
         info!(?video_track, ?audio_track, "RTSP source is playing");
-        self.send_confirm_ok();
+        let mut first_frame_confirmed = false;
 
         loop {
             let frame = tokio::select! {
@@ -725,12 +677,7 @@ impl ExternalStreamPuller {
                 },
             };
             let Some(frame) = frame else {
-                info!(
-                    room_id = %self.room_id,
-                    media_id = %self.media_id,
-                    "RTSP source ended"
-                );
-                return Ok(());
+                return Err(ReconnectRequired("RTSP").into());
             };
             let frame_size = match &frame {
                 FrameData::Video { data, .. }
@@ -744,6 +691,10 @@ impl ExternalStreamPuller {
                 self.max_flv_tag_size_bytes
             );
             send_frame_with_backpressure(data_sender, frame).await?;
+            if !first_frame_confirmed {
+                self.send_confirm_ok();
+                first_frame_confirmed = true;
+            }
         }
     }
 
@@ -810,7 +761,7 @@ impl ExternalStreamPuller {
                                     "HTTP-FLV source closed with an incomplete FLV tag buffered"
                                 ));
                             }
-                            break; // Stream ended normally
+                            return Err(ReconnectRequired("HTTP-FLV").into());
                         }
                         Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to read HTTP chunk: {e}")),
                         Err(_) => return Err(anyhow::anyhow!("No data received for {}s, stream appears dead", HTTP_FLV_CHUNK_READ_TIMEOUT.as_secs())),
@@ -926,18 +877,6 @@ impl ExternalStreamPuller {
                 }
             }
         }
-        if !header_parsed {
-            anyhow::bail!("HTTP-FLV stream ended before a complete FLV header was received");
-        }
-        if !buffer.is_empty() {
-            anyhow::bail!(
-                "HTTP-FLV stream ended with {} buffered bytes of an incomplete FLV tag",
-                buffer.len()
-            );
-        }
-
-        info!("HTTP-FLV stream ended");
-        Ok(())
     }
 
     /// Send the one-shot confirmation if still pending.
@@ -956,11 +895,11 @@ impl ExternalStreamPuller {
     ///
     /// Sends a `StreamHubEvent::Publish` to register this stream in the local `StreamHub`,
     /// then receives back a `FrameDataSender` that can be used to push frames into the stream.
-    async fn publish_to_local_stream_hub(&mut self) -> Result<FrameDataSender> {
-        let publisher_id = Uuid::new();
+    async fn publish_to_local_stream_hub(&mut self) -> Result<(Uuid, FrameDataSender)> {
+        let generation_id = self.generation_id;
 
         let publisher_info = PublisherInfo {
-            id: publisher_id,
+            id: generation_id,
             pub_type: PublishType::ExternalPull,
             pub_data_type: synctv_xiu::streamhub::define::PubDataType::Frame,
             notify_info: NotifyInfo {
@@ -1010,17 +949,20 @@ impl ExternalStreamPuller {
             .ok_or_else(|| anyhow::anyhow!("No data sender from publish result"))?;
 
         info!("Successfully published external stream to local StreamHub");
-        Ok(data_sender)
+        Ok((generation_id, data_sender))
     }
 
     /// Unpublish from local `StreamHub`.
-    fn unpublish_from_local_stream_hub(&mut self) {
+    fn unpublish_from_local_stream_hub(&mut self, generation_id: Uuid) {
         let identifier = StreamIdentifier::Rtmp {
             app_name: self.room_id.clone(),
             stream_name: self.media_id.clone(),
         };
 
-        let unpublish_event = StreamHubEvent::UnPublish { identifier };
+        let unpublish_event = StreamHubEvent::UnPublish {
+            identifier,
+            generation_id,
+        };
 
         spawn_event_delivery_with_backpressure_timeout_for(
             self.stream_hub_event_sender.clone(),
@@ -1079,6 +1021,7 @@ async fn send_http_flv_request(
 struct UnpublishGuard {
     room_id: String,
     media_id: String,
+    generation_id: Uuid,
     stream_hub_event_sender: StreamHubEventSender,
     /// Set to true when the puller has already sent UnPublish (e.g., during normal retry).
     disarmed: std::sync::atomic::AtomicBool,
@@ -1088,11 +1031,13 @@ impl UnpublishGuard {
     const fn new(
         room_id: String,
         media_id: String,
+        generation_id: Uuid,
         stream_hub_event_sender: StreamHubEventSender,
     ) -> Self {
         Self {
             room_id,
             media_id,
+            generation_id,
             stream_hub_event_sender,
             disarmed: std::sync::atomic::AtomicBool::new(false),
         }
@@ -1121,7 +1066,10 @@ impl Drop for UnpublishGuard {
         );
         spawn_event_delivery_with_backpressure_timeout_for(
             self.stream_hub_event_sender.clone(),
-            StreamHubEvent::UnPublish { identifier },
+            StreamHubEvent::UnPublish {
+                identifier,
+                generation_id: self.generation_id,
+            },
             STREAMHUB_EVENT_SEND_TIMEOUT,
         );
     }
@@ -1131,10 +1079,16 @@ impl Drop for UnpublishGuard {
 mod tests {
     use super::*;
     use std::time::Duration as StdDuration;
+    use synctv_core_testing::RtmpPublisher;
+    use synctv_xiu::{
+        httpflv::HttpFlvSession,
+        rtmp::server::RtmpServer,
+        streamhub::{define::BroadcastEvent, StreamsHub},
+    };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    type TestResult = anyhow::Result<()>;
+    type TestResult<T = ()> = anyhow::Result<T>;
 
     fn test_error(message: impl Into<String>) -> anyhow::Error {
         anyhow::anyhow!(message.into())
@@ -1252,6 +1206,130 @@ mod tests {
         })
     }
 
+    struct TestRtmpSource {
+        address: std::net::SocketAddr,
+        shutdown: CancellationToken,
+        server_task: tokio::task::JoinHandle<()>,
+        event_relay_task: tokio::task::JoinHandle<()>,
+        hub_task: tokio::task::JoinHandle<()>,
+        lifecycle: tokio::sync::broadcast::Receiver<BroadcastEvent>,
+        subscription_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+    }
+
+    impl TestRtmpSource {
+        async fn start() -> TestResult<Self> {
+            let (hub_event_sender, event_receiver) = tokio::sync::mpsc::channel(
+                synctv_xiu::streamhub::define::STREAM_HUB_EVENT_CHANNEL_CAPACITY,
+            );
+            let mut hub = StreamsHub::new(hub_event_sender.clone(), event_receiver);
+            let lifecycle = hub.get_client_event_consumer();
+            let hub_task = tokio::spawn(async move {
+                let _ = hub.run().await;
+            });
+            let (event_sender, mut server_event_receiver) = tokio::sync::mpsc::channel(
+                synctv_xiu::streamhub::define::STREAM_HUB_EVENT_CHANNEL_CAPACITY,
+            );
+            let (subscription_tx, subscription_rx) = tokio::sync::mpsc::unbounded_channel();
+            let event_relay_task = tokio::spawn(async move {
+                while let Some(event) = server_event_receiver.recv().await {
+                    if matches!(event, StreamHubEvent::Subscribe { .. }) {
+                        let _ = subscription_tx.send(());
+                    }
+                    if hub_event_sender.send(event).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let address = listener.local_addr()?;
+            let shutdown = CancellationToken::new();
+            let mut server = RtmpServer::new(address.to_string(), event_sender, 2, None, None)
+                .with_listener(listener)
+                .with_cancellation_token(&shutdown)
+                .with_shutdown_grace_period(StdDuration::from_millis(50));
+            let server_task = tokio::spawn(async move {
+                if let Err(error) = server.run().await {
+                    tracing::error!(%error, "test RTMP source failed");
+                }
+            });
+            Ok(Self {
+                address,
+                shutdown,
+                server_task,
+                event_relay_task,
+                hub_task,
+                lifecycle,
+                subscription_rx,
+            })
+        }
+
+        async fn next_lifecycle_event(&mut self) -> TestResult<BroadcastEvent> {
+            tokio::time::timeout(StdDuration::from_secs(2), self.lifecycle.recv())
+                .await
+                .map_err(|_| test_error("test RTMP source lifecycle event timed out"))?
+                .map_err(anyhow::Error::from)
+        }
+
+        async fn wait_for_subscription(&mut self) -> TestResult {
+            tokio::time::timeout(StdDuration::from_secs(2), self.subscription_rx.recv())
+                .await
+                .map_err(|_| test_error("test RTMP source subscription timed out"))?
+                .ok_or_else(|| test_error("test RTMP source subscription observer closed"))
+        }
+
+        async fn stop(self) -> TestResult {
+            self.shutdown.cancel();
+            tokio::time::timeout(StdDuration::from_secs(2), self.server_task)
+                .await
+                .map_err(|_| test_error("test RTMP source did not stop"))??;
+            tokio::time::timeout(StdDuration::from_secs(2), self.event_relay_task)
+                .await
+                .map_err(|_| test_error("test RTMP source event relay did not stop"))??;
+            self.hub_task.abort();
+            let _ = self.hub_task.await;
+            Ok(())
+        }
+    }
+
+    fn make_test_rtmp_puller(
+        address: std::net::SocketAddr,
+        mode: RtmpStreamMode,
+        sender: StreamHubEventSender,
+        confirm_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
+        cancel_token: CancellationToken,
+    ) -> ExternalStreamPuller {
+        ExternalStreamPuller {
+            generation_id: Uuid::new(),
+            room_id: "room".to_string(),
+            media_id: "media".to_string(),
+            source_url: format!("rtmp://{address}/upstream/source"),
+            source_type: ExternalSourceType::Rtmp,
+            rtmp_mode: mode,
+            rtsp_options: None,
+            stream_hub_event_sender: sender,
+            confirm_tx: Some(confirm_tx),
+            http_client: None,
+            resolved_addr: Some(address),
+            cancel_token,
+            max_flv_tag_size_bytes: ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
+            ssrf_guard: SsrfGuard::disabled(),
+        }
+    }
+
+    async fn start_flv_viewer(
+        sender: StreamHubEventSender,
+    ) -> TestResult<(
+        tokio::sync::mpsc::Receiver<Result<bytes::Bytes, std::io::Error>>,
+        tokio::task::JoinHandle<anyhow::Result<()>>,
+    )> {
+        let (flv_tx, flv_rx) = tokio::sync::mpsc::channel(64);
+        let mut session =
+            HttpFlvSession::new("room".to_string(), "media".to_string(), sender, flv_tx);
+        session.start().await?;
+        let task = tokio::spawn(async move { session.run_after_start().await });
+        Ok((flv_rx, task))
+    }
+
     async fn read_http_request_headers(stream: &mut tokio::net::TcpStream) -> anyhow::Result<()> {
         let mut buffer = [0_u8; 1024];
         let mut received = Vec::new();
@@ -1298,6 +1376,85 @@ mod tests {
         Ok((addr, handle))
     }
 
+    fn flv_video_response(marker: [u8; 3]) -> Vec<u8> {
+        let payload = [
+            0x17, 0x01, 0, 0, 0, 0, 0, 0, 3, marker[0], marker[1], marker[2],
+        ];
+        let mut body = vec![b'F', b'L', b'V', 0x01, 0x01, 0x00, 0x00, 0x00, 0x09];
+        body.extend_from_slice(&[0, 0, 0, 0]);
+        // Send enough frames for the downstream HTTP-FLV session to identify
+        // a video-only stream while the local publication stays open across
+        // upstream reconnects.
+        for timestamp in 0_u32..12 {
+            body.push(FLV_TAG_VIDEO);
+            body.extend_from_slice(&[0, 0, u8::try_from(payload.len()).expect("test FLV payload")]);
+            let timestamp = timestamp * 40;
+            body.extend_from_slice(&[
+                ((timestamp >> 16) & 0xff) as u8,
+                ((timestamp >> 8) & 0xff) as u8,
+                (timestamp & 0xff) as u8,
+                ((timestamp >> 24) & 0xff) as u8,
+            ]);
+            body.extend_from_slice(&[0, 0, 0]);
+            body.extend_from_slice(&payload);
+            body.extend_from_slice(
+                &u32::try_from(FLV_TAG_HEADER_SIZE + payload.len())
+                    .expect("test FLV tag size")
+                    .to_be_bytes(),
+            );
+        }
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: video/x-flv\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(&body);
+        response
+    }
+
+    async fn spawn_reconnecting_http_flv_source() -> TestResult<(
+        std::net::SocketAddr,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::task::JoinHandle<TestResult>,
+    )> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (release_first_tx, release_first_rx) = tokio::sync::oneshot::channel();
+        let (second_request_tx, second_request_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let responses = [
+                flv_video_response([0x65, 0xf1, 0xf1]),
+                flv_video_response([0x65, 0xf2, 0xf2]),
+            ];
+            let mut second_request_tx = Some(second_request_tx);
+            let mut release_first_rx = Some(release_first_rx);
+            for (index, response) in responses.into_iter().enumerate() {
+                let (mut stream, _) = listener.accept().await?;
+                read_http_request_headers(&mut stream).await?;
+                if index == 0 {
+                    release_first_rx
+                        .take()
+                        .ok_or_else(|| test_error("first HTTP-FLV release used twice"))?
+                        .await
+                        .map_err(|_| test_error("first HTTP-FLV release sender dropped"))?;
+                } else {
+                    notify_oneshot(
+                        second_request_tx
+                            .take()
+                            .ok_or_else(|| test_error("second HTTP-FLV request sent twice"))?,
+                        (),
+                        "second HTTP-FLV request",
+                    );
+                }
+                stream.write_all(&response).await?;
+                stream.shutdown().await?;
+            }
+            Ok(())
+        });
+        Ok((address, release_first_tx, second_request_rx, task))
+    }
+
     async fn spawn_delayed_http_response_server(
         delay: StdDuration,
         response: Vec<u8>,
@@ -1321,12 +1478,265 @@ mod tests {
         Ok((addr, handle))
     }
 
+    async fn read_rtsp_request(stream: &mut tokio::net::TcpStream) -> anyhow::Result<String> {
+        let mut request = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !request.ends_with(b"\r\n\r\n") {
+            anyhow::ensure!(stream.read(&mut byte).await? == 1, "RTSP client closed");
+            request.push(byte[0]);
+            anyhow::ensure!(request.len() <= 16 * 1024, "RTSP request is too large");
+        }
+        Ok(String::from_utf8(request)?)
+    }
+
+    fn rtsp_cseq(request: &str) -> anyhow::Result<&str> {
+        request
+            .lines()
+            .find_map(|line| line.strip_prefix("CSeq: "))
+            .ok_or_else(|| anyhow::anyhow!("RTSP request is missing CSeq"))
+    }
+
+    async fn write_interleaved_h264(
+        stream: &mut tokio::net::TcpStream,
+        sequence: u16,
+        timestamp: u32,
+        nal: &[u8],
+    ) -> anyhow::Result<()> {
+        let mut rtp = Vec::with_capacity(12 + nal.len());
+        rtp.extend_from_slice(&[0x80, 0xe0]);
+        rtp.extend_from_slice(&sequence.to_be_bytes());
+        rtp.extend_from_slice(&timestamp.to_be_bytes());
+        rtp.extend_from_slice(&[1, 2, 3, 4]);
+        rtp.extend_from_slice(nal);
+        stream.write_all(&[b'$', 0]).await?;
+        stream
+            .write_all(&u16::try_from(rtp.len())?.to_be_bytes())
+            .await?;
+        stream.write_all(&rtp).await?;
+        Ok(())
+    }
+
+    fn rtp_packet(
+        payload_type: u8,
+        marker: bool,
+        sequence: u16,
+        timestamp: u32,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut packet = Vec::with_capacity(12 + payload.len());
+        packet.extend_from_slice(&[0x80, payload_type | if marker { 0x80 } else { 0 }]);
+        packet.extend_from_slice(&sequence.to_be_bytes());
+        packet.extend_from_slice(&timestamp.to_be_bytes());
+        packet.extend_from_slice(&[1, 2, 3, 4]);
+        packet.extend_from_slice(payload);
+        packet
+    }
+
+    async fn spawn_scripted_rtsp_source(
+        sdp: String,
+        expected_track: &'static str,
+        packets: Vec<Vec<u8>>,
+        expected_basic_authorization: Option<&'static str>,
+    ) -> anyhow::Result<(
+        std::net::SocketAddr,
+        tokio::task::JoinHandle<anyhow::Result<()>>,
+    )> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await?;
+            let mut describe = read_rtsp_request(&mut stream).await?;
+            anyhow::ensure!(describe.starts_with("DESCRIBE "), "expected DESCRIBE");
+
+            if let Some(expected) = expected_basic_authorization {
+                anyhow::ensure!(
+                    !describe.contains("Authorization:"),
+                    "credentials should follow the server challenge"
+                );
+                let response = format!(
+                    "RTSP/1.0 401 Unauthorized\r\nCSeq: {}\r\nWWW-Authenticate: Basic realm=\"SyncTV test\"\r\n\r\n",
+                    rtsp_cseq(&describe)?
+                );
+                stream.write_all(response.as_bytes()).await?;
+                describe = read_rtsp_request(&mut stream).await?;
+                if !describe.contains(expected) {
+                    let response = format!(
+                        "RTSP/1.0 401 Unauthorized\r\nCSeq: {}\r\nWWW-Authenticate: Basic realm=\"SyncTV test\"\r\n\r\n",
+                        rtsp_cseq(&describe)?
+                    );
+                    stream.write_all(response.as_bytes()).await?;
+                    stream.shutdown().await?;
+                    return Ok(());
+                }
+            }
+
+            let response = format!(
+                "RTSP/1.0 200 OK\r\nCSeq: {}\r\nContent-Type: application/sdp\r\nContent-Base: rtsp://{address}/live/\r\nContent-Length: {}\r\n\r\n{sdp}",
+                rtsp_cseq(&describe)?,
+                sdp.len()
+            );
+            stream.write_all(response.as_bytes()).await?;
+            let setup = read_rtsp_request(&mut stream).await?;
+            anyhow::ensure!(setup.contains(expected_track), "unexpected SETUP track");
+            let response = format!(
+                "RTSP/1.0 200 OK\r\nCSeq: {}\r\nSession: scripted-test;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=01020304;mode=\"play\"\r\n\r\n",
+                rtsp_cseq(&setup)?
+            );
+            stream.write_all(response.as_bytes()).await?;
+            let play = read_rtsp_request(&mut stream).await?;
+            let response = format!(
+                "RTSP/1.0 200 OK\r\nCSeq: {}\r\nSession: scripted-test\r\nRTP-Info: url=rtsp://{address}/live/{expected_track};seq=1;rtptime=0\r\n\r\n",
+                rtsp_cseq(&play)?
+            );
+            stream.write_all(response.as_bytes()).await?;
+            for packet in packets {
+                stream.write_all(&[b'$', 0]).await?;
+                stream
+                    .write_all(&u16::try_from(packet.len())?.to_be_bytes())
+                    .await?;
+                stream.write_all(&packet).await?;
+            }
+            stream.shutdown().await?;
+            Ok(())
+        });
+        Ok((address, task))
+    }
+
+    struct ReconnectingRtspSource {
+        address: std::net::SocketAddr,
+        release_first_media: tokio::sync::oneshot::Sender<()>,
+        second_played: tokio::sync::oneshot::Receiver<()>,
+        release_second_media: tokio::sync::oneshot::Sender<()>,
+        task: tokio::task::JoinHandle<anyhow::Result<()>>,
+    }
+
+    async fn spawn_reconnecting_rtsp_source() -> anyhow::Result<ReconnectingRtspSource> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (release_first_tx, release_first_rx) = tokio::sync::oneshot::channel();
+        let (release_second_tx, release_second_rx) = tokio::sync::oneshot::channel();
+        let (second_played_tx, second_played_rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(async move {
+            let mut release_first_rx = Some(release_first_rx);
+            let mut release_second_rx = Some(release_second_rx);
+            let mut second_played_tx = Some(second_played_tx);
+            for attempt in 1..=2 {
+                let (mut stream, _) = listener.accept().await?;
+                let describe = read_rtsp_request(&mut stream).await?;
+                anyhow::ensure!(describe.starts_with("DESCRIBE "), "expected DESCRIBE");
+                let sdp = concat!(
+                    "v=0\r\n",
+                    "o=- 1 1 IN IP4 127.0.0.1\r\n",
+                    "s=SyncTV reconnect source\r\n",
+                    "t=0 0\r\n",
+                    "a=control:*\r\n",
+                    "m=video 0 RTP/AVP 96\r\n",
+                    "c=IN IP4 0.0.0.0\r\n",
+                    "a=rtpmap:96 H264/90000\r\n",
+                    "a=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0IAH5WoFAFuQA==,aM4G4g==\r\n",
+                    "a=control:trackID=1\r\n",
+                );
+                let response = format!(
+                    "RTSP/1.0 200 OK\r\nCSeq: {}\r\nContent-Type: application/sdp\r\nContent-Base: rtsp://{address}/live/\r\nContent-Length: {}\r\n\r\n{sdp}",
+                    rtsp_cseq(&describe)?,
+                    sdp.len()
+                );
+                stream.write_all(response.as_bytes()).await?;
+
+                let setup = read_rtsp_request(&mut stream).await?;
+                anyhow::ensure!(setup.starts_with("SETUP "), "expected SETUP");
+                let session = format!("reconnect-test-{attempt}");
+                let response = format!(
+                    "RTSP/1.0 200 OK\r\nCSeq: {}\r\nSession: {session};timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=01020304;mode=\"play\"\r\n\r\n",
+                    rtsp_cseq(&setup)?
+                );
+                stream.write_all(response.as_bytes()).await?;
+
+                let play = read_rtsp_request(&mut stream).await?;
+                anyhow::ensure!(play.starts_with("PLAY "), "expected PLAY");
+                let response = format!(
+                    "RTSP/1.0 200 OK\r\nCSeq: {}\r\nSession: {session}\r\nRTP-Info: url=rtsp://{address}/live/trackID=1;seq=1;rtptime=0\r\n\r\n",
+                    rtsp_cseq(&play)?
+                );
+                stream.write_all(response.as_bytes()).await?;
+
+                if attempt == 1 {
+                    release_first_rx
+                        .take()
+                        .ok_or_else(|| test_error("first RTSP media release already used"))?
+                        .await
+                        .map_err(|_| test_error("first RTSP media release sender dropped"))?;
+                    for index in 0_u16..10 {
+                        let marker = u8::try_from(index)?;
+                        let nal = if index == 0 {
+                            [0x65, 0xf1, 0xf1]
+                        } else {
+                            [0x41, 0x10, marker]
+                        };
+                        write_interleaved_h264(
+                            &mut stream,
+                            index + 1,
+                            u32::from(index) * 3_000,
+                            &nal,
+                        )
+                        .await?;
+                    }
+                    stream.shutdown().await?;
+                    continue;
+                }
+
+                notify_oneshot(
+                    second_played_tx
+                        .take()
+                        .ok_or_else(|| test_error("second PLAY notifier already used"))?,
+                    (),
+                    "second RTSP PLAY",
+                );
+                release_second_rx
+                    .take()
+                    .ok_or_else(|| test_error("second RTSP media release already used"))?
+                    .await
+                    .map_err(|_| test_error("second RTSP media release sender dropped"))?;
+                write_interleaved_h264(&mut stream, 1, 0, &[0x65, 0xf2, 0xf2]).await?;
+
+                let mut buffer = [0_u8; 256];
+                while stream.read(&mut buffer).await? != 0 {}
+            }
+            Ok(())
+        });
+        Ok(ReconnectingRtspSource {
+            address,
+            release_first_media: release_first_tx,
+            second_played: second_played_rx,
+            release_second_media: release_second_tx,
+            task: handle,
+        })
+    }
+
+    async fn wait_for_flv_marker(
+        receiver: &mut tokio::sync::mpsc::Receiver<Result<bytes::Bytes, std::io::Error>>,
+        marker: &[u8],
+    ) -> anyhow::Result<()> {
+        let deadline = tokio::time::Instant::now() + StdDuration::from_secs(3);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let chunk = tokio::time::timeout(remaining, receiver.recv())
+                .await
+                .map_err(|_| test_error("timed out waiting for HTTP-FLV marker"))?
+                .ok_or_else(|| test_error("HTTP-FLV response channel closed"))??;
+            if chunk.windows(marker.len()).any(|window| window == marker) {
+                return Ok(());
+            }
+        }
+    }
+
     fn make_test_http_puller(
         addr: std::net::SocketAddr,
         sender: StreamHubEventSender,
         confirm_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
     ) -> ExternalStreamPuller {
         ExternalStreamPuller {
+            generation_id: Uuid::new(),
             room_id: "room123".to_string(),
             media_id: "media456".to_string(),
             source_url: format!("http://{addr}/stream.flv"),
@@ -1366,6 +1776,551 @@ mod tests {
 
         server_handle.abort();
         hub_handle.abort();
+        Ok(())
+    }
+
+    async fn exercise_rtmp_pull_mode(
+        mode: RtmpStreamMode,
+        expect_audio: bool,
+        expect_video: bool,
+    ) -> TestResult {
+        let mut source = TestRtmpSource::start().await?;
+        let mut upstream = RtmpPublisher::connect(source.address, "upstream", "source").await?;
+        let (event_sender, event_receiver) = tokio::sync::mpsc::channel(64);
+        let mut hub = StreamsHub::new(event_sender.clone(), event_receiver);
+        let mut lifecycle = hub.get_client_event_consumer();
+        let hub_task = tokio::spawn(async move { hub.run().await });
+        let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
+        let cancel_token = CancellationToken::new();
+        let puller = make_test_rtmp_puller(
+            source.address,
+            mode,
+            event_sender.clone(),
+            confirm_tx,
+            cancel_token.clone(),
+        );
+        let pull_task = tokio::spawn(puller.run());
+
+        assert!(matches!(
+            tokio::time::timeout(StdDuration::from_secs(2), lifecycle.recv())
+                .await
+                .map_err(|_| test_error("RTMP puller did not publish locally"))??,
+            BroadcastEvent::Publish { .. }
+        ));
+        tokio::time::timeout(StdDuration::from_secs(2), confirm_rx)
+            .await
+            .map_err(|_| test_error("RTMP puller did not confirm upstream playback"))??
+            .map_err(anyhow::Error::msg)?;
+        source.wait_for_subscription().await?;
+        let (mut flv_rx, flv_task) = start_flv_viewer(event_sender).await?;
+
+        upstream.send_video(0, true).await?;
+        upstream.send_audio(0).await?;
+        upstream.send_video(1, true).await?;
+        upstream.send_audio(1).await?;
+        tokio::time::sleep(StdDuration::from_millis(100)).await;
+
+        cancel_token.cancel();
+        tokio::time::timeout(StdDuration::from_secs(2), pull_task)
+            .await
+            .map_err(|_| test_error("RTMP mode puller did not stop"))???;
+        tokio::time::timeout(StdDuration::from_secs(2), flv_task)
+            .await
+            .map_err(|_| test_error("RTMP mode FLV viewer did not stop"))???;
+
+        let mut audio = false;
+        let mut video = false;
+        while let Some(chunk) = flv_rx.recv().await {
+            match chunk?.first().copied() {
+                Some(FLV_TAG_AUDIO) => audio = true,
+                Some(FLV_TAG_VIDEO) => video = true,
+                _ => {}
+            }
+        }
+        assert_eq!(audio, expect_audio);
+        assert_eq!(video, expect_video);
+
+        upstream.close();
+        source.stop().await?;
+        hub_task.abort();
+        let _ = hub_task.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn external_rtmp_default_mode_forwards_audio_and_video() -> TestResult {
+        exercise_rtmp_pull_mode(RtmpStreamMode::Default, true, true).await
+    }
+
+    #[tokio::test]
+    async fn external_rtmp_video_only_mode_filters_audio() -> TestResult {
+        exercise_rtmp_pull_mode(RtmpStreamMode::VideoOnly, false, true).await
+    }
+
+    #[tokio::test]
+    async fn external_rtmp_audio_only_mode_filters_video() -> TestResult {
+        exercise_rtmp_pull_mode(RtmpStreamMode::AudioOnly, true, false).await
+    }
+
+    #[tokio::test]
+    async fn external_rtmp_reconnect_keeps_publication_and_two_flv_viewers() -> TestResult {
+        const FIRST_MARKER: &[u8] = &[0x65, 0xf1, 0xf1];
+        const SECOND_MARKER: &[u8] = &[0x65, 0xf2, 0xf2];
+
+        let mut source = TestRtmpSource::start().await?;
+        let mut first_upstream =
+            RtmpPublisher::connect(source.address, "upstream", "source").await?;
+        assert!(matches!(
+            source.next_lifecycle_event().await?,
+            BroadcastEvent::Publish { .. }
+        ));
+        let (event_sender, event_receiver) = tokio::sync::mpsc::channel(64);
+        let mut hub = StreamsHub::new(event_sender.clone(), event_receiver);
+        let mut lifecycle = hub.get_client_event_consumer();
+        let hub_task = tokio::spawn(async move { hub.run().await });
+        let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
+        let cancel_token = CancellationToken::new();
+        let puller = make_test_rtmp_puller(
+            source.address,
+            RtmpStreamMode::Default,
+            event_sender.clone(),
+            confirm_tx,
+            cancel_token.clone(),
+        );
+        let pull_task = tokio::spawn(puller.run());
+        let published_id = match tokio::time::timeout(StdDuration::from_secs(2), lifecycle.recv())
+            .await
+            .map_err(|_| test_error("RTMP puller did not publish locally"))??
+        {
+            BroadcastEvent::Publish { generation_id, .. } => generation_id,
+            BroadcastEvent::UnPublish { .. } => {
+                return Err(test_error("RTMP puller unpublished during startup"));
+            }
+        };
+        tokio::time::timeout(StdDuration::from_secs(2), confirm_rx)
+            .await
+            .map_err(|_| test_error("RTMP puller did not confirm upstream playback"))??
+            .map_err(anyhow::Error::msg)?;
+        source.wait_for_subscription().await?;
+
+        let (mut first_flv_rx, first_flv_task) = start_flv_viewer(event_sender.clone()).await?;
+        let (mut second_flv_rx, second_flv_task) = start_flv_viewer(event_sender.clone()).await?;
+        first_upstream.send_video(0, true).await?;
+        first_upstream.send_audio(0).await?;
+        first_upstream
+            .send_raw_video(1, &[0x17, 0x01, 0, 0, 0, 0, 0, 0, 3, 0x65, 0xf1, 0xf1])
+            .await?;
+        first_upstream.send_audio(1).await?;
+        tokio::try_join!(
+            wait_for_flv_marker(&mut first_flv_rx, FIRST_MARKER),
+            wait_for_flv_marker(&mut second_flv_rx, FIRST_MARKER),
+        )?;
+
+        first_upstream.close();
+        assert!(matches!(
+            source.next_lifecycle_event().await?,
+            BroadcastEvent::UnPublish { .. }
+        ));
+        let mut second_upstream =
+            RtmpPublisher::connect(source.address, "upstream", "source").await?;
+        assert!(matches!(
+            source.next_lifecycle_event().await?,
+            BroadcastEvent::Publish { .. }
+        ));
+        source.wait_for_subscription().await?;
+        second_upstream.send_video(0, true).await?;
+        second_upstream
+            .send_raw_video(1, &[0x17, 0x01, 0, 0, 0, 0, 0, 0, 3, 0x65, 0xf2, 0xf2])
+            .await?;
+
+        tokio::try_join!(
+            wait_for_flv_marker(&mut first_flv_rx, SECOND_MARKER),
+            wait_for_flv_marker(&mut second_flv_rx, SECOND_MARKER),
+        )?;
+        assert!(!first_flv_task.is_finished());
+        assert!(!second_flv_task.is_finished());
+        assert!(
+            tokio::time::timeout(StdDuration::from_millis(50), lifecycle.recv())
+                .await
+                .is_err(),
+            "RTMP upstream reconnect changed the local publication"
+        );
+
+        cancel_token.cancel();
+        tokio::time::timeout(StdDuration::from_secs(2), pull_task)
+            .await
+            .map_err(|_| test_error("RTMP reconnect puller did not stop"))???;
+        match tokio::time::timeout(StdDuration::from_secs(2), lifecycle.recv())
+            .await
+            .map_err(|_| test_error("RTMP reconnect final UnPublish was not delivered"))??
+        {
+            BroadcastEvent::UnPublish { generation_id, .. } => {
+                assert_eq!(generation_id, published_id);
+            }
+            BroadcastEvent::Publish { .. } => {
+                return Err(test_error("RTMP reconnect created another publication"));
+            }
+        }
+        tokio::time::timeout(StdDuration::from_secs(2), first_flv_task)
+            .await
+            .map_err(|_| test_error("first RTMP reconnect viewer did not stop"))???;
+        tokio::time::timeout(StdDuration::from_secs(2), second_flv_task)
+            .await
+            .map_err(|_| test_error("second RTMP reconnect viewer did not stop"))???;
+
+        second_upstream.close();
+        source.stop().await?;
+        hub_task.abort();
+        let _ = hub_task.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn external_http_flv_reconnect_keeps_publication_and_two_flv_viewers() -> TestResult {
+        let (source_address, release_first_response, second_request, source_task) =
+            spawn_reconnecting_http_flv_source().await?;
+        let (event_sender, event_receiver) = tokio::sync::mpsc::channel(64);
+        let mut hub = StreamsHub::new(event_sender.clone(), event_receiver);
+        let mut lifecycle = hub.get_client_event_consumer();
+        let hub_task = tokio::spawn(async move { hub.run().await });
+        let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
+        let mut puller = make_test_http_puller(source_address, event_sender.clone(), confirm_tx);
+        puller.room_id = "room".to_string();
+        puller.media_id = "media".to_string();
+        let cancel_token = puller.cancel_token.clone();
+        let pull_task = tokio::spawn(puller.run());
+        let published_id = match tokio::time::timeout(StdDuration::from_secs(2), lifecycle.recv())
+            .await
+            .map_err(|_| test_error("HTTP-FLV puller did not publish locally"))??
+        {
+            BroadcastEvent::Publish { generation_id, .. } => generation_id,
+            BroadcastEvent::UnPublish { .. } => {
+                return Err(test_error("HTTP-FLV puller unpublished during startup"));
+            }
+        };
+        let (mut first_flv_rx, first_flv_task) = start_flv_viewer(event_sender.clone()).await?;
+        let (mut second_flv_rx, second_flv_task) = start_flv_viewer(event_sender).await?;
+
+        release_first_response
+            .send(())
+            .map_err(|()| test_error("HTTP-FLV source closed before first response release"))?;
+        tokio::time::timeout(StdDuration::from_secs(2), confirm_rx)
+            .await
+            .map_err(|_| test_error("HTTP-FLV puller did not confirm first response"))??
+            .map_err(anyhow::Error::msg)?;
+        tokio::try_join!(
+            wait_for_flv_marker(&mut first_flv_rx, &[0x65, 0xf1, 0xf1]),
+            wait_for_flv_marker(&mut second_flv_rx, &[0x65, 0xf1, 0xf1]),
+        )?;
+        tokio::time::timeout(StdDuration::from_secs(3), second_request)
+            .await
+            .map_err(|_| test_error("HTTP-FLV puller did not reconnect"))
+            .and_then(|result| result.map_err(anyhow::Error::from))?;
+        tokio::try_join!(
+            wait_for_flv_marker(&mut first_flv_rx, &[0x65, 0xf2, 0xf2]),
+            wait_for_flv_marker(&mut second_flv_rx, &[0x65, 0xf2, 0xf2]),
+        )?;
+        assert!(!first_flv_task.is_finished());
+        assert!(!second_flv_task.is_finished());
+        assert!(
+            tokio::time::timeout(StdDuration::from_millis(50), lifecycle.recv())
+                .await
+                .is_err(),
+            "HTTP-FLV reconnect changed the local publication"
+        );
+
+        cancel_token.cancel();
+        tokio::time::timeout(StdDuration::from_secs(2), pull_task)
+            .await
+            .map_err(|_| test_error("HTTP-FLV reconnect puller did not stop"))???;
+        match tokio::time::timeout(StdDuration::from_secs(2), lifecycle.recv())
+            .await
+            .map_err(|_| test_error("HTTP-FLV final UnPublish was not delivered"))??
+        {
+            BroadcastEvent::UnPublish { generation_id, .. } => {
+                assert_eq!(generation_id, published_id);
+            }
+            BroadcastEvent::Publish { .. } => {
+                return Err(test_error("HTTP-FLV reconnect created another publication"));
+            }
+        }
+        tokio::time::timeout(StdDuration::from_secs(2), first_flv_task)
+            .await
+            .map_err(|_| test_error("first HTTP-FLV reconnect viewer did not stop"))???;
+        tokio::time::timeout(StdDuration::from_secs(2), second_flv_task)
+            .await
+            .map_err(|_| test_error("second HTTP-FLV reconnect viewer did not stop"))???;
+        source_task.await??;
+        hub_task.abort();
+        let _ = hub_task.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rtsp_reconnects_after_clean_eof() -> TestResult {
+        let source = spawn_reconnecting_rtsp_source().await?;
+        let address = source.address;
+        let (event_sender, event_receiver) = tokio::sync::mpsc::channel(8);
+        let mut hub = StreamsHub::new(event_sender.clone(), event_receiver);
+        let mut lifecycle = hub.get_client_event_consumer();
+        let hub_task = tokio::spawn(async move { hub.run().await });
+        let (confirm_tx, mut confirm_rx) = tokio::sync::oneshot::channel();
+        let cancel_token = CancellationToken::new();
+        let puller = ExternalStreamPuller {
+            generation_id: Uuid::new(),
+            room_id: "room".to_string(),
+            media_id: "media".to_string(),
+            source_url: format!("rtsp://{address}/live"),
+            source_type: ExternalSourceType::Rtsp,
+            rtmp_mode: RtmpStreamMode::Default,
+            rtsp_options: Some((
+                RtspTransport::Tcp,
+                RtspTrackSelection::FirstCompatible,
+                RtspTrackSelection::Disabled,
+            )),
+            stream_hub_event_sender: event_sender.clone(),
+            confirm_tx: Some(confirm_tx),
+            http_client: None,
+            resolved_addr: Some(address),
+            cancel_token: cancel_token.clone(),
+            max_flv_tag_size_bytes: ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
+            ssrf_guard: SsrfGuard::disabled(),
+        };
+        let pull_task = tokio::spawn(puller.run());
+
+        let published_id = match tokio::time::timeout(StdDuration::from_secs(2), lifecycle.recv())
+            .await
+            .map_err(|_| test_error("RTSP puller did not publish to StreamHub"))??
+        {
+            BroadcastEvent::Publish { generation_id, .. } => generation_id,
+            BroadcastEvent::UnPublish { .. } => {
+                return Err(test_error("RTSP stream unpublished before startup"));
+            }
+        };
+
+        let (flv_tx_1, mut flv_rx_1) = tokio::sync::mpsc::channel(64);
+        let mut flv_session_1 = HttpFlvSession::new(
+            "room".to_string(),
+            "media".to_string(),
+            event_sender.clone(),
+            flv_tx_1,
+        );
+        flv_session_1.start().await?;
+        let flv_task_1 = tokio::spawn(async move { flv_session_1.run_after_start().await });
+
+        let (flv_tx_2, mut flv_rx_2) = tokio::sync::mpsc::channel(64);
+        let mut flv_session_2 = HttpFlvSession::new(
+            "room".to_string(),
+            "media".to_string(),
+            event_sender,
+            flv_tx_2,
+        );
+        flv_session_2.start().await?;
+        let flv_task_2 = tokio::spawn(async move { flv_session_2.run_after_start().await });
+
+        assert!(
+            tokio::time::timeout(StdDuration::from_millis(50), &mut confirm_rx)
+                .await
+                .is_err(),
+            "RTSP PLAY without media must keep startup pending"
+        );
+        source
+            .release_first_media
+            .send(())
+            .map_err(|()| test_error("first RTSP connection closed before media release"))?;
+        tokio::time::timeout(StdDuration::from_secs(2), &mut confirm_rx)
+            .await
+            .map_err(|_| test_error("RTSP first media frame did not confirm startup"))?
+            .map_err(|_| test_error("RTSP confirmation sender dropped"))?
+            .map_err(anyhow::Error::msg)?;
+        tokio::try_join!(
+            wait_for_flv_marker(&mut flv_rx_1, &[0x65, 0xf1, 0xf1]),
+            wait_for_flv_marker(&mut flv_rx_2, &[0x65, 0xf1, 0xf1]),
+        )?;
+
+        tokio::time::timeout(StdDuration::from_secs(5), source.second_played)
+            .await
+            .map_err(|_| test_error("RTSP puller did not establish its second connection"))?
+            .map_err(|_| test_error("second RTSP PLAY notifier dropped"))?;
+        assert!(!flv_task_1.is_finished());
+        assert!(!flv_task_2.is_finished());
+        assert!(
+            tokio::time::timeout(StdDuration::from_millis(50), lifecycle.recv())
+                .await
+                .is_err(),
+            "upstream reconnect must keep the local StreamHub publication alive"
+        );
+
+        source
+            .release_second_media
+            .send(())
+            .map_err(|()| test_error("second RTSP connection closed before media release"))?;
+        tokio::try_join!(
+            wait_for_flv_marker(&mut flv_rx_1, &[0x65, 0xf2, 0xf2]),
+            wait_for_flv_marker(&mut flv_rx_2, &[0x65, 0xf2, 0xf2]),
+        )?;
+
+        cancel_token.cancel();
+        tokio::time::timeout(StdDuration::from_secs(2), pull_task)
+            .await
+            .map_err(|_| test_error("RTSP puller did not stop after cancellation"))???;
+
+        match tokio::time::timeout(StdDuration::from_secs(2), lifecycle.recv())
+            .await
+            .map_err(|_| test_error("final RTSP UnPublish was not delivered"))??
+        {
+            BroadcastEvent::UnPublish { generation_id, .. } => {
+                assert_eq!(generation_id, published_id);
+            }
+            BroadcastEvent::Publish { .. } => {
+                return Err(test_error(
+                    "RTSP reconnect created a second local publication",
+                ));
+            }
+        }
+
+        tokio::time::timeout(StdDuration::from_secs(2), flv_task_1)
+            .await
+            .map_err(|_| test_error("first HTTP-FLV session did not close"))???;
+        tokio::time::timeout(StdDuration::from_secs(2), flv_task_2)
+            .await
+            .map_err(|_| test_error("second HTTP-FLV session did not close"))???;
+        source.task.await??;
+        hub_task.abort();
+        let _ = hub_task.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rtsp_audio_only_exact_index_disables_video() -> TestResult {
+        let sdp = concat!(
+            "v=0\r\n",
+            "o=- 1 1 IN IP4 127.0.0.1\r\n",
+            "s=SyncTV audio track test\r\n",
+            "t=0 0\r\n",
+            "a=control:*\r\n",
+            "m=video 0 RTP/AVP 96\r\n",
+            "c=IN IP4 0.0.0.0\r\n",
+            "a=rtpmap:96 H264/90000\r\n",
+            "a=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0IAH5WoFAFuQA==,aM4G4g==\r\n",
+            "a=control:trackID=1\r\n",
+            "m=audio 0 RTP/AVP 97\r\n",
+            "c=IN IP4 0.0.0.0\r\n",
+            "a=rtpmap:97 mpeg4-generic/44100/2\r\n",
+            "a=fmtp:97 streamtype=5;profile-level-id=1;mode=AAC-hbr;sizelength=13;indexlength=3;indexdeltalength=3;config=1210\r\n",
+            "a=control:trackID=2\r\n",
+        );
+        let aac_access_unit = [0x00, 0x10, 0x00, 0x18, 0x21, 0x10, 0x56];
+        let (address, source_task) = spawn_scripted_rtsp_source(
+            sdp.to_string(),
+            "trackID=2",
+            vec![rtp_packet(97, true, 1, 0, &aac_access_unit)],
+            None,
+        )
+        .await?;
+        let mut config = RtspPullConfig::from_url(&format!("rtsp://{address}/live"))?;
+        config.video_track = RtspTrackSelection::Disabled;
+        config.audio_track = RtspTrackSelection::Index(1);
+        let mut session = RtspPullSession::connect(config).await?;
+        assert_eq!(session.selected_tracks(), (None, Some(1)));
+
+        let sequence = session
+            .next_frame()
+            .await?
+            .ok_or_else(|| test_error("missing AAC sequence header"))?;
+        let raw = session
+            .next_frame()
+            .await?
+            .ok_or_else(|| test_error("missing AAC access unit"))?;
+        assert!(matches!(
+            sequence,
+            FrameData::Audio { ref data, .. } if data.get(..2) == Some(&[0xaf, 0][..])
+        ));
+        assert!(matches!(
+            raw,
+            FrameData::Audio { ref data, .. }
+                if data.get(..2) == Some(&[0xaf, 1][..]) && data.ends_with(&[0x21, 0x10, 0x56])
+        ));
+        source_task.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rtsp_h264_fu_a_fragments_reassemble_into_one_flv_frame() -> TestResult {
+        let sdp = concat!(
+            "v=0\r\n",
+            "o=- 1 1 IN IP4 127.0.0.1\r\n",
+            "s=SyncTV FU-A test\r\n",
+            "t=0 0\r\n",
+            "a=control:*\r\n",
+            "m=video 0 RTP/AVP 96\r\n",
+            "c=IN IP4 0.0.0.0\r\n",
+            "a=rtpmap:96 H264/90000\r\n",
+            "a=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0IAH5WoFAFuQA==,aM4G4g==\r\n",
+            "a=control:trackID=1\r\n",
+        );
+        let packets = vec![
+            rtp_packet(96, false, 1, 0, &[0x7c, 0x85, 0xaa, 0xbb]),
+            rtp_packet(96, true, 2, 0, &[0x7c, 0x45, 0xcc, 0xdd]),
+        ];
+        let (address, source_task) =
+            spawn_scripted_rtsp_source(sdp.to_string(), "trackID=1", packets, None).await?;
+        let config = RtspPullConfig::from_url(&format!("rtsp://{address}/live"))?;
+        let mut session = RtspPullSession::connect(config).await?;
+        let _sequence = session
+            .next_frame()
+            .await?
+            .ok_or_else(|| test_error("missing AVC sequence header"))?;
+        let frame = session
+            .next_frame()
+            .await?
+            .ok_or_else(|| test_error("missing reassembled AVC frame"))?;
+        assert!(matches!(
+            frame,
+            FrameData::Video { ref data, .. }
+                if data.windows(9).any(|window| window == [0, 0, 0, 5, 0x65, 0xaa, 0xbb, 0xcc, 0xdd])
+        ));
+        source_task.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rtsp_basic_auth_accepts_valid_and_rejects_invalid_credentials() -> TestResult {
+        let sdp = concat!(
+            "v=0\r\n",
+            "o=- 1 1 IN IP4 127.0.0.1\r\n",
+            "s=SyncTV auth test\r\n",
+            "t=0 0\r\n",
+            "a=control:*\r\n",
+            "m=video 0 RTP/AVP 96\r\n",
+            "c=IN IP4 0.0.0.0\r\n",
+            "a=rtpmap:96 H264/90000\r\n",
+            "a=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0IAH5WoFAFuQA==,aM4G4g==\r\n",
+            "a=control:trackID=1\r\n",
+        );
+        let expected = "Authorization: Basic dXNlcjpwYXNz";
+        let media = vec![rtp_packet(96, true, 1, 0, &[0x65, 0xa1, 0xa1])];
+        let (valid_address, valid_source) =
+            spawn_scripted_rtsp_source(sdp.to_string(), "trackID=1", media, Some(expected)).await?;
+        let valid = RtspPullConfig::from_url(&format!("rtsp://user:pass@{valid_address}/live"))?;
+        let mut session = RtspPullSession::connect(valid).await?;
+        assert!(matches!(
+            session.next_frame().await?,
+            Some(FrameData::Video { .. })
+        ));
+        valid_source.await??;
+
+        let (invalid_address, invalid_source) =
+            spawn_scripted_rtsp_source(sdp.to_string(), "trackID=1", Vec::new(), Some(expected))
+                .await?;
+        let invalid =
+            RtspPullConfig::from_url(&format!("rtsp://user:wrong@{invalid_address}/live"))?;
+        let Err(error) = RtspPullSession::connect(invalid).await else {
+            return Err(test_error("invalid RTSP Basic credentials were accepted"));
+        };
+        let error_chain = format!("{error:#}");
+        assert!(error_chain.contains("401") || error_chain.contains("Unauthorized"));
+        invalid_source.await??;
         Ok(())
     }
 
@@ -1411,14 +2366,17 @@ mod tests {
         let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
 
         let puller = make_test_http_puller(addr, hub_sender, confirm_tx);
-        let result = puller.run().await;
-
-        assert!(result.is_ok(), "valid FLV header should allow startup");
+        let cancel_token = puller.cancel_token.clone();
+        let pull_task = tokio::spawn(puller.run());
         let confirm = confirm_rx.await?;
         assert!(
             confirm.is_ok(),
             "startup should be confirmed after FLV header"
         );
+        cancel_token.cancel();
+        tokio::time::timeout(StdDuration::from_secs(2), pull_task)
+            .await
+            .map_err(|_| test_error("valid HTTP-FLV puller did not stop after cancellation"))???;
 
         server_handle.abort();
         hub_handle.abort();

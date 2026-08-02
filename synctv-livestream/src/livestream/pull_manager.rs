@@ -8,7 +8,7 @@ use crate::{
     error::StreamResult,
     grpc::GrpcConnectionPool,
     livestream::managed_stream::{ManagedStream, StreamPool},
-    livestream::pull_stream::PullStream,
+    livestream::pull_stream::{PullStream, PullStreamRoute},
     relay::registry_trait::StreamRegistryTrait,
 };
 use std::sync::Arc;
@@ -158,7 +158,7 @@ impl PullStreamManager {
         let registry_timeout = std::time::Duration::from_secs(5);
         let publisher_info = tokio::time::timeout(
             registry_timeout,
-            self.registry.get_publisher(room_id, media_id),
+            self.registry.get_active_generation(room_id, media_id),
         )
         .await
         .map_err(|_| {
@@ -184,8 +184,8 @@ impl PullStreamManager {
         })?;
 
         // Create pull stream with gRPC puller
-        // Store the epoch from publisher info for split-brain detection
-        let epoch = publisher_info.epoch;
+        // Store the lease_epoch from publisher info for split-brain detection
+        let lease_epoch = publisher_info.lease_epoch;
 
         // Use the cluster listener address registered by the publisher node.
         let publisher_address = publisher_info
@@ -206,12 +206,15 @@ impl PullStreamManager {
 
         let pull_stream = Arc::new(
             PullStream::with_pool(
-                room_id.to_string(),
-                media_id.to_string(),
-                publisher_address,
+                PullStreamRoute::new(
+                    room_id.to_string(),
+                    media_id.to_string(),
+                    publisher_address,
+                    publisher_info.generation_id.clone(),
+                    lease_epoch,
+                ),
                 Arc::clone(&self.registry),
                 self.stream_hub_event_sender.clone(),
-                epoch,
                 self.connection_pool.clone(),
             )
             .with_grpc_max_message_size(self.grpc_max_message_size_bytes)
@@ -250,7 +253,15 @@ impl PullStreamManager {
                     error = %e,
                     "Pull stream start failed with permanent error; removing stale publisher registry entry"
                 );
-                if let Err(unreg_err) = self.registry.unregister_publisher(room_id, media_id).await
+                if let Err(unreg_err) = self
+                    .registry
+                    .deactivate_generation_if_lease_matches(
+                        room_id,
+                        media_id,
+                        &publisher_info.generation_id,
+                        lease_epoch,
+                    )
+                    .await
                 {
                     error!(
                         room_id = %room_id,
@@ -306,12 +317,15 @@ mod tests {
         stream_hub_event_sender: StreamHubEventSender,
     ) -> PullStream {
         PullStream::with_pool(
-            "room-123".to_string(),
-            "media-456".to_string(),
-            "publisher-node".to_string(),
+            PullStreamRoute::new(
+                "room-123".to_string(),
+                "media-456".to_string(),
+                "publisher-node".to_string(),
+                crate::util::TEST_GENERATION_ID.to_string(),
+                1,
+            ),
             registry,
             stream_hub_event_sender,
-            1,
             GrpcConnectionPool::with_defaults(),
         )
     }

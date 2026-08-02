@@ -3,8 +3,9 @@ use std::sync::Arc;
 use futures::FutureExt;
 use synctv_proto::playback_provider::live_proxy::live_proxy_playback_provider_service_server::LiveProxyPlaybackProviderService;
 use synctv_proto::playback_provider::live_proxy::{
-    GetLiveProxyFlvStreamRequest, GetLiveProxyHlsPlaylistRequest, GetLiveProxyHlsSegmentRequest,
-    LiveProxyFlvStreamResponse, LiveProxyHlsPlaylistResponse, LiveProxyHlsSegmentResponse,
+    GetLiveProxyFlvStreamRequest, GetLiveProxyHlsMasterRequest, GetLiveProxyHlsPlaylistRequest,
+    GetLiveProxyHlsSegmentRequest, LiveProxyFlvStreamResponse, LiveProxyHlsMasterResponse,
+    LiveProxyHlsPlaylistResponse, LiveProxyHlsSegmentResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -36,6 +37,7 @@ impl LiveProxyPlaybackProviderGrpcService {
 #[allow(clippy::result_large_err)]
 impl LiveProxyPlaybackProviderService for LiveProxyPlaybackProviderGrpcService {
     type GetFlvStreamStream = GrpcResponseStream<LiveProxyFlvStreamResponse>;
+    type GetHlsMasterStream = GrpcResponseStream<LiveProxyHlsMasterResponse>;
     type GetHlsPlaylistStream = GrpcResponseStream<LiveProxyHlsPlaylistResponse>;
     type GetHlsSegmentStream = GrpcResponseStream<LiveProxyHlsSegmentResponse>;
 
@@ -73,6 +75,28 @@ impl LiveProxyPlaybackProviderService for LiveProxyPlaybackProviderGrpcService {
             let state = state.clone();
             async move {
                 synctv_api_common::playback_provider::live_proxy::get_live_proxy_hls_playlist(
+                    live_proxy_deps(&state, Some(&request_control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn get_hls_master(
+        &self,
+        request: Request<GetLiveProxyHlsMasterRequest>,
+    ) -> Result<Response<Self::GetHlsMasterStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+
+        execute_playback_provider_stream(state.clone(), metadata, move |request_control| {
+            let state = state.clone();
+            async move {
+                synctv_api_common::playback_provider::live_proxy::get_live_proxy_hls_master(
                     live_proxy_deps(&state, Some(&request_control)),
                     req,
                 )

@@ -136,22 +136,7 @@ impl HttpFlvSession {
 
                     // Send header after detecting A/V or after 10 frames
                     if (self.has_audio && self.has_video) || max_av_frame_num_to_guess_av > 10 {
-                        self.has_send_header = true;
-
-                        // Write FLV header
-                        self.muxer
-                            .write_flv_header(self.has_audio, self.has_video)
-                            .map_err(|e| anyhow::anyhow!("Failed to write FLV header: {e:?}"))?;
-                        self.muxer
-                            .write_previous_tag_size(0)
-                            .map_err(|e| anyhow::anyhow!("Failed to write tag size: {e:?}"))?;
-                        self.flush_response_data()?;
-
-                        // Write cached frames
-                        for frame in &cached_frames {
-                            self.write_flv_tag(frame)?;
-                        }
-                        cached_frames.clear();
+                        self.flush_header_and_cached_frames(&mut cached_frames)?;
                     }
 
                     continue;
@@ -164,8 +149,30 @@ impl HttpFlvSession {
             } else {
                 // Channel closed - stream truly ended
                 info!("Stream channel closed");
+                if !self.has_send_header && (self.has_audio || self.has_video) {
+                    self.flush_header_and_cached_frames(&mut cached_frames)?;
+                }
                 break;
             }
+        }
+        Ok(())
+    }
+
+    fn flush_header_and_cached_frames(
+        &mut self,
+        cached_frames: &mut Vec<FrameData>,
+    ) -> anyhow::Result<()> {
+        self.has_send_header = true;
+        self.muxer
+            .write_flv_header(self.has_audio, self.has_video)
+            .map_err(|e| anyhow::anyhow!("Failed to write FLV header: {e:?}"))?;
+        self.muxer
+            .write_previous_tag_size(0)
+            .map_err(|e| anyhow::anyhow!("Failed to write tag size: {e:?}"))?;
+        self.flush_response_data()?;
+
+        for frame in cached_frames.drain(..) {
+            self.write_flv_tag(&frame)?;
         }
         Ok(())
     }
@@ -180,7 +187,11 @@ impl HttpFlvSession {
                 amf_writer
                     .write_string(&String::from("@setDataFrame"))
                     .map_err(|e| anyhow::anyhow!("Failed to write AMF string: {e:?}"))?;
-                let right = &data[amf_writer.len()..];
+                let right = data.get(amf_writer.len()..).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Invalid RTMP metadata: body is shorter than @setDataFrame prefix"
+                    )
+                })?;
                 (right, *timestamp, 18) // SCRIPT_DATA_AMF
             }
             FrameData::MediaInfo { .. } => return Ok(()),
@@ -333,6 +344,13 @@ impl HttpFlvSession {
 mod tests {
     use super::*;
     use crate::streamhub::errors::{StreamHubError, StreamHubErrorValue};
+
+    fn flv_tag_timestamp(tag: &[u8]) -> u32 {
+        u32::from(tag[4]) << 16
+            | u32::from(tag[5]) << 8
+            | u32::from(tag[6])
+            | u32::from(tag[7]) << 24
+    }
 
     fn assert_rtmp_identifier(
         identifier: StreamIdentifier,
@@ -552,6 +570,140 @@ mod tests {
         );
     }
 
+    async fn assert_short_single_track_flushes_on_eof(frame: FrameData, expected_flags: u8) {
+        let (event_sender, _) = tokio::sync::mpsc::channel(8);
+        let (response_tx, mut response_rx) = mpsc::channel(8);
+        let (frame_tx, frame_rx) = mpsc::channel(2);
+        let mut session = HttpFlvSession::new(
+            "live".to_string(),
+            "single-track".to_string(),
+            event_sender,
+            response_tx,
+        );
+        session.data_receiver = Some(crate::streamhub::define::FrameDataReceiver::bounded(
+            frame_rx,
+        ));
+
+        frame_tx.send(frame).await.expect("send test frame");
+        drop(frame_tx);
+        session
+            .send_media_stream()
+            .await
+            .expect("short FLV stream should finish cleanly");
+
+        let header = response_rx
+            .recv()
+            .await
+            .expect("FLV header result")
+            .unwrap();
+        assert!(header.starts_with(b"FLV"));
+        assert_eq!(header[4] & 0x05, expected_flags);
+        let tag = response_rx
+            .recv()
+            .await
+            .expect("FLV media tag result")
+            .unwrap();
+        assert_eq!(tag[0], if expected_flags == 0x04 { 8 } else { 9 });
+    }
+
+    #[tokio::test]
+    async fn short_audio_only_stream_flushes_header_and_cached_tag_on_eof() {
+        assert_short_single_track_flushes_on_eof(
+            FrameData::Audio {
+                timestamp: 0,
+                data: bytes::Bytes::from_static(&[0xaf, 0, 0x12, 0x10]),
+            },
+            0x04,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn short_video_only_stream_flushes_header_and_cached_tag_on_eof() {
+        assert_short_single_track_flushes_on_eof(
+            FrameData::Video {
+                timestamp: 0,
+                data: bytes::Bytes::from_static(&[0x17, 0, 0, 0, 0]),
+            },
+            0x01,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn cached_sequence_headers_keep_order_and_extended_timestamps_across_rollover() {
+        let (event_sender, _) = tokio::sync::mpsc::channel(8);
+        let (response_tx, mut response_rx) = mpsc::channel(8);
+        let (frame_tx, frame_rx) = mpsc::channel(4);
+        let mut session = HttpFlvSession::new(
+            "live".to_string(),
+            "late-subscriber".to_string(),
+            event_sender,
+            response_tx,
+        );
+        session.data_receiver = Some(crate::streamhub::define::FrameDataReceiver::bounded(
+            frame_rx,
+        ));
+
+        frame_tx
+            .send(FrameData::Video {
+                timestamp: u32::MAX - 3,
+                data: bytes::Bytes::from_static(&[0x17, 0x00, 0, 0, 0, 0x01]),
+            })
+            .await
+            .expect("cached video sequence header");
+        frame_tx
+            .send(FrameData::Audio {
+                timestamp: 2,
+                data: bytes::Bytes::from_static(&[0xaf, 0x00, 0x12, 0x10]),
+            })
+            .await
+            .expect("cached audio sequence header");
+        drop(frame_tx);
+
+        session
+            .send_media_stream()
+            .await
+            .expect("cached headers should form a complete FLV stream");
+
+        let header = response_rx.recv().await.expect("FLV header").unwrap();
+        assert!(header.starts_with(b"FLV"));
+        assert_eq!(header[4] & 0x05, 0x05);
+
+        let video = response_rx.recv().await.expect("video tag").unwrap();
+        assert_eq!(video[0], 9);
+        assert_eq!(flv_tag_timestamp(&video), u32::MAX - 3);
+        assert_eq!(&video[11..17], &[0x17, 0x00, 0, 0, 0, 0x01]);
+
+        let audio = response_rx.recv().await.expect("audio tag").unwrap();
+        assert_eq!(audio[0], 8);
+        assert_eq!(flv_tag_timestamp(&audio), 2);
+        assert_eq!(&audio[11..15], &[0xaf, 0x00, 0x12, 0x10]);
+        drop(session);
+        assert!(response_rx.recv().await.is_none());
+    }
+
+    #[test]
+    fn short_metadata_body_returns_an_error() {
+        let (event_sender, _) = tokio::sync::mpsc::channel(8);
+        let (response_tx, _response_rx) = mpsc::channel(8);
+        let mut session = HttpFlvSession::new(
+            "live".to_string(),
+            "metadata".to_string(),
+            event_sender,
+            response_tx,
+        );
+
+        let error = session
+            .write_flv_tag(&FrameData::MetaData {
+                timestamp: 0,
+                data: bytes::Bytes::from_static(&[0x02, 0x00]),
+            })
+            .expect_err("short metadata must be rejected");
+
+        assert!(error.to_string().contains("shorter than @setDataFrame"));
+    }
+
     #[tokio::test]
     async fn test_send_media_stream_disconnects_slow_subscriber() {
         let (event_sender, _) = tokio::sync::mpsc::channel(64);
@@ -674,6 +826,7 @@ mod tests {
                     app_name: "live".to_string(),
                     stream_name: "blocker".to_string(),
                 },
+                generation_id: Uuid::new(),
             })
             .expect("prefill event channel");
 

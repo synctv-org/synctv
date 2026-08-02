@@ -7,9 +7,9 @@ license = "MIT"
 
 [features]
 default = []
-oss = ["dep:opendal", "dep:opendal-http-transport-reqwest"]
-tls-aws-lc = ["synctv-common/tls-aws-lc"]
-tls-ring = ["synctv-common/tls-ring"]
+s3 = ["dep:opendal", "dep:opendal-http-transport-reqwest", "dep:rustls"]
+tls-aws-lc = ["synctv-common/tls-aws-lc", "rustls/aws_lc_rs"]
+tls-ring = ["synctv-common/tls-ring", "rustls/ring"]
 tls-webpki-roots = ["synctv-common/tls-webpki-roots"]
 tls-native-roots = ["synctv-common/tls-native-roots"]
 
@@ -70,10 +70,18 @@ percent-encoding.workspace = true
 # Resilience
 backon.workspace = true
 
-# Object storage (optional, behind `oss` feature)
+# Object storage (optional, behind `s3` feature)
 opendal = { workspace = true, optional = true }
 opendal-http-transport-reqwest = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
 
 [dev-dependencies]
+base64.workspace = true
+ffmpeg-next.workspace = true
+reqwest.workspace = true
+rust_h265.workspace = true
+rusty_aac.workspace = true
+rusty_h264.workspace = true
+synctv-core-testing = { workspace = true, features = ["streaming"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

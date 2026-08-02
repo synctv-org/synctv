@@ -1324,32 +1324,35 @@ async fn test_active_room_stream_media_ids_unions_local_and_registry_streams() -
 
     let registry = synctv_livestream::local_stream_registry();
     registry
-        .try_register_publisher(
+        .try_activate_generation(
             &room_id.to_string(),
             &shared_media_id.to_string(),
             "node-a",
             "user-overlap",
             "127.0.0.1:50051",
+            &uuid::Uuid::new_v4().to_string(),
         )
         .await
         .map_err(|error| test_error(error.to_string()))?;
     registry
-        .try_register_publisher(
+        .try_activate_generation(
             &room_id.to_string(),
             &remote_media_id.to_string(),
             "node-b",
             "user-remote",
             "127.0.0.1:50052",
+            &uuid::Uuid::new_v4().to_string(),
         )
         .await
         .map_err(|error| test_error(error.to_string()))?;
     registry
-        .try_register_publisher(
+        .try_activate_generation(
             &other_room_id.to_string(),
             &other_media_id.to_string(),
             "node-c",
             "user-other",
             "127.0.0.1:50053",
+            &uuid::Uuid::new_v4().to_string(),
         )
         .await
         .map_err(|error| test_error(error.to_string()))?;
@@ -3856,12 +3859,13 @@ async fn test_get_stream_info_bypasses_room_membership_requirement_for_global_ad
     let registry_owner_id = owner.id.to_string();
 
     registry
-        .try_register_publisher(
+        .try_activate_generation(
             &registry_room_id,
             &registry_media_id,
             "node-local",
             &registry_owner_id,
             "127.0.0.1:50051",
+            &uuid::Uuid::new_v4().to_string(),
         )
         .await
         .map_err(|error| test_error(error.to_string()))?;
@@ -3915,12 +3919,13 @@ async fn test_kick_stream_reports_local_unpublish_enqueue_failure() -> TestResul
     let registry_owner_id = owner.id.to_string();
 
     registry
-        .try_register_publisher(
+        .try_activate_generation(
             &registry_room_id,
             &registry_media_id,
             "node-local",
             &registry_owner_id,
             "127.0.0.1:50051",
+            &uuid::Uuid::new_v4().to_string(),
         )
         .await
         .map_err(|error| test_error(error.to_string()))?;
@@ -3945,7 +3950,7 @@ async fn test_kick_stream_reports_local_unpublish_enqueue_failure() -> TestResul
     );
     assert!(
         registry
-            .get_publisher(&registry_room_id, &registry_media_id)
+            .get_active_generation(&registry_room_id, &registry_media_id)
             .await
             .map_err(|error| test_error(error.to_string()))?
             .is_some(),
@@ -3998,12 +4003,13 @@ async fn test_kick_stream_publishes_cluster_event_for_remote_publisher() -> Test
     let registry_owner_id = owner.id.to_string();
 
     registry
-        .try_register_publisher(
+        .try_activate_generation(
             &registry_room_id,
             &registry_media_id,
             "node-remote",
             &registry_owner_id,
             "127.0.0.1:50052",
+            &uuid::Uuid::new_v4().to_string(),
         )
         .await
         .map_err(|error| test_error(error.to_string()))?;
@@ -4030,7 +4036,7 @@ async fn test_kick_stream_publishes_cluster_event_for_remote_publisher() -> Test
     ));
     assert!(
         registry
-            .get_publisher(&registry_room_id, &registry_media_id)
+            .get_active_generation(&registry_room_id, &registry_media_id)
             .await
             .map_err(|error| test_error(error.to_string()))?
             .is_some(),
@@ -4080,12 +4086,13 @@ async fn test_kick_stream_reports_remote_fanout_failure() -> TestResult {
     let registry_owner_id = owner.id.to_string();
 
     registry
-        .try_register_publisher(
+        .try_activate_generation(
             &registry_room_id,
             &registry_media_id,
             "node-remote",
             &registry_owner_id,
             "127.0.0.1:50052",
+            &uuid::Uuid::new_v4().to_string(),
         )
         .await
         .map_err(|error| test_error(error.to_string()))?;
@@ -4110,7 +4117,7 @@ async fn test_kick_stream_reports_remote_fanout_failure() -> TestResult {
     );
     assert!(
         registry
-            .get_publisher(&registry_room_id, &registry_media_id)
+            .get_active_generation(&registry_room_id, &registry_media_id)
             .await
             .map_err(|error| test_error(error.to_string()))?
             .is_some(),
@@ -4153,12 +4160,13 @@ async fn test_list_room_streams_bypasses_room_membership_requirement_for_global_
     let encoded_media_id = public_media_id(&admin_api, media.id);
 
     registry
-        .try_register_publisher(
+        .try_activate_generation(
             &registry_room_id,
             &registry_media_id,
             "node-a",
             &registry_owner_id,
             "127.0.0.1:50051",
+            &uuid::Uuid::new_v4().to_string(),
         )
         .await
         .map_err(|error| test_error(error.to_string()))?;

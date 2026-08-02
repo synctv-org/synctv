@@ -16,6 +16,8 @@ pub mod result;
 pub mod rustfs;
 pub mod services;
 pub mod source_config;
+#[cfg(feature = "streaming")]
+pub mod streaming;
 
 pub(crate) fn test_temp_dir() -> PathBuf {
     let path = std::env::temp_dir();
@@ -64,4 +66,8 @@ pub use source_config::{
     bilibili_video_media_source_config, direct_url_media_source_config,
     direct_url_media_source_config_with_headers, live_proxy_pull_live_media_source_config,
     media_source_config_json, playlist_source_config_json, rtmp_managed_live_media_source_config,
+};
+#[cfg(feature = "streaming")]
+pub use streaming::{
+    aac_test_tag, avc_test_tag, RtmpMediaMessage, RtmpMediaType, RtmpPlayer, RtmpPublisher,
 };

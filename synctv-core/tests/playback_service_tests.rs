@@ -204,7 +204,7 @@ async fn test_seek_rejects_live_direct_url_source() {
     let synctv_core::models::MediaSourceConfig::DirectUrl(config) = &mut source_config else {
         panic!("direct url source_config should be DirectUrl");
     };
-    config.is_live = Some(true);
+    config.playback_kind = Some(synctv_core::models::PlaybackKind::Live);
 
     let media = Media {
         id: MediaId::new(),

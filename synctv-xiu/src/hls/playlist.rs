@@ -3,7 +3,11 @@ use std::fmt::Write as _;
 
 use chrono::{SecondsFormat, TimeZone as _, Utc};
 
-const LIVE_WINDOW_SEGMENTS: usize = 6;
+/// Number of segments exposed by a live HLS playlist.
+pub const HLS_PLAYLIST_WINDOW_SEGMENTS: usize = 6;
+/// One additional segment lets a client request the oldest entry from the
+/// playlist it fetched before the next refresh advances the window.
+pub const HLS_PLAYLIST_RETENTION_RESERVE: usize = HLS_PLAYLIST_WINDOW_SEGMENTS + 1;
 const DEFAULT_TARGET_DURATION_SECS: i64 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +37,7 @@ impl HlsPlaylist {
     }
 
     fn prune(&mut self) {
-        while self.segments.len() > LIVE_WINDOW_SEGMENTS {
+        while self.segments.len() > HLS_PLAYLIST_WINDOW_SEGMENTS {
             self.segments.pop_front();
         }
     }

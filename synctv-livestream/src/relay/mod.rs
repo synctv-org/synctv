@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use in_memory_registry::InMemoryStreamRegistry;
 
-pub use registry::{PublisherInfo, RegistryConnectionRuntime, PUBLISHER_TTL_SECS};
-pub use registry_trait::{ActivePublisherEntry, PublisherRefreshOutcome, StreamRegistryTrait};
+pub use registry::{RegistryConnectionRuntime, StreamGeneration, PUBLISHER_TTL_SECS};
+pub use registry_trait::{ActiveStreamGeneration, LeaseRefreshOutcome, StreamRegistryTrait};
 
 #[cfg(test)]
 pub(crate) use test_registry::TestStreamRegistry;

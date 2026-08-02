@@ -49,7 +49,7 @@ fn mark_rtmp_playback_resources(result: &mut PlaybackResult, version: &str, expi
         for media in &mut info.medias {
             let (room_id, media_id) = match &media.provider {
                 PlaybackMediaProvider::Rtmp(
-                    PlaybackRtmpMedia::HlsPlaylist {
+                    PlaybackRtmpMedia::HlsMaster {
                         room_id, media_id, ..
                     }
                     | PlaybackRtmpMedia::FlvStream {
@@ -60,7 +60,7 @@ fn mark_rtmp_playback_resources(result: &mut PlaybackResult, version: &str, expi
             };
 
             media.provider = if is_hls {
-                PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::HlsPlaylist {
+                PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::HlsMaster {
                     version: version.to_string(),
                     expires_at,
                     room_id,
@@ -147,7 +147,7 @@ impl RtmpProvider {
         super::live_helpers::build_flv_action(Self::NAME, &versioned, access)
     }
 
-    pub async fn get_hls_playlist(
+    pub async fn get_hls_master(
         &self,
         store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
         version: &str,
@@ -155,18 +155,36 @@ impl RtmpProvider {
     ) -> Result<PlaybackTransportAction, ProviderError> {
         let versioned =
             super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        super::live_helpers::build_hls_playlist_action(Self::NAME, &versioned)
+        super::live_helpers::build_hls_master_action(Self::NAME, &versioned)
+    }
+
+    pub async fn get_hls_playlist(
+        &self,
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
+        version: &str,
+        generation_id: &str,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        super::live_helpers::build_hls_playlist_action(Self::NAME, &versioned, generation_id)
     }
 
     pub async fn get_hls_segment(
         &self,
         store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
         version: &str,
+        generation_id: &str,
         segment_name: &str,
         request_context: Option<&super::ExecutionControl>,
     ) -> Result<PlaybackTransportAction, ProviderError> {
         let versioned =
             super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        super::live_helpers::build_hls_segment_action(Self::NAME, &versioned, segment_name)
+        super::live_helpers::build_hls_segment_action(
+            Self::NAME,
+            &versioned,
+            generation_id,
+            segment_name,
+        )
     }
 }

@@ -50,8 +50,8 @@ jobs:
         with:
           components: clippy
 
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
@@ -110,8 +110,8 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
 
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
@@ -139,13 +139,13 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
-      - name: Install protobuf compiler on Linux
+      - name: Install build dependencies on Linux
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
 
-      - name: Install protobuf compiler on macOS
+      - name: Install build dependencies on macOS
         if: runner.os == 'macOS'
-        run: brew install protobuf
+        run: brew install protobuf nasm
 
       - name: Install protobuf compiler on Windows
         if: runner.os == 'Windows'
@@ -186,9 +186,9 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
-      - name: Install protobuf compiler on Linux
+      - name: Install build dependencies on Linux
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
@@ -260,8 +260,8 @@ jobs:
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
 
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
 
       - name: Install cargo-udeps
         run: make install-cargo-udeps

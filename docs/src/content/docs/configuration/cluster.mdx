@@ -53,7 +53,7 @@ openssl rand -hex 32
   light={clusterRuntimeLight}
   dark={clusterRuntimeDark}
   alt="SyncTV 集群运行时架构图，展示客户端通过 HTTP/gRPC 入口访问多个节点，节点共享 PostgreSQL 和 Redis，并通过 HLS backend 或 publisher-node proxy 读取直播分片。"
-  caption="集群模式下，业务持久状态进入 PostgreSQL，跨节点运行时状态进入 Redis。本地 HLS backend 使用 publisher-node proxy；shared_file 会让当前节点从共享挂载读取 TS 分片，OSS 则提供对象存储边界。"
+  caption="集群模式下，业务持久状态进入 PostgreSQL，跨节点运行时状态进入 Redis。本地 HLS backend 使用 publisher-node proxy；shared_file 会让当前节点从共享挂载读取 TS 分片，S3 则提供对象存储边界。"
 />
 
 ## 节点协同流程
@@ -68,7 +68,7 @@ openssl rand -hex 32
 </Steps>
 
 <Aside type="caution">
-集群模式不能修复底层依赖不一致。多个副本必须共享同一个 PostgreSQL、Redis 和 `cluster.secret`。HLS 本地 backend 可以通过 publisher-node proxy 工作，因此 publisher 节点不可达、重启或网络分区时，远端节点读取分片会受影响；`shared_file` 会让 TS 分片从当前节点挂载的共享路径读取，OSS 则提供对象存储分片。
+集群模式不能修复底层依赖不一致。多个副本必须共享同一个 PostgreSQL、Redis 和 `cluster.secret`。HLS 本地 backend 可以通过 publisher-node proxy 工作，因此 publisher 节点不可达、重启或网络分区时，远端节点读取分片会受影响；`shared_file` 会让 TS 分片从当前节点挂载的共享路径读取，S3 则提供对象存储分片。
 </Aside>
 
 ## 部署形态
@@ -79,7 +79,7 @@ openssl rand -hex 32
 | 多进程固定节点 | 多台 VM 或裸机，节点数量稳定 | `cluster.enabled=true`、`discovery_mode=static` 或 `redis` |
 | Kubernetes 多副本 | 水平扩缩容、滚动升级、Ingress 暴露 | `cluster.enabled=true`、`discovery_mode=redis` 或 `k8s_dns`、HTTP/gRPC 独立 Service |
 | 多副本直播，小流量 | HLS/FLV 需要跨节点播放，但 segment 请求量不高 | `cluster.enabled=true`，可使用 `memory` 或本地 `file`，依赖 publisher-node proxy |
-| 多副本直播，高流量 | HLS 请求量高、需要更稳定的滚动升级边界 | 在集群配置基础上增加 `shared_file` 或 `oss` HLS backend |
+| 多副本直播，高流量 | HLS 请求量高、需要更稳定的滚动升级边界 | 在集群配置基础上增加 `shared_file` 或 `s3` HLS backend |
 
 ## 必备条件
 
@@ -207,21 +207,21 @@ livestream:
 ```yaml
 livestream:
   hls_storage:
-    type: "oss"
+    type: "s3"
     endpoint: "https://s3.example.com"
     bucket: "synctv-hls"
     base_path: "synctv/hls/"
 ```
 
-`oss` backend 使用 S3 兼容对象存储。
+`s3` backend 使用 S3 兼容对象存储。
 
 ## Helm 中的集群建议
 
-Helm chart 默认不启用集群模式。扩容前显式设置 `config.cluster.enabled=true`。HLS 可以先使用 publisher-node proxy；需要更稳定的分片存储和恢复边界时，使用 `shared_file` 或 `oss`。
+Helm chart 默认不启用集群模式。扩容前显式设置 `config.cluster.enabled=true`。HLS 可以先使用 publisher-node proxy；需要更稳定的分片存储和恢复边界时，使用 `shared_file` 或 `s3`。
 
 扩容前必须确认：
 
 - Redis 可用。
 - `cluster.secret` 稳定且所有副本一致。
-- HLS 模型已明确：小规模使用本地 backend + publisher-node proxy；需要持久共享存储时使用 `shared_file + RWX/PVC` 或 `oss`。
+- HLS 模型已明确：小规模使用本地 backend + publisher-node proxy；需要持久共享存储时使用 `shared_file + RWX/PVC` 或 `s3`。
 - gRPC Service/Ingress 与内部节点访问符合你的网络设计。

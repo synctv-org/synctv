@@ -2463,12 +2463,6 @@ enum PlaybackAudioCapability {
   PLAYBACK_AUDIO_CAPABILITY_LOSSLESS_SURROUND = 3;
 }
 
-enum PlaybackKind {
-  PLAYBACK_KIND_UNSPECIFIED = 0;
-  PLAYBACK_KIND_REGULAR = 1;
-  PLAYBACK_KIND_LIVE = 2;
-}
-
 message PlaybackClientProfile {
   PlaybackStreamPreference stream_preference = 1 [(buf.validate.field).enum.defined_only = true];
   optional int64 max_streaming_bitrate = 2 [(buf.validate.field).int64.gt = 0];
@@ -2516,7 +2510,7 @@ message Playback {
   // Backend-owned source duration in seconds, when available.
   optional double duration_seconds = 12;
   // Behavioral kind of the current playback source.
-  PlaybackKind playback_kind = 13 [(buf.validate.field).enum.defined_only = true];
+  synctv.source_config.PlaybackKind playback_kind = 13 [(buf.validate.field).enum.defined_only = true];
   // Provider-facing playback target for dynamic playlist playback.
   ProviderTarget target = 14;
 }

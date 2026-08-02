@@ -9,4 +9,7 @@ pub(crate) mod pull_manager;
 pub(crate) mod pull_stream;
 pub(crate) mod server;
 
+#[cfg(test)]
+mod cluster_e2e_tests;
+
 pub(crate) use synctv_xiu::hls::segment_manager::{CleanupConfig, SegmentManager};

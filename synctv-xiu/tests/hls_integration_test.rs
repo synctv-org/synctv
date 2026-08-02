@@ -1,6 +1,5 @@
-use std::time::Instant;
-
 use synctv_xiu::hls::{HlsPlaylist, SegmentInfo, StreamProcessorState};
+use synctv_xiu::streamhub::utils::Uuid;
 
 fn segment(sequence: u64, start_ms: i64) -> SegmentInfo {
     SegmentInfo {
@@ -17,7 +16,7 @@ fn state(playlist: HlsPlaylist) -> StreamProcessorState {
         app_name: "room".to_string(),
         stream_name: "media".to_string(),
         playlist,
-        created_at: Instant::now(),
+        generation_id: Uuid::new(),
         marked_for_cleanup: false,
         cleanup_segment_names: Vec::new(),
     }

@@ -2,8 +2,8 @@
 {{- $hlsBackend := $hlsStorage.type | default "memory" -}}
 {{- $hlsStoragePath := $hlsStorage.path | default "" -}}
 {{- $hlsFileBackend := or (eq $hlsBackend "file") (eq $hlsBackend "shared_file") -}}
-{{- if not (has $hlsBackend (list "memory" "file" "shared_file" "oss")) -}}
-{{- fail "config.livestream.hlsStorage.type must be one of: memory, file, shared_file, oss" -}}
+{{- if not (has $hlsBackend (list "memory" "file" "shared_file" "s3")) -}}
+{{- fail "config.livestream.hlsStorage.type must be one of: memory, file, shared_file, s3" -}}
 {{- end -}}
 {{- if and $hlsFileBackend (not $hlsStoragePath) -}}
 {{- fail "config.livestream.hlsStorage.type=file/shared_file requires config.livestream.hlsStorage.path" -}}
@@ -370,7 +370,7 @@ spec:
                   name: {{ include "synctv.secretName" . }}
                   key: SYNCTV_METRICS_AUTH_BASIC_PASSWORD
             {{- end }}
-            {{- if eq $hlsBackend "oss" }}
+            {{- if eq $hlsBackend "s3" }}
             - name: SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:

@@ -491,7 +491,7 @@ pub enum ServerStateHlsStorageBackend {
     Memory,
     File,
     SharedFile,
-    Oss,
+    S3,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1527,7 +1527,7 @@ fn hls_storage_backend_name(backend: ServerStateHlsStorageBackend) -> &'static s
         ServerStateHlsStorageBackend::Memory => "memory",
         ServerStateHlsStorageBackend::File => "file",
         ServerStateHlsStorageBackend::SharedFile => "shared_file",
-        ServerStateHlsStorageBackend::Oss => "oss",
+        ServerStateHlsStorageBackend::S3 => "s3",
     }
 }
 

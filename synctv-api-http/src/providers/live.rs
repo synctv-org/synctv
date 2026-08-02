@@ -11,9 +11,9 @@ use synctv_core::provider::PlaybackTransportAction;
 use crate::http::{AppError, AppResult, AppState};
 use crate::providers::playback_provider::transport::stream_chunk_http_response;
 use synctv_api_common::playback_provider::common::{
-    get_live_hls_playlist_chunks, get_live_hls_segment_chunks, stream_live_flv_chunks,
-    LiveFlvChunksRequest, LiveHlsPlaylistChunksRequest, LiveHlsSegmentChunksRequest,
-    LivePlaybackDeps,
+    get_live_hls_master_chunks, get_live_hls_playlist_chunks, get_live_hls_segment_chunks,
+    stream_live_flv_chunks, LiveFlvChunksRequest, LiveHlsMasterChunksRequest,
+    LiveHlsPlaylistChunksRequest, LiveHlsSegmentChunksRequest, LivePlaybackDeps,
 };
 use synctv_api_common::proxy_signature::ProxySigningKeyQueryExt;
 
@@ -47,7 +47,7 @@ pub(crate) async fn execute_live_stream_action(
             .await
             .map_err(crate::http::error::map_api_error)?
         }
-        PlaybackTransportAction::LiveHlsPlaylist {
+        PlaybackTransportAction::LiveHlsMaster {
             provider_name,
             room_id,
             media_id,
@@ -59,15 +59,16 @@ pub(crate) async fn execute_live_stream_action(
                 state,
                 &provider_name,
                 &version,
+                "hls-master",
                 raw_query.unwrap_or_default(),
             )?;
             let route_provider = match provider_name.as_str() {
                 synctv_core::provider::LiveProxyProvider::NAME => "live-proxy".to_string(),
                 other => other.to_string(),
             };
-            get_live_hls_playlist_chunks(
+            get_live_hls_master_chunks(
                 live_deps(state),
-                LiveHlsPlaylistChunksRequest {
+                LiveHlsMasterChunksRequest {
                     provider_name,
                     room_id,
                     media_id,
@@ -82,28 +83,61 @@ pub(crate) async fn execute_live_stream_action(
             .await
             .map_err(crate::http::error::map_api_error)?
         }
-        PlaybackTransportAction::LiveHlsSegment {
+        PlaybackTransportAction::LiveHlsPlaylist {
             provider_name,
             room_id,
             media_id,
-            segment_name,
-            disguised_as_png: _,
+            version,
+            generation_id,
         } => {
-            let external_source =
-                live_proxy_source(state, &provider_name, &room_id, &media_id).await;
-            get_live_hls_segment_chunks(
+            let resource = format!("hls/{generation_id}/index.m3u8");
+            let (signature_user_id, signature_room_id, signature_expires_at) = live_hls_signature(
+                state,
+                &provider_name,
+                &version,
+                &resource,
+                raw_query.unwrap_or_default(),
+            )?;
+            let route_provider = match provider_name.as_str() {
+                synctv_core::provider::LiveProxyProvider::NAME => "live-proxy".to_string(),
+                other => other.to_string(),
+            };
+            get_live_hls_playlist_chunks(
                 live_deps(state),
-                LiveHlsSegmentChunksRequest {
+                LiveHlsPlaylistChunksRequest {
+                    provider_name,
                     room_id,
                     media_id,
-                    segment_name,
-                    external_source,
-                    head: false,
+                    version,
+                    generation_id,
+                    signature_user_id,
+                    signature_room_id,
+                    signature_expires_at,
+                    route_provider,
                 },
             )
             .await
             .map_err(crate::http::error::map_api_error)?
         }
+        PlaybackTransportAction::LiveHlsSegment {
+            provider_name: _,
+            room_id,
+            media_id,
+            generation_id,
+            segment_name,
+            disguised_as_png: _,
+        } => get_live_hls_segment_chunks(
+            live_deps(state),
+            LiveHlsSegmentChunksRequest {
+                room_id,
+                media_id,
+                generation_id,
+                segment_name,
+                head: false,
+            },
+        )
+        .await
+        .map_err(crate::http::error::map_api_error)?,
         other => {
             tracing::error!(action = ?other, "execute_live_stream_action received unsupported action");
             return Err(AppError::internal_server_error(
@@ -129,6 +163,7 @@ fn live_hls_signature(
     state: &AppState,
     provider_name: &str,
     version: &str,
+    resource: &str,
     raw_query: &str,
 ) -> Result<(String, String, i64), AppError> {
     let (_sig, uid, rid, exp) =
@@ -137,7 +172,7 @@ fn live_hls_signature(
     state
         .shared_api_runtime
         .proxy_signing_key
-        .parse_and_verify_query(raw_query, provider_name, version, "hls-playlist")
+        .parse_and_verify_query(raw_query, provider_name, version, resource)
         .map_err(|_| AppError::unauthorized("Invalid playback provider signature"))?;
     Ok((uid, rid, exp))
 }

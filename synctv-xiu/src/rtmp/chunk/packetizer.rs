@@ -30,8 +30,6 @@ pub struct ChunkPacketizer {
     csid_2_chunk_header: lru::LruCache<u32, ChunkHeader>,
     max_chunk_size: usize,
     writer: AsyncBytesWriter,
-    //save extended timestamp need to be write for chunk
-    extended_timestamp: Option<u32>,
 }
 
 impl ChunkPacketizer {
@@ -40,7 +38,6 @@ impl ChunkPacketizer {
             csid_2_chunk_header: lru::LruCache::new(MAX_CACHED_CHUNK_HEADERS),
             writer: AsyncBytesWriter::new(io),
             max_chunk_size: CHUNK_SIZE as usize,
-            extended_timestamp: None,
         }
     }
     fn zip_chunk_header(&mut self, chunk_info: &mut ChunkInfo) -> PackResult {
@@ -71,6 +68,8 @@ impl ChunkPacketizer {
                     chunk_info.basic_header.format = 2;
                     if cur_msg_header.timestamp_delta == pre_msg_header.timestamp_delta {
                         chunk_info.basic_header.format = 3;
+                        cur_msg_header.extended_timestamp_type =
+                            pre_msg_header.extended_timestamp_type.clone();
                     }
                 }
             }
@@ -83,15 +82,6 @@ impl ChunkPacketizer {
             chunk_info.message_header.timestamp_delta = 0;
         }
 
-        //update pre header
-        self.csid_2_chunk_header.put(
-            chunk_info.basic_header.chunk_stream_id,
-            ChunkHeader {
-                basic_header: chunk_info.basic_header.clone(),
-                message_header: chunk_info.message_header.clone(),
-            },
-        );
-
         PackResult::Success
     }
 
@@ -100,7 +90,8 @@ impl ChunkPacketizer {
             let extended_csid =
                 u16::try_from(csid - 64).map_err(|_| PackErrorValue::InvalidChunkStreamId(csid))?;
             self.writer.write_u8(fmt << 6 | 1)?;
-            self.writer.write_u16::<BigEndian>(extended_csid)?;
+            // RTMP encodes the 16-bit extended CSID least-significant byte first.
+            self.writer.write_u16::<LittleEndian>(extended_csid)?;
         } else if csid >= 64 {
             let extended_csid =
                 u8::try_from(csid - 64).map_err(|_| PackErrorValue::InvalidChunkStreamId(csid))?;
@@ -119,10 +110,12 @@ impl ChunkPacketizer {
         &mut self,
         basic_header: &ChunkBasicHeader,
         message_header: &mut ChunkMessageHeader,
-    ) -> Result<(), PackError> {
+    ) -> Result<Option<u32>, PackError> {
         let message_header_timestamp: u32;
-        (self.extended_timestamp, message_header_timestamp) = match basic_header.format {
+        let extended_timestamp;
+        (extended_timestamp, message_header_timestamp) = match basic_header.format {
             0 => {
+                message_header.extended_timestamp_type = ExtendTimestampType::NONE;
                 if message_header.timestamp >= 0x00FF_FFFF {
                     message_header.extended_timestamp_type = ExtendTimestampType::FORMAT0;
                     (Some(message_header.timestamp), 0x00FF_FFFF)
@@ -131,6 +124,7 @@ impl ChunkPacketizer {
                 }
             }
             1 | 2 => {
+                message_header.extended_timestamp_type = ExtendTimestampType::NONE;
                 if message_header.timestamp_delta >= 0x00FF_FFFF {
                     //if use the format1,2's extended timestamp, there may be a problem for
                     //av timestamp.
@@ -145,6 +139,14 @@ impl ChunkPacketizer {
                     (None, message_header.timestamp_delta)
                 }
             }
+            3 => (
+                match message_header.extended_timestamp_type {
+                    ExtendTimestampType::FORMAT0 => Some(message_header.timestamp),
+                    ExtendTimestampType::FORMAT12 => Some(message_header.timestamp_delta),
+                    ExtendTimestampType::NONE => None,
+                },
+                0,
+            ),
             _ => {
                 return Err(PackErrorValue::InvalidChunkHeaderFormat(basic_header.format).into());
             }
@@ -174,7 +176,7 @@ impl ChunkPacketizer {
             _ => {}
         }
 
-        Ok(())
+        Ok(extended_timestamp)
     }
 
     fn write_extened_timestamp(&mut self, timestamp: u32) -> Result<(), PackError> {
@@ -198,9 +200,20 @@ impl ChunkPacketizer {
             chunk_info.basic_header.chunk_stream_id,
         )?;
 
-        self.write_message_header(&chunk_info.basic_header, &mut chunk_info.message_header)?;
+        let extended_timestamp =
+            self.write_message_header(&chunk_info.basic_header, &mut chunk_info.message_header)?;
 
-        if let Some(extended_timestamp) = self.extended_timestamp {
+        // Header compression for the next message must observe the finalized
+        // extended-timestamp type selected by `write_message_header`.
+        self.csid_2_chunk_header.put(
+            chunk_info.basic_header.chunk_stream_id,
+            ChunkHeader {
+                basic_header: chunk_info.basic_header.clone(),
+                message_header: chunk_info.message_header.clone(),
+            },
+        );
+
+        if let Some(extended_timestamp) = extended_timestamp {
             self.write_extened_timestamp(extended_timestamp)?;
         }
 
@@ -220,7 +233,7 @@ impl ChunkPacketizer {
             if whole_payload_size > 0 {
                 self.write_basic_header(3, chunk_info.basic_header.chunk_stream_id)?;
 
-                if let Some(extended_timestamp) = self.extended_timestamp {
+                if let Some(extended_timestamp) = extended_timestamp {
                     self.write_extened_timestamp(extended_timestamp)?;
                 }
             }
@@ -228,5 +241,98 @@ impl ChunkPacketizer {
         self.writer.flush_timeout(WRITE_FLUSH_TIMEOUT).await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bytesio::{
+        bytesio_errors::BytesIOError,
+        net_io::{NetType, TNetIO},
+    };
+    use crate::rtmp::chunk::unpacketizer::{ChunkUnpacketizer, UnpackResult};
+    use async_trait::async_trait;
+    use bytes::{Bytes, BytesMut};
+    use parking_lot::Mutex as ParkingMutex;
+
+    struct CaptureIo {
+        bytes: Arc<ParkingMutex<Vec<u8>>>,
+    }
+
+    #[async_trait]
+    impl TNetIO for CaptureIo {
+        async fn write(&mut self, bytes: Bytes) -> Result<(), BytesIOError> {
+            self.bytes.lock().extend_from_slice(&bytes);
+            Ok(())
+        }
+
+        async fn read(&mut self) -> Result<BytesMut, BytesIOError> {
+            panic!("capture IO is write-only")
+        }
+
+        async fn read_timeout(&mut self, _duration: Duration) -> Result<BytesMut, BytesIOError> {
+            panic!("capture IO is write-only")
+        }
+
+        async fn shutdown(&mut self) -> Result<(), BytesIOError> {
+            Ok(())
+        }
+
+        fn get_net_type(&self) -> NetType {
+            NetType::TCP
+        }
+    }
+
+    #[tokio::test]
+    async fn three_byte_csid_encoding_round_trips_through_unpacketizer() {
+        let captured = Arc::new(ParkingMutex::new(Vec::new()));
+        let io: Arc<tokio::sync::Mutex<Box<dyn TNetIO + Send + Sync>>> =
+            Arc::new(tokio::sync::Mutex::new(Box::new(CaptureIo {
+                bytes: Arc::clone(&captured),
+            })));
+        let mut packetizer = ChunkPacketizer::new(io);
+        let mut chunk = ChunkInfo::new(320, 0, 7, 1, 9, 1, BytesMut::from(&[0xaa][..]));
+
+        packetizer.write_chunk(&mut chunk).await.unwrap();
+        let wire = captured.lock().clone();
+        assert_eq!(&wire[..3], &[0x01, 0x00, 0x01]);
+
+        let mut unpacker = ChunkUnpacketizer::new();
+        unpacker.extend_data(&wire).unwrap();
+        let UnpackResult::Chunks(chunks) = unpacker.read_chunks().unwrap() else {
+            panic!("packetized message should unpack")
+        };
+        assert_eq!(chunks[0].basic_header.chunk_stream_id, 320);
+        assert_eq!(chunks[0].payload.as_ref(), &[0xaa]);
+    }
+
+    #[tokio::test]
+    async fn format_three_inherits_format_zero_extended_timestamp() {
+        let captured = Arc::new(ParkingMutex::new(Vec::new()));
+        let io: Arc<tokio::sync::Mutex<Box<dyn TNetIO + Send + Sync>>> =
+            Arc::new(tokio::sync::Mutex::new(Box::new(CaptureIo {
+                bytes: Arc::clone(&captured),
+            })));
+        let mut packetizer = ChunkPacketizer::new(io);
+        let timestamp = 0x0100_0000;
+
+        for payload in [0xaa, 0xbb] {
+            let mut chunk =
+                ChunkInfo::new(7, 0, timestamp, 1, 9, 1, BytesMut::from(&[payload][..]));
+            packetizer.write_chunk(&mut chunk).await.unwrap();
+        }
+
+        let wire = captured.lock().clone();
+        let mut unpacker = ChunkUnpacketizer::new();
+        unpacker.extend_data(&wire).unwrap();
+        let UnpackResult::Chunks(chunks) = unpacker.read_chunks().unwrap() else {
+            panic!("packetized messages should unpack")
+        };
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].message_header.timestamp, timestamp);
+        assert_eq!(chunks[1].message_header.timestamp, timestamp);
+        assert_eq!(chunks[0].payload.as_ref(), &[0xaa]);
+        assert_eq!(chunks[1].payload.as_ref(), &[0xbb]);
     }
 }

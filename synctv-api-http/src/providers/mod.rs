@@ -66,6 +66,7 @@ pub(crate) async fn execute_playback_transport(
 ) -> crate::http::error::AppResult<axum::response::Response> {
     match action {
         PlaybackTransportAction::LiveFlv { .. }
+        | PlaybackTransportAction::LiveHlsMaster { .. }
         | PlaybackTransportAction::LiveHlsPlaylist { .. }
         | PlaybackTransportAction::LiveHlsSegment { .. } => Err(AppError::internal_server_error(
             "live playback transport actions must execute with application state".to_string(),
@@ -141,6 +142,7 @@ pub(crate) async fn execute_playback_transport_with_state_for_method(
 ) -> crate::http::error::AppResult<axum::response::Response> {
     match action {
         PlaybackTransportAction::LiveFlv { .. }
+        | PlaybackTransportAction::LiveHlsMaster { .. }
         | PlaybackTransportAction::LiveHlsPlaylist { .. }
         | PlaybackTransportAction::LiveHlsSegment { .. } => {
             if method != Method::GET {
@@ -179,6 +181,7 @@ async fn execute_playback_transport_with_runtime_for_method(
 ) -> crate::http::error::AppResult<axum::response::Response> {
     match action {
         PlaybackTransportAction::LiveFlv { .. }
+        | PlaybackTransportAction::LiveHlsMaster { .. }
         | PlaybackTransportAction::LiveHlsPlaylist { .. }
         | PlaybackTransportAction::LiveHlsSegment { .. } => Err(AppError::internal_server_error(
             "live playback transport actions require application state".to_string(),

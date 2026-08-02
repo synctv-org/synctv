@@ -163,6 +163,31 @@ impl ServerSession {
     }
 
     pub async fn run(&mut self) -> Result<(), SessionError> {
+        let result = self.run_inner().await;
+
+        // Media parsing and downstream channel failures can leave the session
+        // loop without passing through the transport-error teardown paths.
+        if self.is_publishing {
+            let teardown_result = self.teardown_active_stream().await;
+            return match (result, teardown_result) {
+                (Ok(()), cleanup) => cleanup,
+                (Err(error), Ok(())) => Err(error),
+                (Err(error), Err(cleanup_error)) => {
+                    tracing::warn!(
+                        error = %cleanup_error,
+                        app = %self.app_name,
+                        stream = %self.stream_name,
+                        "RTMP publisher cleanup failed after the session stopped"
+                    );
+                    Err(error)
+                }
+            };
+        }
+
+        result
+    }
+
+    async fn run_inner(&mut self) -> Result<(), SessionError> {
         loop {
             match self.state {
                 ServerSessionState::Handshake => {
@@ -192,8 +217,13 @@ impl ServerSession {
                 .unpublish_to_stream_hub(self.app_name.clone(), self.stream_name.clone())
                 .await;
             if let Some(auth) = &self.auth {
-                auth.on_unpublish(&self.app_name, &self.stream_name, self.query.as_deref())
-                    .await;
+                auth.on_unpublish(
+                    self.common.session_id(),
+                    &self.app_name,
+                    &self.stream_name,
+                    self.query.as_deref(),
+                )
+                .await;
             }
             if let Some(cb) = &self.callbacks.on_publisher_stop {
                 cb();
@@ -883,7 +913,12 @@ impl ServerSession {
         }
         if let Some(auth) = &self.auth {
             let rewrite = auth
-                .on_publish(&self.app_name, &self.stream_name, self.query.as_deref())
+                .on_publish(
+                    self.common.session_id(),
+                    &self.app_name,
+                    &self.stream_name,
+                    self.query.as_deref(),
+                )
                 .await
                 .map_err(|e| SessionError {
                     value: SessionErrorValue::AuthFailed(e.to_string()),
@@ -934,6 +969,7 @@ impl ServerSession {
         );
 
         // Helper closure for cleanup on error - use rollback for proper Redis cleanup
+        let generation_id = self.common.session_id();
         let cleanup_auth = || async {
             if let Some(auth) = &self.auth {
                 // Use on_publish_rollback instead of on_unpublish because:
@@ -941,8 +977,13 @@ impl ServerSession {
                 // 2. on_unpublish intentionally does NOT clean up Redis (PublisherManager does)
                 // 3. When StreamHub fails, PublisherManager never gets called
                 // 4. So we need rollback to clean up Redis immediately
-                auth.on_publish_rollback(&self.app_name, &self.stream_name, self.query.as_deref())
-                    .await;
+                auth.on_publish_rollback(
+                    generation_id,
+                    &self.app_name,
+                    &self.stream_name,
+                    self.query.as_deref(),
+                )
+                .await;
             }
         };
 
@@ -1018,6 +1059,7 @@ mod tests {
     use crate::bytesio::bytesio_errors::{BytesIOError, BytesIOErrorValue};
     use crate::bytesio::net_io::{NetType, TNetIO};
     use crate::streamhub::define::STREAM_HUB_EVENT_CHANNEL_CAPACITY;
+    use crate::streamhub::utils::Uuid;
 
     struct ChunkedNetIo {
         reads: VecDeque<BytesMut>,
@@ -1067,6 +1109,7 @@ mod tests {
     impl AuthCallback for RecordingAuthCallback {
         async fn on_publish(
             &self,
+            _generation_id: Uuid,
             _app_name: &str,
             _stream_name: &str,
             _query: Option<&str>,
@@ -1086,7 +1129,13 @@ mod tests {
             Ok(())
         }
 
-        async fn on_unpublish(&self, _app_name: &str, _stream_name: &str, _query: Option<&str>) {
+        async fn on_unpublish(
+            &self,
+            _generation_id: Uuid,
+            _app_name: &str,
+            _stream_name: &str,
+            _query: Option<&str>,
+        ) {
             self.events
                 .lock()
                 .expect("lock auth events")

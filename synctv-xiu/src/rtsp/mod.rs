@@ -11,7 +11,10 @@ use bytes::{Bytes, BytesMut};
 use futures::StreamExt as _;
 use percent_encoding::percent_decode_str;
 use retina::{
-    client::{Credentials, Demuxed, PlayOptions, Session, SessionOptions, SetupOptions, Transport},
+    client::{
+        Credentials, Demuxed, InitialTimestampPolicy, PlayOptions, Session, SessionOptions,
+        SetupOptions, Transport,
+    },
     codec::{CodecItem, FrameFormat, ParametersRef, VideoParametersCodec},
 };
 use url::Url;
@@ -192,11 +195,12 @@ impl RtspPullSession {
                 .with_context(|| format!("RTSP SETUP failed for track {track}"))?;
         }
 
-        let playing =
-            tokio::time::timeout(config.request_timeout, session.play(PlayOptions::default()))
-                .await
-                .context("RTSP PLAY timed out")?
-                .context("RTSP PLAY failed")?;
+        let play_options =
+            PlayOptions::default().initial_timestamp(InitialTimestampPolicy::Permissive);
+        let playing = tokio::time::timeout(config.request_timeout, session.play(play_options))
+            .await
+            .context("RTSP PLAY timed out")?
+            .context("RTSP PLAY failed")?;
         let demuxed = playing
             .demuxed()
             .context("RTSP presentation contains an unsupported selected track")?;

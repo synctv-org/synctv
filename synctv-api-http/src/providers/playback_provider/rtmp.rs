@@ -4,8 +4,9 @@ use axum::{
 };
 use futures::FutureExt;
 use synctv_proto::playback_provider::rtmp::{
-    GetRtmpFlvStreamRequest, GetRtmpHlsPlaylistRequest, GetRtmpHlsSegmentRequest,
-    RtmpFlvStreamResponse, RtmpHlsPlaylistResponse, RtmpHlsSegmentResponse,
+    GetRtmpFlvStreamRequest, GetRtmpHlsMasterRequest, GetRtmpHlsPlaylistRequest,
+    GetRtmpHlsSegmentRequest, RtmpFlvStreamResponse, RtmpHlsMasterResponse,
+    RtmpHlsPlaylistResponse, RtmpHlsSegmentResponse,
 };
 
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
@@ -23,7 +24,15 @@ pub struct RtmpVersionPath {
 #[serde(rename_all = "camelCase")]
 pub struct RtmpSegmentPath {
     pub version: String,
+    pub generation_id: String,
     pub segment_name: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RtmpPlaylistPath {
+    pub version: String,
+    pub generation_id: String,
 }
 
 impl PlaybackProviderHttpResponse for RtmpFlvStreamResponse {
@@ -33,6 +42,12 @@ impl PlaybackProviderHttpResponse for RtmpFlvStreamResponse {
 }
 
 impl PlaybackProviderHttpResponse for RtmpHlsPlaylistResponse {
+    fn chunk(self) -> Option<synctv_proto::playback_provider::common::StreamChunk> {
+        self.chunk
+    }
+}
+
+impl PlaybackProviderHttpResponse for RtmpHlsMasterResponse {
     fn chunk(self) -> Option<synctv_proto::playback_provider::common::StreamChunk> {
         self.chunk
     }
@@ -147,7 +162,7 @@ async fn rtmp_flv_stream(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/rtmp/{version}/hls-playlist",
+        path = "/api/playback-providers/rtmp/{version}/hls-master",
         tag = "RTMP Playback Provider",
         params(
             ("version" = String, Path),
@@ -157,14 +172,71 @@ async fn rtmp_flv_stream(
             ("exp" = i64, Query)
         ),
         responses(
-            (status = 200, description = "RTMP HLS playlist"),
+            (status = 200, description = "RTMP HLS master playlist"),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
+        )
+    )
+)]
+pub async fn get_rtmp_hls_master(
+    Path(path): Path<RtmpVersionPath>,
+    State(state): State<AppState>,
+    request_meta: RequestMetadata,
+    raw_query: RawQuery,
+) -> AppResult<axum::response::Response> {
+    let query_string = query(raw_query);
+    let (sig, uid, rid, exp) =
+        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let req = GetRtmpHlsMasterRequest {
+        version: path.version,
+        sig,
+        uid,
+        rid,
+        exp,
+    };
+    let state_for_stream = state.clone();
+    stream_http_response::<RtmpHlsMasterResponse, _>(
+        state,
+        request_meta,
+        Method::GET,
+        move |request_control| {
+            let state = state_for_stream;
+            async move {
+                synctv_api_common::playback_provider::rtmp::get_rtmp_hls_master(
+                    rtmp_deps(&state, Some(&request_control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        },
+    )
+    .await
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/playback-providers/rtmp/{version}/hls/{generationId}/index.m3u8",
+        tag = "RTMP Playback Provider",
+        params(
+            ("version" = String, Path),
+            ("generationId" = String, Path),
+            ("sig" = String, Query),
+            ("uid" = String, Query),
+            ("rid" = String, Query),
+            ("exp" = i64, Query)
+        ),
+        responses(
+            (status = 200, description = "RTMP HLS generation playlist"),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
 pub async fn get_rtmp_hls_playlist(
-    Path(path): Path<RtmpVersionPath>,
+    Path(path): Path<RtmpPlaylistPath>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     raw_query: RawQuery,
@@ -174,6 +246,7 @@ pub async fn get_rtmp_hls_playlist(
         signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
     let req = GetRtmpHlsPlaylistRequest {
         version: path.version,
+        generation_id: path.generation_id,
         sig,
         uid,
         rid,
@@ -203,10 +276,11 @@ pub async fn get_rtmp_hls_playlist(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/rtmp/{version}/hls-segments/{segmentName}",
+        path = "/api/playback-providers/rtmp/{version}/hls/{generationId}/{segmentName}",
         tag = "RTMP Playback Provider",
         params(
             ("version" = String, Path),
+            ("generationId" = String, Path),
             ("segmentName" = String, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
@@ -241,10 +315,11 @@ pub fn get_rtmp_hls_segment(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/rtmp/{version}/hls-segments/{segmentName}",
+        path = "/api/playback-providers/rtmp/{version}/hls/{generationId}/{segmentName}",
         tag = "RTMP Playback Provider",
         params(
             ("version" = String, Path),
+            ("generationId" = String, Path),
             ("segmentName" = String, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
@@ -287,6 +362,7 @@ async fn rtmp_hls_segment(
         signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
     let req = GetRtmpHlsSegmentRequest {
         version: path.version,
+        generation_id: path.generation_id,
         segment_name: path.segment_name,
         sig,
         uid,

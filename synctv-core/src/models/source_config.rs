@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use url::Url;
 
-use super::media::SourceProvider;
+use super::{media::SourceProvider, playback::PlaybackKind};
 
 const fn is_false(value: &bool) -> bool {
     !*value
@@ -67,7 +67,7 @@ pub enum PlaylistSourceConfig {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DirectUrlMediaSourceConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub is_live: Option<bool>,
+    pub playback_kind: Option<PlaybackKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -94,7 +94,7 @@ impl DirectUrlMediaSourceConfig {
     #[must_use]
     pub fn single(url: String, headers: HashMap<String, String>) -> Self {
         Self {
-            is_live: None,
+            playback_kind: None,
             duration_seconds: None,
             prefer_proxy: None,
             proxy_only: false,
@@ -113,12 +113,15 @@ impl DirectUrlMediaSourceConfig {
     }
 
     #[must_use]
-    pub fn inferred_live_status(&self) -> Option<bool> {
-        self.is_live.or_else(|| {
-            self.has_positive_duration().then_some(false).or_else(|| {
-                self.default_media()
-                    .and_then(DirectUrlMediaResourceConfig::is_file_video)
-            })
+    pub fn inferred_playback_kind(&self) -> Option<PlaybackKind> {
+        self.playback_kind.or_else(|| {
+            self.has_positive_duration()
+                .then_some(PlaybackKind::Regular)
+                .or_else(|| {
+                    self.default_media()
+                        .and_then(DirectUrlMediaResourceConfig::is_file_video)
+                        .map(|_| PlaybackKind::Regular)
+                })
         })
     }
 
@@ -992,29 +995,29 @@ mod tests {
     }
 
     #[test]
-    fn direct_url_inferred_live_status_treats_file_video_as_finite() {
+    fn direct_url_inferred_playback_kind_treats_file_video_as_regular() {
         let config = DirectUrlMediaSourceConfig::single(
             "https://example.com/video.mp4?token=m3u8".to_string(),
             HashMap::new(),
         );
 
-        assert_eq!(config.inferred_live_status(), Some(false));
+        assert_eq!(config.inferred_playback_kind(), Some(PlaybackKind::Regular));
     }
 
     #[test]
-    fn direct_url_inferred_live_status_keeps_manifest_unknown() {
+    fn direct_url_inferred_playback_kind_keeps_manifest_unknown() {
         let config = DirectUrlMediaSourceConfig::single(
             "https://example.com/live.m3u8".to_string(),
             HashMap::new(),
         );
 
-        assert_eq!(config.inferred_live_status(), None);
+        assert_eq!(config.inferred_playback_kind(), None);
     }
 
     #[test]
-    fn direct_url_inferred_live_status_uses_default_media() {
+    fn direct_url_inferred_playback_kind_uses_default_media() {
         let config = DirectUrlMediaSourceConfig {
-            is_live: None,
+            playback_kind: None,
             duration_seconds: None,
             prefer_proxy: None,
             proxy_only: false,
@@ -1039,25 +1042,25 @@ mod tests {
             default_danmaku_index: None,
         };
 
-        assert_eq!(config.inferred_live_status(), Some(false));
+        assert_eq!(config.inferred_playback_kind(), Some(PlaybackKind::Regular));
     }
 
     #[test]
-    fn direct_url_inferred_live_status_honors_explicit_live_flag() {
+    fn direct_url_inferred_playback_kind_honors_explicit_live_kind() {
         let mut config = DirectUrlMediaSourceConfig::single(
             "https://example.com/video.mp4".to_string(),
             HashMap::new(),
         );
-        config.is_live = Some(true);
+        config.playback_kind = Some(PlaybackKind::Live);
 
-        assert_eq!(config.inferred_live_status(), Some(true));
+        assert_eq!(config.inferred_playback_kind(), Some(PlaybackKind::Live));
     }
 
     #[test]
     fn media_source_configs_round_trip_provider_storage() {
         media_round_trip(
             &MediaSourceConfig::DirectUrl(DirectUrlMediaSourceConfig {
-                is_live: Some(false),
+                playback_kind: Some(PlaybackKind::Regular),
                 duration_seconds: Some(120.5),
                 prefer_proxy: Some(true),
                 proxy_only: true,
@@ -1086,7 +1089,7 @@ mod tests {
             }),
             &json!({
                 "provider": "directUrl",
-                "isLive": false,
+                "playbackKind": "regular",
                 "durationSeconds": 120.5,
                 "preferProxy": true,
                 "proxyOnly": true,

@@ -7,8 +7,8 @@ license.workspace = true
 
 [features]
 default = ["tls-aws-lc", "tls-webpki-roots"]
-tls-aws-lc = ["reqwest/rustls"]
-tls-ring = ["reqwest/rustls-no-provider"]
+tls-aws-lc = ["dep:rustls", "reqwest/rustls", "rustls/aws_lc_rs"]
+tls-ring = ["dep:rustls", "reqwest/rustls-no-provider", "rustls/ring"]
 tls-webpki-roots = []
 tls-native-roots = []
 
@@ -17,6 +17,7 @@ http-acl.workspace = true
 http-acl-reqwest.workspace = true
 ipnet.workspace = true
 reqwest.workspace = true
+rustls = { workspace = true, optional = true }
 tracing.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true

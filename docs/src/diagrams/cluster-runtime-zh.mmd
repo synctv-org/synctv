@@ -14,7 +14,7 @@ flowchart TB
 
   PG[(PostgreSQL<br/>持久状态)]
   Redis[(Redis<br/>协调状态)]
-  HLS[(HLS 后端<br/>memory / file / OSS)]
+  HLS[(HLS 后端<br/>memory / file / S3)]
   HLSProxy[发布节点<br/>HLS gRPC 代理]
 
   Client --> HTTP

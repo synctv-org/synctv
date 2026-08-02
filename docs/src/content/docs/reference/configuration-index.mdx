@@ -28,7 +28,7 @@ OAuth2 provider 实例属于 [Runtime settings](../runtime-settings/#oauth2)。�
 | `webauthn.*` | 启用 passkey | `rp_origin` 与真实访问 origin 不一致 | 需要重启 | 只使用 HTTPS 生产 origin |
 | `email.*` | 邮箱验证、找回密码、邮箱 MFA、通知 | TLS/端口/from_email 不匹配 | 需要重启 | 用 `synctv settings test-email` 验证 |
 | `cluster.*` / `cluster.secret` | 多副本集群 | 开了集群但没 Redis 或 cluster secret | 需要重启 | 所有副本共享 PostgreSQL、Redis、secret |
-| `livestream.*` | RTMP/FLV/HLS 直播 | 多副本 HLS 存储模型不一致 | 需要重启 | 高流量使用共享文件系统或 OSS |
+| `livestream.*` | RTMP/FLV/HLS 直播 | 多副本 HLS 存储模型不一致 | 需要重启 | 高流量使用共享文件系统或 S3 |
 | `proxy_slice_cache.*` | 需要代理 Range slice 缓存 | 误以为会缓存完整文件 | 需要重启 | 挂载容量足够的目录，只缓存 Range slice |
 
 修改配置后运行：
@@ -226,15 +226,15 @@ curl -fsS http://localhost:8081/health/ready
 | `livestream.pull_max_backoff_ms` | 毫秒 | `30000` | 拉流最大退避 |
 | `livestream.max_flv_tag_size_bytes` | 字节数 | `10485760` | 最大 FLV tag 大小 |
 | `livestream.gop_cache_max_memory_mb` | MB | `100` | GOP 缓存最大内存 |
-| `livestream.hls_storage.type` | `memory`、`file`、`shared_file`、`oss` | `memory` | HLS 分片存储后端 |
+| `livestream.hls_storage.type` | `memory`、`file`、`shared_file`、`s3` | `memory` | HLS 分片存储后端 |
 | `livestream.hls_storage.memory_max_mb` | MB | `0` | `memory` 后端 HLS 存储上限，0 表示内置默认 |
 | `livestream.hls_storage.path` | 路径 | `""` | `file` / `shared_file` 后端 HLS 文件存储路径 |
-| `livestream.hls_storage.endpoint` | 字符串 | `""` | `oss` 后端 S3/OSS endpoint，启用 `oss` 时必填 |
-| `livestream.hls_storage.access_key_id` | secret 字符串 | `""` | `oss` 后端 access key ID，启用 `oss` 时必填 |
-| `livestream.hls_storage.secret_access_key` | secret 字符串 | `""` | `oss` 后端 secret access key，启用 `oss` 时必填 |
-| `livestream.hls_storage.bucket` | 字符串 | `""` | `oss` 后端 bucket，启用 `oss` 时必填 |
-| `livestream.hls_storage.region` | 字符串或空 | `null` | `oss` 后端 region |
-| `livestream.hls_storage.base_path` | 字符串 | `hls/` | `oss` 后端 bucket 内对象前缀 |
+| `livestream.hls_storage.endpoint` | 字符串 | `""` | `s3` 后端的 S3-compatible endpoint，启用 `s3` 时必填 |
+| `livestream.hls_storage.access_key_id` | secret 字符串 | `""` | `s3` 后端 access key ID，启用 `s3` 时必填 |
+| `livestream.hls_storage.secret_access_key` | secret 字符串 | `""` | `s3` 后端 secret access key，启用 `s3` 时必填 |
+| `livestream.hls_storage.bucket` | 字符串 | `""` | `s3` 后端 bucket，启用 `s3` 时必填 |
+| `livestream.hls_storage.region` | 字符串或空 | `null` | `s3` 后端 region |
+| `livestream.hls_storage.base_path` | 字符串 | `hls/` | `s3` 后端 bucket 内对象前缀 |
 | `livestream.flv_max_connection_duration_seconds` | 秒数 | `86400` | HTTP-FLV 最大连接时长 |
 | `livestream.flv_write_timeout_seconds` | 秒数 | `30` | HTTP-FLV 写超时 |
 

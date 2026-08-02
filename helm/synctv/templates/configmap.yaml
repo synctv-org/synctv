@@ -252,7 +252,7 @@ data:
         {{ if or (eq $hlsStorageType "file") (eq $hlsStorageType "shared_file") }}
         path: {{ $hlsStorage.path | default "" | quote }}
         {{ end }}
-        {{ if eq $hlsStorageType "oss" }}
+        {{ if eq $hlsStorageType "s3" }}
         endpoint: {{ $hlsStorage.endpoint | default "" | quote }}
         bucket: {{ $hlsStorage.bucket | default "" | quote }}
         {{ if $hlsStorage.region }}

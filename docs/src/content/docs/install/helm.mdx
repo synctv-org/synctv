@@ -29,7 +29,7 @@ Helm 面向已有 Kubernetes、Ingress 和集中式 Secret 管理的平台。单
 | Redis | 生产配置，多副本必需 | 所有副本连接同一 Redis，key prefix 保持唯一 |
 | Secret | 外部 Secret 或受控 Secret 管理 | OPAQUE 和 credential key 跨发布保持稳定 |
 | HTTP/gRPC Ingress | HTTP 和 gRPC 分开 | gRPC Ingress 需要独立 backend protocol |
-| HLS 存储 | 小规模用 publisher-node proxy，高流量用 RWX/OSS | 多副本共享同一存储视图 |
+| HLS 存储 | 小规模用 publisher-node proxy，高流量用 RWX/S3 | 多副本共享同一存储视图 |
 | metrics | 私网抓取并启用鉴权 | `/metrics` 保持在受控网络 |
 
 最小生产 values 骨架：
@@ -192,7 +192,7 @@ existingSecret: "my-external-synctv-secret"
 - `SYNCTV_MANAGEMENT_AUTH_TOKEN`，如果 management 使用 TCP。
 - `SYNCTV_METRICS_AUTH_BEARER_TOKEN`，如果 `metrics.enabled=true` 且 `metrics.auth.mode=bearer_token`。
 - `SYNCTV_METRICS_AUTH_BASIC_USERNAME` 和 `SYNCTV_METRICS_AUTH_BASIC_PASSWORD`，如果 `metrics.enabled=true` 且 `metrics.auth.mode=basic`。
-- `SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID` 和 `SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY`，如果 `config.livestream.hlsStorage.type=oss`。
+- `SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID` 和 `SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY`，如果 `config.livestream.hlsStorage.type=s3`。
 
 Secret 以环境变量注入，运行中的 Pod 会保留启动时读取的值。更新外部 Secret 时同步修改 checksum：
 
@@ -284,7 +284,7 @@ redis:
 
 external PostgreSQL 必须通过 `existingSecret` 的 `SYNCTV_DATABASE_PASSWORD` 或 `secrets.database.password` 提供密码。external Redis 的 `SYNCTV_REDIS_PASSWORD` 是可选的：只有外部 Redis 启用了密码认证时才需要提供。
 
-如果同时启用 `networkPolicy.enabled=true`，external PostgreSQL/Redis 以及对外 HTTP/HTTPS egress 会使用 `ipBlock` CIDR，而不是匹配 Chart 内部 Pod label；这些规则默认 fail-closed：external PostgreSQL 或 Redis 模式要求设置 `networkPolicy.externalPostgresqlCIDRs` / `networkPolicy.externalRedisCIDRs`，或者显式设置 `networkPolicy.allowAnyExternalDatabaseEgress=true`；对外 OAuth、媒体源 HTTP、HLS OSS 和 S3-compatible 对象存储 endpoint 要求设置 `networkPolicy.externalHttpCIDRs`，或者显式设置 `networkPolicy.allowAnyExternalHttpEgress=true`。
+如果同时启用 `networkPolicy.enabled=true`，external PostgreSQL/Redis 以及对外 HTTP/HTTPS egress 会使用 `ipBlock` CIDR，而不是匹配 Chart 内部 Pod label；这些规则默认 fail-closed：external PostgreSQL 或 Redis 模式要求设置 `networkPolicy.externalPostgresqlCIDRs` / `networkPolicy.externalRedisCIDRs`，或者显式设置 `networkPolicy.allowAnyExternalDatabaseEgress=true`；对外 OAuth、媒体源 HTTP、HLS S3 和 S3-compatible 对象存储 endpoint 要求设置 `networkPolicy.externalHttpCIDRs`，或者显式设置 `networkPolicy.allowAnyExternalHttpEgress=true`。
 
 应用 Service、PDB 和应用 NetworkPolicy 只选择带有 `app.kubernetes.io/component=app` 的 Pod。Chart 管理的 PostgreSQL 和 Redis 使用各自的 component label；启用 NetworkPolicy ingress 隔离时，Chart 会为它们渲染依赖专用 ingress policy，只允许 SyncTV 应用 Pod 访问对应端口。因此启用 NetworkPolicy 不会把 API 流量路由到依赖 Pod，也不会把依赖和 SyncTV 自身隔离开。
 
@@ -313,7 +313,7 @@ Deployment 会挂载 `/data`。默认是 `emptyDir`，适合运行时临时文�
 
 ## HLS 多副本注意事项
 
-Helm 默认不启用集群模式。多副本 HLS 可以先使用 publisher-node HLS proxy；生产高流量场景使用 `shared_file` 或 OSS。`shared_file` 的 TS 分片由当前节点从共享路径读取。
+Helm 默认不启用集群模式。多副本 HLS 可以先使用 publisher-node HLS proxy；生产高流量场景使用 `shared_file` 或 S3。`shared_file` 的 TS 分片由当前节点从共享路径读取。
 
 本地 backend 示例：
 
@@ -346,12 +346,12 @@ persistence:
 
 Helm 会提前拒绝以下组合：
 
-- `hlsStorage.type` 不是 `memory`、`file`、`shared_file` 或 `oss`。
+- `hlsStorage.type` 不是 `memory`、`file`、`shared_file` 或 `s3`。
 - `hlsStorage.type=file/shared_file` 但 `hlsStorage.path` 为空。
 - Kubernetes 中 `hlsStorage.type=file/shared_file` 但 `hlsStorage.path` 不是绝对路径。
 - `hlsStorage.type=shared_file` 但没有配置 `persistence.hls.existingClaim`，避免把 `emptyDir` 误当成共享存储。
 
-OSS 示例：
+S3 示例：
 
 ```yaml
 config:
@@ -359,7 +359,7 @@ config:
     enabled: true
   livestream:
     hlsStorage:
-      type: "oss"
+      type: "s3"
       endpoint: "https://s3.example.com"
       bucket: "synctv-hls"
       basePath: "synctv/hls/"

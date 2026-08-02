@@ -58,7 +58,7 @@ Start with the first error. Later errors are often cascading failures.
 | OAuth2 callback/state error | Redirect mismatch or multi-replica deployment without shared Redis | Match provider registration and configure Redis for replicas |
 | WebAuthn/passkey failure | `rp_origin` does not match the real HTTPS origin | Fix `webauthn.rp_origin` and `webauthn.rp_id` |
 | Range seek or proxy playback failure | Provider headers are incomplete or upstream lacks Range | Check Provider headers and upstream `Accept-Ranges` |
-| Intermittent HLS 404 in multi-replica mode | Publisher node unreachable or HLS storage model mismatch | Use publisher-node proxy, `shared_file`, or OSS |
+| Intermittent HLS 404 in multi-replica mode | Publisher node unreachable or HLS storage model mismatch | Use publisher-node proxy, `shared_file`, or S3 |
 
 ## Quick Checks
 

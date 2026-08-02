@@ -60,7 +60,7 @@ OPAQUE, Provider credentials, and the email outbox use separate long-lived secre
 | OAuth2 | `redirectUrl` matches provider registration. |
 | Provider credentials | Credentials are stored through secrets or controlled admin flows, not in the repository. |
 | File-backed slice cache | Cache directory has capacity planning and cleanup policy. |
-| Livestream HLS | Single-node storage is confirmed; multi-replica mode uses publisher-node proxy, `shared_file`, or OSS. |
+| Livestream HLS | Single-node storage is confirmed; multi-replica mode uses publisher-node proxy, `shared_file`, or S3. |
 | Cluster mode | All replicas share PostgreSQL, Redis, `redis.key_prefix`, and `cluster.secret`. |
 | OpenAPI | Production exposure of `/swagger-ui/` and `/api-docs/openapi.json` has been decided. |
 

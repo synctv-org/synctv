@@ -1,12 +1,8 @@
-// Object Storage Service (OSS) backend for HLS
-// Supports:
-// - AWS S3
-// - Aliyun OSS
-// - Minio
-// - Any S3-compatible storage
+// S3-compatible object storage backend for HLS
+// Supports AWS S3, MinIO, RustFS, Cloudflare R2, and compatible services.
 // Uses OpenDAL for unified storage access
 
-#[cfg(feature = "oss")]
+#[cfg(feature = "s3")]
 mod inner {
     use crate::storage::{
         minute_bucket_is_expired, path_leaf, segment_minute_bucket, validate_component,
@@ -15,15 +11,19 @@ mod inner {
     use async_trait::async_trait;
     use bytes::Bytes;
     use futures::{StreamExt as _, TryStreamExt};
-    use opendal::{services::S3, EntryMode, Operator};
+    use opendal::{
+        layers::{ConcurrentLimitLayer, RetryLayer, TimeoutLayer},
+        services::S3,
+        EntryMode, ErrorKind as OpendalErrorKind, Operator,
+    };
     use std::io::{Error, ErrorKind, Result};
     use std::sync::Arc;
     use std::time::Duration;
 
-    /// OSS storage configuration
+    /// S3 storage configuration
     #[derive(Debug, Clone)]
-    pub struct OssConfig {
-        /// OSS endpoint (e.g., "oss-cn-hangzhou.aliyuncs.com" or "s3.amazonaws.com")
+    pub struct S3Config {
+        /// S3-compatible endpoint (e.g., "https://s3.amazonaws.com")
         pub endpoint: String,
         /// Access key ID
         pub access_key_id: String,
@@ -43,19 +43,48 @@ mod inner {
         pub presign_expires_in: u64,
     }
 
-    /// OSS storage backend
-    pub struct OssStorage {
-        config: OssConfig,
+    /// S3 storage backend
+    pub struct S3Storage {
+        config: S3Config,
         operator: Arc<Operator>,
     }
 
-    impl OssStorage {
+    impl S3Storage {
         const BUCKET_LIST_CONCURRENCY: usize = 8;
+        const MAX_CONCURRENT_OPERATIONS: usize = 64;
 
-        /// Create new OSS storage with configuration
-        pub fn new(config: OssConfig) -> std::result::Result<Self, Box<dyn std::error::Error>> {
+        fn map_error(operation: &str, error: &opendal::Error) -> Error {
+            let kind = match error.kind() {
+                OpendalErrorKind::NotFound => ErrorKind::NotFound,
+                OpendalErrorKind::PermissionDenied => ErrorKind::PermissionDenied,
+                OpendalErrorKind::AlreadyExists => ErrorKind::AlreadyExists,
+                OpendalErrorKind::RateLimited => ErrorKind::WouldBlock,
+                _ => ErrorKind::Other,
+            };
+            Error::new(kind, format!("S3 {operation} failed: {error}"))
+        }
+
+        /// Create new S3 storage with configuration.
+        ///
+        /// Enable `tls-aws-lc` or `tls-ring` when the process has not already
+        /// installed a rustls crypto provider.
+        pub fn new(mut config: S3Config) -> opendal::Result<Self> {
+            synctv_common::install_process_crypto_provider();
+            if rustls::crypto::CryptoProvider::get_default().is_none() {
+                return Err(opendal::Error::new(
+                    OpendalErrorKind::ConfigInvalid,
+                    "S3 requires either the tls-aws-lc or tls-ring feature",
+                ));
+            }
+            config.base_path = config.base_path.trim_matches('/').to_string();
+            if !config.base_path.is_empty() {
+                config.base_path.push('/');
+            }
+            if !config.public_url_prefix.is_empty() && !config.public_url_prefix.ends_with('/') {
+                config.public_url_prefix.push('/');
+            }
             tracing::info!(
-                "Initializing OSS storage: bucket={}, endpoint={}",
+                "Initializing S3 storage: bucket={}, endpoint={}",
                 config.bucket,
                 config.endpoint
             );
@@ -75,7 +104,20 @@ mod inner {
             opendal::HttpTransporter::install_default(
                 opendal_http_transport_reqwest::ReqwestTransport::default(),
             );
-            let operator = Operator::new(builder)?;
+            let operator = Operator::new(builder)?
+                .layer(
+                    TimeoutLayer::new()
+                        .with_timeout(Duration::from_secs(30))
+                        .with_io_timeout(Duration::from_secs(30)),
+                )
+                .layer(
+                    RetryLayer::new()
+                        .with_max_times(3)
+                        .with_min_delay(Duration::from_millis(100))
+                        .with_max_delay(Duration::from_secs(2))
+                        .with_jitter(),
+                )
+                .layer(ConcurrentLimitLayer::new(Self::MAX_CONCURRENT_OPERATIONS));
 
             Ok(Self {
                 config,
@@ -94,7 +136,7 @@ mod inner {
         /// Get full object key.
         ///
         /// HLS segment names must start with an epoch-minute bucket
-        /// (`unix_minutes_random`). OSS stores those as
+        /// (`unix_minutes_random`). S3 stores those as
         /// `{base_path}segments/{minute}/{app}/{stream}/{name}`.
         fn get_object_key(&self, app: &str, stream: &str, name: &str) -> Result<String> {
             let bucket = segment_minute_bucket(name).ok_or_else(|| {
@@ -125,7 +167,7 @@ mod inner {
                 self.operator
                     .delete_iter(paths)
                     .await
-                    .map_err(|e| Error::other(format!("OSS batch delete failed: {e}")))?;
+                    .map_err(|e| Error::other(format!("S3 batch delete failed: {e}")))?;
             }
             Ok(deleted)
         }
@@ -136,14 +178,14 @@ mod inner {
                 .lister_with(prefix)
                 .recursive(true)
                 .await
-                .map_err(|e| Error::other(format!("OSS list failed: {e}")))?;
+                .map_err(|e| Error::other(format!("S3 list failed: {e}")))?;
 
             let mut entries = lister;
             let mut paths = Vec::new();
             while let Some(entry) = entries
                 .try_next()
                 .await
-                .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))?
+                .map_err(|e| Error::other(format!("S3 list iteration failed: {e}")))?
             {
                 if entry.metadata().mode() == EntryMode::DIR {
                     continue;
@@ -153,19 +195,38 @@ mod inner {
             Ok(paths)
         }
 
+        async fn list_objects_by_modified(
+            &self,
+            prefix: &str,
+        ) -> Result<Vec<(Option<opendal::raw::Timestamp>, String)>> {
+            let paths = self.list_object_paths(prefix).await?;
+            futures::stream::iter(paths)
+                .map(|path| async move {
+                    let metadata = self
+                        .operator
+                        .stat(&path)
+                        .await
+                        .map_err(|error| Self::map_error("stat", &error))?;
+                    Ok::<_, Error>((metadata.last_modified(), path))
+                })
+                .buffer_unordered(Self::BUCKET_LIST_CONCURRENCY)
+                .try_collect()
+                .await
+        }
+
         async fn list_dirs(&self, prefix: &str) -> Result<Vec<String>> {
             let lister = self
                 .operator
                 .lister(prefix)
                 .await
-                .map_err(|e| Error::other(format!("OSS list failed for {prefix}: {e}")))?;
+                .map_err(|e| Error::other(format!("S3 list failed for {prefix}: {e}")))?;
 
             let mut entries = lister;
             let mut dirs = Vec::new();
             while let Some(entry) = entries
                 .try_next()
                 .await
-                .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))?
+                .map_err(|e| Error::other(format!("S3 list iteration failed: {e}")))?
             {
                 if entry.metadata().mode() == EntryMode::DIR {
                     dirs.push(entry.path().to_string());
@@ -176,7 +237,7 @@ mod inner {
     }
 
     #[async_trait]
-    impl HlsStorage for OssStorage {
+    impl HlsStorage for S3Storage {
         async fn write(&self, app: &str, stream: &str, name: &str, data: Bytes) -> Result<()> {
             validate_storage_key(app, stream, name)?;
             let object_key = self.get_object_key(app, stream, name)?;
@@ -185,10 +246,10 @@ mod inner {
             self.operator
                 .write(&object_key, data)
                 .await
-                .map_err(|e| Error::other(format!("OSS write failed: {e}")))?;
+                .map_err(|error| Self::map_error("write", &error))?;
 
             tracing::trace!(
-                "Wrote to OSS: {} ({} bytes) for {}/{}/{}",
+                "Wrote to S3: {} ({} bytes) for {}/{}/{}",
                 object_key,
                 size,
                 app,
@@ -203,15 +264,16 @@ mod inner {
             validate_storage_key(app, stream, name)?;
             let object_key = self.get_object_key(app, stream, name)?;
 
-            let buffer =
-                self.operator.read(&object_key).await.map_err(|e| {
-                    Error::new(ErrorKind::NotFound, format!("OSS read failed: {e}"))
-                })?;
+            let buffer = self
+                .operator
+                .read(&object_key)
+                .await
+                .map_err(|error| Self::map_error("read", &error))?;
 
             let data = buffer.to_bytes();
 
             tracing::trace!(
-                "Read from OSS: {} ({} bytes) for {}/{}/{}",
+                "Read from S3: {} ({} bytes) for {}/{}/{}",
                 object_key,
                 data.len(),
                 app,
@@ -229,10 +291,10 @@ mod inner {
             self.operator
                 .delete(&object_key)
                 .await
-                .map_err(|e| Error::other(format!("OSS delete failed: {e}")))?;
+                .map_err(|error| Self::map_error("delete", &error))?;
 
             tracing::trace!(
-                "Deleted from OSS: {} for {}/{}/{}",
+                "Deleted from S3: {} for {}/{}/{}",
                 object_key,
                 app,
                 stream,
@@ -246,13 +308,10 @@ mod inner {
             validate_storage_key(app, stream, name)?;
             let object_key = self.get_object_key(app, stream, name)?;
 
-            match self.operator.exists(&object_key).await {
-                Ok(exists) => Ok(exists),
-                Err(e) => {
-                    tracing::warn!("OSS exists check failed for {}: {}", object_key, e);
-                    Ok(false)
-                }
-            }
+            self.operator
+                .exists(&object_key)
+                .await
+                .map_err(|error| Self::map_error("exists", &error))
         }
 
         async fn delete_app_stream(&self, app: &str, stream: &str) -> Result<usize> {
@@ -308,14 +367,14 @@ mod inner {
                 .lister_with(&segments_root)
                 .recursive(true)
                 .await
-                .map_err(|e| Error::other(format!("OSS list failed: {e}")))?;
+                .map_err(|e| Error::other(format!("S3 list failed: {e}")))?;
 
             let mut entries = lister;
             let mut streams = std::collections::HashSet::new();
             while let Some(entry) = entries
                 .try_next()
                 .await
-                .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))?
+                .map_err(|e| Error::other(format!("S3 list iteration failed: {e}")))?
             {
                 if entry.metadata().mode() == EntryMode::DIR {
                     continue;
@@ -374,26 +433,30 @@ mod inner {
                     path_leaf(&bucket_prefix)
                         .map(|bucket_name| self.get_bucket_stream_prefix(bucket_name, app, stream))
                 });
-            let mut paths = futures::stream::iter(prefixes)
-                .map(|prefix| async move { self.list_object_paths(&prefix).await })
+            let mut objects = futures::stream::iter(prefixes)
+                .map(|prefix| async move { self.list_objects_by_modified(&prefix).await })
                 .buffer_unordered(Self::BUCKET_LIST_CONCURRENCY)
-                .try_collect::<Vec<Vec<String>>>()
+                .try_collect::<Vec<Vec<(Option<opendal::raw::Timestamp>, String)>>>()
                 .await?
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>();
 
-            if paths.len() <= max_count {
+            if objects.len() <= max_count {
                 return Ok(0);
             }
 
-            paths.sort();
-            let to_delete = paths.len() - max_count;
-            let delete_paths = paths.into_iter().take(to_delete).collect::<Vec<_>>();
+            objects.sort();
+            let to_delete = objects.len() - max_count;
+            let delete_paths = objects
+                .into_iter()
+                .take(to_delete)
+                .map(|(_, path)| path)
+                .collect::<Vec<_>>();
             self.operator
                 .delete_iter(delete_paths)
                 .await
-                .map_err(|e| Error::other(format!("OSS batch delete failed: {e}")))?;
+                .map_err(|e| Error::other(format!("S3 batch delete failed: {e}")))?;
             Ok(to_delete)
         }
 
@@ -412,7 +475,7 @@ mod inner {
             }
 
             tracing::info!(
-                "OSS cleanup completed: bucket={}, deleted {} objects older than {:?}",
+                "S3 cleanup completed: bucket={}, deleted {} objects older than {:?}",
                 self.config.bucket,
                 deleted,
                 older_than
@@ -470,15 +533,97 @@ mod inner {
     mod tests {
         use super::*;
         use chrono::Utc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         fn current_segment(suffix: &str) -> String {
             let bucket = Utc::now().timestamp() / 60;
             format!("{bucket}_{suffix}")
         }
 
+        #[cfg(not(any(feature = "tls-aws-lc", feature = "tls-ring")))]
+        #[test]
+        fn constructor_reports_missing_crypto_provider() {
+            let result = S3Storage::new(S3Config {
+                endpoint: "https://s3.amazonaws.com".to_string(),
+                access_key_id: "test".to_string(),
+                secret_access_key: "test".to_string(),
+                bucket: "bucket".to_string(),
+                region: Some("us-east-1".to_string()),
+                base_path: "hls".to_string(),
+                public_url_prefix: String::new(),
+                presign_expires_in: 60,
+            });
+            let error = match result {
+                Ok(_) => panic!("constructor must require a rustls crypto provider"),
+                Err(error) => error,
+            };
+            assert_eq!(error.kind(), OpendalErrorKind::ConfigInvalid);
+        }
+
+        #[cfg(any(feature = "tls-aws-lc", feature = "tls-ring"))]
         #[tokio::test]
-        async fn test_oss_storage_path_traversal_rejected() {
-            let config = OssConfig {
+        async fn transient_s3_failures_are_retried_by_the_operator() {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let request_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let server_count = Arc::clone(&request_count);
+            let server = tokio::spawn(async move {
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    let mut byte = [0_u8; 1];
+                    while !request.ends_with(b"\r\n\r\n") {
+                        if stream.read(&mut byte).await.unwrap() == 0 {
+                            break;
+                        }
+                        request.push(byte[0]);
+                    }
+
+                    let attempt =
+                        server_count.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+                    if attempt < 3 {
+                        stream
+                            .write_all(
+                                b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .await
+                            .unwrap();
+                    } else {
+                        stream
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nETag: \"test\"\r\nLast-Modified: Sat, 01 Aug 2026 00:00:00 GMT\r\nConnection: close\r\n\r\n",
+                            )
+                            .await
+                            .unwrap();
+                        break;
+                    }
+                }
+            });
+
+            let storage = S3Storage::new(S3Config {
+                endpoint: format!("http://{address}"),
+                access_key_id: "test".to_string(),
+                secret_access_key: "test".to_string(),
+                bucket: "bucket".to_string(),
+                region: Some("us-east-1".to_string()),
+                base_path: "hls".to_string(),
+                public_url_prefix: String::new(),
+                presign_expires_in: 60,
+            })
+            .unwrap();
+
+            assert!(storage
+                .exists("room", "media", &current_segment("retry"))
+                .await
+                .unwrap());
+            server.await.unwrap();
+            assert_eq!(request_count.load(std::sync::atomic::Ordering::Acquire), 3);
+        }
+
+        #[cfg(any(feature = "tls-aws-lc", feature = "tls-ring"))]
+        #[tokio::test]
+        async fn test_s3_storage_path_traversal_rejected() {
+            let config = S3Config {
                 endpoint: "s3.amazonaws.com".to_string(),
                 access_key_id: "test".to_string(),
                 secret_access_key: "test".to_string(),
@@ -489,7 +634,7 @@ mod inner {
                 presign_expires_in: 3600,
             };
 
-            let storage = OssStorage::new(config).unwrap();
+            let storage = S3Storage::new(config).unwrap();
 
             // Path traversal via ".." in app
             assert!(storage
@@ -543,9 +688,10 @@ mod inner {
                 .is_err());
         }
 
+        #[cfg(any(feature = "tls-aws-lc", feature = "tls-ring"))]
         #[tokio::test]
-        async fn test_oss_storage_delete_app_stream_path_traversal_rejected() {
-            let config = OssConfig {
+        async fn test_s3_storage_delete_app_stream_path_traversal_rejected() {
+            let config = S3Config {
                 endpoint: "s3.amazonaws.com".to_string(),
                 access_key_id: "test".to_string(),
                 secret_access_key: "test".to_string(),
@@ -556,7 +702,7 @@ mod inner {
                 presign_expires_in: 3600,
             };
 
-            let storage = OssStorage::new(config).unwrap();
+            let storage = S3Storage::new(config).unwrap();
 
             assert!(storage.delete_app_stream("..", "stream").await.is_err());
             assert!(storage.delete_app_stream("app", "..").await.is_err());
@@ -564,9 +710,10 @@ mod inner {
             assert!(storage.delete_app("a/b").await.is_err());
         }
 
+        #[cfg(any(feature = "tls-aws-lc", feature = "tls-ring"))]
         #[tokio::test]
-        async fn test_oss_storage_public_url_with_cdn() {
-            let config = OssConfig {
+        async fn test_s3_storage_public_url_with_cdn() {
+            let config = S3Config {
                 endpoint: "s3.amazonaws.com".to_string(),
                 access_key_id: "test".to_string(),
                 secret_access_key: "test".to_string(),
@@ -577,7 +724,7 @@ mod inner {
                 presign_expires_in: 3600,
             };
 
-            let storage = OssStorage::new(config).unwrap();
+            let storage = S3Storage::new(config).unwrap();
 
             // With CDN configured, should return CDN URL with structured path
             let segment = current_segment("segment_0");
@@ -595,9 +742,10 @@ mod inner {
             )));
         }
 
+        #[cfg(any(feature = "tls-aws-lc", feature = "tls-ring"))]
         #[tokio::test]
-        async fn test_oss_storage_public_url_no_base_path() {
-            let config = OssConfig {
+        async fn test_s3_storage_public_url_no_base_path() {
+            let config = S3Config {
                 endpoint: "https://minio.example.com:9000".to_string(),
                 access_key_id: "test".to_string(),
                 secret_access_key: "test".to_string(),
@@ -608,7 +756,7 @@ mod inner {
                 presign_expires_in: 3600,
             };
 
-            let storage = OssStorage::new(config).unwrap();
+            let storage = S3Storage::new(config).unwrap();
 
             let segment = current_segment("segment_0");
             let url = storage
@@ -648,9 +796,10 @@ mod inner {
             ));
         }
 
+        #[cfg(any(feature = "tls-aws-lc", feature = "tls-ring"))]
         #[test]
         fn test_minute_bucket_segment_maps_to_directory_key() {
-            let config = OssConfig {
+            let config = S3Config {
                 endpoint: "s3.amazonaws.com".to_string(),
                 access_key_id: "test".to_string(),
                 secret_access_key: "test".to_string(),
@@ -661,7 +810,7 @@ mod inner {
                 presign_expires_in: 3600,
             };
 
-            let storage = OssStorage::new(config).unwrap();
+            let storage = S3Storage::new(config).unwrap();
             assert_eq!(
                 storage
                     .get_object_key("room", "media", "29676270_abcd")
@@ -675,5 +824,5 @@ mod inner {
     }
 }
 
-#[cfg(feature = "oss")]
+#[cfg(feature = "s3")]
 pub use inner::*;

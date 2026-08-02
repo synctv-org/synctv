@@ -9,12 +9,20 @@ This crate is derived from [xiu](https://github.com/harlanc/xiu) by HarlanC, res
 - **flv** - FLV container format (muxer, demuxer, AMF0)
 - **mpegts** - MPEG-TS container format (PAT/PMT/PES)
 - **streamhub** - Central event bus for stream distribution
-- **storage** - Pluggable HLS segment storage (file, memory, OSS/S3)
+- **storage** - Pluggable HLS segment storage (file, memory, S3-compatible object storage)
 - **rtmp** - RTMP protocol (handshake, chunking, sessions)
 - **rtsp** - RTSP client ingest, RTP over TCP/UDP, Basic/Digest authentication,
   multi-track selection, and H.264/H.265/AAC conversion to StreamHub frames
 - **hls** - HLS protocol (RTMP-to-HLS remuxer, segment management, HTTP server)
 - **httpflv** - HTTP-FLV streaming
+
+## S3 storage feature flags
+
+The S3 backend is enabled with `s3` and requires one Rustls crypto provider:
+use `tls-aws-lc` or `tls-ring`. Certificate-root features such as
+`tls-webpki-roots` and `tls-native-roots` remain application choices. The
+provider feature is selected by the application so a workspace can choose its
+required cryptographic backend.
 
 ## RTSP ingest
 

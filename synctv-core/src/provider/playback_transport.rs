@@ -62,18 +62,27 @@ pub enum PlaybackTransportAction {
         user_id: UserId,
         expires_at: i64,
     },
-    /// Generate an HLS playlist for a live stream.
+    /// Generate an HLS master playlist that resolves the active stream generation.
+    LiveHlsMaster {
+        provider_name: String,
+        room_id: RoomId,
+        media_id: MediaId,
+        version: String,
+    },
+    /// Generate the media playlist for one immutable stream generation.
     LiveHlsPlaylist {
         provider_name: String,
         room_id: RoomId,
         media_id: MediaId,
         version: String,
+        generation_id: String,
     },
     /// Serve a live HLS segment through a transport adapter.
     LiveHlsSegment {
         provider_name: String,
         room_id: RoomId,
         media_id: MediaId,
+        generation_id: String,
         segment_name: String,
         disguised_as_png: bool,
     },
@@ -84,7 +93,10 @@ impl PlaybackTransportAction {
     pub const fn bypasses_unary_timeout(&self) -> bool {
         matches!(
             self,
-            Self::LiveFlv { .. } | Self::LiveHlsPlaylist { .. } | Self::LiveHlsSegment { .. }
+            Self::LiveFlv { .. }
+                | Self::LiveHlsMaster { .. }
+                | Self::LiveHlsPlaylist { .. }
+                | Self::LiveHlsSegment { .. }
         )
     }
 }

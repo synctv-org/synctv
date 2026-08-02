@@ -5,9 +5,8 @@
 // - Uses xiu-storage's HlsStorage trait for segment/playlist storage
 // - Generates M3U8 dynamically in memory, no file writes
 
-use crate::flv::define::AvcCodecId;
 use crate::flv::{
-    define::{frame_type, FlvData},
+    define::{frame_type, AvcCodecId, FlvData, SoundFormat},
     demuxer::{FlvAudioTagDemuxer, FlvVideoTagDemuxer},
 };
 use crate::hls::playlist::{HlsPlaylist, SegmentInfo};
@@ -31,13 +30,42 @@ use crate::streamhub::{
 use bytes::{Bytes, BytesMut};
 use dashmap::DashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 const STREAM_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
 const RECV_TIMEOUT_MS: u64 = 65000;
-const ACTIVITY_RECORD_INTERVAL: Duration = Duration::from_secs(10);
 const DTS_REGRESSION_THRESHOLD_MS: i64 = 1000;
+const RTMP_TIMESTAMP_MODULUS_MS: i64 = 1_i64 << 32;
+
+#[derive(Default)]
+struct TimestampUnwrapper {
+    reference_ms: Option<i64>,
+}
+
+impl TimestampUnwrapper {
+    fn unwrap(&mut self, timestamp: u32) -> i64 {
+        let raw = i64::from(timestamp);
+        let Some(reference) = self.reference_ms else {
+            self.reference_ms = Some(raw);
+            return raw;
+        };
+
+        let epoch = reference.div_euclid(RTMP_TIMESTAMP_MODULUS_MS);
+        let base = epoch * RTMP_TIMESTAMP_MODULUS_MS + raw;
+        let timestamp_ms = [
+            base - RTMP_TIMESTAMP_MODULUS_MS,
+            base,
+            base + RTMP_TIMESTAMP_MODULUS_MS,
+        ]
+        .into_iter()
+        .min_by_key(|candidate| candidate.abs_diff(reference))
+        .expect("timestamp candidate set is non-empty");
+
+        self.reference_ms = Some(reference.max(timestamp_ms));
+        timestamp_ms
+    }
+}
 
 fn now_epoch_ms() -> i64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
@@ -67,15 +95,21 @@ fn generate_ts_name() -> String {
     )
 }
 
-/// Registry of active streams (for M3U8 generation)
+/// Build the in-memory registry key for one immutable HLS generation.
+#[must_use]
+pub fn generation_registry_key(app_name: &str, stream_name: &str, generation_id: &str) -> String {
+    format!("{app_name}/{stream_name}/{generation_id}")
+}
+
+/// Registry of active and recently ended HLS generations.
 pub type StreamRegistry = Arc<DashMap<String, Arc<parking_lot::RwLock<StreamProcessorState>>>>;
 /// Stream processor state that can be accessed by HTTP server
 pub struct StreamProcessorState {
     pub app_name: String,
     pub stream_name: String,
     pub playlist: HlsPlaylist,
-    /// Creation timestamp used to detect if this entry was replaced by a new handler
-    pub created_at: Instant,
+    /// Immutable StreamHub publication generation.
+    pub generation_id: Uuid,
     /// When set, this stream's segments can be cleaned up immediately.
     /// Set when the stream handler ends to allow memory-conscious cleanup
     /// rather than waiting for the 60-second grace period to elapse.
@@ -84,35 +118,6 @@ pub struct StreamProcessorState {
     /// should be deleted by the cleanup task, avoiding a race where a new handler
     /// has already started writing new segments for the same stream key.
     pub cleanup_segment_names: Vec<String>,
-}
-
-/// Implementation of `StreamCleanupChecker` for the HLS stream registry.
-///
-/// The cleanup task uses this to find streams that are ready for cleanup.
-/// Crucially, it returns the specific segment names captured at mark time
-/// rather than performing a blanket delete, preventing the race where
-/// new handler segments get deleted.
-pub struct RegistryCleanupChecker {
-    pub registry: StreamRegistry,
-}
-
-impl crate::hls::segment_manager::StreamCleanupChecker for RegistryCleanupChecker {
-    fn get_streams_marked_for_cleanup(
-        &self,
-    ) -> Vec<crate::hls::segment_manager::MarkedStreamCleanup> {
-        let mut result = Vec::new();
-        for entry in self.registry.iter() {
-            let state = entry.value().read();
-            if state.marked_for_cleanup {
-                result.push(crate::hls::segment_manager::MarkedStreamCleanup {
-                    app_name: state.app_name.clone(),
-                    stream_name: state.stream_name.clone(),
-                    segment_names: state.cleanup_segment_names.clone(),
-                });
-            }
-        }
-        result
-    }
 }
 
 impl StreamProcessorState {
@@ -145,15 +150,17 @@ fn mark_stream_state_for_cleanup(state: &mut StreamProcessorState) {
     state.marked_for_cleanup = true;
 }
 
-/// Callback invoked when media data is received from a publisher.
-/// Arguments: (`app_name/room_id`, `stream_name/media_id`).
-/// Used to record publisher activity for silent publisher detection.
-pub type PublisherActivityCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
-
 /// Callback that returns the list of active RTMP publishers as
-/// `(app_name, stream_name)` pairs. Used for reconciliation after
+/// `(app_name, stream_name, generation_id)` tuples. Used for reconciliation after
 /// broadcast channel lag.
-pub type ActivePublishersSource = Arc<dyn Fn() -> Vec<(String, String)> + Send + Sync>;
+pub type ActivePublishersSource = Arc<dyn Fn() -> Vec<(String, String, Uuid)> + Send + Sync>;
+
+#[derive(Clone)]
+struct PendingHandler {
+    app_name: String,
+    stream_name: String,
+    generation_id: Uuid,
+}
 
 /// Custom HLS remuxer with storage abstraction
 pub struct CustomHlsRemuxer {
@@ -169,8 +176,9 @@ pub struct CustomHlsRemuxer {
     cancel_token: CancellationToken,
     /// Tracked spawned stream handler tasks
     handler_tasks: tokio::task::JoinSet<()>,
-    /// Optional callback to record publisher data activity
-    activity_callback: Option<PublisherActivityCallback>,
+    /// Handler generations that have been admitted but have not registered their
+    /// playlist state yet. Reconciliation and shutdown must see this window.
+    pending_handlers: Arc<DashMap<String, PendingHandler>>,
     /// Optional source of currently active publishers for post-lag reconciliation
     active_publishers_source: Option<ActivePublishersSource>,
 }
@@ -191,18 +199,9 @@ impl CustomHlsRemuxer {
             stream_registry,
             cancel_token,
             handler_tasks: tokio::task::JoinSet::new(),
-            activity_callback: None,
+            pending_handlers: Arc::new(DashMap::new()),
             active_publishers_source: None,
         }
-    }
-
-    /// Set a callback that is invoked when media frames are received from a publisher.
-    /// This is used by `PublisherManager` to track publisher liveness and prevent
-    /// silent publisher timeouts.
-    #[must_use]
-    pub fn with_activity_callback(mut self, callback: PublisherActivityCallback) -> Self {
-        self.activity_callback = Some(callback);
-        self
     }
 
     /// Set a source of active publishers for post-lag reconciliation.
@@ -236,8 +235,8 @@ impl CustomHlsRemuxer {
         loop {
             let val = tokio::select! {
                            () = self.cancel_token.cancelled() => {
-                               tracing::info!("HLS remuxer cancelled (shutdown), draining {} handler tasks", self.handler_tasks.len());
-                               self.handler_tasks.abort_all();
+                               tracing::info!("HLS remuxer cancelled (shutdown), flushing {} handler tasks", self.handler_tasks.len());
+                               self.request_unpublish_for_handlers().await;
                                while self.handler_tasks.join_next().await.is_some() {}
                                return Ok(());
                            }
@@ -268,28 +267,27 @@ impl CustomHlsRemuxer {
                                        if let Some(ref source) = self.active_publishers_source {
                                            let active = source();
                                            let mut started = 0u32;
-                                           for (app_name, stream_name) in active {
-                                               let key = format!("{app_name}/{stream_name}");
-                                               if self.stream_registry.contains_key(&key) {
+                                           for (app_name, stream_name, generation_id) in active {
+                                               let key = generation_registry_key(
+                                                   &app_name,
+                                                   &stream_name,
+                                                   &generation_id.to_string(),
+                                               );
+                                               if self.stream_registry.contains_key(&key)
+                                                   || self.pending_handlers.contains_key(&key)
+                                               {
                                                    continue; // handler already running
                                                }
                                                tracing::info!(
                                                    "HLS remuxer reconciliation: starting handler for {}/{}",
                                                    app_name, stream_name
                                                );
-                                               let stream_handler = StreamHandler::new(
+                                               self.spawn_handler(
                                                    app_name,
                                                    stream_name,
-                                                   self.event_producer.clone(),
-                                                   Arc::clone(&self.segment_manager),
-                                                   self.stream_registry.clone(),
-                                                   self.activity_callback.clone(),
+                                                   generation_id,
+                                                   "reconciliation",
                                                );
-                                               self.handler_tasks.spawn(async move {
-                                                   if let Err(e) = stream_handler.run().await {
-                                                       tracing::error!("HLS stream handler error (reconciliation): {}", e);
-                                                   }
-                                               });
                                                started += 1;
                                            }
                                            if started > 0 {
@@ -313,6 +311,7 @@ impl CustomHlsRemuxer {
                 BroadcastEvent::Publish {
                     identifier,
                     pub_type,
+                    generation_id,
                 } => {
                     // Process streams owned by this node. Cross-node relay
                     // streams are mirrored from the publisher node, where HLS
@@ -329,26 +328,92 @@ impl CustomHlsRemuxer {
 
                     tracing::info!("HLS remuxer: new stream {}/{}", app_name, stream_name);
 
-                    let stream_handler = StreamHandler::new(
-                        app_name,
-                        stream_name,
-                        self.event_producer.clone(),
-                        Arc::clone(&self.segment_manager),
-                        self.stream_registry.clone(),
-                        self.activity_callback.clone(),
-                    );
-
-                    self.handler_tasks.spawn(async move {
-                        if let Err(e) = stream_handler.run().await {
-                            tracing::error!("HLS stream handler error: {}", e);
-                        }
-                    });
+                    self.spawn_handler(app_name, stream_name, generation_id, "publish");
                 }
                 BroadcastEvent::UnPublish { .. } => {
                     tracing::trace!("HLS remuxer: stream unpublished");
                 }
             }
         }
+    }
+
+    /// Close every active StreamHub publication before joining handlers. This
+    /// lets each handler flush its final TS data and mark the playlist ended.
+    async fn request_unpublish_for_handlers(&self) {
+        let mut handler_keys = std::collections::HashSet::new();
+        let mut handlers = Vec::new();
+        for entry in self.stream_registry.iter() {
+            let state = entry.value().read();
+            handler_keys.insert(entry.key().clone());
+            handlers.push((
+                state.app_name.clone(),
+                state.stream_name.clone(),
+                state.generation_id,
+            ));
+        }
+
+        for entry in self.pending_handlers.iter() {
+            let pending = entry.value();
+            if handler_keys.insert(entry.key().clone()) {
+                handlers.push((
+                    pending.app_name.clone(),
+                    pending.stream_name.clone(),
+                    pending.generation_id,
+                ));
+            }
+        }
+
+        for (app_name, stream_name, generation_id) in handlers {
+            let event = StreamHubEvent::UnPublish {
+                identifier: StreamIdentifier::Rtmp {
+                    app_name,
+                    stream_name,
+                },
+                generation_id,
+            };
+            if let Err(error) =
+                send_event_with_backpressure_timeout(&self.event_producer, event).await
+            {
+                tracing::warn!("Failed to enqueue HLS shutdown UnPublish: {error}");
+            }
+        }
+    }
+
+    fn spawn_handler(
+        &mut self,
+        app_name: String,
+        stream_name: String,
+        generation_id: Uuid,
+        source: &'static str,
+    ) {
+        let key = generation_registry_key(&app_name, &stream_name, &generation_id.to_string());
+        if self.stream_registry.contains_key(&key) || self.pending_handlers.contains_key(&key) {
+            return;
+        }
+
+        self.pending_handlers.insert(
+            key.clone(),
+            PendingHandler {
+                app_name: app_name.clone(),
+                stream_name: stream_name.clone(),
+                generation_id,
+            },
+        );
+        let pending_handlers = Arc::clone(&self.pending_handlers);
+        let stream_handler = StreamHandler::new(
+            app_name,
+            stream_name,
+            generation_id,
+            self.event_producer.clone(),
+            Arc::clone(&self.segment_manager),
+            self.stream_registry.clone(),
+        );
+        self.handler_tasks.spawn(async move {
+            if let Err(error) = stream_handler.run().await {
+                tracing::error!(source, %error, "HLS stream handler error");
+            }
+            pending_handlers.remove_if(&key, |_, pending| pending.generation_id == generation_id);
+        });
     }
 }
 
@@ -398,9 +463,7 @@ impl Drop for UnsubscribeGuard {
 struct StreamRegistryGuard {
     registry: StreamRegistry,
     key: String,
-    /// The creation timestamp of the entry this guard owns.
-    /// Only removes the entry if it still matches (prevents removing a newer handler's entry).
-    created_at: Instant,
+    generation_id: Uuid,
     active: bool,
 }
 
@@ -411,7 +474,7 @@ impl Drop for StreamRegistryGuard {
         }
         // Only remove if the entry still belongs to this handler
         if let Some(entry) = self.registry.get(&self.key) {
-            if entry.read().created_at == self.created_at {
+            if entry.read().generation_id == self.generation_id {
                 drop(entry);
                 self.registry.remove(&self.key);
                 tracing::warn!(
@@ -427,23 +490,22 @@ impl Drop for StreamRegistryGuard {
 struct StreamHandler {
     app_name: String,
     stream_name: String,
+    generation_id: Uuid,
     event_producer: StreamHubEventSender,
     segment_manager: Arc<SegmentManager>,
     stream_registry: StreamRegistry,
     data_consumer: FrameDataReceiver,
     subscriber_id: Uuid,
-    /// Optional callback to record publisher data activity
-    activity_callback: Option<PublisherActivityCallback>,
 }
 
 impl StreamHandler {
     fn new(
         app_name: String,
         stream_name: String,
+        generation_id: Uuid,
         event_producer: StreamHubEventSender,
         segment_manager: Arc<SegmentManager>,
         stream_registry: StreamRegistry,
-        activity_callback: Option<PublisherActivityCallback>,
     ) -> Self {
         let (_, data_consumer) =
             mpsc::channel(crate::streamhub::define::FRAME_DATA_CHANNEL_CAPACITY);
@@ -452,12 +514,12 @@ impl StreamHandler {
         Self {
             app_name,
             stream_name,
+            generation_id,
             event_producer,
             segment_manager,
             stream_registry,
             data_consumer: crate::streamhub::define::FrameDataReceiver::bounded(data_consumer),
             subscriber_id,
-            activity_callback,
         }
     }
 
@@ -475,17 +537,20 @@ impl StreamHandler {
         };
 
         // Create registry key
-        let registry_key = format!("{}/{}", self.app_name, self.stream_name);
+        let registry_key = generation_registry_key(
+            &self.app_name,
+            &self.stream_name,
+            &self.generation_id.to_string(),
+        );
 
         let playlist = HlsPlaylist::new();
 
         // Register stream in registry
-        let handler_created_at = Instant::now();
         let state = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
             app_name: self.app_name.clone(),
             stream_name: self.stream_name.clone(),
             playlist,
-            created_at: handler_created_at,
+            generation_id: self.generation_id,
             marked_for_cleanup: false,
             cleanup_segment_names: Vec::new(),
         }));
@@ -506,13 +571,11 @@ impl StreamHandler {
         let mut registry_guard = StreamRegistryGuard {
             registry: self.stream_registry.clone(),
             key: registry_key.clone(),
-            created_at: handler_created_at,
+            generation_id: self.generation_id,
             active: true,
         };
 
-        processor
-            .process_stream(&mut self.data_consumer, self.activity_callback.clone())
-            .await?;
+        processor.process_stream(&mut self.data_consumer).await?;
 
         // Unsubscribe when done
         self.unsubscribe_from_stream_hub().await?;
@@ -531,30 +594,35 @@ impl StreamHandler {
         {
             let mut state_guard = state.write();
             mark_stream_state_for_cleanup(&mut state_guard);
-        }
-
-        // Remove from registry after some delay (allow clients to finish).
-        // We capture handler_created_at before sleeping so that when the timer fires
-        // we can detect if a new publisher has already replaced this handler.
-        tokio::time::sleep(tokio::time::Duration::from_mins(1)).await;
-
-        // Only remove the registry entry if it still belongs to this handler.
-        // If a new publisher started within the 60s window, its registry entry
-        // will have a different created_at.
-        let is_still_owner = self
-            .stream_registry
-            .get(&registry_key)
-            .is_some_and(|entry| entry.read().created_at == handler_created_at);
-
-        if is_still_owner {
-            self.stream_registry.remove(&registry_key);
-        } else {
-            tracing::info!(
-                "HLS registry cleanup for {}/{}: skipped because a new publisher has taken over within the grace period",
-                self.app_name,
-                self.stream_name,
+            self.segment_manager.schedule_generation_cleanup(
+                self.app_name.clone(),
+                self.stream_name.clone(),
+                state_guard.cleanup_segment_names.clone(),
             );
         }
+
+        // Keep the ended state available for the final playlist grace period,
+        // while allowing this handler task to finish immediately. This keeps
+        // graceful shutdown bounded by media teardown instead of the viewer
+        // retention window. The generation key is immutable, so delayed
+        // removal cannot affect a later publication for the same stream key.
+        let registry = self.stream_registry.clone();
+        let app_name = self.app_name.clone();
+        let stream_name = self.stream_name.clone();
+        let generation_id = self.generation_id;
+        let grace = self.segment_manager.final_playlist_grace();
+        tokio::spawn(async move {
+            tokio::time::sleep(grace).await;
+            if let Some(entry) = registry.get(&registry_key) {
+                if entry.read().generation_id == generation_id {
+                    drop(entry);
+                    registry.remove(&registry_key);
+                    tracing::debug!(
+                        "HLS registry cleanup for {app_name}/{stream_name}: ended generation expired"
+                    );
+                }
+            }
+        });
 
         Ok(())
     }
@@ -699,15 +767,18 @@ struct StreamProcessor {
 
     // TS muxer
     ts_muxer: TsMuxer,
-    video_pid: u16,
-    audio_pid: u16,
+    video_pid: Option<u16>,
+    audio_pid: Option<u16>,
 
-    // Codec detection: tracks the video codec detected from the stream.
-    // When HEVC is detected, the TsMuxer is re-initialized with PSI_STREAM_HEVC.
+    // Codec detection keeps PMT stream types aligned with the source codec.
     video_codec_id: Option<u8>,
     /// True after a decodable video frame has been received. Audio-only streams
     /// use audio DTS to rotate live segments because they have no keyframes.
     video_seen: bool,
+    /// Audio configuration arrived while a video segment was in progress.
+    /// The track is installed at the next video keyframe so the new
+    /// discontinuity segment starts at a random-access point.
+    audio_track_pending: bool,
 
     // Segment tracking
     sequence_no: u64,
@@ -717,6 +788,7 @@ struct StreamProcessor {
     last_segment_dts: i64,
     last_dts: i64,
     last_pts: i64,
+    timestamp_unwrapper: TimestampUnwrapper,
 
     /// When set, the next HLS segment will include an #EXT-X-DISCONTINUITY tag.
     /// This is set when frames are dropped (buffer overflow, timestamp issues)
@@ -731,14 +803,6 @@ impl StreamProcessor {
         segment_manager: Arc<SegmentManager>,
         state: Arc<parking_lot::RwLock<StreamProcessorState>>,
     ) -> Result<Self, HlsRemuxerError> {
-        let mut ts_muxer = TsMuxer::new();
-        let audio_pid = ts_muxer
-            .add_stream(epsi_stream_type::PSI_STREAM_AAC, BytesMut::new())
-            .map_err(|e| HlsRemuxerError::MuxError(format!("Failed to add audio stream: {e:?}")))?;
-        let video_pid = ts_muxer
-            .add_stream(epsi_stream_type::PSI_STREAM_H264, BytesMut::new())
-            .map_err(|e| HlsRemuxerError::MuxError(format!("Failed to add video stream: {e:?}")))?;
-
         let (sequence_no, discontinuity_pending) = {
             let state = state.read();
             (
@@ -758,16 +822,18 @@ impl StreamProcessor {
             state,
             video_demuxer: FlvVideoTagDemuxer::new(),
             audio_demuxer: FlvAudioTagDemuxer::new(),
-            ts_muxer,
-            video_pid,
-            audio_pid,
+            ts_muxer: TsMuxer::new(),
+            video_pid: None,
+            audio_pid: None,
             video_codec_id: None,
             video_seen: false,
+            audio_track_pending: false,
             sequence_no,
             segment_duration_ms: 10000, // 10 seconds
             last_segment_dts: 0,
             last_dts: 0,
             last_pts: 0,
+            timestamp_unwrapper: TimestampUnwrapper::default(),
             discontinuity_pending,
         })
     }
@@ -775,7 +841,6 @@ impl StreamProcessor {
     async fn process_stream(
         &mut self,
         data_consumer: &mut FrameDataReceiver,
-        activity_callback: Option<PublisherActivityCallback>,
     ) -> Result<(), HlsRemuxerError> {
         // Use a longer timeout for stream end detection
         // The original logic had a flaw: it would increment retry_count on any
@@ -783,10 +848,6 @@ impl StreamProcessor {
         // Now we use a timeout-based approach instead.
         // Must not be less than the silent publisher timeout (60s) to avoid
         // false stream-end detection while the publisher is still connected.
-        // Throttle activity callbacks to avoid excessive overhead.
-        // The silent publisher timeout is 60s, so recording every 10s is sufficient.
-        let mut last_activity_record = Instant::now();
-
         loop {
             match tokio::time::timeout(
                 std::time::Duration::from_millis(RECV_TIMEOUT_MS),
@@ -806,14 +867,6 @@ impl StreamProcessor {
                         },
                         _ => continue,
                     };
-
-                    // Record publisher activity (throttled) to prevent silent publisher timeout
-                    if let Some(callback) = activity_callback.as_ref() {
-                        if last_activity_record.elapsed() >= ACTIVITY_RECORD_INTERVAL {
-                            callback(&self.app_name, &self.stream_name);
-                            last_activity_record = Instant::now();
-                        }
-                    }
 
                     self.process_flv_data(flv_data).await?;
                 }
@@ -849,73 +902,80 @@ impl StreamProcessor {
 
         let (pid, pts, dts, flags, payload) = match flv_data {
             FlvData::Video { timestamp, data } => {
+                let timestamp_offset =
+                    self.timestamp_unwrapper.unwrap(timestamp) - i64::from(timestamp);
+                let detected_codec = data.first().map(|header| header & 0x0f).filter(|codec| {
+                    *codec == AvcCodecId::H264 as u8 || *codec == AvcCodecId::HEVC as u8
+                });
                 let video_data = self.video_demuxer.demux(timestamp, data).map_err(|e| {
                     HlsRemuxerError::DemuxError(format!("Video demux error: {e:?}"))
                 })?;
 
+                if let Some(codec_id) = detected_codec {
+                    self.ensure_video_track(codec_id, i64::from(timestamp) + timestamp_offset)
+                        .await?;
+                }
+
                 let Some(video_data) = video_data else {
                     return Ok(());
                 };
-                self.video_seen = true;
 
-                // Detect codec on first video frame and re-initialize TsMuxer if HEVC.
-                // This ensures the PMT advertises the correct stream_type (0x24 for HEVC,
-                // 0x1B for H.264), preventing players from failing to decode with no error.
-                if self.video_codec_id.is_none() {
-                    self.video_codec_id = Some(video_data.codec_id);
-                    if video_data.codec_id == AvcCodecId::HEVC as u8 {
-                        tracing::info!(
-                            "Detected HEVC video codec for {}/{}, re-initializing TsMuxer with PSI_STREAM_HEVC",
-                            self.app_name, self.stream_name
-                        );
-                        let mut new_muxer = TsMuxer::new();
-                        let audio_pid = new_muxer
-                            .add_stream(epsi_stream_type::PSI_STREAM_AAC, BytesMut::new())
-                            .map_err(|e| {
-                                HlsRemuxerError::MuxError(format!(
-                                    "Failed to add audio stream: {e:?}"
-                                ))
-                            })?;
-                        let video_pid = new_muxer
-                            .add_stream(epsi_stream_type::PSI_STREAM_HEVC, BytesMut::new())
-                            .map_err(|e| {
-                                HlsRemuxerError::MuxError(format!(
-                                    "Failed to add HEVC video stream: {e:?}"
-                                ))
-                            })?;
-                        self.ts_muxer = new_muxer;
-                        self.audio_pid = audio_pid;
-                        self.video_pid = video_pid;
-                    }
+                if self.audio_track_pending && video_data.frame_type == frame_type::KEY_FRAME {
+                    self.ensure_audio_track(video_data.dts + timestamp_offset)
+                        .await?;
+                    self.audio_track_pending = false;
                 }
+                self.video_seen = true;
 
                 let mut flags = 0;
                 let payload = video_data.data;
+                let pts = video_data.pts + timestamp_offset;
+                let dts = video_data.dts + timestamp_offset;
 
                 // Check if keyframe and if we need new segment
                 if video_data.frame_type == frame_type::KEY_FRAME {
                     flags = MPEG_FLAG_IDR_FRAME;
 
-                    if video_data.dts - self.last_segment_dts >= self.segment_duration_ms {
-                        self.finalize_segment(video_data.dts, false).await?;
+                    if dts - self.last_segment_dts >= self.segment_duration_ms {
+                        self.finalize_segment(dts, false).await?;
                     }
                 }
 
                 (
-                    self.video_pid,
-                    video_data.pts,
-                    video_data.dts,
+                    self.video_pid.ok_or_else(|| {
+                        HlsRemuxerError::MuxError("video track was not registered".to_string())
+                    })?,
+                    pts,
+                    dts,
                     flags,
                     payload,
                 )
             }
             FlvData::Audio { timestamp, data } => {
+                let timestamp_offset =
+                    self.timestamp_unwrapper.unwrap(timestamp) - i64::from(timestamp);
+                let is_aac = data
+                    .first()
+                    .is_some_and(|header| header >> 4 == SoundFormat::AAC as u8);
                 let audio_data = self.audio_demuxer.demux(timestamp, data).map_err(|e| {
                     HlsRemuxerError::DemuxError(format!("Audio demux error: {e:?}"))
                 })?;
 
                 if !audio_data.has_data {
+                    if is_aac && self.audio_pid.is_none() {
+                        self.audio_track_pending = true;
+                    }
                     return Ok(());
+                }
+
+                if self.audio_pid.is_none() {
+                    if self.video_seen && !self.ts_muxer.is_empty() {
+                        self.audio_track_pending = true;
+                        return Ok(());
+                    }
+                    self.ensure_audio_track(audio_data.dts + timestamp_offset)
+                        .await?;
+                    self.audio_track_pending = false;
                 }
 
                 let payload = audio_data.data;
@@ -923,14 +983,24 @@ impl StreamProcessor {
                 // Video streams rotate on keyframes. An audio-only RTMP/RTSP
                 // source has no keyframes, so use the audio clock to maintain
                 // the same live HLS sliding-window behavior.
+                let pts = audio_data.pts + timestamp_offset;
+                let dts = audio_data.dts + timestamp_offset;
                 if !self.video_seen
-                    && audio_data.dts - self.last_segment_dts >= self.segment_duration_ms
+                    && dts - self.last_segment_dts >= self.segment_duration_ms
                     && self.last_dts > self.last_segment_dts
                 {
-                    self.finalize_segment(audio_data.dts, false).await?;
+                    self.finalize_segment(dts, false).await?;
                 }
 
-                (self.audio_pid, audio_data.pts, audio_data.dts, 0, payload)
+                (
+                    self.audio_pid.ok_or_else(|| {
+                        HlsRemuxerError::MuxError("audio track was not registered".to_string())
+                    })?,
+                    pts,
+                    dts,
+                    0,
+                    payload,
+                )
             }
             FlvData::MetaData { .. } => return Ok(()),
         };
@@ -956,11 +1026,72 @@ impl StreamProcessor {
         Ok(())
     }
 
+    async fn prepare_track_change(&mut self, current_dts: i64) -> Result<(), HlsRemuxerError> {
+        if self.ts_muxer.is_empty() {
+            return Ok(());
+        }
+
+        self.finalize_segment(current_dts.max(self.last_dts), false)
+            .await?;
+        self.discontinuity_pending = true;
+        Ok(())
+    }
+
+    async fn ensure_audio_track(&mut self, current_dts: i64) -> Result<(), HlsRemuxerError> {
+        if self.audio_pid.is_some() {
+            return Ok(());
+        }
+
+        self.prepare_track_change(current_dts).await?;
+        let pid = self
+            .ts_muxer
+            .add_stream(epsi_stream_type::PSI_STREAM_AAC, BytesMut::new())
+            .map_err(|e| HlsRemuxerError::MuxError(format!("Failed to add audio stream: {e:?}")))?;
+        self.audio_pid = Some(pid);
+        Ok(())
+    }
+
+    async fn ensure_video_track(
+        &mut self,
+        codec_id: u8,
+        current_dts: i64,
+    ) -> Result<(), HlsRemuxerError> {
+        if let Some(active_codec) = self.video_codec_id {
+            if active_codec != codec_id {
+                return Err(HlsRemuxerError::MuxError(format!(
+                    "video codec changed from {active_codec} to {codec_id}"
+                )));
+            }
+            return Ok(());
+        }
+
+        self.prepare_track_change(current_dts).await?;
+        let stream_type = if codec_id == AvcCodecId::HEVC as u8 {
+            epsi_stream_type::PSI_STREAM_HEVC
+        } else {
+            epsi_stream_type::PSI_STREAM_H264
+        };
+        let pid = self
+            .ts_muxer
+            .add_stream(stream_type, BytesMut::new())
+            .map_err(|e| HlsRemuxerError::MuxError(format!("Failed to add video stream: {e:?}")))?;
+        self.video_pid = Some(pid);
+        self.video_codec_id = Some(codec_id);
+        Ok(())
+    }
+
     async fn finalize_segment(
         &mut self,
         current_dts: i64,
         is_eof: bool,
     ) -> Result<(), HlsRemuxerError> {
+        if self.ts_muxer.is_empty() {
+            if is_eof {
+                self.state.write().playlist.mark_ended();
+            }
+            return Ok(());
+        }
+
         let ts_data = self.ts_muxer.get_data();
         // Guard against zero or negative segment durations caused by
         // DTS non-monotonicity, first-segment edge cases, or encoder anomalies.
@@ -984,7 +1115,7 @@ impl StreamProcessor {
         };
         let ts_data_len = ts_data.len();
 
-        // Generate TS filename with a minute bucket prefix. OSS storage maps
+        // Generate TS filename with a minute bucket prefix. S3 storage maps
         // this prefix to a real directory while HTTP routes keep a slash-free
         // opaque segment name.
         let ts_name = generate_ts_name();
@@ -1096,5 +1227,169 @@ pub enum HlsRemuxerError {
 impl From<crate::streamhub::errors::StreamHubError> for HlsRemuxerError {
     fn from(error: crate::streamhub::errors::StreamHubError) -> Self {
         Self::SubscribeError(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hls::segment_manager::CleanupConfig;
+    use crate::storage::MemoryStorage;
+
+    fn processor() -> (
+        StreamProcessor,
+        Arc<parking_lot::RwLock<StreamProcessorState>>,
+        Arc<MemoryStorage>,
+    ) {
+        let storage = Arc::new(MemoryStorage::new());
+        let manager = Arc::new(SegmentManager::new(
+            storage.clone(),
+            CleanupConfig {
+                interval: Duration::from_secs(60),
+                retention: Duration::from_secs(180),
+                final_playlist_grace: Duration::from_secs(60),
+                ended_segment_grace: Duration::from_secs(90),
+                max_segments_per_stream: 0,
+            },
+        ));
+        let state = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
+            app_name: "live".to_string(),
+            stream_name: "edge".to_string(),
+            playlist: HlsPlaylist::new(),
+            generation_id: Uuid::new(),
+            marked_for_cleanup: false,
+            cleanup_segment_names: Vec::new(),
+        }));
+        let processor = StreamProcessor::new("live", "edge", manager, state.clone())
+            .expect("test stream processor");
+        (processor, state, storage)
+    }
+
+    fn aac_sequence(timestamp: u32) -> FlvData {
+        FlvData::Audio {
+            timestamp,
+            data: BytesMut::from(&[0xaf, 0x00, 0x12, 0x10][..]),
+        }
+    }
+
+    fn aac_frame(timestamp: u32) -> FlvData {
+        FlvData::Audio {
+            timestamp,
+            data: BytesMut::from(&[0xaf, 0x01, 0x11, 0x22, 0x33][..]),
+        }
+    }
+
+    #[test]
+    fn timestamp_unwrapper_keeps_the_32_bit_rollover_monotonic() {
+        let mut unwrapper = TimestampUnwrapper::default();
+
+        assert_eq!(unwrapper.unwrap(u32::MAX - 10), i64::from(u32::MAX) - 10);
+        assert_eq!(unwrapper.unwrap(u32::MAX), i64::from(u32::MAX));
+        assert_eq!(unwrapper.unwrap(9), RTMP_TIMESTAMP_MODULUS_MS + 9);
+    }
+
+    #[test]
+    fn timestamp_unwrapper_preserves_small_out_of_order_arrivals_around_rollover() {
+        let mut unwrapper = TimestampUnwrapper::default();
+        let before_wrap = i64::from(u32::MAX) - 20;
+
+        assert_eq!(unwrapper.unwrap(u32::MAX - 20), before_wrap);
+        assert_eq!(unwrapper.unwrap(10), RTMP_TIMESTAMP_MODULUS_MS + 10);
+        assert_eq!(unwrapper.unwrap(u32::MAX - 5), i64::from(u32::MAX) - 5);
+        assert_eq!(unwrapper.unwrap(20), RTMP_TIMESTAMP_MODULUS_MS + 20);
+    }
+
+    #[tokio::test]
+    async fn audio_only_hls_continues_segmenting_across_timestamp_rollover() {
+        let (mut processor, state, storage) = processor();
+        let initial = u32::MAX - 15_000;
+        let first_boundary = u32::MAX - 4_000;
+
+        processor
+            .process_flv_data(aac_sequence(initial))
+            .await
+            .expect("AAC sequence header");
+        processor
+            .process_flv_data(aac_frame(initial + 1_000))
+            .await
+            .expect("first AAC frame");
+        processor.last_segment_dts = i64::from(initial);
+        processor.last_dts = i64::from(initial + 1_000);
+        processor
+            .process_flv_data(aac_frame(first_boundary))
+            .await
+            .expect("pre-rollover segment boundary");
+        processor
+            .process_flv_data(aac_frame(first_boundary + 1_000))
+            .await
+            .expect("post-boundary AAC frame");
+        processor
+            .process_flv_data(aac_frame(7_000))
+            .await
+            .expect("post-rollover segment boundary");
+        processor
+            .flush_remaining_segment()
+            .await
+            .expect("final segment");
+
+        let names = {
+            let state = state.read();
+            assert_eq!(state.playlist.segments.len(), 2);
+            assert!(state
+                .playlist
+                .generate_m3u8(std::string::ToString::to_string)
+                .contains("#EXT-X-ENDLIST"));
+            assert!(state
+                .playlist
+                .segments
+                .iter()
+                .all(|segment| segment.duration_ms > 0 && segment.duration_ms < 20_000));
+            state
+                .playlist
+                .segments
+                .iter()
+                .map(|segment| segment.ts_name.clone())
+                .collect::<Vec<_>>()
+        };
+        for name in names {
+            let data = storage
+                .read("live", "edge", &name)
+                .await
+                .expect("stored TS segment");
+            assert_eq!(data.first(), Some(&0x47));
+            assert_eq!(data.len() % 188, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn timestamp_regression_marks_the_next_hls_segment_discontinuous() {
+        let (mut processor, state, _) = processor();
+        processor
+            .process_flv_data(aac_sequence(0))
+            .await
+            .expect("AAC sequence header");
+        for timestamp in [1, 10_001, 11_001, 1_000, 21_001, 22_001] {
+            processor
+                .process_flv_data(aac_frame(timestamp))
+                .await
+                .expect("AAC media frame");
+        }
+        processor
+            .flush_remaining_segment()
+            .await
+            .expect("final segment");
+
+        let state = state.read();
+        assert!(state
+            .playlist
+            .generate_m3u8(std::string::ToString::to_string)
+            .contains("#EXT-X-ENDLIST"));
+        assert!(state.playlist.segments.len() >= 2);
+        assert!(state
+            .playlist
+            .segments
+            .iter()
+            .skip(1)
+            .any(|segment| segment.discontinuity));
     }
 }

@@ -147,11 +147,11 @@ struct ApiServerStateLivestreamRuntime {
 #[async_trait]
 impl ServerStateLivestreamRuntime for ApiServerStateLivestreamRuntime {
     async fn snapshot(&self) -> ServerStateLivestreamSnapshot {
-        match self.infrastructure.list_active_publishers().await {
+        match self.infrastructure.list_active_generations().await {
             Ok(publishers) => livestream_snapshot_from_publishers(
                 publishers
                     .into_iter()
-                    .map(|publisher| (publisher.room_id, publisher.publisher.node_id)),
+                    .map(|publisher| (publisher.room_id, publisher.generation.node_id)),
                 &self.local_node_id,
             ),
             Err(error) => {

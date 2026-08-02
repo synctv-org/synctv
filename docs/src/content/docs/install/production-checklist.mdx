@@ -60,7 +60,7 @@ OPAQUE、Provider credential 和 email outbox 使用各自的长期 secret。备
 | OAuth2 | `redirectUrl` 与第三方平台注册值一致。 |
 | Provider 凭据 | 凭据通过 secret 或受控管理流程写入，不出现在仓库。 |
 | Slice cache 文件后端 | 缓存目录有容量规划和清理策略。 |
-| 直播 HLS | 单机已确认本地存储；多副本已选择 publisher-node proxy、`shared_file` 或 OSS。 |
+| 直播 HLS | 单机已确认本地存储；多副本已选择 publisher-node proxy、`shared_file` 或 S3。 |
 | 集群模式 | 所有副本共享 PostgreSQL、Redis、`redis.key_prefix` 和 `cluster.secret`。 |
 | OpenAPI | 已决定生产是否暴露 `/swagger-ui/` 和 `/api-docs/openapi.json`。 |
 

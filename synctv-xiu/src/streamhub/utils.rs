@@ -24,6 +24,10 @@ impl Uuid {
     pub fn new() -> Self {
         Self(uuid::Uuid::new_v4())
     }
+
+    pub fn parse_str(value: &str) -> Result<Self, uuid::Error> {
+        uuid::Uuid::parse_str(value).map(Self)
+    }
 }
 
 impl fmt::Display for Uuid {

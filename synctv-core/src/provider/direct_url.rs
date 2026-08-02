@@ -205,7 +205,7 @@ impl DirectUrlProvider {
             config.danmakus.len(),
             "default_danmaku_index",
         )?;
-        if config.is_live == Some(true)
+        if config.playback_kind == Some(crate::models::PlaybackKind::Live)
             && DirectUrlProvider::configured_duration_seconds(config).is_some()
         {
             return Err(ProviderError::InvalidConfig(
@@ -737,7 +737,7 @@ impl MediaProvider for DirectUrlProvider {
             },
         );
 
-        let is_live = config.inferred_live_status();
+        let playback_kind = config.inferred_playback_kind();
         let metadata = PlaybackMetadata::DirectUrl(DirectUrlPlaybackMetadata {
             format: Some(format.clone()),
             filename: first_media
@@ -745,9 +745,9 @@ impl MediaProvider for DirectUrlProvider {
                 .split('/')
                 .next_back()
                 .map(ToString::to_string),
-            p2p_eligible: is_live == Some(false),
+            p2p_eligible: playback_kind == Some(crate::models::PlaybackKind::Regular),
         });
-        let duration_seconds = if is_live == Some(true) {
+        let duration_seconds = if playback_kind == Some(crate::models::PlaybackKind::Live) {
             None
         } else {
             Self::configured_duration_seconds(config)
@@ -759,13 +759,7 @@ impl MediaProvider for DirectUrlProvider {
             provider: Self::NAME.to_string(),
             provider_instance_name: _ctx.provider_instance_name().map(str::to_string),
             duration_seconds,
-            playback_kind: is_live.map(|value| {
-                if value {
-                    crate::models::PlaybackKind::Live
-                } else {
-                    crate::models::PlaybackKind::Regular
-                }
-            }),
+            playback_kind,
             metadata: Some(metadata),
         };
 
@@ -924,7 +918,7 @@ mod tests {
         };
         let source_config = crate::models::MediaSourceConfig::DirectUrl(
             crate::models::DirectUrlMediaSourceConfig {
-                is_live: Some(false),
+                playback_kind: Some(crate::models::PlaybackKind::Regular),
                 duration_seconds: Some(20.0),
                 prefer_proxy: Some(false),
                 proxy_only: false,
@@ -988,7 +982,7 @@ mod tests {
         let ctx = test_context();
         let source_config = crate::models::MediaSourceConfig::DirectUrl(
             crate::models::DirectUrlMediaSourceConfig {
-                is_live: Some(false),
+                playback_kind: Some(crate::models::PlaybackKind::Regular),
                 duration_seconds: Some(20.0),
                 prefer_proxy: Some(false),
                 proxy_only: false,
@@ -1045,7 +1039,7 @@ mod tests {
     #[tokio::test]
     async fn generate_playback_proxies_dash_transport_headers() {
         let config = crate::models::DirectUrlMediaSourceConfig {
-            is_live: Some(false),
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
             duration_seconds: None,
             prefer_proxy: None,
             proxy_only: true,

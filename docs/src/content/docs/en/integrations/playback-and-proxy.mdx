@@ -99,7 +99,7 @@ Swarm tickets isolate rooms, actors, and resources. The current transfer protoco
 | WebRTC | Independent voice-chat and P2P-media sessions using ICE/STUN/TURN and their respective `use_voice_chat` and `use_p2p_media` permissions |
 | RTMP publish | Publisher entry, usually used by streamer or room admin |
 | HTTP-FLV | Low-latency live playback, sensitive to long connections and slow clients |
-| HLS | Playlist/segment files; multi-replica requires local proxy, shared file, or OSS backend |
+| HLS | Playlist/segment files; multi-replica requires local proxy, shared file, or S3 backend |
 
 WebRTC configuration is in [WebRTC Configuration](../../configuration/webrtc/). Livestreaming is in [Livestream Configuration](../../configuration/livestream/).
 
@@ -111,5 +111,5 @@ WebRTC configuration is in [WebRTC Configuration](../../configuration/webrtc/). 
 | Seek fails | Range or slice cache | `Accept-Ranges`, `Content-Range`, proxy logs |
 | Browser only fails | CORS or header restrictions | Use proxy and inspect browser Network |
 | Proxy only fails | Server-to-upstream network or headers | DNS, server network, proxy headers |
-| Multi-replica live randomly fails | HLS storage model | Publisher node, shared storage, OSS, gRPC proxy |
+| Multi-replica live randomly fails | HLS storage model | Publisher node, shared storage, S3, gRPC proxy |
 | URL stops working later | `expires_at` | Observe or fetch a new playback |

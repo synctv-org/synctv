@@ -564,7 +564,7 @@ fn build_live_playback_with_flv(
                 format: "m3u8".to_string(),
                 expire_at: chrono::DateTime::from_timestamp(live_expires_at, 0),
                 metadata: None,
-                provider: PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::HlsPlaylist {
+                provider: PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::HlsMaster {
                     version: String::new(),
                     expires_at: live_expires_at,
                     room_id,

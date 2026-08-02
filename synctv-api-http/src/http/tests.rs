@@ -2909,7 +2909,7 @@ async fn test_streaming_proxy_routes_preserve_options_preflight() -> TestResult 
     let rtmp_request = test_request(
         Request::builder()
             .method("OPTIONS")
-            .uri("/api/playback-providers/rtmp/ver1/hls-playlist")
+            .uri("/api/playback-providers/rtmp/ver1/hls-master")
             .header(axum::http::header::ORIGIN, "https://example.com")
             .body(Body::empty()),
     )?;
@@ -2923,7 +2923,7 @@ async fn test_streaming_proxy_routes_preserve_options_preflight() -> TestResult 
     let live_proxy_request = test_request(
         Request::builder()
             .method("OPTIONS")
-            .uri("/api/playback-providers/live-proxy/ver1/hls-playlist")
+            .uri("/api/playback-providers/live-proxy/ver1/hls-master")
             .header(axum::http::header::ORIGIN, "https://example.com")
             .body(Body::empty()),
     )?;

@@ -15,13 +15,15 @@ use crate::{
     relay::{publisher_manager::PublisherManager, registry_trait::StreamRegistryTrait},
 };
 use dashmap::DashMap;
+#[cfg(test)]
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use synctv_common::ssrf::SsrfGuard;
 use synctv_core::service::LeaderCheck;
 use synctv_xiu::hls::{segment_manager::CleanupAuthority, CustomHlsRemuxer, StreamRegistry};
 use synctv_xiu::rtmp::auth::AuthCallback;
-use synctv_xiu::storage::{FileStorage, HlsStorage, MemoryStorage, OssConfig, OssStorage};
+use synctv_xiu::storage::{FileStorage, HlsStorage, MemoryStorage, S3Config, S3Storage};
 use synctv_xiu::streamhub::StreamsHub;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
@@ -38,11 +40,18 @@ pub enum HlsStorageBackend {
     Memory,
     File,
     SharedFile,
-    Oss,
+    S3,
+}
+
+impl HlsStorageBackend {
+    #[must_use]
+    pub const fn supports_cross_node_read(self) -> bool {
+        matches!(self, Self::SharedFile | Self::S3)
+    }
 }
 
 #[derive(Clone)]
-pub struct HlsOssOptions {
+pub struct HlsS3Options {
     pub endpoint: String,
     pub access_key_id: String,
     pub secret_access_key: String,
@@ -51,7 +60,7 @@ pub struct HlsOssOptions {
     pub base_path: String,
 }
 
-impl Default for HlsOssOptions {
+impl Default for HlsS3Options {
     fn default() -> Self {
         Self {
             endpoint: String::new(),
@@ -210,8 +219,8 @@ pub struct LivestreamConfig {
     pub hls_storage_backend: HlsStorageBackend,
     /// Base path for file-backed HLS storage.
     pub hls_storage_path: String,
-    /// S3-compatible object storage settings for the OSS backend.
-    pub hls_oss: HlsOssOptions,
+    /// S3-compatible object storage settings for the S3 backend.
+    pub hls_s3: HlsS3Options,
     /// Global SSRF policy for outbound livestream pull requests.
     pub ssrf_guard: SsrfGuard,
 }
@@ -234,29 +243,29 @@ fn build_hls_storage(config: &LivestreamConfig) -> StreamResult<Arc<dyn HlsStora
             );
             Ok(Arc::new(FileStorage::new(path)))
         }
-        HlsStorageBackend::Oss => {
-            let oss = &config.hls_oss;
-            let storage = OssStorage::new(OssConfig {
-                endpoint: oss.endpoint.clone(),
-                access_key_id: oss.access_key_id.clone(),
-                secret_access_key: oss.secret_access_key.clone(),
-                bucket: oss.bucket.clone(),
-                region: oss.region.clone(),
-                base_path: oss.base_path.clone(),
+        HlsStorageBackend::S3 => {
+            let s3 = &config.hls_s3;
+            let storage = S3Storage::new(S3Config {
+                endpoint: s3.endpoint.clone(),
+                access_key_id: s3.access_key_id.clone(),
+                secret_access_key: s3.secret_access_key.clone(),
+                bucket: s3.bucket.clone(),
+                region: s3.region.clone(),
+                base_path: s3.base_path.clone(),
                 public_url_prefix: String::new(),
                 presign_expires_in: 3600,
             })
             .map_err(|error| {
                 crate::error::StreamError::InvalidState(format!(
-                    "failed to initialize HLS OSS storage: {error}"
+                    "failed to initialize HLS S3 storage: {error}"
                 ))
             })?;
 
             info!(
-                endpoint = %oss.endpoint,
-                bucket = %oss.bucket,
-                base_path = %oss.base_path,
-                "HLS storage backend: OSS/S3-compatible object storage"
+                endpoint = %s3.endpoint,
+                bucket = %s3.bucket,
+                base_path = %s3.base_path,
+                "HLS storage backend: S3-compatible object storage"
             );
             Ok(Arc::new(storage))
         }
@@ -287,7 +296,7 @@ fn build_hls_storage(config: &LivestreamConfig) -> StreamResult<Arc<dyn HlsStora
                 warn!(
                     "HLS storage is using in-memory backend in cluster mode. \
                      Each segment request will require gRPC proxy to the publisher node. \
-                     Use shared_file or OSS storage for production multi-replica HLS."
+                     Use shared_file or S3 storage for production multi-replica HLS."
                 );
             }
 
@@ -316,9 +325,38 @@ pub struct LivestreamHandle {
     /// HLS segment cleanup task handle.
     /// Must be tracked to prevent task leaks when `LivestreamHandle` is dropped.
     hls_cleanup_handle: JoinHandle<()>,
+    #[cfg(test)]
+    hub_failure_tx: mpsc::UnboundedSender<()>,
+    #[cfg(test)]
+    hub_restart_count: Arc<AtomicU32>,
 }
 
 impl LivestreamHandle {
+    fn spawn_force_cleanup(&self) {
+        let hub_cycle_tasks = Arc::clone(&self.hub_cycle_tasks);
+        let pull_manager = Arc::clone(&self.pull_manager);
+        let external_publish_manager = Arc::clone(&self.infrastructure.external_publish_manager);
+        let registry = Arc::clone(&self.infrastructure.registry);
+        let node_id = self.infrastructure.local_node_id.clone();
+        if crate::util::try_spawn(async move {
+            hub_cycle_tasks.lock().await.shutdown().await;
+            pull_manager.stop_all().await;
+            external_publish_manager.stop_all().await;
+            if !node_id.is_empty() {
+                if let Err(error) = registry
+                    .deactivate_all_generations_for_node_preserving_hls(&node_id)
+                    .await
+                {
+                    warn!(node_id = %node_id, %error, "Failed to preserve local HLS generations during force shutdown");
+                }
+            }
+        })
+        .is_none()
+        {
+            warn!("No Tokio runtime available for managed stream force cleanup");
+        }
+    }
+
     async fn cleanup_local_publishers_on_shutdown(&self) {
         if self.infrastructure.local_node_id.is_empty() {
             self.infrastructure.user_stream_tracker.clear();
@@ -328,7 +366,7 @@ impl LivestreamHandle {
         if let Err(e) = self
             .infrastructure
             .registry
-            .cleanup_all_publishers_for_node(&self.infrastructure.local_node_id)
+            .deactivate_all_generations_for_node_preserving_hls(&self.infrastructure.local_node_id)
             .await
         {
             warn!(
@@ -351,6 +389,7 @@ impl LivestreamHandle {
     /// This is a fast shutdown that immediately aborts all tasks.
     /// For graceful shutdown that waits for tasks to complete, use `shutdown_graceful`.
     pub fn shutdown(&self) {
+        self.spawn_force_cleanup();
         // Cancel the inner re-registration task first
         self.reregister_cancel_token.cancel();
         self.reregister_task_handle.abort();
@@ -360,14 +399,6 @@ impl LivestreamHandle {
         self.hls_cleanup_handle.abort();
         self.hls_remuxer_handle.abort();
         self.hub_handle.abort();
-        let hub_cycle_tasks = Arc::clone(&self.hub_cycle_tasks);
-        if crate::util::try_spawn(async move {
-            hub_cycle_tasks.lock().await.shutdown().await;
-        })
-        .is_none()
-        {
-            warn!("No Tokio runtime available for StreamHub cycle task shutdown");
-        }
         self.infrastructure.user_stream_tracker.clear();
     }
 
@@ -390,27 +421,12 @@ impl LivestreamHandle {
         let timeout_duration = Duration::from_secs(timeout_secs);
         let mut all_graceful = true;
 
-        // Shutdown in reverse startup order
+        // Stop admission and producers before retiring registry routes. HLS
+        // handlers need the publication teardown event to flush their final
+        // segment and emit ENDLIST.
         info!("Starting shutdown of livestream components...");
 
-        // Remove this node from the shared publisher registry first. Later
-        // shutdown phases can be force-aborted when the process budget is low,
-        // but other cluster nodes must stop routing viewers to this node.
-        self.cleanup_local_publishers_on_shutdown().await;
-
-        // 1. Stop all managed stream pools to prevent zombie streams.
-        info!("Stopping all managed pull streams...");
-        self.pull_manager.stop_all().await;
-        info!("All managed pull streams stopped");
-
-        info!("Stopping all managed external publish streams...");
-        self.infrastructure
-            .external_publish_manager
-            .stop_all()
-            .await;
-        info!("All managed external publish streams stopped");
-
-        // 2. Stop the inner re-registration task gracefully via cancellation token
+        // 1. Stop lease refresh before stopping any source.
         self.reregister_cancel_token.cancel();
         if timeout(timeout_duration, &mut self.reregister_task_handle)
             .await
@@ -423,12 +439,28 @@ impl LivestreamHandle {
             all_graceful = false;
         }
 
-        // 3. Abort publisher manager event loop (no graceful signal)
+        // 2. Stop RTMP sessions so direct publishers emit UnPublish while the
+        // StreamHub and HLS remuxer are still alive.
+        self.hub_cycle_tasks.lock().await.shutdown().await;
+
+        // 3. Stop all managed stream pools to prevent zombie streams.
+        info!("Stopping all managed pull streams...");
+        self.pull_manager.stop_all().await;
+        info!("All managed pull streams stopped");
+
+        info!("Stopping all managed external publish streams...");
+        self.infrastructure
+            .external_publish_manager
+            .stop_all()
+            .await;
+        info!("All managed external publish streams stopped");
+
+        // 4. Abort publisher manager event loop (no graceful signal)
         abort_and_log_join("publisher manager", &mut self.publisher_manager_handle).await;
         info!("Publisher manager stopped");
 
-        // 4. Stop HLS tasks gracefully: first cancel the token, then await both
-        // the remuxer and the cleanup task.
+        // 5. Stop HLS tasks gracefully. The remuxer requests generation-aware
+        // UnPublish events and waits for handlers to flush.
         self.hls_shutdown_token.cancel();
         if timeout(timeout_duration, &mut self.hls_remuxer_handle)
             .await
@@ -453,13 +485,13 @@ impl LivestreamHandle {
             all_graceful = false;
         }
 
-        // 8. Abort StreamHub (last, as other components depend on it).
-        // The RTMP server is managed inside the hub loop and will be
-        // shut down explicitly because aborting the hub task skips the loop's
-        // per-cycle cleanup path.
+        // 6. Abort the StreamHub event loop after HLS has drained.
         abort_and_log_join("StreamHub", &mut self.hub_handle).await;
-        self.hub_cycle_tasks.lock().await.shutdown().await;
         info!("StreamHub stopped");
+
+        // Keep ended generations routable for HLS grace-period readers. The
+        // registry cleanup task removes them after the retained playlist window.
+        self.cleanup_local_publishers_on_shutdown().await;
 
         if all_graceful {
             info!("Shutdown completed successfully");
@@ -468,6 +500,58 @@ impl LivestreamHandle {
         }
 
         all_graceful
+    }
+
+    /// Force shutdown with a short, ordered drain window. This path is used when
+    /// the process-wide graceful budget has already expired; it still gives HLS
+    /// handlers a chance to consume UnPublish and mark the final playlist before
+    /// aborting the remaining tasks.
+    pub async fn shutdown_force(&mut self) {
+        use tokio::time::{timeout, Duration};
+
+        self.reregister_cancel_token.cancel();
+        if timeout(Duration::from_millis(100), &mut self.reregister_task_handle)
+            .await
+            .is_err()
+        {
+            abort_and_log_join("re-registration task", &mut self.reregister_task_handle).await;
+        }
+
+        let hub_cycle_shutdown = async {
+            self.hub_cycle_tasks.lock().await.shutdown().await;
+        };
+        let _ = timeout(Duration::from_millis(100), hub_cycle_shutdown).await;
+
+        let pull_manager = Arc::clone(&self.pull_manager);
+        let external_publish_manager = Arc::clone(&self.infrastructure.external_publish_manager);
+        let (pull_result, external_result) = tokio::join!(
+            timeout(Duration::from_millis(200), pull_manager.stop_all()),
+            timeout(
+                Duration::from_millis(200),
+                external_publish_manager.stop_all()
+            ),
+        );
+        if pull_result.is_err() {
+            warn!("Force shutdown timed out stopping managed pull streams");
+        }
+        if external_result.is_err() {
+            warn!("Force shutdown timed out stopping managed external streams");
+        }
+
+        abort_and_log_join("publisher manager", &mut self.publisher_manager_handle).await;
+
+        self.hls_shutdown_token.cancel();
+        if timeout(Duration::from_millis(300), &mut self.hls_remuxer_handle)
+            .await
+            .is_err()
+        {
+            warn!("Force shutdown timed out waiting for HLS finalization");
+            abort_and_log_join("HLS remuxer", &mut self.hls_remuxer_handle).await;
+        }
+        abort_and_log_join("HLS cleanup task", &mut self.hls_cleanup_handle).await;
+        abort_and_log_join("StreamHub", &mut self.hub_handle).await;
+
+        self.cleanup_local_publishers_on_shutdown().await;
     }
 }
 
@@ -478,6 +562,7 @@ impl Drop for LivestreamHandle {
     /// `shutdown_graceful()`, cancellation tokens are cancelled and background
     /// task handles are aborted.
     fn drop(&mut self) {
+        self.spawn_force_cleanup();
         // Cancel all cancellation tokens to signal tasks to exit
         self.reregister_cancel_token.cancel();
         self.hls_shutdown_token.cancel();
@@ -489,14 +574,6 @@ impl Drop for LivestreamHandle {
         self.hls_cleanup_handle.abort();
         self.hls_remuxer_handle.abort();
         self.hub_handle.abort();
-        let hub_cycle_tasks = Arc::clone(&self.hub_cycle_tasks);
-        if crate::util::try_spawn(async move {
-            hub_cycle_tasks.lock().await.shutdown().await;
-        })
-        .is_none()
-        {
-            warn!("LivestreamHandle drop: no Tokio runtime available for StreamHub cycle task shutdown");
-        }
         self.infrastructure.user_stream_tracker.clear();
     }
 }
@@ -548,7 +625,7 @@ impl LivestreamServer {
 
     /// Set the leader check used for shared HLS storage cleanup.
     ///
-    /// Only `shared_file` and `oss` use this gate. Local `file` and `memory`
+    /// Only `shared_file` and `s3` use this gate. Local `file` and `memory`
     /// backends still clean on every replica because their data is per-process
     /// or per-node.
     #[must_use]
@@ -588,7 +665,23 @@ impl LivestreamServer {
         // 1. Create StreamHub channels and hub (bounded to prevent OOM under load)
         let (event_sender, event_receiver) =
             mpsc::channel(synctv_xiu::streamhub::define::STREAM_HUB_EVENT_CHANNEL_CAPACITY);
-        let mut streams_hub = StreamsHub::new(event_sender.clone(), event_receiver);
+        let is_restarting_flag = Arc::clone(&self.is_restarting_flag);
+        let publisher_manager = Arc::new(
+            PublisherManager::with_restarting_flag(
+                self.publisher_registry.clone(),
+                self.config.node_id.clone(),
+                event_sender.clone(),
+                Arc::clone(&is_restarting_flag),
+            )
+            .with_cluster_address(self.config.cluster_address.clone()),
+        );
+        let activity_pm = Arc::clone(&publisher_manager);
+        let activity_callback: synctv_xiu::streamhub::define::PublisherActivityCallback =
+            Arc::new(move |room_id: &str, media_id: &str, generation_id| {
+                activity_pm.record_publisher_activity(room_id, media_id, generation_id);
+            });
+        let mut streams_hub = StreamsHub::new(event_sender.clone(), event_receiver)
+            .with_publisher_activity_callback(activity_callback);
 
         let external_publish_manager = Arc::new(
             ExternalPublishManager::with_timeouts(
@@ -652,10 +745,9 @@ impl LivestreamServer {
         // Set before cleanup begins, cleared after re-registration completes.
         // Also checked by auth callback (via restarting_flag()) to reject new publications.
         // Use the flag created in LivestreamServer::new so it can be shared with auth.
-        let is_restarting_flag = Arc::clone(&self.is_restarting_flag);
         // Mutex to serialize restart operations and prevent race conditions.
         // This ensures only one restart flow executes at a time, preventing:
-        // - Corrupted state from parallel cleanup_all_publishers_for_node calls
+        // - Corrupted state from parallel cleanup_all_generations_for_node calls
         // - Lost re-registration signals
         // - Inconsistent is_restarting flag state
         let restart_mutex = Arc::new(Mutex::new(()));
@@ -698,6 +790,12 @@ impl LivestreamServer {
         let rtmp_listener = self.rtmp_listener;
         let hub_cycle_tasks = Arc::new(tokio::sync::Mutex::new(HubCycleTasks::new()));
         let hub_cycle_tasks_for_hub = Arc::clone(&hub_cycle_tasks);
+        #[cfg(test)]
+        let (hub_failure_tx, mut hub_failure_rx) = mpsc::unbounded_channel::<()>();
+        #[cfg(test)]
+        let hub_restart_count = Arc::new(AtomicU32::new(0));
+        #[cfg(test)]
+        let hub_restart_count_for_hub = Arc::clone(&hub_restart_count);
 
         // 2. Spawn StreamHub event loop with automatic recovery
         let hub_handle = tokio::spawn(async move {
@@ -784,6 +882,14 @@ impl LivestreamServer {
                     .await;
 
                 info!("Starting StreamHub event loop...");
+                #[cfg(test)]
+                let run_result = tokio::select! {
+                    result = streams_hub.run() => result,
+                    Some(()) = hub_failure_rx.recv() => {
+                        Err("injected StreamHub failure".to_string())
+                    }
+                };
+                #[cfg(not(test))]
                 let run_result = streams_hub.run().await;
 
                 // Hub exited -- stop the RTMP server and forwarder for this cycle
@@ -796,6 +902,8 @@ impl LivestreamServer {
                 synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_VIEWERS.set(0);
 
                 restart_count += 1;
+                #[cfg(test)]
+                hub_restart_count_for_hub.store(restart_count, Ordering::Release);
 
                 // Record restart metrics with exit reason
                 let reason = match &run_result {
@@ -817,7 +925,7 @@ impl LivestreamServer {
 
                 // Acquire the restart mutex to serialize cleanup operations.
                 // This prevents race conditions when multiple restarts happen in quick succession:
-                // - Prevents parallel cleanup_all_publishers_for_node calls
+                // - Prevents parallel cleanup_all_generations_for_node calls
                 // - Ensures is_restarting flag state is consistent
                 // - Serializes re-registration notifications
                 let _restart_guard = restart_mutex_for_hub.lock().await;
@@ -838,7 +946,7 @@ impl LivestreamServer {
                 // Clean up all local publisher registrations from Redis
                 // This ensures stale state doesn't persist after restart
                 if let Err(e) = registry_for_cleanup
-                    .cleanup_all_publishers_for_node(&node_id_for_cleanup)
+                    .cleanup_all_generations_for_node(&node_id_for_cleanup)
                     .await
                 {
                     error!("Failed to cleanup publishers on StreamHub restart: {}", e);
@@ -883,7 +991,7 @@ impl LivestreamServer {
         let mut segment_manager = SegmentManager::new(hls_storage, CleanupConfig::default());
         if matches!(
             self.config.hls_storage_backend,
-            HlsStorageBackend::SharedFile | HlsStorageBackend::Oss
+            HlsStorageBackend::SharedFile | HlsStorageBackend::S3
         ) {
             info!(
                 hls_storage_backend = ?self.config.hls_storage_backend,
@@ -902,27 +1010,6 @@ impl LivestreamServer {
             .clone()
             .start_cleanup_task(hls_shutdown_token.clone());
 
-        // Create PublisherManager early so the activity callback can be wired to the HLS remuxer.
-        // The manager itself is started later (step 7) after all components are created.
-        // Use with_restarting_flag to share the is_restarting flag with the StreamHub restart loop.
-        let publisher_manager = Arc::new(
-            PublisherManager::with_restarting_flag(
-                self.publisher_registry.clone(),
-                self.config.node_id.clone(),
-                event_sender.clone(),
-                Arc::clone(&is_restarting_flag),
-            )
-            .with_cluster_address(self.config.cluster_address.clone()),
-        );
-
-        // Create activity callback for the HLS remuxer to record publisher data activity.
-        // This prevents the silent publisher detection from incorrectly timing out active publishers.
-        let activity_pm = Arc::clone(&publisher_manager);
-        let activity_callback: synctv_xiu::hls::PublisherActivityCallback =
-            Arc::new(move |room_id: &str, media_id: &str| {
-                activity_pm.record_publisher_activity(room_id, media_id);
-            });
-
         // Create active publishers source for post-lag reconciliation in the HLS remuxer.
         let reconcile_pm = Arc::clone(&publisher_manager);
         let active_publishers_source: synctv_xiu::hls::ActivePublishersSource =
@@ -940,7 +1027,6 @@ impl LivestreamServer {
                 hls_stream_registry,
                 hls_cancel,
             )
-            .with_activity_callback(activity_callback)
             .with_active_publishers_source(active_publishers_source);
 
             let timer = synctv_core::metrics::stream::STREAM_RELAY_DURATION
@@ -1043,6 +1129,10 @@ impl LivestreamServer {
             reregister_cancel_token,
             hls_shutdown_token,
             hls_cleanup_handle,
+            #[cfg(test)]
+            hub_failure_tx,
+            #[cfg(test)]
+            hub_restart_count,
         })
     }
 }
@@ -1052,14 +1142,62 @@ mod tests {
     use super::*;
     use crate::api::tracker::StreamTracker;
     use crate::relay::TestStreamRegistry;
+    use crate::util::TEST_GENERATION_ID;
     use bytes::Bytes;
+    use synctv_core_testing::RtmpPublisher;
     use tempfile::tempdir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::time::{timeout, Duration};
 
     type TestResult = anyhow::Result<()>;
 
     fn test_error(message: impl Into<String>) -> anyhow::Error {
         anyhow::anyhow!(message.into())
+    }
+
+    struct RegistryAuth {
+        registry: Arc<TestStreamRegistry>,
+        user_id: String,
+        cluster_address: String,
+    }
+
+    #[async_trait::async_trait]
+    impl AuthCallback for RegistryAuth {
+        async fn on_publish(
+            &self,
+            generation_id: synctv_xiu::streamhub::utils::Uuid,
+            app_name: &str,
+            stream_name: &str,
+            _query: Option<&str>,
+        ) -> Result<
+            Option<synctv_xiu::rtmp::auth::AuthPublishRewrite>,
+            Box<dyn std::error::Error + Send + Sync>,
+        > {
+            let registered = self
+                .registry
+                .try_activate_generation(
+                    app_name,
+                    stream_name,
+                    "test-node",
+                    &self.user_id,
+                    &self.cluster_address,
+                    &generation_id.to_string(),
+                )
+                .await?;
+            if !registered {
+                return Err(anyhow::anyhow!("test publisher registration already exists").into());
+            }
+            Ok(None)
+        }
+
+        async fn on_play(
+            &self,
+            _app_name: &str,
+            _stream_name: &str,
+            _query: Option<&str>,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            Ok(())
+        }
     }
 
     fn test_config() -> LivestreamConfig {
@@ -1079,7 +1217,7 @@ mod tests {
             hls_memory_max_mb: 0,
             hls_storage_backend: HlsStorageBackend::Memory,
             hls_storage_path: String::new(),
-            hls_oss: HlsOssOptions::default(),
+            hls_s3: HlsS3Options::default(),
             ssrf_guard: SsrfGuard::strict_policy(),
         }
     }
@@ -1095,6 +1233,130 @@ mod tests {
         let mut config = test_config();
         config.rtmp_address = local_addr.to_string();
         config
+    }
+
+    async fn connect_rtmp_handshake(
+        address: std::net::SocketAddr,
+    ) -> anyhow::Result<tokio::net::TcpStream> {
+        let mut stream = tokio::net::TcpStream::connect(address).await?;
+        let mut c0c1 = vec![0_u8; 1 + synctv_xiu::rtmp::handshake::define::RTMP_HANDSHAKE_SIZE];
+        c0c1[0] = synctv_xiu::rtmp::handshake::define::RTMP_VERSION;
+        stream.write_all(&c0c1).await?;
+
+        let mut s0s1s2 =
+            vec![0_u8; 1 + 2 * synctv_xiu::rtmp::handshake::define::RTMP_HANDSHAKE_SIZE];
+        stream.read_exact(&mut s0s1s2).await?;
+        assert_eq!(s0s1s2[0], synctv_xiu::rtmp::handshake::define::RTMP_VERSION);
+
+        stream
+            .write_all(&s0s1s2[1..=synctv_xiu::rtmp::handshake::define::RTMP_HANDSHAKE_SIZE])
+            .await?;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        Ok(stream)
+    }
+
+    async fn wait_for_rtmp_handshake(
+        address: std::net::SocketAddr,
+        max_wait: Duration,
+    ) -> anyhow::Result<tokio::net::TcpStream> {
+        let deadline = tokio::time::Instant::now() + max_wait;
+        loop {
+            match connect_rtmp_handshake(address).await {
+                Ok(stream) => return Ok(stream),
+                Err(error) if tokio::time::Instant::now() < deadline => {
+                    tracing::debug!(%error, "RTMP listener has not restarted yet");
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    async fn wait_for_session_eof(stream: &mut tokio::net::TcpStream) -> anyhow::Result<()> {
+        timeout(Duration::from_secs(2), async {
+            let mut buffer = [0_u8; 4096];
+            loop {
+                if stream.read(&mut buffer).await? == 0 {
+                    return Ok::<(), std::io::Error>(());
+                }
+            }
+        })
+        .await
+        .map_err(|_| test_error("active RTMP session remained open"))??;
+        Ok(())
+    }
+
+    async fn wait_for_restart_cleanup(
+        handle: &LivestreamHandle,
+        registry: &TestStreamRegistry,
+        tracker: &StreamTracker,
+        room_id: &str,
+        media_id: &str,
+    ) -> TestResult {
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let restarted = handle.hub_restart_count.load(Ordering::Acquire) >= 1;
+                let registry_clean = !registry.is_stream_active(room_id, media_id).await?;
+                let tracker_clean = tracker.get_stream_user(room_id, media_id).is_none();
+                if restarted && registry_clean && tracker_clean {
+                    return Ok::<(), anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| test_error("StreamHub restart cleanup did not complete"))??;
+        Ok(())
+    }
+
+    async fn publish_test_media(
+        address: std::net::SocketAddr,
+        room_id: &str,
+        media_id: &str,
+    ) -> anyhow::Result<RtmpPublisher> {
+        let mut publisher = RtmpPublisher::connect(address, room_id, media_id).await?;
+        publisher.send_video(0, true).await?;
+        publisher.send_audio(0).await?;
+        publisher.send_video(1, true).await?;
+        publisher.send_audio(1).await?;
+        publisher.send_video(10_001, true).await?;
+        Ok(publisher)
+    }
+
+    async fn wait_for_hls_generation(
+        handle: &LivestreamHandle,
+        room_id: &str,
+        media_id: &str,
+        previous: Option<synctv_xiu::streamhub::utils::Uuid>,
+    ) -> anyhow::Result<synctv_xiu::streamhub::utils::Uuid> {
+        let registry = handle
+            .infrastructure
+            .hls_stream_registry
+            .as_ref()
+            .ok_or_else(|| test_error("HLS registry is unavailable"))?;
+        let stream_label = format!("{room_id}/{media_id}");
+        timeout(Duration::from_secs(3), async {
+            loop {
+                let generation = registry.iter().find_map(|entry| {
+                    let state = entry.value().read();
+                    (state.app_name == room_id
+                        && state.stream_name == media_id
+                        && !state.playlist.segments.is_empty()
+                        && previous.is_none_or(|owner| owner != state.generation_id))
+                    .then_some(state.generation_id)
+                });
+                if let Some(generation) = generation {
+                    return generation;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            test_error(format!(
+                "HLS generation {stream_label} did not produce a segment"
+            ))
+        })
     }
 
     #[tokio::test]
@@ -1303,12 +1565,13 @@ mod tests {
         let mut handle = server.start()?;
 
         registry
-            .try_register_publisher(
+            .try_activate_generation(
                 "room-shutdown",
                 "media-shutdown",
                 "test-node",
                 "user-shutdown",
                 "127.0.0.1:50051",
+                TEST_GENERATION_ID,
             )
             .await?;
         tracker.insert(
@@ -1567,6 +1830,259 @@ mod tests {
             rebound.is_ok(),
             "shutdown_graceful must release the RTMP listener so the port can be rebound: {rebound:?}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_graceful_closes_active_rtmp_session_and_hls_tasks() -> TestResult {
+        let registry = Arc::new(TestStreamRegistry::new());
+        let tracker = test_tracker();
+        let (listener, local_addr) = bind_local_listener().await?;
+        let server = LivestreamServer::new(
+            config_for_rtmp_addr(local_addr),
+            registry.clone(),
+            tracker.clone(),
+        )
+        .with_rtmp_listener(listener);
+        let mut handle = server.start()?;
+        let mut session = connect_rtmp_handshake(local_addr).await?;
+
+        registry
+            .try_activate_generation(
+                "room-active-shutdown",
+                "media-active-shutdown",
+                "test-node",
+                "user-active-shutdown",
+                "127.0.0.1:50051",
+                TEST_GENERATION_ID,
+            )
+            .await?;
+        tracker.insert(
+            "user-active-shutdown".to_string(),
+            "room-active-shutdown".to_string(),
+            "media-active-shutdown".to_string(),
+        );
+        let publisher =
+            publish_test_media(local_addr, "room-active-shutdown", "media-active-shutdown").await?;
+        let generation = wait_for_hls_generation(
+            &handle,
+            "room-active-shutdown",
+            "media-active-shutdown",
+            None,
+        )
+        .await?;
+
+        assert!(handle.shutdown_graceful(1).await);
+        wait_for_session_eof(&mut session).await?;
+        publisher.close();
+
+        assert!(handle.hls_remuxer_handle.is_finished());
+        assert!(handle.hls_cleanup_handle.is_finished());
+        assert!(handle.publisher_manager_handle.is_finished());
+        assert!(handle.reregister_task_handle.is_finished());
+        assert!(
+            !registry
+                .is_stream_active("room-active-shutdown", "media-active-shutdown")
+                .await?
+        );
+        assert!(tracker
+            .get_stream_user("room-active-shutdown", "media-active-shutdown")
+            .is_none());
+        let hls_registry = handle
+            .infrastructure
+            .hls_stream_registry
+            .as_ref()
+            .ok_or_else(|| test_error("HLS registry is unavailable"))?;
+        let hls_key = synctv_xiu::hls::generation_registry_key(
+            "room-active-shutdown",
+            "media-active-shutdown",
+            &generation.to_string(),
+        );
+        assert!(hls_registry.get(&hls_key).is_some_and(|state| {
+            state
+                .read()
+                .generate_m3u8(|name| format!("/{name}.ts"))
+                .contains("#EXT-X-ENDLIST")
+        }));
+        tokio::net::TcpListener::bind(local_addr).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_streamhub_failure_closes_sessions_cleans_state_and_accepts_reconnect(
+    ) -> TestResult {
+        let registry = Arc::new(TestStreamRegistry::new());
+        let tracker = test_tracker();
+        let (listener, local_addr) = bind_local_listener().await?;
+        let server = LivestreamServer::new(
+            config_for_rtmp_addr(local_addr),
+            registry.clone(),
+            tracker.clone(),
+        )
+        .with_rtmp_listener(listener);
+        let mut handle = server.start()?;
+        let mut old_session = connect_rtmp_handshake(local_addr).await?;
+
+        registry
+            .try_activate_generation(
+                "room-restart",
+                "media-restart",
+                "test-node",
+                "user-restart",
+                "127.0.0.1:50051",
+                TEST_GENERATION_ID,
+            )
+            .await?;
+        tracker.insert(
+            "user-restart".to_string(),
+            "room-restart".to_string(),
+            "media-restart".to_string(),
+        );
+        let old_publisher = publish_test_media(local_addr, "room-restart", "media-restart").await?;
+        let old_generation =
+            wait_for_hls_generation(&handle, "room-restart", "media-restart", None).await?;
+
+        handle
+            .hub_failure_tx
+            .send(())
+            .map_err(|_| test_error("StreamHub failure injector closed"))?;
+        wait_for_session_eof(&mut old_session).await?;
+        wait_for_restart_cleanup(
+            &handle,
+            registry.as_ref(),
+            tracker.as_ref(),
+            "room-restart",
+            "media-restart",
+        )
+        .await?;
+        old_publisher.close();
+
+        assert!(!handle.hls_remuxer_handle.is_finished());
+        assert!(!handle.hls_cleanup_handle.is_finished());
+
+        let mut replacement = wait_for_rtmp_handshake(local_addr, Duration::from_secs(3)).await?;
+        assert_eq!(handle.hub_restart_count.load(Ordering::Acquire), 1);
+        assert!(
+            registry
+                .try_activate_generation(
+                    "room-restart",
+                    "media-restart",
+                    "test-node",
+                    "user-restart",
+                    "127.0.0.1:50051",
+                    "00000000-0000-4000-8000-000000000002",
+                )
+                .await?
+        );
+        tracker.insert(
+            "user-restart".to_string(),
+            "room-restart".to_string(),
+            "media-restart".to_string(),
+        );
+        let replacement_publisher =
+            publish_test_media(local_addr, "room-restart", "media-restart").await?;
+        let replacement_generation = wait_for_hls_generation(
+            &handle,
+            "room-restart",
+            "media-restart",
+            Some(old_generation),
+        )
+        .await?;
+        assert_ne!(replacement_generation, old_generation);
+
+        assert!(handle.shutdown_graceful(1).await);
+        wait_for_session_eof(&mut replacement).await?;
+        replacement_publisher.close();
+        assert!(handle.hls_remuxer_handle.is_finished());
+        assert!(handle.hls_cleanup_handle.is_finished());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_kick_active_publisher_ends_hls_and_allows_same_key_republish() -> TestResult {
+        const ROOM_ID: &str = "room-kick";
+        const MEDIA_ID: &str = "media-kick";
+        const USER_ID: &str = "user-kick";
+
+        let registry = Arc::new(TestStreamRegistry::new());
+        let tracker = test_tracker();
+        let (listener, local_addr) = bind_local_listener().await?;
+        let server = LivestreamServer::new(
+            config_for_rtmp_addr(local_addr),
+            registry.clone(),
+            tracker.clone(),
+        )
+        .with_rtmp_listener(listener)
+        .with_auth(Arc::new(RegistryAuth {
+            registry: Arc::clone(&registry),
+            user_id: USER_ID.to_string(),
+            cluster_address: "127.0.0.1:50051".to_string(),
+        }));
+        let mut handle = server.start()?;
+
+        // PublisherManager removes stale node registrations during startup;
+        // let that one-time cleanup finish before installing the test owner.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        tracker.insert(
+            USER_ID.to_string(),
+            ROOM_ID.to_string(),
+            MEDIA_ID.to_string(),
+        );
+        let mut publisher = publish_test_media(local_addr, ROOM_ID, MEDIA_ID).await?;
+        let old_generation = wait_for_hls_generation(&handle, ROOM_ID, MEDIA_ID, None).await?;
+        let old_state = handle
+            .infrastructure
+            .hls_stream_registry
+            .as_ref()
+            .and_then(|hls_registry| {
+                hls_registry.get(&synctv_xiu::hls::generation_registry_key(
+                    ROOM_ID,
+                    MEDIA_ID,
+                    &old_generation.to_string(),
+                ))
+            })
+            .map(|entry| Arc::clone(entry.value()))
+            .ok_or_else(|| test_error("active HLS generation is missing"))?;
+
+        handle.infrastructure.kick_stream(ROOM_ID, MEDIA_ID).await?;
+        timeout(Duration::from_secs(3), async {
+            loop {
+                let inactive = !registry.is_stream_active(ROOM_ID, MEDIA_ID).await?;
+                let ended = old_state
+                    .read()
+                    .generate_m3u8(|name| format!("/hls/{name}"))
+                    .contains("#EXT-X-ENDLIST");
+                if inactive && ended {
+                    return Ok::<(), anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| test_error("kicked publisher did not finish cleanup"))??;
+
+        timeout(Duration::from_secs(2), async {
+            let mut timestamp = 20_000;
+            loop {
+                if publisher.send_video(timestamp, true).await.is_err() {
+                    break;
+                }
+                timestamp += 1_000;
+            }
+        })
+        .await
+        .map_err(|_| test_error("kicked RTMP publisher connection remained writable"))?;
+        publisher.close();
+
+        let replacement = publish_test_media(local_addr, ROOM_ID, MEDIA_ID).await?;
+        let replacement_generation =
+            wait_for_hls_generation(&handle, ROOM_ID, MEDIA_ID, Some(old_generation)).await?;
+        assert_ne!(replacement_generation, old_generation);
+
+        assert!(handle.shutdown_graceful(1).await);
+        replacement.close();
+        tokio::net::TcpListener::bind(local_addr).await?;
         Ok(())
     }
 

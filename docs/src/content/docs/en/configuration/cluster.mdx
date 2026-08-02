@@ -55,7 +55,7 @@ Cluster mode solves runtime consistency when multiple SyncTV processes serve the
   light={clusterRuntimeLight}
   dark={clusterRuntimeDark}
   alt="SyncTV cluster runtime architecture showing clients reaching multiple nodes through HTTP/gRPC, with nodes sharing PostgreSQL and Redis, and reading livestream segments through an HLS backend or publisher-node proxy."
-  caption="In cluster mode, durable business state goes to PostgreSQL and cross-node runtime state goes to Redis. Local HLS backends use publisher-node proxying; shared_file serves TS segments from the current node's shared mount, and OSS defines an object-storage boundary."
+  caption="In cluster mode, durable business state goes to PostgreSQL and cross-node runtime state goes to Redis. Local HLS backends use publisher-node proxying; shared_file serves TS segments from the current node's shared mount, and S3 defines an object-storage boundary."
 />
 
 ## Node Coordination Flow
@@ -70,7 +70,7 @@ Cluster mode solves runtime consistency when multiple SyncTV processes serve the
 </Steps>
 
 <Aside type="caution">
-Cluster mode cannot compensate for inconsistent dependencies. Replicas must share the same PostgreSQL, Redis, and `cluster.secret`. Local HLS backends work through publisher-node proxying, so publisher-node restarts, reachability issues, or network partitions affect remote segment reads. `shared_file` improves TS segment routing by reading from the current node's shared mount; OSS gives object-storage-backed segment storage.
+Cluster mode cannot compensate for inconsistent dependencies. Replicas must share the same PostgreSQL, Redis, and `cluster.secret`. Local HLS backends work through publisher-node proxying, so publisher-node restarts, reachability issues, or network partitions affect remote segment reads. `shared_file` improves TS segment routing by reading from the current node's shared mount; S3 gives object-storage-backed segment storage.
 </Aside>
 
 ## Deployment Shapes
@@ -81,7 +81,7 @@ Cluster mode cannot compensate for inconsistent dependencies. Replicas must shar
 | Fixed multi-node | Stable VM or bare-metal node count | `cluster.enabled=true`, `discovery_mode=static` or `redis` |
 | Kubernetes replicas | Horizontal scaling, rolling updates, Ingress exposure | `cluster.enabled=true`, `discovery_mode=redis` or `k8s_dns`, separate HTTP/gRPC Services |
 | Low-traffic multi-replica livestream | HLS/FLV playback must survive cross-node routing, but segment request volume is low | `cluster.enabled=true`; `memory` or local `file` can rely on publisher-node proxying |
-| High-traffic multi-replica livestream | High HLS request volume or cleaner rolling-upgrade boundaries | Add `shared_file` or the `oss` HLS backend on top of cluster configuration |
+| High-traffic multi-replica livestream | High HLS request volume or cleaner rolling-upgrade boundaries | Add `shared_file` or the `s3` HLS backend on top of cluster configuration |
 
 ## Requirements
 
@@ -209,22 +209,22 @@ Object storage option:
 ```yaml
 livestream:
   hls_storage:
-    type: "oss"
+    type: "s3"
     endpoint: "https://s3.example.com"
     bucket: "synctv-hls"
     base_path: "synctv/hls/"
 ```
 
-The `oss` backend uses S3-compatible object storage.
+The `s3` backend uses S3-compatible object storage.
 
 ## Helm Checklist
 
-The Helm chart does not enable cluster mode by default. Before scaling replicas, explicitly set `config.cluster.enabled=true`. HLS can start with the publisher-node proxy model; when you need a more stable segment storage and recovery boundary, configure `shared_file` HLS or OSS-backed HLS.
+The Helm chart does not enable cluster mode by default. Before scaling replicas, explicitly set `config.cluster.enabled=true`. HLS can start with the publisher-node proxy model; when you need a more stable segment storage and recovery boundary, configure `shared_file` HLS or S3-backed HLS.
 
 Before scaling replicas:
 
 - Redis is configured and reachable.
 - `cluster.secret` is stable and shared by every replica.
-- The HLS model is explicit: local backend with publisher-node proxying for small deployments; `shared_file + RWX/PVC` or `oss` when durable shared segment storage is required.
+- The HLS model is explicit: local backend with publisher-node proxying for small deployments; `shared_file + RWX/PVC` or `s3` when durable shared segment storage is required.
 - HTTP and gRPC Services/Ingresses match your network design.
 - Leader election mode matches your platform.

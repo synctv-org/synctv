@@ -444,6 +444,11 @@ async fn init_shared_rustfs_server() -> SharedRustfsServer {
 }
 
 async fn shared_rustfs_server() -> Arc<SharedRustfsServer> {
+    // The RustFS readiness probe uses reqwest through testcontainers.  Its
+    // TLS provider follows the storage transport feature selected by the
+    // test binary, while synctv-core is intentionally built without default
+    // features in this helper crate.
+    synctv_common::install_process_crypto_provider();
     synctv_core::install_process_crypto_provider();
     Arc::clone(
         SHARED_RUSTFS

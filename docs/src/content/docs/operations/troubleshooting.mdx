@@ -58,7 +58,7 @@ kubectl -n synctv logs deploy/synctv -f
 | OAuth2 callback/state 错误 | redirect 不一致或多副本没有共享 Redis | 对齐 provider 注册值，多副本配置 Redis |
 | WebAuthn/passkey 失败 | `rp_origin` 和真实 HTTPS origin 不一致 | 修正 `webauthn.rp_origin` 和 `webauthn.rp_id` |
 | Range seek 或代理播放失败 | Provider header 不完整或上游不支持 Range | 检查 Provider header 和上游 `Accept-Ranges` |
-| 多副本 HLS 间歇 404 | publisher 节点不可达或 HLS 存储模型不一致 | 使用 publisher-node proxy、`shared_file` 或 OSS |
+| 多副本 HLS 间歇 404 | publisher 节点不可达或 HLS 存储模型不一致 | 使用 publisher-node proxy、`shared_file` 或 S3 |
 
 ## 快速检查
 

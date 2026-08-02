@@ -540,7 +540,14 @@ fn media_source_config_to_proto(
     let provider = match config.clone() {
         synctv_core::models::MediaSourceConfig::DirectUrl(config) => {
             Provider::DirectUrl(source_config_proto::DirectUrlMediaSourceConfig {
-                is_live: config.is_live,
+                playback_kind: config.playback_kind.map(|kind| match kind {
+                    synctv_core::models::PlaybackKind::Regular => {
+                        source_config_proto::PlaybackKind::Regular as i32
+                    }
+                    synctv_core::models::PlaybackKind::Live => {
+                        source_config_proto::PlaybackKind::Live as i32
+                    }
+                }),
                 duration_seconds: config.duration_seconds,
                 prefer_proxy: config.prefer_proxy,
                 proxy_only: config.proxy_only.then_some(true),

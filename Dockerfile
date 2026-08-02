@@ -30,7 +30,7 @@ ARG SYNCTV_BUILD_FEATURES="k8s,mimalloc,openapi"
 ARG SYNCTV_CARGO_BUILD_ARGS=""
 ARG SYNCTV_CARGO_BUILD_PROFILE=release
 ARG CARGO_INCREMENTAL=0
-ARG CARGO_TERM_COLOR=""
+ARG CARGO_TERM_COLOR="auto"
 ARG TARGETARCH
 
 # Clean CI runners benefit from deterministic non-incremental compilation.
@@ -44,14 +44,13 @@ COPY . .
 # Copy binary out of cache mount before RUN completes
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,id=synctv-target-${TARGETARCH},target=/app/target,sharing=locked \
+    --mount=type=cache,id=synctv-target-${SYNCTV_CARGO_BUILD_PROFILE}-${TARGETARCH},target=/app/target,sharing=locked \
     case "$SYNCTV_CARGO_BUILD_PROFILE" in \
         dev) target_profile_dir=debug ;; \
         release) target_profile_dir=release ;; \
         *) echo "Unsupported SYNCTV_CARGO_BUILD_PROFILE: $SYNCTV_CARGO_BUILD_PROFILE" >&2; exit 1 ;; \
     esac; \
     build_flags="--profile $SYNCTV_CARGO_BUILD_PROFILE"; \
-    build_flags="$build_flags --config 'build.rustflags=[\"-Clink-arg=-Wl,-z,pack-relative-relocs\"]'"; \
     if [ -n "$SYNCTV_CARGO_BUILD_ARGS" ]; then \
         build_flags="$build_flags $SYNCTV_CARGO_BUILD_ARGS"; \
     fi; \
@@ -61,7 +60,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     if [ -n "$SYNCTV_BUILD_FEATURES" ]; then \
         build_flags="$build_flags --features $SYNCTV_BUILD_FEATURES"; \
     fi; \
-    cargo +nightly build $build_flags --bin synctv && \
+    cargo +nightly \
+        --config 'build.rustflags=["-Clink-arg=-Wl,-z,pack-relative-relocs"]' \
+        build $build_flags \
+        --bin synctv && \
     cp "target/$target_profile_dir/synctv" /synctv
 
 # Stage 2: Runtime image

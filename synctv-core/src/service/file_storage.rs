@@ -1538,7 +1538,6 @@ pub(super) fn file_object_key(
         "image/jpeg" | "image/jpg" => "jpg",
         "image/png" => "png",
         "image/gif" => "gif",
-        "image/avif" => "avif",
         "image/webp" => "webp",
         _ => "bin",
     };

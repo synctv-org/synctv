@@ -15,7 +15,7 @@ pub const MAX_USER_AVATAR_HEIGHT: i32 = 2048;
 pub const MAX_COVER_IMAGE_WIDTH: i32 = 4096;
 pub const MAX_COVER_IMAGE_HEIGHT: i32 = 4096;
 
-const COVER_IMAGE_MIME_TYPES: &[&str] = &["image/jpeg", "image/png", "image/webp", "image/avif"];
+const COVER_IMAGE_MIME_TYPES: &[&str] = &["image/jpeg", "image/png", "image/webp"];
 const CHAT_ATTACHMENT_MIME_TYPES: &[&str] = &[
     "application/json",
     "application/pdf",
@@ -261,7 +261,7 @@ mod tests {
             ),
             (
                 media_cover_upload_policy(),
-                "image/avif",
+                "image/png",
                 MAX_MEDIA_COVER_SIZE_BYTES,
             ),
             (

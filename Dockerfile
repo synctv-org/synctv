@@ -5,9 +5,10 @@ FROM rust:slim-trixie AS builder
 # build-essential, perl, cmake needed for vendored builds (xiu/opus dependencies)
 # curl needed for utoipa-swagger-ui to download assets
 RUN apt-get update && apt-get install -y \
-    protobuf-compiler \
     pkg-config \
     build-essential \
+    libclang-dev \
+    nasm \
     cmake \
     curl \
     perl \

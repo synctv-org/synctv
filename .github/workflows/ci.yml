@@ -51,7 +51,7 @@ jobs:
           components: clippy
 
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
+        run: sudo apt-get update && sudo apt-get install -y nasm libclang-dev
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
@@ -71,8 +71,8 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
 
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y nasm libclang-dev
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
@@ -90,8 +90,8 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
 
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y nasm libclang-dev
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
@@ -111,7 +111,7 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
+        run: sudo apt-get update && sudo apt-get install -y nasm libclang-dev
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
@@ -141,15 +141,11 @@ jobs:
 
       - name: Install build dependencies on Linux
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
+        run: sudo apt-get update && sudo apt-get install -y nasm libclang-dev
 
       - name: Install build dependencies on macOS
         if: runner.os == 'macOS'
-        run: brew install protobuf nasm
-
-      - name: Install protobuf compiler on Windows
-        if: runner.os == 'Windows'
-        run: choco install protoc --yes
+        run: brew install nasm
 
       - name: Install Make on Windows
         if: runner.os == 'Windows'
@@ -188,7 +184,7 @@ jobs:
 
       - name: Install build dependencies on Linux
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
+        run: sudo apt-get update && sudo apt-get install -y nasm libclang-dev
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
@@ -261,7 +257,7 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
+        run: sudo apt-get update && sudo apt-get install -y nasm libclang-dev
 
       - name: Install cargo-udeps
         run: make install-cargo-udeps

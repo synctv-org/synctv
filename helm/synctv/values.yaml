@@ -335,6 +335,15 @@ config:
         intervalSeconds: 300
         timeoutMillis: 1000
 
+  ## Process-wide logging for shared infrastructure and unmatched targets.
+  logging:
+    level: info
+    format: text
+    ## File output example:
+    ## output: {type: file, path: /data/logs/global.log, rotation: {strategy: daily, maxFiles: 30}}
+    output: stdout
+    color: auto
+
   ## ServerConfig
   server:
     host: "0.0.0.0"
@@ -463,6 +472,11 @@ config:
     ## If empty, SyncTV uses only the local bind host fallback and does not
     ## reuse internal Pod IPs or server.advertise_host.
     publicRtmpHost: ""
+    logging:
+      level: info
+      format: text
+      output: stdout
+      color: auto
     gopCacheSize: 2
     streamTimeoutSeconds: 300
     cleanupCheckIntervalSeconds: 60
@@ -562,6 +576,11 @@ config:
     stunExternalAddr: ""
     ## External ICE servers are configured dynamically via the settings API.
     filterPrivateIceCandidates: false
+    logging:
+      level: info
+      format: text
+      output: stdout
+      color: auto
 
   ## ConnectionLimitsConfig
   connectionLimits:

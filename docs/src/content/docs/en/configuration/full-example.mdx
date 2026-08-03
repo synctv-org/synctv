@@ -64,6 +64,12 @@ Production Compose users should maintain `.env.postgres`, `.env.redis`, and `.en
 </Aside>
 
 ```yaml
+logging:
+  level: "info"
+  format: "text"
+  output: stdout
+  color: auto
+
 server:
   host: "0.0.0.0"
   port: 8080
@@ -175,6 +181,12 @@ This template covers all static configuration fields in the current version. Pro
 The template lists both inline secret fields and `*_file` fields to show hierarchy. Production configuration should use `*_file` or environment injection.
 
 ```yaml
+logging:
+  level: "info"
+  format: "text"
+  output: stdout
+  color: auto
+
 server:
   host: "0.0.0.0"
   port: 8080
@@ -318,6 +330,11 @@ jwt:
 livestream:
   rtmp_port: 1935
   public_rtmp_host: "stream.example.com"
+  logging:
+    level: "info"
+    format: "text"
+    output: stdout
+    color: auto
   gop_cache_size: 2
   stream_timeout_seconds: 300
   cleanup_check_interval_seconds: 60
@@ -383,6 +400,11 @@ webrtc:
   stun_host: "0.0.0.0"
   stun_external_addr: ""
   filter_private_ice_candidates: false
+  logging:
+    level: "info"
+    format: "text"
+    output: stdout
+    color: auto
 
 connection_limits:
   max_per_user: 20

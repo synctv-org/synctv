@@ -945,6 +945,7 @@ impl std::fmt::Debug for HlsS3Config {
 pub struct LivestreamConfig {
     pub rtmp_port: u16,
     pub public_rtmp_host: String,
+    pub logging: LoggingConfig,
     pub gop_cache_size: u32,
     pub stream_timeout_seconds: u64,
     pub cleanup_check_interval_seconds: u64,
@@ -963,6 +964,7 @@ impl Default for LivestreamConfig {
         Self {
             rtmp_port: 1935,
             public_rtmp_host: String::new(),
+            logging: LoggingConfig::default(),
             gop_cache_size: 2,
             stream_timeout_seconds: 300,
             cleanup_check_interval_seconds: 60,
@@ -1301,6 +1303,7 @@ pub struct WebRTCConfig {
     pub stun_host: String,
     pub stun_external_addr: String,
     pub filter_private_ice_candidates: bool,
+    pub logging: LoggingConfig,
 }
 
 impl Default for WebRTCConfig {
@@ -1312,6 +1315,7 @@ impl Default for WebRTCConfig {
             stun_host: "0.0.0.0".to_string(),
             stun_external_addr: String::new(),
             filter_private_ice_candidates: false,
+            logging: LoggingConfig::default(),
         }
     }
 }
@@ -1688,6 +1692,7 @@ pub struct RateLimitScopeRule {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
+    pub logging: LoggingConfig,
     pub server: ServerConfig,
     pub health: HealthConfig,
     pub time: TimeConfig,
@@ -1718,6 +1723,7 @@ pub struct AppConfig {
 impl std::fmt::Debug for AppConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppConfig")
+            .field("logging", &self.logging)
             .field("server", &self.server)
             .field("health", &self.health)
             .field("time", &self.time)
@@ -1750,6 +1756,7 @@ impl std::fmt::Debug for AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            logging: LoggingConfig::default(),
             server: ServerConfig::default(),
             health: HealthConfig::default(),
             time: TimeConfig::default(),

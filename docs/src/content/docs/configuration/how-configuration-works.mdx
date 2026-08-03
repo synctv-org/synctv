@@ -115,7 +115,8 @@ export SYNCTV_JWT_SECRET_FILE=/run/secrets/jwt_secret
 会受 `data_dir` 影响的路径：
 
 - `management.unix_socket_path`
-- `<component>.logging.output.path` for `server`, `health`, `metrics`, `cluster`, and `management`
+- `logging.output.path`
+- `<component>.logging.output.path`，其中 `<component>` 为 `server`、`health`、`metrics`、`management`、`cluster`、`livestream` 或 `webrtc`
 - `livestream.hls_storage.path`
 - `proxy_slice_cache.file_cache_dir`
 

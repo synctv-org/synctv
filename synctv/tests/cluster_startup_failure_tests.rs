@@ -59,6 +59,7 @@ fn test_file_storage_config() -> FileStorageConfig {
 /// Create a minimal standalone config for testing (no Redis, no distributed mode)
 fn standalone_test_config() -> Config {
     Config {
+        logging: LoggingConfig::default(),
         server: ServerConfig {
             host: "127.0.0.1".to_string(),
             port: 8080,
@@ -113,6 +114,7 @@ fn standalone_test_config() -> Config {
 /// Create a config with distributed mode enabled
 fn cluster_test_config() -> Config {
     Config {
+        logging: LoggingConfig::default(),
         server: ServerConfig {
             host: "127.0.0.1".to_string(),
             port: 8080,

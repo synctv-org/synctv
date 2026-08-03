@@ -98,6 +98,7 @@ fn apply_redis_url_component_env_overrides(
 /// Format: `SYNCTV_<SECTION>_<FIELD>=<value>`
 ///
 /// Examples:
+/// - `SYNCTV_LOGGING_LEVEL=info`
 /// - `SYNCTV_SERVER_HOST=0.0.0.0`
 /// - `SYNCTV_DATABASE_URL=postgresql://...`
 /// - `SYNCTV_SERVER_ADVERTISE_HOST=10.0.0.1`
@@ -129,7 +130,11 @@ pub(crate) fn apply_env_overrides_with(
     };
     let apply_logging_env =
         |service: &str, logging: &mut LoggingConfig| -> Result<(), ConfigError> {
-            let prefix = format!("SYNCTV_{service}_LOGGING");
+            let prefix = if service.is_empty() {
+                "SYNCTV_LOGGING".to_string()
+            } else {
+                format!("SYNCTV_{service}_LOGGING")
+            };
             if let Some(value) = get_env(&format!("{prefix}_LEVEL")) {
                 logging.level = value;
             }
@@ -707,11 +712,14 @@ pub(crate) fn apply_env_overrides_with(
         &mut config.webauthn.timeout_seconds,
     )?;
 
+    apply_logging_env("", &mut config.logging)?;
     apply_logging_env("SERVER", &mut config.server.logging)?;
     apply_logging_env("HEALTH", &mut config.health.logging)?;
     apply_logging_env("METRICS", &mut config.metrics.logging)?;
     apply_logging_env("CLUSTER", &mut config.cluster.logging)?;
     apply_logging_env("MANAGEMENT", &mut config.management.logging)?;
+    apply_logging_env("LIVESTREAM", &mut config.livestream.logging)?;
+    apply_logging_env("WEBRTC", &mut config.webrtc.logging)?;
 
     env_override_parse(
         "SYNCTV_LIVESTREAM_RTMP_PORT",
@@ -1235,11 +1243,14 @@ pub(crate) fn resolve_owned_local_paths(
     };
 
     for logging in [
+        &mut config.logging,
         &mut config.server.logging,
         &mut config.health.logging,
         &mut config.metrics.logging,
         &mut config.cluster.logging,
         &mut config.management.logging,
+        &mut config.livestream.logging,
+        &mut config.webrtc.logging,
     ] {
         if let LogOutput::File(output) = &mut logging.output {
             let path = output.path.trim();
@@ -1453,9 +1464,13 @@ mod tests {
     }
 
     #[test]
-    fn service_logging_and_internal_listener_environment_overrides() {
+    fn global_and_service_logging_environment_overrides() {
         let mut config = Config::default();
         let env = HashMap::from([
+            ("SYNCTV_LOGGING_LEVEL", "trace".to_string()),
+            ("SYNCTV_LOGGING_FORMAT", "json".to_string()),
+            ("SYNCTV_LOGGING_COLOR", "always".to_string()),
+            ("SYNCTV_LOGGING_OUTPUT_PATH", "logs/global".to_string()),
             ("SYNCTV_SERVER_LOGGING_LEVEL", "debug".to_string()),
             ("SYNCTV_SERVER_LOGGING_FORMAT", "json".to_string()),
             ("SYNCTV_SERVER_LOGGING_COLOR", "never".to_string()),
@@ -1474,6 +1489,8 @@ mod tests {
                 "SYNCTV_HEALTH_LOGGING_OUTPUT_ROTATION_MAX_FILES",
                 "72".to_string(),
             ),
+            ("SYNCTV_LIVESTREAM_LOGGING_LEVEL", "warn".to_string()),
+            ("SYNCTV_WEBRTC_LOGGING_LEVEL", "error".to_string()),
             ("SYNCTV_HEALTH_PORT", "18081".to_string()),
             ("SYNCTV_CLUSTER_ENABLED", "true".to_string()),
             ("SYNCTV_CLUSTER_HOST", "0.0.0.0".to_string()),
@@ -1487,6 +1504,13 @@ mod tests {
         apply_env_overrides_with(&mut config, &|name| env.get(name).cloned())
             .expect("service configuration environment overrides should apply");
 
+        assert_eq!(config.logging.level, "trace");
+        assert_eq!(config.logging.format, "json");
+        assert!(matches!(config.logging.color, LogColor::Always));
+        let LogOutput::File(global_output) = &config.logging.output else {
+            panic!("global logging output should be a file output");
+        };
+        assert_eq!(global_output.path, "logs/global");
         assert_eq!(config.server.logging.level, "debug");
         assert_eq!(config.server.logging.format, "json");
         assert!(matches!(config.server.logging.color, LogColor::Never));
@@ -1499,6 +1523,8 @@ mod tests {
         assert_eq!(health_output.path, "logs/health");
         assert_eq!(health_output.rotation.strategy, "hourly");
         assert_eq!(health_output.rotation.max_files, 72);
+        assert_eq!(config.livestream.logging.level, "warn");
+        assert_eq!(config.webrtc.logging.level, "error");
         assert_eq!(config.health.port, 18081);
         assert!(config.cluster.enabled);
         assert_eq!(config.cluster.port, 15051);
@@ -1506,12 +1532,16 @@ mod tests {
     }
 
     #[test]
-    fn relative_component_log_paths_resolve_under_data_dir() {
+    fn relative_global_and_component_log_paths_resolve_under_data_dir() {
         let dir = tempdir().expect("temp dir should be created");
         let config_path = dir.path().join("synctv.yaml");
         let data_dir = dir.path().join("data");
         let mut config = Config::default();
         config.data_dir = data_dir.display().to_string();
+        config.logging.output = LogOutput::File(LogFileOutput {
+            path: "logs/global".to_string(),
+            ..LogFileOutput::default()
+        });
         config.server.logging.output = LogOutput::File(LogFileOutput {
             path: "logs/server".to_string(),
             ..LogFileOutput::default()
@@ -1520,9 +1550,24 @@ mod tests {
             path: "logs/health".to_string(),
             ..LogFileOutput::default()
         });
+        config.livestream.logging.output = LogOutput::File(LogFileOutput {
+            path: "logs/livestream".to_string(),
+            ..LogFileOutput::default()
+        });
+        config.webrtc.logging.output = LogOutput::File(LogFileOutput {
+            path: "logs/webrtc".to_string(),
+            ..LogFileOutput::default()
+        });
 
         resolve_owned_local_paths(&mut config, Some(&config_path), false, None);
 
+        let LogOutput::File(output) = config.logging.output else {
+            panic!("global logging output should remain a file output");
+        };
+        assert_eq!(
+            output.path,
+            data_dir.join("logs/global").display().to_string()
+        );
         let LogOutput::File(output) = config.server.logging.output else {
             panic!("server logging output should remain a file output");
         };
@@ -1536,6 +1581,20 @@ mod tests {
         assert_eq!(
             output.path,
             data_dir.join("logs/health").display().to_string()
+        );
+        let LogOutput::File(output) = config.livestream.logging.output else {
+            panic!("livestream logging output should remain a file output");
+        };
+        assert_eq!(
+            output.path,
+            data_dir.join("logs/livestream").display().to_string()
+        );
+        let LogOutput::File(output) = config.webrtc.logging.output else {
+            panic!("webrtc logging output should remain a file output");
+        };
+        assert_eq!(
+            output.path,
+            data_dir.join("logs/webrtc").display().to_string()
         );
     }
 }

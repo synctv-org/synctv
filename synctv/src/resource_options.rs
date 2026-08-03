@@ -40,8 +40,19 @@ use crate::app_config::{
 
 pub fn logging_options(config: &AppConfig) -> LoggingOptions {
     LoggingOptions {
+        global: component_logging("global", &config.logging, Vec::new()),
         components: vec![
-            component_logging("server", &config.server.logging, Vec::new()),
+            component_logging(
+                "server",
+                &config.server.logging,
+                vec![
+                    "synctv::server".to_string(),
+                    "synctv_api".to_string(),
+                    "synctv_api_common".to_string(),
+                    "synctv_api_grpc".to_string(),
+                    "synctv_api_http".to_string(),
+                ],
+            ),
             component_logging(
                 "health",
                 &config.health.logging,
@@ -50,7 +61,10 @@ pub fn logging_options(config: &AppConfig) -> LoggingOptions {
             component_logging(
                 "metrics",
                 &config.metrics.logging,
-                vec!["synctv::metrics".to_string()],
+                vec![
+                    "synctv::metrics".to_string(),
+                    "synctv_core::metrics".to_string(),
+                ],
             ),
             component_logging(
                 "cluster",
@@ -65,6 +79,24 @@ pub fn logging_options(config: &AppConfig) -> LoggingOptions {
                 "management",
                 &config.management.logging,
                 vec!["synctv_management".to_string()],
+            ),
+            component_logging(
+                "livestream",
+                &config.livestream.logging,
+                vec![
+                    "synctv::bootstrap::livestream".to_string(),
+                    "synctv::rtmp_auth".to_string(),
+                    "synctv_livestream".to_string(),
+                    "synctv_xiu".to_string(),
+                ],
+            ),
+            component_logging(
+                "webrtc",
+                &config.webrtc.logging,
+                vec![
+                    "synctv::bootstrap::webrtc".to_string(),
+                    "synctv_core::service::stun_server".to_string(),
+                ],
             ),
         ],
     }
@@ -643,6 +675,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn global_logging_is_the_unscoped_output() {
+        let options = logging_options(&AppConfig::default());
+
+        assert_eq!(options.global.name, "global");
+        assert!(options.global.targets.is_empty());
+        assert!(options
+            .components
+            .iter()
+            .all(|component| !component.targets.is_empty()));
+    }
+
+    #[test]
     fn cluster_logging_includes_application_bootstrap_target() {
         let options = logging_options(&AppConfig::default());
         let cluster = options
@@ -655,5 +699,24 @@ mod tests {
             .targets
             .iter()
             .any(|target| target == "synctv::bootstrap::cluster"));
+    }
+
+    #[test]
+    fn independent_network_services_have_dedicated_logging_targets() {
+        let options = logging_options(&AppConfig::default());
+        let targets_for = |name: &str| {
+            options
+                .components
+                .iter()
+                .find(|component| component.name == name)
+                .map(|component| component.targets.as_slice())
+                .expect("logging component must exist")
+        };
+
+        assert!(targets_for("server").contains(&"synctv_api_http".to_string()));
+        assert!(targets_for("metrics").contains(&"synctv_core::metrics".to_string()));
+        assert!(targets_for("livestream").contains(&"synctv_livestream".to_string()));
+        assert!(targets_for("livestream").contains(&"synctv_xiu".to_string()));
+        assert!(targets_for("webrtc").contains(&"synctv_core::service::stun_server".to_string()));
     }
 }

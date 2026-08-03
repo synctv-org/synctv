@@ -16,6 +16,25 @@
 #   1. Config file sibling keys: jwt.secret_file, management.auth_token_file, ...
 #   2. Env file variables: SYNCTV_JWT_SECRET_FILE, SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE, ...
 
+# Process-wide logging for shared infrastructure, background workers, database,
+# Redis, configuration/bootstrap code, and third-party library targets.
+# Environment variables: SYNCTV_LOGGING_LEVEL, SYNCTV_LOGGING_FORMAT,
+# SYNCTV_LOGGING_COLOR, SYNCTV_LOGGING_OUTPUT, SYNCTV_LOGGING_OUTPUT_PATH,
+# SYNCTV_LOGGING_OUTPUT_ROTATION_STRATEGY, SYNCTV_LOGGING_OUTPUT_ROTATION_MAX_FILES.
+# Service logging blocks use the corresponding SYNCTV_<SERVICE>_LOGGING_* prefix.
+logging:
+  level: "info"
+  format: "text"
+  output: "stdout"
+  color: "auto"
+  # File output:
+  # output:
+  #   type: "file"
+  #   path: "logs/global.log"
+  #   rotation:
+  #     strategy: "daily"
+  #     max_files: 30
+
 server:
   host: "0.0.0.0"
   port: 8080
@@ -236,7 +255,9 @@ management:
 # `data_dir` is the shared root for runtime-owned local files.
 # It affects relative:
 #   - management.unix_socket_path
-#   - <component>.logging.output.path for server, health, metrics, cluster, and management
+#   - logging.output.path
+#   - <component>.logging.output.path for server, health, metrics, management,
+#     cluster, livestream, and webrtc
 #   - livestream.hls_storage.path
 #   - proxy_slice_cache.file_cache_dir
 # It does NOT affect:
@@ -382,6 +403,11 @@ livestream:
   # client-reachable domain, LoadBalancer address, or node public IP.
   # If empty, SyncTV uses only the local bind host fallback for local/single-node use.
   # public_rtmp_host: "live.example.com"
+  logging:
+    level: "info"
+    format: "text"
+    output: "stdout"
+    color: "auto"
   gop_cache_size: 2
   stream_timeout_seconds: 300
   # How often to check for idle streams (seconds)
@@ -767,6 +793,11 @@ webrtc:
   # stun_external_addr: ""
   # Filter private/internal ICE candidates before sending them to clients.
   filter_private_ice_candidates: false
+  logging:
+    level: "info"
+    format: "text"
+    output: "stdout"
+    color: "auto"
   # --- External ICE Servers ---
   # Configured dynamically via the settings API (no restart required):
   #   "webrtc.external_ice_servers" - JSON array of ICE server objects, e.g.:

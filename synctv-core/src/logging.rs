@@ -62,20 +62,22 @@ pub struct ComponentLoggingOptions {
 
 #[derive(Debug, Clone)]
 pub struct LoggingOptions {
+    pub global: ComponentLoggingOptions,
     pub components: Vec<ComponentLoggingOptions>,
 }
 
 impl Default for LoggingOptions {
     fn default() -> Self {
         Self {
-            components: vec![ComponentLoggingOptions {
-                name: "server".to_string(),
+            global: ComponentLoggingOptions {
+                name: "global".to_string(),
                 targets: Vec::new(),
                 level: "info".to_string(),
                 format: "text".to_string(),
                 output: LogOutput::Stdout,
                 color: LogColor::Auto,
-            }],
+            },
+            components: Vec::new(),
         }
     }
 }
@@ -118,9 +120,9 @@ pub(crate) fn dropped_lines_by_component() -> Vec<(String, usize)> {
         .map_or_else(Vec::new, |counters| dropped_lines(counters))
 }
 
-/// Build one filtered fmt layer per configured component and install them on a
-/// single registry. Routing is exclusive: a specialized target is handled by
-/// its component, while the server component receives all remaining targets.
+/// Build one filtered fmt layer per configured output and install them on a
+/// single registry. Routing is exclusive: configured targets are handled by
+/// their components, while the global output receives every remaining target.
 pub fn init_logging(config: &LoggingOptions) -> anyhow::Result<LoggingGuards> {
     let (subscriber, guards) = build_subscriber(config)?;
     subscriber
@@ -135,26 +137,26 @@ type LoggingSubscriber = Layered<Vec<Box<dyn Layer<Registry> + Send + Sync>>, Re
 fn build_subscriber(config: &LoggingOptions) -> anyhow::Result<(LoggingSubscriber, LoggingGuards)> {
     validate_component_routes(config)?;
 
-    let specialized_targets: Vec<String> = config
+    let component_targets: Vec<String> = config
         .components
         .iter()
-        .filter(|component| component.name != "server")
         .flat_map(|component| component.targets.iter().cloned())
         .collect();
 
     let mut layers: Vec<Box<dyn Layer<Registry> + Send + Sync>> = Vec::new();
     let mut writers = WriterPool::new();
 
-    for component in &config.components {
+    for (component, is_global) in std::iter::once((&config.global, true))
+        .chain(config.components.iter().map(|component| (component, false)))
+    {
         let level = parse_log_level(&component.level)?;
         let targets = component.targets.clone();
-        let is_server = component.name == "server";
-        let specialized_targets_for_server = specialized_targets.clone();
+        let component_targets_for_global = component_targets.clone();
         let filter = FilterFn::new(move |metadata| {
             if *metadata.level() > level {
                 return false;
             }
-            if is_server && metadata.target() == SQLX_POSTGRES_NOTICE_TARGET {
+            if is_global && metadata.target() == SQLX_POSTGRES_NOTICE_TARGET {
                 let notice_level = if matches!(level, Level::TRACE | Level::DEBUG) {
                     Level::INFO
                 } else {
@@ -166,9 +168,9 @@ fn build_subscriber(config: &LoggingOptions) -> anyhow::Result<(LoggingSubscribe
             }
             target_is_owned_by_component(
                 metadata.target(),
-                is_server,
+                is_global,
                 &targets,
-                &specialized_targets_for_server,
+                &component_targets_for_global,
             )
         });
 
@@ -217,68 +219,31 @@ fn build_subscriber(config: &LoggingOptions) -> anyhow::Result<(LoggingSubscribe
 }
 
 fn validate_component_routes(config: &LoggingOptions) -> anyhow::Result<()> {
-    let server_count = config
-        .components
-        .iter()
-        .filter(|component| component.name == "server")
-        .count();
-    if server_count != 1 {
+    if config.global.name.trim().is_empty() {
         return Err(anyhow::anyhow!(
-            "logging requires exactly one server component, found {server_count}"
+            "global logging component name must be non-empty"
+        ));
+    }
+    if !config.global.targets.is_empty() {
+        return Err(anyhow::anyhow!(
+            "global logging component must not define targets"
         ));
     }
 
     let mut names = HashSet::new();
+    validate_component_options(&config.global, &mut names)?;
     for component in &config.components {
-        if component.name.trim().is_empty() || !names.insert(component.name.as_str()) {
-            return Err(anyhow::anyhow!(
-                "logging component names must be non-empty and unique"
-            ));
-        }
-        if component.name != "server" && component.targets.is_empty() {
+        if component.targets.is_empty() {
             return Err(anyhow::anyhow!(
                 "logging component '{}' requires at least one target",
                 component.name
             ));
         }
-        parse_log_level(&component.level).map_err(|error| {
-            anyhow::anyhow!(
-                "invalid log level for component '{}': {error}",
-                component.name
-            )
-        })?;
-        if !matches!(
-            component.format.to_ascii_lowercase().as_str(),
-            "text" | "json"
-        ) {
-            return Err(anyhow::anyhow!(
-                "invalid log format '{}' for component '{}'",
-                component.format,
-                component.name
-            ));
-        }
-        if matches!(&component.output, LogOutput::File { path, .. } if path.as_os_str().is_empty())
-        {
-            return Err(anyhow::anyhow!(
-                "file output path for component '{}' must not be empty",
-                component.name
-            ));
-        }
-        if matches!(&component.output, LogOutput::File { max_files: 0, .. }) {
-            return Err(anyhow::anyhow!(
-                "file retention for component '{}' must keep at least one file",
-                component.name
-            ));
-        }
+        validate_component_options(component, &mut names)?;
     }
 
-    let specialized: Vec<_> = config
-        .components
-        .iter()
-        .filter(|component| component.name != "server")
-        .collect();
-    for (index, left) in specialized.iter().enumerate() {
-        for right in specialized.iter().skip(index + 1) {
+    for (index, left) in config.components.iter().enumerate() {
+        for right in config.components.iter().skip(index + 1) {
             for left_target in &left.targets {
                 for right_target in &right.targets {
                     if target_prefixes_overlap(left_target, right_target) {
@@ -297,6 +262,46 @@ fn validate_component_routes(config: &LoggingOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_component_options(
+    component: &ComponentLoggingOptions,
+    names: &mut HashSet<String>,
+) -> anyhow::Result<()> {
+    if component.name.trim().is_empty() || !names.insert(component.name.clone()) {
+        return Err(anyhow::anyhow!(
+            "logging component names must be non-empty and unique"
+        ));
+    }
+    parse_log_level(&component.level).map_err(|error| {
+        anyhow::anyhow!(
+            "invalid log level for component '{}': {error}",
+            component.name
+        )
+    })?;
+    if !matches!(
+        component.format.to_ascii_lowercase().as_str(),
+        "text" | "json"
+    ) {
+        return Err(anyhow::anyhow!(
+            "invalid log format '{}' for component '{}'",
+            component.format,
+            component.name
+        ));
+    }
+    if matches!(&component.output, LogOutput::File { path, .. } if path.as_os_str().is_empty()) {
+        return Err(anyhow::anyhow!(
+            "file output path for component '{}' must not be empty",
+            component.name
+        ));
+    }
+    if matches!(&component.output, LogOutput::File { max_files: 0, .. }) {
+        return Err(anyhow::anyhow!(
+            "file retention for component '{}' must keep at least one file",
+            component.name
+        ));
+    }
+    Ok(())
+}
+
 fn target_prefixes_overlap(left: &str, right: &str) -> bool {
     let is_prefix = |prefix: &str, target: &str| {
         target == prefix
@@ -309,9 +314,9 @@ fn target_prefixes_overlap(left: &str, right: &str) -> bool {
 
 fn target_is_owned_by_component(
     target: &str,
-    is_server: bool,
+    is_global: bool,
     component_targets: &[String],
-    specialized_targets: &[String],
+    all_component_targets: &[String],
 ) -> bool {
     let matches = |configured: &[String]| {
         configured.iter().any(|prefix| {
@@ -321,8 +326,8 @@ fn target_is_owned_by_component(
                     .is_some_and(|suffix| suffix.starts_with("::"))
         })
     };
-    if is_server {
-        !matches(specialized_targets)
+    if is_global {
+        !matches(all_component_targets)
     } else {
         matches(component_targets)
     }
@@ -445,13 +450,7 @@ pub(crate) fn parse_log_level(level: &str) -> anyhow::Result<Level> {
 }
 
 pub fn effective_log_level(config: &LoggingOptions) -> anyhow::Result<Level> {
-    let component = config
-        .components
-        .iter()
-        .find(|component| component.name == "server")
-        .or_else(|| config.components.first())
-        .ok_or_else(|| anyhow::anyhow!("at least one logging component is required"))?;
-    parse_log_level(&component.level)
+    parse_log_level(&config.global.level)
 }
 
 /// Generate a trace ID for request tracing.
@@ -471,64 +470,61 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn default_logging_has_a_server_component() {
+    fn default_logging_has_a_global_output() {
         let config = LoggingOptions::default();
-        assert_eq!(config.components.len(), 1);
-        assert_eq!(config.components[0].name, "server");
+        assert_eq!(config.global.name, "global");
+        assert!(config.global.targets.is_empty());
+        assert!(config.components.is_empty());
     }
 
     #[test]
-    fn effective_level_comes_from_server_component() {
+    fn effective_level_comes_from_global_output() {
         let config = LoggingOptions {
-            components: vec![
-                ComponentLoggingOptions {
-                    name: "health".to_string(),
-                    level: "error".to_string(),
-                    targets: vec!["synctv::health".to_string()],
-                    ..default_component("health")
-                },
-                ComponentLoggingOptions {
-                    name: "server".to_string(),
-                    level: "debug".to_string(),
-                    ..default_component("server")
-                },
-            ],
+            global: ComponentLoggingOptions {
+                level: "debug".to_string(),
+                ..default_component("global")
+            },
+            components: vec![ComponentLoggingOptions {
+                level: "error".to_string(),
+                targets: vec!["synctv::health".to_string()],
+                ..default_component("health")
+            }],
         };
         assert_eq!(
-            effective_log_level(&config).expect("server level should be valid"),
+            effective_log_level(&config).expect("global level should be valid"),
             Level::DEBUG
         );
     }
 
     #[test]
-    fn specialized_targets_are_excluded_from_server_layer() {
-        let specialized = vec!["synctv::health".to_string()];
+    fn component_targets_are_excluded_from_global_layer() {
+        let component_targets = vec!["synctv::health".to_string()];
         let health = vec!["synctv::health".to_string()];
         assert!(target_is_owned_by_component(
             "synctv::health::probe",
             false,
             &health,
-            &specialized
+            &component_targets
         ));
         assert!(!target_is_owned_by_component(
             "synctv::health::probe",
             true,
             &[],
-            &specialized
+            &component_targets
         ));
         assert!(target_is_owned_by_component(
             "synctv_api_http",
             true,
             &[],
-            &specialized
+            &component_targets
         ));
     }
 
     #[test]
     fn overlapping_specialized_routes_are_rejected() {
         let config = LoggingOptions {
+            global: default_component("global"),
             components: vec![
-                default_component("server"),
                 ComponentLoggingOptions {
                     targets: vec!["synctv::cluster".to_string()],
                     ..default_component("cluster")
@@ -545,20 +541,18 @@ mod tests {
     #[test]
     fn components_sharing_standard_output_have_independent_workers() {
         let config = LoggingOptions {
-            components: vec![
-                default_component("server"),
-                ComponentLoggingOptions {
-                    targets: vec!["synctv::health".to_string()],
-                    ..default_component("health")
-                },
-            ],
+            global: default_component("global"),
+            components: vec![ComponentLoggingOptions {
+                targets: vec!["synctv::health".to_string()],
+                ..default_component("health")
+            }],
         };
         let (_subscriber, guards) =
             build_subscriber(&config).expect("logging subscriber should build");
         assert_eq!(guards.len(), 2);
         assert_eq!(
             guards.dropped_lines(),
-            vec![("server".to_string(), 0), ("health".to_string(), 0)]
+            vec![("global".to_string(), 0), ("health".to_string(), 0)]
         );
     }
 
@@ -589,14 +583,15 @@ mod tests {
     #[test]
     fn zero_file_retention_is_rejected() {
         let config = LoggingOptions {
-            components: vec![ComponentLoggingOptions {
+            global: ComponentLoggingOptions {
                 output: LogOutput::File {
-                    path: PathBuf::from("server.log"),
+                    path: PathBuf::from("global.log"),
                     rotation: LogRotation::Daily,
                     max_files: 0,
                 },
-                ..default_component("server")
-            }],
+                ..default_component("global")
+            },
+            components: Vec::new(),
         };
         assert!(validate_component_routes(&config).is_err());
     }
@@ -635,47 +630,46 @@ mod tests {
     fn component_layers_use_independent_routes_levels_formats_and_files() {
         let dir = tempdir().expect("temporary log directory should be created");
         let config = LoggingOptions {
-            components: vec![
-                ComponentLoggingOptions {
-                    format: "json".to_string(),
-                    output: LogOutput::File {
-                        path: dir.path().join("server.log"),
-                        rotation: LogRotation::Never,
-                        max_files: 2,
-                    },
-                    ..default_component("server")
+            global: ComponentLoggingOptions {
+                format: "json".to_string(),
+                output: LogOutput::File {
+                    path: dir.path().join("global.log"),
+                    rotation: LogRotation::Never,
+                    max_files: 2,
                 },
-                ComponentLoggingOptions {
-                    targets: vec!["synctv::health".to_string()],
-                    level: "warn".to_string(),
-                    output: LogOutput::File {
-                        path: dir.path().join("health.log"),
-                        rotation: LogRotation::Never,
-                        max_files: 2,
-                    },
-                    ..default_component("health")
+                ..default_component("global")
+            },
+            components: vec![ComponentLoggingOptions {
+                targets: vec!["synctv::health".to_string()],
+                level: "warn".to_string(),
+                output: LogOutput::File {
+                    path: dir.path().join("health.log"),
+                    rotation: LogRotation::Never,
+                    max_files: 2,
                 },
-            ],
+                ..default_component("health")
+            }],
         };
         let (subscriber, guards) =
             build_subscriber(&config).expect("logging subscriber should build");
         assert_eq!(guards.len(), 2);
 
         tracing::subscriber::with_default(subscriber, || {
-            tracing::info!(target: "synctv_api_http", "server-only-event");
+            tracing::info!(target: "synctv_core::cache", "global-only-event");
             tracing::info!(target: "synctv::health", "filtered-health-event");
             tracing::warn!(target: "synctv::health", "health-only-event");
         });
         drop(guards);
 
-        let server_log = read_log_with_prefix(dir.path(), "server");
+        let global_log = read_log_with_prefix(dir.path(), "global");
         let health_log = read_log_with_prefix(dir.path(), "health");
-        assert!(server_log.contains("server-only-event"));
-        assert!(server_log.contains("\"target\":\"synctv_api_http\""));
-        assert!(!server_log.contains("health-only-event"));
+        assert!(global_log.contains("global-only-event"));
+        assert!(global_log.contains("\"target\":\"synctv_core::cache\""));
+        assert!(!global_log.contains("health-only-event"));
+        assert!(!global_log.contains("filtered-health-event"));
         assert!(health_log.contains("health-only-event"));
         assert!(!health_log.contains("filtered-health-event"));
-        assert!(!health_log.contains("server-only-event"));
+        assert!(!health_log.contains("global-only-event"));
         assert!(!health_log.trim_start().starts_with('{'));
     }
 

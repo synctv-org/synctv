@@ -226,7 +226,8 @@ The application uses split database/Redis configuration so credentials can stay 
 
 | Section | Description |
 |---------|-------------|
-| `config.server` | API bind address, CORS, proxy settings, and gRPC transport settings |
+| `config.logging` | Process-wide output for shared infrastructure, background workers, and unmatched tracing targets |
+| `config.server` | API bind address, CORS, proxy settings, gRPC transport settings, and API logging |
 | `config.publicIds` | Optional sqids settings for public API IDs |
 | `config.management` | Management endpoint settings |
 | `config.database` | Pool settings; actual host/port/user/password and optional read URL come from env vars |
@@ -234,13 +235,13 @@ The application uses split database/Redis configuration so credentials can stay 
 | `config.cluster` | Cluster coordination and discovery settings |
 | `config.jwt` | Token durations; signing secret comes from a secret |
 | `config.bootstrap` | Bootstrap root-user settings |
-| `config.livestream` | RTMP/HLS/pull timeout and cache settings |
+| `config.livestream` | RTMP/HLS/pull timeout, cache, and logging settings |
 | `config.fileStorage` | Uploaded file storage backends and product-level backend routing |
 | `config.cache` | Business L1/L2 cache settings |
 | `config.proxySliceCache` | Startup-only media proxy Range-slice cache settings |
 | `config.mediaProviders` | Local built-in provider adapter request and connect timeouts |
 | `config.webauthn` | Passkey relying-party settings |
-| `config.webrtc` | Built-in STUN and WebRTC settings; external ICE servers are runtime settings |
+| `config.webrtc` | Built-in STUN, WebRTC, and logging settings; external ICE servers are runtime settings |
 | `config.requestRateLimits` | Shared HTTP and gRPC API category rate limits |
 | `config.passwordComplexity` | Password policy for account credentials |
 | `config.bufferSizes` | Internal queue sizes |

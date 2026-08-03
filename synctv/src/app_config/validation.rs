@@ -564,43 +564,46 @@ impl AppConfig {
             }
         }
 
-        for (name, logging) in [
-            ("server", &self.server.logging),
-            ("health", &self.health.logging),
-            ("metrics", &self.metrics.logging),
-            ("cluster", &self.cluster.logging),
-            ("management", &self.management.logging),
+        for (path, logging) in [
+            ("logging", &self.logging),
+            ("server.logging", &self.server.logging),
+            ("health.logging", &self.health.logging),
+            ("metrics.logging", &self.metrics.logging),
+            ("cluster.logging", &self.cluster.logging),
+            ("management.logging", &self.management.logging),
+            ("livestream.logging", &self.livestream.logging),
+            ("webrtc.logging", &self.webrtc.logging),
         ] {
             if logging.level.parse::<tracing::Level>().is_err() {
                 errors.push(format!(
-                    "{name}.logging.level '{}' must be one of: trace, debug, info, warn, error",
+                    "{path}.level '{}' must be one of: trace, debug, info, warn, error",
                     logging.level
                 ));
             }
             if !matches!(logging.format.as_str(), "text" | "json") {
                 errors.push(format!(
-                    "{name}.logging.format '{}' must be text or json",
+                    "{path}.format '{}' must be text or json",
                     logging.format
                 ));
             }
             if let LogOutput::File(output) = &logging.output {
                 if output.r#type != "file" {
-                    errors.push(format!("{name}.logging.output.type must be file"));
+                    errors.push(format!("{path}.output.type must be file"));
                 }
                 if output.path.trim().is_empty() {
-                    errors.push(format!("{name}.logging.output.path must not be empty"));
+                    errors.push(format!("{path}.output.path must not be empty"));
                 }
                 if !matches!(
                     output.rotation.strategy.as_str(),
                     "daily" | "hourly" | "never"
                 ) {
                     errors.push(format!(
-                        "{name}.logging.output.rotation.strategy must be daily, hourly, or never"
+                        "{path}.output.rotation.strategy must be daily, hourly, or never"
                     ));
                 }
                 if output.rotation.max_files == 0 {
                     errors.push(format!(
-                        "{name}.logging.output.rotation.max_files must be at least 1"
+                        "{path}.output.rotation.max_files must be at least 1"
                     ));
                 }
             }
@@ -1423,7 +1426,8 @@ mod tests {
         valid_sha256_certificate_fingerprint, validate_project_url,
     };
     use crate::app_config::{
-        AppConfig, ClusterChannelConfig, ClusterDiscoveryMode, SecurityConfig, SsrfConfig,
+        AppConfig, ClusterChannelConfig, ClusterDiscoveryMode, LogFileOutput, LogOutput,
+        SecurityConfig, SsrfConfig,
     };
 
     #[test]
@@ -1437,6 +1441,26 @@ mod tests {
         for value in ["", "synctv-org/synctv", "file:///tmp/synctv", "https://"] {
             assert!(validate_project_url(value).is_err(), "value: {value}");
         }
+    }
+
+    #[test]
+    fn logging_validation_covers_global_and_network_components() {
+        let mut config = AppConfig::default();
+        config.logging.level = "verbose".to_string();
+        config.livestream.logging.format = "pretty".to_string();
+        config.webrtc.logging.output = LogOutput::File(LogFileOutput::default());
+
+        let errors = config.validate().expect_err("logging settings must fail");
+
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("logging.level 'verbose'")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("livestream.logging.format 'pretty'")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("webrtc.logging.output.path must not be empty")));
     }
 
     #[test]

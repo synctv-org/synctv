@@ -45,6 +45,21 @@ data:
           interval_seconds: {{ $clockSyncProvider.intervalSeconds | default 300 }}
           timeout_millis: {{ $clockSyncProvider.timeoutMillis | default 1000 }}
 
+    logging:
+      level: {{ .Values.config.logging.level | default "info" | quote }}
+      format: {{ .Values.config.logging.format | default "text" | quote }}
+      {{- if kindIs "map" .Values.config.logging.output }}
+      output:
+        type: {{ .Values.config.logging.output.type | default "file" | quote }}
+        path: {{ .Values.config.logging.output.path | quote }}
+        rotation:
+          strategy: {{ .Values.config.logging.output.rotation.strategy | default "daily" | quote }}
+          max_files: {{ .Values.config.logging.output.rotation.maxFiles | default 30 }}
+      {{- else }}
+      output: {{ .Values.config.logging.output | default "stdout" | quote }}
+      {{- end }}
+      color: {{ .Values.config.logging.color | default "auto" | quote }}
+
     server:
       host: {{ .Values.config.server.host | quote }}
       port: {{ .Values.config.server.port }}
@@ -236,6 +251,20 @@ data:
     livestream:
       rtmp_port: {{ .Values.config.livestream.rtmpPort }}
       public_rtmp_host: {{ .Values.config.livestream.publicRtmpHost | default "" | quote }}
+      logging:
+        level: {{ $livestream.logging.level | default "info" | quote }}
+        format: {{ $livestream.logging.format | default "text" | quote }}
+        {{- if kindIs "map" $livestream.logging.output }}
+        output:
+          type: {{ $livestream.logging.output.type | default "file" | quote }}
+          path: {{ $livestream.logging.output.path | quote }}
+          rotation:
+            strategy: {{ $livestream.logging.output.rotation.strategy | default "daily" | quote }}
+            max_files: {{ $livestream.logging.output.rotation.maxFiles | default 30 }}
+        {{- else }}
+        output: {{ $livestream.logging.output | default "stdout" | quote }}
+        {{- end }}
+        color: {{ $livestream.logging.color | default "auto" | quote }}
       gop_cache_size: {{ $livestream.gopCacheSize }}
       stream_timeout_seconds: {{ $livestream.streamTimeoutSeconds }}
       cleanup_check_interval_seconds: {{ $livestream.cleanupCheckIntervalSeconds }}
@@ -351,6 +380,20 @@ data:
       stun_external_addr: {{ .Values.config.webrtc.stunExternalAddr | quote }}
       {{- end }}
       filter_private_ice_candidates: {{ .Values.config.webrtc.filterPrivateIceCandidates }}
+      logging:
+        level: {{ .Values.config.webrtc.logging.level | default "info" | quote }}
+        format: {{ .Values.config.webrtc.logging.format | default "text" | quote }}
+        {{- if kindIs "map" .Values.config.webrtc.logging.output }}
+        output:
+          type: {{ .Values.config.webrtc.logging.output.type | default "file" | quote }}
+          path: {{ .Values.config.webrtc.logging.output.path | quote }}
+          rotation:
+            strategy: {{ .Values.config.webrtc.logging.output.rotation.strategy | default "daily" | quote }}
+            max_files: {{ .Values.config.webrtc.logging.output.rotation.maxFiles | default 30 }}
+        {{- else }}
+        output: {{ .Values.config.webrtc.logging.output | default "stdout" | quote }}
+        {{- end }}
+        color: {{ .Values.config.webrtc.logging.color | default "auto" | quote }}
 
     connection_limits:
       max_per_user: {{ $connectionLimits.maxPerUser | default 20 }}

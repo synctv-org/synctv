@@ -198,6 +198,8 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 
 ## `jwt` and `logging`
 
+Top-level `logging` receives logs from the database, Redis, caches, proxies, realtime, outbox, migrations, startup, third-party dependencies, and all remaining targets. `<component>` is one of `server`, `health`, `metrics`, `management`, `cluster`, `livestream`, or `webrtc`; each component has an independent output.
+
 | Field | Type / values | Default | Meaning |
 | --- | --- | --- | --- |
 | `jwt.secret` | secret string | `change-me-in-production` | Token signing secret |
@@ -205,9 +207,17 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `jwt.refresh_token_duration_days` | days | `30` | Refresh-token lifetime |
 | `jwt.guest_token_duration_hours` | hours | `4` | Guest-token lifetime |
 | `jwt.clock_skew_leeway_secs` | seconds | `60` | Token timestamp skew allowance |
+| `logging.level` | `error`, `warn`, `info`, `debug`, or `trace` | `info` | Global log level |
+| `logging.format` | `text` or `json` | `text` | Global log format |
+| `logging.output` | `stdout`, `stderr`, or a file object | `stdout` | Global log output |
+| `logging.output.path` | file path | `""` | Global log file path; relative paths resolve under `data_dir` |
+| `logging.output.rotation.strategy` | `daily`, `hourly`, or `never` | `daily` | Global log file rotation period |
+| `logging.output.rotation.max_files` | positive integer | `30` | Global log files retained |
+| `logging.color` | `auto`, `always`, or `never` | `auto` | Global color output |
 | `<component>.logging.level` | `error`, `warn`, `info`, `debug`, or `trace` | `info` (`warn` for metrics/cluster) | Component log level |
 | `<component>.logging.format` | `text` or `json` | `text` | Component log format |
 | `<component>.logging.output` | `stdout`, `stderr`, or a file object | `stdout` | Independent component output |
+| `<component>.logging.output.path` | file path | `""` | Component log file path; relative paths resolve under `data_dir` |
 | `<component>.logging.output.rotation.strategy` | `daily`, `hourly`, or `never` | `daily` | File rotation period |
 | `<component>.logging.output.rotation.max_files` | positive integer | `30` | Files retained per component |
 | `<component>.logging.color` | `auto`, `always`, or `never` | `auto` | Component color output |

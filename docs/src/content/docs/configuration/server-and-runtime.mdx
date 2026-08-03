@@ -143,8 +143,14 @@ data_dir: "/var/lib/synctv"
 
 ## `logging`
 
+顶层 `logging` 是全局兜底输出，覆盖数据库、Redis、缓存、代理、realtime、outbox、迁移、启动流程、第三方依赖和其余 target。`server`、`health`、`metrics`、`management`、`cluster`、`livestream`、`webrtc` 使用各自的专属输出。每条事件只进入一个输出：专属 target 进入对应组件，其余 target 进入全局输出。
+
 | 字段 | 默认值 | 用途 |
 | --- | --- | --- |
+| `logging.level` | `info` | 全局日志级别 |
+| `logging.format` | `text` | 全局日志格式（`text` 或 `json`） |
+| `logging.output` | `stdout` | 全局 `stdout`、`stderr` 或文件对象 |
+| `logging.color` | `auto` | 全局颜色策略（`auto`、`always` 或 `never`） |
 | `<component>.logging.level` | `info`（metrics/cluster 为 `warn`） | 组件日志级别 |
 | `<component>.logging.format` | `text` | 组件日志格式（`text` 或 `json`） |
 | `<component>.logging.output` | `stdout` | 组件独立的 `stdout`、`stderr` 或文件对象 |
@@ -153,37 +159,40 @@ data_dir: "/var/lib/synctv"
 Kubernetes 或日志采集系统使用 JSON：
 
 ```yaml
-server:
-  logging:
-    level: "info"
-    format: "text"
-    output: stdout
-    color: auto
+logging:
+  level: "info"
+  format: "json"
+  output: stdout
+  color: never
 
-health:
+server:
   logging:
     level: "info"
     format: "json"
     output: stdout
     color: never
 
-metrics:
+livestream:
   logging:
-    level: "warn"
+    level: "info"
     format: "json"
     output:
       type: file
-      path: "logs/metrics.log"
+      path: "logs/livestream.log"
       rotation:
         strategy: daily
         max_files: 30
     color: never
+
+webrtc:
+  logging:
+    level: "info"
+    format: "json"
+    output: stdout
+    color: never
 ```
 
-`server`、`health`、`metrics`、`cluster` 和 `management` 分别构建独立日志 layer，
-各自的级别、格式、输出和文件轮转配置单独生效。
-
-各组件的相对日志文件路径按 `data_dir` 解析。`rotation.max_files` 限制组件保留的日志文件数量，默认保留 30 个。容器中通常输出到 stdout。
+全局和组件日志的相对文件路径都按 `data_dir` 解析。文件输出支持 `daily`、`hourly` 和 `never` 三种轮转策略；`rotation.max_files` 默认保留 30 个文件。容器环境通常把所有目标输出到 stdout，由日志采集系统按 JSON 字段处理。
 
 ## `management`
 

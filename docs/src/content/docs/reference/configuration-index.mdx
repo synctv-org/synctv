@@ -198,6 +198,8 @@ curl -fsS http://localhost:8081/health/ready
 
 ## `jwt` 和 `logging`
 
+顶层 `logging` 接收数据库、Redis、缓存、代理、realtime、outbox、迁移、启动流程、第三方依赖和其余 target 的日志。`<component>` 可取 `server`、`health`、`metrics`、`management`、`cluster`、`livestream` 或 `webrtc`，每个组件拥有独立输出目标。
+
 | 字段 | 类型/可选值 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `jwt.secret` | secret 字符串 | `change-me-in-production` | token 签名密钥 |
@@ -205,9 +207,17 @@ curl -fsS http://localhost:8081/health/ready
 | `jwt.refresh_token_duration_days` | 天数 | `30` | refresh token 有效期 |
 | `jwt.guest_token_duration_hours` | 小时数 | `4` | guest token 有效期 |
 | `jwt.clock_skew_leeway_secs` | 秒数 | `60` | token 时间误差容忍 |
+| `logging.level` | `error`、`warn`、`info`、`debug`、`trace` | `info` | 全局日志级别 |
+| `logging.format` | `text` 或 `json` | `text` | 全局日志格式 |
+| `logging.output` | `stdout`、`stderr` 或文件对象 | `stdout` | 全局日志输出目标 |
+| `logging.output.path` | 文件路径 | `""` | 全局日志文件路径；相对路径按 `data_dir` 解析 |
+| `logging.output.rotation.strategy` | `daily`、`hourly`、`never` | `daily` | 全局日志文件轮转周期 |
+| `logging.output.rotation.max_files` | 正整数 | `30` | 全局日志文件保留数量 |
+| `logging.color` | `auto`、`always`、`never` | `auto` | 全局日志颜色输出 |
 | `<component>.logging.level` | `error`、`warn`、`info`、`debug`、`trace` | `info`（metrics/cluster 为 `warn`） | 组件日志级别 |
 | `<component>.logging.format` | `text` 或 `json` | `text` | 组件日志格式 |
 | `<component>.logging.output` | `stdout`、`stderr` 或文件对象 | `stdout` | 组件独立输出目标 |
+| `<component>.logging.output.path` | 文件路径 | `""` | 组件日志文件路径；相对路径按 `data_dir` 解析 |
 | `<component>.logging.output.rotation.strategy` | `daily`、`hourly`、`never` | `daily` | 文件轮转周期 |
 | `<component>.logging.output.rotation.max_files` | 正整数 | `30` | 每个组件保留的文件数量 |
 | `<component>.logging.color` | `auto`、`always`、`never` | `auto` | 组件颜色输出 |

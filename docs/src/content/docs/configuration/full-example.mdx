@@ -64,6 +64,12 @@ curl -fsS http://localhost:8081/health/ready
 </Aside>
 
 ```yaml
+logging:
+  level: "info"
+  format: "text"
+  output: stdout
+  color: auto
+
 server:
   host: "0.0.0.0"
   port: 8080
@@ -175,6 +181,12 @@ metrics:
 模板同时列出 secret 直填字段和 `*_file` 字段，用于展示层级。生产配置使用 `*_file` 或环境变量注入。
 
 ```yaml
+logging:
+  level: "info"
+  format: "text"
+  output: stdout
+  color: auto
+
 server:
   host: "0.0.0.0"
   port: 8080
@@ -318,6 +330,11 @@ jwt:
 livestream:
   rtmp_port: 1935
   public_rtmp_host: "stream.example.com"
+  logging:
+    level: "info"
+    format: "text"
+    output: stdout
+    color: auto
   gop_cache_size: 2
   stream_timeout_seconds: 300
   cleanup_check_interval_seconds: 60
@@ -383,6 +400,11 @@ webrtc:
   stun_host: "0.0.0.0"
   stun_external_addr: ""
   filter_private_ice_candidates: false
+  logging:
+    level: "info"
+    format: "text"
+    output: stdout
+    color: auto
 
 connection_limits:
   max_per_user: 20

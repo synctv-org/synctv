@@ -519,14 +519,15 @@ mod tests {
     #[test]
     fn effective_log_level_uses_synctv_config_for_database_policy() {
         let logging = LoggingOptions {
-            components: vec![synctv_core::logging::ComponentLoggingOptions {
-                name: "server".to_string(),
+            global: synctv_core::logging::ComponentLoggingOptions {
+                name: "global".to_string(),
                 level: "debug".to_string(),
                 targets: Vec::new(),
                 format: "text".to_string(),
                 output: synctv_core::logging::LogOutput::Stdout,
                 color: synctv_core::logging::LogColor::Auto,
-            }],
+            },
+            components: Vec::new(),
         };
 
         let effective = synctv_core::logging::effective_log_level(&logging)

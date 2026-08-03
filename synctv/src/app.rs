@@ -1832,6 +1832,7 @@ mod tests {
 
     fn minimal_valid_startup_config() -> Config {
         Config {
+            logging: crate::app_config::LoggingConfig::default(),
             server: ServerConfig {
                 host: "127.0.0.1".to_string(),
                 port: 8080,

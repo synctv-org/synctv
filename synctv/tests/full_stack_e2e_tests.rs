@@ -493,14 +493,15 @@ static TEST_LOGGING: OnceLock<synctv_core::logging::LoggingGuards> = OnceLock::n
 fn ensure_test_logging() {
     TEST_LOGGING.get_or_init(|| {
         let logging = synctv_core::logging::LoggingOptions {
-            components: vec![synctv_core::logging::ComponentLoggingOptions {
-                name: "server".to_string(),
+            global: synctv_core::logging::ComponentLoggingOptions {
+                name: "global".to_string(),
                 targets: Vec::new(),
                 level: "debug".to_string(),
                 format: "text".to_string(),
                 output: synctv_core::logging::LogOutput::Stdout,
                 color: synctv_core::logging::LogColor::Auto,
-            }],
+            },
+            components: Vec::new(),
         };
         synctv_core::logging::init_logging(&logging)
             .expect("test tracing subscriber should initialize")

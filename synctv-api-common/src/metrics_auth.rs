@@ -133,6 +133,7 @@ impl MetricsAccessController {
                         .map(Arc::new)
                         .map_err(|error| {
                             tracing::error!(
+                                target: "synctv::metrics",
                                 error = %error,
                                 "failed to initialize Kubernetes metrics authorizer"
                             );
@@ -145,7 +146,13 @@ impl MetricsAccessController {
                 .authorize(&token, path, method, metrics)
                 .await
                 .inspect_err(|&error| {
-                    tracing::warn!(error = ?error, path, method, "metrics request denied");
+                    tracing::warn!(
+                        target: "synctv::metrics",
+                        error = ?error,
+                        path,
+                        method,
+                        "metrics request denied"
+                    );
                 });
         }
     }
@@ -395,7 +402,11 @@ fn map_kubernetes_metrics_error(error: &kube::Error) -> MetricsAccessError {
             return MetricsAccessError::Forbidden;
         }
     }
-    tracing::error!(error = %error, "kubernetes metrics auth request failed");
+    tracing::error!(
+        target: "synctv::metrics",
+        error = %error,
+        "kubernetes metrics auth request failed"
+    );
     MetricsAccessError::Internal
 }
 

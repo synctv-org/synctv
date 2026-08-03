@@ -171,8 +171,14 @@ Container deployments usually use `/data` and mount it as a volume.
 
 ## Logging
 
+Top-level `logging` is the global catch-all output for the database, Redis, caches, proxies, realtime, outbox, migrations, startup, third-party dependencies, and all remaining targets. `server`, `health`, `metrics`, `management`, `cluster`, `livestream`, and `webrtc` use dedicated outputs. Each event enters exactly one output: dedicated targets enter their component output, and every remaining target enters the global output.
+
 | Field | Default | Purpose |
 | --- | --- | --- |
+| `logging.level` | `info` | Global log level |
+| `logging.format` | `text` | Global log format (`text` or `json`) |
+| `logging.output` | `stdout` | Global `stdout`, `stderr`, or file output |
+| `logging.color` | `auto` | Global color policy (`auto`, `always`, or `never`) |
 | `<component>.logging.level` | `info` (`warn` for metrics/cluster) | Component log level |
 | `<component>.logging.format` | `text` | Component log format (`text` or `json`) |
 | `<component>.logging.output` | `stdout` | Independent `stdout`, `stderr`, or file output |
@@ -181,38 +187,40 @@ Container deployments usually use `/data` and mount it as a volume.
 Use `json` in Kubernetes or log aggregation systems:
 
 ```yaml
-server:
-  logging:
-    level: "info"
-    format: "text"
-    output: stdout
-    color: auto
+logging:
+  level: "info"
+  format: "json"
+  output: stdout
+  color: never
 
-health:
+server:
   logging:
     level: "info"
     format: "json"
     output: stdout
     color: never
 
-metrics:
+livestream:
   logging:
-    level: "warn"
+    level: "info"
     format: "json"
     output:
       type: file
-      path: "logs/metrics.log"
+      path: "logs/livestream.log"
       rotation:
         strategy: daily
         max_files: 30
     color: never
+
+webrtc:
+  logging:
+    level: "info"
+    format: "json"
+    output: stdout
+    color: never
 ```
 
-`server`, `health`, `metrics`, `cluster`, and `management` each build an independent
-logging layer. Their levels, formats, outputs, and file rotation settings apply
-independently. Relative component log paths resolve under `data_dir`.
-`rotation.max_files` limits retained files per component and defaults to 30.
-Containers usually write component logs to stdout.
+Relative file paths for global and component logs resolve under `data_dir`. File outputs support `daily`, `hourly`, and `never` rotation strategies; `rotation.max_files` retains 30 files by default. Containers commonly send every output to stdout for JSON-aware log collection.
 
 ## Management Endpoint
 

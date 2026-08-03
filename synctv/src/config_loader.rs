@@ -852,8 +852,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::{default_config_search_paths, user_home_dir};
     use super::{
-        load_config, load_config_with_options, load_public_id_config_with_options,
-        public_id_config_extensions, ConfigLoadExtensions, LoadConfigOptions,
+        load_config, load_config_with_options, load_core_config_file,
+        load_public_id_config_with_options, public_id_config_extensions, ConfigLoadExtensions,
+        LoadConfigOptions,
     };
     use std::fmt::Debug;
     use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -891,6 +892,26 @@ mod tests {
             .get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn example_config_covers_every_logging_destination() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../synctv.example.yaml");
+        let (config, unknown) = load_core_config_file(path, &public_id_config_extensions())
+            .checked("example config should deserialize");
+
+        assert!(
+            unknown.is_empty(),
+            "example config keys should be supported"
+        );
+        assert_eq!(config.logging.level, "info");
+        assert_eq!(config.server.logging.level, "info");
+        assert_eq!(config.health.logging.level, "info");
+        assert_eq!(config.metrics.logging.level, "warn");
+        assert_eq!(config.management.logging.level, "info");
+        assert_eq!(config.cluster.logging.level, "warn");
+        assert_eq!(config.livestream.logging.level, "info");
+        assert_eq!(config.webrtc.logging.level, "info");
     }
 
     #[cfg(target_os = "macos")]

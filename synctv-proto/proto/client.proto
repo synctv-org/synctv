@@ -2601,9 +2601,17 @@ message LiveProxyPlaybackMetadata {
   optional string source_host = 3;
 }
 
+enum LiveStreamAvailability {
+  LIVE_STREAM_AVAILABILITY_UNSPECIFIED = 0;
+  LIVE_STREAM_AVAILABILITY_OFFLINE = 1;
+  LIVE_STREAM_AVAILABILITY_LIVE = 2;
+}
+
 message LivePlaybackMetadata {
   string media_id = 1;
   string room_id = 2;
+  LiveStreamAvailability availability = 3;
+  string stream_generation_id = 4;
 }
 
 message TwitchPlaybackMetadata {

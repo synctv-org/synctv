@@ -394,8 +394,8 @@ docs_default_app_version="$(node --input-type=module -e 'const project = await i
   fail "chart version ($chart_version) must match Cargo workspace version ($cargo_version)"
 [ "$app_version" = "$cargo_version" ] ||
   fail "chart appVersion ($app_version) must match Cargo workspace version ($cargo_version)"
-[ "$compose_image_tag" = "$cargo_version" ] ||
-  fail "Compose image fallback tag ($compose_image_tag) must match Cargo workspace version ($cargo_version)"
+[ "$compose_image_tag" = "latest" ] ||
+  fail "Compose image fallback tag ($compose_image_tag) must be latest"
 [ "$docs_default_app_version" = "$cargo_version" ] ||
   fail "docs default app version ($docs_default_app_version) must match Cargo workspace version ($cargo_version)"
 

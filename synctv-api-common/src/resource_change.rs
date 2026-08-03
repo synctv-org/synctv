@@ -66,6 +66,7 @@ impl Eq for ResourceInvalidation {}
 pub enum PlaybackInvalidation {
     PlaybackStateChanged,
     MediaChanged { media_id: MediaId },
+    LiveStreamChanged { media_id: MediaId },
     PlaylistChanged { playlist_id: PlaylistId },
     PlaylistItemsChanged { media_ids: Vec<MediaId> },
     Cache,
@@ -89,6 +90,11 @@ pub fn resource_invalidations_for_room_event(event: &RealtimeEvent) -> Vec<Resou
                 media_id: *media_id,
             }),
         ],
+        RealtimeEvent::LiveStreamChanged { media_id, .. } => vec![ResourceInvalidation::Playback(
+            PlaybackInvalidation::LiveStreamChanged {
+                media_id: *media_id,
+            },
+        )],
         RealtimeEvent::PlaylistUpdated { playlist, .. } => vec![
             ResourceInvalidation::PlaylistItems,
             ResourceInvalidation::Playback(PlaybackInvalidation::PlaylistChanged {
@@ -293,6 +299,27 @@ mod tests {
                 ResourceInvalidation::PlaybackState,
                 ResourceInvalidation::Playback(PlaybackInvalidation::PlaybackStateChanged),
             ]
+        );
+    }
+
+    #[test]
+    fn live_stream_event_invalidates_its_playback_snapshot() {
+        let media_id = MediaId::expect_positive(404);
+        let event = RealtimeEvent::LiveStreamChanged {
+            event_id: "evt-live".to_string(),
+            room_id: room_id(),
+            media_id,
+            user_id: user_id(),
+            generation_id: "generation-live".to_string(),
+            is_live: true,
+            timestamp: synctv_core::SystemClock.now(),
+        };
+
+        assert_eq!(
+            resource_invalidations_for_room_event(&event),
+            vec![ResourceInvalidation::Playback(
+                PlaybackInvalidation::LiveStreamChanged { media_id }
+            )]
         );
     }
 

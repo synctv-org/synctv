@@ -10,8 +10,8 @@
 //!
 //! Ongoing TTL renewal is handled by `PublisherManager::maintain_heartbeats()`.
 //!
-//! On unpublish, PublisherManager owns the registry transition while this
-//! callback removes user tracking and emits the stopped lifecycle event.
+//! On unpublish, the callback sends a generation-fenced stop command to
+//! `PublisherManager`, then removes authentication tracking state.
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -27,7 +27,10 @@ use synctv_core::{
     service::{RoomService, StreamingPublishKeyService, UserService},
     RedisConnectionRuntime, SharedStateMode, SharedStateProfile,
 };
-use synctv_livestream::{StreamRegistryTrait, StreamTracker, PUBLISHER_TTL_SECS};
+use synctv_livestream::{
+    PublisherControlHandle, PublisherStopOutcome, PublisherStopRequest, StreamRegistryTrait,
+    StreamTracker, PUBLISHER_TTL_SECS,
+};
 // TTL for the per-user rtmp:user_stream:{user_id} Redis key, matching the publisher TTL.
 use synctv_xiu::rtmp::auth::{
     AuthCallback, AuthPublishRewrite, RtmpStreamMode as XiuRtmpStreamMode,
@@ -49,6 +52,24 @@ pub trait UserStreamIndex: Send + Sync {
     async fn delete(&self, user_id: UserId) -> anyhow::Result<()>;
 
     fn supports_cross_node_lookup(&self) -> bool;
+}
+
+#[async_trait]
+trait PublisherStopControl: Send + Sync {
+    async fn stop_publisher(
+        &self,
+        request: PublisherStopRequest,
+    ) -> anyhow::Result<PublisherStopOutcome>;
+}
+
+#[async_trait]
+impl PublisherStopControl for PublisherControlHandle {
+    async fn stop_publisher(
+        &self,
+        request: PublisherStopRequest,
+    ) -> anyhow::Result<PublisherStopOutcome> {
+        PublisherControlHandle::stop_publisher(self, request).await
+    }
 }
 
 #[derive(Default)]
@@ -158,82 +179,6 @@ pub(crate) fn user_stream_index_from_shared_state_profile(
     }
 }
 
-/// Stream lifecycle event emitted on publish/unpublish
-#[derive(Debug, Clone)]
-pub enum StreamLifecycleEvent {
-    /// A publisher successfully started streaming
-    Started {
-        room_id: String,
-        media_id: String,
-        user_id: String,
-    },
-    /// A publisher stopped streaming
-    Stopped {
-        room_id: String,
-        media_id: String,
-        user_id: String,
-    },
-}
-
-impl StreamLifecycleEvent {
-    const fn kind(&self) -> &'static str {
-        match self {
-            Self::Started { .. } => "started",
-            Self::Stopped { .. } => "stopped",
-        }
-    }
-
-    fn room_id(&self) -> &str {
-        match self {
-            Self::Started { room_id, .. } | Self::Stopped { room_id, .. } => room_id,
-        }
-    }
-
-    fn media_id(&self) -> &str {
-        match self {
-            Self::Started { media_id, .. } | Self::Stopped { media_id, .. } => media_id,
-        }
-    }
-
-    fn user_id(&self) -> &str {
-        match self {
-            Self::Started { user_id, .. } | Self::Stopped { user_id, .. } => user_id,
-        }
-    }
-}
-
-fn publish_stream_lifecycle_event(
-    tx: &tokio::sync::broadcast::Sender<StreamLifecycleEvent>,
-    event: StreamLifecycleEvent,
-) {
-    let lifecycle_event = event.kind();
-    let room_id = event.room_id().to_string();
-    let media_id = event.media_id().to_string();
-    let user_id = event.user_id().to_string();
-    match tx.send(event) {
-        Ok(receiver_count) => {
-            tracing::debug!(
-                lifecycle_event,
-                room_id = %room_id,
-                media_id = %media_id,
-                user_id = %user_id,
-                receiver_count,
-                "Published RTMP stream lifecycle event"
-            );
-        }
-        Err(error) => {
-            tracing::warn!(
-                lifecycle_event,
-                room_id = %room_id,
-                media_id = %media_id,
-                user_id = %user_id,
-                error = %error,
-                "Failed to publish RTMP stream lifecycle event: no active receivers"
-            );
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 struct PendingPublishCleanup {
     lease_epoch: u64,
@@ -248,8 +193,8 @@ struct PublisherCleanupRuntime {
     registry: Arc<dyn StreamRegistryTrait>,
     node_id: String,
     cluster_address: String,
-    stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
     user_stream_index: Arc<dyn UserStreamIndex>,
+    publisher_stop_control: Arc<dyn PublisherStopControl>,
     pending_publish_cleanups: Arc<DashMap<Uuid, PendingPublishCleanup>>,
 }
 
@@ -258,8 +203,8 @@ struct PublisherCleanupRuntimeConfig {
     registry: Arc<dyn StreamRegistryTrait>,
     node_id: String,
     cluster_address: String,
-    stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
     user_stream_index: Arc<dyn UserStreamIndex>,
+    publisher_stop_control: Arc<dyn PublisherStopControl>,
 }
 
 impl PublisherCleanupRuntime {
@@ -269,8 +214,8 @@ impl PublisherCleanupRuntime {
             registry: config.registry,
             node_id: config.node_id,
             cluster_address: config.cluster_address,
-            stream_event_tx: config.stream_event_tx,
             user_stream_index: config.user_stream_index,
+            publisher_stop_control: config.publisher_stop_control,
             pending_publish_cleanups: Arc::new(DashMap::new()),
         }
     }
@@ -293,7 +238,6 @@ pub struct SyncTvRtmpAuth {
     user_service: Arc<UserService>,
     publish_key_service: Arc<dyn StreamingPublishKeyService>,
     publisher_cleanup: PublisherCleanupRuntime,
-    /// Broadcast channel for stream lifecycle events (StreamStarted/StreamStopped)
     /// Shared codec for client-visible RTMP app/stream identifiers.
     public_id_codec: Arc<PublicIdCodec>,
     /// Optional shared restart flag from LivestreamServer. When set, new
@@ -310,9 +254,9 @@ pub struct SyncTvRtmpAuthConfig {
     pub node_id: String,
     pub cluster_address: String,
     pub public_id_codec: Arc<PublicIdCodec>,
-    pub stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
     pub is_restarting: Option<Arc<AtomicBool>>,
     pub user_stream_index: Arc<dyn UserStreamIndex>,
+    pub publisher_control: PublisherControlHandle,
 }
 
 impl SyncTvRtmpAuth {
@@ -326,8 +270,8 @@ impl SyncTvRtmpAuth {
                 registry: config.registry,
                 node_id: config.node_id.clone(),
                 cluster_address: config.cluster_address.clone(),
-                stream_event_tx: config.stream_event_tx,
                 user_stream_index: config.user_stream_index,
+                publisher_stop_control: Arc::new(config.publisher_control),
             }),
             public_id_codec: config.public_id_codec,
             is_restarting: config.is_restarting,
@@ -570,17 +514,6 @@ impl PublisherCleanupRuntime {
             validated.media_id.to_string(),
         );
 
-        if let Some(ref tx) = self.stream_event_tx {
-            publish_stream_lifecycle_event(
-                tx,
-                StreamLifecycleEvent::Started {
-                    room_id: validated.room_id.to_string(),
-                    media_id: validated.media_id.to_string(),
-                    user_id: validated.user_id.to_string(),
-                },
-            );
-        }
-
         self.remember_pending_publish_cleanup(
             generation_id,
             PendingPublishCleanup {
@@ -600,6 +533,38 @@ impl PublisherCleanupRuntime {
         else {
             return;
         };
+        let stop_request = PublisherStopRequest::new(
+            room_id,
+            media_id,
+            generation_id.to_string(),
+            attempt.lease_epoch,
+        );
+        match self
+            .publisher_stop_control
+            .stop_publisher(stop_request)
+            .await
+        {
+            Ok(outcome) => {
+                tracing::info!(
+                    generation_id = %generation_id,
+                    lease_epoch = attempt.lease_epoch,
+                    room_id,
+                    media_id,
+                    ?outcome,
+                    "Publisher stop committed after RTMP unpublish"
+                );
+            }
+            Err(error) => {
+                tracing::error!(
+                    generation_id = %generation_id,
+                    lease_epoch = attempt.lease_epoch,
+                    room_id,
+                    media_id,
+                    %error,
+                    "Failed to commit publisher stop after RTMP unpublish"
+                );
+            }
+        }
         self.pending_publish_cleanups.remove(&generation_id);
         let tracked_user = self
             .user_stream_tracker
@@ -617,17 +582,6 @@ impl PublisherCleanupRuntime {
 
         self.delete_user_stream_key(attempt.user_id, "unpublish")
             .await;
-
-        if let Some(ref tx) = self.stream_event_tx {
-            publish_stream_lifecycle_event(
-                tx,
-                StreamLifecycleEvent::Stopped {
-                    room_id: room_id.to_string(),
-                    media_id: media_id.to_string(),
-                    user_id: attempt.user_id.to_string(),
-                },
-            );
-        }
     }
 
     async fn cleanup_on_publish_rollback(
@@ -722,7 +676,7 @@ impl AuthCallback for SyncTvRtmpAuth {
             .validate_publish_request(app_name, stream_name, query)
             .await?;
 
-        // Phase 2: Register in Redis, track mapping, emit event, spawn TTL renewal
+        // Phase 2: Reserve publisher ownership and track cleanup state.
         self.publisher_cleanup
             .register_and_start_ttl(&validated, generation_id)
             .await?;
@@ -1114,6 +1068,18 @@ mod tests {
                 .await
         }
 
+        async fn mark_generation_ready(
+            &self,
+            room_id: &str,
+            media_id: &str,
+            generation_id: &str,
+            expected_lease_epoch: u64,
+        ) -> anyhow::Result<bool> {
+            self.inner
+                .mark_generation_ready(room_id, media_id, generation_id, expected_lease_epoch)
+                .await
+        }
+
         async fn deactivate_current_generation(
             &self,
             room_id: &str,
@@ -1130,7 +1096,7 @@ mod tests {
             media_id: &str,
             generation_id: &str,
             expected_lease_epoch: u64,
-        ) -> anyhow::Result<()> {
+        ) -> anyhow::Result<bool> {
             let remaining_failures = self
                 .fail_unregister_if_lease_matches_times
                 .load(Ordering::SeqCst);
@@ -1331,7 +1297,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unpublish_cleans_auth_state_and_leaves_registry_active() {
+    async fn unpublish_commits_registry_stop_and_cleans_auth_state() {
         let registry = local_stream_registry();
         let runtime = make_publisher_cleanup_runtime(registry.clone());
         let generation_id = Uuid::new();
@@ -1344,7 +1310,7 @@ mod tests {
             .cleanup_on_unpublish(generation_id, "101", "201")
             .await;
 
-        assert!(registry
+        assert!(!registry
             .is_stream_active("101", "201")
             .await
             .expect("publisher activity lookup should succeed"));
@@ -1631,16 +1597,55 @@ mod tests {
         ));
     }
 
+    struct RegistryPublisherStopControl {
+        registry: Arc<dyn StreamRegistryTrait>,
+    }
+
+    #[async_trait]
+    impl PublisherStopControl for RegistryPublisherStopControl {
+        async fn stop_publisher(
+            &self,
+            request: PublisherStopRequest,
+        ) -> anyhow::Result<PublisherStopOutcome> {
+            let current = self
+                .registry
+                .get_active_generation(&request.room_id, &request.media_id)
+                .await?;
+            let Some(current) = current else {
+                return Ok(PublisherStopOutcome::AlreadyStopped);
+            };
+            if current.generation_id != request.generation_id
+                || current.lease_epoch != request.lease_epoch
+            {
+                return Ok(PublisherStopOutcome::Superseded);
+            }
+            let stopped = self
+                .registry
+                .deactivate_generation_preserving_hls_if_lease_matches(
+                    &request.room_id,
+                    &request.media_id,
+                    &request.generation_id,
+                    request.lease_epoch,
+                )
+                .await?;
+            Ok(if stopped {
+                PublisherStopOutcome::Stopped
+            } else {
+                PublisherStopOutcome::AlreadyStopped
+            })
+        }
+    }
+
     fn make_publisher_cleanup_runtime(
         registry: Arc<dyn StreamRegistryTrait>,
     ) -> PublisherCleanupRuntime {
         PublisherCleanupRuntime::new(PublisherCleanupRuntimeConfig {
             user_stream_tracker: Arc::new(StreamTracker::new()),
-            registry,
+            registry: registry.clone(),
             node_id: "node-1".to_string(),
             cluster_address: "127.0.0.1:50051".to_string(),
-            stream_event_tx: None,
             user_stream_index: Arc::new(LocalOnlyUserStreamIndex),
+            publisher_stop_control: Arc::new(RegistryPublisherStopControl { registry }),
         })
     }
 

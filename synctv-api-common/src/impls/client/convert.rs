@@ -3117,6 +3117,8 @@ fn playback_metadata_to_proto(
             playback_metadata::Metadata::Live(synctv_proto::client::LivePlaybackMetadata {
                 media_id: encode_media_id_for_proto(metadata.media_id, public_id_codec)?,
                 room_id: encode_room_id_for_proto(metadata.room_id, public_id_codec)?,
+                availability: synctv_proto::client::LiveStreamAvailability::Unspecified as i32,
+                stream_generation_id: String::new(),
             })
         }
         PlaybackMetadata::Twitch(metadata) => {

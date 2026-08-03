@@ -18,5 +18,6 @@ pub use livestream::server::{
 };
 pub use relay::{
     local_stream_registry, shared_stream_registry, ActiveStreamGeneration, LeaseRefreshOutcome,
-    RegistryConnectionRuntime, StreamGeneration, StreamRegistryTrait, PUBLISHER_TTL_SECS,
+    PublisherControlHandle, PublisherStopOutcome, PublisherStopRequest, RegistryConnectionRuntime,
+    StreamGeneration, StreamLifecycleEvent, StreamRegistryTrait, PUBLISHER_TTL_SECS,
 };

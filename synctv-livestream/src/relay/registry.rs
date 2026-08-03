@@ -190,6 +190,36 @@ static REFRESH_GENERATION_LEASE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(
     )
 });
 
+static MARK_GENERATION_READY_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local active_generation_id = redis.call('GET', KEYS[1])
+        if not active_generation_id then
+            return 0
+        end
+        if active_generation_id ~= ARGV[1] then
+            return -1
+        end
+
+        local info_json = redis.call('GET', KEYS[2])
+        if not info_json then
+            return 0
+        end
+        local ok, parsed = pcall(cjson.decode, info_json)
+        if not ok or not parsed then
+            return 0
+        end
+        if tonumber(parsed.lease_epoch or 0) ~= tonumber(ARGV[2]) then
+            return -1
+        end
+
+        parsed.ready_at = ARGV[3]
+        redis.call('SET', KEYS[2], cjson.encode(parsed), 'KEEPTTL')
+        return 1
+        ",
+    )
+});
+
 static DEACTIVATE_GENERATION_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
     redis::Script::new(
         r"
@@ -233,7 +263,7 @@ static DEACTIVATE_GENERATION_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| 
         if not info_json then
             remove_reverse_indexes(nil)
             redis.call('DEL', active_generation_key)
-            return 0
+            return 1
         end
 
         local ok, parsed = pcall(cjson.decode, info_json)
@@ -365,6 +395,9 @@ pub struct StreamGeneration {
     pub user_id: String,
     /// When the stream started
     pub started_at: DateTime<Utc>,
+    /// When StreamHub accepted the publisher and heartbeat tracking became active.
+    /// A missing value means the authenticated publisher is still starting.
+    pub ready_at: Option<DateTime<Utc>>,
     /// When this generation released the active stream slot.
     pub ended_at: Option<DateTime<Utc>>,
     /// Fencing token (monotonically increasing lease_epoch) for split-brain prevention
@@ -632,6 +665,7 @@ impl StreamRegistry {
             app_name: "live".to_string(),
             user_id: user_id.to_string(),
             started_at: synctv_core::SystemClock.now(),
+            ready_at: None,
             ended_at: None,
             lease_epoch: 0, // Placeholder, will be replaced by actual lease_epoch in Lua script
             generation_id: generation_id.to_string(),
@@ -698,6 +732,38 @@ impl StreamRegistry {
         // by the Lua script above, no additional Redis calls needed
 
         Ok(registered)
+    }
+
+    /// Mark an authenticated publisher generation ready after StreamHub admission.
+    pub async fn mark_generation_ready(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        expected_lease_epoch: u64,
+    ) -> Result<bool> {
+        validate_stream_ids(room_id, media_id)?;
+        validate_stream_generation_id(generation_id)?;
+        let lease_epoch = i64::try_from(expected_lease_epoch)
+            .map_err(|_| anyhow!("Lease epoch {expected_lease_epoch} exceeds Redis range"))?;
+        let active_generation_key = self.active_generation_key(room_id, media_id);
+        let generation_key = self.generation_key(room_id, media_id, generation_id);
+        let ready_at = synctv_core::SystemClock.now().to_rfc3339();
+
+        with_redis_timeout(|| async {
+            let mut conn = self.conn().await?;
+            let status: i64 = MARK_GENERATION_READY_SCRIPT
+                .key(active_generation_key)
+                .key(generation_key)
+                .arg(generation_id)
+                .arg(lease_epoch)
+                .arg(ready_at)
+                .invoke_async(&mut conn)
+                .await
+                .map_err(|error| anyhow!("Generation readiness script failed: {error}"))?;
+            Ok(status == 1)
+        })
+        .await
     }
 
     /// Refresh TTL for a publisher plus its user/node reverse indexes.
@@ -863,6 +929,7 @@ impl StreamRegistry {
             false,
         )
         .await
+        .map(|_| ())
     }
 
     /// Release a publisher and retain its route while the final HLS generation is readable.
@@ -872,7 +939,7 @@ impl StreamRegistry {
         media_id: &str,
         generation_id: &str,
         expected_lease_epoch: u64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         self.deactivate_generation_with_lease(
             room_id,
             media_id,
@@ -891,7 +958,7 @@ impl StreamRegistry {
         generation_id: &str,
         expected_lease_epoch: u64,
         retain_generation: bool,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         validate_stream_ids(room_id, media_id)?;
         validate_stream_generation_id(generation_id)?;
         let active_generation_key = self.active_generation_key(room_id, media_id);
@@ -933,7 +1000,7 @@ impl StreamRegistry {
                 );
             }
 
-            Ok(())
+            Ok(status == 1)
         }).await
     }
 

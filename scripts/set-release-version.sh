@@ -45,8 +45,7 @@ perl -0pi -e '
 ' docs/src/lib/project.ts
 
 perl -0pi -e '
-  my $version = $ENV{"SYNCTV_RELEASE_VERSION"};
-  s/(\$\{SYNCTV_IMAGE_TAG:-)[^}]+(\})/$1$version$2/g;
+  s/(\$\{SYNCTV_IMAGE_TAG:-)[^}]+(\})/${1}latest$2/g;
 ' docker-compose.yml
 
 perl -0pi -e '
@@ -76,7 +75,7 @@ if [ "$cargo_version" != "$version" ] ||
   [ "$docs_lock_version" != "$version" ] ||
   [ "$docs_lock_root_version" != "$version" ] ||
   [ "$docs_default_app_version" != "$version" ] ||
-  [ "$compose_image_tag" != "$version" ]; then
+  [ "$compose_image_tag" != "latest" ]; then
   echo "Failed to synchronize release version across Cargo.toml, Helm chart, Compose, and docs metadata." >&2
   exit 1
 fi

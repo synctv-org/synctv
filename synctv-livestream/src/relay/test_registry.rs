@@ -28,6 +28,7 @@ pub struct TestStreamRegistry {
     unregister_if_lease_matches_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     list_active_generations_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     fail_get_active_generation: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fail_mark_generation_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     fail_refresh_generation_lease_with_response_error:
         std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -58,6 +59,9 @@ impl TestStreamRegistry {
                 std::sync::atomic::AtomicUsize::new(0),
             ),
             fail_get_active_generation: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
+            fail_mark_generation_ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
             fail_refresh_generation_lease_with_response_error: std::sync::Arc::new(
@@ -102,6 +106,9 @@ impl TestStreamRegistry {
                 std::sync::atomic::AtomicUsize::new(0),
             ),
             fail_get_active_generation: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
+            fail_mark_generation_ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
             fail_refresh_generation_lease_with_response_error: std::sync::Arc::new(
@@ -169,6 +176,11 @@ impl TestStreamRegistry {
             .store(fail, std::sync::atomic::Ordering::SeqCst);
     }
 
+    pub fn set_fail_mark_generation_ready(&self, fail: bool) {
+        self.fail_mark_generation_ready
+            .store(fail, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Set whether `refresh_generation_lease` should fail with a non-I/O Redis error.
     pub fn set_fail_refresh_generation_lease_with_response_error(&self, fail: bool) {
         self.fail_refresh_generation_lease_with_response_error
@@ -213,6 +225,7 @@ impl StreamRegistryTrait for TestStreamRegistry {
                 app_name: "live".to_string(),
                 user_id: user_id.to_string(),
                 started_at: synctv_core::SystemClock.now(),
+                ready_at: None,
                 ended_at: None,
                 lease_epoch: *lease_epoch,
                 generation_id: generation_id.to_string(),
@@ -230,6 +243,42 @@ impl StreamRegistryTrait for TestStreamRegistry {
         } else {
             Ok(false)
         }
+    }
+
+    async fn mark_generation_ready(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        expected_lease_epoch: u64,
+    ) -> Result<bool> {
+        if self
+            .fail_mark_generation_ready
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(anyhow::anyhow!(
+                "Simulated Redis failure in mark_generation_ready"
+            ));
+        }
+        let key = (room_id.to_string(), media_id.to_string());
+        let mut publishers = self.publishers.lock().await;
+        let Some(publisher) = publishers.get_mut(&key) else {
+            return Ok(false);
+        };
+        if publisher.generation_id != generation_id || publisher.lease_epoch != expected_lease_epoch
+        {
+            return Ok(false);
+        }
+        let ready_at = synctv_core::SystemClock.now();
+        publisher.ready_at = Some(ready_at);
+        if let Some(generation) = self.generations.lock().await.get_mut(&(
+            room_id.to_string(),
+            media_id.to_string(),
+            generation_id.to_string(),
+        )) {
+            generation.ready_at = Some(ready_at);
+        }
+        Ok(true)
     }
 
     async fn refresh_generation_lease(
@@ -328,23 +377,24 @@ impl StreamRegistryTrait for TestStreamRegistry {
         media_id: &str,
         generation_id: &str,
         expected_lease_epoch: u64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         validate_stream_ids(room_id, media_id)?;
         self.unregister_if_lease_matches_call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let mut publishers = self.publishers.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
-        if publishers.get(&key).is_some_and(|publisher| {
+        let owns_lease = publishers.get(&key).is_some_and(|publisher| {
             publisher.generation_id == generation_id
                 && publisher.lease_epoch == expected_lease_epoch
-        }) {
+        });
+        if owns_lease {
             publishers.remove(&key);
             self.generations
                 .lock()
                 .await
                 .remove(&(key.0, key.1, generation_id.to_string()));
         }
-        Ok(())
+        Ok(owns_lease)
     }
 
     async fn deactivate_generation_preserving_hls_if_lease_matches(
@@ -353,16 +403,17 @@ impl StreamRegistryTrait for TestStreamRegistry {
         media_id: &str,
         generation_id: &str,
         expected_lease_epoch: u64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         validate_stream_ids(room_id, media_id)?;
         self.unregister_if_lease_matches_call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let mut publishers = self.publishers.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
-        if publishers.get(&key).is_some_and(|publisher| {
+        let owns_lease = publishers.get(&key).is_some_and(|publisher| {
             publisher.generation_id == generation_id
                 && publisher.lease_epoch == expected_lease_epoch
-        }) {
+        });
+        if owns_lease {
             if let Some(mut generation) = publishers.remove(&key) {
                 generation.ended_at = Some(synctv_core::SystemClock.now());
                 self.generations
@@ -371,7 +422,7 @@ impl StreamRegistryTrait for TestStreamRegistry {
                     .insert((key.0, key.1, generation_id.to_string()), generation);
             }
         }
-        Ok(())
+        Ok(owns_lease)
     }
 
     async fn get_active_generation(
@@ -536,6 +587,7 @@ mod tests {
                 app_name: "live".to_string(),
                 user_id: String::new(),
                 started_at: synctv_core::SystemClock.now(),
+                ready_at: None,
                 ended_at: None,
                 lease_epoch: 1,
                 generation_id: TEST_GENERATION_ID.to_string(),
@@ -582,6 +634,66 @@ mod tests {
             .await?;
         let info = require_publisher(registry.get_active_generation("room1", "media1").await?)?;
         assert_eq!(info.lease_epoch, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn generation_readiness_is_fenced_by_generation_and_epoch() -> TestResult {
+        let registry = TestStreamRegistry::new();
+        registry
+            .try_activate_generation(
+                "room-ready",
+                "media-ready",
+                "node-ready",
+                "user-ready",
+                "localhost:50051",
+                TEST_GENERATION_ID,
+            )
+            .await?;
+        let generation = require_publisher(
+            registry
+                .get_active_generation("room-ready", "media-ready")
+                .await?,
+        )?;
+        assert!(generation.ready_at.is_none());
+
+        assert!(
+            !registry
+                .mark_generation_ready(
+                    "room-ready",
+                    "media-ready",
+                    "00000000-0000-0000-0000-000000000002",
+                    generation.lease_epoch,
+                )
+                .await?
+        );
+        assert!(
+            !registry
+                .mark_generation_ready(
+                    "room-ready",
+                    "media-ready",
+                    TEST_GENERATION_ID,
+                    generation.lease_epoch + 1,
+                )
+                .await?
+        );
+        assert!(
+            registry
+                .mark_generation_ready(
+                    "room-ready",
+                    "media-ready",
+                    TEST_GENERATION_ID,
+                    generation.lease_epoch,
+                )
+                .await?
+        );
+        assert!(require_publisher(
+            registry
+                .get_active_generation("room-ready", "media-ready")
+                .await?,
+        )?
+        .ready_at
+        .is_some());
         Ok(())
     }
 

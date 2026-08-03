@@ -349,6 +349,17 @@ pub enum RealtimeEvent {
         timestamp: DateTime<Utc>,
     },
 
+    /// Committed RTMP publisher readiness transition for one room media source.
+    LiveStreamChanged {
+        event_id: String,
+        room_id: RoomId,
+        media_id: MediaId,
+        user_id: UserId,
+        generation_id: String,
+        is_live: bool,
+        timestamp: DateTime<Utc>,
+    },
+
     /// Notification for all clients (system-wide)
     SystemNotification {
         event_id: String,
@@ -517,6 +528,7 @@ impl RealtimeEvent {
             | Self::WebRTCVoicePeerJoined { event_id, .. }
             | Self::WebRTCVoicePeerLeft { event_id, .. }
             | Self::MediaSwarmPeerLeft { event_id, .. }
+            | Self::LiveStreamChanged { event_id, .. }
             | Self::SystemNotification { event_id, .. }
             | Self::KickPublisher { event_id, .. }
             | Self::KickUser { event_id, .. }
@@ -558,6 +570,7 @@ impl RealtimeEvent {
             | Self::WebRTCVoicePeerJoined { room_id, .. }
             | Self::WebRTCVoicePeerLeft { room_id, .. }
             | Self::MediaSwarmPeerLeft { room_id, .. }
+            | Self::LiveStreamChanged { room_id, .. }
             | Self::KickPublisher { room_id, .. }
             | Self::KickUserFromRoom { room_id, .. }
             | Self::RoomCreated { room_id, .. }
@@ -609,7 +622,8 @@ impl RealtimeEvent {
             | Self::WebRTCMediaSignaling { .. }
             | Self::WebRTCVoicePeerJoined { .. }
             | Self::WebRTCVoicePeerLeft { .. }
-            | Self::MediaSwarmPeerLeft { .. } => RealtimeDeliveryRoute::Room,
+            | Self::MediaSwarmPeerLeft { .. }
+            | Self::LiveStreamChanged { .. } => RealtimeDeliveryRoute::Room,
         }
     }
 
@@ -649,7 +663,8 @@ impl RealtimeEvent {
             | Self::KickUser { user_id, .. }
             | Self::KickUserFromRoom { user_id, .. }
             | Self::UserNotification { user_id, .. }
-            | Self::ProviderCredentialChanged { user_id, .. } => Some(user_id),
+            | Self::ProviderCredentialChanged { user_id, .. }
+            | Self::LiveStreamChanged { user_id, .. } => Some(user_id),
             Self::ChatMessageEvent { actor_user_id, .. }
             | Self::ChatPinEvent { actor_user_id, .. } => Some(actor_user_id),
             Self::RoomCreated { creator_id, .. } => Some(creator_id),
@@ -697,6 +712,7 @@ impl RealtimeEvent {
             | Self::WebRTCVoicePeerJoined { timestamp, .. }
             | Self::WebRTCVoicePeerLeft { timestamp, .. }
             | Self::MediaSwarmPeerLeft { timestamp, .. }
+            | Self::LiveStreamChanged { timestamp, .. }
             | Self::SystemNotification { timestamp, .. }
             | Self::KickPublisher { timestamp, .. }
             | Self::KickUser { timestamp, .. }
@@ -722,6 +738,7 @@ impl RealtimeEvent {
                 | Self::KickUserFromRoom { .. }
                 | Self::UserLeft { .. }
                 | Self::MediaSwarmPeerLeft { .. }
+                | Self::LiveStreamChanged { .. }
                 | Self::PermissionChanged { .. }
                 | Self::RoomBanned { .. }
                 | Self::RoomOwnerInactive { .. }
@@ -787,6 +804,7 @@ impl RealtimeEvent {
             Self::WebRTCVoicePeerJoined { .. } => "webrtc_voice_peer_joined",
             Self::WebRTCVoicePeerLeft { .. } => "webrtc_voice_peer_left",
             Self::MediaSwarmPeerLeft { .. } => "media_swarm_peer_left",
+            Self::LiveStreamChanged { .. } => "live_stream_changed",
             Self::SystemNotification { .. } => "system_notification",
             Self::KickPublisher { .. } => "kick_publisher",
             Self::KickUser { .. } => "kick_user",
@@ -877,6 +895,24 @@ mod tests {
         assert_eq!(event.delivery_route(), RealtimeDeliveryRoute::RoomAndAdmin);
         assert!(event.delivers_to_admin_channel());
         assert!(event.delivers_to_room_channel());
+    }
+
+    #[test]
+    fn live_stream_change_is_critical_and_room_scoped() {
+        let room_id = RoomId::expect_positive(10_000_160);
+        let event = RealtimeEvent::LiveStreamChanged {
+            event_id: synctv_common::snanoid!(16),
+            room_id,
+            media_id: MediaId::expect_positive(10_000_161),
+            user_id: UserId::expect_positive(10_000_162),
+            generation_id: "generation".to_string(),
+            is_live: true,
+            timestamp: crate::SystemClock.now(),
+        };
+
+        assert!(event.is_critical());
+        assert_eq!(event.room_id(), Some(&room_id));
+        assert_eq!(event.delivery_route(), RealtimeDeliveryRoute::Room);
     }
 
     #[test]

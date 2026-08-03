@@ -10,6 +10,9 @@ use std::sync::Arc;
 
 use in_memory_registry::InMemoryStreamRegistry;
 
+pub use publisher_manager::{
+    PublisherControlHandle, PublisherStopOutcome, PublisherStopRequest, StreamLifecycleEvent,
+};
 pub use registry::{RegistryConnectionRuntime, StreamGeneration, PUBLISHER_TTL_SECS};
 pub use registry_trait::{ActiveStreamGeneration, LeaseRefreshOutcome, StreamRegistryTrait};
 

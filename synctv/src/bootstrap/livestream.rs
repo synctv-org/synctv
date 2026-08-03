@@ -4,6 +4,7 @@ use tracing::info;
 
 use synctv_adapter::PublicIdCodec;
 use synctv_core::{RedisConnectionRuntime, SharedStateMode, SharedStateProfile};
+use synctv_realtime::fanout::RealtimeEventService;
 
 use crate::app_config::AppConfig as Config;
 use crate::resource_options::{hls_s3_options, hls_storage_backend};
@@ -84,6 +85,7 @@ pub async fn init_livestream(
     config: &Config,
     public_id_codec: Arc<PublicIdCodec>,
     synctv_services: &crate::bootstrap::Services,
+    realtime_event_service: Arc<dyn RealtimeEventService>,
     shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
     hls_cleanup_leader: Arc<dyn synctv_core::service::LeaderCheck>,
     node_id: &str,
@@ -106,9 +108,8 @@ pub async fn init_livestream(
     // Shared tracker for user->stream mapping (kick-on-user-ban)
     let user_stream_tracker = Arc::new(synctv_livestream::StreamTracker::new());
 
-    // Stream lifecycle event channel (app-level logging)
     let (stream_lifecycle_tx, mut stream_lifecycle_rx) =
-        tokio::sync::broadcast::channel::<rtmp_auth::StreamLifecycleEvent>(64);
+        tokio::sync::mpsc::channel::<synctv_livestream::StreamLifecycleEvent>(64);
 
     // Pre-bind RTMP listener to catch port-in-use errors before deep initialization.
     // This follows the same pattern as gRPC/HTTP server pre-binding.
@@ -153,7 +154,9 @@ pub async fn init_livestream(
         },
         publisher_registry,
         user_stream_tracker.clone(),
-    );
+    )
+    .with_lifecycle_sender(stream_lifecycle_tx);
+    let publisher_control = livestream_server.publisher_control_handle();
 
     let rtmp_auth_impl = rtmp_auth::SyncTvRtmpAuth::new(rtmp_auth::SyncTvRtmpAuthConfig {
         room_service: synctv_services.room_service.clone(),
@@ -164,9 +167,9 @@ pub async fn init_livestream(
         node_id: node_id.to_string(),
         cluster_address: config.advertise_cluster_address(),
         public_id_codec,
-        stream_event_tx: Some(stream_lifecycle_tx),
         is_restarting: Some(livestream_server.restarting_flag()),
         user_stream_index,
+        publisher_control,
     });
     let rtmp_auth: Arc<dyn synctv_xiu::rtmp::auth::AuthCallback> = Arc::new(rtmp_auth_impl);
 
@@ -187,31 +190,63 @@ pub async fn init_livestream(
     let mut background_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
     let lifecycle_handle = tokio::spawn(async move {
-        while let Ok(event) = stream_lifecycle_rx.recv().await {
+        while let Some(event) = stream_lifecycle_rx.recv().await {
             match event {
-                rtmp_auth::StreamLifecycleEvent::Started {
+                synctv_livestream::StreamLifecycleEvent::Started {
                     room_id,
                     media_id,
                     user_id,
+                    generation_id,
                 } => {
                     info!(
                         room_id = %room_id,
                         media_id = %media_id,
                         user_id = %user_id,
+                        generation_id = %generation_id,
                         "Stream started"
                     );
+                    let event = parse_lifecycle_realtime_event(
+                        &room_id,
+                        &media_id,
+                        &user_id,
+                        &generation_id,
+                        true,
+                    );
+                    if let Some(event) = event {
+                        log_lifecycle_delivery(
+                            realtime_event_service.broadcast_outcome(event),
+                            &room_id,
+                            &media_id,
+                        );
+                    }
                 }
-                rtmp_auth::StreamLifecycleEvent::Stopped {
+                synctv_livestream::StreamLifecycleEvent::Stopped {
                     room_id,
                     media_id,
                     user_id,
+                    generation_id,
                 } => {
                     info!(
                         room_id = %room_id,
                         media_id = %media_id,
                         user_id = %user_id,
+                        generation_id = %generation_id,
                         "Stream stopped"
                     );
+                    let event = parse_lifecycle_realtime_event(
+                        &room_id,
+                        &media_id,
+                        &user_id,
+                        &generation_id,
+                        false,
+                    );
+                    if let Some(event) = event {
+                        log_lifecycle_delivery(
+                            realtime_event_service.broadcast_outcome(event),
+                            &room_id,
+                            &media_id,
+                        );
+                    }
                 }
             }
         }
@@ -219,6 +254,50 @@ pub async fn init_livestream(
     background_handles.push(lifecycle_handle);
 
     Ok((state, Some(live_infra), background_handles))
+}
+
+fn log_lifecycle_delivery(
+    outcome: synctv_realtime::fanout::RealtimeDeliveryOutcome,
+    room_id: &str,
+    media_id: &str,
+) {
+    if outcome.distributed_delivery_missed() {
+        tracing::warn!(
+            room_id,
+            media_id,
+            local_delivered = outcome.local_delivered(),
+            "Livestream lifecycle refresh missed distributed realtime delivery"
+        );
+    }
+}
+
+fn parse_lifecycle_realtime_event(
+    room_id: &str,
+    media_id: &str,
+    user_id: &str,
+    generation_id: &str,
+    is_live: bool,
+) -> Option<synctv_realtime::sync::RealtimeEvent> {
+    let parsed = (|| {
+        Some(synctv_realtime::sync::RealtimeEvent::LiveStreamChanged {
+            event_id: synctv_common::snanoid!(16),
+            room_id: room_id.parse().ok()?,
+            media_id: media_id.parse().ok()?,
+            user_id: user_id.parse().ok()?,
+            generation_id: generation_id.to_string(),
+            is_live,
+            timestamp: synctv_core::SystemClock.now(),
+        })
+    })();
+    if parsed.is_none() {
+        tracing::error!(
+            room_id,
+            media_id,
+            user_id,
+            "Discarding livestream lifecycle event with invalid identifiers"
+        );
+    }
+    parsed
 }
 
 #[cfg(test)]

@@ -48,6 +48,15 @@ pub trait StreamRegistryTrait: Send + Sync {
         generation_id: &str,
     ) -> Result<bool>;
 
+    /// Commit a generation as playable after StreamHub admission.
+    async fn mark_generation_ready(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        expected_lease_epoch: u64,
+    ) -> Result<bool>;
+
     /// Refresh TTL for a publisher (called by heartbeat).
     /// `user_id` and `node_id` are used to also refresh reverse-index TTLs
     /// (pass "" to skip either index).
@@ -95,14 +104,16 @@ pub trait StreamRegistryTrait: Send + Sync {
     /// Unregister a publisher unconditionally.
     async fn deactivate_current_generation(&self, room_id: &str, media_id: &str) -> Result<()>;
 
-    /// Unregister a publisher only if the stored lease_epoch matches `expected_lease_epoch`.
+    /// Unregister a publisher only if the generation and lease still match.
+    ///
+    /// Returns `true` only when the active generation was actually deactivated.
     async fn deactivate_generation_if_lease_matches(
         &self,
         room_id: &str,
         media_id: &str,
         generation_id: &str,
         expected_lease_epoch: u64,
-    ) -> Result<()>;
+    ) -> Result<bool>;
 
     /// Release the active publisher while retaining its route for the final HLS generation.
     async fn deactivate_generation_preserving_hls_if_lease_matches(
@@ -111,7 +122,7 @@ pub trait StreamRegistryTrait: Send + Sync {
         media_id: &str,
         generation_id: &str,
         expected_lease_epoch: u64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         self.deactivate_generation_if_lease_matches(
             room_id,
             media_id,
@@ -246,6 +257,23 @@ impl StreamRegistryTrait for StreamRegistry {
         .await
     }
 
+    async fn mark_generation_ready(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        expected_lease_epoch: u64,
+    ) -> Result<bool> {
+        StreamRegistry::mark_generation_ready(
+            self,
+            room_id,
+            media_id,
+            generation_id,
+            expected_lease_epoch,
+        )
+        .await
+    }
+
     async fn refresh_generation_leases(
         &self,
         node_id: &str,
@@ -264,7 +292,7 @@ impl StreamRegistryTrait for StreamRegistry {
         media_id: &str,
         generation_id: &str,
         expected_lease_epoch: u64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         Self::deactivate_generation_with_lease(
             self,
             room_id,
@@ -282,7 +310,7 @@ impl StreamRegistryTrait for StreamRegistry {
         media_id: &str,
         generation_id: &str,
         expected_lease_epoch: u64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         Self::deactivate_generation_with_hls_grace(
             self,
             room_id,

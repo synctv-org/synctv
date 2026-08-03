@@ -72,7 +72,7 @@ async fn test_handle_publish_success() -> TestResult {
             &generation_id.to_string(),
         )
         .await?;
-    let (manager, _rx) = test_manager(registry, "test-node-1");
+    let (manager, _rx) = test_manager(registry.clone(), "test-node-1");
 
     let identifier = StreamIdentifier::Rtmp {
         app_name: "room123".to_string(),
@@ -85,6 +85,223 @@ async fn test_handle_publish_success() -> TestResult {
     assert!(result.is_ok());
 
     assert!(manager.active_publishers.contains_key("room123:media456"));
+    assert!(
+        require_publisher(
+            registry
+                .get_active_generation("room123", "media456")
+                .await?,
+            "tracked publisher should remain registered",
+        )?
+        .ready_at
+        .is_some(),
+        "StreamHub admission should commit the generation as ready"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn publish_and_unpublish_emit_committed_lifecycle_events() -> TestResult {
+    let registry = Arc::new(TestStreamRegistry::new());
+    let generation_id = Uuid::new();
+    registry
+        .try_activate_generation(
+            "room-lifecycle",
+            "media-lifecycle",
+            "test-node",
+            "user-lifecycle",
+            "addr",
+            &generation_id.to_string(),
+        )
+        .await?;
+    let (hub_tx, _hub_rx) = tokio::sync::mpsc::channel(8);
+    let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(8);
+    let manager = PublisherManager::with_restarting_flag(
+        registry,
+        "test-node".to_string(),
+        hub_tx,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .with_lifecycle_sender(lifecycle_tx);
+    let identifier = StreamIdentifier::Rtmp {
+        app_name: "room-lifecycle".to_string(),
+        stream_name: "media-lifecycle".to_string(),
+    };
+
+    manager
+        .handle_publish_with_owner(identifier.clone(), generation_id)
+        .await?;
+    assert_eq!(
+        lifecycle_rx.recv().await,
+        Some(StreamLifecycleEvent::Started {
+            room_id: "room-lifecycle".to_string(),
+            media_id: "media-lifecycle".to_string(),
+            user_id: "user-lifecycle".to_string(),
+            generation_id: generation_id.to_string(),
+        })
+    );
+
+    manager
+        .handle_unpublish_with_owner(identifier, generation_id)
+        .await?;
+    assert_eq!(
+        lifecycle_rx.recv().await,
+        Some(StreamLifecycleEvent::Stopped {
+            room_id: "room-lifecycle".to_string(),
+            media_id: "media-lifecycle".to_string(),
+            user_id: "user-lifecycle".to_string(),
+            generation_id: generation_id.to_string(),
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn reliable_stop_command_commits_when_unpublish_broadcast_is_missing() -> TestResult {
+    let registry = Arc::new(TestStreamRegistry::new());
+    let generation_id = Uuid::new();
+    registry
+        .try_activate_generation(
+            "room-reliable-stop",
+            "media-reliable-stop",
+            "test-node",
+            "user-reliable-stop",
+            "addr",
+            &generation_id.to_string(),
+        )
+        .await?;
+    let generation = require_publisher(
+        registry
+            .get_active_generation("room-reliable-stop", "media-reliable-stop")
+            .await?,
+        "publisher should exist before tracking",
+    )?;
+    let (hub_tx, _hub_rx) = tokio::sync::mpsc::channel(8);
+    let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(8);
+    let manager = Arc::new(
+        PublisherManager::with_restarting_flag(
+            registry.clone(),
+            "test-node".to_string(),
+            hub_tx,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_lifecycle_sender(lifecycle_tx),
+    );
+    let control = manager.control_handle();
+    let maintenance_rx = manager
+        .maintenance_rx
+        .lock()
+        .await
+        .take()
+        .ok_or_else(|| test_error("maintenance receiver should be available"))?;
+    let cancel = CancellationToken::new();
+    let worker =
+        tokio::spawn(Arc::clone(&manager).run_maintenance_worker(maintenance_rx, cancel.clone()));
+    let identifier = StreamIdentifier::Rtmp {
+        app_name: "room-reliable-stop".to_string(),
+        stream_name: "media-reliable-stop".to_string(),
+    };
+    manager
+        .handle_publish_with_owner(identifier.clone(), generation_id)
+        .await?;
+    assert!(matches!(
+        lifecycle_rx.recv().await,
+        Some(StreamLifecycleEvent::Started { .. })
+    ));
+
+    let outcome = control
+        .stop_publisher(PublisherStopRequest::new(
+            "room-reliable-stop",
+            "media-reliable-stop",
+            generation_id.to_string(),
+            generation.lease_epoch,
+        ))
+        .await?;
+
+    assert_eq!(outcome, PublisherStopOutcome::Stopped);
+    assert!(registry
+        .get_active_generation("room-reliable-stop", "media-reliable-stop")
+        .await?
+        .is_none());
+    assert!(!manager
+        .active_publishers
+        .contains_key("room-reliable-stop:media-reliable-stop"));
+    assert!(matches!(
+        lifecycle_rx.recv().await,
+        Some(StreamLifecycleEvent::Stopped { generation_id: stopped, .. })
+            if stopped == generation_id.to_string()
+    ));
+
+    manager
+        .handle_unpublish_with_owner(identifier, generation_id)
+        .await?;
+    assert!(lifecycle_rx.try_recv().is_err());
+
+    cancel.cancel();
+    worker.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn unpublish_emits_stopped_after_the_registry_lease_is_missing() -> TestResult {
+    let registry = Arc::new(TestStreamRegistry::new());
+    let generation_id = Uuid::new();
+    registry
+        .try_activate_generation(
+            "room-expired-lifecycle",
+            "media-expired-lifecycle",
+            "test-node",
+            "user-expired-lifecycle",
+            "addr",
+            &generation_id.to_string(),
+        )
+        .await?;
+    let generation = require_publisher(
+        registry
+            .get_active_generation("room-expired-lifecycle", "media-expired-lifecycle")
+            .await?,
+        "publisher should exist before tracking",
+    )?;
+    let (hub_tx, _hub_rx) = tokio::sync::mpsc::channel(8);
+    let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(8);
+    let manager = PublisherManager::with_restarting_flag(
+        registry.clone(),
+        "test-node".to_string(),
+        hub_tx,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .with_lifecycle_sender(lifecycle_tx);
+    let identifier = StreamIdentifier::Rtmp {
+        app_name: "room-expired-lifecycle".to_string(),
+        stream_name: "media-expired-lifecycle".to_string(),
+    };
+    manager
+        .handle_publish_with_owner(identifier.clone(), generation_id)
+        .await?;
+    let _started = lifecycle_rx.recv().await;
+    assert!(
+        registry
+            .deactivate_generation_if_lease_matches(
+                "room-expired-lifecycle",
+                "media-expired-lifecycle",
+                &generation_id.to_string(),
+                generation.lease_epoch,
+            )
+            .await?
+    );
+
+    manager
+        .handle_unpublish_with_owner(identifier, generation_id)
+        .await?;
+
+    assert_eq!(
+        lifecycle_rx.recv().await,
+        Some(StreamLifecycleEvent::Stopped {
+            room_id: "room-expired-lifecycle".to_string(),
+            media_id: "media-expired-lifecycle".to_string(),
+            user_id: "user-expired-lifecycle".to_string(),
+            generation_id: generation_id.to_string(),
+        })
+    );
     Ok(())
 }
 
@@ -361,6 +578,7 @@ impl RecreateOnReregisterRegistry {
                 app_name: "live".to_string(),
                 user_id: "user1".to_string(),
                 started_at: synctv_core::SystemClock.now(),
+                ready_at: None,
                 ended_at: None,
                 lease_epoch: 1,
                 generation_id: generation_id.to_string(),
@@ -402,6 +620,7 @@ impl StreamRegistryTrait for RecreateOnReregisterRegistry {
                 app_name: "live".to_string(),
                 user_id: user_id.to_string(),
                 started_at: synctv_core::SystemClock.now(),
+                ready_at: None,
                 ended_at: None,
                 lease_epoch,
                 generation_id: generation_id.to_string(),
@@ -420,10 +639,29 @@ impl StreamRegistryTrait for RecreateOnReregisterRegistry {
             app_name: "live".to_string(),
             user_id: user_id.to_string(),
             started_at: synctv_core::SystemClock.now(),
+            ready_at: None,
             ended_at: None,
             lease_epoch,
             generation_id: generation_id.to_string(),
         });
+        Ok(true)
+    }
+
+    async fn mark_generation_ready(
+        &self,
+        _room_id: &str,
+        _media_id: &str,
+        generation_id: &str,
+        expected_lease_epoch: u64,
+    ) -> Result<bool> {
+        let mut publisher = self.publisher.lock().await;
+        let Some(current) = publisher.as_mut() else {
+            return Ok(false);
+        };
+        if current.generation_id != generation_id || current.lease_epoch != expected_lease_epoch {
+            return Ok(false);
+        }
+        current.ready_at = Some(synctv_core::SystemClock.now());
         Ok(true)
     }
 
@@ -464,14 +702,15 @@ impl StreamRegistryTrait for RecreateOnReregisterRegistry {
         _media_id: &str,
         generation_id: &str,
         expected_lease_epoch: u64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let mut publisher = self.publisher.lock().await;
-        if publisher.as_ref().is_some_and(|current| {
+        let owns_lease = publisher.as_ref().is_some_and(|current| {
             current.generation_id == generation_id && current.lease_epoch == expected_lease_epoch
-        }) {
+        });
+        if owns_lease {
             publisher.take();
         }
-        Ok(())
+        Ok(owns_lease)
     }
 
     async fn get_active_generation(
@@ -750,6 +989,48 @@ async fn test_reconcile_with_empty_map() {
 }
 
 #[tokio::test]
+async fn reverse_reconciliation_waits_for_committed_readiness() -> TestResult {
+    let registry = Arc::new(TestStreamRegistry::new());
+    let generation_id = Uuid::new();
+    registry
+        .try_activate_generation(
+            "room-reverse-ready",
+            "media-reverse-ready",
+            "test-node",
+            "user-reverse-ready",
+            "addr",
+            &generation_id.to_string(),
+        )
+        .await?;
+    let generation = require_publisher(
+        registry
+            .get_active_generation("room-reverse-ready", "media-reverse-ready")
+            .await?,
+        "starting generation should exist",
+    )?;
+    let (manager, _rx) = test_manager(registry.clone(), "test-node");
+
+    manager.reconcile_missing_from_registry().await;
+    assert!(manager.active_publishers.is_empty());
+
+    assert!(
+        registry
+            .mark_generation_ready(
+                "room-reverse-ready",
+                "media-reverse-ready",
+                &generation_id.to_string(),
+                generation.lease_epoch,
+            )
+            .await?
+    );
+    manager.reconcile_missing_from_registry().await;
+    assert!(manager
+        .active_publishers
+        .contains_key("room-reverse-ready:media-reverse-ready"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_reregister_refreshes_local_epoch_after_registry_recreate() -> TestResult {
     let generation_id = Uuid::new();
     let registry = Arc::new(RecreateOnReregisterRegistry::new(generation_id));
@@ -768,6 +1049,17 @@ async fn test_reregister_refreshes_local_epoch_after_registry_recreate() -> Test
 
     manager.reregister_all_publishers_once().await;
 
+    assert!(
+        require_publisher(
+            registry
+                .get_active_generation("room-reregister", "media-reregister")
+                .await?,
+            "recreated publisher should remain registered",
+        )?
+        .ready_at
+        .is_some(),
+        "re-registration should restore publisher readiness"
+    );
     let active_entry = manager
         .active_publishers
         .get("room-reregister:media-reregister")
@@ -814,6 +1106,17 @@ async fn test_reregister_refreshes_local_epoch_after_ttl_only_recovery() -> Test
 
     manager.reregister_all_publishers_once().await;
 
+    assert!(
+        require_publisher(
+            registry
+                .get_active_generation("room-reregister", "media-reregister")
+                .await?,
+            "TTL-recovered publisher should remain registered",
+        )?
+        .ready_at
+        .is_some(),
+        "TTL-only recovery should restore publisher readiness"
+    );
     let active_entry = manager
         .active_publishers
         .get("room-reregister:media-reregister")
@@ -870,6 +1173,10 @@ async fn test_reregister_recreates_entry_when_ttl_refresh_reports_missing() -> T
     )?;
     assert_eq!(recreated.node_id, "test-node");
     assert_eq!(recreated.lease_epoch, 2);
+    assert!(
+        recreated.ready_at.is_some(),
+        "missing registration recovery should restore publisher readiness"
+    );
 
     let active_entry = manager
         .active_publishers
@@ -938,6 +1245,66 @@ async fn test_record_publisher_activity() -> TestResult {
 }
 
 #[tokio::test]
+async fn publisher_activity_recovers_a_missed_publish_event() -> TestResult {
+    let registry = Arc::new(TestStreamRegistry::new());
+    let generation_id = Uuid::new();
+    registry
+        .try_activate_generation(
+            "room-activity-recovery",
+            "media-activity-recovery",
+            "publisher-node",
+            "user-activity-recovery",
+            "addr",
+            &generation_id.to_string(),
+        )
+        .await?;
+    let (hub_tx, _hub_rx) = tokio::sync::mpsc::channel(8);
+    let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(8);
+    let manager = Arc::new(
+        PublisherManager::with_restarting_flag(
+            registry.clone(),
+            String::new(),
+            hub_tx,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_lifecycle_sender(lifecycle_tx),
+    );
+    let (broadcast_tx, broadcast_rx) = tokio::sync::broadcast::channel(8);
+    let manager_task = tokio::spawn(Arc::clone(&manager).start(broadcast_rx));
+
+    manager.record_publisher_activity(
+        "room-activity-recovery",
+        "media-activity-recovery",
+        generation_id,
+    );
+
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), lifecycle_rx.recv()).await?,
+        Some(StreamLifecycleEvent::Started {
+            room_id: "room-activity-recovery".to_string(),
+            media_id: "media-activity-recovery".to_string(),
+            user_id: "user-activity-recovery".to_string(),
+            generation_id: generation_id.to_string(),
+        })
+    );
+    assert!(manager
+        .active_publishers
+        .contains_key("room-activity-recovery:media-activity-recovery"));
+    assert!(require_publisher(
+        registry
+            .get_active_generation("room-activity-recovery", "media-activity-recovery")
+            .await?,
+        "activity-recovered publisher should remain registered",
+    )?
+    .ready_at
+    .is_some());
+
+    drop(broadcast_tx);
+    tokio::time::timeout(Duration::from_secs(1), manager_task).await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_handle_publish_fails_closed_on_redis_failure() -> TestResult {
     let registry = Arc::new(TestStreamRegistry::new());
     let generation_id = Uuid::new();
@@ -973,6 +1340,52 @@ async fn test_handle_publish_fails_closed_on_redis_failure() -> TestResult {
         !manager.active_publishers.contains_key("room123:media456"),
         "Publisher should not be tracked when Redis fails"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn readiness_failure_rolls_back_registration_without_started_event() -> TestResult {
+    let registry = Arc::new(TestStreamRegistry::new());
+    let generation_id = Uuid::new();
+    registry
+        .try_activate_generation(
+            "room-readiness-failure",
+            "media-readiness-failure",
+            "test-node",
+            "user-readiness-failure",
+            "addr",
+            &generation_id.to_string(),
+        )
+        .await?;
+    registry.set_fail_mark_generation_ready(true);
+    let (hub_tx, _hub_rx) = tokio::sync::mpsc::channel(8);
+    let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(8);
+    let manager = PublisherManager::with_restarting_flag(
+        registry.clone(),
+        "test-node".to_string(),
+        hub_tx,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .with_lifecycle_sender(lifecycle_tx);
+
+    let result = manager
+        .handle_publish_with_owner(
+            StreamIdentifier::Rtmp {
+                app_name: "room-readiness-failure".to_string(),
+                stream_name: "media-readiness-failure".to_string(),
+            },
+            generation_id,
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert!(manager.active_publishers.is_empty());
+    assert!(registry
+        .get_active_generation("room-readiness-failure", "media-readiness-failure")
+        .await?
+        .is_none());
+    assert!(lifecycle_rx.try_recv().is_err());
+    assert_eq!(registry.unregister_if_lease_matches_call_count(), 1);
     Ok(())
 }
 
@@ -1207,6 +1620,173 @@ async fn test_cleanup_publisher_uses_epoch_fenced_unregister() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn cleanup_emits_stopped_after_registry_deactivation() -> TestResult {
+    let registry = Arc::new(TestStreamRegistry::new());
+    let generation_id = Uuid::new();
+    registry
+        .try_activate_generation(
+            "room-cleanup",
+            "media-cleanup",
+            "test-node",
+            "user-cleanup",
+            "addr",
+            &generation_id.to_string(),
+        )
+        .await?;
+    let generation = require_publisher(
+        registry
+            .get_active_generation("room-cleanup", "media-cleanup")
+            .await?,
+        "cleanup publisher should exist",
+    )?;
+    assert!(
+        registry
+            .mark_generation_ready(
+                "room-cleanup",
+                "media-cleanup",
+                &generation_id.to_string(),
+                generation.lease_epoch,
+            )
+            .await?,
+        "cleanup publisher should represent an admitted stream"
+    );
+    let (hub_tx, mut hub_rx) = tokio::sync::mpsc::channel(8);
+    let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(8);
+    let manager = PublisherManager::with_restarting_flag(
+        registry,
+        "test-node".to_string(),
+        hub_tx,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .with_lifecycle_sender(lifecycle_tx);
+    manager.active_publishers.insert(
+        "room-cleanup:media-cleanup".to_string(),
+        publisher_entry_with_generation(
+            "user-cleanup".to_string(),
+            generation.lease_epoch,
+            generation_id,
+        ),
+    );
+
+    manager
+        .cleanup_publisher(
+            "room-cleanup",
+            "media-cleanup",
+            generation.lease_epoch,
+            "test cleanup",
+        )
+        .await;
+
+    assert_eq!(
+        lifecycle_rx.recv().await,
+        Some(StreamLifecycleEvent::Stopped {
+            room_id: "room-cleanup".to_string(),
+            media_id: "media-cleanup".to_string(),
+            user_id: "user-cleanup".to_string(),
+            generation_id: generation_id.to_string(),
+        })
+    );
+    assert!(matches!(
+        hub_rx.recv().await,
+        Some(StreamHubEvent::UnPublish {
+            generation_id: emitted_generation,
+            ..
+        }) if emitted_generation == generation_id
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn stale_cleanup_does_not_emit_stopped_for_a_new_generation() -> TestResult {
+    let registry = Arc::new(TestStreamRegistry::new());
+    let old_generation_id = Uuid::new();
+    registry
+        .try_activate_generation(
+            "room-stale-cleanup",
+            "media-stale-cleanup",
+            "test-node",
+            "old-user",
+            "addr",
+            &old_generation_id.to_string(),
+        )
+        .await?;
+    let old_generation = require_publisher(
+        registry
+            .get_active_generation("room-stale-cleanup", "media-stale-cleanup")
+            .await?,
+        "old publisher should exist",
+    )?;
+    assert!(
+        registry
+            .deactivate_generation_if_lease_matches(
+                "room-stale-cleanup",
+                "media-stale-cleanup",
+                &old_generation_id.to_string(),
+                old_generation.lease_epoch,
+            )
+            .await?
+    );
+
+    let new_generation_id = Uuid::new();
+    registry
+        .try_activate_generation(
+            "room-stale-cleanup",
+            "media-stale-cleanup",
+            "test-node",
+            "new-user",
+            "addr",
+            &new_generation_id.to_string(),
+        )
+        .await?;
+    let (hub_tx, mut hub_rx) = tokio::sync::mpsc::channel(8);
+    let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(8);
+    let manager = PublisherManager::with_restarting_flag(
+        registry.clone(),
+        "test-node".to_string(),
+        hub_tx,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .with_lifecycle_sender(lifecycle_tx);
+    manager.active_publishers.insert(
+        "room-stale-cleanup:media-stale-cleanup".to_string(),
+        publisher_entry_with_generation(
+            "old-user".to_string(),
+            old_generation.lease_epoch,
+            old_generation_id,
+        ),
+    );
+
+    manager
+        .cleanup_publisher(
+            "room-stale-cleanup",
+            "media-stale-cleanup",
+            old_generation.lease_epoch,
+            "stale cleanup",
+        )
+        .await;
+
+    assert!(lifecycle_rx.try_recv().is_err());
+    assert!(matches!(
+        hub_rx.recv().await,
+        Some(StreamHubEvent::UnPublish {
+            generation_id: emitted_generation,
+            ..
+        }) if emitted_generation == old_generation_id
+    ));
+    assert_eq!(
+        require_publisher(
+            registry
+                .get_active_generation("room-stale-cleanup", "media-stale-cleanup")
+                .await?,
+            "new publisher should remain active",
+        )?
+        .generation_id,
+        new_generation_id.to_string()
+    );
+    Ok(())
+}
+
 #[tokio::test(start_paused = true)]
 async fn test_persistent_registry_failures_trigger_cleanup() -> TestResult {
     let registry = Arc::new(TestStreamRegistry::new());
@@ -1411,6 +1991,7 @@ async fn test_start_stops_heartbeat_and_sync_when_broadcast_channel_closes() -> 
                 app_name: "live".to_string(),
                 user_id: "user1".to_string(),
                 started_at: synctv_core::SystemClock.now(),
+                ready_at: None,
                 ended_at: None,
                 lease_epoch: 1,
                 generation_id: TEST_GENERATION_ID.to_string(),

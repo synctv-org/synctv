@@ -1,6 +1,6 @@
 use super::{
-    apply_static_direct_url_thumbnail, build_playback_state_update, build_start_playback_request,
-    static_media_source_provider,
+    apply_live_stream_generation, apply_static_direct_url_thumbnail, build_playback_state_update,
+    build_start_playback_request, static_media_source_provider,
 };
 use synctv_core::models::{
     Media, MediaId, PlaybackExternalMedia, PlaybackInfo, PlaybackMedia, PlaybackMediaProvider,
@@ -28,6 +28,48 @@ fn api_err<T>(result: Result<T, crate::impls::ApiError>) -> TestResult<crate::im
 
 fn codec_ok<T>(result: Result<T, String>) -> TestResult<T> {
     result.map_err(test_error)
+}
+
+fn live_generation(ready: bool) -> synctv_livestream::StreamGeneration {
+    synctv_livestream::StreamGeneration {
+        node_id: "node-live".to_string(),
+        cluster_address: "127.0.0.1:50051".to_string(),
+        app_name: "live".to_string(),
+        user_id: "user-live".to_string(),
+        started_at: synctv_core::SystemClock.now(),
+        ready_at: ready.then(|| synctv_core::SystemClock.now()),
+        ended_at: None,
+        lease_epoch: 1,
+        generation_id: "generation-live".to_string(),
+    }
+}
+
+#[test]
+fn live_stream_generation_maps_to_authoritative_playback_availability() {
+    let mut metadata = synctv_proto::client::LivePlaybackMetadata::default();
+
+    apply_live_stream_generation(&mut metadata, None);
+    assert_eq!(
+        metadata.availability,
+        synctv_proto::client::LiveStreamAvailability::Offline as i32
+    );
+    assert!(metadata.stream_generation_id.is_empty());
+
+    let pending = live_generation(false);
+    apply_live_stream_generation(&mut metadata, Some(&pending));
+    assert_eq!(
+        metadata.availability,
+        synctv_proto::client::LiveStreamAvailability::Offline as i32
+    );
+    assert!(metadata.stream_generation_id.is_empty());
+
+    let live = live_generation(true);
+    apply_live_stream_generation(&mut metadata, Some(&live));
+    assert_eq!(
+        metadata.availability,
+        synctv_proto::client::LiveStreamAvailability::Live as i32
+    );
+    assert_eq!(metadata.stream_generation_id, "generation-live");
 }
 
 fn proto_alist_target(relative_path: &str) -> Option<synctv_proto::client::ProviderTarget> {

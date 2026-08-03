@@ -29,6 +29,24 @@ pub(super) fn static_media_source_provider(
     Ok(media.source_provider)
 }
 
+fn apply_live_stream_generation(
+    metadata: &mut synctv_proto::client::LivePlaybackMetadata,
+    generation: Option<&synctv_livestream::StreamGeneration>,
+) {
+    match generation.filter(|generation| generation.ready_at.is_some()) {
+        Some(generation) => {
+            metadata.availability = synctv_proto::client::LiveStreamAvailability::Live as i32;
+            metadata
+                .stream_generation_id
+                .clone_from(&generation.generation_id);
+        }
+        None => {
+            metadata.availability = synctv_proto::client::LiveStreamAvailability::Offline as i32;
+            metadata.stream_generation_id.clear();
+        }
+    }
+}
+
 fn stale_cached_playback_reference<T>(
     state: &RoomPlaybackState,
     playback_result: &Result<T, ApiError>,
@@ -566,7 +584,7 @@ impl ClientApiImpl {
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<synctv_proto::client::Playback, ApiError> {
-        if let Some(ref media_id) = state.playing_media_id {
+        let mut playback = if let Some(ref media_id) = state.playing_media_id {
             let media = self
                 .room_service
                 .media_service()
@@ -574,58 +592,85 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
-            return self
-                .build_static_media_playback_result(
-                    user_id,
-                    room_id,
-                    media,
-                    Some(state),
-                    playback_client_profile,
-                    request_control,
-                )
-                .await;
-        }
-
-        if let Some(ref playlist_id) = state.playing_playlist_id {
+            self.build_static_media_playback_result(
+                user_id,
+                room_id,
+                media,
+                Some(state),
+                playback_client_profile,
+                request_control,
+            )
+            .await?
+        } else if let Some(ref playlist_id) = state.playing_playlist_id {
             let target = state.target.as_ref().ok_or_else(|| {
                 ApiError::InvalidInput(
                     "dynamic playlist playback state requires target".to_string(),
                 )
             })?;
-            return self
-                .build_dynamic_playlist_playback_result(DynamicPlaylistPlaybackRequest {
-                    room_id,
-                    user_id,
-                    playlist_id,
-                    target,
-                    state: Some(state),
-                    playback_client_profile,
-                    request_control,
-                })
-                .await;
-        }
+            self.build_dynamic_playlist_playback_result(DynamicPlaylistPlaybackRequest {
+                room_id,
+                user_id,
+                playlist_id,
+                target,
+                state: Some(state),
+                playback_client_profile,
+                request_control,
+            })
+            .await?
+        } else {
+            synctv_proto::client::Playback {
+                media_id: String::new(),
+                playlist_id: String::new(),
+                room_id: self
+                    .public_id_codec
+                    .encode_room_id(*room_id)
+                    .map_err(|error| {
+                        ApiError::Internal(format!("Failed to encode room public id: {error}"))
+                    })?,
+                name: String::new(),
+                playlist_position: 0.0,
+                playback_infos: std::collections::HashMap::new(),
+                default_mode: String::new(),
+                provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
+                provider_instance_name: String::new(),
+                metadata: None,
+                expires_at: None,
+                duration_seconds: None,
+                playback_kind: synctv_proto::source_config::PlaybackKind::Regular as i32,
+                target: None,
+            }
+        };
 
-        Ok(synctv_proto::client::Playback {
-            media_id: String::new(),
-            playlist_id: String::new(),
-            room_id: self
-                .public_id_codec
-                .encode_room_id(*room_id)
-                .map_err(|error| {
-                    ApiError::Internal(format!("Failed to encode room public id: {error}"))
-                })?,
-            name: String::new(),
-            playlist_position: 0.0,
-            playback_infos: std::collections::HashMap::new(),
-            default_mode: String::new(),
-            provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
-            provider_instance_name: String::new(),
-            metadata: None,
-            expires_at: None,
-            duration_seconds: None,
-            playback_kind: synctv_proto::source_config::PlaybackKind::Regular as i32,
-            target: None,
-        })
+        self.attach_live_stream_state(room_id, state.playing_media_id.as_ref(), &mut playback)
+            .await?;
+        Ok(playback)
+    }
+
+    async fn attach_live_stream_state(
+        &self,
+        room_id: &synctv_core::models::RoomId,
+        media_id: Option<&MediaId>,
+        playback: &mut synctv_proto::client::Playback,
+    ) -> Result<(), ApiError> {
+        let Some(synctv_proto::client::playback_metadata::Metadata::Live(metadata)) = playback
+            .metadata
+            .as_mut()
+            .and_then(|metadata| metadata.metadata.as_mut())
+        else {
+            return Ok(());
+        };
+        let Some(media_id) = media_id else {
+            return Ok(());
+        };
+        let publisher = match &self.live_streaming_infrastructure {
+            Some(infrastructure) => infrastructure
+                .find_publisher(&room_id.to_string(), &media_id.to_string())
+                .await
+                .map_err(|error| Self::map_livestream_backend_error(error.as_ref()))?,
+            None => None,
+        };
+        apply_live_stream_generation(metadata, publisher.as_ref());
+        Ok(())
     }
 
     async fn playback_credential_dependencies_from_state(

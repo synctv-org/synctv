@@ -129,6 +129,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
             app_name: "live".to_string(),
             user_id: user_id.to_string(),
             started_at: synctv_core::SystemClock.now(),
+            ready_at: None,
             ended_at: None,
             lease_epoch,
             generation_id: generation_id.to_string(),
@@ -143,6 +144,36 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
                 expires_at: None,
             },
         );
+        Ok(true)
+    }
+
+    async fn mark_generation_ready(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        expected_lease_epoch: u64,
+    ) -> Result<bool> {
+        validate_stream_ids(room_id, media_id)?;
+        crate::util::validate_stream_generation_id(generation_id)?;
+        let mut state = self.state.lock().await;
+        Self::purge_expired(&mut state);
+        let key = (room_id.to_string(), media_id.to_string());
+        if state
+            .active_generations
+            .get(&key)
+            .is_none_or(|active| active != generation_id)
+        {
+            return Ok(false);
+        }
+        let generation_key = (key.0, key.1, generation_id.to_string());
+        let Some(record) = state.generations.get_mut(&generation_key) else {
+            return Ok(false);
+        };
+        if record.generation.lease_epoch != expected_lease_epoch {
+            return Ok(false);
+        }
+        record.generation.ready_at = Some(synctv_core::SystemClock.now());
         Ok(true)
     }
 
@@ -197,7 +228,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
         media_id: &str,
         generation_id: &str,
         expected_lease_epoch: u64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         validate_stream_ids(room_id, media_id)?;
         let key = (room_id.to_string(), media_id.to_string());
         let mut state = self.state.lock().await;
@@ -220,7 +251,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
             state.generations.remove(&generation_key);
         }
 
-        Ok(())
+        Ok(owns_lease)
     }
 
     async fn deactivate_generation_preserving_hls_if_lease_matches(
@@ -229,7 +260,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
         media_id: &str,
         generation_id: &str,
         expected_lease_epoch: u64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         validate_stream_ids(room_id, media_id)?;
         let key = (room_id.to_string(), media_id.to_string());
         let mut state = self.state.lock().await;
@@ -247,7 +278,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
             expected_lease_epoch,
         );
         if !owns_lease {
-            return Ok(());
+            return Ok(false);
         }
         state.active_generations.remove(&key);
         let record = state
@@ -256,7 +287,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
             .expect("generation lease was checked while holding the registry lock");
         record.generation.ended_at = Some(synctv_core::SystemClock.now());
         record.expires_at = Some(Instant::now() + HLS_GENERATION_RETENTION);
-        Ok(())
+        Ok(true)
     }
 
     async fn get_active_generation(

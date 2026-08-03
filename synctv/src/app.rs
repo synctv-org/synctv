@@ -752,13 +752,14 @@ impl Application {
         Self::start_playback_background_tasks(&infra, &core, &cluster, &mut shutdown);
 
         // Phase 7: Server components (livestream, WebRTC, providers)
-        let servers = match Self::init_servers(&infra, &core, &leader, &mut shutdown).await {
-            Ok(servers) => servers,
-            Err(e) => {
-                shutdown.shutdown().await;
-                return Err(e);
-            }
-        };
+        let servers =
+            match Self::init_servers(&infra, &core, &cluster, &leader, &mut shutdown).await {
+                Ok(servers) => servers,
+                Err(e) => {
+                    shutdown.shutdown().await;
+                    return Err(e);
+                }
+            };
 
         // Assemble
         Ok(Self::assemble(
@@ -1596,6 +1597,7 @@ impl Application {
     async fn init_servers(
         infra: &Infrastructure,
         core: &CoreState,
+        cluster: &ClusterState,
         leader: &LeaderState,
         shutdown: &mut ShutdownCoordinator,
     ) -> Result<ServerComponents> {
@@ -1604,6 +1606,7 @@ impl Application {
             &infra.config,
             infra.public_id_codec.clone(),
             &core.services,
+            cluster.realtime_event_service.clone(),
             infra.shared_runtime.clone(),
             Arc::new(LeaderRuntimeCheck {
                 leader_runtime: leader.leader_runtime.clone(),

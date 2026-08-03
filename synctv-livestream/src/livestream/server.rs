@@ -12,7 +12,12 @@ use crate::{
         external_publish_manager::ExternalPublishManager, pull_manager::PullStreamManager,
         CleanupConfig, SegmentManager,
     },
-    relay::{publisher_manager::PublisherManager, registry_trait::StreamRegistryTrait},
+    relay::{
+        publisher_manager::{
+            PublisherControlHandle, PublisherMaintenanceCommand, PublisherManager,
+        },
+        registry_trait::StreamRegistryTrait,
+    },
 };
 use dashmap::DashMap;
 #[cfg(test)]
@@ -589,6 +594,9 @@ pub struct LivestreamServer {
     /// Shared flag to reject publications during StreamHub restart.
     /// Created early so it can be shared with auth callback before start().
     is_restarting_flag: Arc<AtomicBool>,
+    lifecycle_tx: Option<mpsc::Sender<crate::relay::StreamLifecycleEvent>>,
+    publisher_control: PublisherControlHandle,
+    publisher_maintenance_rx: mpsc::Receiver<PublisherMaintenanceCommand>,
 }
 
 impl LivestreamServer {
@@ -597,6 +605,7 @@ impl LivestreamServer {
         publisher_registry: Arc<dyn StreamRegistryTrait>,
         user_stream_tracker: Arc<StreamTracker>,
     ) -> Self {
+        let (publisher_control, publisher_maintenance_rx) = PublisherControlHandle::channel();
         Self {
             config,
             publisher_registry,
@@ -605,6 +614,9 @@ impl LivestreamServer {
             hls_cleanup_leader: Arc::new(synctv_core::service::AlwaysLeader),
             rtmp_listener: None,
             is_restarting_flag: Arc::new(AtomicBool::new(false)),
+            lifecycle_tx: None,
+            publisher_control,
+            publisher_maintenance_rx,
         }
     }
 
@@ -620,6 +632,16 @@ impl LivestreamServer {
     #[must_use]
     pub fn with_auth(mut self, auth: Arc<dyn AuthCallback>) -> Self {
         self.auth = Some(auth);
+        self
+    }
+
+    /// Deliver committed publisher readiness transitions to the application layer.
+    #[must_use]
+    pub fn with_lifecycle_sender(
+        mut self,
+        lifecycle_tx: mpsc::Sender<crate::relay::StreamLifecycleEvent>,
+    ) -> Self {
+        self.lifecycle_tx = Some(lifecycle_tx);
         self
     }
 
@@ -640,6 +662,12 @@ impl LivestreamServer {
     #[must_use]
     pub fn restarting_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.is_restarting_flag)
+    }
+
+    /// Return a reliable control handle for generation-fenced publisher stops.
+    #[must_use]
+    pub fn publisher_control_handle(&self) -> PublisherControlHandle {
+        self.publisher_control.clone()
     }
 
     /// Start the entire livestream infrastructure.
@@ -666,15 +694,19 @@ impl LivestreamServer {
         let (event_sender, event_receiver) =
             mpsc::channel(synctv_xiu::streamhub::define::STREAM_HUB_EVENT_CHANNEL_CAPACITY);
         let is_restarting_flag = Arc::clone(&self.is_restarting_flag);
-        let publisher_manager = Arc::new(
-            PublisherManager::with_restarting_flag(
-                self.publisher_registry.clone(),
-                self.config.node_id.clone(),
-                event_sender.clone(),
-                Arc::clone(&is_restarting_flag),
-            )
-            .with_cluster_address(self.config.cluster_address.clone()),
-        );
+        let mut publisher_manager = PublisherManager::with_restarting_flag_and_control(
+            self.publisher_registry.clone(),
+            self.config.node_id.clone(),
+            event_sender.clone(),
+            Arc::clone(&is_restarting_flag),
+            self.publisher_control,
+            self.publisher_maintenance_rx,
+        )
+        .with_cluster_address(self.config.cluster_address.clone());
+        if let Some(lifecycle_tx) = self.lifecycle_tx {
+            publisher_manager = publisher_manager.with_lifecycle_sender(lifecycle_tx);
+        }
+        let publisher_manager = Arc::new(publisher_manager);
         let activity_pm = Arc::clone(&publisher_manager);
         let activity_callback: synctv_xiu::streamhub::define::PublisherActivityCallback =
             Arc::new(move |room_id: &str, media_id: &str, generation_id| {

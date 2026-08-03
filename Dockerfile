@@ -95,17 +95,14 @@ RUN chown -R synctv:synctv /app /data /run/synctv
 # Set working directory
 WORKDIR /app
 
-# Copy binary from builder
-COPY --from=builder \
-    --chown=synctv:synctv \
-    /synctv /app/synctv
-
-# Execute the binary in the final image so ABI/runtime dependency mismatches
-# fail the image build for every target platform.
-RUN /app/synctv --version
+# Install the CLI in the standard executable search path.
+COPY --from=builder /synctv /usr/local/bin/synctv
 
 # Switch to non-root user
 USER synctv
+
+# Verify PATH resolution and runtime dependencies using the production user.
+RUN command -v synctv && synctv --version
 
 # Expose ports
 # 8080: HTTP API + public gRPC (also serves HLS via /api/room/movie/live/hls/*)
@@ -120,6 +117,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD ["curl", "-f", "http://localhost:8081/health/ready"]
 
 # Run the application
-ENTRYPOINT ["/app/synctv"]
+ENTRYPOINT ["synctv"]
 
-CMD [ "serve" ]
+CMD ["serve"]

@@ -18,9 +18,10 @@ use jsonwebtoken::{
 };
 use oauth2::{
     basic::{BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenType},
-    AuthUrl, Client, ClientId, ClientSecret, EndpointNotSet, EndpointSet, ExtraTokenFields,
-    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, StandardRevocableToken,
-    StandardTokenIntrospectionResponse, StandardTokenResponse, TokenResponse, TokenUrl,
+    AuthType, AuthUrl, Client, ClientId, ClientSecret, EndpointNotSet, EndpointSet,
+    ExtraTokenFields, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
+    StandardRevocableToken, StandardTokenIntrospectionResponse, StandardTokenResponse,
+    TokenResponse, TokenUrl,
 };
 use reqwest::Client as ReqwestClient;
 use serde::{Deserialize, Serialize};
@@ -150,6 +151,64 @@ struct OidcDiscoveryDocument {
     jwks_uri: String,
     #[serde(default)]
     userinfo_endpoint: Option<String>,
+    #[serde(default)]
+    token_endpoint_auth_methods_supported: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenEndpointAuthMethod {
+    ClientSecretBasic,
+    ClientSecretPost,
+}
+
+impl TokenEndpointAuthMethod {
+    const fn oauth2_auth_type(self) -> AuthType {
+        match self {
+            Self::ClientSecretBasic => AuthType::BasicAuth,
+            Self::ClientSecretPost => AuthType::RequestBody,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ClientSecretBasic => "client_secret_basic",
+            Self::ClientSecretPost => "client_secret_post",
+        }
+    }
+}
+
+fn select_token_endpoint_auth_method(
+    provider_type: &str,
+    advertised_methods: Option<&[String]>,
+) -> Result<TokenEndpointAuthMethod, Error> {
+    let supports = |method: TokenEndpointAuthMethod| {
+        advertised_methods
+            .is_none_or(|methods| methods.iter().any(|value| value == method.as_str()))
+    };
+
+    if provider_type == "apple" {
+        if supports(TokenEndpointAuthMethod::ClientSecretPost) {
+            return Ok(TokenEndpointAuthMethod::ClientSecretPost);
+        }
+        return Err(Error::InvalidInput(
+            "Apple OIDC discovery does not support client_secret_post".to_string(),
+        ));
+    }
+
+    let Some(methods) = advertised_methods else {
+        return Ok(TokenEndpointAuthMethod::ClientSecretBasic);
+    };
+    for method in [
+        TokenEndpointAuthMethod::ClientSecretBasic,
+        TokenEndpointAuthMethod::ClientSecretPost,
+    ] {
+        if methods.iter().any(|value| value == method.as_str()) {
+            return Ok(method);
+        }
+    }
+    Err(Error::InvalidInput(
+        "OIDC token endpoint must support client_secret_basic or client_secret_post".to_string(),
+    ))
 }
 
 /// Resolved OIDC client and endpoints, initialized lazily via discovery or static config.
@@ -461,14 +520,19 @@ impl OidcProvider {
             .get_or_try_init(|| async {
                 let config = &self.init_config;
 
-                let (auth_url_str, token_url_str, userinfo_url, jwks_uri) = if let Some(static_ep) =
-                    &config.static_endpoints
-                {
+                let (
+                    auth_url_str,
+                    token_url_str,
+                    userinfo_url,
+                    jwks_uri,
+                    token_auth_method,
+                ) = if let Some(static_ep) = &config.static_endpoints {
                     (
                         static_ep.auth.clone(),
                         static_ep.token.clone(),
                         static_ep.userinfo.clone(),
                         static_ep.jwks.clone(),
+                        select_token_endpoint_auth_method(self.provider_type, None)?,
                     )
                 } else {
                     // Perform .well-known/openid-configuration discovery
@@ -510,12 +574,18 @@ impl OidcProvider {
                         )));
                     }
 
+                    let token_auth_method = select_token_endpoint_auth_method(
+                        self.provider_type,
+                        doc.token_endpoint_auth_methods_supported.as_deref(),
+                    )?;
+
                     tracing::info!(
-                        "OIDC: discovered endpoints: auth={}, token={}, userinfo={:?}, jwks={}",
+                        "OIDC: discovered endpoints: auth={}, token={}, userinfo={:?}, jwks={}, token_auth_method={}",
                         doc.authorization_endpoint,
                         doc.token_endpoint,
                         doc.userinfo_endpoint,
-                        doc.jwks_uri
+                        doc.jwks_uri,
+                        token_auth_method.as_str(),
                     );
 
                     validate_provider_url(
@@ -546,6 +616,7 @@ impl OidcProvider {
                         doc.token_endpoint,
                         doc.userinfo_endpoint,
                         doc.jwks_uri,
+                        token_auth_method,
                     )
                 };
 
@@ -558,6 +629,7 @@ impl OidcProvider {
 
                 let client = OidcClientBuilder::new(ClientId::new(config.client_id.clone()))
                     .set_client_secret(ClientSecret::new(config.client_secret.clone()))
+                    .set_auth_type(token_auth_method.oauth2_auth_type())
                     .set_auth_uri(auth)
                     .set_token_uri(token)
                     .set_redirect_uri(redirect);
@@ -919,6 +991,18 @@ fn validate_jwk_for_id_token(jwk: &Jwk, algorithm: Algorithm) -> Result<(), Erro
 impl Provider for OidcProvider {
     fn provider_type(&self) -> &'static str {
         self.provider_type
+    }
+
+    fn validate_authorization_redirect_url(&self, redirect_url: Option<&str>) -> Result<(), Error> {
+        if self.provider_type == "apple"
+            && redirect_url.is_some_and(|url| url != self.init_config.redirect_url)
+        {
+            return Err(Error::InvalidInput(
+                "Apple OAuth redirect URL must match the configured provider redirect URL"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 
     async fn new_auth_url(
@@ -1517,7 +1601,8 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
                 "authorization_endpoint": "https://issuer.example.com/authorize",
                 "token_endpoint": "https://issuer.example.com/token",
                 "userinfo_endpoint": "https://issuer.example.com/userinfo",
-                "jwks_uri": "https://issuer.example.com/jwks"
+                "jwks_uri": "https://issuer.example.com/jwks",
+                "token_endpoint_auth_methods_supported": ["client_secret_post"]
             }"#,
         )
         .checked("standard OIDC discovery document should deserialize");
@@ -1533,6 +1618,44 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             Some("https://issuer.example.com/userinfo")
         );
         assert_eq!(doc.jwks_uri, "https://issuer.example.com/jwks");
+        assert_eq!(
+            doc.token_endpoint_auth_methods_supported.as_deref(),
+            Some(
+                [TokenEndpointAuthMethod::ClientSecretPost
+                    .as_str()
+                    .to_string()]
+                .as_slice()
+            ),
+        );
+    }
+
+    #[test]
+    fn test_token_endpoint_auth_method_honors_discovery_and_apple_requirements() {
+        let post = vec![TokenEndpointAuthMethod::ClientSecretPost
+            .as_str()
+            .to_string()];
+        let basic = vec![TokenEndpointAuthMethod::ClientSecretBasic
+            .as_str()
+            .to_string()];
+        let unsupported = vec!["private_key_jwt".to_string()];
+
+        assert_eq!(
+            select_token_endpoint_auth_method("apple", Some(&post))
+                .checked("Apple should use request-body client authentication"),
+            TokenEndpointAuthMethod::ClientSecretPost,
+        );
+        assert_eq!(
+            select_token_endpoint_auth_method("oidc", Some(&post))
+                .checked("OIDC should honor client_secret_post discovery"),
+            TokenEndpointAuthMethod::ClientSecretPost,
+        );
+        assert_eq!(
+            select_token_endpoint_auth_method("oidc", Some(&basic))
+                .checked("OIDC should honor client_secret_basic discovery"),
+            TokenEndpointAuthMethod::ClientSecretBasic,
+        );
+        assert!(select_token_endpoint_auth_method("apple", Some(&basic)).is_err());
+        assert!(select_token_endpoint_auth_method("oidc", Some(&unsupported)).is_err());
     }
 
     #[test]
@@ -2077,7 +2200,8 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
                 jwks_url: Some("https://appleid.apple.com/auth/keys".to_string()),
             },
         )
-        .checked("operation should succeed");
+        .checked("operation should succeed")
+        .with_provider_type("apple");
 
         let auth = provider
             .new_auth_url("apple_state", None)
@@ -2088,6 +2212,77 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         assert!(!auth.auth_url.contains("name"));
         assert!(!auth.auth_url.contains("email"));
         assert!(!auth.auth_url.contains("+profile"));
+    }
+
+    #[tokio::test]
+    async fn test_apple_token_exchange_sends_client_credentials_in_request_body() {
+        let provider = OidcProvider::create_with_endpoints(
+            "org.synctv.app.web".to_string(),
+            "signed-client-secret".to_string(),
+            "https://syncs.tv/oauth2/callback".to_string(),
+            "https://appleid.apple.com",
+            OidcEndpointOverrides {
+                auth_url: Some("https://appleid.apple.com/auth/authorize".to_string()),
+                token_url: Some("https://appleid.apple.com/auth/token".to_string()),
+                userinfo_url: None,
+                jwks_url: Some("https://appleid.apple.com/auth/keys".to_string()),
+            },
+        )
+        .checked("Apple provider should be created")
+        .with_provider_type("apple");
+        let resolved = provider
+            .get_resolved()
+            .await
+            .checked("Apple provider should resolve");
+        let captured = Arc::new(std::sync::Mutex::new(None));
+        let captured_request = Arc::clone(&captured);
+        let http_client = move |request: oauth2::HttpRequest| {
+            let captured_request = Arc::clone(&captured_request);
+            async move {
+                let has_authorization_header = request
+                    .headers()
+                    .contains_key(oauth2::http::header::AUTHORIZATION);
+                let form = url::form_urlencoded::parse(request.body())
+                    .into_owned()
+                    .collect::<std::collections::HashMap<_, _>>();
+                *captured_request
+                    .lock()
+                    .checked("captured request mutex should remain available") =
+                    Some((has_authorization_header, form));
+
+                Ok::<_, std::io::Error>(
+                    oauth2::http::Response::builder()
+                        .status(oauth2::http::StatusCode::OK)
+                        .header(oauth2::http::header::CONTENT_TYPE, "application/json")
+                        .body(br#"{"access_token":"access","token_type":"Bearer"}"#.to_vec())
+                        .checked("test token response should build"),
+                )
+            }
+        };
+
+        resolved
+            .client
+            .exchange_code(oauth2::AuthorizationCode::new(
+                "authorization-code".to_string(),
+            ))
+            .request_async(&http_client)
+            .await
+            .checked("Apple token response should parse");
+
+        let (has_authorization_header, form) = captured
+            .lock()
+            .checked("captured request mutex should remain available")
+            .clone()
+            .checked("Apple token request should be captured");
+        assert!(!has_authorization_header);
+        assert_eq!(
+            form.get("client_id").map(String::as_str),
+            Some("org.synctv.app.web"),
+        );
+        assert_eq!(
+            form.get("client_secret").map(String::as_str),
+            Some("signed-client-secret"),
+        );
     }
 
     #[tokio::test]
@@ -2164,17 +2359,24 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
     #[test]
     fn test_dedicated_provider_factories_report_stable_types() {
         let guard = synctv_common::ssrf::SsrfGuard::strict_policy();
+        let apple_redirect_url = "https://app.example.com/oauth2/callback";
         let apple = OAuth2ProviderPrivateConfig::Apple(OAuth2AppleProviderConfig {
             client_id: "org.example.app.web".to_string(),
             client_secret: "secret".to_string(),
-            redirect_url: "https://app.example.com/oauth2/callback".to_string(),
+            redirect_url: apple_redirect_url.to_string(),
         });
-        assert_eq!(
-            apple_factory_from_private_config(&apple, &guard)
-                .checked("Apple provider should be created")
-                .provider_type(),
-            "apple"
-        );
+        let apple_provider = apple_factory_from_private_config(&apple, &guard)
+            .checked("Apple provider should be created");
+        assert_eq!(apple_provider.provider_type(), "apple");
+        assert!(apple_provider
+            .validate_authorization_redirect_url(None)
+            .is_ok());
+        assert!(apple_provider
+            .validate_authorization_redirect_url(Some(apple_redirect_url))
+            .is_ok());
+        assert!(apple_provider
+            .validate_authorization_redirect_url(Some("http://127.0.0.1:49152/oauth2/callback"))
+            .is_err());
 
         let casdoor = OAuth2ProviderPrivateConfig::Casdoor(OAuth2CasdoorProviderConfig {
             client_id: "client".to_string(),

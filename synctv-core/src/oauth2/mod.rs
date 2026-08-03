@@ -56,6 +56,16 @@ pub trait Provider: Send + Sync {
     /// Provider type identifier (e.g., "github", "logto", "oidc")
     fn provider_type(&self) -> &str;
 
+    /// Validate a client-requested redirect URL before generating an
+    /// authorization request. Providers with fixed return URLs can reject
+    /// overrides that the upstream identity service will refuse.
+    fn validate_authorization_redirect_url(
+        &self,
+        _redirect_url: Option<&str>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
     /// Generate authorization URL with state and PKCE challenge
     ///
     /// Returns an authorization context containing the URL plus provider-generated

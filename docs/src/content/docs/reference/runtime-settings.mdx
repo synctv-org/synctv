@@ -121,6 +121,8 @@ runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通�
 synctv settings update --set 'oauth2.allowedRedirectUrls=["https://syncs.tv/oauth2/callback"]'
 ```
 
+Apple Services ID 只接受已登记的 HTTPS Return URL。Apple provider 的客户端回调必须与该 provider 的 `redirectUrl` 完全一致；macOS 和 iOS 客户端应通过 `ASWebAuthenticationSession` 接收这个 HTTPS 回调。
+
 ```json
 [
   {

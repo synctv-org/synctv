@@ -111,6 +111,7 @@ All registration modes are disabled by default. Production deployments should en
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `oauth2.providers` | JSON array | `[]` | OAuth2/OIDC provider instance registry. Each element is an `OAuth2ProviderSettings` ProtoJSON object |
+| `oauth2.allowedRedirectUrls` | JSON string array | `[]` | Allowlist of HTTPS callbacks requested by clients; loopback callbacks are handled separately |
 
 `oauth2.providers` is the OAuth2 configuration entry point. `instanceName` may contain only ASCII letters, digits, `_`, and `-`, and must be at most 64 bytes. Each element uses one provider oneof field such as `github` or `oidc`:
 
@@ -119,6 +120,8 @@ Configure the shared callback allowlist as a runtime setting. Store builds commo
 ```bash
 synctv settings update --set 'oauth2.allowedRedirectUrls=["https://syncs.tv/oauth2/callback"]'
 ```
+
+Apple Services IDs accept registered HTTPS Return URLs. An Apple provider client callback must exactly match that provider's `redirectUrl`; macOS and iOS clients should receive this HTTPS callback through `ASWebAuthenticationSession`.
 
 ```json
 [

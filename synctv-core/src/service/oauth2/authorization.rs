@@ -86,6 +86,7 @@ impl OAuth2Service {
 
         let state_token = synctv_common::snanoid!(32);
         let auth_redirect_url = redirect_url.as_deref();
+        provider.validate_authorization_redirect_url(auth_redirect_url)?;
         let auth = Self::run_with_control(control, async {
             provider
                 .new_auth_url(&state_token, auth_redirect_url)

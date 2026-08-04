@@ -22,3 +22,16 @@ mod server;
 mod shutdown;
 
 pub use app::{Application, ApplicationBuildOptions};
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    pub(crate) fn acquire_process_state_lock() -> MutexGuard<'static, ()> {
+        static PROCESS_STATE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        PROCESS_STATE_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}

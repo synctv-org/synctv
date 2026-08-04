@@ -857,11 +857,9 @@ mod tests {
         LoadConfigOptions,
     };
     use std::fmt::Debug;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::sync::MutexGuard;
     use synctv_common::time::{default_timezone_name, set_default_timezone_name};
     use tempfile::tempdir;
-
-    static CONFIG_TEST_SERIAL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     trait TestResultExt<T, E> {
         fn checked(self, context: &str) -> T;
@@ -888,10 +886,7 @@ mod tests {
     }
 
     fn acquire_process_config_test_lock() -> MutexGuard<'static, ()> {
-        CONFIG_TEST_SERIAL_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::test_support::acquire_process_state_lock()
     }
 
     #[test]

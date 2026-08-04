@@ -33,17 +33,14 @@ fn apply_live_stream_generation(
     metadata: &mut synctv_proto::client::LivePlaybackMetadata,
     generation: Option<&synctv_livestream::StreamGeneration>,
 ) {
-    match generation.filter(|generation| generation.ready_at.is_some()) {
-        Some(generation) => {
-            metadata.availability = synctv_proto::client::LiveStreamAvailability::Live as i32;
-            metadata
-                .stream_generation_id
-                .clone_from(&generation.generation_id);
-        }
-        None => {
-            metadata.availability = synctv_proto::client::LiveStreamAvailability::Offline as i32;
-            metadata.stream_generation_id.clear();
-        }
+    if let Some(generation) = generation.filter(|generation| generation.ready_at.is_some()) {
+        metadata.availability = synctv_proto::client::LiveStreamAvailability::Live as i32;
+        metadata
+            .stream_generation_id
+            .clone_from(&generation.generation_id);
+    } else {
+        metadata.availability = synctv_proto::client::LiveStreamAvailability::Offline as i32;
+        metadata.stream_generation_id.clear();
     }
 }
 

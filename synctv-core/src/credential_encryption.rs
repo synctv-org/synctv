@@ -8,7 +8,7 @@ use aes_gcm::{
     Aes256Gcm, Key, Nonce,
 };
 use hkdf::Hkdf;
-use sha2_010::Sha256;
+use sha2::Sha256;
 use std::sync::Arc;
 
 use crate::{Error, InternalExt, Result};

@@ -6,34 +6,22 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::MutexGuard;
 use std::time::Duration;
 use synctv_core::models::{RoomAdminPermissionBits, RoomMemberPermissionBits};
 use synctv_management::proto as management_proto;
 use synctv_proto::admin as admin_proto;
 
 fn acquire_time_test_lock() -> MutexGuard<'static, ()> {
-    static TIME_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    TIME_TEST_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    crate::test_support::acquire_process_state_lock()
 }
 
 fn acquire_current_dir_test_lock() -> MutexGuard<'static, ()> {
-    static CURRENT_DIR_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    CURRENT_DIR_TEST_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    crate::test_support::acquire_process_state_lock()
 }
 
 fn acquire_env_test_lock() -> MutexGuard<'static, ()> {
-    static ENV_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    ENV_TEST_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    crate::test_support::acquire_process_state_lock()
 }
 
 fn direct_url_media_source_config(

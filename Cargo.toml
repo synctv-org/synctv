@@ -28,7 +28,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.0.2-rc.6"
+version = "1.0.2-rc.7"
 edition = "2021"
 authors = ["SyncTV Contributors"]
 license = "MIT"

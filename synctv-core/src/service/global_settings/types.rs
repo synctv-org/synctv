@@ -668,6 +668,73 @@ impl RuntimeSettingsUpdateMask {
         }
     }
 
+    /// Select every field in each section whose effective value changed.
+    #[must_use]
+    pub fn between(current: &RuntimeSettings, next: &RuntimeSettings) -> Self {
+        Self {
+            server: if current.server == next.server {
+                ServerRuntimeSettingsUpdateMask::default()
+            } else {
+                ServerRuntimeSettingsUpdateMask::all()
+            },
+            room_defaults: if current.room_defaults == next.room_defaults {
+                RoomDefaultsRuntimeSettingsUpdateMask::default()
+            } else {
+                RoomDefaultsRuntimeSettingsUpdateMask::all()
+            },
+            permissions: if current.permissions == next.permissions {
+                PermissionRuntimeSettingsUpdateMask::default()
+            } else {
+                PermissionRuntimeSettingsUpdateMask::all()
+            },
+            room_creation: if current.room_creation == next.room_creation {
+                RoomCreationRuntimeSettingsUpdateMask::default()
+            } else {
+                RoomCreationRuntimeSettingsUpdateMask::all()
+            },
+            user: if current.user == next.user {
+                UserRuntimeSettingsUpdateMask::default()
+            } else {
+                UserRuntimeSettingsUpdateMask::all()
+            },
+            oauth2: if current.oauth2 == next.oauth2 {
+                OAuth2RuntimeSettingsUpdateMask::default()
+            } else {
+                OAuth2RuntimeSettingsUpdateMask::all()
+            },
+            rtmp: if current.rtmp == next.rtmp {
+                RtmpRuntimeSettingsUpdateMask::default()
+            } else {
+                RtmpRuntimeSettingsUpdateMask::all()
+            },
+            email: if current.email == next.email {
+                EmailRuntimeSettingsUpdateMask::default()
+            } else {
+                EmailRuntimeSettingsUpdateMask::all()
+            },
+            webrtc: if current.webrtc == next.webrtc {
+                WebRtcRuntimeSettingsUpdateMask::default()
+            } else {
+                WebRtcRuntimeSettingsUpdateMask::all()
+            },
+            chat: if current.chat == next.chat {
+                ChatRuntimeSettingsUpdateMask::default()
+            } else {
+                ChatRuntimeSettingsUpdateMask::all()
+            },
+            playback_history: if current.playback_history == next.playback_history {
+                PlaybackHistoryRuntimeSettingsUpdateMask::default()
+            } else {
+                PlaybackHistoryRuntimeSettingsUpdateMask::all()
+            },
+            cors: if current.cors == next.cors {
+                CorsRuntimeSettingsUpdateMask::default()
+            } else {
+                CorsRuntimeSettingsUpdateMask::all()
+            },
+        }
+    }
+
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.server.is_empty()

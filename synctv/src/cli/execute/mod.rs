@@ -792,6 +792,8 @@ fn merge_settings_command_globals(command: &mut SettingsCommand, root: &GlobalCo
         SettingsSubcommand::List(args) => merge_remote_access_args(&mut args.remote, root),
         SettingsSubcommand::Get(args) => merge_remote_access_args(&mut args.remote, root),
         SettingsSubcommand::Update(args) => merge_remote_access_args(&mut args.remote, root),
+        SettingsSubcommand::Export(args) => merge_remote_access_args(&mut args.remote, root),
+        SettingsSubcommand::Import(args) => merge_remote_access_args(&mut args.remote, root),
         SettingsSubcommand::TestEmail(args) => merge_remote_access_args(&mut args.remote, root),
     }
 }

@@ -164,6 +164,25 @@ fn test_runtime_settings() -> synctv_core::service::RuntimeSettings {
     }
 }
 
+fn runtime_settings_with_github_provider() -> synctv_core::service::RuntimeSettings {
+    let mut settings = test_runtime_settings();
+    settings.oauth2.providers.0.insert(
+        "github-main".to_string(),
+        synctv_core::service::OAuth2ProviderConfig {
+            enable_signup: true,
+            signup_need_review: false,
+            config: synctv_core::service::OAuth2ProviderPrivateConfig::GitHub(
+                synctv_core::service::OAuth2GithubProviderConfig {
+                    client_id: "github-client".to_string(),
+                    client_secret: "github-secret".to_string(),
+                    redirect_url: "https://app.example.com/oauth/callback".to_string(),
+                },
+            ),
+        },
+    );
+    settings
+}
+
 async fn current_admin_settings(
     admin_api: &AdminApiImpl,
 ) -> TestResult<synctv_proto::admin::RuntimeSettings> {
@@ -2656,6 +2675,201 @@ fn test_smtp_credentials_patch_requires_password_for_username_change() -> TestRe
 }
 
 #[test]
+fn test_runtime_settings_snapshot_replacement_requires_complete_smtp_secrets() -> TestResult {
+    let projected = AdminApiImpl::project_admin_settings(test_runtime_settings())
+        .map_err(|error| test_error(format!("{error:?}")))?;
+
+    let result = crate::admin_settings_mapping::runtime_settings_replacement_patch_from_admin_proto(
+        projected,
+    );
+    assert!(matches!(
+        result,
+        Err(ApiError::InvalidInput(message))
+            if message.contains("smtp_credentials.password is required")
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_runtime_settings_snapshot_projection_includes_smtp_secrets() -> TestResult {
+    let projected = AdminApiImpl::project_admin_settings_snapshot(test_runtime_settings())
+        .map_err(|error| test_error(format!("{error:?}")))?;
+    let email = admin_email_settings(&projected)?;
+    assert_eq!(
+        some_value(email.smtp_credentials.as_ref(), "SMTP credentials")?.password,
+        Some("smtp-secret".to_string())
+    );
+    assert_eq!(
+        some_value(
+            some_value(email.smtp_proxy.as_ref(), "SMTP proxy")?
+                .credentials
+                .as_ref(),
+            "SMTP proxy credentials",
+        )?
+        .password,
+        Some("proxy-secret".to_string())
+    );
+    Ok(())
+}
+
+#[test]
+fn test_admin_settings_redact_oauth_secrets_and_snapshot_includes_them() -> TestResult {
+    let settings = runtime_settings_with_github_provider();
+    let projected = AdminApiImpl::project_admin_settings(settings.clone())
+        .map_err(|error| test_error(format!("{error:?}")))?;
+    let regular_provider = projected
+        .oauth2
+        .as_ref()
+        .and_then(|oauth2| oauth2.providers.first())
+        .and_then(|provider| provider.config.as_ref());
+    assert!(matches!(
+        regular_provider,
+        Some(synctv_proto::admin::o_auth2_provider_settings::Config::Github(config))
+            if config.client_secret.is_none()
+    ));
+
+    let snapshot = AdminApiImpl::project_admin_settings_snapshot(settings)
+        .map_err(|error| test_error(format!("{error:?}")))?;
+    let snapshot_provider = snapshot
+        .oauth2
+        .as_ref()
+        .and_then(|oauth2| oauth2.providers.first())
+        .and_then(|provider| provider.config.as_ref());
+    assert!(matches!(
+        snapshot_provider,
+        Some(synctv_proto::admin::o_auth2_provider_settings::Config::Github(config))
+            if config.client_secret.as_deref() == Some("github-secret")
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_oauth_update_preserves_redacted_secret_only_for_same_client() -> TestResult {
+    let current = runtime_settings_with_github_provider();
+    let projected = AdminApiImpl::project_admin_settings(current.clone())
+        .map_err(|error| test_error(format!("{error:?}")))?;
+    let providers = projected
+        .oauth2
+        .ok_or_else(|| test_error("OAuth2 settings"))?
+        .providers;
+    let request = runtime_settings_request(
+        synctv_proto::admin::RuntimeSettingsPatch {
+            oauth2: Some(synctv_proto::admin::OAuth2SettingsPatch {
+                providers: providers.clone(),
+                allowed_redirect_urls: Vec::new(),
+            }),
+            ..Default::default()
+        },
+        &["oauth2.providers"],
+    );
+    let patch =
+        crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto_with_current(
+            request,
+            &current.oauth2.providers,
+        )
+        .map_err(|error| test_error(format!("{error:?}")))?;
+    let replacement = AdminApiImpl::apply_runtime_settings_patch(current.clone(), patch)
+        .map_err(|error| test_error(format!("{error:?}")))?
+        .settings;
+    assert_eq!(replacement.oauth2.providers, current.oauth2.providers);
+
+    let mut changed_providers = providers;
+    let Some(synctv_proto::admin::o_auth2_provider_settings::Config::Github(config)) =
+        changed_providers
+            .first_mut()
+            .and_then(|provider| provider.config.as_mut())
+    else {
+        return Err(test_error("GitHub provider config"));
+    };
+    config.client_id = "changed-client".to_string();
+    let result =
+        crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto_with_current(
+            runtime_settings_request(
+                synctv_proto::admin::RuntimeSettingsPatch {
+                    oauth2: Some(synctv_proto::admin::OAuth2SettingsPatch {
+                        providers: changed_providers,
+                        allowed_redirect_urls: Vec::new(),
+                    }),
+                    ..Default::default()
+                },
+                &["oauth2.providers"],
+            ),
+            &current.oauth2.providers,
+        );
+    assert!(matches!(
+        result,
+        Err(ApiError::InvalidInput(message)) if message.contains("client_secret is required")
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_runtime_settings_snapshot_requires_oauth_secrets() -> TestResult {
+    let mut snapshot =
+        AdminApiImpl::project_admin_settings_snapshot(runtime_settings_with_github_provider())
+            .map_err(|error| test_error(format!("{error:?}")))?;
+    let Some(synctv_proto::admin::o_auth2_provider_settings::Config::Github(config)) = snapshot
+        .oauth2
+        .as_mut()
+        .and_then(|oauth2| oauth2.providers.first_mut())
+        .and_then(|provider| provider.config.as_mut())
+    else {
+        return Err(test_error("GitHub provider config"));
+    };
+    config.client_secret = None;
+
+    let result = crate::admin_settings_mapping::runtime_settings_replacement_patch_from_admin_proto(
+        snapshot,
+    );
+    assert!(matches!(
+        result,
+        Err(ApiError::InvalidInput(message)) if message.contains("client_secret is required")
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_runtime_settings_snapshot_replacement_round_trips_all_sections() -> TestResult {
+    let expected = test_runtime_settings();
+    let mut snapshot = AdminApiImpl::project_admin_settings(expected.clone())
+        .map_err(|error| test_error(format!("{error:?}")))?;
+    let email = snapshot
+        .email
+        .as_mut()
+        .ok_or_else(|| test_error("expected email settings"))?;
+    email
+        .smtp_credentials
+        .as_mut()
+        .ok_or_else(|| test_error("expected SMTP credentials"))?
+        .password = Some("smtp-secret".to_string());
+    email
+        .smtp_proxy
+        .as_mut()
+        .and_then(|proxy| proxy.credentials.as_mut())
+        .ok_or_else(|| test_error("expected SMTP proxy credentials"))?
+        .password = Some("proxy-secret".to_string());
+
+    let patch = crate::admin_settings_mapping::runtime_settings_replacement_patch_from_admin_proto(
+        snapshot,
+    )
+    .map_err(|error| test_error(format!("{error:?}")))?;
+    let mut current = expected.clone();
+    current.server.name = "Old SyncTV".to_string();
+    current.email.smtp_credentials = None;
+    let replacement = AdminApiImpl::apply_runtime_settings_patch(current.clone(), patch)
+        .map_err(|error| test_error(format!("{error:?}")))?
+        .settings;
+
+    assert_eq!(replacement, expected);
+    let mask = synctv_core::service::RuntimeSettingsUpdateMask::between(&current, &replacement);
+    assert!(!mask.server.is_empty());
+    assert!(!mask.email.is_empty());
+    assert!(mask.oauth2.is_empty());
+    assert!(mask.playback_history.is_empty());
+    Ok(())
+}
+
+#[test]
 fn test_optional_rtmp_publish_host_supports_set_and_clear() -> TestResult {
     let current = test_runtime_settings();
     let set_patch = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(
@@ -2756,6 +2970,178 @@ async fn test_get_settings_omits_nested_smtp_credential_passwords() -> TestResul
     let proxy_credentials = some_value(proxy.credentials.as_ref(), "SMTP proxy credentials")?;
     assert_eq!(proxy_credentials.username, "proxy-user");
     assert_eq!(proxy_credentials.password, None);
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_runtime_settings_export_import_round_trip_and_dry_run() -> TestResult {
+    let (_postgres, pool) = create_test_pool().await;
+    let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
+    let registry = some_value(
+        admin_api.runtime_settings_store.as_ref(),
+        "runtime settings store",
+    )?;
+    let original = runtime_settings_with_github_provider();
+    core_ok(registry.persist_runtime_settings(&original).await)?;
+
+    let snapshot = api_ok(
+        admin_api
+            .export_settings(&UserId::new(), &RequestContext::default())
+            .await,
+    )?;
+    let exported_settings = snapshot
+        .settings
+        .as_ref()
+        .ok_or_else(|| test_error("exported settings"))?;
+    let exported_provider = exported_settings
+        .oauth2
+        .as_ref()
+        .and_then(|oauth2| oauth2.providers.first())
+        .and_then(|provider| provider.config.as_ref());
+    assert!(matches!(
+        exported_provider,
+        Some(synctv_proto::admin::o_auth2_provider_settings::Config::Github(config))
+            if config.client_secret.as_deref() == Some("github-secret")
+    ));
+
+    let mut changed = original.clone();
+    changed.server.name = "Changed after export".to_string();
+    core_ok(registry.persist_runtime_settings(&changed).await)?;
+
+    let dry_run = api_ok(
+        admin_api
+            .import_settings(
+                synctv_proto::admin::ImportSettingsRequest {
+                    snapshot: Some(snapshot.clone()),
+                    dry_run: true,
+                },
+                &UserId::new(),
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
+    assert!(!dry_run.applied);
+    assert!(dry_run.changed_sections.contains(&"server".to_string()));
+    assert_eq!(
+        core_ok(registry.runtime_settings())?.server.name,
+        changed.server.name
+    );
+
+    let imported = api_ok(
+        admin_api
+            .import_settings(
+                synctv_proto::admin::ImportSettingsRequest {
+                    snapshot: Some(snapshot.clone()),
+                    dry_run: false,
+                },
+                &UserId::new(),
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
+    assert!(imported.applied);
+    assert_eq!(core_ok(registry.runtime_settings())?, original);
+    let reexported = api_ok(
+        admin_api
+            .export_settings(&UserId::new(), &RequestContext::default())
+            .await,
+    )?;
+    assert_eq!(reexported, snapshot);
+
+    for key in [
+        synctv_core::service::ServerNameSetting::KEY,
+        synctv_core::service::OAuth2ProvidersSetting::KEY,
+        "playback_history.retention_days",
+        synctv_core::service::CorsAllowedOriginsSetting::KEY,
+    ] {
+        core_ok(admin_api.settings_service.get(key).await)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_runtime_settings_import_rolls_back_and_releases_fences_on_database_failure(
+) -> TestResult {
+    let (_postgres, pool) = create_test_pool().await;
+    let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
+    let snapshot = api_ok(
+        admin_api
+            .export_settings(&UserId::new(), &RequestContext::default())
+            .await,
+    )?;
+
+    sqlx::query(
+        r#"
+        CREATE FUNCTION reject_runtime_settings_import() RETURNS trigger AS $$
+        BEGIN
+            IF NEW.key = 'server.name' THEN
+                RAISE EXCEPTION 'injected settings import failure';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .map_err(|error| test_error(error.to_string()))?;
+    sqlx::query(
+        r#"
+        CREATE TRIGGER reject_runtime_settings_import_trigger
+        BEFORE INSERT OR UPDATE ON settings
+        FOR EACH ROW EXECUTE FUNCTION reject_runtime_settings_import()
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .map_err(|error| test_error(error.to_string()))?;
+
+    let result = admin_api
+        .import_settings(
+            synctv_proto::admin::ImportSettingsRequest {
+                snapshot: Some(snapshot.clone()),
+                dry_run: false,
+            },
+            &UserId::new(),
+            &RequestContext::default(),
+        )
+        .await;
+    assert!(result.is_err());
+    let stored_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM settings")
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| test_error(error.to_string()))?;
+    assert_eq!(stored_count, 0);
+
+    sqlx::query("DROP TRIGGER reject_runtime_settings_import_trigger ON settings")
+        .execute(&pool)
+        .await
+        .map_err(|error| test_error(error.to_string()))?;
+    sqlx::query("DROP FUNCTION reject_runtime_settings_import()")
+        .execute(&pool)
+        .await
+        .map_err(|error| test_error(error.to_string()))?;
+
+    let retry = api_ok(
+        admin_api
+            .import_settings(
+                synctv_proto::admin::ImportSettingsRequest {
+                    snapshot: Some(snapshot),
+                    dry_run: false,
+                },
+                &UserId::new(),
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
+    assert!(retry.applied);
+    let stored_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM settings")
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| test_error(error.to_string()))?;
+    assert!(stored_count > 0);
     Ok(())
 }
 

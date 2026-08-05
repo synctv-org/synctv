@@ -496,14 +496,23 @@ synctv settings list
 synctv settings get email
 synctv settings update --set email.whitelistEnabled=true --set 'email.whitelistDomains=["example.com"]'
 synctv settings update --unset email.smtpProxy
+synctv settings export --file runtime-settings.json
+synctv settings import runtime-settings.json --dry-run
+synctv settings import runtime-settings.json
 synctv settings test-email admin@example.com
 ```
 
 `--set PATH=VALUE` 与 `--unset PATH` 可以重复使用，CLI 自动生成 FieldMask。`--request-json` 接受标准 `UpdateSettingsRequest` ProtoJSON，并与 set/unset 模式互斥。
 
+`settings export` 生成带 `formatVersion` 的完整 JSON 快照，内容包含 OAuth client secret、SMTP 密码和代理密码。文件以原子方式写入；Unix 文件权限为 `0600`，覆盖已有文件需要 `--force`。省略 `--file` 时快照写入标准输出。
+
+`settings import` 从文件读取快照，使用 `-` 可读取标准输入。服务端先校验快照版本、完整凭据和全部业务规则，再以单个事务完整替换 runtime settings。`--dry-run` 返回计划变更的分组且保持数据库原值，适合恢复前校验。
+
+导出和导入接口要求 root 权限。management CLI 会使用本地 root 操作者身份，并继续要求有效的 management token。
+
 完整 key、默认值和校验规则见 [Runtime settings 参考](../runtime-settings/)。
 
-SMTP 主机、端口、账号、密码、SOCKS5 代理和发件人通过 `email` runtime settings 管理。`settings test-email` 使用当前热更新配置发送测试邮件；设置读取结果会隐藏 SMTP 密码和代理密码。
+SMTP 主机、端口、账号、密码、SOCKS5 代理和发件人通过 `email` runtime settings 管理。`settings test-email` 使用当前热更新配置发送测试邮件；普通设置读取结果会隐藏 SMTP 密码和代理密码，导出快照保留完整凭据用于恢复。
 
 安全建议：不要把 management TCP 端点暴露公网。远程执行时使用强 token，并优先通过内网或 VPN 访问。
 

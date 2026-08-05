@@ -18,29 +18,30 @@ use synctv_proto::admin::{
     DeleteRoomCategoryRequest, DeleteRoomCategoryResponse, DeleteRoomLabelRequest,
     DeleteRoomLabelResponse, DeleteRoomRequest, DeleteRoomResponse, DeleteUserRequest,
     DeleteUserResponse, EvictExpiredSliceCacheRequest, EvictExpiredSliceCacheResponse,
-    GetContentReportRequest, GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest,
-    GetRoomSettingsRequest, GetRoomSettingsResponse, GetServiceStateRequest,
+    ExportSettingsRequest, GetContentReportRequest, GetRoomMembersRequest, GetRoomMembersResponse,
+    GetRoomRequest, GetRoomSettingsRequest, GetRoomSettingsResponse, GetServiceStateRequest,
     GetServiceStateResponse, GetSettingsRequest, GetSliceCacheStatsRequest,
     GetSliceCacheStatsResponse, GetUserPreferencesRequest, GetUserPreferencesResponse,
-    GetUserRequest, GetUserRoomsRequest, GetUserRoomsResponse, KickMemberRequest,
-    KickMemberResponse, KickStreamRequest, KickStreamResponse, ListActiveStreamsRequest,
-    ListActiveStreamsResponse, ListAdminsRequest, ListAdminsResponse, ListBanRecordsRequest,
-    ListBanRecordsResponse, ListContentReportsRequest, ListContentReportsResponse,
-    ListRoomCategoriesRequest, ListRoomCategoriesResponse, ListRoomCreationReviewsRequest,
-    ListRoomCreationReviewsResponse, ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse,
-    ListRoomLabelsRequest, ListRoomLabelsResponse, ListRoomsRequest, ListRoomsResponse,
-    ListUserRegistrationReviewsRequest, ListUserRegistrationReviewsResponse, ListUsersRequest,
-    ListUsersResponse, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
+    GetUserRequest, GetUserRoomsRequest, GetUserRoomsResponse, ImportSettingsRequest,
+    ImportSettingsResponse, KickMemberRequest, KickMemberResponse, KickStreamRequest,
+    KickStreamResponse, ListActiveStreamsRequest, ListActiveStreamsResponse, ListAdminsRequest,
+    ListAdminsResponse, ListBanRecordsRequest, ListBanRecordsResponse, ListContentReportsRequest,
+    ListContentReportsResponse, ListRoomCategoriesRequest, ListRoomCategoriesResponse,
+    ListRoomCreationReviewsRequest, ListRoomCreationReviewsResponse, ListRoomJoinReviewsRequest,
+    ListRoomJoinReviewsResponse, ListRoomLabelsRequest, ListRoomLabelsResponse, ListRoomsRequest,
+    ListRoomsResponse, ListUserRegistrationReviewsRequest, ListUserRegistrationReviewsResponse,
+    ListUsersRequest, ListUsersResponse, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
     RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
     RejectUserRegistrationReviewRequest, RemoveAdminRequest, RemoveAdminResponse,
-    ResetRoomSettingsRequest, Room, RoomCreationReview, RoomJoinReview, SendTestEmailRequest,
-    SendTestEmailResponse, SetUserPasswordRequest, SetUserPasswordResponse, UnbanRoomRequest,
-    UnbanUserRequest, UpdateContentReportStatusRequest, UpdateContentReportStatusResponse,
-    UpdateMemberDisplayTagRequest, UpdateMemberPermissionsRequest, UpdateMemberRemarkNameRequest,
-    UpdateRoomPasswordRequest, UpdateRoomPasswordResponse, UpdateRoomSettingsRequest,
-    UpdateRoomTaxonomyRequest, UpdateSettingsRequest, UpdateUserPreferencesRequest,
-    UpdateUserPreferencesResponse, UpdateUserRoleRequest, UpdateUserUsernameRequest,
-    UpsertRoomCategoryRequest, UpsertRoomLabelRequest, UserRegistrationReview,
+    ResetRoomSettingsRequest, Room, RoomCreationReview, RoomJoinReview, RuntimeSettingsSnapshot,
+    SendTestEmailRequest, SendTestEmailResponse, SetUserPasswordRequest, SetUserPasswordResponse,
+    UnbanRoomRequest, UnbanUserRequest, UpdateContentReportStatusRequest,
+    UpdateContentReportStatusResponse, UpdateMemberDisplayTagRequest,
+    UpdateMemberPermissionsRequest, UpdateMemberRemarkNameRequest, UpdateRoomPasswordRequest,
+    UpdateRoomPasswordResponse, UpdateRoomSettingsRequest, UpdateRoomTaxonomyRequest,
+    UpdateSettingsRequest, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
+    UpdateUserRoleRequest, UpdateUserUsernameRequest, UpsertRoomCategoryRequest,
+    UpsertRoomLabelRequest, UserRegistrationReview,
 };
 use synctv_proto::client::{RoomCategory, RoomLabel};
 use synctv_proto::common::RoomMember;
@@ -228,6 +229,26 @@ impl AdminService for AdminServiceImpl {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
             synctv_api_common::impls::validate_proto_request(&req)?;
             api.update_settings(req, &validated.user_id, &ctx).await
+        })
+        .await
+    }
+
+    async fn export_settings(
+        &self,
+        request: Request<ExportSettingsRequest>,
+    ) -> Result<Response<RuntimeSettingsSnapshot>, Status> {
+        self.execute_root_rpc(request, move |api, validated, ctx, _| async move {
+            api.export_settings(&validated.user_id, &ctx).await
+        })
+        .await
+    }
+
+    async fn import_settings(
+        &self,
+        request: Request<ImportSettingsRequest>,
+    ) -> Result<Response<ImportSettingsResponse>, Status> {
+        self.execute_root_rpc(request, move |api, validated, ctx, req| async move {
+            api.import_settings(req, &validated.user_id, &ctx).await
         })
         .await
     }

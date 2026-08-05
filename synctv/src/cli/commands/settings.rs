@@ -1,4 +1,5 @@
 use super::prelude::*;
+use std::path::PathBuf;
 
 #[derive(Debug, Args)]
 pub struct SettingsCommand {
@@ -14,6 +15,10 @@ pub enum SettingsSubcommand {
     Get(SettingsGetArgs),
     /// Update runtime settings
     Update(SettingsUpdateArgs),
+    /// Export a versioned runtime settings backup
+    Export(SettingsExportArgs),
+    /// Validate and import a runtime settings backup
+    Import(SettingsImportArgs),
     /// Send a test email using the current runtime email settings
     TestEmail(SettingsTestEmailArgs),
 }
@@ -49,6 +54,34 @@ pub struct SettingsUpdateArgs {
         conflicts_with_all = ["set", "unset"]
     )]
     pub request_json: Option<String>,
+
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct SettingsExportArgs {
+    /// Write the JSON backup to this file; stdout is used when omitted.
+    #[arg(long, value_name = "FILE")]
+    pub file: Option<PathBuf>,
+
+    /// Atomically replace an existing output file.
+    #[arg(long, requires = "file")]
+    pub force: bool,
+
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct SettingsImportArgs {
+    /// Runtime settings backup JSON file, or '-' to read stdin.
+    #[arg(value_name = "FILE")]
+    pub file: PathBuf,
+
+    /// Validate and report changes without writing settings.
+    #[arg(long)]
+    pub dry_run: bool,
 
     #[command(flatten)]
     pub remote: RemoteAccessArgs,

@@ -19,6 +19,10 @@ service AdminService {
   // =========================
   rpc GetSettings(GetSettingsRequest) returns (RuntimeSettings);
   rpc UpdateSettings(UpdateSettingsRequest) returns (RuntimeSettings);
+  // Root-only because the snapshot contains OAuth and SMTP credentials.
+  rpc ExportSettings(ExportSettingsRequest) returns (RuntimeSettingsSnapshot);
+  // Root-only because the import replaces all runtime settings.
+  rpc ImportSettings(ImportSettingsRequest) returns (ImportSettingsResponse);
   rpc SendTestEmail(SendTestEmailRequest) returns (SendTestEmailResponse);
 
   // =========================
@@ -178,6 +182,25 @@ message RuntimeSettings {
   PlaybackHistorySettings playback_history = 12 [(buf.validate.field).required = true];
 }
 
+// Portable, versioned backup document for all database-backed runtime settings.
+// The document contains credentials and must be handled as a secret.
+message RuntimeSettingsSnapshot {
+  uint32 format_version = 1 [(buf.validate.field).uint32.const = 1];
+  RuntimeSettings settings = 2 [(buf.validate.field).required = true];
+}
+
+message ExportSettingsRequest {}
+
+message ImportSettingsRequest {
+  RuntimeSettingsSnapshot snapshot = 1 [(buf.validate.field).required = true];
+  bool dry_run = 2;
+}
+
+message ImportSettingsResponse {
+  bool applied = 1;
+  repeated string changed_sections = 2;
+}
+
 message ServerSettings {
   string name = 1 [(buf.validate.field).string = {
     min_len: 1
@@ -247,26 +270,26 @@ message OAuth2ProviderSettings {
 
 message OAuth2GithubProviderConfig {
   string client_id = 1;
-  string client_secret = 2;
+  optional string client_secret = 2;
   string redirect_url = 3;
 }
 
 message OAuth2GoogleProviderConfig {
   string client_id = 1;
-  string client_secret = 2;
+  optional string client_secret = 2;
   string redirect_url = 3;
 }
 
 message OAuth2LogtoProviderConfig {
   string client_id = 1;
-  string client_secret = 2;
+  optional string client_secret = 2;
   string redirect_url = 3;
   string endpoint = 4;
 }
 
 message OAuth2OidcProviderConfig {
   string client_id = 1;
-  string client_secret = 2;
+  optional string client_secret = 2;
   string redirect_url = 3;
   string issuer = 4;
   optional string auth_url = 5;
@@ -278,13 +301,13 @@ message OAuth2OidcProviderConfig {
 
 message OAuth2AppleProviderConfig {
   string client_id = 1;
-  string client_secret = 2;
+  optional string client_secret = 2;
   string redirect_url = 3;
 }
 
 message OAuth2CasdoorProviderConfig {
   string client_id = 1;
-  string client_secret = 2;
+  optional string client_secret = 2;
   string redirect_url = 3;
   string issuer = 4;
   optional string auth_url = 5;

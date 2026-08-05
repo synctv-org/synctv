@@ -13,6 +13,14 @@ synctv settings get user
 synctv settings update --set user.enablePasswordSignup=true
 ```
 
+## Backup and Restore
+
+Use `synctv settings export --file runtime-settings.json` to create a complete, versioned snapshot. The snapshot contains OAuth and SMTP credentials and should be managed as a secret. Run `synctv settings import runtime-settings.json --dry-run` to validate the version, fields, and business rules, then apply it atomically with `synctv settings import runtime-settings.json`.
+
+Regular `settings list/get` commands and management API reads omit OAuth client secrets and SMTP passwords. An update that omits an existing OAuth secret preserves it when the provider type and client ID remain unchanged. New providers, provider type changes, and client ID changes require a secret. Snapshot files are limited to 8 MiB.
+
+HTTP clients use `POST /api/admin/settings/export` and `POST /api/admin/settings/import`; gRPC clients use `AdminService.ExportSettings` and `AdminService.ImportSettings`. All four entry points require root authorization. HTTP export responses include `Cache-Control: no-store`.
+
 Permission defaults are runtime settings too. Guests use a dedicated ceiling, so media-resource, chat-write, and administration permissions are rejected:
 
 ```bash
@@ -31,6 +39,6 @@ synctv settings update --set permissions.guestDefaultPermissions=40
 
 ## Multi-Replica Behavior
 
-After a runtime setting is written to PostgreSQL, LISTEN/NOTIFY tells other replicas to refresh local caches. If a replica does not update, inspect database connectivity, notification listeners, and version skew.
+After runtime settings are written to PostgreSQL, LISTEN/NOTIFY tells other replicas to load and atomically publish the complete configuration generation. If a replica does not update, inspect database connectivity, notification listeners, and version skew.
 
 Fields, defaults, and validation rules are in [Runtime Settings Reference](../../reference/runtime-settings/).

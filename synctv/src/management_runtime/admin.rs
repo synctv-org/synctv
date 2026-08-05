@@ -9,9 +9,10 @@ use synctv_management::admin_runtime::{
     ApproveUserRegistrationReviewCommand, BanRoomCommand, BanUserCommand, BatchBanRoomsCommand,
     BatchBanUsersCommand, BatchDeleteRoomsCommand, BatchDeleteUsersCommand, CreateUserCommand,
     DeleteMediaCommand, DeletePlaylistCommand, DeleteRoomCategoryCommand, DeleteRoomCommand,
-    DeleteRoomLabelCommand, DeleteUserCommand, EditMediaCommand, GetRoomMembersQuery, GetRoomQuery,
-    GetRoomSettingsQuery, GetServiceStateQuery, GetSettingsQuery, GetUserPreferencesQuery,
-    GetUserQuery, GetUserRoomsQuery, KickMemberCommand, KickStreamCommand, ListActiveStreamsQuery,
+    DeleteRoomLabelCommand, DeleteUserCommand, EditMediaCommand, ExportSettingsQuery,
+    GetRoomMembersQuery, GetRoomQuery, GetRoomSettingsQuery, GetServiceStateQuery,
+    GetSettingsQuery, GetUserPreferencesQuery, GetUserQuery, GetUserRoomsQuery,
+    ImportSettingsCommand, KickMemberCommand, KickStreamCommand, ListActiveStreamsQuery,
     ListAdminsQuery, ListBanRecordsQuery, ListMediaQuery, ListPlaylistsQuery,
     ListRoomCategoriesQuery, ListRoomCreationReviewsQuery, ListRoomJoinReviewsQuery,
     ListRoomLabelsQuery, ListRoomStreamsQuery, ListRoomsQuery, ListUserRegistrationReviewsQuery,
@@ -1374,6 +1375,37 @@ impl AdminRuntime for ManagementAdminRuntime {
                 admin_proto::UpdateSettingsRequest {
                     settings: Some(command.settings),
                     update_mask: Some(command.update_mask),
+                },
+                admin_user_id,
+                &api_request_context(ctx),
+            )
+            .await
+            .map_err(|error| map_runtime_error(&error))
+    }
+
+    async fn export_settings(
+        &self,
+        _query: ExportSettingsQuery,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<admin_proto::RuntimeSettingsSnapshot, RuntimeError> {
+        self.inner
+            .export_settings(admin_user_id, &api_request_context(ctx))
+            .await
+            .map_err(|error| map_runtime_error(&error))
+    }
+
+    async fn import_settings(
+        &self,
+        command: ImportSettingsCommand,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<admin_proto::ImportSettingsResponse, RuntimeError> {
+        self.inner
+            .import_settings(
+                admin_proto::ImportSettingsRequest {
+                    snapshot: Some(command.snapshot),
+                    dry_run: command.dry_run,
                 },
                 admin_user_id,
                 &api_request_context(ctx),

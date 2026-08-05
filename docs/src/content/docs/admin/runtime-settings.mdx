@@ -13,6 +13,14 @@ synctv settings get user
 synctv settings update --set user.enablePasswordSignup=true
 ```
 
+## 备份与恢复
+
+使用 `synctv settings export --file runtime-settings.json` 导出版本化完整快照。快照包含 OAuth 与 SMTP 凭据，应按 secret 管理。恢复前执行 `synctv settings import runtime-settings.json --dry-run` 校验版本、字段和业务规则，再执行 `synctv settings import runtime-settings.json` 原子应用变更。
+
+普通 `settings list/get` 与管理 API 设置读取会省略 OAuth client secret 和 SMTP password。更新已有 OAuth provider 时，省略 secret 会在 provider 类型与 client ID 保持一致时保留现值；新增 provider、切换类型或修改 client ID 时必须提供 secret。快照文件上限为 8 MiB。
+
+HTTP 使用 `POST /api/admin/settings/export` 与 `POST /api/admin/settings/import`，gRPC 使用 `AdminService.ExportSettings` 与 `AdminService.ImportSettings`。四个入口均要求 root 权限；HTTP 导出响应带 `Cache-Control: no-store`。
+
 权限默认值也属于 runtime settings。guest 使用独立上限，不能写入播放列表、媒体、聊天写入或管理权限：
 
 ```bash
@@ -31,6 +39,6 @@ synctv settings update --set permissions.guestDefaultPermissions=40
 
 ## 多副本行为
 
-runtime settings 写入 PostgreSQL 后，通过 PostgreSQL LISTEN/NOTIFY 通知其他副本刷新本地缓存。修改后观察所有副本日志和行为；如果副本没有同步，先检查数据库连接、通知监听和部署版本。
+runtime settings 写入 PostgreSQL 后，通过 PostgreSQL LISTEN/NOTIFY 通知其他副本加载并原子发布完整配置 generation。修改后观察所有副本日志和行为；如果副本没有同步，先检查数据库连接、通知监听和部署版本。
 
 完整字段、默认值和校验规则见 [Runtime settings 参考](../../reference/runtime-settings/)。

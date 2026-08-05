@@ -224,6 +224,8 @@ service ManagementService {
 
     rpc GetSettings(GetSettingsRequest) returns (synctv.admin.RuntimeSettings);
     rpc UpdateSettings(synctv.admin.UpdateSettingsRequest) returns (synctv.admin.RuntimeSettings);
+    rpc ExportSettings(synctv.admin.ExportSettingsRequest) returns (synctv.admin.RuntimeSettingsSnapshot);
+    rpc ImportSettings(synctv.admin.ImportSettingsRequest) returns (synctv.admin.ImportSettingsResponse);
     rpc SendTestEmail(SendTestEmailRequest) returns (synctv.admin.SendTestEmailResponse);
     rpc GetServiceState(GetServiceStateRequest) returns (synctv.admin.GetServiceStateResponse);
     rpc GetServerState(GetServerStateRequest) returns (GetServerStateResponse);

@@ -268,6 +268,8 @@ mod tests {
         assert!(admin_runtime.contains("command: KickStreamCommand"));
         assert!(admin_runtime.contains("query: GetSettingsQuery"));
         assert!(admin_runtime.contains("command: UpdateSettingsCommand"));
+        assert!(admin_runtime.contains("query: ExportSettingsQuery"));
+        assert!(admin_runtime.contains("command: ImportSettingsCommand"));
         assert!(admin_runtime.contains("command: SendTestEmailCommand"));
         assert!(admin_runtime.contains("query: GetServiceStateQuery"));
         assert!(admin_runtime.contains("query: ListActiveStreamsQuery"));
@@ -325,6 +327,8 @@ mod tests {
         assert!(!admin_runtime.contains("req: admin_proto::KickStreamRequest"));
         assert!(!admin_runtime.contains("req: admin_proto::GetSettingsRequest"));
         assert!(!admin_runtime.contains("req: admin_proto::UpdateSettingsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::ExportSettingsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::ImportSettingsRequest"));
         assert!(!admin_runtime.contains("req: admin_proto::SendTestEmailRequest"));
         assert!(!admin_runtime.contains("req: admin_proto::GetServiceStateRequest"));
         assert!(!admin_runtime.contains("req: admin_proto::ListActiveStreamsRequest"));

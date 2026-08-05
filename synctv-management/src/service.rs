@@ -14,9 +14,10 @@ use crate::admin_runtime::{
     ApproveUserRegistrationReviewCommand, BanRoomCommand, BanUserCommand, BatchBanRoomsCommand,
     BatchBanUsersCommand, BatchDeleteRoomsCommand, BatchDeleteUsersCommand, CreateUserCommand,
     DeleteMediaCommand, DeletePlaylistCommand, DeleteRoomCategoryCommand, DeleteRoomCommand,
-    DeleteRoomLabelCommand, DeleteUserCommand, EditMediaCommand, GetRoomMembersQuery, GetRoomQuery,
-    GetRoomSettingsQuery, GetServiceStateQuery, GetSettingsQuery, GetUserPreferencesQuery,
-    GetUserQuery, GetUserRoomsQuery, KickMemberCommand, KickStreamCommand, ListActiveStreamsQuery,
+    DeleteRoomLabelCommand, DeleteUserCommand, EditMediaCommand, ExportSettingsQuery,
+    GetRoomMembersQuery, GetRoomQuery, GetRoomSettingsQuery, GetServiceStateQuery,
+    GetSettingsQuery, GetUserPreferencesQuery, GetUserQuery, GetUserRoomsQuery,
+    ImportSettingsCommand, KickMemberCommand, KickStreamCommand, ListActiveStreamsQuery,
     ListAdminsQuery, ListBanRecordsQuery, ListMediaQuery, ListPlaylistsQuery,
     ListRoomCategoriesQuery, ListRoomCreationReviewsQuery, ListRoomJoinReviewsQuery,
     ListRoomLabelsQuery, ListRoomStreamsQuery, ListRoomsQuery, ListUserRegistrationReviewsQuery,
@@ -4110,6 +4111,45 @@ impl ManagementService for ManagementServiceImpl {
                 UpdateSettingsCommand {
                     settings,
                     update_mask,
+                },
+                &validated.user_id,
+                &ctx,
+            )
+            .await
+            .map_err(|error| map_api_error(&error))?;
+        Ok(Response::new(response))
+    }
+
+    async fn export_settings(
+        &self,
+        request: Request<admin_proto::ExportSettingsRequest>,
+    ) -> Result<Response<admin_proto::RuntimeSettingsSnapshot>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = self.grpc_request_context(&request);
+        let response = self
+            .admin_api
+            .export_settings(ExportSettingsQuery, &validated.user_id, &ctx)
+            .await
+            .map_err(|error| map_api_error(&error))?;
+        Ok(Response::new(response))
+    }
+
+    async fn import_settings(
+        &self,
+        request: Request<admin_proto::ImportSettingsRequest>,
+    ) -> Result<Response<admin_proto::ImportSettingsResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = self.grpc_request_context(&request);
+        let req = request.into_inner();
+        let snapshot = req
+            .snapshot
+            .ok_or_else(|| Status::invalid_argument("snapshot is required"))?;
+        let response = self
+            .admin_api
+            .import_settings(
+                ImportSettingsCommand {
+                    snapshot,
+                    dry_run: req.dry_run,
                 },
                 &validated.user_id,
                 &ctx,

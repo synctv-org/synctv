@@ -301,11 +301,37 @@ fn image_descriptor_parts(descriptor: &str) -> Result<(&str, &str), String> {
 
 async fn docker_pull_image(descriptor: &str) -> Result<(), String> {
     let (name, tag) = image_descriptor_parts(descriptor)?;
-    GenericImage::new(name, tag)
-        .pull_image()
+    match GenericImage::new(name, tag).pull_image().await {
+        Ok(_) => Ok(()),
+        Err(error) if image_pull_error_is_authentication_related(&error.to_string()) => {
+            docker_cli_pull_image(descriptor).await.map_err(|cli_error| {
+                format!(
+                    "failed to pull Docker image `{descriptor}` through testcontainers: {error}; Docker CLI credential fallback failed: {cli_error}"
+                )
+            })
+        }
+        Err(error) => Err(format!(
+            "failed to pull Docker image `{descriptor}`: {error}"
+        )),
+    }
+}
+
+async fn docker_cli_pull_image(descriptor: &str) -> Result<(), String> {
+    let mut command = tokio::process::Command::new("docker");
+    command.args(["pull", descriptor]).kill_on_drop(true);
+    let output = command
+        .output()
         .await
-        .map(|_| ())
-        .map_err(|error| format!("failed to pull Docker image `{descriptor}`: {error}"))
+        .map_err(|error| format!("failed to execute docker pull: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!(
+        "docker pull exited with {}: {stderr}",
+        output.status
+    ))
 }
 
 async fn run_until_deadline<T>(
@@ -327,6 +353,14 @@ fn image_pull_error_is_rate_limited(error: &str) -> bool {
     normalized.contains("toomanyrequests")
         || normalized.contains("too many requests")
         || (normalized.contains("oauth token") && normalized.contains("429"))
+}
+
+fn image_pull_error_is_authentication_related(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("authentication required")
+        || normalized.contains("unauthorized")
+        || normalized.contains("incorrect username or password")
+        || normalized.contains("no basic auth credentials")
 }
 
 fn docker_image_pull_lock_name(descriptor: &str) -> String {
@@ -727,6 +761,28 @@ mod tests {
     fn image_pull_rate_limit_detection_rejects_authentication_errors() {
         assert!(!image_pull_error_is_rate_limited(
             "failed to fetch oauth token: unexpected status 401 Unauthorized"
+        ));
+    }
+
+    #[test]
+    fn image_pull_authentication_detection_matches_registry_errors() {
+        for error in [
+            "Docker responded with status code 401: authentication required",
+            "failed to fetch oauth token: unexpected status 401 Unauthorized",
+            "authentication required - incorrect username or password",
+            "no basic auth credentials",
+        ] {
+            assert!(image_pull_error_is_authentication_related(error), "{error}");
+        }
+    }
+
+    #[test]
+    fn image_pull_authentication_detection_rejects_rate_limits_and_missing_tags() {
+        assert!(!image_pull_error_is_authentication_related(
+            "failed to fetch oauth token: unexpected status 429 Too Many Requests"
+        ));
+        assert!(!image_pull_error_is_authentication_related(
+            "manifest unknown: manifest unknown"
         ));
     }
 

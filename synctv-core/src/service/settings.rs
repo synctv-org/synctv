@@ -5,16 +5,17 @@
 //!
 //! Design reference: external design doc 19-configuration-management.md §6.3
 
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use sqlx::PgPool;
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::cache::{
     CacheDomain, CacheL2Backend, ConsistencyCoordinator, FenceReadResult, NoopCacheL2,
-    RuntimeSettingKey, RuntimeSettingsCache, VersionFenceStore,
+    RuntimeSettingKey, RuntimeSettingsCache, VersionFenceReservation, VersionFenceStore,
 };
 use crate::models::settings::RuntimeSetting;
 use crate::repository::SettingsRepository;
@@ -27,11 +28,25 @@ pub struct SettingsService {
     pool: Option<PgPool>,
     // Lock-free cache using DashMap for concurrent reads.
     cache: Arc<DashMap<String, RuntimeSetting>>,
-    // Broadcast channel for notifying SettingsStorage of remote reload events.
-    // Payload is the setting key that was reloaded along with its new value.
-    reload_sender: broadcast::Sender<(String, Option<String>)>,
+    // Broadcast channel for notifying SettingsStorage after committed changes.
+    reload_sender: broadcast::Sender<SettingsReloadEvent>,
+    // Orders full database snapshots with cache publication after local commits.
+    reload_lock: Arc<Mutex<()>>,
     consistency: ConsistencyCoordinator,
     runtime_cache: RuntimeSettingsCache,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SettingsReloadEvent {
+    pub keys: Vec<String>,
+}
+
+struct RuntimeSettingWriteFence {
+    key: String,
+    domain: CacheDomain,
+    observed_version: i32,
+    new_version: i32,
+    reservation: Option<VersionFenceReservation>,
 }
 
 #[derive(Clone)]
@@ -100,6 +115,7 @@ impl SettingsService {
             pool: Some(pool),
             cache: Arc::new(DashMap::new()),
             reload_sender,
+            reload_lock: Arc::new(Mutex::new(())),
             consistency: ConsistencyCoordinator::new(runtime.version_fence),
             runtime_cache,
         }
@@ -120,6 +136,7 @@ impl SettingsService {
             pool: None,
             cache: Arc::new(DashMap::new()),
             reload_sender,
+            reload_lock: Arc::new(Mutex::new(())),
             consistency: ConsistencyCoordinator::new(runtime.version_fence),
             runtime_cache,
         }
@@ -137,11 +154,9 @@ impl SettingsService {
             .ok_or_else(|| Error::Internal("Settings service has no database pool backend".into()))
     }
 
-    /// Subscribe to reload events triggered by remote replicas.
-    ///
-    /// Each event is `(key, Option<new_value>)` where `None` means the key was deleted.
+    /// Subscribe to committed runtime-setting reload events.
     #[must_use]
-    pub fn subscribe_reloads(&self) -> broadcast::Receiver<(String, Option<String>)> {
+    pub(crate) fn subscribe_reloads(&self) -> broadcast::Receiver<SettingsReloadEvent> {
         self.reload_sender.subscribe()
     }
 
@@ -291,59 +306,84 @@ impl SettingsService {
         if updates.is_empty() {
             return Ok(vec![]);
         }
+        let repository = self.repository()?;
+        let pool = self.pool()?;
 
         let mut fences = Vec::with_capacity(updates.len());
         for (key, _) in &updates {
-            let observed_version =
-                i64::from(self.repository()?.current_version(key).await.map_err(|e| {
-                    Error::Internal(format!("Failed to read setting '{key}': {e}"))
-                })?);
+            let observed_version = match repository.current_version(key).await {
+                Ok(version) => version,
+                Err(error) => {
+                    self.abort_reserved_settings_writes(&fences).await;
+                    return Err(Error::Internal(format!(
+                        "Failed to read setting '{key}': {error}"
+                    )));
+                }
+            };
             let domain = Self::runtime_setting_domain(key);
             match self
                 .consistency
-                .begin_observed_write(&domain, observed_version)
+                .begin_observed_write(&domain, i64::from(observed_version))
                 .await
             {
                 Ok(reservation) => {
-                    let new_version = reservation
+                    let reserved_version = reservation
                         .as_ref()
-                        .map_or(observed_version + 1, |reservation| reservation.version);
-                    fences.push((
-                        key.clone(),
+                        .map_or(i64::from(observed_version) + 1, |reservation| {
+                            reservation.version
+                        });
+                    let new_version = match i32::try_from(reserved_version) {
+                        Ok(version) => version,
+                        Err(_) => {
+                            self.consistency
+                                .abort_reserved_write(&domain, reservation.as_ref())
+                                .await;
+                            self.abort_reserved_settings_writes(&fences).await;
+                            return Err(Error::Internal(format!(
+                                "Setting version {reserved_version} exceeds i32"
+                            )));
+                        }
+                    };
+                    fences.push(RuntimeSettingWriteFence {
+                        key: key.clone(),
                         domain,
                         observed_version,
                         new_version,
                         reservation,
-                    ));
+                    });
                 }
                 Err(error) => {
-                    for (_, domain, _, _, reservation) in &fences {
-                        self.consistency
-                            .abort_reserved_write(domain, reservation.as_ref())
-                            .await;
-                    }
+                    self.abort_reserved_settings_writes(&fences).await;
                     return Err(error);
                 }
             }
         }
 
-        let mut tx =
-            self.pool()?.begin().await.map_err(|e| {
-                Error::Internal(format!("Failed to start settings transaction: {e}"))
-            })?;
+        let mut tx = match pool.begin().await {
+            Ok(tx) => tx,
+            Err(error) => {
+                self.abort_reserved_settings_writes(&fences).await;
+                return Err(Error::Internal(format!(
+                    "Failed to start settings transaction: {error}"
+                )));
+            }
+        };
 
         let mut updated = Vec::with_capacity(updates.len());
         for (key, value) in &updates {
             let group_name = group_name_from_setting_key(key);
-            let Some((_, _, observed_version, new_version, _)) = fences
-                .iter()
-                .find(|(reserved_key, _, _, _, _)| reserved_key == key)
-            else {
-                return Err(Error::Internal(format!(
-                    "Missing reserved runtime-setting fence for {key}"
-                )));
+            let Some(fence) = fences.iter().find(|fence| &fence.key == key) else {
+                let error =
+                    Error::Internal(format!("Missing reserved runtime-setting fence for {key}"));
+                if let Err(rollback_error) = tx.rollback().await {
+                    warn!(%rollback_error, "Failed to roll back runtime settings batch");
+                }
+                self.abort_reserved_settings_writes(&fences).await;
+                return Err(error);
             };
-            let setting = sqlx::query_as!(
+            let observed_version = fence.observed_version;
+            let new_version = fence.new_version;
+            let setting_result = sqlx::query_as!(
                 crate::models::settings::RuntimeSetting,
                 r#"
                  INSERT INTO settings (key, group_name, value, version)
@@ -359,62 +399,63 @@ impl SettingsService {
                 key.as_str(),
                 group_name,
                 value.as_str(),
-                i32::try_from(*observed_version).map_err(|_| {
-                    Error::Internal(format!("Setting version {observed_version} exceeds i32"))
-                })?,
-                i32::try_from(*new_version).map_err(|_| {
-                    Error::Internal(format!("Setting version {new_version} exceeds i32"))
-                })?,
+                observed_version,
+                new_version,
             )
             .fetch_optional(&mut *tx)
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to update setting '{key}': {e}")))?;
-            let Some(setting) = setting else {
-                for (_, domain, _, _, reservation) in &fences {
-                    self.consistency
-                        .abort_reserved_write(domain, reservation.as_ref())
-                        .await;
+            .await;
+            let setting = match setting_result {
+                Ok(Some(setting)) => setting,
+                Ok(None) => {
+                    if let Err(rollback_error) = tx.rollback().await {
+                        warn!(%rollback_error, "Failed to roll back conflicting runtime settings batch");
+                    }
+                    self.abort_reserved_settings_writes(&fences).await;
+                    return Err(Error::OptimisticLockConflict);
                 }
-                return Err(Error::OptimisticLockConflict);
+                Err(error) => {
+                    if let Err(rollback_error) = tx.rollback().await {
+                        warn!(%rollback_error, "Failed to roll back runtime settings batch after write failure");
+                    }
+                    self.abort_reserved_settings_writes(&fences).await;
+                    return Err(Error::Internal(format!(
+                        "Failed to update setting '{key}': {error}"
+                    )));
+                }
             };
             updated.push(setting);
         }
 
         if let Err(error) = tx.commit().await {
-            for (_, domain, _, _, reservation) in &fences {
-                self.consistency
-                    .abort_reserved_write(domain, reservation.as_ref())
-                    .await;
-            }
+            self.abort_reserved_settings_writes(&fences).await;
             return Err(Error::Internal(format!(
                 "Failed to commit settings transaction: {error}"
             )));
         }
 
+        let _reload_guard = self.reload_lock.lock().await;
         for setting in &updated {
-            let Some((_, domain, _, _, reservation)) = fences
-                .iter()
-                .find(|(reserved_key, _, _, _, _)| reserved_key == &setting.key)
-            else {
+            let Some(fence) = fences.iter().find(|fence| fence.key == setting.key) else {
                 continue;
             };
             self.finalize_committed_write_best_effort(
-                domain,
-                reservation.as_ref(),
+                &fence.domain,
+                fence.reservation.as_ref(),
                 i64::from(setting.version),
                 "update_batch",
             )
             .await;
         }
 
-        // Update cache and notify reload subscribers only after the transaction committed.
+        // Publish one complete cache generation before subscribers observe any key.
         for setting in &updated {
             self.store_cache_entry(setting.clone()).await;
+        }
 
-            self.notify_reload_subscribers(&setting.key, Some(setting.value.clone()));
-
+        for setting in &updated {
             info!("Updated setting '{}' (batch)", setting.key);
         }
+        self.notify_reload_subscribers(updated.iter().map(|setting| setting.key.clone()));
 
         Ok(updated)
     }
@@ -449,8 +490,9 @@ impl SettingsService {
             Error::Internal(format!("Failed to initialize setting '{key}': {error}"))
         })?;
 
+        let _reload_guard = self.reload_lock.lock().await;
         self.store_cache_entry(setting.clone()).await;
-        self.notify_reload_subscribers(&setting.key, Some(setting.value.clone()));
+        self.notify_reload_subscribers([setting.key.clone()]);
 
         Ok(setting)
     }
@@ -530,10 +572,12 @@ impl SettingsService {
                                     let changed_key = notification.payload();
                                     info!("Received settings change notification: {}", changed_key);
 
-                                    // Reload the changed setting from database
-                                    match service.reload_setting(changed_key).await {
-                                        Ok(()) => {
-                                            debug!("Successfully reloaded setting: {}", changed_key);
+                                    // A transaction can update several keys. Reload the complete
+                                    // committed generation before publishing its first key.
+                                    match service.reload_all_from_database().await {
+                                        Ok(_) => {
+                                            service.notify_reload_subscribers([changed_key.to_string()]);
+                                            debug!("Successfully reloaded settings generation for: {}", changed_key);
                                         }
                                         Err(e) => {
                                             warn!(
@@ -567,23 +611,57 @@ impl SettingsService {
                 }
 
                 // Refresh cache after reconnection to catch missed notifications
-                if let Err(e) = service.initialize().await {
-                    error!("Failed to refresh settings cache after reconnection: {}", e);
+                match service.reload_all_from_database().await {
+                    Ok(refreshed) => service.notify_reload_subscribers(
+                        refreshed.into_iter().map(|setting| setting.key),
+                    ),
+                    Err(e) => {
+                        error!("Failed to refresh settings cache after reconnection: {}", e);
+                    }
                 }
             }
         })
     }
 
-    /// Reload a specific setting from database into cache
-    ///
-    /// Called when a `PostgreSQL` NOTIFY is received
-    async fn reload_setting(&self, key: &str) -> Result<(), Error> {
-        debug!("Reloading setting from database: {}", key);
+    pub(crate) async fn reload_all_from_database(&self) -> Result<Vec<RuntimeSetting>, Error> {
+        let _reload_guard = self.reload_lock.lock().await;
+        let settings = self.repository()?.get_all().await.map_err(|error| {
+            Error::Internal(format!("Failed to reload runtime settings: {error}"))
+        })?;
+        let refreshed_keys: std::collections::HashSet<_> =
+            settings.iter().map(|setting| setting.key.clone()).collect();
 
-        let result = self.repository()?.get(key).await;
-        self.apply_reload_result(key, result).await
+        for setting in &settings {
+            self.store_cache_entry(setting.clone()).await;
+            self.consistency
+                .repair_after_db_read(
+                    &Self::runtime_setting_domain(&setting.key),
+                    i64::from(setting.version),
+                )
+                .await;
+        }
+
+        let stale_keys: Vec<_> = self
+            .cache
+            .iter()
+            .filter(|entry| !refreshed_keys.contains(entry.key()))
+            .map(|entry| entry.key().clone())
+            .collect();
+        for key in stale_keys {
+            self.cache.remove(&key);
+            if let Err(error) = self
+                .runtime_cache
+                .invalidate(&RuntimeSettingKey::new(&key))
+                .await
+            {
+                warn!(key, error = %error, "Failed to invalidate removed runtime setting");
+            }
+        }
+
+        Ok(settings)
     }
 
+    #[cfg(test)]
     async fn apply_reload_result(
         &self,
         key: &str,
@@ -600,7 +678,7 @@ impl SettingsService {
                     )
                     .await;
 
-                self.notify_reload_subscribers(key, Some(setting.value.clone()));
+                self.notify_reload_subscribers([key.to_string()]);
 
                 info!("Setting '{}' reloaded from database", key);
                 Ok(())
@@ -621,20 +699,7 @@ impl SettingsService {
                     );
                 }
 
-                match self.reload_sender.send((key.to_string(), None)) {
-                    Ok(subscriber_count) => tracing::debug!(
-                        key,
-                        subscriber_count,
-                        "Runtime setting removal notified SettingsStorage subscribers"
-                    ),
-                    Err(error) => {
-                        tracing::debug!(
-                            key,
-                            error = %error,
-                            "Runtime setting removal had no SettingsStorage subscribers"
-                        );
-                    }
-                }
+                self.notify_reload_subscribers([key.to_string()]);
 
                 Ok(())
             }
@@ -647,6 +712,14 @@ impl SettingsService {
     fn runtime_setting_domain(key: &str) -> CacheDomain {
         CacheDomain::RuntimeSetting {
             key: key.to_string(),
+        }
+    }
+
+    async fn abort_reserved_settings_writes(&self, fences: &[RuntimeSettingWriteFence]) {
+        for fence in fences {
+            self.consistency
+                .abort_reserved_write(&fence.domain, fence.reservation.as_ref())
+                .await;
         }
     }
 
@@ -673,6 +746,7 @@ impl SettingsService {
     }
 
     async fn get_refresh(&self, key: &str) -> Result<RuntimeSetting, Error> {
+        let _reload_guard = self.reload_lock.lock().await;
         let setting = self
             .repository()?
             .get(key)
@@ -689,7 +763,23 @@ impl SettingsService {
     }
 
     async fn store_cache_entry(&self, setting: RuntimeSetting) {
-        self.cache.insert(setting.key.clone(), setting.clone());
+        match self.cache.entry(setting.key.clone()) {
+            Entry::Occupied(mut entry) => {
+                if entry.get().version > setting.version {
+                    debug!(
+                        key = %setting.key,
+                        cached_version = entry.get().version,
+                        snapshot_version = setting.version,
+                        "Ignored stale runtime setting cache entry"
+                    );
+                    return;
+                }
+                entry.insert(setting.clone());
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(setting.clone());
+            }
+        }
         let cache_key = RuntimeSettingKey::new(setting.key.clone());
         if let Err(error) = self
             .runtime_cache
@@ -705,15 +795,23 @@ impl SettingsService {
         }
     }
 
-    fn notify_reload_subscribers(&self, key: &str, value: Option<String>) {
-        match self.reload_sender.send((key.to_string(), value)) {
+    fn notify_reload_subscribers(&self, keys: impl IntoIterator<Item = String>) {
+        let keys: Vec<_> = keys.into_iter().collect();
+        if keys.is_empty() {
+            return;
+        }
+
+        match self
+            .reload_sender
+            .send(SettingsReloadEvent { keys: keys.clone() })
+        {
             Ok(subscriber_count) => debug!(
-                key = %key,
+                keys = ?keys,
                 subscriber_count,
                 "Runtime setting reload notified SettingsStorage subscribers"
             ),
             Err(error) => debug!(
-                key = %key,
+                keys = ?keys,
                 error = %error,
                 "Runtime setting reload had no active SettingsStorage subscribers"
             ),
@@ -836,16 +934,34 @@ mod tests {
 
     fn service_with_fence_store(
         store: Arc<dyn VersionFenceStore>,
-    ) -> (
-        SettingsService,
-        broadcast::Receiver<(String, Option<String>)>,
-    ) {
+    ) -> (SettingsService, broadcast::Receiver<SettingsReloadEvent>) {
         let service = SettingsService::new_without_backend_for_tests(SettingsServiceRuntime {
             version_fence: store,
             ..SettingsServiceRuntime::local_only()
         });
         let receiver = service.subscribe_reloads();
         (service, receiver)
+    }
+
+    #[tokio::test]
+    async fn test_stale_runtime_setting_cannot_downgrade_memory_cache() {
+        let (service, _reloads) = service_with_fence_store(Arc::new(LocalVersionFenceStore::new()));
+        let mut current = RuntimeSetting::new("test".to_string(), "fresh".to_string());
+        current.key = "test.key".to_string();
+        current.version = 2;
+        service.store_cache_entry(current).await;
+
+        let mut stale = RuntimeSetting::new("test".to_string(), "stale".to_string());
+        stale.key = "test.key".to_string();
+        stale.version = 1;
+        service.store_cache_entry(stale).await;
+
+        let cached = some(
+            service.cache.get("test.key"),
+            "setting should remain cached",
+        );
+        assert_eq!(cached.value().value, "fresh");
+        assert_eq!(cached.value().version, 2);
     }
 
     #[tokio::test]
@@ -864,7 +980,7 @@ mod tests {
         setting.key = "test.key".to_string();
         setting.version = 1;
         service.store_cache_entry(setting.clone()).await;
-        service.notify_reload_subscribers(&setting.key, Some(setting.value.clone()));
+        service.notify_reload_subscribers([setting.key.clone()]);
 
         let cached = some(
             service.cache.get("test.key"),
@@ -878,7 +994,9 @@ mod tests {
                 reloads.recv().await,
                 "reload subscriber should receive committed setting",
             ),
-            ("test.key".to_string(), Some("\"fresh\"".to_string()))
+            SettingsReloadEvent {
+                keys: vec!["test.key".to_string()]
+            }
         );
     }
 
@@ -907,8 +1025,8 @@ mod tests {
             setting.key = key.to_string();
             setting.version = version;
             service.store_cache_entry(setting.clone()).await;
-            service.notify_reload_subscribers(&setting.key, Some(setting.value.clone()));
         }
+        service.notify_reload_subscribers(["test.first".to_string(), "test.second".to_string()]);
 
         assert_eq!(
             some(
@@ -930,20 +1048,15 @@ mod tests {
         );
         assert_eq!(store.commit_attempts.load(Ordering::SeqCst), 2);
         assert_eq!(store.repair_attempts.load(Ordering::SeqCst), 2);
-        let first = ok(
+        let event = ok(
             reloads.recv().await,
-            "first reload event should be delivered",
-        );
-        let second = ok(
-            reloads.recv().await,
-            "second reload event should be delivered",
+            "batch reload event should be delivered",
         );
         assert_eq!(
-            vec![first, second],
-            vec![
-                ("test.first".to_string(), Some("\"one\"".to_string())),
-                ("test.second".to_string(), Some("\"two\"".to_string())),
-            ]
+            event,
+            SettingsReloadEvent {
+                keys: vec!["test.first".to_string(), "test.second".to_string()]
+            }
         );
     }
 

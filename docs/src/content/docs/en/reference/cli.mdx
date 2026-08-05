@@ -484,14 +484,23 @@ synctv settings list
 synctv settings get email
 synctv settings update --set email.whitelistEnabled=true --set 'email.whitelistDomains=["example.com"]'
 synctv settings update --unset email.smtpProxy
+synctv settings export --file runtime-settings.json
+synctv settings import runtime-settings.json --dry-run
+synctv settings import runtime-settings.json
 synctv settings test-email admin@example.com
 ```
 
 `--set PATH=VALUE` and `--unset PATH` are repeatable, and the CLI builds the FieldMask. `--request-json` accepts the standard `UpdateSettingsRequest` ProtoJSON shape and is mutually exclusive with set/unset mode.
 
+`settings export` produces a complete, versioned JSON snapshot with `formatVersion`. The snapshot contains OAuth client secrets, SMTP passwords, and proxy passwords. File output is atomic, uses mode `0600` on Unix, and requires `--force` to replace an existing file. Omitting `--file` writes the snapshot to stdout.
+
+`settings import` reads a snapshot from a file; use `-` for stdin. The server validates the format version, complete credentials, and every runtime business rule before replacing all runtime settings in one transaction. `--dry-run` reports the planned changed sections while preserving the stored values.
+
+Export and import require root authorization. The management CLI uses its local root actor identity and still requires a valid management token.
+
 See [Runtime Settings Reference](../runtime-settings/) for all keys, defaults, and validation rules.
 
-SMTP host, port, credentials, SOCKS5 proxy, and sender identity are managed through the `email` runtime settings. `settings test-email` uses the current hot-reloaded configuration. Settings reads redact the SMTP and proxy passwords.
+SMTP host, port, credentials, SOCKS5 proxy, and sender identity are managed through the `email` runtime settings. `settings test-email` uses the current hot-reloaded configuration. Regular settings reads redact SMTP and proxy passwords; export snapshots retain complete credentials for restoration.
 
 Security note: do not expose the management TCP endpoint publicly. Use strong tokens and prefer internal networks or VPNs.
 

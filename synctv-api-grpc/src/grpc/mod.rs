@@ -1324,6 +1324,8 @@ async fn build_axum_router_with_health(
 
     // Get the configured max message size (prevents OOM from oversized messages)
     let max_message_size = runtime_settings.server.grpc_max_message_size_bytes;
+    let admin_max_message_size =
+        max_message_size.max(synctv_core::service::MAX_RUNTIME_SETTINGS_IMPORT_REQUEST_BYTES);
     profile_info!(
         max_message_size_bytes = max_message_size,
         max_message_size_mb = max_message_size / (1024 * 1024),
@@ -1405,7 +1407,7 @@ async fn build_axum_router_with_health(
         if grpc_registration_plan.health_state.admin_registered {
             routes.add_service(
                 AdminServiceServer::new(admin_service).with_transport_settings(
-                    max_message_size,
+                    admin_max_message_size,
                     runtime_settings.server.grpc_compression_enabled,
                 ),
             );

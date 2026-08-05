@@ -23,6 +23,20 @@ use crate::ApiError;
 pub fn runtime_settings_patch_from_admin_proto(
     req: admin_proto::UpdateSettingsRequest,
 ) -> Result<RuntimeSettingsPatch, ApiError> {
+    runtime_settings_patch_from_admin_proto_with_oauth2(req, None)
+}
+
+pub fn runtime_settings_patch_from_admin_proto_with_current(
+    req: admin_proto::UpdateSettingsRequest,
+    current_oauth2: &OAuth2ProviderConfigs,
+) -> Result<RuntimeSettingsPatch, ApiError> {
+    runtime_settings_patch_from_admin_proto_with_oauth2(req, Some(current_oauth2))
+}
+
+fn runtime_settings_patch_from_admin_proto_with_oauth2(
+    req: admin_proto::UpdateSettingsRequest,
+    current_oauth2: Option<&OAuth2ProviderConfigs>,
+) -> Result<RuntimeSettingsPatch, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     let settings = req
         .settings
@@ -61,7 +75,7 @@ pub fn runtime_settings_patch_from_admin_proto(
         }),
         oauth2: settings
             .oauth2
-            .map(oauth2_settings_patch_from_admin_proto)
+            .map(|patch| oauth2_settings_patch_from_admin_proto(patch, current_oauth2))
             .transpose()?,
         rtmp: settings.rtmp.map(|patch| RtmpSettingsPatch {
             custom_publish_host: patch.custom_publish_host.map(OptionalConfigPatch::Set),
@@ -94,6 +108,160 @@ pub fn runtime_settings_patch_from_admin_proto(
         }),
     };
     select_runtime_settings_patch(patch, &paths)
+}
+
+fn required_runtime_snapshot_section<T>(value: Option<T>, path: &str) -> Result<T, ApiError> {
+    value.ok_or_else(|| ApiError::InvalidInput(format!("{path} is required")))
+}
+
+fn runtime_snapshot_credentials(
+    credentials: admin_proto::SmtpCredentials,
+    path: &str,
+) -> Result<SmtpCredentialsInput, ApiError> {
+    let password = credentials.password.ok_or_else(|| {
+        ApiError::InvalidInput(format!(
+            "{path}.password is required in a runtime settings snapshot"
+        ))
+    })?;
+    Ok(SmtpCredentialsInput {
+        username: credentials.username,
+        password: Some(password),
+    })
+}
+
+pub fn runtime_settings_replacement_patch_from_admin_proto(
+    settings: admin_proto::RuntimeSettings,
+) -> Result<RuntimeSettingsPatch, ApiError> {
+    crate::impls::validate_proto_request(&settings)?;
+
+    let server = required_runtime_snapshot_section(settings.server, "settings.server")?;
+    let room_defaults =
+        required_runtime_snapshot_section(settings.room_defaults, "settings.room_defaults")?;
+    let permissions =
+        required_runtime_snapshot_section(settings.permissions, "settings.permissions")?;
+    let room_creation =
+        required_runtime_snapshot_section(settings.room_creation, "settings.room_creation")?;
+    let user = required_runtime_snapshot_section(settings.user, "settings.user")?;
+    let oauth2 = required_runtime_snapshot_section(settings.oauth2, "settings.oauth2")?;
+    let rtmp = required_runtime_snapshot_section(settings.rtmp, "settings.rtmp")?;
+    let email = required_runtime_snapshot_section(settings.email, "settings.email")?;
+    let webrtc = required_runtime_snapshot_section(settings.webrtc, "settings.webrtc")?;
+    let chat = required_runtime_snapshot_section(settings.chat, "settings.chat")?;
+    let playback_history =
+        required_runtime_snapshot_section(settings.playback_history, "settings.playback_history")?;
+    let cors = required_runtime_snapshot_section(settings.cors, "settings.cors")?;
+
+    let smtp_credentials = email
+        .smtp_credentials
+        .map(|credentials| {
+            runtime_snapshot_credentials(credentials, "settings.email.smtp_credentials")
+                .map(OptionalConfigPatch::Set)
+        })
+        .transpose()?
+        .unwrap_or(OptionalConfigPatch::Clear);
+    let smtp_proxy = email
+        .smtp_proxy
+        .map(|proxy| {
+            let credentials = proxy
+                .credentials
+                .map(|credentials| {
+                    runtime_snapshot_credentials(
+                        credentials,
+                        "settings.email.smtp_proxy.credentials",
+                    )
+                })
+                .transpose()?;
+            Ok::<_, ApiError>(OptionalConfigPatch::Set(SmtpProxyInput {
+                url: proxy.url,
+                credentials,
+            }))
+        })
+        .transpose()?
+        .unwrap_or(OptionalConfigPatch::Clear);
+
+    Ok(RuntimeSettingsPatch {
+        server: Some(ServerSettingsPatch {
+            name: Some(server.name),
+        }),
+        room_defaults: Some(RoomDefaultsSettingsPatch {
+            default_max_members: Some(room_defaults.default_max_members),
+            default_max_chat_messages: Some(room_defaults.default_max_chat_messages),
+        }),
+        permissions: Some(PermissionSettingsPatch {
+            admin_default_permissions: Some(permissions.admin_default_permissions),
+            member_default_permissions: Some(permissions.member_default_permissions),
+            guest_default_permissions: Some(permissions.guest_default_permissions),
+        }),
+        room_creation: Some(RoomCreationSettingsPatch {
+            enabled: Some(room_creation.enabled),
+            approval_required: Some(room_creation.approval_required),
+            password_policy: Some(core_room_password_policy(room_creation.password_policy)?),
+            max_rooms_per_user: Some(room_creation.max_rooms_per_user),
+        }),
+        user: Some(UserSettingsPatch {
+            enable_password_signup: Some(user.enable_password_signup),
+            password_signup_need_review: Some(user.password_signup_need_review),
+            enable_email_signup: Some(user.enable_email_signup),
+            email_signup_need_review: Some(user.email_signup_need_review),
+            enable_webauthn_signup: Some(user.enable_webauthn_signup),
+            webauthn_signup_need_review: Some(user.webauthn_signup_need_review),
+            enable_guest: Some(user.enable_guest),
+        }),
+        oauth2: Some(OAuth2SettingsPatch {
+            providers: Some(oauth2_provider_configs_from_admin_proto(
+                oauth2.providers,
+                None,
+            )?),
+            allowed_redirect_urls: Some(oauth2.allowed_redirect_urls),
+        }),
+        rtmp: Some(RtmpSettingsPatch {
+            custom_publish_host: Some(match rtmp.custom_publish_host {
+                Some(host) => OptionalConfigPatch::Set(host),
+                None => OptionalConfigPatch::Clear,
+            }),
+            ts_disguised_as_png: Some(rtmp.ts_disguised_as_png),
+        }),
+        email: Some(EmailSettingsPatch {
+            enabled: Some(email.enabled),
+            smtp_host: Some(match email.smtp_host {
+                Some(host) => OptionalConfigPatch::Set(host),
+                None => OptionalConfigPatch::Clear,
+            }),
+            smtp_port: Some(email.smtp_port),
+            smtp_credentials: Some(smtp_credentials),
+            smtp_proxy: Some(smtp_proxy),
+            use_tls: Some(email.use_tls),
+            from_email: Some(match email.from_email {
+                Some(from_email) => OptionalConfigPatch::Set(from_email),
+                None => OptionalConfigPatch::Clear,
+            }),
+            from_name: Some(email.from_name),
+            whitelist_enabled: Some(email.whitelist_enabled),
+            whitelist_domains: Some(email.whitelist_domains),
+        }),
+        webrtc: Some(WebRtcSettingsPatch {
+            external_ice_servers: Some(
+                webrtc
+                    .external_ice_servers
+                    .into_iter()
+                    .map(core_ice_server)
+                    .collect(),
+            ),
+            max_voice_participants_per_room: Some(webrtc.max_voice_participants_per_room),
+        }),
+        chat: Some(ChatSettingsPatch {
+            max_messages_per_room: Some(chat.max_messages_per_room),
+            max_pinned_messages_per_room: Some(chat.max_pinned_messages_per_room),
+            message_retention_days: Some(chat.message_retention_days),
+        }),
+        playback_history: Some(PlaybackHistorySettingsPatch {
+            retention_days: Some(playback_history.retention_days),
+            max_entries_per_room: Some(playback_history.max_entries_per_room),
+        }),
+        cors: Some(CorsSettingsPatch {
+            allowed_origins: Some(cors.allowed_origins),
+        }),
+    })
 }
 
 fn required_mask_value<T>(value: Option<T>, path: &str) -> Result<T, ApiError> {
@@ -332,20 +500,29 @@ fn room_creation_settings_patch_from_admin_proto(
 
 fn oauth2_settings_patch_from_admin_proto(
     patch: admin_proto::OAuth2SettingsPatch,
+    current: Option<&OAuth2ProviderConfigs>,
 ) -> Result<OAuth2SettingsPatch, ApiError> {
     Ok(OAuth2SettingsPatch {
-        providers: Some(oauth2_provider_configs_from_admin_proto(patch.providers)?),
+        providers: Some(oauth2_provider_configs_from_admin_proto(
+            patch.providers,
+            current,
+        )?),
         allowed_redirect_urls: Some(patch.allowed_redirect_urls),
     })
 }
 
 fn oauth2_provider_configs_from_admin_proto(
     providers: Vec<admin_proto::OAuth2ProviderSettings>,
+    current: Option<&OAuth2ProviderConfigs>,
 ) -> Result<OAuth2ProviderConfigs, ApiError> {
     let mut configs = BTreeMap::new();
     for provider in providers {
         let name = provider.name.clone();
-        let config = oauth2_config_from_admin_proto(&name, &provider)?;
+        let config = oauth2_config_from_admin_proto(
+            &name,
+            &provider,
+            current.and_then(|configs| configs.0.get(&name)),
+        )?;
         if configs
             .insert(
                 name.clone(),
@@ -368,6 +545,7 @@ fn oauth2_provider_configs_from_admin_proto(
 fn oauth2_config_from_admin_proto(
     name: &str,
     provider: &admin_proto::OAuth2ProviderSettings,
+    current: Option<&OAuth2ProviderConfig>,
 ) -> Result<OAuth2ProviderPrivateConfig, ApiError> {
     use admin_proto::o_auth2_provider_settings::Config;
     Ok(
@@ -375,42 +553,104 @@ fn oauth2_config_from_admin_proto(
             ApiError::InvalidInput(format!("OAuth2 provider '{name}' config is required"))
         })? {
             Config::Github(config) => {
+                let current_secret = current.and_then(|provider| match &provider.config {
+                    OAuth2ProviderPrivateConfig::GitHub(current) => {
+                        Some((current.client_id.as_str(), current.client_secret.as_str()))
+                    }
+                    _ => None,
+                });
                 OAuth2ProviderPrivateConfig::GitHub(OAuth2GithubProviderConfig {
+                    client_secret: resolve_oauth2_client_secret(
+                        name,
+                        "github",
+                        &config.client_id,
+                        config.client_secret,
+                        current_secret,
+                    )?,
                     client_id: config.client_id,
-                    client_secret: config.client_secret,
                     redirect_url: config.redirect_url,
                 })
             }
             Config::Google(config) => {
+                let current_secret = current.and_then(|provider| match &provider.config {
+                    OAuth2ProviderPrivateConfig::Google(current) => {
+                        Some((current.client_id.as_str(), current.client_secret.as_str()))
+                    }
+                    _ => None,
+                });
                 OAuth2ProviderPrivateConfig::Google(OAuth2GoogleProviderConfig {
+                    client_secret: resolve_oauth2_client_secret(
+                        name,
+                        "google",
+                        &config.client_id,
+                        config.client_secret,
+                        current_secret,
+                    )?,
                     client_id: config.client_id,
-                    client_secret: config.client_secret,
                     redirect_url: config.redirect_url,
                 })
             }
             Config::Logto(config) => {
+                let current_secret = current.and_then(|provider| match &provider.config {
+                    OAuth2ProviderPrivateConfig::Logto(current) => {
+                        Some((current.client_id.as_str(), current.client_secret.as_str()))
+                    }
+                    _ => None,
+                });
                 OAuth2ProviderPrivateConfig::Logto(OAuth2LogtoProviderConfig {
+                    client_secret: resolve_oauth2_client_secret(
+                        name,
+                        "logto",
+                        &config.client_id,
+                        config.client_secret,
+                        current_secret,
+                    )?,
                     client_id: config.client_id,
-                    client_secret: config.client_secret,
                     redirect_url: config.redirect_url,
                     endpoint: config.endpoint,
                 })
             }
-            Config::Oidc(config) => OAuth2ProviderPrivateConfig::Oidc(OAuth2OidcProviderConfig {
-                client_id: config.client_id,
-                client_secret: config.client_secret,
-                redirect_url: config.redirect_url,
-                issuer: config.issuer,
-                auth_url: config.auth_url,
-                token_url: config.token_url,
-                userinfo_url: config.userinfo_url,
-                jwks_url: config.jwks_url,
-                scopes: config.scopes,
-            }),
-            Config::Casdoor(config) => {
-                OAuth2ProviderPrivateConfig::Casdoor(OAuth2CasdoorProviderConfig {
+            Config::Oidc(config) => {
+                let current_secret = current.and_then(|provider| match &provider.config {
+                    OAuth2ProviderPrivateConfig::Oidc(current) => {
+                        Some((current.client_id.as_str(), current.client_secret.as_str()))
+                    }
+                    _ => None,
+                });
+                OAuth2ProviderPrivateConfig::Oidc(OAuth2OidcProviderConfig {
+                    client_secret: resolve_oauth2_client_secret(
+                        name,
+                        "oidc",
+                        &config.client_id,
+                        config.client_secret,
+                        current_secret,
+                    )?,
                     client_id: config.client_id,
-                    client_secret: config.client_secret,
+                    redirect_url: config.redirect_url,
+                    issuer: config.issuer,
+                    auth_url: config.auth_url,
+                    token_url: config.token_url,
+                    userinfo_url: config.userinfo_url,
+                    jwks_url: config.jwks_url,
+                    scopes: config.scopes,
+                })
+            }
+            Config::Casdoor(config) => {
+                let current_secret = current.and_then(|provider| match &provider.config {
+                    OAuth2ProviderPrivateConfig::Casdoor(current) => {
+                        Some((current.client_id.as_str(), current.client_secret.as_str()))
+                    }
+                    _ => None,
+                });
+                OAuth2ProviderPrivateConfig::Casdoor(OAuth2CasdoorProviderConfig {
+                    client_secret: resolve_oauth2_client_secret(
+                        name,
+                        "casdoor",
+                        &config.client_id,
+                        config.client_secret,
+                        current_secret,
+                    )?,
+                    client_id: config.client_id,
                     redirect_url: config.redirect_url,
                     issuer: config.issuer,
                     auth_url: config.auth_url,
@@ -420,14 +660,46 @@ fn oauth2_config_from_admin_proto(
                 })
             }
             Config::Apple(config) => {
+                let current_secret = current.and_then(|provider| match &provider.config {
+                    OAuth2ProviderPrivateConfig::Apple(current) => {
+                        Some((current.client_id.as_str(), current.client_secret.as_str()))
+                    }
+                    _ => None,
+                });
                 OAuth2ProviderPrivateConfig::Apple(OAuth2AppleProviderConfig {
+                    client_secret: resolve_oauth2_client_secret(
+                        name,
+                        "apple",
+                        &config.client_id,
+                        config.client_secret,
+                        current_secret,
+                    )?,
                     client_id: config.client_id,
-                    client_secret: config.client_secret,
                     redirect_url: config.redirect_url,
                 })
             }
         },
     )
+}
+
+fn resolve_oauth2_client_secret(
+    name: &str,
+    provider_type: &str,
+    client_id: &str,
+    supplied: Option<String>,
+    current: Option<(&str, &str)>,
+) -> Result<String, ApiError> {
+    if let Some(secret) = supplied {
+        return Ok(secret);
+    }
+    if let Some((current_client_id, current_secret)) = current {
+        if current_client_id == client_id {
+            return Ok(current_secret.to_string());
+        }
+    }
+    Err(ApiError::InvalidInput(format!(
+        "OAuth2 provider '{name}' {provider_type}.client_secret is required for a new provider, provider type change, or client_id change"
+    )))
 }
 
 fn core_room_password_policy(value: i32) -> Result<RoomPasswordPolicy, ApiError> {

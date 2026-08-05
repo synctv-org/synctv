@@ -243,9 +243,14 @@ where
             server_state_runtime: config.server_state_runtime,
             lifecycle_controller: config.lifecycle_controller,
             management_auth_token: config.settings.auth_token.clone(),
-        }))
-        .max_decoding_message_size(config.settings.grpc_max_message_size_bytes)
-        .max_encoding_message_size(config.settings.grpc_max_message_size_bytes);
+        }));
+    let management_message_size = config
+        .settings
+        .grpc_max_message_size_bytes
+        .max(synctv_core::service::MAX_RUNTIME_SETTINGS_IMPORT_REQUEST_BYTES);
+    let management_service = management_service
+        .max_decoding_message_size(management_message_size)
+        .max_encoding_message_size(management_message_size);
     let management_service = if config.settings.grpc_compression_enabled {
         management_service
             .accept_compressed(CompressionEncoding::Gzip)

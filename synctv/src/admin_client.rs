@@ -62,6 +62,8 @@ impl RemoteAdminSession {
                 authorization: self.authorization.clone(),
             },
         )
+        .max_decoding_message_size(synctv_core::service::MAX_RUNTIME_SETTINGS_IMPORT_REQUEST_BYTES)
+        .max_encoding_message_size(synctv_core::service::MAX_RUNTIME_SETTINGS_IMPORT_REQUEST_BYTES)
     }
 }
 
@@ -1958,6 +1960,18 @@ mod tests {
             &self,
             _: Request<admin_proto::UpdateSettingsRequest>,
         ) -> std::result::Result<Response<admin_proto::RuntimeSettings>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn export_settings(
+            &self,
+            _: Request<admin_proto::ExportSettingsRequest>,
+        ) -> std::result::Result<Response<admin_proto::RuntimeSettingsSnapshot>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn import_settings(
+            &self,
+            _: Request<admin_proto::ImportSettingsRequest>,
+        ) -> std::result::Result<Response<admin_proto::ImportSettingsResponse>, Status> {
             unavailable_test_management_response()
         }
         async fn send_test_email(

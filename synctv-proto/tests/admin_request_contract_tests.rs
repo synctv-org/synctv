@@ -227,3 +227,15 @@ fn test_admin_batch_delete_rooms_request_rejects_invalid_room_id() {
     let message = error.to_string();
     assert!(message.contains("room_ids"), "{message}");
 }
+
+#[test]
+fn test_runtime_settings_snapshot_rejects_unknown_format_version() {
+    let snapshot = synctv_proto::admin::RuntimeSettingsSnapshot {
+        format_version: 2,
+        settings: Some(synctv_proto::admin::RuntimeSettings::default()),
+    };
+
+    let error = synctv_proto::validate(&snapshot).expect_err("snapshot should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("format_version"), "{message}");
+}

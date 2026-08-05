@@ -399,6 +399,15 @@ pub struct UpdateSettingsCommand {
 }
 
 #[derive(Debug, Clone)]
+pub struct ExportSettingsQuery;
+
+#[derive(Debug, Clone)]
+pub struct ImportSettingsCommand {
+    pub snapshot: admin_proto::RuntimeSettingsSnapshot,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct SendTestEmailCommand {
     pub to: String,
 }
@@ -969,6 +978,20 @@ pub trait AdminRuntime: Send + Sync {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<admin_proto::RuntimeSettings, RuntimeError>;
+
+    async fn export_settings(
+        &self,
+        query: ExportSettingsQuery,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<admin_proto::RuntimeSettingsSnapshot, RuntimeError>;
+
+    async fn import_settings(
+        &self,
+        command: ImportSettingsCommand,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<admin_proto::ImportSettingsResponse, RuntimeError>;
 
     async fn send_test_email(
         &self,

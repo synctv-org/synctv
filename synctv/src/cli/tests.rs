@@ -5000,6 +5000,56 @@ fn cli_parses_settings_update_with_standard_proto_json_request() {
 }
 
 #[test]
+fn cli_parses_settings_export_to_file() {
+    let cli = Cli::parse_from([
+        "synctv",
+        "settings",
+        "export",
+        "--file",
+        "runtime-settings.json",
+        "--force",
+    ]);
+    match cli.command {
+        Commands::Settings(SettingsCommand {
+            command: SettingsSubcommand::Export(args),
+            ..
+        }) => {
+            assert_eq!(
+                args.file.as_deref(),
+                Some(std::path::Path::new("runtime-settings.json"))
+            );
+            assert!(args.force);
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_rejects_settings_export_force_without_file() {
+    let error = Cli::try_parse_from(["synctv", "settings", "export", "--force"])
+        .expect_err("--force should require --file");
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
+}
+
+#[test]
+fn cli_parses_settings_import_dry_run_from_stdin() {
+    let cli = Cli::parse_from(["synctv", "settings", "import", "-", "--dry-run"]);
+    match cli.command {
+        Commands::Settings(SettingsCommand {
+            command: SettingsSubcommand::Import(args),
+            ..
+        }) => {
+            assert_eq!(args.file, std::path::PathBuf::from("-"));
+            assert!(args.dry_run);
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
 fn settings_update_parser_accepts_field_mask_proto_json() {
     let request: synctv_proto::admin::UpdateSettingsRequest = parse_cli_json(
         "settings update request",
@@ -5938,7 +5988,7 @@ fn render_human_output_uses_proto_json_for_admin_settings() {
                     synctv_proto::admin::o_auth2_provider_settings::Config::Github(
                         synctv_proto::admin::OAuth2GithubProviderConfig {
                             client_id: "client-id".into(),
-                            client_secret: "client-secret".into(),
+                            client_secret: Some("client-secret".into()),
                             redirect_url: "https://example.com/callback".into(),
                         },
                     ),

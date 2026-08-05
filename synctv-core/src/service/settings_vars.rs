@@ -32,8 +32,9 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fmt::{self, Display};
 use std::hash::BuildHasherDefault;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
 use tracing::{debug, warn};
 
 use super::SettingsService;
@@ -184,6 +185,19 @@ macro_rules! setting {
 pub struct SettingsStorage {
     inner: Arc<RwLock<HashMap<String, String, BuildHasherDefault<DefaultHasher>>>>,
     settings_service: Option<Arc<SettingsService>>,
+    change_sender: broadcast::Sender<(String, Option<String>)>,
+    reload_lock: Arc<Mutex<()>>,
+    mutation_revision: Arc<AtomicU64>,
+}
+
+pub(crate) struct SettingsSnapshot {
+    values: HashMap<String, String, BuildHasherDefault<DefaultHasher>>,
+}
+
+impl SettingsSnapshot {
+    fn get_raw(&self, key: &str) -> Option<String> {
+        self.values.get(key).cloned()
+    }
 }
 
 impl SettingsStorage {
@@ -199,17 +213,25 @@ impl SettingsStorage {
 
     #[must_use]
     pub fn new(settings_service: Arc<SettingsService>) -> Self {
+        let (change_sender, _) = broadcast::channel(256);
         Self {
             inner: Arc::new(RwLock::new(HashMap::default())),
             settings_service: Some(settings_service),
+            change_sender,
+            reload_lock: Arc::new(Mutex::new(())),
+            mutation_revision: Arc::new(AtomicU64::new(0)),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn new_for_tests() -> Self {
+        let (change_sender, _) = broadcast::channel(256);
         Self {
             inner: Arc::new(RwLock::new(HashMap::default())),
             settings_service: None,
+            change_sender,
+            reload_lock: Arc::new(Mutex::new(())),
+            mutation_revision: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -229,20 +251,61 @@ impl SettingsStorage {
 
         let mut storage = self.inner.write();
         *storage = all_values.into_iter().collect();
+        self.mutation_revision.fetch_add(1, Ordering::Release);
 
         Ok(())
     }
 
-    fn reload_all_from_service(&self) -> Result<()> {
-        let all_values = self
-            .settings_service()?
-            .get_all_values()
-            .map_err(|e| crate::Error::Internal(format!("Failed to reload settings: {e}")))?;
+    async fn reload_all_from_database(&self) -> Result<Vec<(String, Option<String>)>> {
+        let _reload_guard = self.reload_lock.lock().await;
+        loop {
+            let observed_revision = self.mutation_revision.load(Ordering::Acquire);
+            let settings = self
+                .settings_service()?
+                .reload_all_from_database()
+                .await
+                .map_err(|e| crate::Error::Internal(format!("Failed to reload settings: {e}")))?;
+            let all_values: HashMap<_, _, BuildHasherDefault<DefaultHasher>> = settings
+                .into_iter()
+                .map(|setting| (setting.key, setting.value))
+                .collect();
 
+            if let Some(changed) = self.apply_reloaded_values(all_values, observed_revision) {
+                return Ok(changed);
+            }
+            debug!(
+                observed_revision,
+                current_revision = self.mutation_revision.load(Ordering::Acquire),
+                "Discarded stale runtime settings snapshot after a local commit"
+            );
+        }
+    }
+
+    fn apply_reloaded_values(
+        &self,
+        all_values: HashMap<String, String, BuildHasherDefault<DefaultHasher>>,
+        observed_revision: u64,
+    ) -> Option<Vec<(String, Option<String>)>> {
         let mut storage = self.inner.write();
-        *storage = all_values.into_iter().collect();
+        if self.mutation_revision.load(Ordering::Acquire) != observed_revision {
+            return None;
+        }
 
-        Ok(())
+        let mut changed = Vec::new();
+        for (key, value) in storage.iter() {
+            if all_values.get(key) != Some(value) {
+                changed.push((key.clone(), all_values.get(key).cloned()));
+            }
+        }
+        for (key, value) in &all_values {
+            if !storage.contains_key(key) {
+                changed.push((key.clone(), Some(value.clone())));
+            }
+        }
+        *storage = all_values;
+        self.mutation_revision.fetch_add(1, Ordering::Release);
+
+        Some(changed)
     }
 
     /// Start a background task that listens for reload events from `SettingsService`
@@ -273,24 +336,38 @@ impl SettingsStorage {
                 };
 
                 match recv_result {
-                    Ok((key, Some(value))) => {
-                        storage.inner.write().insert(key.clone(), value);
-                        debug!("SettingsStorage refreshed key '{}' from remote reload", key);
-                    }
-                    Ok((key, None)) => {
-                        storage.inner.write().remove(&key);
-                        debug!("SettingsStorage removed key '{}' from remote reload", key);
+                    Ok(event) => {
+                        if let Err(error) = storage.reload_all_from_database().await {
+                            warn!(
+                                keys = ?event.keys,
+                                error = %error,
+                                "Failed to refresh SettingsStorage generation"
+                            );
+                            continue;
+                        }
+                        for key in event.keys {
+                            let value = storage.get_raw(&key);
+                            let _ = storage.change_sender.send((key, value));
+                        }
+                        debug!("SettingsStorage refreshed a committed settings generation");
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         warn!(
                             "SettingsStorage reload listener lagged by {} messages, forcing full snapshot refresh",
                             n
                         );
-                        if let Err(error) = storage.reload_all_from_service() {
-                            warn!(
-                                error = %error,
-                                "Failed to refresh SettingsStorage after lagged notifications"
-                            );
+                        match storage.reload_all_from_database().await {
+                            Ok(changed) => {
+                                for change in changed {
+                                    let _ = storage.change_sender.send(change);
+                                }
+                            }
+                            Err(error) => {
+                                warn!(
+                                    error = %error,
+                                    "Failed to refresh SettingsStorage after lagged notifications"
+                                );
+                            }
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -308,6 +385,12 @@ impl SettingsStorage {
         self.inner.read().get(key).cloned()
     }
 
+    pub(crate) fn snapshot(&self) -> SettingsSnapshot {
+        SettingsSnapshot {
+            values: self.inner.read().clone(),
+        }
+    }
+
     pub fn subscribe_changes<T>(&self, key: &'static str) -> Result<SettingChangeReceiver<T>>
     where
         T: Clone + Display + std::str::FromStr + Send + Sync + 'static,
@@ -315,7 +398,7 @@ impl SettingsStorage {
     {
         Ok(SettingChangeReceiver {
             key,
-            receiver: self.settings_service()?.subscribe_reloads(),
+            receiver: self.change_sender.subscribe(),
             _phantom: std::marker::PhantomData,
         })
     }
@@ -327,6 +410,7 @@ impl SettingsStorage {
     #[cfg(test)]
     pub(crate) fn set_raw_for_test(&self, key: &str, value: String) {
         self.inner.write().insert(key.to_string(), value);
+        self.mutation_revision.fetch_add(1, Ordering::Release);
     }
 
     /// Apply settings that were already committed by `SettingsService`.
@@ -335,8 +419,13 @@ impl SettingsStorage {
         updates: impl IntoIterator<Item = crate::models::settings::RuntimeSetting>,
     ) {
         let mut storage = self.inner.write();
+        let mut applied = false;
         for setting in updates {
             storage.insert(setting.key, setting.value);
+            applied = true;
+        }
+        if applied {
+            self.mutation_revision.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -349,6 +438,7 @@ impl SettingsStorage {
                 crate::Error::Internal(format!("Failed to initialize runtime setting '{key}': {e}"))
             })?;
         self.inner.write().insert(setting.key, setting.value);
+        self.mutation_revision.fetch_add(1, Ordering::Release);
         Ok(())
     }
 }
@@ -444,7 +534,14 @@ where
     pub fn get(&self) -> Result<T> {
         // Always fetch the latest raw value from storage
         let new_raw = self.storage.get_raw(self.key);
+        self.get_from_raw(new_raw)
+    }
 
+    pub(crate) fn get_from_snapshot(&self, snapshot: &SettingsSnapshot) -> Result<T> {
+        self.get_from_raw(snapshot.get_raw(self.key))
+    }
+
+    fn get_from_raw(&self, new_raw: Option<String>) -> Result<T> {
         // Check if we need to update cache
         let needs_update = {
             let raw_cache = self.raw_cache.read();
@@ -695,9 +792,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_stale_reload_snapshot_cannot_overwrite_committed_update() {
+        let storage = SettingsStorage::new_for_tests();
+        let key = "room_creation.approval_required";
+        storage.set_raw_for_test(key, "false".to_string());
+
+        let observed_revision = storage.mutation_revision.load(Ordering::Acquire);
+        let stale_snapshot = HashMap::from_iter([(key.to_string(), "false".to_string())]);
+
+        storage.set_raw_for_test(key, "true".to_string());
+
+        assert!(
+            storage
+                .apply_reloaded_values(stale_snapshot, observed_revision)
+                .is_none(),
+            "a snapshot read before the committed update must be retried"
+        );
+        assert_eq!(storage.get_raw(key).as_deref(), Some("true"));
+    }
+
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_reload_all_from_service_replaces_stale_snapshot() {
+    async fn test_reload_all_from_database_replaces_stale_snapshot() {
         let (_pg, pool) = synctv_core_testing::create_test_pool().await;
         let repo = crate::repository::SettingsRepository::new(pool.clone());
         let service = Arc::new(SettingsService::new(repo, pool.clone()));
@@ -728,7 +845,7 @@ mod tests {
         );
 
         ok(
-            storage.reload_all_from_service(),
+            storage.reload_all_from_database().await,
             "settings storage should reload",
         );
 

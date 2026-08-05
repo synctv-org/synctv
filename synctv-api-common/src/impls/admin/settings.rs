@@ -242,6 +242,40 @@ pub struct RuntimeSettingsPatchResult {
     pub update_mask: synctv_core::service::RuntimeSettingsUpdateMask,
 }
 
+pub const RUNTIME_SETTINGS_SNAPSHOT_FORMAT_VERSION: u32 = 1;
+
+const RUNTIME_SETTINGS_SECTIONS: [&str; 12] = [
+    "server",
+    "roomDefaults",
+    "permissions",
+    "roomCreation",
+    "user",
+    "oauth2",
+    "rtmp",
+    "email",
+    "webrtc",
+    "chat",
+    "playbackHistory",
+    "cors",
+];
+
+fn validate_runtime_settings_snapshot_size(
+    snapshot: &synctv_proto::admin::RuntimeSettingsSnapshot,
+) -> Result<(), ApiError> {
+    let encoded = serde_json::to_vec_pretty(snapshot).map_err(|error| {
+        ApiError::Internal(format!(
+            "failed to measure runtime settings snapshot: {error}"
+        ))
+    })?;
+    if encoded.len() > synctv_core::service::MAX_RUNTIME_SETTINGS_SNAPSHOT_BYTES {
+        return Err(ApiError::InvalidInput(format!(
+            "runtime settings snapshot exceeds the {} byte limit",
+            synctv_core::service::MAX_RUNTIME_SETTINGS_SNAPSHOT_BYTES
+        )));
+    }
+    Ok(())
+}
+
 fn changed_runtime_settings_sections(patch: &RuntimeSettingsPatch) -> Vec<String> {
     let mut sections = Vec::new();
     if patch.server.is_some() {
@@ -274,7 +308,53 @@ fn changed_runtime_settings_sections(patch: &RuntimeSettingsPatch) -> Vec<String
     if patch.chat.is_some() {
         sections.push("chat".to_string());
     }
+    if patch.playback_history.is_some() {
+        sections.push("playbackHistory".to_string());
+    }
     if patch.cors.is_some() {
+        sections.push("cors".to_string());
+    }
+    sections
+}
+
+fn changed_runtime_settings_sections_from_mask(
+    mask: &synctv_core::service::RuntimeSettingsUpdateMask,
+) -> Vec<String> {
+    let mut sections = Vec::new();
+    if !mask.server.is_empty() {
+        sections.push("server".to_string());
+    }
+    if !mask.room_defaults.is_empty() {
+        sections.push("roomDefaults".to_string());
+    }
+    if !mask.permissions.is_empty() {
+        sections.push("permissions".to_string());
+    }
+    if !mask.room_creation.is_empty() {
+        sections.push("roomCreation".to_string());
+    }
+    if !mask.user.is_empty() {
+        sections.push("user".to_string());
+    }
+    if !mask.oauth2.is_empty() {
+        sections.push("oauth2".to_string());
+    }
+    if !mask.rtmp.is_empty() {
+        sections.push("rtmp".to_string());
+    }
+    if !mask.email.is_empty() {
+        sections.push("email".to_string());
+    }
+    if !mask.webrtc.is_empty() {
+        sections.push("webrtc".to_string());
+    }
+    if !mask.chat.is_empty() {
+        sections.push("chat".to_string());
+    }
+    if !mask.playback_history.is_empty() {
+        sections.push("playbackHistory".to_string());
+    }
+    if !mask.cors.is_empty() {
         sections.push("cors".to_string());
     }
     sections
@@ -299,6 +379,15 @@ fn proto_smtp_credentials(
     }
 }
 
+fn proto_smtp_credentials_with_password(
+    credentials: synctv_core::service::SmtpCredentials,
+) -> synctv_proto::admin::SmtpCredentials {
+    synctv_proto::admin::SmtpCredentials {
+        username: credentials.username,
+        password: Some(credentials.password),
+    }
+}
+
 fn proto_smtp_proxy(
     proxy: synctv_core::service::SmtpProxyConfig,
 ) -> synctv_proto::admin::SmtpProxy {
@@ -308,42 +397,55 @@ fn proto_smtp_proxy(
     }
 }
 
+fn proto_smtp_proxy_with_password(
+    proxy: synctv_core::service::SmtpProxyConfig,
+) -> synctv_proto::admin::SmtpProxy {
+    synctv_proto::admin::SmtpProxy {
+        url: proxy.url,
+        credentials: proxy.credentials.map(proto_smtp_credentials_with_password),
+    }
+}
+
 fn oauth2_github_config_to_proto(
     config: &synctv_core::service::OAuth2GithubProviderConfig,
+    include_credentials: bool,
 ) -> synctv_proto::admin::OAuth2GithubProviderConfig {
     synctv_proto::admin::OAuth2GithubProviderConfig {
         client_id: config.client_id.clone(),
-        client_secret: config.client_secret.clone(),
+        client_secret: include_credentials.then(|| config.client_secret.clone()),
         redirect_url: config.redirect_url.clone(),
     }
 }
 
 fn oauth2_config_to_proto(
     config: &synctv_core::service::OAuth2ProviderPrivateConfig,
+    include_credentials: bool,
 ) -> synctv_proto::admin::o_auth2_provider_settings::Config {
     use synctv_core::service::OAuth2ProviderPrivateConfig as CoreConfig;
     use synctv_proto::admin::o_auth2_provider_settings::Config;
 
     match config {
-        CoreConfig::GitHub(config) => Config::Github(oauth2_github_config_to_proto(config)),
+        CoreConfig::GitHub(config) => {
+            Config::Github(oauth2_github_config_to_proto(config, include_credentials))
+        }
         CoreConfig::Google(config) => {
             Config::Google(synctv_proto::admin::OAuth2GoogleProviderConfig {
                 client_id: config.client_id.clone(),
-                client_secret: config.client_secret.clone(),
+                client_secret: include_credentials.then(|| config.client_secret.clone()),
                 redirect_url: config.redirect_url.clone(),
             })
         }
         CoreConfig::Logto(config) => {
             Config::Logto(synctv_proto::admin::OAuth2LogtoProviderConfig {
                 client_id: config.client_id.clone(),
-                client_secret: config.client_secret.clone(),
+                client_secret: include_credentials.then(|| config.client_secret.clone()),
                 redirect_url: config.redirect_url.clone(),
                 endpoint: config.endpoint.clone(),
             })
         }
         CoreConfig::Oidc(config) => Config::Oidc(synctv_proto::admin::OAuth2OidcProviderConfig {
             client_id: config.client_id.clone(),
-            client_secret: config.client_secret.clone(),
+            client_secret: include_credentials.then(|| config.client_secret.clone()),
             redirect_url: config.redirect_url.clone(),
             issuer: config.issuer.clone(),
             auth_url: config.auth_url.clone(),
@@ -355,7 +457,7 @@ fn oauth2_config_to_proto(
         CoreConfig::Casdoor(config) => {
             Config::Casdoor(synctv_proto::admin::OAuth2CasdoorProviderConfig {
                 client_id: config.client_id.clone(),
-                client_secret: config.client_secret.clone(),
+                client_secret: include_credentials.then(|| config.client_secret.clone()),
                 redirect_url: config.redirect_url.clone(),
                 issuer: config.issuer.clone(),
                 auth_url: config.auth_url.clone(),
@@ -367,7 +469,7 @@ fn oauth2_config_to_proto(
         CoreConfig::Apple(config) => {
             Config::Apple(synctv_proto::admin::OAuth2AppleProviderConfig {
                 client_id: config.client_id.clone(),
-                client_secret: config.client_secret.clone(),
+                client_secret: include_credentials.then(|| config.client_secret.clone()),
                 redirect_url: config.redirect_url.clone(),
             })
         }
@@ -385,6 +487,19 @@ impl AdminApiImpl {
 
     pub fn project_admin_settings(
         settings: synctv_core::service::RuntimeSettings,
+    ) -> Result<synctv_proto::admin::RuntimeSettings, ApiError> {
+        Self::project_admin_settings_with_credentials(settings, false)
+    }
+
+    pub(in crate::impls::admin) fn project_admin_settings_snapshot(
+        settings: synctv_core::service::RuntimeSettings,
+    ) -> Result<synctv_proto::admin::RuntimeSettings, ApiError> {
+        Self::project_admin_settings_with_credentials(settings, true)
+    }
+
+    fn project_admin_settings_with_credentials(
+        settings: synctv_core::service::RuntimeSettings,
+        include_credentials: bool,
     ) -> Result<synctv_proto::admin::RuntimeSettings, ApiError> {
         Ok(synctv_proto::admin::RuntimeSettings {
             server: Some(synctv_proto::admin::ServerSettings {
@@ -439,7 +554,10 @@ impl AdminApiImpl {
                             name,
                             enable_signup: provider.enable_signup,
                             signup_need_review: provider.signup_need_review,
-                            config: Some(oauth2_config_to_proto(&provider.config)),
+                            config: Some(oauth2_config_to_proto(
+                                &provider.config,
+                                include_credentials,
+                            )),
                         },
                     )
                     .collect(),
@@ -452,8 +570,20 @@ impl AdminApiImpl {
                 enabled: settings.email.enabled,
                 smtp_host: settings.email.smtp_host,
                 smtp_port: settings.email.smtp_port.into(),
-                smtp_credentials: settings.email.smtp_credentials.map(proto_smtp_credentials),
-                smtp_proxy: settings.email.smtp_proxy.map(proto_smtp_proxy),
+                smtp_credentials: settings.email.smtp_credentials.map(|credentials| {
+                    if include_credentials {
+                        proto_smtp_credentials_with_password(credentials)
+                    } else {
+                        proto_smtp_credentials(credentials)
+                    }
+                }),
+                smtp_proxy: settings.email.smtp_proxy.map(|proxy| {
+                    if include_credentials {
+                        proto_smtp_proxy_with_password(proxy)
+                    } else {
+                        proto_smtp_proxy(proxy)
+                    }
+                }),
                 use_tls: settings.email.use_tls,
                 from_email: settings.email.from_email,
                 from_name: settings.email.from_name,
@@ -717,28 +847,14 @@ impl AdminApiImpl {
                 .runtime_settings()
                 .map_err(ApiError::from)?,
         )?;
-        let sections = [
-            "server",
-            "roomDefaults",
-            "permissions",
-            "roomCreation",
-            "user",
-            "oauth2",
-            "rtmp",
-            "email",
-            "webrtc",
-            "chat",
-            "cors",
-        ];
-
         self.log_admin_action(
             admin_user_id,
             synctv_core::models::AuditAction::SettingsViewed,
             synctv_core::models::AuditTargetType::Settings,
             None,
             AuditDetails {
-                group_count: Some(sections.len()),
-                groups: sections
+                group_count: Some(RUNTIME_SETTINGS_SECTIONS.len()),
+                groups: RUNTIME_SETTINGS_SECTIONS
                     .iter()
                     .map(|section| (*section).to_string())
                     .collect(),
@@ -751,20 +867,150 @@ impl AdminApiImpl {
         Ok(settings)
     }
 
+    pub async fn export_settings(
+        &self,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<synctv_proto::admin::RuntimeSettingsSnapshot, ApiError> {
+        let settings = Self::project_admin_settings_snapshot(
+            self.runtime_settings_store()?
+                .runtime_settings()
+                .map_err(ApiError::from)?,
+        )?;
+
+        self.log_admin_action(
+            admin_user_id,
+            synctv_core::models::AuditAction::SettingsViewed,
+            synctv_core::models::AuditTargetType::Settings,
+            None,
+            AuditDetails {
+                operation: Some("export".to_string()),
+                group_count: Some(RUNTIME_SETTINGS_SECTIONS.len()),
+                groups: RUNTIME_SETTINGS_SECTIONS
+                    .iter()
+                    .map(|section| (*section).to_string())
+                    .collect(),
+                ..Default::default()
+            },
+            ctx,
+        )
+        .await;
+
+        let snapshot = synctv_proto::admin::RuntimeSettingsSnapshot {
+            format_version: RUNTIME_SETTINGS_SNAPSHOT_FORMAT_VERSION,
+            settings: Some(settings),
+        };
+        validate_runtime_settings_snapshot_size(&snapshot)?;
+        Ok(snapshot)
+    }
+
+    pub async fn import_settings(
+        &self,
+        req: synctv_proto::admin::ImportSettingsRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<synctv_proto::admin::ImportSettingsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let snapshot = req
+            .snapshot
+            .ok_or_else(|| ApiError::InvalidInput("snapshot is required".to_string()))?;
+        validate_runtime_settings_snapshot_size(&snapshot)?;
+        if snapshot.format_version != RUNTIME_SETTINGS_SNAPSHOT_FORMAT_VERSION {
+            return Err(ApiError::InvalidInput(format!(
+                "unsupported runtime settings snapshot format version {}; expected {}",
+                snapshot.format_version, RUNTIME_SETTINGS_SNAPSHOT_FORMAT_VERSION
+            )));
+        }
+        let imported_proto = snapshot
+            .settings
+            .ok_or_else(|| ApiError::InvalidInput("snapshot.settings is required".to_string()))?;
+        let patch =
+            crate::admin_settings_mapping::runtime_settings_replacement_patch_from_admin_proto(
+                imported_proto,
+            )?;
+        let runtime_settings_store = self.runtime_settings_store()?;
+        let current = runtime_settings_store
+            .runtime_settings()
+            .map_err(ApiError::from)?;
+        let replacement = Self::apply_runtime_settings_patch(current.clone(), patch)?.settings;
+        let update_mask =
+            synctv_core::service::RuntimeSettingsUpdateMask::between(&current, &replacement);
+        let changed_sections = changed_runtime_settings_sections_from_mask(&update_mask);
+
+        runtime_settings_store
+            .validate_runtime_settings(&replacement)
+            .map_err(ApiError::from)?;
+
+        if !req.dry_run {
+            // Imports are authoritative full replacements. Persisting every key
+            // closes the read-to-commit race for sections that appeared unchanged.
+            runtime_settings_store
+                .persist_runtime_settings(&replacement)
+                .await
+                .map_err(ApiError::from)?;
+
+            if !self.room_cache_fanout.try_publish_all_invalidation().await {
+                tracing::warn!(
+                    changed_sections = ?changed_sections,
+                    "Failed to publish runtime settings cache invalidation after settings import"
+                );
+            }
+        }
+
+        self.log_admin_action(
+            admin_user_id,
+            if req.dry_run {
+                synctv_core::models::AuditAction::SettingsViewed
+            } else {
+                synctv_core::models::AuditAction::SettingsUpdated
+            },
+            synctv_core::models::AuditTargetType::Settings,
+            None,
+            AuditDetails {
+                operation: Some(if req.dry_run {
+                    "import_dry_run".to_string()
+                } else {
+                    "import".to_string()
+                }),
+                groups: changed_sections.clone(),
+                ..Default::default()
+            },
+            ctx,
+        )
+        .await;
+
+        Ok(synctv_proto::admin::ImportSettingsResponse {
+            applied: !req.dry_run,
+            changed_sections,
+        })
+    }
+
     pub async fn update_settings(
         &self,
         req: synctv_proto::admin::UpdateSettingsRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<synctv_proto::admin::RuntimeSettings, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
-        let patch = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(req)?;
         let runtime_settings_store = self.runtime_settings_store()?;
         let current = runtime_settings_store
             .runtime_settings()
             .map_err(ApiError::from)?;
+        crate::impls::validate_proto_request(&req)?;
+        let patch =
+            crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto_with_current(
+                req,
+                &current.oauth2.providers,
+            )?;
         let changed_sections = changed_runtime_settings_sections(&patch);
         let patch_result = Self::apply_runtime_settings_patch(current, patch)?;
+
+        let projected_snapshot = synctv_proto::admin::RuntimeSettingsSnapshot {
+            format_version: RUNTIME_SETTINGS_SNAPSHOT_FORMAT_VERSION,
+            settings: Some(Self::project_admin_settings_snapshot(
+                patch_result.settings.clone(),
+            )?),
+        };
+        validate_runtime_settings_snapshot_size(&projected_snapshot)?;
 
         runtime_settings_store
             .persist_runtime_settings_patch(&patch_result.settings, &patch_result.update_mask)

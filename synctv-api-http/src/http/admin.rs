@@ -156,6 +156,13 @@ pub(crate) fn create_admin_router() -> Router<AppState> {
         )
         // Settings
         .route("/settings", get(get_settings).post(set_settings))
+        .route("/settings/export", post(export_settings))
+        .route(
+            "/settings/import",
+            post(import_settings).layer(axum::extract::DefaultBodyLimit::max(
+                synctv_core::service::MAX_RUNTIME_SETTINGS_IMPORT_REQUEST_BYTES,
+            )),
+        )
         // Email
         .route("/email/test", post(send_test_email))
         // User management
@@ -919,6 +926,77 @@ pub(crate) async fn set_settings(
         move |api, validated, rctx| async move {
             synctv_api_common::impls::validate_proto_request(&req)?;
             api.update_settings(req, &validated.user_id, &rctx).await
+        },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/settings/export",
+        tag = "Admin",
+        responses(
+            (status = 200, description = "Versioned runtime settings backup containing credentials", body = admin::RuntimeSettingsSnapshot),
+            (status = 401, description = "Root authentication required", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn export_settings(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+) -> AppResult<(axum::http::HeaderMap, Json<admin::RuntimeSettingsSnapshot>)> {
+    let resp =
+        execute_root_endpoint(
+            &state,
+            request_meta,
+            require_admin_api,
+            move |api, validated, rctx| async move {
+                api.export_settings(&validated.user_id, &rctx).await
+            },
+        )
+        .await?;
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    headers.insert(
+        axum::http::header::PRAGMA,
+        axum::http::HeaderValue::from_static("no-cache"),
+    );
+    Ok((headers, Json(resp)))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/settings/import",
+        tag = "Admin",
+        request_body = admin::ImportSettingsRequest,
+        responses(
+            (status = 200, description = "Runtime settings import result", body = admin::ImportSettingsResponse),
+            (status = 400, description = "Invalid snapshot", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Root authentication required", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn import_settings(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<admin::ImportSettingsRequest>,
+) -> AppResult<Json<admin::ImportSettingsResponse>> {
+    let resp = execute_root_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, rctx| async move {
+            api.import_settings(req, &validated.user_id, &rctx).await
         },
     )
     .await?;

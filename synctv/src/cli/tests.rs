@@ -40,6 +40,7 @@ fn direct_url_media_source_config(
                         url: url.to_string(),
                         headers: Default::default(),
                         format: String::new(),
+                        expires_at: None,
                     }],
                     default_media_index: None,
                     subtitles: Vec::new(),

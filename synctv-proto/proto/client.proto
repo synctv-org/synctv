@@ -2581,6 +2581,7 @@ message BilibiliPlaybackMetadata {
   optional string fallback_format = 7;
   optional uint64 quality = 8;
   optional uint64 room_id = 9;
+  optional int64 live_started_at = 10;
 }
 
 message EmbyPlaybackMetadata {
@@ -2985,12 +2986,13 @@ message PlaybackMedia {
   // Media-level metadata (resolution, codec, bitrate, fps, etc.)
   optional PlaybackMediaMetadata metadata = 5;
 
-  // Server-approved room-scoped P2P delivery identity and resource strategy.
+  // Provider-approved byte-stable identity with a room/user-bound capability.
   // Omitted when this representation must use its origin directly.
-  optional P2pMediaDelivery p2p_delivery = 7;
+  optional P2pResourceDelivery p2p_delivery = 7;
 }
 
-message P2pMediaDelivery {
+// Provider-approved identity and API-issued capability for a byte-stable resource.
+message P2pResourceDelivery {
   string swarm_id = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 128
@@ -3033,6 +3035,12 @@ message PlaybackSubtitle {
 
   // Format (e.g., "json", "srt", "vtt")
   string format = 5;
+
+  // Hard Unix timestamp deadline for the current subtitle URL.
+  optional int64 expire_at = 6;
+
+  // Omitted when the subtitle cannot be shared as one immutable document.
+  optional P2pResourceDelivery p2p_delivery = 7;
 }
 
 // Danmaku (bullet comments) information.
@@ -3048,6 +3056,12 @@ message PlaybackDanmaku {
 
   // Request headers (if needed)
   map<string, string> headers = 4;
+
+  // Hard Unix timestamp deadline for the current danmaku URL.
+  optional int64 expire_at = 5;
+
+  // Omitted for real-time danmaku streams and mutable resources.
+  optional P2pResourceDelivery p2p_delivery = 6;
 }
 
 // Real-time Messaging

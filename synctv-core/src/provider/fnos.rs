@@ -22,10 +22,9 @@ use crate::models::{
     FnosMediaPlaybackMetadata, FnosMediaSource, FnosMediaSourceConfig, FnosPlaybackMetadata,
     FnosPlaybackSession, FnosPlaylistSource, FnosPlaylistSourceConfig, FnosProxyResource,
     FnosSubtitleTrackMetadata, FnosTargetKind, FnosTranscodeResource, MediaSourceConfig, PlayMode,
-    PlaybackExternalSubtitle, PlaybackFnosMedia, PlaybackFnosSubtitle, PlaybackMedia,
-    PlaybackMediaProvider, PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
-    PlaylistSourceConfig, ProviderCredential, ProviderPlaybackSession, ProviderTarget, UserId,
-    UserProviderCredential,
+    PlaybackFnosMedia, PlaybackFnosSubtitle, PlaybackMedia, PlaybackMediaProvider,
+    PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider, PlaylistSourceConfig,
+    ProviderCredential, ProviderPlaybackSession, ProviderTarget, UserId, UserProviderCredential,
 };
 use crate::repository::{
     NewProviderPlaybackSession, ProviderPlaybackSessionRepository, UserProviderCredentialRepository,
@@ -1564,7 +1563,8 @@ fn mark_fnos_playback_resources(result: &mut PlaybackResult, version: &str, expi
                 name: subtitle.name.clone(),
                 language: subtitle.language.clone(),
                 format: subtitle.format.clone(),
-                provider: PlaybackSubtitleProvider::Fnos(PlaybackFnosSubtitle {
+                p2p_swarm_id: subtitle.p2p_swarm_id.clone(),
+                provider: PlaybackSubtitleProvider::Fnos(PlaybackFnosSubtitle::Proxy {
                     version: version.to_string(),
                     expires_at,
                     mode_name: mode_name.clone(),
@@ -1616,10 +1616,20 @@ impl MediaProvider for FnosProvider {
                         |file| &file.name,
                     )
                     .to_string();
+                let file_revision = file.as_ref().map_or_else(String::new, |file| {
+                    format!(
+                        ":size:{}:modified:{}:storage:{}",
+                        file.size.unwrap_or_default(),
+                        file.modified_at.unwrap_or_default(),
+                        file.storage_id.unwrap_or_default()
+                    )
+                });
                 let subtitles = discover_file_subtitles(
                     &self.client,
                     &endpoints,
                     &credential,
+                    instance_name.as_deref(),
+                    &config.server_id,
                     path,
                     &listing.files,
                 )
@@ -1634,6 +1644,12 @@ impl MediaProvider for FnosProvider {
                                 format: detect_direct_url_format(path).to_string(),
                                 expire_at: None,
                                 metadata: None,
+                                p2p_swarm_id: Some(fnos_swarm_id(
+                                    instance_name.as_deref(),
+                                    "media",
+                                    &config.server_id,
+                                    &format!("file:{path}{file_revision}"),
+                                )),
                                 provider: PlaybackMediaProvider::Fnos(
                                     PlaybackFnosMedia::FileRefresh {
                                         credential_owner_id: owner.to_string(),
@@ -1689,6 +1705,20 @@ impl MediaProvider for FnosProvider {
                     .clone()
                     .or(play.item.tv_title.clone())
                     .unwrap_or_else(|| "FNOS media".to_string());
+                let media_revision = format!(
+                    ":file:{}:size:{}:video:{}",
+                    stream
+                        .file_stream
+                        .as_ref()
+                        .and_then(|file| file.path.as_deref())
+                        .unwrap_or_default(),
+                    stream.file_stream.as_ref().map_or(0, |file| file.size),
+                    stream
+                        .video_stream
+                        .as_ref()
+                        .and_then(|video| video.guid.as_deref())
+                        .unwrap_or_default()
+                );
                 let mut medias = vec![PlaybackMedia {
                     name: "Original".to_string(),
                     format: stream
@@ -1699,6 +1729,12 @@ impl MediaProvider for FnosProvider {
                         .to_string(),
                     expire_at: None,
                     metadata: None,
+                    p2p_swarm_id: Some(fnos_swarm_id(
+                        instance_name.as_deref(),
+                        "media",
+                        &config.server_id,
+                        &format!("media:{}{media_revision}:quality:original", play.media_guid),
+                    )),
                     provider: PlaybackMediaProvider::Fnos(PlaybackFnosMedia::MediaRefresh {
                         credential_owner_id: owner.to_string(),
                         server_id: config.server_id.clone(),
@@ -1714,8 +1750,19 @@ impl MediaProvider for FnosProvider {
                                 .clone()
                                 .unwrap_or_else(|| format!("Quality {}", quality_index + 1)),
                             format: if quality.is_m3u8 { "hls" } else { "video" }.to_string(),
-                            expire_at: chrono::DateTime::from_timestamp(quality.expired_at, 0),
+                            expire_at: None,
                             metadata: None,
+                            p2p_swarm_id: Some(fnos_swarm_id(
+                                instance_name.as_deref(),
+                                "media",
+                                &config.server_id,
+                                &format!(
+                                    "media:{}{media_revision}:quality:{quality_index}:bitrate:{}:resolution:{}",
+                                    play.media_guid,
+                                    quality.bitrate,
+                                    quality.resolution.as_deref().unwrap_or_default()
+                                ),
+                            )),
                             provider: PlaybackMediaProvider::Fnos(
                                 PlaybackFnosMedia::MediaRefresh {
                                     credential_owner_id: owner.to_string(),
@@ -1777,6 +1824,25 @@ impl MediaProvider for FnosProvider {
                                                 .filter(|value| !value.trim().is_empty())
                                         })
                                 });
+                                let spec = FnosTranscodeResource {
+                                    media_guid: play.media_guid.clone(),
+                                    video_guid: video_guid.to_string(),
+                                    video_encoder: video_encoder.clone(),
+                                    resolution: resolution.clone(),
+                                    bitrate: if quality.bitrate > 0 {
+                                        quality.bitrate
+                                    } else {
+                                        video.bps
+                                    },
+                                    audio_guid: audio
+                                        .and_then(|audio| audio.guid.clone())
+                                        .unwrap_or_default(),
+                                    subtitle_guid: subtitle_guid.clone(),
+                                    channels: audio.map_or(2, |audio| audio.channels.max(1)),
+                                    forced_sdr,
+                                };
+                                let descriptor = serde_json::to_string(&spec)
+                                    .expect("FNOS transcode resource is JSON serializable");
                                 medias.push(PlaybackMedia {
                                     name: audio_label.map_or_else(
                                         || format!("Transcode {resolution}"),
@@ -1785,28 +1851,17 @@ impl MediaProvider for FnosProvider {
                                     format: "hls".to_string(),
                                     expire_at: None,
                                     metadata: None,
+                                    p2p_swarm_id: Some(fnos_swarm_id(
+                                        instance_name.as_deref(),
+                                        "media",
+                                        &config.server_id,
+                                        &format!("transcode:{descriptor}"),
+                                    )),
                                     provider: PlaybackMediaProvider::Fnos(
                                         PlaybackFnosMedia::TranscodeRefresh {
                                             credential_owner_id: owner.to_string(),
                                             server_id: config.server_id.clone(),
-                                            spec: FnosTranscodeResource {
-                                                media_guid: play.media_guid.clone(),
-                                                video_guid: video_guid.to_string(),
-                                                video_encoder: video_encoder.clone(),
-                                                resolution: resolution.clone(),
-                                                bitrate: if quality.bitrate > 0 {
-                                                    quality.bitrate
-                                                } else {
-                                                    video.bps
-                                                },
-                                                audio_guid: audio
-                                                    .and_then(|audio| audio.guid.clone())
-                                                    .unwrap_or_default(),
-                                                subtitle_guid: subtitle_guid.clone(),
-                                                channels: audio
-                                                    .map_or(2, |audio| audio.channels.max(1)),
-                                                forced_sdr,
-                                            },
+                                            spec,
                                         },
                                     ),
                                 });
@@ -1851,10 +1906,17 @@ impl MediaProvider for FnosProvider {
                                 .clone()
                                 .or_else(|| subtitle.codec_name.clone())
                                 .unwrap_or_default(),
-                            provider: PlaybackSubtitleProvider::External(
-                                PlaybackExternalSubtitle {
+                            p2p_swarm_id: Some(fnos_swarm_id(
+                                instance_name.as_deref(),
+                                "subtitle",
+                                &config.server_id,
+                                &format!("media:{}:subtitle:{guid}", play.media_guid),
+                            )),
+                            provider: PlaybackSubtitleProvider::Fnos(
+                                PlaybackFnosSubtitle::Direct {
                                     url: client.subtitle_url(guid),
                                     headers: FnosMediaClient::auth_headers(&token),
+                                    expire_at: None,
                                 },
                             ),
                         }
@@ -2304,6 +2366,8 @@ async fn discover_file_subtitles(
     client: &FnosClient,
     endpoints: &FnosEndpoints,
     credential: &FnosCredential,
+    provider_instance_name: Option<&str>,
+    server_id: &str,
     media_path: &str,
     files: &[FnosFile],
 ) -> Result<Vec<PlaybackSubtitle>, ProviderError> {
@@ -2326,13 +2390,40 @@ async fn discover_file_subtitles(
                 format: file_subtitle_format(&file.name)
                     .unwrap_or_default()
                     .to_string(),
-                provider: PlaybackSubtitleProvider::External(PlaybackExternalSubtitle {
+                p2p_swarm_id: Some(fnos_swarm_id(
+                    provider_instance_name,
+                    "subtitle",
+                    server_id,
+                    &format!(
+                        "file:{}:size:{}:modified:{}:storage:{}",
+                        file.path,
+                        file.size.unwrap_or_default(),
+                        file.modified_at.unwrap_or_default(),
+                        file.storage_id.unwrap_or_default()
+                    ),
+                )),
+                provider: PlaybackSubtitleProvider::Fnos(PlaybackFnosSubtitle::Direct {
                     url: FnosClient::webdav_file_url(&webdav, &file.path)?,
                     headers: headers.clone(),
+                    expire_at: None,
                 }),
             })
         })
         .collect()
+}
+
+fn fnos_swarm_id(
+    provider_instance_name: Option<&str>,
+    resource_kind: &str,
+    server_id: &str,
+    resource: &str,
+) -> String {
+    super::provider_p2p_swarm_id(
+        FnosProvider::NAME,
+        provider_instance_name,
+        resource_kind,
+        &format!("server:{server_id}:{resource}"),
+    )
 }
 
 fn related_file_subtitle(media_path: &str, file: &FnosFile) -> bool {
@@ -2903,6 +2994,7 @@ mod tests {
                         format: "hls".to_string(),
                         expire_at: None,
                         metadata: None,
+                        p2p_swarm_id: None,
                         provider: PlaybackMediaProvider::Fnos(PlaybackFnosMedia::MediaRefresh {
                             credential_owner_id: "42".to_string(),
                             server_id: "server".to_string(),
@@ -2915,12 +3007,14 @@ mod tests {
                         name: "English".to_string(),
                         language: "en".to_string(),
                         format: "srt".to_string(),
-                        provider: PlaybackSubtitleProvider::External(PlaybackExternalSubtitle {
+                        p2p_swarm_id: None,
+                        provider: PlaybackSubtitleProvider::Fnos(PlaybackFnosSubtitle::Direct {
                             url: "https://nas.example/subtitle.srt".to_string(),
                             headers: HashMap::from([(
                                 "Authorization".to_string(),
                                 "Bearer secret".to_string(),
                             )]),
+                            expire_at: None,
                         }),
                     }],
                     default_subtitle_index: Some(0),
@@ -2960,7 +3054,7 @@ mod tests {
         ));
         assert!(matches!(
             &info.subtitles[0].provider,
-            PlaybackSubtitleProvider::Fnos(PlaybackFnosSubtitle {
+            PlaybackSubtitleProvider::Fnos(PlaybackFnosSubtitle::Proxy {
                 version,
                 subtitle_index: 0,
                 headers,

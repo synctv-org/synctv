@@ -12,6 +12,7 @@ use std::sync::LazyLock;
 use std::sync::{RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use chrono::{FixedOffset, NaiveDateTime, TimeZone};
 use futures_util::{SinkExt, StreamExt};
 use md5::{Digest, Md5};
 use regex::Regex;
@@ -62,9 +63,58 @@ fn required_first_segment_url(
         .ok_or_else(|| BilibiliError::Parse(format!("{endpoint} response missing media URL")))
 }
 
+fn video_segments_from_durls(durls: &[types::DurlInfo]) -> Vec<VideoSegment> {
+    durls
+        .iter()
+        .map(|durl| VideoSegment {
+            url: durl.url.clone(),
+            size: durl.size,
+            duration_millis: durl.length,
+            backup_urls: durl.backup_url.clone().unwrap_or_default(),
+        })
+        .collect()
+}
+
 fn quality_to_u32(quality: u64, endpoint: &'static str) -> Result<u32, BilibiliError> {
     u32::try_from(quality)
         .map_err(|_| BilibiliError::Parse(format!("{endpoint} quality {quality} exceeds u32")))
+}
+
+fn parse_bilibili_live_started_at(value: &str) -> Option<i64> {
+    let local = NaiveDateTime::parse_from_str(value.trim(), "%Y-%m-%d %H:%M:%S").ok()?;
+    FixedOffset::east_opt(8 * 60 * 60)?
+        .from_local_datetime(&local)
+        .single()
+        .map(|started_at| started_at.timestamp())
+}
+
+fn parse_live_stream_expires_at(value: &str) -> Option<i64> {
+    url::Url::parse(value)
+        .ok()?
+        .query_pairs()
+        .filter(|(key, _)| key == "expires")
+        .find_map(|(_, value)| {
+            value
+                .parse::<i64>()
+                .ok()
+                .filter(|expires_at| *expires_at > 0)
+        })
+}
+
+const fn live_stream_format_rank(format: &str) -> u8 {
+    match format.as_bytes() {
+        b"ts" => 0,
+        b"fmp4" => 1,
+        _ => 2,
+    }
+}
+
+const fn live_stream_codec_rank(codec: &str) -> u8 {
+    match codec.as_bytes() {
+        b"avc" => 0,
+        b"hevc" => 1,
+        _ => 2,
+    }
 }
 
 fn bilibili_api_error(code: i64, context: &'static str) -> BilibiliError {
@@ -1612,6 +1662,7 @@ impl BilibiliClient {
                     season_id: 0,
                     cover,
                     collection,
+                    live_started_at: None,
                 })
             }
         })
@@ -1669,15 +1720,7 @@ impl BilibiliClient {
                     .collect::<Result<_, _>>()?;
                 let accept_description = data.accept_description;
                 let current_quality = quality_to_u32(data.quality, "video URL")?;
-                let segments: Vec<VideoSegment> = data
-                    .durl
-                    .iter()
-                    .map(|d| VideoSegment {
-                        url: d.url.clone(),
-                        size: d.size,
-                        duration_millis: d.length,
-                    })
-                    .collect();
+                let segments = video_segments_from_durls(&data.durl);
                 let url = required_first_segment_url(&segments, "video URL")?;
 
                 Ok(VideoUrlInfo {
@@ -1969,6 +2012,7 @@ impl BilibiliClient {
                     season_id,
                     cover,
                     collection: None,
+                    live_started_at: None,
                 })
             }
         })
@@ -2012,15 +2056,7 @@ impl BilibiliClient {
                     .collect::<Result<_, _>>()?;
                 let accept_description = result.accept_description;
                 let current_quality = quality_to_u32(result.quality, "PGC URL")?;
-                let segments: Vec<VideoSegment> = result
-                    .durl
-                    .iter()
-                    .map(|d| VideoSegment {
-                        url: d.url.clone(),
-                        size: d.size,
-                        duration_millis: d.length,
-                    })
-                    .collect();
+                let segments = video_segments_from_durls(&result.durl);
                 let url = required_first_segment_url(&segments, "PGC URL")?;
 
                 Ok(VideoUrlInfo {
@@ -2372,6 +2408,9 @@ impl BilibiliClient {
                     }
                 };
                 let cover = data.user_cover.clone();
+                let live_started_at = (data.live_status == 1)
+                    .then(|| parse_bilibili_live_started_at(&data.live_time))
+                    .flatten();
 
                 let video_info = VideoInfoItem {
                     bvid: String::new(),
@@ -2394,6 +2433,7 @@ impl BilibiliClient {
                     season_id: 0,
                     cover,
                     collection: None,
+                    live_started_at,
                 })
             }
         })
@@ -3083,12 +3123,16 @@ impl BilibiliClient {
                                     .url_info
                                     .iter()
                                     .filter(|info| !info.host.is_empty())
-                                    .map(|info| LiveStreamUrl {
-                                        host: info.host.clone(),
-                                        url: format!(
+                                    .map(|info| {
+                                        let url = format!(
                                             "{}{}{}",
                                             info.host, codec.base_url, info.extra
-                                        ),
+                                        );
+                                        LiveStreamUrl {
+                                            host: info.host.clone(),
+                                            expires_at: parse_live_stream_expires_at(&url),
+                                            url,
+                                        }
                                     })
                                     .collect::<Vec<_>>();
                                 if !urls.is_empty() {
@@ -3113,16 +3157,21 @@ impl BilibiliClient {
                     right
                         .quality
                         .cmp(&left.quality)
+                        .then_with(|| {
+                            live_stream_format_rank(&left.format)
+                                .cmp(&live_stream_format_rank(&right.format))
+                        })
+                        .then_with(|| {
+                            live_stream_codec_rank(&left.codec)
+                                .cmp(&live_stream_codec_rank(&right.codec))
+                        })
                         .then(left.protocol.cmp(&right.protocol))
-                        .then(left.format.cmp(&right.format))
-                        .then(left.codec.cmp(&right.codec))
                 });
                 streams.dedup_by(|left, right| {
                     left.quality == right.quality
                         && left.protocol == right.protocol
                         && left.format == right.format
                         && left.codec == right.codec
-                        && left.urls == right.urls
                 });
                 Ok(streams)
             }
@@ -4075,6 +4124,7 @@ pub struct VideoPageInfo {
     pub season_id: u64,
     pub cover: String,
     pub collection: Option<BilibiliCollectionInfo>,
+    pub live_started_at: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -4127,6 +4177,7 @@ pub struct VideoSegment {
     pub url: String,
     pub size: u64,
     pub duration_millis: u64,
+    pub backup_urls: Vec<String>,
 }
 
 /// Video URL information
@@ -4268,6 +4319,7 @@ pub struct LiveStream {
 pub struct LiveStreamUrl {
     pub host: String,
     pub url: String,
+    pub expires_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

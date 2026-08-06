@@ -11,6 +11,9 @@ fn acfun_services_and_wire_contract_are_registered() {
         .get_service_by_name("synctv.playback_provider.acfun.AcFunPlaybackProviderService")
         .expect("AcFun playback provider service descriptor");
     assert_eq!(playback.methods().count(), 4);
+    assert!(playback
+        .methods()
+        .any(|method| method.name() == "GetHlsResource"));
 
     let media = synctv_proto::source_config::MediaSourceConfig {
         provider: Some(media_source_config::Provider::AcFun(
@@ -33,6 +36,7 @@ fn acfun_services_and_wire_contract_are_registered() {
 
     for message_name in [
         "synctv.playback_provider.acfun.GetAcFunResourceRequest",
+        "synctv.playback_provider.acfun.GetAcFunHlsResourceRequest",
         "synctv.playback_provider.acfun.GetAcFunDanmakuFileRequest",
         "synctv.playback_provider.acfun.WatchAcFunDanmakuRequest",
     ] {
@@ -46,6 +50,15 @@ fn acfun_services_and_wire_contract_are_registered() {
                 .kind(),
             Kind::Uint32
         );
+        if message_name.contains("HlsResource") {
+            assert!(matches!(
+                request
+                    .get_field_by_name("resource_kind")
+                    .expect("AcFun HLS resource kind")
+                    .kind(),
+                Kind::Enum(_)
+            ));
+        }
     }
 
     for (message_name, field_name, expected_number) in [

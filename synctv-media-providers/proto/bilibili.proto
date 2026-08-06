@@ -85,6 +85,7 @@ message VideoPageInfo {
   uint64 season_id = 4;
   string cover = 5;
   BilibiliCollectionInfo collection = 6;
+  optional int64 live_started_at = 7;
 }
 
 message VideoInfo {
@@ -128,6 +129,7 @@ message VideoSegment {
   string url = 1;
   uint64 size = 2;
   uint64 duration_millis = 3;
+  repeated string backup_urls = 4;
 }
 
 message GetVideoURLReq {
@@ -293,6 +295,7 @@ message GetLiveStreamsReq {
 message LiveStreamUrl {
   string host = 1;
   string url = 2;
+  optional int64 expires_at = 3;
 }
 
 message LiveStream {

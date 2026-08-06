@@ -3,8 +3,8 @@ use std::sync::Arc;
 use futures::FutureExt;
 use synctv_proto::playback_provider::tiktok::tik_tok_playback_provider_service_server::TikTokPlaybackProviderService;
 use synctv_proto::playback_provider::tiktok::{
-    GetTikTokResourceRequest, GetTikTokSegmentRequest, GetTikTokSubtitleRequest,
-    TikTokResourceResponse, TikTokSegmentResponse, TikTokSubtitleResponse,
+    GetTikTokHlsResourceRequest, GetTikTokResourceRequest, GetTikTokSubtitleRequest,
+    TikTokHlsResourceResponse, TikTokResourceResponse, TikTokSubtitleResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -36,7 +36,7 @@ impl TikTokPlaybackProviderGrpcService {
 #[allow(clippy::result_large_err)]
 impl TikTokPlaybackProviderService for TikTokPlaybackProviderGrpcService {
     type GetResourceStream = GrpcResponseStream<TikTokResourceResponse>;
-    type GetSegmentStream = GrpcResponseStream<TikTokSegmentResponse>;
+    type GetHlsResourceStream = GrpcResponseStream<TikTokHlsResourceResponse>;
     type GetSubtitleStream = GrpcResponseStream<TikTokSubtitleResponse>;
 
     async fn get_resource(
@@ -60,17 +60,17 @@ impl TikTokPlaybackProviderService for TikTokPlaybackProviderGrpcService {
         .await
     }
 
-    async fn get_segment(
+    async fn get_hls_resource(
         &self,
-        request: Request<GetTikTokSegmentRequest>,
-    ) -> Result<Response<Self::GetSegmentStream>, Status> {
+        request: Request<GetTikTokHlsResourceRequest>,
+    ) -> Result<Response<Self::GetHlsResourceStream>, Status> {
         let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
         execute_playback_provider_stream(state.clone(), metadata, move |request_control| {
             let state = state.clone();
             async move {
-                synctv_api_common::playback_provider::tiktok::get_tiktok_segment(
+                synctv_api_common::playback_provider::tiktok::get_tiktok_hls_resource(
                     tiktok_deps(&state, Some(&request_control)),
                     req,
                 )

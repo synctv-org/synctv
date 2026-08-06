@@ -105,6 +105,18 @@ pub trait ProviderAccessService: Send + Sync {
         provider: &str,
         server_id: &str,
     ) -> Result<(), ProviderError>;
+
+    async fn invalidate_alist_access(
+        &self,
+        user_id: UserId,
+        server_id: &str,
+        credential_revision: &str,
+        provider_instance_name: Option<&str>,
+    ) -> Result<(), ProviderError> {
+        let _ = (credential_revision, provider_instance_name);
+        self.invalidate(user_id, AlistProvider::NAME, server_id)
+            .await
+    }
 }
 
 #[async_trait]
@@ -740,6 +752,21 @@ impl ProviderAccessService for CachedProviderAccessService {
         let Some(store) = &self.store else {
             return Ok(());
         };
+        let alist_session_key = if provider == AlistProvider::NAME {
+            self.alist_record(user_id, server_id, None)
+                .await
+                .ok()
+                .map(|(record, _, revision)| {
+                    Self::alist_session_key(
+                        user_id,
+                        server_id,
+                        &revision,
+                        record.provider_instance_name.as_deref(),
+                    )
+                })
+        } else {
+            None
+        };
         let binding_key = Self::binding_key(provider, user_id, server_id);
         let missing_key = Self::missing_key(provider, user_id, server_id);
 
@@ -763,7 +790,41 @@ impl ProviderAccessService for CachedProviderAccessService {
                 "Failed to invalidate provider access cache entry"
             );
         }
+        if let Some(session_key) = alist_session_key {
+            if let Err(error) = store.delete(&session_key).await {
+                tracing::warn!(
+                    provider,
+                    user_id = %user_id,
+                    server_id,
+                    key = %session_key,
+                    error = %error,
+                    "Failed to invalidate provider access session"
+                );
+            }
+        }
 
+        Ok(())
+    }
+
+    async fn invalidate_alist_access(
+        &self,
+        user_id: UserId,
+        server_id: &str,
+        credential_revision: &str,
+        provider_instance_name: Option<&str>,
+    ) -> Result<(), ProviderError> {
+        self.invalidate(user_id, AlistProvider::NAME, server_id)
+            .await?;
+        let Some(store) = &self.store else {
+            return Ok(());
+        };
+        let session_key = Self::alist_session_key(
+            user_id,
+            server_id,
+            credential_revision,
+            provider_instance_name,
+        );
+        Self::delete_cache_entry_best_effort(store, &session_key, "alist_auth_rejected").await;
         Ok(())
     }
 }

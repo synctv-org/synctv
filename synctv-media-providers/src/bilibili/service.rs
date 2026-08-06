@@ -318,6 +318,7 @@ fn to_proto_video_url(url_info: super::client::VideoUrlInfo) -> VideoUrl {
                 url: s.url,
                 size: s.size,
                 duration_millis: s.duration_millis,
+                backup_urls: s.backup_urls,
             })
             .collect(),
     }
@@ -338,6 +339,7 @@ fn to_proto_page_info(page_info: super::client::VideoPageInfo) -> VideoPageInfo 
                 cover: collection.cover,
             }
         }),
+        live_started_at: page_info.live_started_at,
         video_infos: page_info
             .video_infos
             .into_iter()
@@ -717,6 +719,7 @@ impl BilibiliInterface for BilibiliService {
                         .map(|url| crate::transport_dto::bilibili::LiveStreamUrl {
                             host: url.host,
                             url: url.url,
+                            expires_at: url.expires_at,
                         })
                         .collect(),
                     quality_name: s.quality_name,

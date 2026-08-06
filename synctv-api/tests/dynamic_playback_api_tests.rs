@@ -10,12 +10,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::Utc;
 use synctv_api::{ClientApiImpl, ProxySigningKey};
+use synctv_core::models::media::{AlistPlaybackLocator, AlistPlaybackMediaLocator};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
-        AlistMediaSourceConfig, FromProviderParams, Media, MediaSourceConfig, PlayMode, Playlist,
-        PlaylistId, ProviderInstance, ProviderTarget, RoomId, SignupMethod, User, UserId, UserRole,
-        UserStatus,
+        AlistMediaSourceConfig, FromProviderParams, Media, MediaSourceConfig, PlayMode,
+        PlaybackAlistMedia, Playlist, PlaylistId, ProviderInstance, ProviderTarget, RoomId,
+        SignupMethod, User, UserId, UserRole, UserStatus,
     },
     provider::{
         DirectoryItem, DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult,
@@ -279,10 +280,20 @@ fn provider_playback_info(url: &str) -> PlaybackInfo {
             format: "mp4".to_string(),
             expire_at: None,
             metadata: None,
-            provider: synctv_core::models::PlaybackMediaProvider::External(
-                synctv_core::models::PlaybackExternalMedia {
+            p2p_swarm_id: None,
+            provider: synctv_core::models::PlaybackMediaProvider::Alist(
+                PlaybackAlistMedia::Direct {
                     url: url.to_string(),
                     headers: std::collections::HashMap::new(),
+                    locator: AlistPlaybackLocator {
+                        server_id: NEXT_ITEM_SOURCE_CONFIG_SECRET.to_string(),
+                        path: url.to_string(),
+                        password: None,
+                        credential_owner_id: UserId::new(),
+                        credential_revision: "test".to_string(),
+                        provider_instance_name: None,
+                    },
+                    resource: AlistPlaybackMediaLocator::File,
                 },
             ),
         }],
@@ -1388,8 +1399,9 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
                 format: "mp4".to_string(),
                 expire_at: None,
                 metadata: None,
-                provider: synctv_core::models::PlaybackMediaProvider::External(
-                    synctv_core::models::PlaybackExternalMedia {
+                p2p_swarm_id: None,
+                provider: synctv_core::models::PlaybackMediaProvider::DirectUrl(
+                    synctv_core::models::PlaybackDirectUrlMedia::Direct {
                         url: "https://example.com/root.mp4".to_string(),
                         headers: std::collections::HashMap::new(),
                     },

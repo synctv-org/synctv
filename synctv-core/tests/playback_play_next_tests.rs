@@ -11,12 +11,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::Utc;
 use sqlx::PgPool;
+use synctv_core::models::media::{AlistPlaybackLocator, AlistPlaybackMediaLocator};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     credential_encryption::CredentialEncryption,
     models::{
         room::AutoPlaySettings, room_settings::AutoPlay, Media, MediaId, PlayMode,
-        PlaybackExternalMedia, PlaybackMedia, PlaybackMediaProvider, Playlist, PlaylistId,
+        PlaybackAlistMedia, PlaybackMedia, PlaybackMediaProvider, Playlist, PlaylistId,
         ProviderInstance, ProviderTarget, RoomAdminPermissionBits, RoomId, RoomRole, RoomSettings,
         SourceProvider, User, UserId, UserRole, UserStatus,
     },
@@ -330,9 +331,19 @@ impl TestDynamicProvider {
                     format: "mp4".to_string(),
                     expire_at: None,
                     metadata: None,
-                    provider: PlaybackMediaProvider::External(PlaybackExternalMedia {
+                    p2p_swarm_id: None,
+                    provider: PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct {
                         url: format!("https://{}.example.com{path}", self.instance_id),
                         headers: std::collections::HashMap::new(),
+                        locator: AlistPlaybackLocator {
+                            server_id: self.instance_id.clone(),
+                            path: path.to_string(),
+                            password: None,
+                            credential_owner_id: UserId::new(),
+                            credential_revision: "test".to_string(),
+                            provider_instance_name: Some(self.instance_id.clone()),
+                        },
+                        resource: AlistPlaybackMediaLocator::File,
                     }),
                 }],
                 default_media_index: None,

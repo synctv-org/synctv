@@ -129,6 +129,14 @@ mod tests {
             source_config_proto::SourceProvider::Douyu,
         ),
         (
+            SourceProvider::Douyin,
+            source_config_proto::SourceProvider::Douyin,
+        ),
+        (
+            SourceProvider::TikTok,
+            source_config_proto::SourceProvider::Tiktok,
+        ),
+        (
             SourceProvider::AcFun,
             source_config_proto::SourceProvider::Acfun,
         ),
@@ -144,10 +152,38 @@ mod tests {
             SourceProvider::Qnap,
             source_config_proto::SourceProvider::Qnap,
         ),
+        (
+            SourceProvider::Synology,
+            source_config_proto::SourceProvider::Synology,
+        ),
+        (
+            SourceProvider::Nextcloud,
+            source_config_proto::SourceProvider::Nextcloud,
+        ),
+        (
+            SourceProvider::Seafile,
+            source_config_proto::SourceProvider::Seafile,
+        ),
+        (
+            SourceProvider::TrueNas,
+            source_config_proto::SourceProvider::Truenas,
+        ),
+        (
+            SourceProvider::Youtube,
+            source_config_proto::SourceProvider::Youtube,
+        ),
     ];
 
     #[test]
     fn proto_core_source_provider_round_trips_all_variants() {
+        let proto_variant_count = synctv_proto::DESCRIPTOR_POOL
+            .get_enum_by_name("synctv.source_config.SourceProvider")
+            .expect("SourceProvider descriptor should exist")
+            .values()
+            .filter(|value| value.number() != 0)
+            .count();
+        assert_eq!(PROVIDER_MAPPINGS.len(), proto_variant_count);
+
         for (core, proto) in PROVIDER_MAPPINGS {
             let proto_value = *proto as i32;
             assert_eq!(core_source_provider_to_proto(*core), proto_value);

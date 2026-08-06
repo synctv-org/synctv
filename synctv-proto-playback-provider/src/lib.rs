@@ -329,6 +329,7 @@ mod tests {
                             url: url.to_string(),
                             headers: std::collections::HashMap::default(),
                             format: String::new(),
+                            expires_at: None,
                         }],
                         default_media_index: None,
                         subtitles: Vec::new(),

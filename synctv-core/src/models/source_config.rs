@@ -103,6 +103,7 @@ impl DirectUrlMediaSourceConfig {
                 url,
                 headers,
                 format: String::new(),
+                expires_at: None,
             }],
             default_media_index: None,
             subtitles: Vec::new(),
@@ -152,6 +153,8 @@ pub struct DirectUrlMediaResourceConfig {
     pub headers: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
 }
 
 impl DirectUrlMediaResourceConfig {
@@ -212,6 +215,8 @@ pub struct DirectUrlSubtitleSourceConfig {
     pub headers: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -224,6 +229,8 @@ pub struct DirectUrlDanmakuSourceConfig {
     pub headers: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1027,12 +1034,14 @@ mod tests {
                     url: "https://example.com/live.m3u8".to_string(),
                     headers: HashMap::new(),
                     format: String::new(),
+                    expires_at: None,
                 },
                 DirectUrlMediaResourceConfig {
                     name: "file".to_string(),
                     url: "https://example.com/video.mp4".to_string(),
                     headers: HashMap::new(),
                     format: String::new(),
+                    expires_at: None,
                 },
             ],
             default_media_index: Some(1),
@@ -1057,6 +1066,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unreadable_literal)]
     fn media_source_configs_round_trip_provider_storage() {
         media_round_trip(
             &MediaSourceConfig::DirectUrl(DirectUrlMediaSourceConfig {
@@ -1069,6 +1079,7 @@ mod tests {
                     url: "https://example.com/video.mp4".to_string(),
                     headers: HashMap::from([("User-Agent".to_string(), "SyncTV".to_string())]),
                     format: "mp4".to_string(),
+                    expires_at: Some(1_900_000_000),
                 }],
                 default_media_index: Some(0),
                 subtitles: vec![DirectUrlSubtitleSourceConfig {
@@ -1077,6 +1088,7 @@ mod tests {
                     url: "https://example.com/subtitle.vtt".to_string(),
                     headers: HashMap::new(),
                     format: "vtt".to_string(),
+                    expires_at: Some(1_900_000_100),
                 }],
                 default_subtitle_index: Some(0),
                 danmakus: vec![DirectUrlDanmakuSourceConfig {
@@ -1084,6 +1096,7 @@ mod tests {
                     url: "https://example.com/danmaku.xml".to_string(),
                     headers: HashMap::new(),
                     format: Some("xml".to_string()),
+                    expires_at: Some(1_900_000_200),
                 }],
                 default_danmaku_index: Some(0),
             }),
@@ -1097,20 +1110,23 @@ mod tests {
                     "name": "1080p",
                     "url": "https://example.com/video.mp4",
                     "headers": {"User-Agent": "SyncTV"},
-                    "format": "mp4"
+                    "format": "mp4",
+                    "expiresAt": 1900000000
                 }],
                 "defaultMediaIndex": 0,
                 "subtitles": [{
                     "name": "English",
                     "language": "en",
                     "url": "https://example.com/subtitle.vtt",
-                    "format": "vtt"
+                    "format": "vtt",
+                    "expiresAt": 1900000100
                 }],
                 "defaultSubtitleIndex": 0,
                 "danmakus": [{
                     "name": "Danmaku",
                     "url": "https://example.com/danmaku.xml",
-                    "format": "xml"
+                    "format": "xml",
+                    "expiresAt": 1900000200
                 }],
                 "defaultDanmakuIndex": 0
             }),

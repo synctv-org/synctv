@@ -10,7 +10,7 @@ fn truenas_services_and_source_variants_are_registered() {
     let playback = synctv_proto::PLAYBACK_PROVIDER_DESCRIPTOR_POOL
         .get_service_by_name("synctv.playback_provider.truenas.TrueNasPlaybackProviderService")
         .expect("TrueNAS playback provider service descriptor");
-    assert_eq!(playback.methods().count(), 2);
+    assert_eq!(playback.methods().count(), 4);
 
     let media = synctv_proto::source_config::MediaSourceConfig {
         provider: Some(media_source_config::Provider::Truenas(

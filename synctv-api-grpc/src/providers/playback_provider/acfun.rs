@@ -3,8 +3,8 @@ use std::sync::Arc;
 use futures::FutureExt;
 use synctv_proto::playback_provider::acfun::ac_fun_playback_provider_service_server::AcFunPlaybackProviderService;
 use synctv_proto::playback_provider::acfun::{
-    AcFunDanmakuEvent, AcFunDanmakuFileResponse, AcFunResourceResponse, AcFunSegmentResponse,
-    GetAcFunDanmakuFileRequest, GetAcFunResourceRequest, GetAcFunSegmentRequest,
+    AcFunDanmakuEvent, AcFunDanmakuFileResponse, AcFunHlsResourceResponse, AcFunResourceResponse,
+    GetAcFunDanmakuFileRequest, GetAcFunHlsResourceRequest, GetAcFunResourceRequest,
     WatchAcFunDanmakuRequest,
 };
 use tonic::{Request, Response, Status};
@@ -37,7 +37,7 @@ impl AcFunPlaybackProviderGrpcService {
 #[allow(clippy::result_large_err)]
 impl AcFunPlaybackProviderService for AcFunPlaybackProviderGrpcService {
     type GetResourceStream = GrpcResponseStream<AcFunResourceResponse>;
-    type GetSegmentStream = GrpcResponseStream<AcFunSegmentResponse>;
+    type GetHlsResourceStream = GrpcResponseStream<AcFunHlsResourceResponse>;
     type GetDanmakuFileStream = GrpcResponseStream<AcFunDanmakuFileResponse>;
     type WatchDanmakuStream = GrpcResponseStream<AcFunDanmakuEvent>;
 
@@ -62,17 +62,17 @@ impl AcFunPlaybackProviderService for AcFunPlaybackProviderGrpcService {
         .await
     }
 
-    async fn get_segment(
+    async fn get_hls_resource(
         &self,
-        request: Request<GetAcFunSegmentRequest>,
-    ) -> Result<Response<Self::GetSegmentStream>, Status> {
+        request: Request<GetAcFunHlsResourceRequest>,
+    ) -> Result<Response<Self::GetHlsResourceStream>, Status> {
         let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
         execute_playback_provider_stream(state.clone(), metadata, move |request_control| {
             let state = state.clone();
             async move {
-                synctv_api_common::playback_provider::acfun::get_acfun_segment(
+                synctv_api_common::playback_provider::acfun::get_acfun_hls_resource(
                     acfun_deps(&state, Some(&request_control)),
                     req,
                 )

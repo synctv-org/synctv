@@ -7,9 +7,9 @@ use futures::{FutureExt, StreamExt};
 #[cfg(feature = "openapi")]
 use synctv_proto::playback_provider::acfun::AcFunDanmakuEvent;
 use synctv_proto::playback_provider::acfun::{
-    AcFunDanmakuFileResponse, AcFunResourceResponse, AcFunSegmentResponse,
-    GetAcFunDanmakuFileRequest, GetAcFunResourceRequest, GetAcFunSegmentRequest,
-    WatchAcFunDanmakuRequest,
+    AcFunDanmakuFileResponse, AcFunHlsResourceKind, AcFunHlsResourceResponse,
+    AcFunResourceResponse, GetAcFunDanmakuFileRequest, GetAcFunHlsResourceRequest,
+    GetAcFunResourceRequest, WatchAcFunDanmakuRequest,
 };
 
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
@@ -27,13 +27,22 @@ pub struct AcFunResourcePath {
     pub media_index: u32,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcFunHlsResourcePath {
+    pub version: String,
+    pub mode_name: String,
+    pub media_index: u32,
+    pub resource_kind: String,
+}
+
 impl PlaybackProviderHttpResponse for AcFunResourceResponse {
     fn chunk(self) -> Option<synctv_proto::playback_provider::common::StreamChunk> {
         self.chunk
     }
 }
 
-impl PlaybackProviderHttpResponse for AcFunSegmentResponse {
+impl PlaybackProviderHttpResponse for AcFunHlsResourceResponse {
     fn chunk(self) -> Option<synctv_proto::playback_provider::common::StreamChunk> {
         self.chunk
     }
@@ -138,25 +147,27 @@ async fn acfun_resource(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/acfun/{version}/segments.ts",
+        path = "/api/playback-providers/acfun/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
         tag = "AcFun Playback Provider",
         params(
-            ("version" = String, Path), ("targetUrl" = String, Query),
+            ("version" = String, Path), ("modeName" = String, Path),
+            ("mediaIndex" = u32, Path), ("resourceKind" = String, Path),
+            ("targetUrl" = String, Query),
             ("sig" = String, Query), ("uid" = String, Query),
             ("rid" = String, Query), ("exp" = i64, Query)
         ),
-        responses((status = 200, description = "AcFun HLS segment"))
+        responses((status = 200, description = "AcFun HLS resource"))
     )
 )]
-pub fn get_acfun_segment(
-    Path(version): Path<String>,
+pub fn get_acfun_hls_resource(
+    Path(path): Path<AcFunHlsResourcePath>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
-    acfun_segment(
-        version,
+    acfun_hls_resource(
+        path,
         state,
         request_meta,
         headers,
@@ -165,15 +176,15 @@ pub fn get_acfun_segment(
     )
 }
 
-pub fn head_acfun_segment(
-    Path(version): Path<String>,
+pub fn head_acfun_hls_resource(
+    Path(path): Path<AcFunHlsResourcePath>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
-    acfun_segment(
-        version,
+    acfun_hls_resource(
+        path,
         state,
         request_meta,
         headers,
@@ -182,8 +193,8 @@ pub fn head_acfun_segment(
     )
 }
 
-async fn acfun_segment(
-    version: String,
+async fn acfun_hls_resource(
+    path: AcFunHlsResourcePath,
     state: AppState,
     request_meta: RequestMetadata,
     headers: HeaderMap,
@@ -192,8 +203,8 @@ async fn acfun_segment(
 ) -> AppResult<axum::response::Response> {
     let (sig, uid, rid, exp) =
         signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
-    let req = GetAcFunSegmentRequest {
-        version,
+    let req = GetAcFunHlsResourceRequest {
+        version: path.version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,
         sig,
         uid,
@@ -201,16 +212,19 @@ async fn acfun_segment(
         exp,
         range: range_header(&headers).map_err(crate::http::error::map_api_error)?,
         head: method == Method::HEAD,
+        mode_name: path.mode_name,
+        media_index: path.media_index,
+        resource_kind: acfun_hls_resource_kind(&path.resource_kind)?,
     };
     let state_for_stream = state.clone();
-    stream_http_response::<AcFunSegmentResponse, _>(
+    stream_http_response::<AcFunHlsResourceResponse, _>(
         state,
         request_meta,
         method,
         move |request_control| {
             let state = state_for_stream;
             async move {
-                synctv_api_common::playback_provider::acfun::get_acfun_segment(
+                synctv_api_common::playback_provider::acfun::get_acfun_hls_resource(
                     acfun_deps(&state, Some(&request_control)),
                     req,
                 )
@@ -220,6 +234,18 @@ async fn acfun_segment(
         },
     )
     .await
+}
+
+fn acfun_hls_resource_kind(value: &str) -> AppResult<i32> {
+    match value {
+        "media" => Ok(AcFunHlsResourceKind::Media as i32),
+        "manifest" => Ok(AcFunHlsResourceKind::Manifest as i32),
+        _ => Err(crate::http::error::map_api_error(
+            synctv_api_common::impls::ApiError::InvalidInput(
+                "Invalid AcFun HLS resource kind".to_string(),
+            ),
+        )),
+    }
 }
 
 #[cfg_attr(

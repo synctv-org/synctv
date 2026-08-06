@@ -16,6 +16,30 @@ fn test_public_id_codec() -> synctv_adapter::PublicIdCodec {
 
 type TestResult<T = ()> = anyhow::Result<T>;
 
+fn direct_url_playback_info(url: &str, name: &str) -> synctv_core::models::PlaybackInfo {
+    synctv_core::models::PlaybackInfo {
+        thumbnail: None,
+        medias: vec![synctv_core::models::PlaybackMedia {
+            name: name.to_string(),
+            format: String::new(),
+            expire_at: None,
+            metadata: None,
+            p2p_swarm_id: None,
+            provider: synctv_core::models::PlaybackMediaProvider::DirectUrl(
+                synctv_core::models::PlaybackDirectUrlMedia::Direct {
+                    url: url.to_string(),
+                    headers: std::collections::HashMap::new(),
+                },
+            ),
+        }],
+        default_media_index: None,
+        subtitles: Vec::new(),
+        default_subtitle_index: None,
+        danmakus: Vec::new(),
+        default_danmaku_index: None,
+    }
+}
+
 fn test_error(message: impl Into<String>) -> anyhow::Error {
     anyhow::anyhow!(message.into())
 }
@@ -1120,10 +1144,7 @@ fn test_media_to_proto_direct_media_omits_default_instance_binding() -> TestResu
         Some(UserId::expect_positive(304)),
         "Direct Media".to_string(),
         "direct",
-        synctv_core::models::PlaybackInfo::single_url(
-            "https://example.com/video.mp4".to_string(),
-            "1080p".to_string(),
-        ),
+        direct_url_playback_info("https://example.com/video.mp4", "1080p"),
         1.0,
     )
     .map_err(|error| test_error(error.to_string()))?;

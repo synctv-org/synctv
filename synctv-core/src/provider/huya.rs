@@ -248,6 +248,7 @@ impl HuyaProvider {
                     .then(|| PlaybackDanmaku {
                         name: "Huya Danmaku".to_string(),
                         format: Some("synctv-huya-live".to_string()),
+                        p2p_swarm_id: None,
                         provider: PlaybackDanmakuProvider::Huya(PlaybackHuyaDanmaku::Refresh {
                             media_index: 0,
                         }),
@@ -260,6 +261,23 @@ impl HuyaProvider {
             let media_index = info.medias.len();
             let is_preferred = matches!(quality.format, HuyaStreamFormat::Hls)
                 && (quality.name.contains("流畅") || quality.name.eq_ignore_ascii_case("smooth"));
+            let resource_kind = resource_kind(playback.resource.kind);
+            let playback_format = playback_format(quality.format);
+            let p2p_swarm_id = (resource_kind == HuyaPlaybackResourceKind::Video).then(|| {
+                super::provider_p2p_swarm_id(
+                    Self::NAME,
+                    None,
+                    "media",
+                    &format!(
+                        "video:{}:quality:{}:cdn:{}:format:{}:bitrate:{}",
+                        playback.resource.id,
+                        quality.name,
+                        quality.cdn,
+                        huya_format_name(playback_format),
+                        quality.bitrate.unwrap_or_default()
+                    ),
+                )
+            });
             info.medias.push(PlaybackMedia {
                 name: quality.name.clone(),
                 format: format.to_string(),
@@ -276,12 +294,13 @@ impl HuyaProvider {
                     codec: Some("avc".to_string()),
                     fps: None,
                 }),
+                p2p_swarm_id,
                 provider: PlaybackMediaProvider::Huya(PlaybackHuyaMedia::Refresh {
-                    resource_kind: resource_kind(playback.resource.kind),
+                    resource_kind,
                     resource_id: playback.resource.id.clone(),
                     quality_name: quality.name,
                     cdn: quality.cdn,
-                    format: playback_format(quality.format),
+                    format: playback_format,
                     bitrate: quality.bitrate,
                 }),
             });
@@ -373,6 +392,13 @@ const fn playback_format(format: HuyaStreamFormat) -> HuyaPlaybackFormat {
     match format {
         HuyaStreamFormat::Flv => HuyaPlaybackFormat::Flv,
         HuyaStreamFormat::Hls => HuyaPlaybackFormat::Hls,
+    }
+}
+
+const fn huya_format_name(format: HuyaPlaybackFormat) -> &'static str {
+    match format {
+        HuyaPlaybackFormat::Flv => "flv",
+        HuyaPlaybackFormat::Hls => "hls",
     }
 }
 
@@ -530,6 +556,11 @@ mod tests {
         .expect("playback should map");
         assert_eq!(result.default_mode, "al");
         assert_eq!(result.playback_infos["al"].medias.len(), 2);
+        assert!(result
+            .playback_infos
+            .values()
+            .flat_map(|info| &info.medias)
+            .all(|media| media.p2p_swarm_id.is_none()));
         assert!(matches!(
             result.playback_infos["al"].medias[0].provider,
             PlaybackMediaProvider::Huya(PlaybackHuyaMedia::Refresh {
@@ -538,5 +569,8 @@ mod tests {
             })
         ));
         assert_eq!(result.playback_infos["al"].danmakus.len(), 1);
+        assert!(result.playback_infos["al"].danmakus[0]
+            .p2p_swarm_id
+            .is_none());
     }
 }

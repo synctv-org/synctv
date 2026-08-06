@@ -332,17 +332,14 @@ impl SettingsService {
                         .map_or(i64::from(observed_version) + 1, |reservation| {
                             reservation.version
                         });
-                    let new_version = match i32::try_from(reserved_version) {
-                        Ok(version) => version,
-                        Err(_) => {
-                            self.consistency
-                                .abort_reserved_write(&domain, reservation.as_ref())
-                                .await;
-                            self.abort_reserved_settings_writes(&fences).await;
-                            return Err(Error::Internal(format!(
-                                "Setting version {reserved_version} exceeds i32"
-                            )));
-                        }
+                    let Ok(new_version) = i32::try_from(reserved_version) else {
+                        self.consistency
+                            .abort_reserved_write(&domain, reservation.as_ref())
+                            .await;
+                        self.abort_reserved_settings_writes(&fences).await;
+                        return Err(Error::Internal(format!(
+                            "Setting version {reserved_version} exceeds i32"
+                        )));
                     };
                     fences.push(RuntimeSettingWriteFence {
                         key: key.clone(),

@@ -89,7 +89,13 @@ pub(crate) async fn execute_playback_transport(
                 .await
                 .map_err(map_proxy_execution_error)
         }
+        PlaybackTransportAction::FetchAndForwardCandidates { .. } => {
+            Err(AppError::internal_server_error(
+                "Candidate playback actions require provider-specific stream execution".to_string(),
+            ))
+        }
         PlaybackTransportAction::M3u8Rewrite { .. }
+        | PlaybackTransportAction::M3u8RewriteWithSource { .. }
         | PlaybackTransportAction::M3u8BodyRewrite { .. }
         | PlaybackTransportAction::MpdRewrite { .. }
         | PlaybackTransportAction::MpdBodyRewrite { .. } => Err(AppError::internal_server_error(
@@ -254,6 +260,7 @@ async fn execute_playback_transport_with_runtime_for_method(
             .await
         }
         PlaybackTransportAction::M3u8Rewrite { .. }
+        | PlaybackTransportAction::M3u8RewriteWithSource { .. }
         | PlaybackTransportAction::M3u8BodyRewrite { .. } => {
             if method != Method::GET {
                 return Err(playback_transport_method_not_allowed());

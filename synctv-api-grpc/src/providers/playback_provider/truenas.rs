@@ -3,8 +3,9 @@ use std::sync::Arc;
 use futures::FutureExt;
 use synctv_proto::playback_provider::truenas::true_nas_playback_provider_service_server::TrueNasPlaybackProviderService;
 use synctv_proto::playback_provider::truenas::{
-    GetTrueNasResourceRequest, GetTrueNasSubtitleRequest, TrueNasResourceResponse,
-    TrueNasSubtitleResponse,
+    GetTrueNasHlsManifestRequest, GetTrueNasHlsResourceRequest, GetTrueNasResourceRequest,
+    GetTrueNasSubtitleRequest, TrueNasHlsManifestResponse, TrueNasHlsResourceResponse,
+    TrueNasResourceResponse, TrueNasSubtitleResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -36,6 +37,8 @@ impl TrueNasPlaybackProviderGrpcService {
 #[allow(clippy::result_large_err)]
 impl TrueNasPlaybackProviderService for TrueNasPlaybackProviderGrpcService {
     type GetResourceStream = GrpcResponseStream<TrueNasResourceResponse>;
+    type GetHlsManifestStream = GrpcResponseStream<TrueNasHlsManifestResponse>;
+    type GetHlsResourceStream = GrpcResponseStream<TrueNasHlsResourceResponse>;
     type GetSubtitleStream = GrpcResponseStream<TrueNasSubtitleResponse>;
 
     async fn get_resource(
@@ -49,6 +52,48 @@ impl TrueNasPlaybackProviderService for TrueNasPlaybackProviderGrpcService {
             let state = state.clone();
             async move {
                 synctv_api_common::playback_provider::truenas::get_truenas_resource(
+                    deps(&state, Some(&control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn get_hls_manifest(
+        &self,
+        request: Request<GetTrueNasHlsManifestRequest>,
+    ) -> Result<Response<Self::GetHlsManifestStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+        execute_playback_provider_stream(state.clone(), metadata, move |control| {
+            let state = state.clone();
+            async move {
+                synctv_api_common::playback_provider::truenas::get_truenas_hls_manifest(
+                    deps(&state, Some(&control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn get_hls_resource(
+        &self,
+        request: Request<GetTrueNasHlsResourceRequest>,
+    ) -> Result<Response<Self::GetHlsResourceStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+        execute_playback_provider_stream(state.clone(), metadata, move |control| {
+            let state = state.clone();
+            async move {
+                synctv_api_common::playback_provider::truenas::get_truenas_hls_resource(
                     deps(&state, Some(&control)),
                     req,
                 )

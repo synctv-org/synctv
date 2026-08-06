@@ -13,10 +13,12 @@ use super::{
     PlaybackSubtitlePreference, PreparedSourceConfig, ProviderContext,
     ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
 };
+use crate::cache::{SingleFlight, SingleFlightError};
 use crate::models::media::{
-    AlistPlaybackMetadata, AlistTranscodingTaskMetadata, AlistVideoPreviewMetadata,
-    PlaybackAlistMedia, PlaybackAlistSubtitle, PlaybackExternalSubtitle, PlaybackMedia,
-    PlaybackMediaProvider, PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
+    AlistPlaybackLocator, AlistPlaybackMediaLocator, AlistPlaybackMetadata,
+    AlistPlaybackSubtitleLocator, AlistTranscodingTaskMetadata, AlistVideoPreviewMetadata,
+    PlaybackAlistMedia, PlaybackAlistSubtitle, PlaybackMedia, PlaybackMediaProvider,
+    PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
 };
 use crate::models::{
     normalize_provider_instance_name, validate_provider_instance_name, AlistMediaSourceConfig,
@@ -38,6 +40,16 @@ const LIST_PAGE_SIZE: usize = 50;
 const SHUFFLE_MAX_ITEMS: usize = 200;
 const RELATED_SUBTITLE_FETCH_LIMIT: usize = 32;
 const ALIST_PASSWORD_HASH_SALT: &str = "https://github.com/alist-org/alist";
+const PLAYBACK_RESOURCE_CACHE_TTL: Duration = Duration::from_secs(15);
+const PLAYBACK_RESOURCE_EXPIRY_MARGIN_SECONDS: i64 = 30;
+
+#[derive(Debug, Clone, Copy)]
+pub struct AlistFileStreamRequest<'a> {
+    pub version: &'a str,
+    pub mode_name: &'a str,
+    pub url_index: usize,
+    pub range_header: Option<&'a str>,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct AlistHlsResourceRequest<'a> {
@@ -384,13 +396,43 @@ fn playback_media(
     expires_at: Option<i64>,
     provider: PlaybackMediaProvider,
 ) -> PlaybackMedia {
+    let p2p_swarm_id = match &provider {
+        PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct {
+            locator, resource, ..
+        }) => Some(super::provider_p2p_swarm_id(
+            AlistProvider::NAME,
+            locator.provider_instance_name.as_deref(),
+            "media",
+            &serde_json::to_string(&(&locator.server_id, &locator.path, resource))
+                .expect("AList media resource is JSON serializable"),
+        )),
+        _ => None,
+    };
     PlaybackMedia {
         name,
         format,
         expire_at: expires_at.and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0)),
         metadata: None,
+        p2p_swarm_id,
         provider,
     }
+}
+
+fn alist_url_expiration_timestamp(value: &str) -> Option<i64> {
+    let public_sign_expiration = (|| {
+        let url = url::Url::parse(value).ok()?;
+        url.query_pairs()
+            .find(|(key, _)| key.eq_ignore_ascii_case("sign"))
+            .and_then(|(_, sign)| {
+                sign.rsplit_once(':')
+                    .and_then(|(_, expires_at)| expires_at.parse::<i64>().ok())
+            })
+            .filter(|expires_at| *expires_at > 0)
+    })();
+    super::url_expiration_timestamp(value)
+        .into_iter()
+        .chain(public_sign_expiration)
+        .min()
 }
 
 fn external_subtitle(
@@ -399,16 +441,36 @@ fn external_subtitle(
     url: String,
     headers: HashMap<String, String>,
     format: String,
+    locator: AlistPlaybackLocator,
+    resource: AlistPlaybackSubtitleLocator,
 ) -> PlaybackSubtitle {
+    let expires_at = alist_url_expiration_timestamp(&url);
+    let p2p_swarm_id = super::provider_p2p_swarm_id(
+        AlistProvider::NAME,
+        locator.provider_instance_name.as_deref(),
+        "subtitle",
+        &serde_json::to_string(&(&locator.server_id, &locator.path, &resource))
+            .expect("AList subtitle resource is JSON serializable"),
+    );
     PlaybackSubtitle {
         name,
         language,
         format,
-        provider: PlaybackSubtitleProvider::External(PlaybackExternalSubtitle { url, headers }),
+        p2p_swarm_id: Some(p2p_swarm_id),
+        provider: PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle::Refresh {
+            url,
+            headers,
+            expires_at,
+            locator,
+            resource,
+        }),
     }
 }
 
-fn subtitles_from_video_preview(preview: Option<&AlistVideoPreview>) -> Vec<PlaybackSubtitle> {
+fn subtitles_from_video_preview(
+    preview: Option<&AlistVideoPreview>,
+    locator: &AlistPlaybackLocator,
+) -> Vec<PlaybackSubtitle> {
     let headers = alist_headers();
     preview.map_or_else(Vec::new, |preview| {
         preview
@@ -428,14 +490,27 @@ fn subtitles_from_video_preview(preview: Option<&AlistVideoPreview>) -> Vec<Play
                     sub.url.clone(),
                     headers.clone(),
                     "srt".to_string(),
+                    locator.clone(),
+                    AlistPlaybackSubtitleLocator::Transcoded {
+                        language: sub.language.clone(),
+                        fallback_index: idx,
+                    },
                 )
             })
             .collect()
     })
 }
 
-fn subtitles_from_related_files(related: &[AlistRelatedFile]) -> Vec<PlaybackSubtitle> {
+fn subtitles_from_related_files(
+    related: &[AlistRelatedFile],
+    locator: &AlistPlaybackLocator,
+) -> Vec<PlaybackSubtitle> {
     let headers = alist_headers();
+    let parent_path =
+        locator.path.rsplit_once('/').map_or(
+            "/",
+            |(parent, _)| if parent.is_empty() { "/" } else { parent },
+        );
     related
         .iter()
         .filter(|related| {
@@ -443,14 +518,17 @@ fn subtitles_from_related_files(related: &[AlistRelatedFile]) -> Vec<PlaybackSub
                 && !related.raw_url.trim().is_empty()
                 && is_subtitle_filename(&related.name)
         })
-        .map(|related| {
-            external_subtitle(
+        .filter_map(|related| {
+            let path = related_file_path(parent_path, &related.name)?;
+            Some(external_subtitle(
                 related.name.clone(),
                 external_subtitle_language(&related.name),
                 related.raw_url.clone(),
                 headers.clone(),
                 subtitle_format_from_name(&related.name),
-            )
+                locator.clone(),
+                AlistPlaybackSubtitleLocator::RelatedFile { path },
+            ))
         })
         .collect()
 }
@@ -498,10 +576,10 @@ fn mark_alist_playback_resources(result: &mut PlaybackResult, version: &str, exp
             .enumerate()
             .filter_map(|(url_index, media)| {
                 let url = media.upstream_url()?.to_string();
-                Some(playback_media(
+                let mut proxy = playback_media(
                     media.name.clone(),
                     media.format.clone(),
-                    media.expire_at.map(|dt| dt.timestamp()),
+                    Some(expires_at),
                     PlaybackMediaProvider::Alist(
                         if super::playback_media_is_hls(&mode_name, media) {
                             PlaybackAlistMedia::ProxyTranscodedHlsManifest {
@@ -523,25 +601,38 @@ fn mark_alist_playback_resources(result: &mut PlaybackResult, version: &str, exp
                             }
                         },
                     ),
-                ))
+                );
+                proxy.p2p_swarm_id.clone_from(&media.p2p_swarm_id);
+                Some(proxy)
             })
             .collect();
         proxy_info.subtitles = original_info
             .subtitles
             .iter()
             .enumerate()
-            .map(|(subtitle_index, subtitle)| PlaybackSubtitle {
-                name: subtitle.name().to_string(),
-                language: subtitle.language().to_string(),
-                format: subtitle.format().to_string(),
-                provider: PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle {
-                    version: version.to_string(),
-                    expires_at,
-                    mode_name: mode_name.clone(),
-                    subtitle_index,
-                    url: subtitle.upstream_url().to_string(),
-                    headers: subtitle.upstream_headers(),
-                }),
+            .filter_map(|(subtitle_index, subtitle)| {
+                let PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle::Refresh {
+                    url,
+                    headers,
+                    ..
+                }) = &subtitle.provider
+                else {
+                    return None;
+                };
+                Some(PlaybackSubtitle {
+                    name: subtitle.name().to_string(),
+                    language: subtitle.language().to_string(),
+                    format: subtitle.format().to_string(),
+                    p2p_swarm_id: subtitle.p2p_swarm_id.clone(),
+                    provider: PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle::Proxy {
+                        version: version.to_string(),
+                        expires_at,
+                        mode_name: mode_name.clone(),
+                        subtitle_index,
+                        url: url.clone(),
+                        headers: headers.clone(),
+                    }),
+                })
             })
             .collect();
 
@@ -575,6 +666,49 @@ pub struct AlistProvider {
     provider_instance_manager: Arc<RemoteProviderManager>,
     client_manager: Arc<ProviderClientManager>,
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+    playback_resource_resolver: Arc<AlistPlaybackResourceResolver>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedAlistPlaybackTarget {
+    url: String,
+    headers: HashMap<String, String>,
+    expires_at: Option<i64>,
+}
+
+impl ResolvedAlistPlaybackTarget {
+    fn is_fresh(&self) -> bool {
+        self.expires_at.is_none_or(|expires_at| {
+            expires_at
+                > crate::SystemClock
+                    .now()
+                    .timestamp()
+                    .saturating_add(PLAYBACK_RESOURCE_EXPIRY_MARGIN_SECONDS)
+        })
+    }
+}
+
+struct AlistPlaybackResourceResolver {
+    cache: moka::future::Cache<String, ResolvedAlistPlaybackTarget>,
+    singleflight:
+        SingleFlight<String, ResolvedAlistPlaybackTarget, super::ProviderPlaybackFillError>,
+}
+
+impl AlistPlaybackResourceResolver {
+    fn new() -> Self {
+        Self {
+            cache: moka::future::Cache::builder()
+                .max_capacity(2_048)
+                .time_to_live(PLAYBACK_RESOURCE_CACHE_TTL)
+                .build(),
+            singleflight: SingleFlight::new(),
+        }
+    }
+
+    async fn invalidate_all(&self) {
+        self.cache.invalidate_all();
+        self.cache.run_pending_tasks().await;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -698,6 +832,259 @@ pub struct AlistMeResponse {
 }
 
 impl AlistProvider {
+    fn playback_resource_cache_key<T: serde::Serialize>(
+        kind: &str,
+        locator: &AlistPlaybackLocator,
+        resource: &T,
+    ) -> Result<String, ProviderError> {
+        let encoded = serde_json::to_vec(&(kind, locator, resource)).map_err(|error| {
+            ProviderError::Internal(format!("Failed to encode Alist playback locator: {error}"))
+        })?;
+        Ok(hex::encode(Sha256::digest(encoded)))
+    }
+
+    async fn config_from_playback_locator(
+        &self,
+        locator: &AlistPlaybackLocator,
+        access_service: &dyn super::access::ProviderAccessService,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<ResolvedAlistConfig, ProviderError> {
+        let access = access_service
+            .alist_access(
+                locator.credential_owner_id,
+                &locator.server_id,
+                locator.provider_instance_name.as_deref(),
+                request_context,
+            )
+            .await?;
+        Ok(ResolvedAlistConfig {
+            host: access.host,
+            token: access.token,
+            server_id: access.server_id,
+            path: locator.path.clone(),
+            password: locator.password.clone(),
+            credential_owner_user_id: locator.credential_owner_id,
+            credential_owner_id: access.credential_owner_id,
+            credential_revision: access.credential_revision,
+            provider_instance_name: access.provider_instance_name,
+        })
+    }
+
+    async fn resolve_media_target_uncached(
+        &self,
+        locator: &AlistPlaybackLocator,
+        resource: &AlistPlaybackMediaLocator,
+        access_service: &dyn super::access::ProviderAccessService,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<ResolvedAlistPlaybackTarget, ProviderError> {
+        let config = self
+            .config_from_playback_locator(locator, access_service, request_context)
+            .await?;
+        let client = self
+            .get_client_with_context(config.provider_instance_name.as_deref(), request_context)
+            .await?;
+        let url = match resource {
+            AlistPlaybackMediaLocator::File => {
+                let file: AlistFileInfo = client
+                    .fs_get(alist_fs_get_request(&config, config.path.clone()))
+                    .await?
+                    .into();
+                file.raw_url
+            }
+            AlistPlaybackMediaLocator::Transcoded {
+                template_id,
+                template_name,
+                fallback_index,
+            } => {
+                let preview = client
+                    .get_video_preview(
+                        &config.host,
+                        &config.token,
+                        &config.path,
+                        config.password.as_deref(),
+                    )
+                    .await?
+                    .ok_or(ProviderError::NotFound)?;
+                preview
+                    .transcoding_tasks
+                    .iter()
+                    .find(|task| !template_id.is_empty() && task.template_id == *template_id)
+                    .or_else(|| {
+                        preview.transcoding_tasks.iter().find(|task| {
+                            !template_name.is_empty() && task.template_name == *template_name
+                        })
+                    })
+                    .or_else(|| preview.transcoding_tasks.get(*fallback_index))
+                    .map(|task| task.url.clone())
+                    .filter(|url| !url.trim().is_empty())
+                    .ok_or(ProviderError::NotFound)?
+            }
+        };
+        if url.trim().is_empty() {
+            return Err(ProviderError::NotFound);
+        }
+        Ok(ResolvedAlistPlaybackTarget {
+            expires_at: alist_url_expiration_timestamp(&url),
+            url,
+            headers: alist_headers(),
+        })
+    }
+
+    async fn resolve_subtitle_target_uncached(
+        &self,
+        locator: &AlistPlaybackLocator,
+        resource: &AlistPlaybackSubtitleLocator,
+        access_service: &dyn super::access::ProviderAccessService,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<ResolvedAlistPlaybackTarget, ProviderError> {
+        let config = self
+            .config_from_playback_locator(locator, access_service, request_context)
+            .await?;
+        let client = self
+            .get_client_with_context(config.provider_instance_name.as_deref(), request_context)
+            .await?;
+        let url = match resource {
+            AlistPlaybackSubtitleLocator::RelatedFile { path } => {
+                let file: AlistFileInfo = client
+                    .fs_get(alist_fs_get_request(&config, path.clone()))
+                    .await?
+                    .into();
+                file.raw_url
+            }
+            AlistPlaybackSubtitleLocator::Transcoded {
+                language,
+                fallback_index,
+            } => {
+                let preview = client
+                    .get_video_preview(
+                        &config.host,
+                        &config.token,
+                        &config.path,
+                        config.password.as_deref(),
+                    )
+                    .await?
+                    .ok_or(ProviderError::NotFound)?;
+                preview
+                    .subtitle_tasks
+                    .get(*fallback_index)
+                    .filter(|task| language.is_empty() || task.language == *language)
+                    .or_else(|| {
+                        preview
+                            .subtitle_tasks
+                            .iter()
+                            .find(|task| !language.is_empty() && task.language == *language)
+                    })
+                    .map(|task| task.url.clone())
+                    .filter(|url| !url.trim().is_empty())
+                    .ok_or(ProviderError::NotFound)?
+            }
+        };
+        if url.trim().is_empty() {
+            return Err(ProviderError::NotFound);
+        }
+        Ok(ResolvedAlistPlaybackTarget {
+            expires_at: alist_url_expiration_timestamp(&url),
+            url,
+            headers: alist_headers(),
+        })
+    }
+
+    async fn resolve_media_target(
+        &self,
+        locator: &AlistPlaybackLocator,
+        resource: &AlistPlaybackMediaLocator,
+        access_service: &dyn super::access::ProviderAccessService,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<ResolvedAlistPlaybackTarget, ProviderError> {
+        let key = Self::playback_resource_cache_key("media", locator, resource)?;
+        if let Some(target) = self.playback_resource_resolver.cache.get(&key).await {
+            if target.is_fresh() {
+                return Ok(target);
+            }
+            self.playback_resource_resolver.cache.invalidate(&key).await;
+        }
+        self.playback_resource_resolver
+            .singleflight
+            .do_work(key.clone(), async {
+                if let Some(target) = self.playback_resource_resolver.cache.get(&key).await {
+                    if target.is_fresh() {
+                        return Ok(target);
+                    }
+                }
+                let target = self
+                    .resolve_media_target_uncached(
+                        locator,
+                        resource,
+                        access_service,
+                        request_context,
+                    )
+                    .await
+                    .map_err(super::ProviderPlaybackFillError::from)?;
+                if target.is_fresh() {
+                    self.playback_resource_resolver
+                        .cache
+                        .insert(key, target.clone())
+                        .await;
+                }
+                Ok(target)
+            })
+            .await
+            .map_err(|error| match error {
+                SingleFlightError::Inner(error) => ProviderError::from(error),
+                SingleFlightError::WorkerFailed => ProviderError::Internal(
+                    "Alist playback resource resolver worker failed".to_string(),
+                ),
+            })
+    }
+
+    async fn resolve_subtitle_target(
+        &self,
+        locator: &AlistPlaybackLocator,
+        resource: &AlistPlaybackSubtitleLocator,
+        access_service: &dyn super::access::ProviderAccessService,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<ResolvedAlistPlaybackTarget, ProviderError> {
+        let key = Self::playback_resource_cache_key("subtitle", locator, resource)?;
+        if let Some(target) = self.playback_resource_resolver.cache.get(&key).await {
+            if target.is_fresh() {
+                return Ok(target);
+            }
+            self.playback_resource_resolver.cache.invalidate(&key).await;
+        }
+        self.playback_resource_resolver
+            .singleflight
+            .do_work(key.clone(), async {
+                if let Some(target) = self.playback_resource_resolver.cache.get(&key).await {
+                    if target.is_fresh() {
+                        return Ok(target);
+                    }
+                }
+                let target = self
+                    .resolve_subtitle_target_uncached(
+                        locator,
+                        resource,
+                        access_service,
+                        request_context,
+                    )
+                    .await
+                    .map_err(super::ProviderPlaybackFillError::from)?;
+                if target.is_fresh() {
+                    self.playback_resource_resolver
+                        .cache
+                        .insert(key, target.clone())
+                        .await;
+                }
+                Ok(target)
+            })
+            .await
+            .map_err(|error| match error {
+                SingleFlightError::Inner(error) => ProviderError::from(error),
+                SingleFlightError::WorkerFailed => ProviderError::Internal(
+                    "Alist subtitle resource resolver worker failed".to_string(),
+                ),
+            })
+    }
+
     /// Provider type name constant.
     pub const NAME: &'static str = "alist";
 
@@ -722,6 +1109,7 @@ impl AlistProvider {
             provider_instance_manager,
             client_manager: Arc::new(ProviderClientManager::new()?),
             credential_repo: None,
+            playback_resource_resolver: Arc::new(AlistPlaybackResourceResolver::new()),
         })
     }
 
@@ -734,6 +1122,7 @@ impl AlistProvider {
             provider_instance_manager,
             client_manager,
             credential_repo: None,
+            playback_resource_resolver: Arc::new(AlistPlaybackResourceResolver::new()),
         }
     }
 
@@ -746,6 +1135,7 @@ impl AlistProvider {
             provider_instance_manager: self.provider_instance_manager.clone(),
             client_manager: self.client_manager.clone(),
             credential_repo: Some(credential_repo),
+            playback_resource_resolver: self.playback_resource_resolver.clone(),
         }
     }
 
@@ -762,6 +1152,7 @@ impl AlistProvider {
                 crate::service::remote_provider_manager::empty_provider_instance_manager(),
             client_manager: Arc::new(ProviderClientManager::new()?),
             credential_repo: None,
+            playback_resource_resolver: Arc::new(AlistPlaybackResourceResolver::new()),
         })
     }
 
@@ -1368,6 +1759,7 @@ struct ResolvedAlistConfig {
     server_id: String,
     path: String,
     password: Option<String>,
+    credential_owner_user_id: UserId,
     credential_owner_id: String,
     credential_revision: String,
     provider_instance_name: Option<String>,
@@ -1598,6 +1990,7 @@ impl AlistProvider {
             server_id: access.server_id,
             path: config.path,
             password: config.password,
+            credential_owner_user_id: *credential_owner_id,
             credential_owner_id: access.credential_owner_id,
             credential_revision: access.credential_revision,
             provider_instance_name: access.provider_instance_name,
@@ -1683,12 +2076,22 @@ impl AlistProvider {
             Err(err) => (None, Some(err.to_string())),
         };
 
+        let locator = AlistPlaybackLocator {
+            server_id: config.server_id.clone(),
+            path: config.path.clone(),
+            password: config.password.clone(),
+            credential_owner_id: config.credential_owner_user_id,
+            credential_revision: config.credential_revision.clone(),
+            provider_instance_name: config.provider_instance_name.clone(),
+        };
+
         Ok(Self::build_playback_result(
             &file_info,
             video_preview.as_ref(),
             video_preview_error.as_deref(),
             playback_client_profile,
             config.provider_instance_name.clone(),
+            &locator,
         ))
     }
 
@@ -1698,6 +2101,7 @@ impl AlistProvider {
         video_preview_error: Option<&str>,
         playback_client_profile: Option<&PlaybackClientProfile>,
         provider_instance_name: Option<String>,
+        locator: &AlistPlaybackLocator,
     ) -> PlaybackResult {
         let mut playback_infos = HashMap::new();
         let mut metadata = AlistPlaybackMetadata {
@@ -1708,7 +2112,7 @@ impl AlistProvider {
         };
         let thumbnail = (!file_info.thumb.is_empty()).then(|| file_info.thumb.clone());
         let mut duration_seconds = None;
-        let related_subtitles = subtitles_from_related_files(&file_info.related);
+        let related_subtitles = subtitles_from_related_files(&file_info.related, locator);
         if !related_subtitles.is_empty() {
             metadata.external_subtitle_count = Some(related_subtitles.len());
         }
@@ -1723,10 +2127,9 @@ impl AlistProvider {
         ) {
             Vec::new()
         } else {
-            let preview_subtitles = subtitles_from_video_preview(video_preview);
+            let preview_subtitles = subtitles_from_video_preview(video_preview, locator);
             merge_subtitles(preview_subtitles, related_subtitles)
         };
-
         let mut transcoded_modes = Vec::new();
         let headers = alist_headers();
 
@@ -1742,9 +2145,7 @@ impl AlistProvider {
                     let mode_name = format!("transcoded_{quality_name}");
                     transcoded_modes.push((mode_name.clone(), task.template_height));
 
-                    // AliyunDrive live transcoding URLs are requested from AList/OpenList
-                    // with url_expire_sec=14400.
-                    let task_expires_at = Some(crate::SystemClock.now().timestamp() + 4 * 60 * 60);
+                    let task_expires_at = alist_url_expiration_timestamp(&task.url);
                     let info = playback_infos
                         .entry("transcoded".to_string())
                         .or_insert_with(|| PlaybackInfo {
@@ -1763,6 +2164,12 @@ impl AlistProvider {
                         PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct {
                             url: task.url.clone(),
                             headers: headers.clone(),
+                            locator: locator.clone(),
+                            resource: AlistPlaybackMediaLocator::Transcoded {
+                                template_id: task.template_id.clone(),
+                                template_name: task.template_name.clone(),
+                                fallback_index: idx,
+                            },
                         }),
                     ));
                     metadata
@@ -1796,10 +2203,7 @@ impl AlistProvider {
 
         // Always add direct URL (raw_url) as fallback
         if !file_info.raw_url.is_empty() {
-            // Alist raw URLs are provider-dependent. Use the same conservative
-            // expiry window as AliyunDrive live transcoding when AList does not
-            // return a per-URL expiry.
-            let direct_expires_at = Some(crate::SystemClock.now().timestamp() + 4 * 60 * 60);
+            let direct_expires_at = alist_url_expiration_timestamp(&file_info.raw_url);
 
             playback_infos.insert(
                 "direct".to_string(),
@@ -1812,6 +2216,8 @@ impl AlistProvider {
                         PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct {
                             url: file_info.raw_url.clone(),
                             headers: headers.clone(),
+                            locator: locator.clone(),
+                            resource: AlistPlaybackMediaLocator::File,
                         }),
                     )],
                     default_media_index: None,
@@ -2084,30 +2490,37 @@ impl MediaProvider for AlistProvider {
 impl AlistProvider {
     pub async fn get_file_stream(
         &self,
+        request: AlistFileStreamRequest<'_>,
         store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
-        version: &str,
-        mode_name: &str,
-        url_index: usize,
+        access_service: &dyn super::access::ProviderAccessService,
         request_context: Option<&super::ExecutionControl>,
-        range_header: Option<&str>,
     ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
         let versioned =
-            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+            super::playback_transport::lookup_versioned(store, request.version, request_context)
+                .await?;
         let playback_info = versioned
             .result
             .playback_infos
-            .get(mode_name)
+            .get(request.mode_name)
             .ok_or(ProviderError::NotFound)?;
         let media = playback_info
             .medias
-            .get(url_index)
+            .get(request.url_index)
             .ok_or(ProviderError::NotFound)?;
-        let url = media.upstream_url().ok_or(ProviderError::NotFound)?;
+        let PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct {
+            locator, resource, ..
+        }) = &media.provider
+        else {
+            return Err(ProviderError::NotFound);
+        };
+        let target = self
+            .resolve_media_target(locator, resource, access_service, request_context)
+            .await?;
         Ok(
             super::playback_transport::PlaybackTransportAction::FetchAndForward {
-                url: url.to_string(),
-                headers: media.upstream_headers(),
-                range_header: range_header.map(ToString::to_string),
+                url: target.url,
+                headers: target.headers,
+                range_header: request.range_header.map(ToString::to_string),
             },
         )
     }
@@ -2118,6 +2531,7 @@ impl AlistProvider {
         version: &str,
         mode_name: &str,
         url_index: usize,
+        access_service: &dyn super::access::ProviderAccessService,
         request_context: Option<&super::ExecutionControl>,
     ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
         let versioned =
@@ -2128,11 +2542,23 @@ impl AlistProvider {
             .get(mode_name)
             .and_then(|info| info.medias.get(url_index))
             .ok_or(ProviderError::NotFound)?;
-        let url = media.upstream_url().ok_or(ProviderError::NotFound)?;
+        let PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct {
+            url: original_root_url,
+            locator,
+            resource,
+            ..
+        }) = &media.provider
+        else {
+            return Err(ProviderError::NotFound);
+        };
+        let target = self
+            .resolve_media_target(locator, resource, access_service, request_context)
+            .await?;
         Ok(
-            super::playback_transport::PlaybackTransportAction::M3u8Rewrite {
-                url: url.to_string(),
-                headers: media.upstream_headers(),
+            super::playback_transport::PlaybackTransportAction::M3u8RewriteWithSource {
+                url: target.url,
+                headers: target.headers,
+                source_url: super::playback_transport::dynamic_hls_source_url(original_root_url)?,
             },
         )
     }
@@ -2141,6 +2567,7 @@ impl AlistProvider {
         &self,
         store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
         request: AlistHlsResourceRequest<'_>,
+        access_service: &dyn super::access::ProviderAccessService,
         request_context: Option<&super::ExecutionControl>,
     ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
         let versioned =
@@ -2152,22 +2579,26 @@ impl AlistProvider {
             .get(request.mode_name)
             .and_then(|info| info.medias.get(request.media_index))
             .ok_or(ProviderError::NotFound)?;
-        if request.is_manifest {
-            Ok(
-                super::playback_transport::PlaybackTransportAction::M3u8Rewrite {
-                    url: request.target_url.to_string(),
-                    headers: media.upstream_headers(),
-                },
-            )
-        } else {
-            Ok(
-                super::playback_transport::PlaybackTransportAction::FetchAndForward {
-                    url: request.target_url.to_string(),
-                    headers: media.upstream_headers(),
-                    range_header: request.range_header.map(ToString::to_string),
-                },
-            )
-        }
+        let PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct {
+            url: original_root_url,
+            locator,
+            resource,
+            ..
+        }) = &media.provider
+        else {
+            return Err(ProviderError::NotFound);
+        };
+        let target = self
+            .resolve_media_target(locator, resource, access_service, request_context)
+            .await?;
+        super::playback_transport::transport_action_for_dynamic_hls_target(
+            original_root_url,
+            &target.url,
+            target.headers,
+            request.target_url,
+            request.is_manifest,
+            request.range_header,
+        )
     }
 
     pub async fn get_subtitle(
@@ -2176,6 +2607,7 @@ impl AlistProvider {
         version: &str,
         mode_name: &str,
         subtitle_index: usize,
+        access_service: &dyn super::access::ProviderAccessService,
         request_context: Option<&super::ExecutionControl>,
     ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
         let versioned =
@@ -2189,19 +2621,70 @@ impl AlistProvider {
             .subtitles
             .get(subtitle_index)
             .ok_or(ProviderError::NotFound)?;
+        let PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle::Refresh {
+            locator,
+            resource,
+            ..
+        }) = &subtitle.provider
+        else {
+            return Err(ProviderError::NotFound);
+        };
+        let target = self
+            .resolve_subtitle_target(locator, resource, access_service, request_context)
+            .await?;
         Ok(
             super::playback_transport::PlaybackTransportAction::FetchAndForward {
-                url: subtitle.upstream_url().to_string(),
-                headers: super::subtitle_headers_for_proxy(
-                    &playback_info
-                        .medias
-                        .first()
-                        .map_or_else(HashMap::new, PlaybackMedia::upstream_headers),
-                    subtitle,
-                ),
+                url: target.url,
+                headers: target.headers,
                 range_header: None,
             },
         )
+    }
+
+    pub async fn invalidate_playback_access(
+        &self,
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
+        version: &str,
+        access_service: &dyn super::access::ProviderAccessService,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<(), ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let locator = versioned
+            .result
+            .playback_infos
+            .values()
+            .flat_map(|info| info.medias.iter())
+            .find_map(|media| match &media.provider {
+                PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct { locator, .. }) => {
+                    Some(locator)
+                }
+                _ => None,
+            })
+            .or_else(|| {
+                versioned
+                    .result
+                    .playback_infos
+                    .values()
+                    .flat_map(|info| info.subtitles.iter())
+                    .find_map(|subtitle| match &subtitle.provider {
+                        PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle::Refresh {
+                            locator,
+                            ..
+                        }) => Some(locator),
+                        _ => None,
+                    })
+            })
+            .ok_or(ProviderError::NotFound)?;
+        self.playback_resource_resolver.invalidate_all().await;
+        access_service
+            .invalidate_alist_access(
+                locator.credential_owner_id,
+                &locator.server_id,
+                &locator.credential_revision,
+                locator.provider_instance_name.as_deref(),
+            )
+            .await
     }
 
     pub async fn get_thumbnail(
@@ -2706,12 +3189,587 @@ impl DynamicPlaylistProvider for AlistProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::AlistProvider;
+    use super::*;
+    use crate::provider::access::{
+        AlistAccess, AlistBinding, BilibiliAccess, EmbyAccess, ProviderAccessService,
+    };
+    use crate::provider::provider_client::ProviderClientManager;
+    use crate::provider::{
+        ExecutionControl, InMemoryProviderStore, PlaybackTransportAction, ProviderStore,
+        ProviderStoreExt, VersionedPlayback,
+    };
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use synctv_media_providers::alist::{AlistError, AlistInterface};
+    use synctv_media_providers::transport_dto::alist::{
+        fs_other_resp, FsGetReq, FsGetResp, FsListReq, FsListResp, FsOtherReq, FsOtherResp,
+        FsSearchReq, FsSearchResp, LoginReq, MeReq, MeResp,
+    };
 
     type TestResult<T = ()> = anyhow::Result<T>;
 
     fn ok<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> TestResult<T> {
         result.map_err(|error| anyhow::anyhow!("{context}: {error}"))
+    }
+
+    #[derive(Default)]
+    struct RotatingAlistClient {
+        media_requests: AtomicUsize,
+        subtitle_requests: AtomicUsize,
+        preview_requests: AtomicUsize,
+    }
+
+    impl RotatingAlistClient {
+        fn signed_url(path: &str, generation: usize) -> String {
+            format!("https://cdn.example.test/{path}?sign=generation-{generation}:2000000000")
+        }
+    }
+
+    #[async_trait]
+    impl AlistInterface for RotatingAlistClient {
+        async fn fs_get(&self, request: FsGetReq) -> Result<FsGetResp, AlistError> {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+            let (name, generation) = if request.path.ends_with(".srt") {
+                (
+                    "movie.srt",
+                    self.subtitle_requests.fetch_add(1, Ordering::SeqCst) + 1,
+                )
+            } else {
+                (
+                    "movie.mp4",
+                    self.media_requests.fetch_add(1, Ordering::SeqCst) + 1,
+                )
+            };
+            Ok(FsGetResp {
+                name: name.to_string(),
+                raw_url: Self::signed_url(name, generation),
+                provider: "mock".to_string(),
+                ..Default::default()
+            })
+        }
+
+        async fn fs_other(&self, _request: FsOtherReq) -> Result<FsOtherResp, AlistError> {
+            let generation = self.preview_requests.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(FsOtherResp {
+                video_preview_play_info: Some(fs_other_resp::VideoPreviewPlayInfo {
+                    live_transcoding_task_list: vec![
+                        fs_other_resp::video_preview_play_info::LiveTranscodingTaskList {
+                            template_id: "template-1080p".to_string(),
+                            template_name: "1080p".to_string(),
+                            url: Self::signed_url("master.m3u8", generation),
+                            ..Default::default()
+                        },
+                    ],
+                    live_transcoding_subtitle_task_list: vec![
+                        fs_other_resp::video_preview_play_info::LiveTranscodingSubtitleTaskList {
+                            language: "zh-CN".to_string(),
+                            url: Self::signed_url("transcoded-zh.srt", generation),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+        }
+
+        async fn fs_list(&self, _request: FsListReq) -> Result<FsListResp, AlistError> {
+            Err(AlistError::InvalidConfig("unused fs_list".to_string()))
+        }
+
+        async fn fs_search(&self, _request: FsSearchReq) -> Result<FsSearchResp, AlistError> {
+            Err(AlistError::InvalidConfig("unused fs_search".to_string()))
+        }
+
+        async fn me(&self, _request: MeReq) -> Result<MeResp, AlistError> {
+            Err(AlistError::InvalidConfig("unused me".to_string()))
+        }
+
+        async fn login(&self, _request: LoginReq) -> Result<String, AlistError> {
+            Err(AlistError::InvalidConfig("unused login".to_string()))
+        }
+    }
+
+    #[derive(Default)]
+    struct TestAccessService {
+        invalidations: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ProviderAccessService for TestAccessService {
+        async fn alist_binding(
+            &self,
+            _user_id: UserId,
+            _server_id: &str,
+            _provider_instance_name: Option<&str>,
+            _request_context: Option<&ExecutionControl>,
+        ) -> Result<AlistBinding, ProviderError> {
+            Err(ProviderError::Internal("unused alist binding".to_string()))
+        }
+
+        async fn alist_access(
+            &self,
+            user_id: UserId,
+            server_id: &str,
+            provider_instance_name: Option<&str>,
+            _request_context: Option<&ExecutionControl>,
+        ) -> Result<AlistAccess, ProviderError> {
+            Ok(AlistAccess {
+                host: "https://alist.example.test".to_string(),
+                token: "token".to_string(),
+                server_id: server_id.to_string(),
+                credential_owner_id: user_id.to_string(),
+                credential_revision: "revision-1".to_string(),
+                provider_instance_name: provider_instance_name.map(str::to_string),
+            })
+        }
+
+        async fn bilibili_access(
+            &self,
+            _user_id: UserId,
+            _request_context: Option<&ExecutionControl>,
+        ) -> Result<BilibiliAccess, ProviderError> {
+            Err(ProviderError::Internal(
+                "unused bilibili access".to_string(),
+            ))
+        }
+
+        async fn emby_access(
+            &self,
+            _user_id: UserId,
+            _server_id: &str,
+            _provider_instance_name: Option<&str>,
+            _request_context: Option<&ExecutionControl>,
+        ) -> Result<EmbyAccess, ProviderError> {
+            Err(ProviderError::Internal("unused emby access".to_string()))
+        }
+
+        async fn invalidate(
+            &self,
+            _user_id: UserId,
+            _provider: &str,
+            _server_id: &str,
+        ) -> Result<(), ProviderError> {
+            self.invalidations.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn invalidate_alist_access(
+            &self,
+            _user_id: UserId,
+            _server_id: &str,
+            _credential_revision: &str,
+            _provider_instance_name: Option<&str>,
+        ) -> Result<(), ProviderError> {
+            self.invalidations.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn test_provider(client: Arc<RotatingAlistClient>) -> TestResult<AlistProvider> {
+        let defaults = ok(
+            ProviderClientManager::new_for_tests(),
+            "default provider clients should build",
+        )?;
+        let manager = ProviderClientManager::with_custom_clients(
+            client,
+            defaults.local_bilibili_client(),
+            defaults.local_emby_client(),
+        );
+        Ok(AlistProvider::with_client_manager(
+            crate::service::remote_provider_manager::empty_provider_instance_manager(),
+            Arc::new(manager),
+        ))
+    }
+
+    fn locator(owner: UserId) -> AlistPlaybackLocator {
+        AlistPlaybackLocator {
+            server_id: "server-1".to_string(),
+            path: "/movie.mp4".to_string(),
+            password: Some("source-password".to_string()),
+            credential_owner_id: owner,
+            credential_revision: "revision-1".to_string(),
+            provider_instance_name: None,
+        }
+    }
+
+    async fn store_versioned_result(
+        store: &Arc<dyn ProviderStore>,
+        version: &str,
+        result: PlaybackResult,
+    ) -> TestResult {
+        ok(
+            store
+                .set(
+                    &format!("v:{version}"),
+                    &VersionedPlayback {
+                        version: version.to_string(),
+                        result,
+                        expires_at: crate::SystemClock.now().timestamp() + 3_600,
+                        playback_context: None,
+                    },
+                    Duration::from_hours(1),
+                )
+                .await,
+            "versioned playback should persist",
+        )?;
+        Ok(())
+    }
+
+    fn action_url(action: PlaybackTransportAction) -> TestResult<(String, Option<String>)> {
+        match action {
+            PlaybackTransportAction::FetchAndForward {
+                url, range_header, ..
+            } => Ok((url, range_header)),
+            PlaybackTransportAction::M3u8Rewrite { url, .. }
+            | PlaybackTransportAction::M3u8RewriteWithSource { url, .. } => Ok((url, None)),
+            other => Err(anyhow::anyhow!("unexpected action: {other:?}")),
+        }
+    }
+
+    #[tokio::test]
+    async fn playback_resources_resolve_once_then_rotate_after_invalidation() -> TestResult {
+        let client = Arc::new(RotatingAlistClient::default());
+        let provider = test_provider(client.clone())?;
+        let access = TestAccessService::default();
+        let owner = UserId::new();
+        let locator = locator(owner);
+        let result = PlaybackResult {
+            playback_infos: HashMap::from([(
+                "direct".to_string(),
+                PlaybackInfo {
+                    thumbnail: None,
+                    medias: vec![playback_media(
+                        "movie.mp4".to_string(),
+                        "mp4".to_string(),
+                        None,
+                        PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct {
+                            url: RotatingAlistClient::signed_url("movie.mp4", 0),
+                            headers: alist_headers(),
+                            locator: locator.clone(),
+                            resource: AlistPlaybackMediaLocator::File,
+                        }),
+                    )],
+                    default_media_index: Some(0),
+                    subtitles: vec![PlaybackSubtitle {
+                        name: "movie.srt".to_string(),
+                        language: "und".to_string(),
+                        format: "srt".to_string(),
+                        p2p_swarm_id: None,
+                        provider: PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle::Refresh {
+                            url: RotatingAlistClient::signed_url("movie.srt", 0),
+                            headers: alist_headers(),
+                            expires_at: Some(2_000_000_000),
+                            locator: locator.clone(),
+                            resource: AlistPlaybackSubtitleLocator::RelatedFile {
+                                path: "/movie.srt".to_string(),
+                            },
+                        }),
+                    }],
+                    default_subtitle_index: Some(0),
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                },
+            )]),
+            default_mode: "direct".to_string(),
+            provider: AlistProvider::NAME.to_string(),
+            provider_instance_name: None,
+            duration_seconds: None,
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
+            metadata: None,
+        };
+        let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(64));
+        store_versioned_result(&store, "rotate", result).await?;
+
+        let (first_url, first_range) = action_url(
+            provider
+                .get_file_stream(
+                    AlistFileStreamRequest {
+                        version: "rotate",
+                        mode_name: "direct",
+                        url_index: 0,
+                        range_header: Some("bytes=10-19"),
+                    },
+                    Some(&store),
+                    &access,
+                    None,
+                )
+                .await?,
+        )?;
+        let (cached_url, _) = action_url(
+            provider
+                .get_file_stream(
+                    AlistFileStreamRequest {
+                        version: "rotate",
+                        mode_name: "direct",
+                        url_index: 0,
+                        range_header: None,
+                    },
+                    Some(&store),
+                    &access,
+                    None,
+                )
+                .await?,
+        )?;
+        assert!(first_url.contains("generation-1"));
+        assert_eq!(cached_url, first_url);
+        assert_eq!(first_range.as_deref(), Some("bytes=10-19"));
+        assert_eq!(client.media_requests.load(Ordering::SeqCst), 1);
+
+        provider
+            .invalidate_playback_access(Some(&store), "rotate", &access, None)
+            .await?;
+        let (rotated_url, _) = action_url(
+            provider
+                .get_file_stream(
+                    AlistFileStreamRequest {
+                        version: "rotate",
+                        mode_name: "direct",
+                        url_index: 0,
+                        range_header: None,
+                    },
+                    Some(&store),
+                    &access,
+                    None,
+                )
+                .await?,
+        )?;
+        assert!(rotated_url.contains("generation-2"));
+        assert_eq!(client.media_requests.load(Ordering::SeqCst), 2);
+
+        let (subtitle_url, _) = action_url(
+            provider
+                .get_subtitle(Some(&store), "rotate", "direct", 0, &access, None)
+                .await?,
+        )?;
+        assert!(subtitle_url.contains("generation-1"));
+        provider
+            .invalidate_playback_access(Some(&store), "rotate", &access, None)
+            .await?;
+        let (rotated_subtitle_url, _) = action_url(
+            provider
+                .get_subtitle(Some(&store), "rotate", "direct", 0, &access, None)
+                .await?,
+        )?;
+        assert!(rotated_subtitle_url.contains("generation-2"));
+        assert_eq!(access.invalidations.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_resource_resolution_uses_singleflight() -> TestResult {
+        let client = Arc::new(RotatingAlistClient::default());
+        let provider = test_provider(client.clone())?;
+        let access = TestAccessService::default();
+        let locator = locator(UserId::new());
+
+        let results = futures::future::join_all((0..8).map(|_| {
+            provider.resolve_media_target(&locator, &AlistPlaybackMediaLocator::File, &access, None)
+        }))
+        .await;
+        for result in results {
+            assert!(result?.url.contains("generation-1"));
+        }
+        assert_eq!(client.media_requests.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn transcoded_hls_and_subtitle_refresh_stable_resources() -> TestResult {
+        let client = Arc::new(RotatingAlistClient::default());
+        let provider = test_provider(client.clone())?;
+        let access = TestAccessService::default();
+        let locator = locator(UserId::new());
+        let result = PlaybackResult {
+            playback_infos: HashMap::from([(
+                "transcoded".to_string(),
+                PlaybackInfo {
+                    thumbnail: None,
+                    medias: vec![playback_media(
+                        "1080p".to_string(),
+                        "hls".to_string(),
+                        None,
+                        PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct {
+                            url: RotatingAlistClient::signed_url("master.m3u8", 0),
+                            headers: alist_headers(),
+                            locator: locator.clone(),
+                            resource: AlistPlaybackMediaLocator::Transcoded {
+                                template_id: "template-1080p".to_string(),
+                                template_name: "1080p".to_string(),
+                                fallback_index: 0,
+                            },
+                        }),
+                    )],
+                    default_media_index: Some(0),
+                    subtitles: vec![PlaybackSubtitle {
+                        name: "zh-CN".to_string(),
+                        language: "zh-CN".to_string(),
+                        format: "srt".to_string(),
+                        p2p_swarm_id: None,
+                        provider: PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle::Refresh {
+                            url: RotatingAlistClient::signed_url("transcoded-zh.srt", 0),
+                            headers: alist_headers(),
+                            expires_at: Some(2_000_000_000),
+                            locator: locator.clone(),
+                            resource: AlistPlaybackSubtitleLocator::Transcoded {
+                                language: "zh-CN".to_string(),
+                                fallback_index: 0,
+                            },
+                        }),
+                    }],
+                    default_subtitle_index: Some(0),
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                },
+            )]),
+            default_mode: "transcoded".to_string(),
+            provider: AlistProvider::NAME.to_string(),
+            provider_instance_name: None,
+            duration_seconds: None,
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
+            metadata: None,
+        };
+        let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(64));
+        store_versioned_result(&store, "hls-rotate", result).await?;
+
+        let (manifest_url, _) = action_url(
+            provider
+                .get_transcoded_hls_manifest(
+                    Some(&store),
+                    "hls-rotate",
+                    "transcoded",
+                    0,
+                    &access,
+                    None,
+                )
+                .await?,
+        )?;
+        assert!(manifest_url.contains("generation-1"));
+        let stable_segment = url::Url::parse(
+            &crate::provider::playback_transport::dynamic_hls_source_url(
+                &RotatingAlistClient::signed_url("master.m3u8", 0),
+            )?,
+        )?
+        .join("segment-1.ts")?
+        .to_string();
+
+        provider
+            .invalidate_playback_access(Some(&store), "hls-rotate", &access, None)
+            .await?;
+        let (rotated_manifest_url, _) = action_url(
+            provider
+                .get_transcoded_hls_manifest(
+                    Some(&store),
+                    "hls-rotate",
+                    "transcoded",
+                    0,
+                    &access,
+                    None,
+                )
+                .await?,
+        )?;
+        assert!(rotated_manifest_url.contains("generation-2"));
+        let (segment_url, range) = action_url(
+            provider
+                .get_transcoded_hls_resource(
+                    Some(&store),
+                    AlistHlsResourceRequest {
+                        version: "hls-rotate",
+                        mode_name: "transcoded",
+                        media_index: 0,
+                        target_url: &stable_segment,
+                        is_manifest: false,
+                        range_header: Some("bytes=0-1023"),
+                    },
+                    &access,
+                    None,
+                )
+                .await?,
+        )?;
+        let segment_url = url::Url::parse(&segment_url)?;
+        assert_eq!(segment_url.path(), "/segment-1.ts");
+        assert_eq!(
+            segment_url
+                .query_pairs()
+                .find(|(key, _)| key == "sign")
+                .map(|(_, value)| value.into_owned()),
+            Some("generation-2:2000000000".to_string())
+        );
+        assert_eq!(range.as_deref(), Some("bytes=0-1023"));
+
+        provider
+            .invalidate_playback_access(Some(&store), "hls-rotate", &access, None)
+            .await?;
+        let (subtitle_url, _) = action_url(
+            provider
+                .get_subtitle(Some(&store), "hls-rotate", "transcoded", 0, &access, None)
+                .await?,
+        )?;
+        assert!(subtitle_url.contains("generation-3"));
+        assert_eq!(client.preview_requests.load(Ordering::SeqCst), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn proxy_resources_expose_transport_expiry_after_dynamic_refresh() {
+        let locator = locator(UserId::new());
+        let upstream_expires_at = crate::SystemClock.now().timestamp() + 60;
+        let transport_expires_at = upstream_expires_at + 3_540;
+        let mut result = PlaybackResult {
+            playback_infos: HashMap::from([(
+                "direct".to_string(),
+                PlaybackInfo {
+                    thumbnail: None,
+                    medias: vec![playback_media(
+                        "movie.mp4".to_string(),
+                        "mp4".to_string(),
+                        Some(upstream_expires_at),
+                        PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct {
+                            url: RotatingAlistClient::signed_url("movie.mp4", 0),
+                            headers: alist_headers(),
+                            locator: locator.clone(),
+                            resource: AlistPlaybackMediaLocator::File,
+                        }),
+                    )],
+                    default_media_index: Some(0),
+                    subtitles: vec![PlaybackSubtitle {
+                        name: "movie.srt".to_string(),
+                        language: "und".to_string(),
+                        format: "srt".to_string(),
+                        p2p_swarm_id: None,
+                        provider: PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle::Refresh {
+                            url: RotatingAlistClient::signed_url("movie.srt", 0),
+                            headers: alist_headers(),
+                            expires_at: Some(upstream_expires_at),
+                            locator,
+                            resource: AlistPlaybackSubtitleLocator::RelatedFile {
+                                path: "/movie.srt".to_string(),
+                            },
+                        }),
+                    }],
+                    default_subtitle_index: Some(0),
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                },
+            )]),
+            default_mode: "direct".to_string(),
+            provider: AlistProvider::NAME.to_string(),
+            provider_instance_name: None,
+            duration_seconds: None,
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
+            metadata: None,
+        };
+
+        mark_alist_playback_resources(&mut result, "version", transport_expires_at);
+        let proxy = &result.playback_infos["proxy_direct"];
+        assert_eq!(
+            proxy.medias[0].expire_at.map(|value| value.timestamp()),
+            Some(transport_expires_at)
+        );
+        assert_eq!(
+            proxy.subtitles[0].expiration_timestamp(),
+            Some(transport_expires_at)
+        );
     }
 
     #[test]
@@ -2733,6 +3791,22 @@ mod tests {
             ))
             .as_deref(),
             Some("JBSWY3DPEHPK3PXP")
+        );
+    }
+
+    #[test]
+    fn alist_signed_url_expiration_uses_the_public_sign_suffix() {
+        assert_eq!(
+            alist_url_expiration_timestamp(
+                "https://alist.example.test/d/movie.mp4?sign=private-signature%3A1785945600"
+            ),
+            Some(1_785_945_600)
+        );
+        assert_eq!(
+            alist_url_expiration_timestamp(
+                "https://alist.example.test/d/movie.mp4?sign=private-signature"
+            ),
+            None
         );
     }
 }

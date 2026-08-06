@@ -35,8 +35,8 @@ pub use error::{
     ProxyErrorKind,
 };
 pub use manifest::{
-    percent_encode, rewrite_m3u8, rewrite_m3u8_with_typed_url_mapper, rewrite_m3u8_with_url_mapper,
-    HlsResourceKind, MAX_M3U8_URLS,
+    classify_hls_playlist, percent_encode, rewrite_m3u8, rewrite_m3u8_with_typed_url_mapper,
+    rewrite_m3u8_with_url_mapper, HlsPlaylistKind, HlsResourceKind, MAX_M3U8_URLS,
 };
 pub use mpd::{rewrite_mpd_with_url_mapper, MpdResourceKind};
 pub(crate) use redirect::{

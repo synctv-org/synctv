@@ -129,6 +129,7 @@ fn playback_media(
         format,
         expire_at: expires_at.and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0)),
         metadata: None,
+        p2p_swarm_id: None,
         provider,
     }
 }
@@ -160,7 +161,7 @@ fn mark_emby_playback_resources(result: &mut PlaybackResult, version: &str, expi
             .enumerate()
             .filter_map(|(url_index, media)| {
                 let url = media.upstream_url()?.to_string();
-                Some(playback_media(
+                let mut proxy = playback_media(
                     media.name.clone(),
                     media.format.clone(),
                     media.expire_at.map(|dt| dt.timestamp()),
@@ -185,7 +186,9 @@ fn mark_emby_playback_resources(result: &mut PlaybackResult, version: &str, expi
                             }
                         },
                     ),
-                ))
+                );
+                proxy.p2p_swarm_id.clone_from(&media.p2p_swarm_id);
+                Some(proxy)
             })
             .collect();
         proxy_info.subtitles = original_info
@@ -196,7 +199,8 @@ fn mark_emby_playback_resources(result: &mut PlaybackResult, version: &str, expi
                 name: subtitle.name().to_string(),
                 language: subtitle.language().to_string(),
                 format: subtitle.format().to_string(),
-                provider: PlaybackSubtitleProvider::Emby(PlaybackEmbySubtitle {
+                p2p_swarm_id: subtitle.p2p_swarm_id.clone(),
+                provider: PlaybackSubtitleProvider::Emby(PlaybackEmbySubtitle::Proxy {
                     version: version.to_string(),
                     expires_at,
                     mode_name: mode_name.clone(),
@@ -1347,9 +1351,6 @@ impl EmbyProvider {
 
         let mut playback_infos = HashMap::new();
 
-        // Emby session-based URLs: default to 30 minutes
-        let emby_expires_at = crate::SystemClock.now().timestamp() + 30 * 60;
-
         // Auth headers for Emby: use X-Emby-Token header instead of
         // embedding api_key in query strings to avoid credential exposure
         // in URLs (which end up in logs, browser history, Referer headers).
@@ -1380,12 +1381,6 @@ impl EmbyProvider {
                 .iter()
                 .filter(|stream| stream.r#type == "Subtitle")
                 .map(|stream| {
-                    let subtitle_index = usize::try_from(stream.index).map_err(|_| {
-                        ProviderError::InvalidConfig(format!(
-                            "Invalid Emby subtitle stream index: {}",
-                            stream.index
-                        ))
-                    })?;
                     let subtitle_url = emby_server_url(
                         &config.host,
                         &format!(
@@ -1401,13 +1396,19 @@ impl EmbyProvider {
                         language: stream.language.clone(),
                         name: stream.display_title.clone(),
                         format: stream.codec.to_lowercase(),
-                        provider: PlaybackSubtitleProvider::Emby(PlaybackEmbySubtitle {
-                            version: String::new(),
-                            expires_at: emby_expires_at,
-                            mode_name: mode_name.clone(),
-                            subtitle_index,
+                        p2p_swarm_id: Some(super::provider_p2p_swarm_id(
+                            Self::NAME,
+                            config.provider_instance_name.as_deref(),
+                            "subtitle",
+                            &format!(
+                                "item:{}:source:{}:stream:{}",
+                                config.item_id, source.id, stream.index
+                            ),
+                        )),
+                        provider: PlaybackSubtitleProvider::Emby(PlaybackEmbySubtitle::Direct {
                             url: subtitle_url,
                             headers: emby_auth_headers.clone(),
+                            expire_at: None,
                         }),
                     })
                 })
@@ -1435,12 +1436,18 @@ impl EmbyProvider {
                     medias: vec![playback_media(
                         source.name.clone(),
                         format,
-                        Some(emby_expires_at),
+                        None,
                         PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct {
                             url: direct_url,
                             headers: emby_auth_headers.clone(),
                         }),
-                    )],
+                    )
+                    .with_p2p_swarm_id(super::provider_p2p_swarm_id(
+                        Self::NAME,
+                        config.provider_instance_name.as_deref(),
+                        "media",
+                        &format!("item:{}:source:{}:direct", config.item_id, source.id),
+                    ))],
                     default_media_index: Some(0),
                     subtitles,
                     default_subtitle_index: None,
@@ -1456,15 +1463,23 @@ impl EmbyProvider {
                     .get_mut(&mode_name)
                     .expect("media source mode was inserted above");
                 let transcode_index = info.medias.len();
-                info.medias.push(playback_media(
-                    "Transcode".to_string(),
-                    "hls".to_string(),
-                    Some(emby_expires_at),
-                    PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct {
-                        url: transcode_url,
-                        headers: emby_auth_headers.clone(),
-                    }),
-                ));
+                info.medias.push(
+                    playback_media(
+                        "Transcode".to_string(),
+                        "hls".to_string(),
+                        None,
+                        PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct {
+                            url: transcode_url,
+                            headers: emby_auth_headers.clone(),
+                        }),
+                    )
+                    .with_p2p_swarm_id(super::provider_p2p_swarm_id(
+                        Self::NAME,
+                        config.provider_instance_name.as_deref(),
+                        "media",
+                        &format!("item:{}:source:{}:transcode", config.item_id, source.id),
+                    )),
+                );
                 if playback_client_profile.is_some_and(|profile| {
                     matches!(
                         profile.stream_preference,
@@ -2817,5 +2832,65 @@ mod tests {
 
         assert_eq!(first, repeated);
         assert_ne!(first, other_room);
+    }
+
+    #[test]
+    fn proxy_marker_signs_subtitles_without_changing_direct_tracks() {
+        let direct_subtitle = PlaybackSubtitle {
+            name: "English".to_string(),
+            language: "en".to_string(),
+            format: "vtt".to_string(),
+            p2p_swarm_id: None,
+            provider: PlaybackSubtitleProvider::Emby(PlaybackEmbySubtitle::Direct {
+                url: "https://emby.example/subtitle.vtt".to_string(),
+                headers: HashMap::from([("X-Emby-Token".to_string(), "secret".to_string())]),
+                expire_at: None,
+            }),
+        };
+        let mut result = PlaybackResult {
+            playback_infos: HashMap::from([(
+                "source".to_string(),
+                PlaybackInfo {
+                    thumbnail: None,
+                    medias: vec![playback_media(
+                        "Direct".to_string(),
+                        "mp4".to_string(),
+                        None,
+                        PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct {
+                            url: "https://emby.example/video.mp4".to_string(),
+                            headers: HashMap::new(),
+                        }),
+                    )],
+                    default_media_index: Some(0),
+                    subtitles: vec![direct_subtitle],
+                    default_subtitle_index: Some(0),
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                },
+            )]),
+            default_mode: "source".to_string(),
+            provider: EmbyProvider::NAME.to_string(),
+            provider_instance_name: None,
+            duration_seconds: Some(60.0),
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
+            metadata: None,
+        };
+
+        mark_emby_playback_resources(&mut result, "version-1", 1234);
+
+        assert!(matches!(
+            result.playback_infos["source"].subtitles[0].provider,
+            PlaybackSubtitleProvider::Emby(PlaybackEmbySubtitle::Direct { .. })
+        ));
+        assert!(matches!(
+            &result.playback_infos["proxy_source"].subtitles[0].provider,
+            PlaybackSubtitleProvider::Emby(PlaybackEmbySubtitle::Proxy {
+                version,
+                expires_at: 1234,
+                mode_name,
+                subtitle_index: 0,
+                ..
+            }) if version == "version-1" && mode_name == "source"
+        ));
     }
 }

@@ -42,6 +42,16 @@ pub struct TrueNasBind {
     pub provider_instance_name: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct TrueNasHlsResourceRequest<'a> {
+    pub version: &'a str,
+    pub mode_name: &'a str,
+    pub media_index: usize,
+    pub target_url: &'a str,
+    pub is_manifest: bool,
+    pub range_header: Option<&'a str>,
+}
+
 #[derive(Debug, Clone)]
 pub struct TrueNasListResponse {
     pub content: Vec<TrueNasFileItem>,
@@ -288,17 +298,12 @@ impl TrueNasProvider {
             .get(mode_name)
             .and_then(|info| info.medias.get(media_index))
             .ok_or(ProviderError::NotFound)?;
-        let PlaybackMediaProvider::TrueNas(PlaybackTrueNasMedia::Proxy {
-            credential_owner_id,
-            server_id,
-            path,
-            ..
-        }) = &media.provider
-        else {
+        let PlaybackMediaProvider::TrueNas(provider) = &media.provider else {
             return Err(ProviderError::InvalidConfig(
                 "TrueNAS cached playback resource is invalid".to_string(),
             ));
         };
+        let (credential_owner_id, server_id, path) = resource_descriptor(provider);
         let owner = credential_owner_id
             .parse::<UserId>()
             .map_err(ProviderError::InvalidConfig)?;
@@ -308,6 +313,90 @@ impl TrueNasProvider {
             ticket.url.to_string(),
             HashMap::new(),
             range_header,
+        )
+    }
+
+    pub async fn get_hls_manifest(
+        &self,
+        store: Option<&Arc<dyn super::ProviderStore>>,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<super::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let media = versioned
+            .result
+            .playback_infos
+            .get(mode_name)
+            .and_then(|info| info.medias.get(media_index))
+            .ok_or(ProviderError::NotFound)?;
+        if !super::playback_media_is_hls(mode_name, media) {
+            return Err(ProviderError::InvalidConfig(
+                "TrueNAS HLS manifest request references a non-HLS media resource".to_string(),
+            ));
+        }
+        let PlaybackMediaProvider::TrueNas(provider) = &media.provider else {
+            return Err(ProviderError::InvalidConfig(
+                "TrueNAS cached HLS resource is invalid".to_string(),
+            ));
+        };
+        let (owner, server_id, path) = resource_descriptor(provider);
+        let owner = owner
+            .parse::<UserId>()
+            .map_err(ProviderError::InvalidConfig)?;
+        let auth = self.authenticated(owner, server_id).await?;
+        let ticket = auth.client.download_ticket(&auth.api_key, path).await?;
+        super::playback_transport::transport_action_for_storage_hls_target(
+            ticket.url.to_string(),
+            HashMap::new(),
+            path,
+            true,
+            None,
+        )
+    }
+
+    pub async fn get_hls_resource(
+        &self,
+        store: Option<&Arc<dyn super::ProviderStore>>,
+        request: TrueNasHlsResourceRequest<'_>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<super::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, request.version, request_context)
+                .await?;
+        let media = versioned
+            .result
+            .playback_infos
+            .get(request.mode_name)
+            .and_then(|info| info.medias.get(request.media_index))
+            .ok_or(ProviderError::NotFound)?;
+        if !super::playback_media_is_hls(request.mode_name, media) {
+            return Err(ProviderError::InvalidConfig(
+                "TrueNAS HLS child request references a non-HLS media resource".to_string(),
+            ));
+        }
+        let PlaybackMediaProvider::TrueNas(provider) = &media.provider else {
+            return Err(ProviderError::InvalidConfig(
+                "TrueNAS cached HLS resource is invalid".to_string(),
+            ));
+        };
+        let (owner, server_id, root_path) = resource_descriptor(provider);
+        let path =
+            super::playback_transport::storage_hls_resource_path(root_path, request.target_url)?;
+        validate_file_path(&path)?;
+        let owner = owner
+            .parse::<UserId>()
+            .map_err(ProviderError::InvalidConfig)?;
+        let auth = self.authenticated(owner, server_id).await?;
+        let ticket = auth.client.download_ticket(&auth.api_key, &path).await?;
+        super::playback_transport::transport_action_for_storage_hls_target(
+            ticket.url.to_string(),
+            HashMap::new(),
+            &path,
+            request.is_manifest,
+            request.range_header,
         )
     }
 
@@ -339,18 +428,7 @@ impl TrueNasProvider {
         let PlaybackMediaProvider::TrueNas(provider) = &media.provider else {
             return Err(ProviderError::NotFound);
         };
-        let (owner, server_id) = match provider {
-            PlaybackTrueNasMedia::Refresh {
-                credential_owner_id,
-                server_id,
-                ..
-            }
-            | PlaybackTrueNasMedia::Proxy {
-                credential_owner_id,
-                server_id,
-                ..
-            } => (credential_owner_id, server_id),
-        };
+        let (owner, server_id, _) = resource_descriptor(provider);
         let owner = owner
             .parse::<UserId>()
             .map_err(ProviderError::InvalidConfig)?;
@@ -431,6 +509,15 @@ impl MediaProvider for TrueNasProvider {
             .next()
             .unwrap_or("TrueNAS media")
             .to_string();
+        let media_swarm_descriptor = format!(
+            "server:{}:path:{}:device:{}:inode:{}:size:{}:mtime:{}",
+            config.server_id,
+            config.path,
+            stat.dev,
+            stat.inode,
+            stat.size,
+            stat.mtime.to_bits()
+        );
         let metadata = TrueNasPlaybackMetadata {
             realpath: stat.realpath,
             size: stat.size,
@@ -453,7 +540,7 @@ impl MediaProvider for TrueNasProvider {
             user: stat.user,
             group: stat.group,
         };
-        let subtitles = discover_subtitles(&auth, &config.path).await?;
+        let subtitles = discover_subtitles(&auth, &config.server_id, &config.path).await?;
         let mut playback_infos = HashMap::new();
         playback_infos.insert(
             "original".to_string(),
@@ -464,6 +551,12 @@ impl MediaProvider for TrueNasProvider {
                     format: detect_direct_url_format(&config.path).to_string(),
                     expire_at: None,
                     metadata: None,
+                    p2p_swarm_id: Some(super::provider_p2p_swarm_id(
+                        Self::NAME,
+                        auth.instance_name.as_deref(),
+                        "media",
+                        &media_swarm_descriptor,
+                    )),
                     provider: PlaybackMediaProvider::TrueNas(PlaybackTrueNasMedia::Refresh {
                         credential_owner_id: owner.to_string(),
                         server_id: config.server_id.clone(),
@@ -805,6 +898,7 @@ fn mark_playback_resources(result: &mut PlaybackResult, version: &str, expires_a
 
 async fn discover_subtitles(
     auth: &AuthenticatedTrueNas,
+    server_id: &str,
     media_path: &str,
 ) -> Result<Vec<PlaybackSubtitle>, ProviderError> {
     let parent = parent_path(media_path);
@@ -819,6 +913,15 @@ async fn discover_subtitles(
             name: item.name.clone(),
             language: subtitle_language(media_path, &item.name),
             format: subtitle_format(&item.name).unwrap_or_default().to_string(),
+            p2p_swarm_id: Some(super::provider_p2p_swarm_id(
+                TrueNasProvider::NAME,
+                auth.instance_name.as_deref(),
+                "subtitle",
+                &format!(
+                    "server:{server_id}:path:{}:size:{}:allocation:{}",
+                    item.path, item.size, item.allocation_size
+                ),
+            )),
             provider: PlaybackSubtitleProvider::TrueNas(PlaybackTrueNasSubtitle {
                 version: String::new(),
                 expires_at: 0,
@@ -981,9 +1084,111 @@ fn enough_for_next(media: &[DirectoryItem], target: &ProviderTarget, play_mode: 
     }
 }
 
+fn resource_descriptor(provider: &PlaybackTrueNasMedia) -> (&str, &str, &str) {
+    match provider {
+        PlaybackTrueNasMedia::Refresh {
+            credential_owner_id,
+            server_id,
+            path,
+        }
+        | PlaybackTrueNasMedia::Proxy {
+            credential_owner_id,
+            server_id,
+            path,
+            ..
+        } => (credential_owner_id, server_id, path),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{related_stem, subtitle_format, subtitle_language};
+    use super::*;
+    use crate::provider::{
+        InMemoryProviderStore, ProviderStore, ProviderStoreExt, VersionedPlayback,
+    };
+
+    #[tokio::test]
+    async fn resource_action_accepts_refresh_media_from_version_mapping() {
+        let version = "truenas-refresh";
+        let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(16));
+        let media = PlaybackTrueNasMedia::Refresh {
+            credential_owner_id: "42".to_string(),
+            server_id: "truenas-main".to_string(),
+            path: "/mnt/tank/Videos/Movie.mkv".to_string(),
+        };
+        let versioned = VersionedPlayback {
+            version: version.to_string(),
+            result: PlaybackResult {
+                playback_infos: HashMap::from([(
+                    "proxy".to_string(),
+                    PlaybackInfo {
+                        thumbnail: None,
+                        medias: vec![PlaybackMedia {
+                            name: "Movie".to_string(),
+                            format: "mkv".to_string(),
+                            expire_at: None,
+                            metadata: None,
+                            p2p_swarm_id: None,
+                            provider: PlaybackMediaProvider::TrueNas(media),
+                        }],
+                        default_media_index: Some(0),
+                        subtitles: Vec::new(),
+                        default_subtitle_index: None,
+                        danmakus: Vec::new(),
+                        default_danmaku_index: None,
+                    },
+                )]),
+                default_mode: "proxy".to_string(),
+                provider: TrueNasProvider::NAME.to_string(),
+                provider_instance_name: None,
+                duration_seconds: None,
+                playback_kind: Some(crate::models::PlaybackKind::Regular),
+                metadata: None,
+            },
+            expires_at: crate::SystemClock.now().timestamp() + 60,
+            playback_context: None,
+        };
+        store
+            .set(&format!("v:{version}"), &versioned, Duration::from_mins(1))
+            .await
+            .expect("version mapping should be stored");
+
+        let provider = TrueNasProvider::with_http_client(reqwest::Client::new());
+        let Err(error) = provider
+            .get_resource(Some(&store), version, "proxy", 0, None, None)
+            .await
+        else {
+            panic!("missing credentials should prevent a successful action");
+        };
+
+        assert!(matches!(
+            error,
+            ProviderError::Internal(message)
+                if message == "TrueNAS credential repository is unavailable"
+        ));
+    }
+
+    #[test]
+    fn resource_descriptor_accepts_refresh_and_proxy_media() {
+        let refresh = PlaybackTrueNasMedia::Refresh {
+            credential_owner_id: "42".to_string(),
+            server_id: "truenas-main".to_string(),
+            path: "/mnt/tank/Videos/Movie.mkv".to_string(),
+        };
+        let proxy = PlaybackTrueNasMedia::Proxy {
+            version: "version".to_string(),
+            expires_at: 1_800_000_000,
+            mode_name: "direct".to_string(),
+            media_index: 0,
+            credential_owner_id: "42".to_string(),
+            server_id: "truenas-main".to_string(),
+            path: "/mnt/tank/Videos/Movie.mkv".to_string(),
+        };
+
+        let expected = ("42", "truenas-main", "/mnt/tank/Videos/Movie.mkv");
+        assert_eq!(resource_descriptor(&refresh), expected);
+        assert_eq!(resource_descriptor(&proxy), expected);
+    }
 
     #[test]
     fn discovers_only_related_subtitle_names() {

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use futures::FutureExt;
 use synctv_proto::playback_provider::douyin::douyin_playback_provider_service_server::DouyinPlaybackProviderService;
 use synctv_proto::playback_provider::douyin::{
-    DouyinDanmakuEvent, DouyinResourceResponse, DouyinSegmentResponse, GetDouyinResourceRequest,
-    GetDouyinSegmentRequest, WatchDouyinDanmakuRequest,
+    DouyinDanmakuEvent, DouyinHlsResourceResponse, DouyinResourceResponse,
+    GetDouyinHlsResourceRequest, GetDouyinResourceRequest, WatchDouyinDanmakuRequest,
 };
 use tonic::{Request, Response, Status};
 
@@ -36,7 +36,7 @@ impl DouyinPlaybackProviderGrpcService {
 #[allow(clippy::result_large_err)]
 impl DouyinPlaybackProviderService for DouyinPlaybackProviderGrpcService {
     type GetResourceStream = GrpcResponseStream<DouyinResourceResponse>;
-    type GetSegmentStream = GrpcResponseStream<DouyinSegmentResponse>;
+    type GetHlsResourceStream = GrpcResponseStream<DouyinHlsResourceResponse>;
     type WatchDanmakuStream = GrpcResponseStream<DouyinDanmakuEvent>;
 
     async fn get_resource(
@@ -60,17 +60,17 @@ impl DouyinPlaybackProviderService for DouyinPlaybackProviderGrpcService {
         .await
     }
 
-    async fn get_segment(
+    async fn get_hls_resource(
         &self,
-        request: Request<GetDouyinSegmentRequest>,
-    ) -> Result<Response<Self::GetSegmentStream>, Status> {
+        request: Request<GetDouyinHlsResourceRequest>,
+    ) -> Result<Response<Self::GetHlsResourceStream>, Status> {
         let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
         execute_playback_provider_stream(state.clone(), metadata, move |request_control| {
             let state = state.clone();
             async move {
-                synctv_api_common::playback_provider::douyin::get_douyin_segment(
+                synctv_api_common::playback_provider::douyin::get_douyin_hls_resource(
                     deps(&state, Some(&request_control)),
                     req,
                 )

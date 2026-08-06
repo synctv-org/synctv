@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use crate::models::{MediaId, RoomId, SourceProvider, UserId};
 use crate::provider::{
-    AlistHlsResourceRequest, BilibiliDashResourceRequest, BilibiliHlsResourceRequest,
-    BilibiliProvider, DirectUrlDashResourceRequest, DirectUrlHlsResourceRequest,
-    EmbyHlsResourceRequest, ExecutionControl, PlaybackTransportAction, ProviderAccessService,
-    ProviderContext, ProviderError, ProviderSet,
+    AlistFileStreamRequest, AlistHlsResourceRequest, BilibiliDashResourceRequest,
+    BilibiliHlsResourceRequest, BilibiliProvider, DirectUrlDashResourceRequest,
+    DirectUrlHlsResourceRequest, EmbyHlsResourceRequest, ExecutionControl, HlsResourceRequest,
+    PlaybackTransportAction, ProviderAccessService, ProviderContext, ProviderError, ProviderSet,
 };
 use crate::provider::{LiveFlvAccess, PlaybackTransportServices};
 use crate::provider::{ProviderStore, ProviderStoreResolver};
@@ -36,12 +36,15 @@ impl AlistPlaybackProviderService {
             .providers
             .alist
             .get_file_stream(
+                AlistFileStreamRequest {
+                    version,
+                    mode_name,
+                    url_index,
+                    range_header: range,
+                },
                 Some(&store),
-                version,
-                mode_name,
-                url_index,
+                self.runtime.provider_access_service.as_ref(),
                 request_control,
-                range,
             )
             .await
     }
@@ -62,6 +65,7 @@ impl AlistPlaybackProviderService {
                 version,
                 mode_name,
                 url_index,
+                self.runtime.provider_access_service.as_ref(),
                 request_control,
             )
             .await
@@ -76,7 +80,12 @@ impl AlistPlaybackProviderService {
         self.runtime
             .providers
             .alist
-            .get_transcoded_hls_resource(Some(&store), request, request_control)
+            .get_transcoded_hls_resource(
+                Some(&store),
+                request,
+                self.runtime.provider_access_service.as_ref(),
+                request_control,
+            )
             .await
     }
 
@@ -96,6 +105,7 @@ impl AlistPlaybackProviderService {
                 version,
                 mode_name,
                 subtitle_index,
+                self.runtime.provider_access_service.as_ref(),
                 request_control,
             )
             .await
@@ -111,6 +121,24 @@ impl AlistPlaybackProviderService {
             .providers
             .alist
             .get_thumbnail(Some(&store), version, request_control)
+            .await
+    }
+
+    pub async fn invalidate_playback_access(
+        &self,
+        version: &str,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<(), ProviderError> {
+        self.runtime
+            .providers
+            .alist
+            .invalidate_playback_access(
+                Some(&store),
+                version,
+                self.runtime.provider_access_service.as_ref(),
+                request_control,
+            )
             .await
     }
 }
@@ -464,6 +492,40 @@ impl TrueNasPlaybackProviderService {
             .await
     }
 
+    pub async fn hls_manifest_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .truenas
+            .get_hls_manifest(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+            )
+            .await
+    }
+
+    pub async fn hls_resource_action(
+        &self,
+        request: crate::provider::TrueNasHlsResourceRequest<'_>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .truenas
+            .get_hls_resource(Some(&store), request, request_control)
+            .await
+    }
+
     pub async fn subtitle_action(
         &self,
         version: &str,
@@ -517,6 +579,40 @@ impl SeafilePlaybackProviderService {
             .await
     }
 
+    pub async fn hls_manifest_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .seafile
+            .get_hls_manifest(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+            )
+            .await
+    }
+
+    pub async fn hls_resource_action(
+        &self,
+        request: crate::provider::SeafileHlsResourceRequest<'_>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .seafile
+            .get_hls_resource(Some(&store), request, request_control)
+            .await
+    }
+
     pub async fn subtitle_action(
         &self,
         version: &str,
@@ -567,6 +663,40 @@ impl NextcloudPlaybackProviderService {
                 request_control,
                 range,
             )
+            .await
+    }
+
+    pub async fn hls_manifest_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .nextcloud
+            .get_hls_manifest(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+            )
+            .await
+    }
+
+    pub async fn hls_resource_action(
+        &self,
+        request: crate::provider::NextcloudHlsResourceRequest<'_>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .nextcloud
+            .get_hls_resource(Some(&store), request, request_control)
             .await
     }
 
@@ -692,6 +822,40 @@ impl QnapPlaybackProviderService {
                 request_control,
                 range,
             )
+            .await
+    }
+
+    pub async fn hls_manifest_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .qnap
+            .get_hls_manifest(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+            )
+            .await
+    }
+
+    pub async fn hls_resource_action(
+        &self,
+        request: crate::provider::QnapHlsResourceRequest<'_>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .qnap
+            .get_hls_resource(Some(&store), request, request_control)
             .await
     }
 
@@ -904,12 +1068,17 @@ impl AcFunPlaybackProviderService {
             .await
     }
 
-    pub fn segment_action(
+    pub async fn hls_resource_action(
         &self,
-        target_url: String,
-        range: Option<&str>,
+        request: HlsResourceRequest<'_>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
     ) -> Result<PlaybackTransportAction, ProviderError> {
-        self.runtime.providers.acfun.get_segment(target_url, range)
+        self.runtime
+            .providers
+            .acfun
+            .get_hls_resource(Some(&store), request, request_control)
+            .await
     }
 
     pub async fn danmaku_file_action(
@@ -1058,12 +1227,17 @@ impl DouyinPlaybackProviderService {
             .await
     }
 
-    pub fn segment_action(
+    pub async fn hls_resource_action(
         &self,
-        target_url: String,
-        range: Option<&str>,
+        request: HlsResourceRequest<'_>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
     ) -> Result<PlaybackTransportAction, ProviderError> {
-        self.runtime.providers.douyin.get_segment(target_url, range)
+        self.runtime
+            .providers
+            .douyin
+            .get_hls_resource(Some(&store), request, request_control)
+            .await
     }
 
     pub async fn watch_danmaku(
@@ -1119,12 +1293,17 @@ impl TikTokPlaybackProviderService {
             .await
     }
 
-    pub fn segment_action(
+    pub async fn hls_resource_action(
         &self,
-        target_url: String,
-        range: Option<&str>,
+        request: HlsResourceRequest<'_>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
     ) -> Result<PlaybackTransportAction, ProviderError> {
-        self.runtime.providers.tiktok.get_segment(target_url, range)
+        self.runtime
+            .providers
+            .tiktok
+            .get_hls_resource(Some(&store), request, request_control)
+            .await
     }
 
     pub async fn subtitle_action(

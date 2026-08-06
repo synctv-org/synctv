@@ -3,8 +3,9 @@ use std::sync::Arc;
 use futures::FutureExt;
 use synctv_proto::playback_provider::qnap::qnap_playback_provider_service_server::QnapPlaybackProviderService;
 use synctv_proto::playback_provider::qnap::{
-    GetQnapResourceRequest, GetQnapSubtitleRequest, GetQnapThumbnailRequest, QnapResourceResponse,
-    QnapSubtitleResponse, QnapThumbnailResponse,
+    GetQnapHlsManifestRequest, GetQnapHlsResourceRequest, GetQnapResourceRequest,
+    GetQnapSubtitleRequest, GetQnapThumbnailRequest, QnapHlsManifestResponse,
+    QnapHlsResourceResponse, QnapResourceResponse, QnapSubtitleResponse, QnapThumbnailResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -36,6 +37,8 @@ impl QnapPlaybackProviderGrpcService {
 #[allow(clippy::result_large_err)]
 impl QnapPlaybackProviderService for QnapPlaybackProviderGrpcService {
     type GetResourceStream = GrpcResponseStream<QnapResourceResponse>;
+    type GetHlsManifestStream = GrpcResponseStream<QnapHlsManifestResponse>;
+    type GetHlsResourceStream = GrpcResponseStream<QnapHlsResourceResponse>;
     type GetSubtitleStream = GrpcResponseStream<QnapSubtitleResponse>;
     type GetThumbnailStream = GrpcResponseStream<QnapThumbnailResponse>;
 
@@ -50,6 +53,48 @@ impl QnapPlaybackProviderService for QnapPlaybackProviderGrpcService {
             let state = state.clone();
             async move {
                 synctv_api_common::playback_provider::qnap::get_qnap_resource(
+                    deps(&state, Some(&control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn get_hls_manifest(
+        &self,
+        request: Request<GetQnapHlsManifestRequest>,
+    ) -> Result<Response<Self::GetHlsManifestStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+        execute_playback_provider_stream(state.clone(), metadata, move |control| {
+            let state = state.clone();
+            async move {
+                synctv_api_common::playback_provider::qnap::get_qnap_hls_manifest(
+                    deps(&state, Some(&control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn get_hls_resource(
+        &self,
+        request: Request<GetQnapHlsResourceRequest>,
+    ) -> Result<Response<Self::GetHlsResourceStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+        execute_playback_provider_stream(state.clone(), metadata, move |control| {
+            let state = state.clone();
+            async move {
+                synctv_api_common::playback_provider::qnap::get_qnap_hls_resource(
                     deps(&state, Some(&control)),
                     req,
                 )

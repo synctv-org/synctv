@@ -193,23 +193,63 @@ impl AcFunProvider {
                     && quality.bitrate == *bitrate
             })
             .ok_or(ProviderError::NotFound)?;
-        super::playback_transport::transport_action_for_target_url(
-            quality.url,
-            acfun_headers(resource.kind),
-            range_header,
-        )
+        let headers = acfun_headers(resource.kind);
+        if *format == AcFunPlaybackFormat::Hls {
+            Ok(super::PlaybackTransportAction::M3u8Rewrite {
+                url: quality.url,
+                headers,
+            })
+        } else {
+            Ok(super::PlaybackTransportAction::FetchAndForward {
+                url: quality.url,
+                headers,
+                range_header: range_header.map(ToString::to_string),
+            })
+        }
     }
 
-    pub fn get_segment(
+    pub async fn get_hls_resource(
         &self,
-        target_url: String,
-        range_header: Option<&str>,
+        store: Option<&Arc<dyn super::ProviderStore>>,
+        request: super::HlsResourceRequest<'_>,
+        request_context: Option<&super::ExecutionControl>,
     ) -> Result<super::PlaybackTransportAction, ProviderError> {
-        super::playback_transport::transport_action_for_target_url(
-            target_url,
-            acfun_headers(AcFunResourceKind::Video),
-            range_header,
-        )
+        let versioned =
+            super::playback_transport::lookup_versioned(store, request.version, request_context)
+                .await?;
+        let media = versioned
+            .result
+            .playback_infos
+            .get(request.mode_name)
+            .and_then(|info| info.medias.get(request.media_index))
+            .ok_or(ProviderError::NotFound)?;
+        let PlaybackMediaProvider::AcFun(PlaybackAcFunMedia::Refresh {
+            resource_kind,
+            format: AcFunPlaybackFormat::Hls,
+            ..
+        }) = &media.provider
+        else {
+            return Err(ProviderError::InvalidConfig(
+                "AcFun HLS resource requires an HLS playback media".to_string(),
+            ));
+        };
+        let headers = acfun_headers(match resource_kind {
+            AcFunPlaybackResourceKind::Video => AcFunResourceKind::Video,
+            AcFunPlaybackResourceKind::Bangumi => AcFunResourceKind::Bangumi,
+            AcFunPlaybackResourceKind::Live => AcFunResourceKind::Live,
+        });
+        if request.is_manifest {
+            Ok(super::PlaybackTransportAction::M3u8Rewrite {
+                url: request.target_url.to_string(),
+                headers,
+            })
+        } else {
+            Ok(super::PlaybackTransportAction::FetchAndForward {
+                url: request.target_url.to_string(),
+                headers,
+                range_header: request.range_header.map(ToString::to_string),
+            })
+        }
     }
 
     pub async fn get_danmaku_file(
@@ -291,10 +331,20 @@ impl AcFunProvider {
                 AcFunStreamFormat::Hls => "hls",
                 AcFunStreamFormat::Flv => "flv",
             };
+            let vod_resource_descriptor = match playback.resource.kind {
+                AcFunResourceKind::Video | AcFunResourceKind::Bangumi => Some(format!(
+                    "{}:{}:query:{}",
+                    acfun_resource_kind_name(playback.resource.kind),
+                    playback.resource.id,
+                    playback.resource.query.as_deref().unwrap_or_default()
+                )),
+                AcFunResourceKind::Live => None,
+            };
             let danmaku = match playback.resource.kind {
                 AcFunResourceKind::Live => Some(PlaybackDanmaku {
                     name: "AcFun Live Danmaku".to_string(),
                     format: Some("synctv-acfun-live".to_string()),
+                    p2p_swarm_id: None,
                     provider: PlaybackDanmakuProvider::AcFun(PlaybackAcFunDanmaku::LiveRefresh {
                         media_index: 0,
                     }),
@@ -302,6 +352,9 @@ impl AcFunProvider {
                 AcFunResourceKind::Video | AcFunResourceKind::Bangumi => Some(PlaybackDanmaku {
                     name: "AcFun Danmaku".to_string(),
                     format: Some("synctv-acfun-vod".to_string()),
+                    p2p_swarm_id: vod_resource_descriptor.as_ref().map(|descriptor| {
+                        super::provider_p2p_swarm_id(Self::NAME, None, "danmaku", descriptor)
+                    }),
                     provider: PlaybackDanmakuProvider::AcFun(PlaybackAcFunDanmaku::FileRefresh {
                         media_index: 0,
                     }),
@@ -320,6 +373,21 @@ impl AcFunProvider {
                 });
             let media_index = info.medias.len();
             let bitrate = quality.bitrate;
+            let playback_format = playback_format(quality.format);
+            let p2p_swarm_id = vod_resource_descriptor.as_ref().map(|descriptor| {
+                super::provider_p2p_swarm_id(
+                    Self::NAME,
+                    None,
+                    "media",
+                    &format!(
+                        "{descriptor}:quality:{}:type:{}:format:{}:bitrate:{}",
+                        quality.name,
+                        quality.quality_type.as_deref().unwrap_or_default(),
+                        acfun_format_name(playback_format),
+                        quality.bitrate.unwrap_or_default()
+                    ),
+                )
+            });
             info.medias.push(PlaybackMedia {
                 name: quality.name.clone(),
                 format: format.to_string(),
@@ -333,13 +401,14 @@ impl AcFunProvider {
                     codec: quality.codec.clone(),
                     fps: quality.fps.and_then(|value| i32::try_from(value).ok()),
                 }),
+                p2p_swarm_id,
                 provider: PlaybackMediaProvider::AcFun(PlaybackAcFunMedia::Refresh {
                     resource_kind: resource_kind(playback.resource.kind),
                     resource_id: playback.resource.id.clone(),
                     query: playback.resource.query.clone(),
                     quality_name: quality.name,
                     quality_type: quality.quality_type,
-                    format: playback_format(quality.format),
+                    format: playback_format,
                     bitrate: quality.bitrate,
                 }),
             });
@@ -506,6 +575,21 @@ const fn playback_format(format: AcFunStreamFormat) -> AcFunPlaybackFormat {
     }
 }
 
+const fn acfun_resource_kind_name(kind: AcFunResourceKind) -> &'static str {
+    match kind {
+        AcFunResourceKind::Video => "video",
+        AcFunResourceKind::Bangumi => "bangumi",
+        AcFunResourceKind::Live => "live",
+    }
+}
+
+const fn acfun_format_name(format: AcFunPlaybackFormat) -> &'static str {
+    match format {
+        AcFunPlaybackFormat::Hls => "hls",
+        AcFunPlaybackFormat::Flv => "flv",
+    }
+}
+
 fn mark_acfun_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
     for (mode_name, info) in &mut result.playback_infos {
         for (media_index, media) in info.medias.iter_mut().enumerate() {
@@ -607,6 +691,10 @@ impl MediaProvider for AcFunProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::{
+        HlsResourceRequest, InMemoryProviderStore, ProviderStore, ProviderStoreExt,
+        VersionedPlayback,
+    };
     use synctv_media_providers::acfun::{AcFunPlayback, AcFunQuality};
 
     #[test]
@@ -655,6 +743,8 @@ mod tests {
         let info = &result.playback_infos[&result.default_mode];
         assert_eq!(result.duration_seconds, Some(90.0));
         assert_eq!(info.danmakus[0].format.as_deref(), Some("synctv-acfun-vod"));
+        assert!(info.medias[0].p2p_swarm_id.is_some());
+        assert!(info.danmakus[0].p2p_swarm_id.is_some());
         assert!(matches!(
             info.medias[0].provider,
             PlaybackMediaProvider::AcFun(PlaybackAcFunMedia::Refresh {
@@ -662,6 +752,85 @@ mod tests {
                 format: AcFunPlaybackFormat::Hls,
                 ..
             })
+        ));
+    }
+
+    #[tokio::test]
+    async fn hls_resource_restores_the_indexed_resource_referer() {
+        let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(8));
+        let result = PlaybackResult {
+            playback_infos: HashMap::from([(
+                "hls".to_string(),
+                PlaybackInfo {
+                    thumbnail: None,
+                    medias: vec![PlaybackMedia {
+                        name: "Live HLS".to_string(),
+                        format: "m3u8".to_string(),
+                        expire_at: None,
+                        metadata: None,
+                        p2p_swarm_id: None,
+                        provider: PlaybackMediaProvider::AcFun(PlaybackAcFunMedia::Refresh {
+                            resource_kind: AcFunPlaybackResourceKind::Live,
+                            resource_id: "123".to_string(),
+                            query: None,
+                            quality_name: "Live".to_string(),
+                            quality_type: None,
+                            format: AcFunPlaybackFormat::Hls,
+                            bitrate: None,
+                        }),
+                    }],
+                    default_media_index: Some(0),
+                    subtitles: Vec::new(),
+                    default_subtitle_index: None,
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                },
+            )]),
+            default_mode: "hls".to_string(),
+            provider: AcFunProvider::NAME.to_string(),
+            provider_instance_name: None,
+            duration_seconds: None,
+            playback_kind: Some(crate::models::PlaybackKind::Live),
+            metadata: None,
+        };
+        store
+            .set(
+                "v:test",
+                &VersionedPlayback {
+                    version: "test".to_string(),
+                    result,
+                    expires_at: crate::SystemClock.now().timestamp() + 60,
+                    playback_context: None,
+                },
+                Duration::from_mins(1),
+            )
+            .await
+            .expect("version mapping should store");
+
+        let action = AcFunProvider::new()
+            .get_hls_resource(
+                Some(&store),
+                HlsResourceRequest {
+                    version: "test",
+                    mode_name: "hls",
+                    media_index: 0,
+                    target_url: "https://cdn.example/live/segment.ts",
+                    is_manifest: false,
+                    range_header: Some("bytes=0-99"),
+                },
+                None,
+            )
+            .await
+            .expect("indexed HLS resource should resolve");
+
+        assert!(matches!(
+            action,
+            super::super::PlaybackTransportAction::FetchAndForward {
+                headers,
+                range_header: Some(range),
+                ..
+            } if headers.get("Referer").map(String::as_str) == Some("https://live.acfun.cn/")
+                && range == "bytes=0-99"
         ));
     }
 }

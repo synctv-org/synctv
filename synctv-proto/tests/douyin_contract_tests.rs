@@ -12,6 +12,9 @@ fn douyin_services_and_source_variants_are_registered() {
         .get_service_by_name("synctv.playback_provider.douyin.DouyinPlaybackProviderService")
         .expect("Douyin playback provider service descriptor");
     assert_eq!(playback.methods().count(), 3);
+    assert!(playback
+        .methods()
+        .any(|method| method.name() == "GetHlsResource"));
 
     let media = synctv_proto::source_config::MediaSourceConfig {
         provider: Some(media_source_config::Provider::Douyin(
@@ -75,4 +78,21 @@ fn douyin_services_and_source_variants_are_registered() {
             .kind(),
         Kind::Uint32
     );
+    let hls_request = synctv_proto::PLAYBACK_PROVIDER_DESCRIPTOR_POOL
+        .get_message_by_name("synctv.playback_provider.douyin.GetDouyinHlsResourceRequest")
+        .expect("Douyin HLS resource request descriptor");
+    assert_eq!(
+        hls_request
+            .get_field_by_name("media_index")
+            .expect("HLS media_index")
+            .kind(),
+        Kind::Uint32
+    );
+    assert!(matches!(
+        hls_request
+            .get_field_by_name("resource_kind")
+            .expect("HLS resource_kind")
+            .kind(),
+        Kind::Enum(_)
+    ));
 }

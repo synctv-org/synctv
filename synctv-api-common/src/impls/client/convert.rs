@@ -1520,6 +1520,7 @@ fn direct_url_media_source_config_to_proto(
                 url: media.url,
                 headers: media.headers,
                 format: media.format,
+                expires_at: media.expires_at,
             })
             .collect(),
         default_media_index: optional_index_to_proto(config.default_media_index),
@@ -1533,6 +1534,7 @@ fn direct_url_media_source_config_to_proto(
                     url: subtitle.url,
                     headers: subtitle.headers,
                     format: subtitle.format,
+                    expires_at: subtitle.expires_at,
                 },
             )
             .collect(),
@@ -1546,6 +1548,7 @@ fn direct_url_media_source_config_to_proto(
                     url: danmaku.url,
                     headers: danmaku.headers,
                     format: danmaku.format,
+                    expires_at: danmaku.expires_at,
                 },
             )
             .collect(),
@@ -2929,18 +2932,33 @@ pub fn try_playback_to_proto(
 ) -> Result<synctv_proto::client::Playback, crate::impls::ApiError> {
     validate_playback_result_shape(result)?;
 
-    let playback_infos = result
-        .playback_infos
-        .iter()
-        .map(|(mode, info)| {
-            Ok((
-                mode.clone(),
-                playback_info_to_proto(result, mode, info, public_id_codec, signing)?,
-            ))
-        })
-        .collect::<Result<_, crate::impls::ApiError>>()?;
+    let playback_infos: std::collections::HashMap<String, synctv_proto::client::PlaybackInfo> =
+        result
+            .playback_infos
+            .iter()
+            .map(|(mode, info)| {
+                Ok((
+                    mode.clone(),
+                    playback_info_to_proto(info, public_id_codec, signing)?,
+                ))
+            })
+            .collect::<Result<_, crate::impls::ApiError>>()?;
 
     let metadata = playback_metadata_to_proto(result, public_id_codec)?;
+    let expires_at = playback_infos
+        .values()
+        .flat_map(|info| {
+            info.medias
+                .iter()
+                .filter_map(|media| media.expire_at)
+                .chain(
+                    info.subtitles
+                        .iter()
+                        .filter_map(|subtitle| subtitle.expire_at),
+                )
+                .chain(info.danmakus.iter().filter_map(|danmaku| danmaku.expire_at))
+        })
+        .min();
 
     Ok(synctv_proto::client::Playback {
         media_id: result
@@ -2969,7 +2987,7 @@ pub fn try_playback_to_proto(
         playback_infos,
         default_mode: result.default_mode.clone(),
         metadata,
-        expires_at: None,
+        expires_at,
         duration_seconds: result.duration_seconds,
         playback_kind: playback_kind_to_proto(result.playback_kind),
         target: optional_provider_target_to_proto(result.target.as_ref()),
@@ -3090,6 +3108,7 @@ fn playback_metadata_to_proto(
                 fallback_format: metadata.fallback_format.clone(),
                 quality: metadata.quality,
                 room_id: metadata.room_id,
+                live_started_at: metadata.live_started_at,
             })
         }
         PlaybackMetadata::Emby(metadata) => {
@@ -3568,8 +3587,6 @@ fn proxy_resource_for_thumbnail(
 
 /// Convert models `PlaybackInfo` to proto `PlaybackInfo`
 fn playback_info_to_proto(
-    result: &synctv_core::models::media::PlaybackResult,
-    mode_name: &str,
     info: &synctv_core::models::media::PlaybackInfo,
     public_id_codec: &synctv_adapter::PublicIdCodec,
     signing: Option<&PlaybackHttpSigningContext<'_>>,
@@ -3589,8 +3606,7 @@ fn playback_info_to_proto(
         medias: info
             .medias
             .iter()
-            .enumerate()
-            .map(|(index, media)| playback_media_to_proto(result, mode_name, index, media, signing))
+            .map(|media| playback_media_to_proto(media, signing))
             .collect::<Result<_, _>>()?,
         default_media_index,
         subtitles: info
@@ -3616,38 +3632,26 @@ fn playback_info_to_proto(
 
 /// Convert models `PlaybackMedia` to proto `PlaybackMedia`.
 fn playback_media_to_proto(
-    result: &synctv_core::models::media::PlaybackResult,
-    mode_name: &str,
-    media_index: usize,
     media: &synctv_core::models::media::PlaybackMedia,
     signing: Option<&PlaybackHttpSigningContext<'_>>,
 ) -> Result<synctv_proto::client::PlaybackMedia, crate::impls::ApiError> {
-    let url_value = playback_media_url(media, signing)?;
-    let p2p_delivery =
-        synctv_core::provider::playback_media_p2p_delivery(result, mode_name, media_index, media)
-            .map(|delivery| {
-                let signing = signing.ok_or_else(|| {
-                    crate::impls::ApiError::Internal(
-                        "P2P media delivery requires playback signing context".to_string(),
-                    )
-                })?;
-                let swarm_ticket = signing.media_swarm_signing_key.sign_media_swarm_ticket(
-                    signing.room_id,
-                    signing.user_id,
-                    &delivery.swarm_id,
-                );
-                Ok::<_, crate::impls::ApiError>(synctv_proto::client::P2pMediaDelivery {
-                    swarm_id: delivery.swarm_id,
-                    swarm_ticket,
-                })
-            })
-            .transpose()?;
+    let (url_value, signed_expires_at) = playback_media_url(media, signing)?;
+    let expire_at = [
+        media.expire_at.map(|expires_at| expires_at.timestamp()),
+        signed_expires_at,
+    ]
+    .into_iter()
+    .flatten()
+    .min();
+    let p2p_delivery = synctv_core::provider::playback_media_p2p_delivery(media)
+        .map(|delivery| p2p_resource_delivery_to_proto(delivery, signing))
+        .transpose()?;
     Ok(synctv_proto::client::PlaybackMedia {
         name: media.name.clone(),
         url: require_non_empty_url(&url_value, "playback")?,
         headers: playback_media_headers_for_proto(media),
         format: media.format.clone(),
-        expire_at: media.expire_at.map(|dt| dt.timestamp()),
+        expire_at,
         metadata: media
             .metadata
             .as_ref()
@@ -3661,12 +3665,12 @@ fn playback_media_headers_for_proto(
     media: &synctv_core::models::media::PlaybackMedia,
 ) -> std::collections::HashMap<String, String> {
     use synctv_core::models::media::{
-        PlaybackAlistMedia, PlaybackBilibiliMedia, PlaybackDirectUrlMedia, PlaybackEmbyMedia,
-        PlaybackExternalMedia, PlaybackMediaProvider,
+        PlaybackAlistMedia, PlaybackBilibiliMedia, PlaybackCloudreveMedia, PlaybackDirectUrlMedia,
+        PlaybackEmbyMedia, PlaybackMediaProvider,
     };
 
     match &media.provider {
-        PlaybackMediaProvider::External(PlaybackExternalMedia { headers, .. })
+        PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia { headers, .. })
         | PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct { headers, .. })
         | PlaybackMediaProvider::Bilibili(
             PlaybackBilibiliMedia::Direct { headers, .. }
@@ -3696,12 +3700,17 @@ fn subtitle_to_proto(
     signing: Option<&PlaybackHttpSigningContext<'_>>,
 ) -> Result<synctv_proto::client::PlaybackSubtitle, crate::impls::ApiError> {
     let url_value = playback_subtitle_url(subtitle, signing)?;
+    let p2p_delivery = synctv_core::provider::playback_subtitle_p2p_delivery(subtitle)
+        .map(|delivery| p2p_resource_delivery_to_proto(delivery, signing))
+        .transpose()?;
     Ok(synctv_proto::client::PlaybackSubtitle {
         name: subtitle.name.clone(),
         language: subtitle.language.clone(),
         url: require_non_empty_url(&url_value, "subtitle")?,
         headers: client_visible_headers(&url_value, &subtitle.upstream_headers()),
         format: subtitle.format.clone(),
+        expire_at: subtitle.expiration_timestamp(),
+        p2p_delivery,
     })
 }
 
@@ -3711,11 +3720,36 @@ fn danmaku_to_proto(
     signing: Option<&PlaybackHttpSigningContext<'_>>,
 ) -> Result<synctv_proto::client::PlaybackDanmaku, crate::impls::ApiError> {
     let url_value = playback_danmaku_url(danmaku, public_id_codec, signing)?;
+    let p2p_delivery = synctv_core::provider::playback_danmaku_p2p_delivery(danmaku)
+        .map(|delivery| p2p_resource_delivery_to_proto(delivery, signing))
+        .transpose()?;
     Ok(synctv_proto::client::PlaybackDanmaku {
         name: danmaku.name.clone(),
         url: require_non_empty_url(&url_value, "danmaku")?,
         format: danmaku.format.clone(),
         headers: client_visible_headers(&url_value, &danmaku.upstream_headers()),
+        expire_at: danmaku.expiration_timestamp(),
+        p2p_delivery,
+    })
+}
+
+fn p2p_resource_delivery_to_proto(
+    delivery: synctv_core::provider::P2pResourceDelivery,
+    signing: Option<&PlaybackHttpSigningContext<'_>>,
+) -> Result<synctv_proto::client::P2pResourceDelivery, crate::impls::ApiError> {
+    let signing = signing.ok_or_else(|| {
+        crate::impls::ApiError::Internal(
+            "P2P resource delivery requires playback signing context".to_string(),
+        )
+    })?;
+    let swarm_ticket = signing.media_swarm_signing_key.sign_media_swarm_ticket(
+        signing.room_id,
+        signing.user_id,
+        &delivery.swarm_id,
+    );
+    Ok(synctv_proto::client::P2pResourceDelivery {
+        swarm_id: delivery.swarm_id,
+        swarm_ticket,
     })
 }
 
@@ -3757,24 +3791,23 @@ fn path_segment_encode(value: &str) -> String {
 fn playback_media_url(
     media: &synctv_core::models::media::PlaybackMedia,
     signing: Option<&PlaybackHttpSigningContext<'_>>,
-) -> Result<String, crate::impls::ApiError> {
+) -> Result<(String, Option<i64>), crate::impls::ApiError> {
     use synctv_core::models::media::{
         PlaybackAcFunMedia, PlaybackAlistMedia, PlaybackBilibiliMedia, PlaybackCctvMedia,
-        PlaybackDirectUrlMedia, PlaybackDouyinMedia, PlaybackDouyuMedia, PlaybackEmbyMedia,
-        PlaybackExternalMedia, PlaybackFnosMedia, PlaybackHuyaMedia, PlaybackLiveProxyMedia,
+        PlaybackCloudreveMedia, PlaybackDirectUrlMedia, PlaybackDouyinMedia, PlaybackDouyuMedia,
+        PlaybackEmbyMedia, PlaybackFnosMedia, PlaybackHuyaMedia, PlaybackLiveProxyMedia,
         PlaybackMediaProvider, PlaybackNextcloudMedia, PlaybackQnapMedia, PlaybackRtmpMedia,
         PlaybackSeafileMedia, PlaybackSynologyMedia, PlaybackTikTokMedia, PlaybackTrueNasMedia,
         PlaybackTwitchMedia, PlaybackYoutubeMedia,
     };
 
-    let direct = |media: &PlaybackExternalMedia| Ok(media.url.clone());
     let (provider, version, expires_at, path, resource) = match &media.provider {
-        PlaybackMediaProvider::External(media) => return direct(media),
-        PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct { url, .. })
+        PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia { url, .. })
+        | PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct { url, .. })
         | PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct { url, .. })
         | PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct { url, .. })
         | PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct { url, .. }) => {
-            return Ok(url.clone());
+            return Ok((url.clone(), None));
         }
         PlaybackMediaProvider::Alist(PlaybackAlistMedia::ProxyFile {
             version,
@@ -4147,7 +4180,7 @@ fn playback_media_url(
             "qnap",
             version,
             *expires_at,
-            "resources",
+            storage_media_resource_prefix(media),
             mode_name,
             *media_index,
         ),
@@ -4185,7 +4218,7 @@ fn playback_media_url(
             synctv_core::provider::NextcloudProvider::NAME,
             version,
             *expires_at,
-            "resources",
+            storage_media_resource_prefix(media),
             mode_name,
             *media_index,
         ),
@@ -4204,7 +4237,7 @@ fn playback_media_url(
             synctv_core::provider::SeafileProvider::NAME,
             version,
             *expires_at,
-            "resources",
+            storage_media_resource_prefix(media),
             mode_name,
             *media_index,
         ),
@@ -4223,7 +4256,7 @@ fn playback_media_url(
             synctv_core::provider::TrueNasProvider::NAME,
             version,
             *expires_at,
-            "resources",
+            storage_media_resource_prefix(media),
             mode_name,
             *media_index,
         ),
@@ -4238,8 +4271,11 @@ fn playback_media_url(
     let query = signed_provider_query(provider, &version, expires_at, resource, signing);
     let route_provider = playback_provider_route_slug(provider);
     let separator = if path.contains('?') { '&' } else { '?' };
-    Ok(format!(
-        "/api/playback-providers/{route_provider}/{encoded_version}/{path}{separator}{query}"
+    Ok((
+        format!(
+            "/api/playback-providers/{route_provider}/{encoded_version}/{path}{separator}{query}"
+        ),
+        Some(expires_at),
     ))
 }
 
@@ -4267,6 +4303,19 @@ fn versioned_indexed_resource(
         format!("{resource_prefix}/{mode}/{url_index}"),
         format!("{resource_prefix}/{mode_name}/{url_index}"),
     )
+}
+
+fn storage_media_resource_prefix(
+    media: &synctv_core::models::media::PlaybackMedia,
+) -> &'static str {
+    if matches!(
+        media.format.trim().to_ascii_lowercase().as_str(),
+        "m3u8" | "hls"
+    ) {
+        "hls-manifests"
+    } else {
+        "resources"
+    }
 }
 
 fn dash_manifest_resource(
@@ -4298,22 +4347,29 @@ fn playback_subtitle_url(
         PlaybackYoutubeSubtitle,
     };
     let (provider, version, expires_at, mode_name, subtitle_index) = match &subtitle.provider {
-        PlaybackSubtitleProvider::External(subtitle) => return Ok(subtitle.url.clone()),
-        PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle {
+        PlaybackSubtitleProvider::Cloudreve(subtitle) => return Ok(subtitle.url.clone()),
+        PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle::Refresh { url, .. })
+        | PlaybackSubtitleProvider::Bilibili(PlaybackBilibiliSubtitle::Direct { url, .. })
+        | PlaybackSubtitleProvider::DirectUrl(PlaybackDirectUrlSubtitle::Direct { url, .. })
+        | PlaybackSubtitleProvider::Emby(PlaybackEmbySubtitle::Direct { url, .. })
+        | PlaybackSubtitleProvider::Fnos(PlaybackFnosSubtitle::Direct { url, .. }) => {
+            return Ok(url.clone());
+        }
+        PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle::Proxy {
             version,
             expires_at,
             mode_name,
             subtitle_index,
             ..
         }) => ("alist", version, *expires_at, mode_name, *subtitle_index),
-        PlaybackSubtitleProvider::Bilibili(PlaybackBilibiliSubtitle {
+        PlaybackSubtitleProvider::Bilibili(PlaybackBilibiliSubtitle::Proxy {
             version,
             expires_at,
             mode_name,
             subtitle_index,
             ..
         }) => ("bilibili", version, *expires_at, mode_name, *subtitle_index),
-        PlaybackSubtitleProvider::DirectUrl(PlaybackDirectUrlSubtitle {
+        PlaybackSubtitleProvider::DirectUrl(PlaybackDirectUrlSubtitle::Proxy {
             version,
             expires_at,
             mode_name,
@@ -4326,14 +4382,14 @@ fn playback_subtitle_url(
             mode_name,
             *subtitle_index,
         ),
-        PlaybackSubtitleProvider::Emby(PlaybackEmbySubtitle {
+        PlaybackSubtitleProvider::Emby(PlaybackEmbySubtitle::Proxy {
             version,
             expires_at,
             mode_name,
             subtitle_index,
             ..
         }) => ("emby", version, *expires_at, mode_name, *subtitle_index),
-        PlaybackSubtitleProvider::Fnos(PlaybackFnosSubtitle {
+        PlaybackSubtitleProvider::Fnos(PlaybackFnosSubtitle::Proxy {
             version,
             expires_at,
             mode_name,
@@ -4464,8 +4520,11 @@ fn playback_danmaku_url(
         PlaybackDouyinDanmaku, PlaybackDouyuDanmaku, PlaybackHuyaDanmaku, PlaybackTwitchDanmaku,
     };
     match &danmaku.provider {
-        PlaybackDanmakuProvider::External(danmaku) => Ok(danmaku.url.clone()),
-        PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::File {
+        PlaybackDanmakuProvider::DirectUrl(danmaku) => Ok(danmaku.url.clone()),
+        PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::FileDirect { url, .. }) => {
+            Ok(url.clone())
+        }
+        PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::FileProxy {
             version,
             expires_at,
             danmaku_index,
@@ -4659,11 +4718,27 @@ mod playback_conversion_tests {
     use std::collections::HashMap;
     use synctv_core::models::media::{
         PlaybackAlistMedia, PlaybackBilibiliDanmaku, PlaybackBilibiliMedia, PlaybackDanmaku,
-        PlaybackDanmakuProvider, PlaybackDirectUrlMedia, PlaybackDouyuDanmaku, PlaybackDouyuMedia,
-        PlaybackExternalSubtitle, PlaybackHuyaDanmaku, PlaybackHuyaMedia, PlaybackInfo,
-        PlaybackLiveProxyMedia, PlaybackMedia, PlaybackMediaProvider, PlaybackResult,
-        PlaybackSubtitle, PlaybackSubtitleProvider,
+        PlaybackDanmakuProvider, PlaybackDirectUrlMedia, PlaybackDirectUrlSubtitle,
+        PlaybackDouyuDanmaku, PlaybackDouyuMedia, PlaybackHuyaDanmaku, PlaybackHuyaMedia,
+        PlaybackInfo, PlaybackLiveProxyMedia, PlaybackMedia, PlaybackMediaProvider,
+        PlaybackNextcloudMedia, PlaybackQnapMedia, PlaybackResult, PlaybackSeafileMedia,
+        PlaybackSubtitle, PlaybackSubtitleProvider, PlaybackTrueNasMedia, QnapPlaybackMode,
+        QnapPlaybackResource,
     };
+
+    fn direct_url_media(name: &str, url: &str) -> PlaybackMedia {
+        PlaybackMedia {
+            name: name.to_string(),
+            format: "mp4".to_string(),
+            expire_at: None,
+            metadata: None,
+            p2p_swarm_id: None,
+            provider: PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct {
+                url: url.to_string(),
+                headers: HashMap::new(),
+            }),
+        }
+    }
 
     fn signing_key() -> crate::proxy_signature::ProxySigningKey {
         crate::proxy_signature::ProxySigningKey::try_derive_from(
@@ -4740,6 +4815,98 @@ mod playback_conversion_tests {
             .expect("signed provider URL should include query")
     }
 
+    fn storage_proxy_provider(provider: &str, expires_at: i64) -> PlaybackMediaProvider {
+        match provider {
+            "nextcloud" => PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Proxy {
+                version: "storage v1".to_string(),
+                expires_at,
+                mode_name: "proxy mode".to_string(),
+                media_index: 0,
+                credential_owner_id: "42".to_string(),
+                server_id: "nextcloud-main".to_string(),
+                path: "/Videos/Movie.m3u8".to_string(),
+                file_id: 7,
+            }),
+            "qnap" => PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Proxy {
+                version: "storage v1".to_string(),
+                expires_at,
+                mode_name: "proxy mode".to_string(),
+                media_index: 0,
+                credential_owner_id: "42".to_string(),
+                server_id: "qnap-main".to_string(),
+                resource: QnapPlaybackResource {
+                    path: "/Videos/Movie.m3u8".to_string(),
+                    mode: QnapPlaybackMode::Original,
+                },
+            }),
+            "seafile" => PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Proxy {
+                version: "storage v1".to_string(),
+                expires_at,
+                mode_name: "proxy mode".to_string(),
+                media_index: 0,
+                credential_owner_id: "42".to_string(),
+                server_id: "seafile-main".to_string(),
+                repository_id: "library".to_string(),
+                path: "/Videos/Movie.m3u8".to_string(),
+                object_id: "object".to_string(),
+            }),
+            "truenas" => PlaybackMediaProvider::TrueNas(PlaybackTrueNasMedia::Proxy {
+                version: "storage v1".to_string(),
+                expires_at,
+                mode_name: "proxy mode".to_string(),
+                media_index: 0,
+                credential_owner_id: "42".to_string(),
+                server_id: "truenas-main".to_string(),
+                path: "/mnt/tank/Videos/Movie.m3u8".to_string(),
+            }),
+            _ => panic!("unsupported storage provider test case: {provider}"),
+        }
+    }
+
+    #[test]
+    fn storage_provider_media_routes_match_the_declared_format() {
+        let key = signing_key();
+        let signing = signing_context(&key);
+        let expires_at = synctv_core::SystemClock.now().timestamp() + 1800;
+
+        for provider in ["nextcloud", "qnap", "seafile", "truenas"] {
+            for (format, route) in [(" HLS ", "hls-manifests"), ("mp4", "resources")] {
+                let info = PlaybackInfo::builder()
+                    .add_media(PlaybackMedia {
+                        name: "Storage media".to_string(),
+                        format: format.to_string(),
+                        expire_at: None,
+                        metadata: None,
+                        p2p_swarm_id: None,
+                        provider: storage_proxy_provider(provider, expires_at),
+                    })
+                    .build();
+                let mut result = playback_result_with_mode("proxy mode", info);
+                result.provider = provider.to_string();
+                let proto = try_playback_to_proto(&result, &codec(), Some(&signing))
+                    .expect("storage playback should convert");
+                let media = &proto.playback_infos["proxy mode"].medias[0];
+                let expected_resource = format!("{route}/proxy mode/0");
+
+                assert_eq!(media.expire_at, Some(expires_at));
+                assert!(
+                    media.url.starts_with(&format!(
+                        "/api/playback-providers/{provider}/storage%20v1/{route}/proxy%20mode/0?"
+                    )),
+                    "unexpected {provider} {format} URL: {}",
+                    media.url
+                );
+                key.parse_and_verify_query(
+                    signed_query(&media.url),
+                    provider,
+                    "storage v1",
+                    &expected_resource,
+                )
+                .expect("storage signature should bind the selected route");
+            }
+        }
+    }
+
     #[test]
     fn direct_dash_manifest_preserves_bilibili_headers_for_clients() {
         let key = signing_key();
@@ -4758,6 +4925,7 @@ mod playback_conversion_tests {
                     .now()
                     .checked_add_signed(chrono::Duration::minutes(30)),
                 metadata: None,
+                p2p_swarm_id: None,
                 provider: PlaybackMediaProvider::Bilibili(
                     PlaybackBilibiliMedia::DirectDashManifest {
                         version: "v1".to_string(),
@@ -4795,16 +4963,16 @@ mod playback_conversion_tests {
                 format: "hls".to_string(),
                 expire_at: None,
                 metadata: None,
-                provider: PlaybackMediaProvider::External(
-                    synctv_core::models::media::PlaybackExternalMedia {
-                        url: "https://example.com/live.m3u8".to_string(),
-                        headers: HashMap::new(),
-                    },
-                ),
+                p2p_swarm_id: None,
+                provider: PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct {
+                    url: "https://example.com/live.m3u8".to_string(),
+                    headers: HashMap::new(),
+                }),
             })
             .add_danmaku(PlaybackDanmaku {
                 name: "Bilibili Live Danmaku".to_string(),
                 format: Some("synctv-bilibili-live".to_string()),
+                p2p_swarm_id: None,
                 provider: PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live {
                     room_id,
                     media_id,
@@ -4831,14 +4999,8 @@ mod playback_conversion_tests {
         let provider_info = synctv_core::provider::PlaybackInfo {
             thumbnail: None,
             medias: vec![
-                PlaybackMedia::simple(
-                    "primary".to_string(),
-                    "https://example.com/1.mp4".to_string(),
-                ),
-                PlaybackMedia::simple(
-                    "selected".to_string(),
-                    "https://example.com/2.mp4".to_string(),
-                ),
+                direct_url_media("primary", "https://example.com/1.mp4"),
+                direct_url_media("selected", "https://example.com/2.mp4"),
             ],
             default_media_index: Some(1),
             subtitles: vec![
@@ -4846,19 +5008,27 @@ mod playback_conversion_tests {
                     name: "English".to_string(),
                     language: "en".to_string(),
                     format: "vtt".to_string(),
-                    provider: PlaybackSubtitleProvider::External(PlaybackExternalSubtitle {
-                        url: "https://example.com/en.vtt".to_string(),
-                        headers: HashMap::new(),
-                    }),
+                    p2p_swarm_id: None,
+                    provider: PlaybackSubtitleProvider::DirectUrl(
+                        PlaybackDirectUrlSubtitle::Direct {
+                            url: "https://example.com/en.vtt".to_string(),
+                            headers: HashMap::new(),
+                            expire_at: None,
+                        },
+                    ),
                 },
                 PlaybackSubtitle {
                     name: "Japanese".to_string(),
                     language: "ja".to_string(),
                     format: "vtt".to_string(),
-                    provider: PlaybackSubtitleProvider::External(PlaybackExternalSubtitle {
-                        url: "https://example.com/ja.vtt".to_string(),
-                        headers: HashMap::new(),
-                    }),
+                    p2p_swarm_id: None,
+                    provider: PlaybackSubtitleProvider::DirectUrl(
+                        PlaybackDirectUrlSubtitle::Direct {
+                            url: "https://example.com/ja.vtt".to_string(),
+                            headers: HashMap::new(),
+                            expire_at: None,
+                        },
+                    ),
                 },
             ],
             default_subtitle_index: Some(1),
@@ -4877,31 +5047,29 @@ mod playback_conversion_tests {
         let key = signing_key();
         let signing = signing_context(&key);
         let info = PlaybackInfo::builder()
-            .add_media(PlaybackMedia::simple(
-                "first".to_string(),
-                "https://example.com/1.mp4".to_string(),
-            ))
-            .add_media(PlaybackMedia::simple(
-                "second".to_string(),
-                "https://example.com/2.mp4".to_string(),
-            ))
+            .add_media(direct_url_media("first", "https://example.com/1.mp4"))
+            .add_media(direct_url_media("second", "https://example.com/2.mp4"))
             .default_media_index(1)
             .add_subtitle(PlaybackSubtitle {
                 name: "English".to_string(),
                 language: "en".to_string(),
                 format: "vtt".to_string(),
-                provider: PlaybackSubtitleProvider::External(PlaybackExternalSubtitle {
+                p2p_swarm_id: None,
+                provider: PlaybackSubtitleProvider::DirectUrl(PlaybackDirectUrlSubtitle::Direct {
                     url: "https://example.com/en.vtt".to_string(),
                     headers: HashMap::new(),
+                    expire_at: None,
                 }),
             })
             .add_subtitle(PlaybackSubtitle {
                 name: "Japanese".to_string(),
                 language: "ja".to_string(),
                 format: "vtt".to_string(),
-                provider: PlaybackSubtitleProvider::External(PlaybackExternalSubtitle {
+                p2p_swarm_id: None,
+                provider: PlaybackSubtitleProvider::DirectUrl(PlaybackDirectUrlSubtitle::Direct {
                     url: "https://example.com/ja.vtt".to_string(),
                     headers: HashMap::new(),
+                    expire_at: None,
                 }),
             })
             .default_subtitle_index(1)
@@ -4926,8 +5094,8 @@ mod playback_conversion_tests {
                 format: "mp4".to_string(),
                 expire_at: None,
                 metadata: None,
+                p2p_swarm_id: None,
                 provider: PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::ProxyStream {
-                    p2p_resource_id: "direct_url:test".to_string(),
                     version: "v 1".to_string(),
                     expires_at: synctv_core::SystemClock.now().timestamp() + 1800,
                     mode_name: mode_name.to_string(),
@@ -4977,6 +5145,7 @@ mod playback_conversion_tests {
                 format: "m3u8".to_string(),
                 expire_at: None,
                 metadata: None,
+                p2p_swarm_id: None,
                 provider: PlaybackMediaProvider::Huya(PlaybackHuyaMedia::Proxy {
                     version: version.to_string(),
                     expires_at,
@@ -4987,6 +5156,7 @@ mod playback_conversion_tests {
             .add_danmaku(PlaybackDanmaku {
                 name: "Huya live danmaku".to_string(),
                 format: Some("synctv-huya-live".to_string()),
+                p2p_swarm_id: None,
                 provider: PlaybackDanmakuProvider::Huya(PlaybackHuyaDanmaku::Proxy {
                     version: version.to_string(),
                     expires_at,
@@ -5005,6 +5175,8 @@ mod playback_conversion_tests {
         let info = &proto.playback_infos[mode_name];
         let media = &info.medias[0];
         let danmaku = &info.danmakus[0];
+
+        assert_eq!(media.expire_at, Some(expires_at));
 
         assert!(media.url.starts_with(
             "/api/playback-providers/huya/huya%20v1/resources/%E8%93%9D%E5%85%89%20HLS/0?"
@@ -5030,6 +5202,41 @@ mod playback_conversion_tests {
     }
 
     #[test]
+    fn proxy_media_exposes_the_earliest_upstream_or_signature_expiry() {
+        let key = signing_key();
+        let signing = signing_context(&key);
+        let signed_expires_at = synctv_core::SystemClock.now().timestamp() + 1800;
+        let upstream_expires_at = signed_expires_at - 600;
+        let info = PlaybackInfo::builder()
+            .add_media(PlaybackMedia {
+                name: "Live".to_string(),
+                format: "m3u8".to_string(),
+                expire_at: chrono::DateTime::from_timestamp(upstream_expires_at, 0),
+                metadata: None,
+                p2p_swarm_id: None,
+                provider: PlaybackMediaProvider::Huya(PlaybackHuyaMedia::Proxy {
+                    version: "v1".to_string(),
+                    expires_at: signed_expires_at,
+                    mode_name: "main".to_string(),
+                    media_index: 0,
+                }),
+            })
+            .build();
+
+        let proto = try_playback_to_proto(
+            &playback_result_with_mode("main", info),
+            &codec(),
+            Some(&signing),
+        )
+        .expect("Huya playback should convert");
+
+        assert_eq!(
+            proto.playback_infos["main"].medias[0].expire_at,
+            Some(upstream_expires_at)
+        );
+    }
+
+    #[test]
     fn douyu_proxy_urls_bind_media_and_danmaku_resources() {
         let key = signing_key();
         let signing = signing_context(&key);
@@ -5042,6 +5249,7 @@ mod playback_conversion_tests {
                 format: "flv".to_string(),
                 expire_at: None,
                 metadata: None,
+                p2p_swarm_id: None,
                 provider: PlaybackMediaProvider::Douyu(PlaybackDouyuMedia::Proxy {
                     version: version.to_string(),
                     expires_at,
@@ -5052,6 +5260,7 @@ mod playback_conversion_tests {
             .add_danmaku(PlaybackDanmaku {
                 name: "Douyu live danmaku".to_string(),
                 format: Some("synctv-douyu-live".to_string()),
+                p2p_swarm_id: None,
                 provider: PlaybackDanmakuProvider::Douyu(PlaybackDouyuDanmaku::Proxy {
                     version: version.to_string(),
                     expires_at,
@@ -5067,6 +5276,7 @@ mod playback_conversion_tests {
         )
         .expect("Douyu playback should convert");
         let info = &proto.playback_infos[mode_name];
+        assert_eq!(info.medias[0].expire_at, Some(expires_at));
         for (url, resource) in [
             (&info.medias[0].url, "resources/original_tct_hevc/0"),
             (&info.danmakus[0].url, "danmakus/original_tct_hevc/0"),
@@ -5095,6 +5305,7 @@ mod playback_conversion_tests {
                 format: "m3u8".to_string(),
                 expire_at: None,
                 metadata: None,
+                p2p_swarm_id: None,
                 provider: PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::HlsMaster {
                     version: "live v1".to_string(),
                     expires_at,
@@ -5107,6 +5318,8 @@ mod playback_conversion_tests {
         let proto = try_playback_to_proto(&playback_result(info), &codec(), Some(&signing))
             .expect("playback should convert");
         let media = &proto.playback_infos["dash"].medias[0];
+
+        assert_eq!(media.expire_at, Some(expires_at));
 
         assert!(
             media
@@ -5142,6 +5355,7 @@ mod playback_conversion_tests {
                     format: "mp4".to_string(),
                     expire_at: None,
                     metadata: None,
+                    p2p_swarm_id: None,
                     provider: PlaybackMediaProvider::Alist(PlaybackAlistMedia::ProxyFile {
                         version: "v 1".to_string(),
                         expires_at,
@@ -5182,8 +5396,8 @@ mod playback_conversion_tests {
                 format: "mp4".to_string(),
                 expire_at: None,
                 metadata: None,
+                p2p_swarm_id: Some("sm3_static_media".to_string()),
                 provider: PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct {
-                    p2p_resource_id: "direct_url:movie".to_string(),
                     url: "https://cdn.example.com/movie.mp4?token=private".to_string(),
                     headers: HashMap::new(),
                 }),
@@ -5203,7 +5417,7 @@ mod playback_conversion_tests {
             .as_ref()
             .expect("static media should expose P2P delivery");
 
-        assert!(delivery.swarm_id.starts_with("sm3_"));
+        assert_eq!(delivery.swarm_id, "sm3_static_media");
         assert!(!delivery.swarm_ticket.is_empty());
     }
 
@@ -5215,8 +5429,8 @@ mod playback_conversion_tests {
                 format: "hls".to_string(),
                 expire_at: None,
                 metadata: None,
+                p2p_swarm_id: None,
                 provider: PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct {
-                    p2p_resource_id: "direct_url:live".to_string(),
                     url: "https://live.example.com/index.m3u8".to_string(),
                     headers: HashMap::new(),
                 }),
@@ -5231,5 +5445,88 @@ mod playback_conversion_tests {
             .expect("playback should convert");
 
         assert!(proto.playback_infos["hls"].medias[0].p2p_delivery.is_none());
+    }
+
+    #[test]
+    fn static_attachments_receive_independent_signed_deliveries() {
+        let info = PlaybackInfo::builder()
+            .add_media(PlaybackMedia {
+                name: "1080p".to_string(),
+                format: "mp4".to_string(),
+                expire_at: None,
+                metadata: None,
+                p2p_swarm_id: Some("sm3_media".to_string()),
+                provider: PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct {
+                    url: "https://cdn.example.com/movie.mp4".to_string(),
+                    headers: HashMap::new(),
+                }),
+            })
+            .add_subtitle(PlaybackSubtitle {
+                name: "Chinese".to_string(),
+                language: "zh-CN".to_string(),
+                format: "vtt".to_string(),
+                p2p_swarm_id: Some("sm3_subtitle".to_string()),
+                provider: PlaybackSubtitleProvider::DirectUrl(PlaybackDirectUrlSubtitle::Direct {
+                    url: "https://cdn.example.com/subtitle.vtt".to_string(),
+                    headers: HashMap::new(),
+                    expire_at: None,
+                }),
+            })
+            .add_danmaku(PlaybackDanmaku {
+                name: "Bilibili danmaku".to_string(),
+                format: Some("xml".to_string()),
+                p2p_swarm_id: Some("sm3_danmaku".to_string()),
+                provider: PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::FileDirect {
+                    url: "https://api.bilibili.com/x/v1/dm/list.so?oid=123".to_string(),
+                    headers: HashMap::new(),
+                    expire_at: None,
+                }),
+            })
+            .add_danmaku(PlaybackDanmaku {
+                name: "Bilibili live danmaku".to_string(),
+                format: Some("synctv-bilibili-live".to_string()),
+                p2p_swarm_id: None,
+                provider: PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live {
+                    room_id: synctv_core::models::RoomId::new(),
+                    media_id: synctv_core::models::MediaId::new(),
+                }),
+            })
+            .build();
+        let key = signing_key();
+        let signing = signing_context(&key);
+        let proto = try_playback_to_proto(
+            &playback_result_with_mode("direct", info),
+            &codec(),
+            Some(&signing),
+        )
+        .expect("playback should convert");
+        let info = &proto.playback_infos["direct"];
+        let media = info.medias[0]
+            .p2p_delivery
+            .as_ref()
+            .expect("static media should have delivery");
+        let subtitle = info.subtitles[0]
+            .p2p_delivery
+            .as_ref()
+            .expect("static subtitle should have delivery");
+        let danmaku = info.danmakus[0]
+            .p2p_delivery
+            .as_ref()
+            .expect("static danmaku should have delivery");
+
+        assert_ne!(media.swarm_id, subtitle.swarm_id);
+        assert_ne!(subtitle.swarm_id, danmaku.swarm_id);
+        assert!(info.danmakus[1].p2p_delivery.is_none());
+        for delivery in [media, subtitle, danmaku] {
+            signing
+                .media_swarm_signing_key
+                .verify_media_swarm_ticket(
+                    signing.room_id,
+                    signing.user_id,
+                    &delivery.swarm_id,
+                    &delivery.swarm_ticket,
+                )
+                .expect("attachment ticket should bind the current room, user, and swarm");
+        }
     }
 }

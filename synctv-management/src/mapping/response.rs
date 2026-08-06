@@ -559,6 +559,7 @@ fn media_source_config_to_proto(
                         url: media.url,
                         headers: media.headers,
                         format: media.format,
+                        expires_at: media.expires_at,
                     })
                     .collect(),
                 default_media_index: optional_index_to_proto(config.default_media_index),
@@ -572,6 +573,7 @@ fn media_source_config_to_proto(
                             url: subtitle.url,
                             headers: subtitle.headers,
                             format: subtitle.format,
+                            expires_at: subtitle.expires_at,
                         },
                     )
                     .collect(),
@@ -585,6 +587,7 @@ fn media_source_config_to_proto(
                             url: danmaku.url,
                             headers: danmaku.headers,
                             format: danmaku.format,
+                            expires_at: danmaku.expires_at,
                         },
                     )
                     .collect(),

@@ -658,6 +658,8 @@ pub struct LivePageData {
     pub uid: u64,
     pub room_id: u64,
     pub live_status: u64,
+    #[serde(default)]
+    pub live_time: String,
 }
 
 /// Live master info response

@@ -42,6 +42,12 @@ fn test_redirect_preserve_headers_includes_critical_headers() {
         REDIRECT_PRESERVE_HEADERS.contains(&"range"),
         "Range must be preserved across redirects for partial content"
     );
+    for header in ["authorization", "cookie", "origin", "proxy-authorization"] {
+        assert!(
+            REDIRECT_PRESERVE_HEADERS.contains(&header),
+            "{header} must participate in redirect scope handling"
+        );
+    }
 }
 
 #[test]

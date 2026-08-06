@@ -77,6 +77,7 @@ pub(super) async fn execute_media(media_command: MediaCommand) -> Result<()> {
                             url: args.url,
                             headers: Default::default(),
                             format: String::new(),
+                            expires_at: None,
                         }],
                         default_media_index: Some(0),
                         subtitles: Vec::new(),

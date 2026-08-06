@@ -592,16 +592,13 @@ impl YoutubeProvider {
             .as_ref()
             .and_then(|collection| collection.thumbnails.last())
             .map(|thumbnail| thumbnail.url.clone());
-        let expires_at = streaming
-            .expires_in_seconds
-            .parse::<i64>()
-            .ok()
-            .map(|seconds| Utc::now() + chrono::Duration::seconds(seconds));
+        let p2p_enabled = !(details.is_live || details.is_live_content);
         let subtitles = youtube_subtitles(
             player,
             &details.video_id,
             credential_owner_id,
             provider_instance_name,
+            p2p_enabled,
         );
         let mut playback_infos = HashMap::new();
         let mut best_progressive = None;
@@ -616,10 +613,10 @@ impl YoutubeProvider {
                 format_metadata(format),
                 thumbnail.clone(),
                 subtitles.clone(),
-                expires_at,
                 &details.video_id,
                 credential_owner_id,
                 provider_instance_name.map(str::to_owned),
+                p2p_enabled,
             );
             let info = playback_infos
                 .entry("progressive".to_string())
@@ -652,10 +649,10 @@ impl YoutubeProvider {
                     None,
                     thumbnail.clone(),
                     subtitles.clone(),
-                    expires_at,
                     &details.video_id,
                     credential_owner_id,
                     provider_instance_name.map(str::to_owned),
+                    p2p_enabled,
                 ),
             );
         }
@@ -669,10 +666,10 @@ impl YoutubeProvider {
                     None,
                     thumbnail,
                     subtitles,
-                    expires_at,
                     &details.video_id,
                     credential_owner_id,
                     provider_instance_name.map(str::to_owned),
+                    p2p_enabled,
                 ),
             );
         }
@@ -798,6 +795,7 @@ fn youtube_subtitles(
     video_id: &str,
     credential_owner_id: UserId,
     provider_instance_name: Option<&str>,
+    p2p_enabled: bool,
 ) -> Vec<PlaybackSubtitle> {
     let Some(tracklist) = player
         .captions
@@ -812,6 +810,9 @@ fn youtube_subtitles(
             name: track.name.value(),
             language: track.language_code.clone(),
             format: "vtt".to_string(),
+            p2p_swarm_id: p2p_enabled.then(|| {
+                youtube_subtitle_swarm_id(video_id, &track.vss_id, None, provider_instance_name)
+            }),
             provider: PlaybackSubtitleProvider::Youtube(PlaybackYoutubeSubtitle::Refresh {
                 video_id: video_id.to_string(),
                 track_id: track.vss_id.clone(),
@@ -830,6 +831,14 @@ fn youtube_subtitles(
                     ),
                     language: language.language_code.clone(),
                     format: "vtt".to_string(),
+                    p2p_swarm_id: p2p_enabled.then(|| {
+                        youtube_subtitle_swarm_id(
+                            video_id,
+                            &track.vss_id,
+                            Some(&language.language_code),
+                            provider_instance_name,
+                        )
+                    }),
                     provider: PlaybackSubtitleProvider::Youtube(PlaybackYoutubeSubtitle::Refresh {
                         video_id: video_id.to_string(),
                         track_id: track.vss_id.clone(),
@@ -842,6 +851,23 @@ fn youtube_subtitles(
         }
     }
     subtitles
+}
+
+fn youtube_subtitle_swarm_id(
+    video_id: &str,
+    track_id: &str,
+    target_language_code: Option<&str>,
+    provider_instance_name: Option<&str>,
+) -> String {
+    super::provider_p2p_swarm_id(
+        YoutubeProvider::NAME,
+        provider_instance_name,
+        "subtitle",
+        &format!(
+            "video:{video_id}:track:{track_id}:target:{}:format:vtt",
+            target_language_code.unwrap_or_default()
+        ),
+    )
 }
 
 fn youtube_caption_url(
@@ -874,18 +900,27 @@ fn playback_info(
     metadata: Option<PlaybackMediaMetadata>,
     thumbnail: Option<String>,
     subtitles: Vec<PlaybackSubtitle>,
-    expire_at: Option<chrono::DateTime<Utc>>,
     video_id: &str,
     credential_owner_id: UserId,
     provider_instance_name: Option<String>,
+    p2p_enabled: bool,
 ) -> PlaybackInfo {
+    let p2p_swarm_id = p2p_enabled.then(|| {
+        super::provider_p2p_swarm_id(
+            YoutubeProvider::NAME,
+            provider_instance_name.as_deref(),
+            "media",
+            &youtube_media_resource_descriptor(video_id, &resource),
+        )
+    });
     PlaybackInfo {
         thumbnail,
         medias: vec![PlaybackMedia {
             name,
             format,
-            expire_at,
+            expire_at: None,
             metadata,
+            p2p_swarm_id,
             provider: PlaybackMediaProvider::Youtube(PlaybackYoutubeMedia::Refresh {
                 video_id: video_id.to_string(),
                 resource,
@@ -898,6 +933,16 @@ fn playback_info(
         default_subtitle_index: None,
         danmakus: Vec::new(),
         default_danmaku_index: None,
+    }
+}
+
+fn youtube_media_resource_descriptor(video_id: &str, resource: &YoutubePlaybackResource) -> String {
+    match resource {
+        YoutubePlaybackResource::Format { itag } => {
+            format!("video:{video_id}:format:{itag}")
+        }
+        YoutubePlaybackResource::HlsManifest => format!("video:{video_id}:hls"),
+        YoutubePlaybackResource::DashManifest => format!("video:{video_id}:dash"),
     }
 }
 
@@ -1368,6 +1413,14 @@ mod tests {
             Some("https://img.example/maxres.jpg")
         );
         assert_eq!(progressive.subtitles.len(), 4);
+        assert!(progressive
+            .medias
+            .iter()
+            .all(|media| media.p2p_swarm_id.is_some()));
+        assert!(progressive
+            .subtitles
+            .iter()
+            .all(|subtitle| subtitle.p2p_swarm_id.is_some()));
         assert!(progressive.subtitles.iter().any(|subtitle| {
             subtitle.language == "zh-Hans"
                 && matches!(
@@ -1425,9 +1478,21 @@ mod tests {
         .expect("live player response should map");
 
         assert_eq!(result.default_mode, "hls");
+        assert!(result.playback_infos.values().all(|info| {
+            info.medias.iter().all(|media| media.p2p_swarm_id.is_none())
+                && info
+                    .subtitles
+                    .iter()
+                    .all(|subtitle| subtitle.p2p_swarm_id.is_none())
+        }));
         mark_youtube_playback_resources(&mut result, "version-1", 1234);
 
         for (mode_name, info) in &result.playback_infos {
+            assert!(info.medias.iter().all(|media| media.p2p_swarm_id.is_none()));
+            assert!(info
+                .subtitles
+                .iter()
+                .all(|subtitle| subtitle.p2p_swarm_id.is_none()));
             assert!(matches!(
                 &info.medias[0].provider,
                 PlaybackMediaProvider::Youtube(PlaybackYoutubeMedia::Proxy {

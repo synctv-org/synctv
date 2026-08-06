@@ -1,9 +1,10 @@
 use futures::StreamExt;
-use synctv_core::provider::ExecutionControl;
+use synctv_core::provider::{ExecutionControl, HlsResourceRequest};
 use synctv_core::service::TikTokPlaybackProviderService;
 use synctv_proto::playback_provider::tiktok::{
-    GetTikTokResourceRequest, GetTikTokSegmentRequest, GetTikTokSubtitleRequest,
-    TikTokResourceResponse, TikTokSegmentResponse, TikTokSubtitleResponse,
+    GetTikTokHlsResourceRequest, GetTikTokResourceRequest, GetTikTokSubtitleRequest,
+    TikTokHlsResourceKind, TikTokHlsResourceResponse, TikTokResourceResponse,
+    TikTokSubtitleResponse,
 };
 
 use super::common::{
@@ -24,8 +25,8 @@ pub struct TikTokPlaybackProviderDeps<'a> {
 pub type TikTokResourceResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<TikTokResourceResponse, ApiError>> + Send + 'static>,
 >;
-pub type TikTokSegmentResponseStream = std::pin::Pin<
-    Box<dyn futures::Stream<Item = Result<TikTokSegmentResponse, ApiError>> + Send + 'static>,
+pub type TikTokHlsResourceResponseStream = std::pin::Pin<
+    Box<dyn futures::Stream<Item = Result<TikTokHlsResourceResponse, ApiError>> + Send + 'static>,
 >;
 pub type TikTokSubtitleResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<TikTokSubtitleResponse, ApiError>> + Send + 'static>,
@@ -62,9 +63,15 @@ pub async fn get_tiktok_resource(
         )
         .await
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base("tiktok", &req.version, "segments");
+    let segment_base = format!(
+        "{}/{}/{}",
+        playback_provider_route_base(PROVIDER, &req.version, "hls-resources"),
+        urlencoding::encode(&req.mode_name),
+        req.media_index
+    );
+    let resource = format!("hls-resources/{}/{}/*", req.mode_name, req.media_index);
     let stream = playback_transport_action_to_chunk_stream(
-        deps.chunk_deps_with_hls(&segment_base, &claims),
+        deps.chunk_deps_with_hls(&segment_base, &claims, &resource),
         action,
         req.head,
     )
@@ -74,17 +81,22 @@ pub async fn get_tiktok_resource(
     })))
 }
 
-pub async fn get_tiktok_segment(
+pub async fn get_tiktok_hls_resource(
     deps: TikTokPlaybackProviderDeps<'_>,
-    req: GetTikTokSegmentRequest,
-) -> Result<TikTokSegmentResponseStream, ApiError> {
+    req: GetTikTokHlsResourceRequest,
+) -> Result<TikTokHlsResourceResponseStream, ApiError> {
     crate::impls::validate_proto_request(&req)?;
-    let (_, claims) = verify_playback_provider_access_with_deps(
+    let kind = tiktok_hls_resource_kind(req.resource_kind)?;
+    let kind_name = tiktok_hls_resource_kind_name(kind);
+    let (store, claims) = verify_playback_provider_access_with_deps(
         &deps.access_deps(),
         PROVIDER,
         PlaybackProviderAccessRequest {
             version: &req.version,
-            resource: "segments".to_string(),
+            resource: format!(
+                "hls-resources/{}/{}/{kind_name}",
+                req.mode_name, req.media_index
+            ),
             signature: &req.sig,
             user_id: &req.uid,
             room_id: &req.rid,
@@ -95,17 +107,39 @@ pub async fn get_tiktok_segment(
     .await?;
     let action = deps
         .playback_provider_service
-        .segment_action(req.target_url, req.range.as_deref())
+        .hls_resource_action(
+            HlsResourceRequest {
+                version: &req.version,
+                mode_name: &req.mode_name,
+                media_index: req.media_index as usize,
+                target_url: &req.target_url,
+                is_manifest: kind == TikTokHlsResourceKind::Manifest,
+                range_header: req.range.as_deref(),
+            },
+            store,
+            deps.request_control,
+        )
+        .await
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base("tiktok", &req.version, "segments");
-    let stream = playback_transport_action_to_chunk_stream(
-        deps.chunk_deps_with_hls(&segment_base, &claims),
-        action,
-        req.head,
-    )
-    .await?;
+    let stream = if kind == TikTokHlsResourceKind::Manifest {
+        let segment_base = format!(
+            "{}/{}/{}",
+            playback_provider_route_base(PROVIDER, &req.version, "hls-resources"),
+            urlencoding::encode(&req.mode_name),
+            req.media_index
+        );
+        let resource = format!("hls-resources/{}/{}/*", req.mode_name, req.media_index);
+        playback_transport_action_to_chunk_stream(
+            deps.chunk_deps_with_hls(&segment_base, &claims, &resource),
+            action,
+            req.head,
+        )
+        .await?
+    } else {
+        playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, req.head).await?
+    };
     Ok(Box::pin(stream.map(|chunk| {
-        chunk.map(|chunk| TikTokSegmentResponse { chunk: Some(chunk) })
+        chunk.map(|chunk| TikTokHlsResourceResponse { chunk: Some(chunk) })
     })))
 }
 
@@ -165,14 +199,49 @@ impl<'a> TikTokPlaybackProviderDeps<'a> {
         &self,
         segment_base: &'a str,
         claims: &'a crate::proxy_signature::ProxyUrlClaims,
+        resource: &'a str,
     ) -> PlaybackTransportExecutorDeps<'a> {
         PlaybackTransportExecutorDeps {
             hls_rewrite: Some(HlsRewriteSigning {
                 segment_base,
                 claims,
-                resource: "segments",
+                resource,
             }),
             ..self.chunk_deps()
         }
+    }
+}
+
+fn tiktok_hls_resource_kind(value: i32) -> Result<TikTokHlsResourceKind, ApiError> {
+    let kind = TikTokHlsResourceKind::try_from(value)
+        .map_err(|_| ApiError::InvalidInput("Invalid TikTok HLS resource kind".to_string()))?;
+    match kind {
+        TikTokHlsResourceKind::Media | TikTokHlsResourceKind::Manifest => Ok(kind),
+        TikTokHlsResourceKind::Unspecified => Err(ApiError::InvalidInput(
+            "TikTok HLS resource kind is required".to_string(),
+        )),
+    }
+}
+
+const fn tiktok_hls_resource_kind_name(kind: TikTokHlsResourceKind) -> &'static str {
+    match kind {
+        TikTokHlsResourceKind::Media => "media",
+        TikTokHlsResourceKind::Manifest => "manifest",
+        TikTokHlsResourceKind::Unspecified => "unspecified",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hls_resource_kind_requires_a_typed_route() {
+        assert!(tiktok_hls_resource_kind(TikTokHlsResourceKind::Unspecified as i32).is_err());
+        assert_eq!(
+            tiktok_hls_resource_kind(TikTokHlsResourceKind::Manifest as i32)
+                .expect("manifest kind should validate"),
+            TikTokHlsResourceKind::Manifest
+        );
     }
 }

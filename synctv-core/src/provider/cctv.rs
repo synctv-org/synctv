@@ -156,6 +156,17 @@ impl CctvProvider {
                 CctvStreamKind::VideoHls | CctvStreamKind::AudioHls => "m3u8",
                 CctvStreamKind::Http => detect_direct_url_format(&stream.url),
             };
+            let stream_kind = playback_stream_kind(stream.kind);
+            let p2p_swarm_id = super::provider_p2p_swarm_id(
+                Self::NAME,
+                None,
+                "media",
+                &format!(
+                    "resource:{resource}:stream:{}:kind:{}",
+                    stream.name,
+                    cctv_stream_kind_name(stream_kind)
+                ),
+            );
             let info = playback_infos.entry(mode).or_insert_with(|| PlaybackInfo {
                 thumbnail: metadata.thumbnail_url.clone(),
                 medias: Vec::new(),
@@ -170,10 +181,11 @@ impl CctvProvider {
                 format: format.to_string(),
                 expire_at: None,
                 metadata: None,
+                p2p_swarm_id: Some(p2p_swarm_id),
                 provider: PlaybackMediaProvider::Cctv(PlaybackCctvMedia::Refresh {
                     resource: resource.to_string(),
                     stream_name: stream.name,
-                    stream_kind: playback_stream_kind(stream.kind),
+                    stream_kind,
                 }),
             });
         }
@@ -231,6 +243,14 @@ const fn playback_stream_kind(kind: CctvStreamKind) -> CctvPlaybackStreamKind {
         CctvStreamKind::VideoHls => CctvPlaybackStreamKind::VideoHls,
         CctvStreamKind::AudioHls => CctvPlaybackStreamKind::AudioHls,
         CctvStreamKind::Http => CctvPlaybackStreamKind::Http,
+    }
+}
+
+const fn cctv_stream_kind_name(kind: CctvPlaybackStreamKind) -> &'static str {
+    match kind {
+        CctvPlaybackStreamKind::VideoHls => "video_hls",
+        CctvPlaybackStreamKind::AudioHls => "audio_hls",
+        CctvPlaybackStreamKind::Http => "http",
     }
 }
 
@@ -359,6 +379,11 @@ mod tests {
         .expect("CCTV playback should map");
         assert_eq!(result.duration_seconds, Some(123.0));
         assert_eq!(result.default_mode, "video_hls");
+        assert!(result
+            .playback_infos
+            .values()
+            .flat_map(|info| &info.medias)
+            .all(|media| media.p2p_swarm_id.is_some()));
         assert!(matches!(
             result.playback_infos[&result.default_mode].medias[0].provider,
             PlaybackMediaProvider::Cctv(PlaybackCctvMedia::Refresh {

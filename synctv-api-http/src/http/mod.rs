@@ -1143,9 +1143,9 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/douyin/{version}/segments",
-            get(crate::providers::playback_provider::douyin::get_segment)
-                .head(crate::providers::playback_provider::douyin::head_segment)
+            "/api/playback-providers/douyin/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            get(crate::providers::playback_provider::douyin::get_hls_resource)
+                .head(crate::providers::playback_provider::douyin::head_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
@@ -1160,9 +1160,9 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/tiktok/{version}/segments",
-            get(crate::providers::playback_provider::tiktok::get_tiktok_segment)
-                .head(crate::providers::playback_provider::tiktok::head_tiktok_segment)
+            "/api/playback-providers/tiktok/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            get(crate::providers::playback_provider::tiktok::get_tiktok_hls_resource)
+                .head(crate::providers::playback_provider::tiktok::head_tiktok_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
@@ -1189,9 +1189,9 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/acfun/{version}/segments.ts",
-            get(crate::providers::playback_provider::acfun::get_acfun_segment)
-                .head(crate::providers::playback_provider::acfun::head_acfun_segment)
+            "/api/playback-providers/acfun/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            get(crate::providers::playback_provider::acfun::get_acfun_hls_resource)
+                .head(crate::providers::playback_provider::acfun::head_acfun_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
@@ -1246,6 +1246,18 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
+            "/api/playback-providers/qnap/{version}/hls-manifests/{modeName}/{mediaIndex}",
+            get(crate::providers::playback_provider::qnap::get_qnap_hls_manifest)
+                .head(crate::providers::playback_provider::qnap::head_qnap_hls_manifest)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/qnap/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            get(crate::providers::playback_provider::qnap::get_qnap_hls_resource)
+                .head(crate::providers::playback_provider::qnap::head_qnap_hls_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
             "/api/playback-providers/qnap/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::qnap::get_qnap_subtitle)
                 .options(providers::playback_provider_options_preflight),
@@ -1268,6 +1280,18 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
+            "/api/playback-providers/nextcloud/{version}/hls-manifests/{modeName}/{mediaIndex}",
+            get(crate::providers::playback_provider::nextcloud::get_nextcloud_hls_manifest)
+                .head(crate::providers::playback_provider::nextcloud::head_nextcloud_hls_manifest)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/nextcloud/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            get(crate::providers::playback_provider::nextcloud::get_nextcloud_hls_resource)
+                .head(crate::providers::playback_provider::nextcloud::head_nextcloud_hls_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
             "/api/playback-providers/nextcloud/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::nextcloud::get_nextcloud_subtitle)
                 .options(providers::playback_provider_options_preflight),
@@ -1279,6 +1303,18 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
+            "/api/playback-providers/seafile/{version}/hls-manifests/{modeName}/{mediaIndex}",
+            get(crate::providers::playback_provider::seafile::get_seafile_hls_manifest)
+                .head(crate::providers::playback_provider::seafile::head_seafile_hls_manifest)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/seafile/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            get(crate::providers::playback_provider::seafile::get_seafile_hls_resource)
+                .head(crate::providers::playback_provider::seafile::head_seafile_hls_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
             "/api/playback-providers/seafile/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::seafile::get_seafile_subtitle)
                 .options(providers::playback_provider_options_preflight),
@@ -1287,6 +1323,18 @@ fn register_all_routes() -> Router<AppState> {
             "/api/playback-providers/truenas/{version}/resources/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::truenas::get_truenas_resource)
                 .head(crate::providers::playback_provider::truenas::head_truenas_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/truenas/{version}/hls-manifests/{modeName}/{mediaIndex}",
+            get(crate::providers::playback_provider::truenas::get_truenas_hls_manifest)
+                .head(crate::providers::playback_provider::truenas::head_truenas_hls_manifest)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/truenas/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            get(crate::providers::playback_provider::truenas::get_truenas_hls_resource)
+                .head(crate::providers::playback_provider::truenas::head_truenas_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(

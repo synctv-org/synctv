@@ -45,6 +45,16 @@ pub struct QnapBind {
     pub provider_instance_name: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct QnapHlsResourceRequest<'a> {
+    pub version: &'a str,
+    pub mode_name: &'a str,
+    pub media_index: usize,
+    pub target_url: &'a str,
+    pub is_manifest: bool,
+    pub range_header: Option<&'a str>,
+}
+
 #[derive(Debug, Clone)]
 pub struct QnapListItem {
     pub name: String,
@@ -493,6 +503,100 @@ impl QnapProvider {
         )
     }
 
+    pub async fn get_hls_manifest(
+        &self,
+        store: Option<&Arc<dyn super::ProviderStore>>,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<super::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let media = versioned
+            .result
+            .playback_infos
+            .get(mode_name)
+            .and_then(|info| info.medias.get(media_index))
+            .ok_or(ProviderError::NotFound)?;
+        if !super::playback_media_is_hls(mode_name, media) {
+            return Err(ProviderError::InvalidConfig(
+                "QNAP HLS manifest request references a non-HLS media resource".to_string(),
+            ));
+        }
+        let PlaybackMediaProvider::Qnap(provider) = &media.provider else {
+            return Err(ProviderError::InvalidConfig(
+                "QNAP cached HLS resource is invalid".to_string(),
+            ));
+        };
+        let (owner, server_id, resource) = qnap_resource_descriptor(provider);
+        if resource.mode != QnapPlaybackMode::Original {
+            return Err(ProviderError::InvalidConfig(
+                "QNAP HLS requires an original file resource".to_string(),
+            ));
+        }
+        let owner = owner
+            .parse::<UserId>()
+            .map_err(ProviderError::InvalidConfig)?;
+        let auth = self.authenticated(owner, server_id).await?;
+        super::playback_transport::transport_action_for_storage_hls_target(
+            auth.client.download_url(&auth.login.sid, &resource.path)?,
+            QnapClient::auth_headers(),
+            &resource.path,
+            true,
+            None,
+        )
+    }
+
+    pub async fn get_hls_resource(
+        &self,
+        store: Option<&Arc<dyn super::ProviderStore>>,
+        request: QnapHlsResourceRequest<'_>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<super::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, request.version, request_context)
+                .await?;
+        let media = versioned
+            .result
+            .playback_infos
+            .get(request.mode_name)
+            .and_then(|info| info.medias.get(request.media_index))
+            .ok_or(ProviderError::NotFound)?;
+        if !super::playback_media_is_hls(request.mode_name, media) {
+            return Err(ProviderError::InvalidConfig(
+                "QNAP HLS child request references a non-HLS media resource".to_string(),
+            ));
+        }
+        let PlaybackMediaProvider::Qnap(provider) = &media.provider else {
+            return Err(ProviderError::InvalidConfig(
+                "QNAP cached HLS resource is invalid".to_string(),
+            ));
+        };
+        let (owner, server_id, root_resource) = qnap_resource_descriptor(provider);
+        if root_resource.mode != QnapPlaybackMode::Original {
+            return Err(ProviderError::InvalidConfig(
+                "QNAP HLS requires an original file resource".to_string(),
+            ));
+        }
+        let path = super::playback_transport::storage_hls_resource_path(
+            &root_resource.path,
+            request.target_url,
+        )?;
+        validate_file_path(&path)?;
+        let owner = owner
+            .parse::<UserId>()
+            .map_err(ProviderError::InvalidConfig)?;
+        let auth = self.authenticated(owner, server_id).await?;
+        super::playback_transport::transport_action_for_storage_hls_target(
+            auth.client.download_url(&auth.login.sid, &path)?,
+            QnapClient::auth_headers(),
+            &path,
+            request.is_manifest,
+            request.range_header,
+        )
+    }
+
     pub async fn get_subtitle(
         &self,
         store: Option<&Arc<dyn super::ProviderStore>>,
@@ -688,6 +792,18 @@ impl MediaProvider for QnapProvider {
                     .next()
                     .unwrap_or_default()
                     .to_ascii_lowercase(),
+                p2p_swarm_id: Some(super::provider_p2p_swarm_id(
+                    Self::NAME,
+                    auth.instance_name.as_deref(),
+                    "subtitle",
+                    &format!(
+                        "server:{}:path:{}:size:{}:modified:{}",
+                        config.server_id,
+                        join_path(parent, &candidate.filename),
+                        candidate.filesize,
+                        candidate.epochmt,
+                    ),
+                )),
                 provider: PlaybackSubtitleProvider::Qnap(PlaybackQnapSubtitle {
                     version: String::new(),
                     expires_at: 0,
@@ -706,6 +822,9 @@ impl MediaProvider for QnapProvider {
             QnapPlaybackMode::Original,
             owner,
             &config.server_id,
+            auth.instance_name.as_deref(),
+            file.filesize,
+            file.epochmt,
             subtitles.clone(),
         );
         for resolution in &ready {
@@ -719,6 +838,9 @@ impl MediaProvider for QnapProvider {
                 },
                 owner,
                 &config.server_id,
+                auth.instance_name.as_deref(),
+                file.filesize,
+                file.epochmt,
                 subtitles.clone(),
             );
         }
@@ -1127,6 +1249,22 @@ fn playback_url(
     }
 }
 
+fn qnap_resource_descriptor(provider: &PlaybackQnapMedia) -> (&str, &str, &QnapPlaybackResource) {
+    match provider {
+        PlaybackQnapMedia::Refresh {
+            credential_owner_id,
+            server_id,
+            resource,
+        }
+        | PlaybackQnapMedia::Proxy {
+            credential_owner_id,
+            server_id,
+            resource,
+            ..
+        } => (credential_owner_id, server_id, resource),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn insert_mode(
     infos: &mut HashMap<String, PlaybackInfo>,
@@ -1136,6 +1274,9 @@ fn insert_mode(
     mode: QnapPlaybackMode,
     owner: UserId,
     server_id: &str,
+    provider_instance_name: Option<&str>,
+    file_size: u64,
+    modified_at: u64,
     subtitles: Vec<PlaybackSubtitle>,
 ) {
     let route_name = if mode_name.starts_with("transcoded_") {
@@ -1162,6 +1303,16 @@ fn insert_mode(
         },
         expire_at: None,
         metadata: None,
+        p2p_swarm_id: Some(super::provider_p2p_swarm_id(
+            QnapProvider::NAME,
+            provider_instance_name,
+            "media",
+            &format!(
+                "server:{server_id}:resource:{}:size:{file_size}:modified:{modified_at}",
+                serde_json::to_string(&(path, &mode))
+                    .expect("QNAP playback resource is JSON serializable")
+            ),
+        )),
         provider: PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Refresh {
             credential_owner_id: owner.to_string(),
             server_id: server_id.to_string(),
@@ -1381,6 +1532,9 @@ mod tests {
             QnapPlaybackMode::PreTranscoded { height: 720 },
             owner,
             "server",
+            None,
+            100,
+            1,
             Vec::new(),
         );
         insert_mode(
@@ -1391,6 +1545,9 @@ mod tests {
             QnapPlaybackMode::PreTranscoded { height: 1080 },
             owner,
             "server",
+            None,
+            100,
+            1,
             Vec::new(),
         );
 

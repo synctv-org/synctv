@@ -12,6 +12,9 @@ fn tiktok_services_and_wire_contract_are_registered() {
         .get_service_by_name("synctv.playback_provider.tiktok.TikTokPlaybackProviderService")
         .expect("TikTok playback provider service descriptor");
     assert_eq!(playback.methods().count(), 3);
+    assert!(playback
+        .methods()
+        .any(|method| method.name() == "GetHlsResource"));
 
     let media = synctv_proto::source_config::MediaSourceConfig {
         provider: Some(media_source_config::Provider::Tiktok(
@@ -46,6 +49,7 @@ fn tiktok_services_and_wire_contract_are_registered() {
 
     for message_name in [
         "synctv.playback_provider.tiktok.GetTikTokResourceRequest",
+        "synctv.playback_provider.tiktok.GetTikTokHlsResourceRequest",
         "synctv.playback_provider.tiktok.GetTikTokSubtitleRequest",
     ] {
         let request = synctv_proto::PLAYBACK_PROVIDER_DESCRIPTOR_POOL
@@ -63,6 +67,15 @@ fn tiktok_services_and_wire_contract_are_registered() {
                 .kind(),
             Kind::Uint32
         );
+        if message_name.contains("HlsResource") {
+            assert!(matches!(
+                request
+                    .get_field_by_name("resource_kind")
+                    .expect("TikTok HLS resource kind")
+                    .kind(),
+                Kind::Enum(_)
+            ));
+        }
     }
 
     for (message_name, field_name, expected_number) in [

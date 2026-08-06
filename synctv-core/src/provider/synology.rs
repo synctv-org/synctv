@@ -1755,6 +1755,15 @@ async fn generate_file_playback(
         format: detect_direct_url_format(path).to_string(),
         expire_at: None,
         metadata: Some(file_metadata(&file)),
+        p2p_swarm_id: Some(synology_swarm_id(
+            auth.instance_name.as_deref(),
+            "media",
+            server_id,
+            &format!(
+                "file:{path}:size:{}:mtime:{}:ctime:{}",
+                file.additional.size, file.additional.time.mtime, file.additional.time.ctime
+            ),
+        )),
         provider: PlaybackMediaProvider::Synology(crate::models::PlaybackSynologyMedia::Refresh {
             credential_owner_id: owner.to_string(),
             server_id: server_id.to_string(),
@@ -1772,6 +1781,18 @@ async fn generate_file_playback(
             format: file_subtitle_format(&file.name)
                 .unwrap_or_default()
                 .to_string(),
+            p2p_swarm_id: Some(synology_swarm_id(
+                auth.instance_name.as_deref(),
+                "subtitle",
+                server_id,
+                &format!(
+                    "file:{}:size:{}:mtime:{}:ctime:{}",
+                    file.path,
+                    file.additional.size,
+                    file.additional.time.mtime,
+                    file.additional.time.ctime
+                ),
+            )),
             provider: PlaybackSubtitleProvider::Synology(
                 crate::models::PlaybackSynologySubtitle::File {
                     version: String::new(),
@@ -1885,6 +1906,15 @@ async fn generate_video_playback(
             },
             language: subtitle.lang.clone(),
             format: subtitle.format.clone(),
+            p2p_swarm_id: Some(synology_swarm_id(
+                auth.instance_name.as_deref(),
+                "subtitle",
+                server_id,
+                &format!(
+                    "video_station:file:{file_id}:subtitle:{}:preview:{}",
+                    subtitle.id, subtitle.need_preview
+                ),
+            )),
             provider: PlaybackSubtitleProvider::Synology(
                 crate::models::PlaybackSynologySubtitle::VideoStation {
                     version: String::new(),
@@ -1925,6 +1955,18 @@ async fn generate_video_playback(
                 danmakus: Vec::new(),
                 default_danmaku_index: None,
             });
+        let resource = SynologyPlaybackResource::VideoStation {
+            file_id,
+            profile,
+            audio_track: default_audio,
+            ac3_passthrough: true,
+        };
+        let descriptor = serde_json::to_string(&resource)
+            .expect("Synology playback resource is JSON serializable");
+        let descriptor = format!(
+            "{descriptor}:path:{}:size:{}:duration:{}:video:{}:audio:{}",
+            file.path, file.filesize, file.duration, file.video_codec, file.audio_codec
+        );
         info.medias.push(PlaybackMedia {
             name: match name {
                 "raw" => "Original".to_string(),
@@ -1936,16 +1978,17 @@ async fn generate_video_playback(
             format: format.to_string(),
             expire_at: None,
             metadata: Some(video_file_metadata(file)),
+            p2p_swarm_id: Some(synology_swarm_id(
+                auth.instance_name.as_deref(),
+                "media",
+                server_id,
+                &descriptor,
+            )),
             provider: PlaybackMediaProvider::Synology(
                 crate::models::PlaybackSynologyMedia::Refresh {
                     credential_owner_id: owner.to_string(),
                     server_id: server_id.to_string(),
-                    resource: SynologyPlaybackResource::VideoStation {
-                        file_id,
-                        profile,
-                        audio_track: default_audio,
-                        ac3_passthrough: true,
-                    },
+                    resource,
                 },
             ),
         });
@@ -2113,6 +2156,20 @@ fn mark_synology_playback_resources(result: &mut PlaybackResult, version: &str, 
             }
         }
     }
+}
+
+fn synology_swarm_id(
+    provider_instance_name: Option<&str>,
+    resource_kind: &str,
+    server_id: &str,
+    resource: &str,
+) -> String {
+    super::provider_p2p_swarm_id(
+        SynologyProvider::NAME,
+        provider_instance_name,
+        resource_kind,
+        &format!("server:{server_id}:{resource}"),
+    )
 }
 
 fn related_file_subtitle(media_path: &str, file: &SynologyFile) -> bool {

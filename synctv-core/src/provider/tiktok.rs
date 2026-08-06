@@ -14,6 +14,7 @@ use super::{
     DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult,
     ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
 };
+use crate::cache::{SingleFlight, SingleFlightError};
 use crate::models::{
     MediaSourceConfig, PlayMode, PlaybackMedia, PlaybackMediaMetadata, PlaybackMediaProvider,
     PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider, PlaybackTikTokMedia,
@@ -29,10 +30,43 @@ use synctv_media_providers::tiktok::{
 
 const PAGE_SIZE: usize = 20;
 const SHUFFLE_LIMIT: usize = 200;
+const PLAYBACK_RESOURCE_CACHE_TTL: Duration = Duration::from_secs(15);
 
 pub struct TikTokProvider {
     client: TikTokClient,
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+    playback_resource_resolver: Arc<TikTokPlaybackResourceResolver>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedTikTokPlaybackTarget {
+    url: String,
+    original_root_url: String,
+    headers: HashMap<String, String>,
+    format: TikTokStreamFormat,
+}
+
+struct TikTokPlaybackResourceResolver {
+    cache: moka::future::Cache<String, ResolvedTikTokPlaybackTarget>,
+    singleflight:
+        SingleFlight<String, ResolvedTikTokPlaybackTarget, super::ProviderPlaybackFillError>,
+}
+
+impl TikTokPlaybackResourceResolver {
+    fn new() -> Self {
+        Self {
+            cache: moka::future::Cache::builder()
+                .max_capacity(2_048)
+                .time_to_live(PLAYBACK_RESOURCE_CACHE_TTL)
+                .build(),
+            singleflight: SingleFlight::new(),
+        }
+    }
+
+    async fn invalidate_all(&self) {
+        self.cache.invalidate_all();
+        self.cache.run_pending_tasks().await;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +92,7 @@ impl TikTokProvider {
         Self {
             client: TikTokClient::new().expect("TikTok HTTP client should build"),
             credential_repo: None,
+            playback_resource_resolver: Arc::new(TikTokPlaybackResourceResolver::new()),
         }
     }
 
@@ -66,6 +101,7 @@ impl TikTokProvider {
         Self {
             client: TikTokClient::with_http_client(client),
             credential_repo: None,
+            playback_resource_resolver: Arc::new(TikTokPlaybackResourceResolver::new()),
         }
     }
 
@@ -77,6 +113,7 @@ impl TikTokProvider {
         Self {
             client: self.client.clone(),
             credential_repo: Some(credential_repo),
+            playback_resource_resolver: self.playback_resource_resolver.clone(),
         }
     }
 
@@ -201,6 +238,7 @@ impl TikTokProvider {
             })
             .await
             .map_err(|error| ProviderError::Internal(error.to_string()))?;
+        self.playback_resource_resolver.invalidate_all().await;
         Ok(server_id)
     }
 
@@ -256,6 +294,7 @@ impl TikTokProvider {
         repo.delete(credential.id)
             .await
             .map_err(|error| ProviderError::Internal(error.to_string()))?;
+        self.playback_resource_resolver.invalidate_all().await;
         Ok(true)
     }
 
@@ -303,57 +342,143 @@ impl TikTokProvider {
         request_context: Option<&super::ExecutionControl>,
         range_header: Option<&str>,
     ) -> Result<super::PlaybackTransportAction, ProviderError> {
-        let versioned =
-            super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        let media = versioned
-            .result
-            .playback_infos
-            .get(mode_name)
-            .and_then(|info| info.medias.get(media_index))
-            .ok_or(ProviderError::NotFound)?;
-        let PlaybackMediaProvider::TikTok(PlaybackTikTokMedia::Refresh {
-            resource,
-            variant_key,
-            credential_owner_id,
-            provider_instance_name,
-        }) = &media.provider
-        else {
-            return Err(ProviderError::InvalidConfig(
-                "TikTok cached playback resource is invalid".to_string(),
-            ));
-        };
-        let session = self
-            .stored_session(*credential_owner_id, provider_instance_name.as_deref())
+        let target = self
+            .resolve_playback_target(store, version, mode_name, media_index, request_context)
             .await?;
-        let resolved = match resource {
-            TikTokPlaybackResource::Video { video_id } => {
-                self.client.video(video_id, Some(&session)).await?
-            }
-            TikTokPlaybackResource::Live { unique_id } => {
-                self.client.live(unique_id, Some(&session)).await?
-            }
-        };
-        let variant = resolved
-            .variants
-            .into_iter()
-            .find(|variant| variant_key_for(variant) == *variant_key)
-            .ok_or(ProviderError::NotFound)?;
-        super::playback_transport::transport_action_for_target_url(
-            variant.url,
-            tiktok_headers(session.cookie.as_deref(), resolved.metadata.kind),
-            range_header,
-        )
+        if target.format == TikTokStreamFormat::Hls {
+            return Ok(super::PlaybackTransportAction::M3u8RewriteWithSource {
+                url: target.url,
+                headers: target.headers,
+                source_url: super::playback_transport::dynamic_hls_source_url(
+                    &target.original_root_url,
+                )?,
+            });
+        }
+        Ok(super::PlaybackTransportAction::FetchAndForward {
+            url: target.url,
+            headers: target.headers,
+            range_header: range_header.map(ToString::to_string),
+        })
     }
 
-    pub fn get_segment(
+    async fn resolve_playback_target(
         &self,
-        target_url: String,
-        range_header: Option<&str>,
+        store: Option<&Arc<dyn super::ProviderStore>>,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<ResolvedTikTokPlaybackTarget, ProviderError> {
+        let cache_key = format!("{version}\n{mode_name}\n{media_index}");
+        if let Some(target) = self.playback_resource_resolver.cache.get(&cache_key).await {
+            return Ok(target);
+        }
+        self.playback_resource_resolver
+            .singleflight
+            .do_work(cache_key.clone(), async {
+                let result: Result<ResolvedTikTokPlaybackTarget, ProviderError> = async {
+                    if let Some(target) =
+                        self.playback_resource_resolver.cache.get(&cache_key).await
+                    {
+                        return Ok(target);
+                    }
+                    let versioned = super::playback_transport::lookup_versioned(
+                        store,
+                        version,
+                        request_context,
+                    )
+                    .await?;
+                    let media = versioned
+                        .result
+                        .playback_infos
+                        .get(mode_name)
+                        .and_then(|info| info.medias.get(media_index))
+                        .ok_or(ProviderError::NotFound)?;
+                    let PlaybackMediaProvider::TikTok(PlaybackTikTokMedia::Refresh {
+                        resource,
+                        variant_key,
+                        root_url,
+                        credential_owner_id,
+                        provider_instance_name,
+                    }) = &media.provider
+                    else {
+                        return Err(ProviderError::InvalidConfig(
+                            "TikTok cached playback resource is invalid".to_string(),
+                        ));
+                    };
+                    let session = self
+                        .stored_session(*credential_owner_id, provider_instance_name.as_deref())
+                        .await?;
+                    let resolved = match resource {
+                        TikTokPlaybackResource::Video { video_id } => {
+                            self.client.video(video_id, Some(&session)).await?
+                        }
+                        TikTokPlaybackResource::Live { unique_id } => {
+                            self.client.live(unique_id, Some(&session)).await?
+                        }
+                    };
+                    let variant = resolved
+                        .variants
+                        .into_iter()
+                        .find(|variant| variant_key_for(variant) == *variant_key)
+                        .ok_or(ProviderError::NotFound)?;
+                    let target = ResolvedTikTokPlaybackTarget {
+                        url: variant.url,
+                        original_root_url: root_url.clone(),
+                        headers: tiktok_headers(
+                            variant
+                                .headers_required
+                                .then_some(session.cookie.as_deref())
+                                .flatten(),
+                            resolved.metadata.kind,
+                        ),
+                        format: variant.format,
+                    };
+                    self.playback_resource_resolver
+                        .cache
+                        .insert(cache_key, target.clone())
+                        .await;
+                    Ok(target)
+                }
+                .await;
+                result.map_err(super::ProviderPlaybackFillError::from)
+            })
+            .await
+            .map_err(|error| match error {
+                SingleFlightError::Inner(error) => ProviderError::from(error),
+                SingleFlightError::WorkerFailed => ProviderError::Internal(
+                    "TikTok playback resource resolver worker failed".to_string(),
+                ),
+            })
+    }
+
+    pub async fn get_hls_resource(
+        &self,
+        store: Option<&Arc<dyn super::ProviderStore>>,
+        request: super::HlsResourceRequest<'_>,
+        request_context: Option<&super::ExecutionControl>,
     ) -> Result<super::PlaybackTransportAction, ProviderError> {
-        super::playback_transport::transport_action_for_target_url(
-            target_url,
-            tiktok_headers(None, TikTokMediaKind::Live),
-            range_header,
+        let root = self
+            .resolve_playback_target(
+                store,
+                request.version,
+                request.mode_name,
+                request.media_index,
+                request_context,
+            )
+            .await?;
+        if root.format != TikTokStreamFormat::Hls {
+            return Err(ProviderError::InvalidConfig(
+                "TikTok HLS resource requires an HLS playback media".to_string(),
+            ));
+        }
+        super::playback_transport::transport_action_for_dynamic_hls_target(
+            &root.original_root_url,
+            &root.url,
+            root.headers,
+            request.target_url,
+            request.is_manifest,
+            request.range_header,
         )
     }
 
@@ -487,6 +612,20 @@ impl TikTokProvider {
                 name: subtitle.language.clone(),
                 language: subtitle.language.clone(),
                 format: subtitle.format.clone(),
+                p2p_swarm_id: match resource {
+                    TikTokPlaybackResource::Video { video_id } => {
+                        Some(super::provider_p2p_swarm_id(
+                            Self::NAME,
+                            provider_instance_name,
+                            "subtitle",
+                            &format!(
+                                "video:{video_id}:language:{}:format:{}",
+                                subtitle.language, subtitle.format
+                            ),
+                        ))
+                    }
+                    TikTokPlaybackResource::Live { .. } => None,
+                },
                 provider: PlaybackSubtitleProvider::TikTok(PlaybackTikTokSubtitle::Refresh {
                     resource: resource.clone(),
                     language: subtitle.language.clone(),
@@ -511,9 +650,18 @@ impl TikTokProvider {
                     default_danmaku_index: None,
                 });
             let media_index = info.medias.len();
-            let is_preferred = preferred_video_key.as_deref()
-                == Some(variant_key_for(variant).as_str())
+            let variant_key = variant_key_for(variant);
+            let is_preferred = preferred_video_key.as_deref() == Some(variant_key.as_str())
                 || variant.quality.to_ascii_lowercase().contains("origin");
+            let p2p_swarm_id = match resource {
+                TikTokPlaybackResource::Video { video_id } => Some(super::provider_p2p_swarm_id(
+                    Self::NAME,
+                    provider_instance_name,
+                    "media",
+                    &format!("video:{video_id}:variant:{variant_key}"),
+                )),
+                TikTokPlaybackResource::Live { .. } => None,
+            };
             info.medias.push(PlaybackMedia {
                 name: variant.quality.clone(),
                 format: format.to_string(),
@@ -527,9 +675,11 @@ impl TikTokProvider {
                     codec: variant.codec.clone(),
                     fps: None,
                 }),
+                p2p_swarm_id,
                 provider: PlaybackMediaProvider::TikTok(PlaybackTikTokMedia::Refresh {
                     resource: resource.clone(),
-                    variant_key: variant_key_for(variant),
+                    variant_key,
+                    root_url: variant.url.clone(),
                     credential_owner_id,
                     provider_instance_name: provider_instance_name.map(str::to_owned),
                 }),
@@ -1049,6 +1199,52 @@ impl DynamicPlaylistProvider for TikTokProvider {
 mod tests {
     use super::*;
 
+    fn media(kind: TikTokMediaKind, id: &str, variant: TikTokVariant) -> TikTokMedia {
+        TikTokMedia {
+            resource: match kind {
+                TikTokMediaKind::Video => synctv_media_providers::tiktok::TikTokResource::Video {
+                    video_id: id.to_string(),
+                },
+                TikTokMediaKind::Live => synctv_media_providers::tiktok::TikTokResource::Live {
+                    unique_id: id.to_string(),
+                },
+            },
+            metadata: synctv_media_providers::tiktok::TikTokMetadata {
+                id: id.to_string(),
+                kind,
+                title: "Playback".to_string(),
+                description: String::new(),
+                author: synctv_media_providers::tiktok::TikTokAuthor {
+                    id: "author".to_string(),
+                    sec_uid: "sec-author".to_string(),
+                    unique_id: "author".to_string(),
+                    nickname: "Author".to_string(),
+                    avatar: None,
+                },
+                cover: None,
+                dynamic_cover: None,
+                duration_ms: (kind == TikTokMediaKind::Video).then_some(60_000),
+                created_at: None,
+                is_live: kind == TikTokMediaKind::Live,
+                view_count: None,
+                like_count: None,
+                comment_count: None,
+                share_count: None,
+                collect_count: None,
+                concurrent_viewers: None,
+                music_title: None,
+                music_author: None,
+                subtitles: vec![synctv_media_providers::tiktok::TikTokSubtitle {
+                    language: "en".to_string(),
+                    format: "vtt".to_string(),
+                    url: "https://cdn.test/subtitle.vtt".to_string(),
+                }],
+            },
+            room_id: (kind == TikTokMediaKind::Live).then(|| "room".to_string()),
+            variants: vec![variant],
+        }
+    }
+
     fn variant(url: &str, quality: &str, width: u32, height: u32, bitrate: u64) -> TikTokVariant {
         TikTokVariant {
             url: url.to_string(),
@@ -1159,5 +1355,60 @@ mod tests {
         let high = variant("https://cdn.test/high.mp4", "1080p", 1920, 1080, 4_000_000);
 
         assert!(video_variant_score(&high) > video_variant_score(&low));
+    }
+
+    #[test]
+    fn playback_assigns_swarm_only_to_video_resources() {
+        let video_resource = TikTokPlaybackResource::Video {
+            video_id: "video-1".to_string(),
+        };
+        let video = TikTokProvider::playback_result(
+            media(
+                TikTokMediaKind::Video,
+                "video-1",
+                variant("https://cdn.test/video.mp4", "1080p", 1920, 1080, 4_000_000),
+            ),
+            &video_resource,
+            UserId::expect_positive(1),
+            Some("primary"),
+        )
+        .expect("video playback should map");
+        let video_info = &video.playback_infos[&video.default_mode];
+        assert!(video_info
+            .medias
+            .iter()
+            .all(|media| media.p2p_swarm_id.is_some()));
+        assert!(video_info
+            .subtitles
+            .iter()
+            .all(|subtitle| subtitle.p2p_swarm_id.is_some()));
+
+        let mut live_variant = variant(
+            "https://cdn.test/live.m3u8",
+            "origin",
+            1920,
+            1080,
+            4_000_000,
+        );
+        live_variant.format = TikTokStreamFormat::Hls;
+        let live_resource = TikTokPlaybackResource::Live {
+            unique_id: "live-1".to_string(),
+        };
+        let live = TikTokProvider::playback_result(
+            media(TikTokMediaKind::Live, "live-1", live_variant),
+            &live_resource,
+            UserId::expect_positive(1),
+            Some("primary"),
+        )
+        .expect("live playback should map");
+        let live_info = &live.playback_infos[&live.default_mode];
+        assert!(live_info
+            .medias
+            .iter()
+            .all(|media| media.p2p_swarm_id.is_none()));
+        assert!(live_info
+            .subtitles
+            .iter()
+            .all(|subtitle| subtitle.p2p_swarm_id.is_none()));
     }
 }

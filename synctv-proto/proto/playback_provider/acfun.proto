@@ -21,7 +21,13 @@ message AcFunResourceResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
-message GetAcFunSegmentRequest {
+enum AcFunHlsResourceKind {
+  AC_FUN_HLS_RESOURCE_KIND_UNSPECIFIED = 0;
+  AC_FUN_HLS_RESOURCE_KIND_MEDIA = 1;
+  AC_FUN_HLS_RESOURCE_KIND_MANIFEST = 2;
+}
+
+message GetAcFunHlsResourceRequest {
   string version = 1 [(buf.validate.field).string.min_len = 1];
   string target_url = 2 [(buf.validate.field).string.min_len = 1];
   string sig = 3 [(buf.validate.field).string.min_len = 1];
@@ -30,9 +36,12 @@ message GetAcFunSegmentRequest {
   int64 exp = 6;
   optional string range = 7;
   bool head = 8;
+  string mode_name = 9 [(buf.validate.field).string.min_len = 1];
+  uint32 media_index = 10;
+  AcFunHlsResourceKind resource_kind = 11 [(buf.validate.field).enum.defined_only = true];
 }
 
-message AcFunSegmentResponse {
+message AcFunHlsResourceResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
@@ -75,7 +84,7 @@ message AcFunDanmakuEvent {
 
 service AcFunPlaybackProviderService {
   rpc GetResource(GetAcFunResourceRequest) returns (stream AcFunResourceResponse);
-  rpc GetSegment(GetAcFunSegmentRequest) returns (stream AcFunSegmentResponse);
+  rpc GetHlsResource(GetAcFunHlsResourceRequest) returns (stream AcFunHlsResourceResponse);
   rpc GetDanmakuFile(GetAcFunDanmakuFileRequest) returns (stream AcFunDanmakuFileResponse);
   rpc WatchDanmaku(WatchAcFunDanmakuRequest) returns (stream AcFunDanmakuEvent);
 }

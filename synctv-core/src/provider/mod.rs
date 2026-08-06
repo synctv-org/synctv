@@ -58,13 +58,17 @@ pub use access::{
 };
 pub use context::ProviderContext;
 pub use error::ProviderError;
-pub use p2p_media::{playback_media_p2p_delivery, P2pMediaDelivery};
+pub(crate) use p2p_media::provider_p2p_swarm_id;
+pub use p2p_media::{
+    playback_danmaku_p2p_delivery, playback_media_p2p_delivery, playback_subtitle_p2p_delivery,
+    P2pResourceDelivery,
+};
 pub use playback_profile::{
     PlaybackAudioCapability, PlaybackClientProfile, PlaybackContainer, PlaybackStreamPreference,
     PlaybackSubtitlePreference, PlaybackVideoCodec,
 };
 pub use playback_transport::{
-    LiveFlvAccess, PlaybackTransportAction, PlaybackTransportServices,
+    HlsResourceRequest, LiveFlvAccess, PlaybackTransportAction, PlaybackTransportServices,
     StatefulPlaybackResourceRequest,
 };
 pub use provider_client::ProviderClientManager;
@@ -115,7 +119,9 @@ pub(crate) fn playback_profile_cache_token(profile: Option<&PlaybackClientProfil
     )
 }
 
-use crate::models::media::{PlaybackMedia, PlaybackMediaProvider, PlaybackRtmpMedia};
+use crate::models::media::{
+    PlaybackDanmaku, PlaybackMedia, PlaybackMediaProvider, PlaybackRtmpMedia, PlaybackSubtitle,
+};
 use crate::models::{normalize_provider_instance_name, MediaId, RoomId};
 use std::future::Future;
 use std::time::Duration;
@@ -179,10 +185,11 @@ pub(crate) fn subtitle_headers_for_proxy(
 // Re-export providers
 pub use acfun::{AcFunDanmakuStream, AcFunLiveDanmakuEvent, AcFunProvider};
 pub use alist::{
-    AlistHlsResourceRequest, AlistListItem, AlistListRequest, AlistListResponse,
-    AlistLoginAndPersistRequest, AlistLoginCredential, AlistLoginRequest, AlistMeRequest,
-    AlistMeResponse, AlistPersistLoginCredentialRequest, AlistPersistedLoginResponse,
-    AlistProvider, AlistSearchItem, AlistSearchRequest, AlistSearchResponse,
+    AlistFileStreamRequest, AlistHlsResourceRequest, AlistListItem, AlistListRequest,
+    AlistListResponse, AlistLoginAndPersistRequest, AlistLoginCredential, AlistLoginRequest,
+    AlistMeRequest, AlistMeResponse, AlistPersistLoginCredentialRequest,
+    AlistPersistedLoginResponse, AlistProvider, AlistSearchItem, AlistSearchRequest,
+    AlistSearchResponse,
 };
 pub use bilibili::{
     BilibiliCaptchaResponse, BilibiliDashManifestMode, BilibiliDashResourceRequest,
@@ -213,15 +220,23 @@ pub use emby::{
 pub use fnos::{FnosBind, FnosLoginResult, FnosProvider};
 pub use huya::{HuyaDanmakuEvent, HuyaDanmakuStream, HuyaProvider};
 pub use live_proxy::LiveProxyProvider;
-pub use nextcloud::{NextcloudBind, NextcloudListResponse, NextcloudProvider};
-pub use qnap::{QnapBind, QnapCapabilities, QnapListItem, QnapListResponse, QnapProvider};
+pub use nextcloud::{
+    NextcloudBind, NextcloudHlsResourceRequest, NextcloudListResponse, NextcloudProvider,
+};
+pub use qnap::{
+    QnapBind, QnapCapabilities, QnapHlsResourceRequest, QnapListItem, QnapListResponse,
+    QnapProvider,
+};
 pub use rtmp::RtmpProvider;
-pub use seafile::{SeafileBind, SeafileListRequest, SeafileListResponse, SeafileProvider};
+pub use seafile::{
+    SeafileBind, SeafileHlsResourceRequest, SeafileListRequest, SeafileListResponse,
+    SeafileProvider,
+};
 pub use synology::{
     SynologyBind, SynologyProvider, SynologyVideoEntry, SynologyVideoEntryKind, SynologyVideoPage,
 };
 pub use tiktok::{TikTokBind, TikTokProvider};
-pub use truenas::{TrueNasBind, TrueNasListResponse, TrueNasProvider};
+pub use truenas::{TrueNasBind, TrueNasHlsResourceRequest, TrueNasListResponse, TrueNasProvider};
 pub use twitch::{TwitchBind, TwitchChatEvent, TwitchChatStream, TwitchProvider};
 pub use youtube::{YoutubeBind, YoutubeProvider};
 
@@ -551,8 +566,6 @@ fn build_live_playback_with_flv(
 ) -> PlaybackResult {
     use std::collections::HashMap;
 
-    let live_expires_at = crate::SystemClock.now().timestamp() + 30;
-
     let mut playback_infos = HashMap::new();
 
     playback_infos.insert(
@@ -562,11 +575,12 @@ fn build_live_playback_with_flv(
             medias: vec![PlaybackMedia {
                 name: "HLS".to_string(),
                 format: "m3u8".to_string(),
-                expire_at: chrono::DateTime::from_timestamp(live_expires_at, 0),
+                expire_at: None,
                 metadata: None,
+                p2p_swarm_id: None,
                 provider: PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::HlsMaster {
                     version: String::new(),
-                    expires_at: live_expires_at,
+                    expires_at: 0,
                     room_id,
                     media_id,
                 }),
@@ -587,11 +601,12 @@ fn build_live_playback_with_flv(
                 medias: vec![PlaybackMedia {
                     name: "FLV".to_string(),
                     format: "flv".to_string(),
-                    expire_at: chrono::DateTime::from_timestamp(live_expires_at, 0),
+                    expire_at: None,
                     metadata: None,
+                    p2p_swarm_id: None,
                     provider: PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::FlvStream {
                         version: String::new(),
-                        expires_at: live_expires_at,
+                        expires_at: 0,
                         room_id,
                         media_id,
                     }),
@@ -638,6 +653,98 @@ pub fn bilibili_headers() -> std::collections::HashMap<String, String> {
         synctv_media_providers::PROVIDER_USER_AGENT.to_string(),
     );
     headers
+}
+
+/// Parse expiration parameters whose timestamp semantics are defined by common
+/// signed-URL protocols. Unknown token formats intentionally remain unset.
+pub(crate) fn url_expiration_timestamp(value: &str) -> Option<i64> {
+    let url = url::Url::parse(value).ok()?;
+    let query = url
+        .query_pairs()
+        .map(|(key, value)| (key.to_ascii_lowercase(), value.into_owned()))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut candidates = Vec::new();
+
+    // V2-style signatures use an absolute `Expires` value. Requiring both the
+    // signature and a protocol identity avoids treating application-specific
+    // `expires` query parameters as Unix timestamps.
+    if query.contains_key("signature")
+        && [
+            "awsaccesskeyid",
+            "googleaccessid",
+            "ossaccesskeyid",
+            "key-pair-id",
+        ]
+        .iter()
+        .any(|key| query.contains_key(*key))
+    {
+        if let Some(expires_at) = query
+            .get("expires")
+            .and_then(|value| value.parse::<i64>().ok())
+            .filter(|expires_at| *expires_at > 0)
+        {
+            candidates.push(expires_at);
+        }
+    }
+
+    // Azure SAS pairs the RFC3339 `se` timestamp with `sig`.
+    if query.contains_key("sig") {
+        if let Some(expires_at) = query
+            .get("se")
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .map(|expires_at| expires_at.timestamp())
+            .filter(|expires_at| *expires_at > 0)
+        {
+            candidates.push(expires_at);
+        }
+    }
+
+    // V4 signatures express expiry as signing time plus a relative TTL.
+    for (date_key, ttl_key, credential_key, signature_key) in [
+        (
+            "x-amz-date",
+            "x-amz-expires",
+            "x-amz-credential",
+            "x-amz-signature",
+        ),
+        (
+            "x-goog-date",
+            "x-goog-expires",
+            "x-goog-credential",
+            "x-goog-signature",
+        ),
+        (
+            "x-oss-date",
+            "x-oss-expires",
+            "x-oss-credential",
+            "x-oss-signature",
+        ),
+    ] {
+        if !query.contains_key(credential_key) || !query.contains_key(signature_key) {
+            continue;
+        }
+        let Some(date) = query
+            .get(date_key)
+            .and_then(|value| chrono::NaiveDateTime::parse_from_str(value, "%Y%m%dT%H%M%SZ").ok())
+        else {
+            continue;
+        };
+        let Some(ttl) = query
+            .get(ttl_key)
+            .and_then(|value| value.parse::<i64>().ok())
+            .filter(|ttl| *ttl >= 0)
+        else {
+            continue;
+        };
+        if let Some(expires_at) = date.and_utc().timestamp().checked_add(ttl) {
+            candidates.push(expires_at);
+        }
+    }
+
+    candidates
+        .into_iter()
+        .filter(|timestamp| chrono::DateTime::from_timestamp(*timestamp, 0).is_some())
+        .min()
 }
 
 #[must_use]
@@ -729,20 +836,7 @@ async fn cache_versioned_playback(
     cache_ttl: std::time::Duration,
     ctx: &ProviderContext<'_>,
 ) -> std::result::Result<VersionedPlayback, ProviderError> {
-    let ttl_secs = i64::try_from(cache_ttl.as_secs()).map_err(|_| {
-        ProviderError::Internal(format!(
-            "Provider '{provider_name}' playback cache TTL exceeds i64::MAX seconds"
-        ))
-    })?;
-    let expires_at = crate::SystemClock
-        .now()
-        .timestamp()
-        .checked_add(ttl_secs)
-        .ok_or_else(|| {
-            ProviderError::Internal(format!(
-                "Provider '{provider_name}' playback cache expiry exceeds i64::MAX"
-            ))
-        })?;
+    let expires_at = playback_transport_expires_at(cache_ttl, provider_name)?;
     let versioned = VersionedPlayback {
         version: synctv_common::snanoid!(16),
         result: result.clone(),
@@ -772,7 +866,28 @@ async fn cache_versioned_playback(
     Ok(versioned)
 }
 
+fn playback_transport_expires_at(
+    cache_ttl: Duration,
+    provider_name: &str,
+) -> Result<i64, ProviderError> {
+    let transport_ttl = cache_ttl.max(DEFAULT_PLAYBACK_TRANSPORT_TTL);
+    let ttl_secs = i64::try_from(transport_ttl.as_secs()).map_err(|_| {
+        ProviderError::Internal(format!(
+            "Provider '{provider_name}' playback transport TTL exceeds i64::MAX seconds"
+        ))
+    })?;
+    let now = crate::SystemClock.now().timestamp();
+    let transport_expires_at = now.checked_add(ttl_secs).ok_or_else(|| {
+        ProviderError::Internal(format!(
+            "Provider '{provider_name}' playback transport expiry exceeds i64::MAX"
+        ))
+    })?;
+    Ok(transport_expires_at)
+}
+
 const PLAYBACK_CACHE_LOCK_TTL: Duration = Duration::from_secs(30);
+const DEFAULT_PLAYBACK_TRANSPORT_TTL: Duration = Duration::from_hours(1);
+const PLAYBACK_TRANSPORT_REFRESH_MARGIN_SECONDS: i64 = 60;
 const PLAYBACK_CACHE_LOCK_WAIT_ATTEMPTS: usize = 5;
 const PLAYBACK_CACHE_LOCK_WAIT_DELAY: Duration = Duration::from_millis(50);
 const SOURCE_COVER_CACHE_LOCK_TTL: Duration = Duration::from_secs(10);
@@ -934,9 +1049,43 @@ async fn read_fresh_versioned_playback(
     cache_key: &str,
 ) -> Option<VersionedPlayback> {
     match store.get::<VersionedPlayback>(cache_key).await {
-        Ok(Some(cached)) if !cached.is_expired() => Some(cached),
+        Ok(Some(cached)) if versioned_playback_is_fresh(&cached) => Some(cached),
         _ => None,
     }
+}
+
+fn versioned_playback_is_fresh(versioned: &VersionedPlayback) -> bool {
+    crate::SystemClock
+        .now()
+        .timestamp()
+        .saturating_add(PLAYBACK_TRANSPORT_REFRESH_MARGIN_SECONDS)
+        < playback_refresh_deadline(versioned)
+}
+
+fn playback_refresh_deadline(versioned: &VersionedPlayback) -> i64 {
+    versioned
+        .result
+        .playback_infos
+        .values()
+        .flat_map(|info| {
+            info.medias
+                .iter()
+                .filter_map(|media| media.expire_at.map(|value| value.timestamp()))
+                .chain(
+                    info.subtitles
+                        .iter()
+                        .filter_map(PlaybackSubtitle::expiration_timestamp),
+                )
+                .chain(
+                    info.danmakus
+                        .iter()
+                        .filter_map(PlaybackDanmaku::expiration_timestamp),
+                )
+        })
+        .min()
+        .map_or(versioned.expires_at, |upstream_expires_at| {
+            upstream_expires_at.min(versioned.expires_at)
+        })
 }
 
 async fn wait_for_fresh_versioned_playback(
@@ -1064,6 +1213,173 @@ where
     SOURCE_COVER_CACHE
         .get_or_fill(provider_name, cache_key, cache_ttl, ctx, fill)
         .await
+}
+
+#[cfg(test)]
+mod playback_transport_expiry_tests {
+    use super::*;
+
+    fn live_playback() -> PlaybackResult {
+        build_live_playback(MediaId::new(), RoomId::new())
+    }
+
+    #[test]
+    fn signed_url_expiration_parser_supports_standard_protocols() {
+        assert_eq!(
+            url_expiration_timestamp(
+                "https://s3.example/object?AWSAccessKeyId=key&Signature=private&Expires=1785945600"
+            ),
+            Some(1_785_945_600),
+        );
+        assert_eq!(
+            url_expiration_timestamp(
+                "https://cdn.example/object?Key-Pair-Id=key&Signature=private&Expires=1785945601"
+            ),
+            Some(1_785_945_601),
+        );
+        assert_eq!(
+            url_expiration_timestamp(
+                "https://s3.example/object?X-Amz-Date=20260805T120000Z&X-Amz-Expires=600&X-Amz-Credential=key&X-Amz-Signature=private"
+            ),
+            Some(1_785_931_800)
+        );
+        assert_eq!(
+            url_expiration_timestamp(
+                "https://storage.example/object?X-Goog-Date=20260805T120000Z&X-Goog-Expires=600&X-Goog-Credential=key&X-Goog-Signature=private"
+            ),
+            Some(1_785_931_800)
+        );
+        assert_eq!(
+            url_expiration_timestamp(
+                "https://oss.example/object?x-oss-date=20260805T120000Z&x-oss-expires=600&x-oss-credential=key&x-oss-signature=private"
+            ),
+            Some(1_785_931_800)
+        );
+        assert_eq!(
+            url_expiration_timestamp(
+                "https://blob.example/object?se=2026-08-05T12%3A10%3A00Z&sig=private"
+            ),
+            Some(1_785_931_800)
+        );
+        assert_eq!(
+            url_expiration_timestamp("https://cdn.example/live.m3u8?expires=3600"),
+            None
+        );
+        assert_eq!(
+            url_expiration_timestamp("https://cdn.example/video.m4s?deadline=1785945601"),
+            None
+        );
+        assert_eq!(
+            url_expiration_timestamp("https://cdn.example/video.m3u8?token=private"),
+            None
+        );
+        assert_eq!(
+            url_expiration_timestamp(
+                "https://s3.example/object?X-Amz-Date=invalid&X-Amz-Expires=600&X-Amz-Credential=key&X-Amz-Signature=private"
+            ),
+            None
+        );
+        assert_eq!(
+            url_expiration_timestamp(
+                "https://s3.example/object?AWSAccessKeyId=key&Signature=private&Expires=1785945600&X-Amz-Date=20260805T120000Z&X-Amz-Expires=600&X-Amz-Credential=key&X-Amz-Signature=private"
+            ),
+            Some(1_785_931_800)
+        );
+    }
+
+    #[test]
+    fn short_provider_cache_does_not_shorten_transport_lifetime() {
+        let before = crate::SystemClock.now().timestamp() + 3600;
+        let expires_at = playback_transport_expires_at(Duration::from_mins(2), "test-provider")
+            .expect("transport expiry should be calculated");
+        let after = crate::SystemClock.now().timestamp() + 3600;
+
+        assert!((before..=after).contains(&expires_at));
+    }
+
+    #[test]
+    fn upstream_expiry_only_advances_snapshot_refresh() {
+        let mut result = live_playback();
+        let upstream_expires_at = crate::SystemClock.now().timestamp() + 600;
+        result
+            .playback_infos
+            .values_mut()
+            .flat_map(|info| &mut info.medias)
+            .for_each(|media| {
+                media.expire_at = chrono::DateTime::from_timestamp(upstream_expires_at, 0);
+            });
+
+        let hard_expires_at =
+            playback_transport_expires_at(Duration::from_mins(2), "test-provider")
+                .expect("transport expiry should be calculated");
+        let mut versioned = VersionedPlayback {
+            version: "test".to_string(),
+            result,
+            expires_at: hard_expires_at,
+            playback_context: None,
+        };
+
+        assert_eq!(playback_refresh_deadline(&versioned), upstream_expires_at);
+        assert!(versioned.expires_at > upstream_expires_at);
+        assert!(versioned_playback_is_fresh(&versioned));
+
+        versioned
+            .result
+            .playback_infos
+            .values_mut()
+            .flat_map(|info| &mut info.medias)
+            .for_each(|media| {
+                media.expire_at = chrono::DateTime::from_timestamp(
+                    crate::SystemClock.now().timestamp()
+                        + PLAYBACK_TRANSPORT_REFRESH_MARGIN_SECONDS,
+                    0,
+                );
+            });
+        assert!(!versioned_playback_is_fresh(&versioned));
+    }
+
+    #[test]
+    fn auxiliary_expiry_advances_snapshot_refresh() {
+        let mut result = live_playback();
+        let subtitle_expires_at = crate::SystemClock.now().timestamp() + 300;
+        result
+            .playback_infos
+            .values_mut()
+            .next()
+            .expect("live playback should have a mode")
+            .subtitles
+            .push(crate::models::PlaybackSubtitle {
+                name: "English".to_string(),
+                language: "en".to_string(),
+                format: "vtt".to_string(),
+                p2p_swarm_id: None,
+                provider: crate::models::PlaybackSubtitleProvider::DirectUrl(
+                    crate::models::PlaybackDirectUrlSubtitle::Direct {
+                        url: "https://cdn.example/subtitle.vtt".to_string(),
+                        headers: Default::default(),
+                        expire_at: chrono::DateTime::from_timestamp(subtitle_expires_at, 0),
+                    },
+                ),
+            });
+        let versioned = VersionedPlayback {
+            version: "test".to_string(),
+            result,
+            expires_at: crate::SystemClock.now().timestamp() + 3600,
+            playback_context: None,
+        };
+
+        assert_eq!(playback_refresh_deadline(&versioned), subtitle_expires_at);
+    }
+
+    #[test]
+    fn long_provider_cache_remains_the_transport_lifetime() {
+        let before = crate::SystemClock.now().timestamp() + 7200;
+        let expires_at = playback_transport_expires_at(Duration::from_hours(2), "test-provider")
+            .expect("transport expiry should be calculated");
+        let after = crate::SystemClock.now().timestamp() + 7200;
+
+        assert!((before..=after).contains(&expires_at));
+    }
 }
 
 #[cfg(test)]

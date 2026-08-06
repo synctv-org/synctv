@@ -4,8 +4,9 @@ use axum::{
 };
 use futures::FutureExt;
 use synctv_proto::playback_provider::tiktok::{
-    GetTikTokResourceRequest, GetTikTokSegmentRequest, GetTikTokSubtitleRequest,
-    TikTokResourceResponse, TikTokSegmentResponse, TikTokSubtitleResponse,
+    GetTikTokHlsResourceRequest, GetTikTokResourceRequest, GetTikTokSubtitleRequest,
+    TikTokHlsResourceKind, TikTokHlsResourceResponse, TikTokResourceResponse,
+    TikTokSubtitleResponse,
 };
 
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
@@ -20,6 +21,15 @@ pub struct TikTokResourcePath {
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TikTokHlsResourcePath {
+    pub version: String,
+    pub mode_name: String,
+    pub media_index: u32,
+    pub resource_kind: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -40,7 +50,7 @@ macro_rules! impl_response {
     };
 }
 impl_response!(TikTokResourceResponse);
-impl_response!(TikTokSegmentResponse);
+impl_response!(TikTokHlsResourceResponse);
 impl_response!(TikTokSubtitleResponse);
 
 #[cfg_attr(
@@ -136,25 +146,27 @@ async fn tiktok_resource(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/tiktok/{version}/segments",
+        path = "/api/playback-providers/tiktok/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
         tag = "TikTok Playback Provider",
         params(
-            ("version" = String, Path), ("targetUrl" = String, Query),
+            ("version" = String, Path), ("modeName" = String, Path),
+            ("mediaIndex" = u32, Path), ("resourceKind" = String, Path),
+            ("targetUrl" = String, Query),
             ("sig" = String, Query), ("uid" = String, Query),
             ("rid" = String, Query), ("exp" = i64, Query)
         ),
-        responses((status = 200, description = "TikTok media segment"))
+        responses((status = 200, description = "TikTok HLS resource"))
     )
 )]
-pub fn get_tiktok_segment(
-    Path(version): Path<String>,
+pub fn get_tiktok_hls_resource(
+    Path(path): Path<TikTokHlsResourcePath>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
-    tiktok_segment(
-        version,
+    tiktok_hls_resource(
+        path,
         state,
         request_meta,
         headers,
@@ -163,15 +175,15 @@ pub fn get_tiktok_segment(
     )
 }
 
-pub fn head_tiktok_segment(
-    Path(version): Path<String>,
+pub fn head_tiktok_hls_resource(
+    Path(path): Path<TikTokHlsResourcePath>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
-    tiktok_segment(
-        version,
+    tiktok_hls_resource(
+        path,
         state,
         request_meta,
         headers,
@@ -180,8 +192,8 @@ pub fn head_tiktok_segment(
     )
 }
 
-async fn tiktok_segment(
-    version: String,
+async fn tiktok_hls_resource(
+    path: TikTokHlsResourcePath,
     state: AppState,
     request_meta: RequestMetadata,
     headers: HeaderMap,
@@ -190,8 +202,8 @@ async fn tiktok_segment(
 ) -> AppResult<axum::response::Response> {
     let (sig, uid, rid, exp) =
         signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
-    let req = GetTikTokSegmentRequest {
-        version,
+    let req = GetTikTokHlsResourceRequest {
+        version: path.version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,
         sig,
         uid,
@@ -199,16 +211,19 @@ async fn tiktok_segment(
         exp,
         range: range_header(&headers).map_err(crate::http::error::map_api_error)?,
         head: method == Method::HEAD,
+        mode_name: path.mode_name,
+        media_index: path.media_index,
+        resource_kind: tiktok_hls_resource_kind(&path.resource_kind)?,
     };
     let state_for_stream = state.clone();
-    stream_http_response::<TikTokSegmentResponse, _>(
+    stream_http_response::<TikTokHlsResourceResponse, _>(
         state,
         request_meta,
         method,
         move |request_control| {
             let state = state_for_stream;
             async move {
-                synctv_api_common::playback_provider::tiktok::get_tiktok_segment(
+                synctv_api_common::playback_provider::tiktok::get_tiktok_hls_resource(
                     tiktok_deps(&state, Some(&request_control)),
                     req,
                 )
@@ -218,6 +233,18 @@ async fn tiktok_segment(
         },
     )
     .await
+}
+
+fn tiktok_hls_resource_kind(value: &str) -> AppResult<i32> {
+    match value {
+        "media" => Ok(TikTokHlsResourceKind::Media as i32),
+        "manifest" => Ok(TikTokHlsResourceKind::Manifest as i32),
+        _ => Err(crate::http::error::map_api_error(
+            synctv_api_common::impls::ApiError::InvalidInput(
+                "Invalid TikTok HLS resource kind".to_string(),
+            ),
+        )),
+    }
 }
 
 #[cfg_attr(

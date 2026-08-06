@@ -21,7 +21,13 @@ message DouyinResourceResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
-message GetDouyinSegmentRequest {
+enum DouyinHlsResourceKind {
+  DOUYIN_HLS_RESOURCE_KIND_UNSPECIFIED = 0;
+  DOUYIN_HLS_RESOURCE_KIND_MEDIA = 1;
+  DOUYIN_HLS_RESOURCE_KIND_MANIFEST = 2;
+}
+
+message GetDouyinHlsResourceRequest {
   string version = 1 [(buf.validate.field).string.min_len = 1];
   string target_url = 2 [(buf.validate.field).string.min_len = 1];
   string sig = 3 [(buf.validate.field).string.min_len = 1];
@@ -30,9 +36,12 @@ message GetDouyinSegmentRequest {
   int64 exp = 6;
   optional string range = 7;
   bool head = 8;
+  string mode_name = 9 [(buf.validate.field).string.min_len = 1];
+  uint32 media_index = 10;
+  DouyinHlsResourceKind resource_kind = 11 [(buf.validate.field).enum.defined_only = true];
 }
 
-message DouyinSegmentResponse {
+message DouyinHlsResourceResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
@@ -69,6 +78,6 @@ message DouyinDanmakuEvent {
 
 service DouyinPlaybackProviderService {
   rpc GetResource(GetDouyinResourceRequest) returns (stream DouyinResourceResponse);
-  rpc GetSegment(GetDouyinSegmentRequest) returns (stream DouyinSegmentResponse);
+  rpc GetHlsResource(GetDouyinHlsResourceRequest) returns (stream DouyinHlsResourceResponse);
   rpc WatchDanmaku(WatchDouyinDanmakuRequest) returns (stream DouyinDanmakuEvent);
 }

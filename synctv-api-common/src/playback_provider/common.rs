@@ -195,10 +195,13 @@ pub fn live_flv_access_from_claims(
 const MAX_MANIFEST_CONTENT_LENGTH: u64 = 10 * 1024 * 1024;
 const MAX_MANIFEST_SIZE: usize = 10 * 1024 * 1024;
 const MAX_CONSECUTIVE_FLV_DROPS: u32 = 100;
+const HLS_ROLLING_RESOURCE_SIGNATURE_TTL_SECONDS: i64 = 120;
+const HLS_MANIFEST_CACHE_CONTROL: &str = "no-store";
 
 pub type PlaybackProviderChunkStream =
     Pin<Box<dyn Stream<Item = Result<StreamChunk, ApiError>> + Send + 'static>>;
 
+#[derive(Clone, Copy)]
 pub struct PlaybackTransportExecutorDeps<'a> {
     pub proxy_signing_key: &'a ProxySigningKey,
     pub proxy_http_client: &'a reqwest::Client,
@@ -400,7 +403,7 @@ pub async fn stream_live_flv_chunks(
         loop {
             tokio::select! {
                 _ = lifecycle_tick.tick() => {
-                    if synctv_core::SystemClock.now().timestamp() > expires_at {
+                    if synctv_core::SystemClock.now().timestamp() >= expires_at {
                         tracing::info!(room_id = %room_id, expires_at, "FLV stream terminated: proxy signature expired");
                         break;
                     }
@@ -501,12 +504,7 @@ pub async fn get_live_hls_master_chunks(
     let content =
         format!("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=8000000\n{playlist_url}\n");
 
-    Ok(direct_chunk_stream(
-        content,
-        "application/vnd.apple.mpegurl",
-        200,
-        false,
-    ))
+    Ok(hls_manifest_chunk_stream(content, 200, false))
 }
 
 pub async fn get_live_hls_playlist_chunks(
@@ -518,6 +516,12 @@ pub async fn get_live_hls_playlist_chunks(
     })?;
     let segment_disguised_as_png = live_segments_disguised_as_png(deps.runtime_settings_store)?;
     let generation_id = req.generation_id.clone();
+    let media_expires_at = req.signature_expires_at.min(
+        synctv_core::SystemClock
+            .now()
+            .timestamp()
+            .saturating_add(HLS_ROLLING_RESOURCE_SIGNATURE_TTL_SECONDS),
+    );
     let playlist = synctv_livestream::HlsStreamingApi::generate_playlist(
         infrastructure,
         &req.room_id.to_string(),
@@ -536,7 +540,7 @@ pub async fn get_live_hls_playlist_chunks(
                 resource: format!("hls/{generation_id}/{segment_name}"),
                 room_id: req.signature_room_id.clone(),
                 user_id: req.signature_user_id.clone(),
-                expires_at: req.signature_expires_at,
+                expires_at: media_expires_at,
                 target_url: None,
             };
             let signed_query = deps.proxy_signing_key.build_signed_query(&claims);
@@ -558,12 +562,7 @@ pub async fn get_live_hls_playlist_chunks(
         ));
     };
 
-    Ok(direct_chunk_stream(
-        content,
-        "application/vnd.apple.mpegurl",
-        200,
-        false,
-    ))
+    Ok(hls_manifest_chunk_stream(content, 200, false))
 }
 
 pub async fn get_live_hls_segment_chunks(
@@ -701,88 +700,22 @@ pub async fn playback_transport_action_to_chunk_stream(
             .map_err(|error| map_proxy_execution_error(&error))?;
             Ok(axum_response_to_chunk_stream(response))
         }
-        PlaybackTransportAction::M3u8Rewrite { url, headers } => {
-            if head {
-                let response = send_playback_provider_request(
-                    &deps,
-                    reqwest::Method::HEAD,
-                    &url,
-                    &headers,
-                    None,
-                )
+        PlaybackTransportAction::FetchAndForwardCandidates {
+            urls,
+            headers,
+            range_header,
+        } => {
+            fetch_and_forward_candidates_to_chunk_stream(deps, urls, headers, range_header, head)
                 .await
-                .map_err(|error| map_proxy_execution_error(&error))?;
-                return Ok(response_to_chunk_stream(response, true));
-            }
-            let response =
-                send_playback_provider_request(&deps, reqwest::Method::GET, &url, &headers, None)
-                    .await
-                    .map_err(|error| map_proxy_execution_error(&error))?;
-            let status = response.status();
-            if !status.is_success() {
-                return Err(ApiError::ServiceUnavailable(format!(
-                    "Remote M3U8 returned status {status}"
-                )));
-            }
-
-            // Check Content-Length BEFORE reading body to prevent DoS
-            let content_length = response.content_length();
-            if let Some(size) = content_length {
-                if size > MAX_MANIFEST_CONTENT_LENGTH {
-                    return Err(ApiError::ServiceUnavailable(
-                        "M3U8 manifest exceeded size limit".to_string(),
-                    ));
-                }
-            }
-
-            let initial_capacity = content_length
-                .and_then(|size| usize::try_from(size).ok())
-                .unwrap_or(8192)
-                .min(MAX_MANIFEST_SIZE);
-            let mut body = bytes::BytesMut::with_capacity(initial_capacity);
-            let mut stream = response.bytes_stream();
-            while let Some(chunk_result) = stream.next().await {
-                let chunk = chunk_result.map_err(|error| map_reqwest_error(&error))?;
-
-                let new_len = body.len().saturating_add(chunk.len());
-                if new_len > MAX_MANIFEST_SIZE {
-                    return Err(ApiError::ServiceUnavailable(
-                        "M3U8 manifest exceeded size limit during streaming read".to_string(),
-                    ));
-                }
-                body.extend_from_slice(&chunk);
-            }
-            let body = body.freeze();
-            let manifest = std::str::from_utf8(&body)
-                .map_err(|_| ApiError::InvalidInput("M3U8 manifest is not UTF-8".to_string()))?;
-            let rewritten = if let Some(hls_rewrite) = deps.hls_rewrite {
-                synctv_proxy::rewrite_m3u8_with_typed_url_mapper(
-                    manifest,
-                    &url,
-                    hls_rewrite.segment_base,
-                    move |segment_base, target_url, kind| {
-                        build_hls_resource_url(
-                            deps.proxy_signing_key,
-                            hls_rewrite,
-                            segment_base,
-                            target_url,
-                            kind,
-                        )
-                    },
-                )
-                .map_err(|error| ApiError::ServiceUnavailable(error.to_string()))?
-            } else {
-                return Err(ApiError::Internal(
-                    "HLS rewrite action requires API route signing context".to_string(),
-                ));
-            };
-            Ok(direct_chunk_stream(
-                rewritten,
-                "application/vnd.apple.mpegurl",
-                200,
-                false,
-            ))
         }
+        PlaybackTransportAction::M3u8Rewrite { url, headers } => {
+            m3u8_rewrite_to_chunk_stream(deps, url, headers, None, head).await
+        }
+        PlaybackTransportAction::M3u8RewriteWithSource {
+            url,
+            headers,
+            source_url,
+        } => m3u8_rewrite_to_chunk_stream(deps, url, headers, Some(source_url), head).await,
         PlaybackTransportAction::M3u8BodyRewrite { body } => {
             if body.len() > MAX_MANIFEST_SIZE {
                 return Err(ApiError::ServiceUnavailable(
@@ -791,6 +724,7 @@ pub async fn playback_transport_action_to_chunk_stream(
             }
             let manifest = std::str::from_utf8(&body)
                 .map_err(|_| ApiError::InvalidInput("M3U8 manifest is not UTF-8".to_string()))?;
+            let playlist_kind = synctv_proxy::classify_hls_playlist(manifest);
             let hls_rewrite = deps.hls_rewrite.ok_or_else(|| {
                 ApiError::Internal(
                     "HLS rewrite action requires API route signing context".to_string(),
@@ -807,16 +741,12 @@ pub async fn playback_transport_action_to_chunk_stream(
                         segment_base,
                         target_url,
                         kind,
+                        playlist_kind,
                     )
                 },
             )
             .map_err(|error| ApiError::ServiceUnavailable(error.to_string()))?;
-            Ok(direct_chunk_stream(
-                rewritten,
-                "application/vnd.apple.mpegurl",
-                200,
-                head,
-            ))
+            Ok(hls_manifest_chunk_stream(rewritten, 200, head))
         }
         PlaybackTransportAction::MpdRewrite { .. }
         | PlaybackTransportAction::MpdBodyRewrite { .. } => Err(ApiError::Internal(
@@ -837,27 +767,295 @@ pub async fn playback_transport_action_to_chunk_stream(
     }
 }
 
+async fn m3u8_rewrite_to_chunk_stream(
+    deps: PlaybackTransportExecutorDeps<'_>,
+    url: String,
+    headers: std::collections::HashMap<String, String>,
+    source_url: Option<String>,
+    head: bool,
+) -> Result<PlaybackProviderChunkStream, ApiError> {
+    if head {
+        let response =
+            send_playback_provider_request(&deps, reqwest::Method::HEAD, &url, &headers, None)
+                .await
+                .map_err(|error| map_proxy_execution_error(&error))?;
+        return Ok(response_to_chunk_stream_with_cache_control(
+            response,
+            true,
+            HLS_MANIFEST_CACHE_CONTROL,
+        ));
+    }
+    let response =
+        send_playback_provider_request(&deps, reqwest::Method::GET, &url, &headers, None)
+            .await
+            .map_err(|error| map_proxy_execution_error(&error))?;
+    let status = response.status();
+    if !status.is_success() {
+        if matches!(status.as_u16(), 401 | 403) {
+            return Err(ApiError::Authentication(format!(
+                "Remote M3U8 returned status {status}"
+            )));
+        }
+        return Err(ApiError::ServiceUnavailable(format!(
+            "Remote M3U8 returned status {status}"
+        )));
+    }
+    let manifest_fetch_url = response.url().to_string();
+    let manifest_source_url = source_url.unwrap_or_else(|| manifest_fetch_url.clone());
+    let content_length = response.content_length();
+    if content_length.is_some_and(|size| size > MAX_MANIFEST_CONTENT_LENGTH) {
+        return Err(ApiError::ServiceUnavailable(
+            "M3U8 manifest exceeded size limit".to_string(),
+        ));
+    }
+    let initial_capacity = content_length
+        .and_then(|size| usize::try_from(size).ok())
+        .unwrap_or(8192)
+        .min(MAX_MANIFEST_SIZE);
+    let mut body = bytes::BytesMut::with_capacity(initial_capacity);
+    let mut stream = response.bytes_stream();
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.map_err(|error| map_reqwest_error(&error))?;
+        if body.len().saturating_add(chunk.len()) > MAX_MANIFEST_SIZE {
+            return Err(ApiError::ServiceUnavailable(
+                "M3U8 manifest exceeded size limit during streaming read".to_string(),
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let manifest = std::str::from_utf8(&body)
+        .map_err(|_| ApiError::InvalidInput("M3U8 manifest is not UTF-8".to_string()))?;
+    let playlist_kind = synctv_proxy::classify_hls_playlist(manifest);
+    let hls_rewrite = deps.hls_rewrite.ok_or_else(|| {
+        ApiError::Internal("HLS rewrite action requires API route signing context".to_string())
+    })?;
+    let rewrite_fetch_url = manifest_fetch_url.clone();
+    let rewrite_source_url = manifest_source_url.clone();
+    let rewritten = synctv_proxy::rewrite_m3u8_with_typed_url_mapper(
+        manifest,
+        &manifest_source_url,
+        hls_rewrite.segment_base,
+        move |segment_base, target_url, kind| {
+            let target_url =
+                stable_hls_rewrite_target(&rewrite_fetch_url, &rewrite_source_url, target_url);
+            build_hls_resource_url(
+                deps.proxy_signing_key,
+                hls_rewrite,
+                segment_base,
+                &target_url,
+                kind,
+                playlist_kind,
+            )
+        },
+    )
+    .map_err(|error| ApiError::ServiceUnavailable(error.to_string()))?;
+    Ok(hls_manifest_chunk_stream(rewritten, 200, false))
+}
+
+fn stable_hls_rewrite_target(
+    manifest_fetch_url: &str,
+    manifest_source_url: &str,
+    target_url: &str,
+) -> String {
+    let (Ok(fetch), Ok(source), Ok(target)) = (
+        url::Url::parse(manifest_fetch_url),
+        url::Url::parse(manifest_source_url),
+        url::Url::parse(target_url),
+    ) else {
+        return target_url.to_string();
+    };
+    if fetch.origin().ascii_serialization() != target.origin().ascii_serialization() {
+        return target_url.to_string();
+    }
+    fetch
+        .make_relative(&target)
+        .and_then(|relative| source.join(&relative).ok())
+        .map_or_else(|| target_url.to_string(), |stable| stable.to_string())
+}
+
+async fn fetch_and_forward_candidates_to_chunk_stream(
+    deps: PlaybackTransportExecutorDeps<'_>,
+    urls: Vec<String>,
+    headers: std::collections::HashMap<String, String>,
+    range_header: Option<String>,
+    head: bool,
+) -> Result<PlaybackProviderChunkStream, ApiError> {
+    if urls.is_empty() {
+        return Err(ApiError::InvalidInput(
+            "playback transport candidate URLs must not be empty".to_string(),
+        ));
+    }
+
+    let candidate_count = urls.len();
+    for (candidate_index, url) in urls.into_iter().enumerate() {
+        let response = if head {
+            synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control_and_timeout(
+                deps.proxy_slice_cache,
+                deps.proxy_slice_cache.config().enabled,
+                range_header.as_deref(),
+                &url,
+                &headers,
+                deps.request_control,
+                Some(synctv_proxy::DEFAULT_UPSTREAM_HEADER_TIMEOUT),
+            )
+            .await
+        } else {
+            synctv_proxy::slice_cache::proxy_with_cache_enabled_with_control_and_timeout(
+                deps.proxy_slice_cache,
+                deps.proxy_slice_cache.config().enabled,
+                range_header.as_deref(),
+                &url,
+                &headers,
+                deps.request_control,
+                Some(synctv_proxy::DEFAULT_UPSTREAM_HEADER_TIMEOUT),
+            )
+            .await
+        };
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                if candidate_index + 1 < candidate_count
+                    && proxy_candidate_error_allows_failover(&error)
+                {
+                    tracing::warn!(
+                        candidate_index,
+                        candidate_count,
+                        error_kind = ?synctv_proxy::proxy_error_kind(&error),
+                        "Playback upstream candidate failed before response commit"
+                    );
+                    continue;
+                }
+                return Err(map_proxy_execution_error(&error));
+            }
+        };
+
+        if !response.status().is_success() && candidate_index + 1 < candidate_count {
+            tracing::warn!(
+                candidate_index,
+                candidate_count,
+                status = %response.status(),
+                "Playback upstream candidate returned an unsuccessful status"
+            );
+            continue;
+        }
+        if head || !response.status().is_success() {
+            return Ok(axum_response_to_chunk_stream(response));
+        }
+
+        let status = response.status().as_u16();
+        let metadata = stream_metadata_from_headers(response.headers());
+        let mut body_stream = response.into_body().into_data_stream();
+        let first_body =
+            tokio::time::timeout(synctv_proxy::DEFAULT_UPSTREAM_HEADER_TIMEOUT, async {
+                loop {
+                    match body_stream.next().await {
+                        Some(Ok(data)) if data.is_empty() => {}
+                        result => return result,
+                    }
+                }
+            })
+            .await;
+        match first_body {
+            Ok(Some(Ok(data))) => {
+                return Ok(prefetched_axum_body_to_chunk_stream(
+                    status,
+                    metadata,
+                    Some(data),
+                    body_stream,
+                ));
+            }
+            Ok(None) => {
+                return Ok(prefetched_axum_body_to_chunk_stream(
+                    status,
+                    metadata,
+                    None,
+                    body_stream,
+                ));
+            }
+            Ok(Some(Err(error))) => {
+                if candidate_index + 1 < candidate_count
+                    && !deps
+                        .request_control
+                        .is_some_and(ExecutionControl::is_cancelled)
+                {
+                    tracing::warn!(
+                        candidate_index,
+                        candidate_count,
+                        "Playback upstream candidate body failed before response commit"
+                    );
+                    continue;
+                }
+                return Err(map_axum_body_error(error));
+            }
+            Err(_) if candidate_index + 1 < candidate_count => {
+                tracing::warn!(
+                    candidate_index,
+                    candidate_count,
+                    "Playback upstream candidate timed out before first body data"
+                );
+            }
+            Err(_) => {
+                return Err(ApiError::Timeout(
+                    "Playback upstream timed out before first body data".to_string(),
+                ));
+            }
+        }
+    }
+
+    Err(ApiError::ServiceUnavailable(
+        "All playback upstream candidates failed".to_string(),
+    ))
+}
+
+fn proxy_candidate_error_allows_failover(error: &anyhow::Error) -> bool {
+    !matches!(
+        synctv_proxy::proxy_error_kind(error),
+        Some(
+            synctv_proxy::ProxyErrorKind::Cancelled
+                | synctv_proxy::ProxyErrorKind::Ssrf
+                | synctv_proxy::ProxyErrorKind::RangeNotSatisfiable
+                | synctv_proxy::ProxyErrorKind::InvalidRequest
+        )
+    )
+}
+
 fn build_hls_resource_url(
     signing_key: &ProxySigningKey,
     rewrite: HlsRewriteSigning<'_>,
     segment_base: &str,
     target_url: &str,
     kind: synctv_proxy::HlsResourceKind,
+    playlist_kind: synctv_proxy::HlsPlaylistKind,
 ) -> String {
-    let Some(resource_prefix) = rewrite.resource.strip_suffix("/*") else {
-        let signed_query = signing_key.build_signed_query_with_target_url(
-            rewrite.claims,
-            rewrite.resource,
-            target_url,
+    let mut claims = rewrite.claims.clone();
+    if playlist_kind == synctv_proxy::HlsPlaylistKind::LiveMedia
+        && matches!(
+            kind,
+            synctv_proxy::HlsResourceKind::Segment | synctv_proxy::HlsResourceKind::Part
+        )
+    {
+        claims.expires_at = claims.expires_at.min(
+            synctv_core::SystemClock
+                .now()
+                .timestamp()
+                .saturating_add(HLS_ROLLING_RESOURCE_SIGNATURE_TTL_SECONDS),
         );
+    }
+    let Some(resource_prefix) = rewrite.resource.strip_suffix("/*") else {
+        let signed_query =
+            signing_key.build_signed_query_with_target_url(&claims, rewrite.resource, target_url);
         return format!("{segment_base}?{signed_query}");
     };
     let kind = match kind {
         synctv_proxy::HlsResourceKind::Manifest => "manifest",
-        synctv_proxy::HlsResourceKind::Media => "media",
+        synctv_proxy::HlsResourceKind::Segment
+        | synctv_proxy::HlsResourceKind::Part
+        | synctv_proxy::HlsResourceKind::Key
+        | synctv_proxy::HlsResourceKind::Init
+        | synctv_proxy::HlsResourceKind::Auxiliary => "media",
     };
     let signed_query = signing_key.build_signed_query_with_target_url(
-        rewrite.claims,
+        &claims,
         &format!("{resource_prefix}/{kind}"),
         target_url,
     );
@@ -1147,8 +1345,27 @@ fn response_to_chunk_stream(
     response: reqwest::Response,
     head: bool,
 ) -> PlaybackProviderChunkStream {
+    response_to_chunk_stream_with_cache_control_override(response, head, None)
+}
+
+fn response_to_chunk_stream_with_cache_control(
+    response: reqwest::Response,
+    head: bool,
+    cache_control: &str,
+) -> PlaybackProviderChunkStream {
+    response_to_chunk_stream_with_cache_control_override(response, head, Some(cache_control))
+}
+
+fn response_to_chunk_stream_with_cache_control_override(
+    response: reqwest::Response,
+    head: bool,
+    cache_control: Option<&str>,
+) -> PlaybackProviderChunkStream {
     let status = response.status().as_u16();
-    let metadata = stream_metadata_from_headers(response.headers());
+    let mut metadata = stream_metadata_from_headers(response.headers());
+    if let Some(cache_control) = cache_control {
+        metadata.cache_control = Some(cache_control.to_string());
+    }
     let first = futures::stream::once(async move { Ok(metadata_chunk(status, metadata)) });
     if head {
         return Box::pin(first);
@@ -1184,6 +1401,32 @@ fn axum_response_to_chunk_stream(
     Box::pin(first.chain(body_stream))
 }
 
+fn prefetched_axum_body_to_chunk_stream(
+    status: u16,
+    metadata: StreamResponseMetadata,
+    prefetched: Option<Bytes>,
+    body_stream: axum::body::BodyDataStream,
+) -> PlaybackProviderChunkStream {
+    let metadata_stream =
+        futures::stream::once(async move { Ok(metadata_chunk(status, metadata)) });
+    let prefetched_stream = futures::stream::iter(prefetched).map(|data| {
+        Ok(StreamChunk {
+            data,
+            status: 0,
+            ..Default::default()
+        })
+    });
+    let body_stream = body_stream.map(|chunk| match chunk {
+        Ok(data) => Ok(StreamChunk {
+            data,
+            status: 0,
+            ..Default::default()
+        }),
+        Err(error) => Err(map_axum_body_error(error)),
+    });
+    Box::pin(metadata_stream.chain(prefetched_stream).chain(body_stream))
+}
+
 fn direct_chunk_stream(
     body: impl Into<Bytes>,
     content_type: &str,
@@ -1197,6 +1440,23 @@ fn direct_chunk_stream(
             data: if head { Bytes::new() } else { body },
             status: status.into(),
             content_type: Some(content_type),
+            ..Default::default()
+        })
+    }))
+}
+
+fn hls_manifest_chunk_stream(
+    body: impl Into<Bytes>,
+    status: u16,
+    head: bool,
+) -> PlaybackProviderChunkStream {
+    let body = body.into();
+    Box::pin(futures::stream::once(async move {
+        Ok(StreamChunk {
+            data: if head { Bytes::new() } else { body },
+            status: status.into(),
+            content_type: Some("application/vnd.apple.mpegurl".to_string()),
+            cache_control: Some(HLS_MANIFEST_CACHE_CONTROL.to_string()),
             ..Default::default()
         })
     }))
@@ -1359,6 +1619,450 @@ mod tests {
             .build()
     }
 
+    async fn rewrite_test_hls_body(
+        signing_key: &ProxySigningKey,
+        client: &reqwest::Client,
+        ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+        proxy_slice_cache: &synctv_proxy::slice_cache::SliceCache,
+        claims: &ProxyUrlClaims,
+        body: &str,
+    ) -> anyhow::Result<StreamChunk> {
+        let deps = PlaybackTransportExecutorDeps {
+            proxy_signing_key: signing_key,
+            proxy_http_client: client,
+            ssrf_guard,
+            proxy_slice_cache,
+            request_control: None,
+            hls_rewrite: Some(HlsRewriteSigning {
+                segment_base: "/api/playback-providers/bilibili/v1/hls-resources/durl/0",
+                claims,
+                resource: "hls-resources/durl/0/*",
+            }),
+        };
+        let action = PlaybackTransportAction::M3u8BodyRewrite {
+            body: body.as_bytes().to_vec(),
+        };
+        let mut stream = playback_transport_action_to_chunk_stream(deps, action, false)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        stream
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("rewritten HLS manifest should emit one chunk"))?
+            .map_err(|error| anyhow::anyhow!("{error:?}"))
+    }
+
+    fn parse_rewritten_hls_claims(
+        signing_key: &ProxySigningKey,
+        manifest: &str,
+    ) -> anyhow::Result<Vec<(String, ProxyUrlClaims)>> {
+        let mut urls = Vec::new();
+        for line in manifest.lines().map(str::trim) {
+            if line.is_empty() {
+                continue;
+            }
+            if !line.starts_with('#') {
+                urls.push(line);
+                continue;
+            }
+
+            let mut remaining = line;
+            while let Some(start) = remaining.find("URI=\"") {
+                remaining = &remaining[start + "URI=\"".len()..];
+                let Some(end) = remaining.find('"') else {
+                    break;
+                };
+                urls.push(&remaining[..end]);
+                remaining = &remaining[end + 1..];
+            }
+        }
+
+        urls.into_iter()
+            .map(|resource_url| {
+                let (path, query) = resource_url
+                    .split_once('?')
+                    .ok_or_else(|| anyhow::anyhow!("rewritten HLS URL should contain a query"))?;
+                let route_kind = path
+                    .rsplit('/')
+                    .next()
+                    .filter(|kind| matches!(*kind, "manifest" | "media"))
+                    .ok_or_else(|| anyhow::anyhow!("rewritten HLS URL has an invalid route"))?;
+                let claims = signing_key.parse_and_verify_query(
+                    query,
+                    "bilibili",
+                    "v1",
+                    &format!("hls-resources/durl/0/{route_kind}"),
+                )?;
+                Ok((route_kind.to_string(), claims))
+            })
+            .collect()
+    }
+
+    fn hls_claim_for_target_suffix<'a>(
+        claims: &'a [(String, ProxyUrlClaims)],
+        suffix: &str,
+    ) -> &'a (String, ProxyUrlClaims) {
+        claims
+            .iter()
+            .find(|(_, claims)| {
+                claims
+                    .target_url
+                    .as_deref()
+                    .is_some_and(|target_url| target_url.ends_with(suffix))
+            })
+            .unwrap_or_else(|| panic!("rewritten HLS target ending with {suffix:?} should exist"))
+    }
+
+    fn assert_hls_resource_lifetime(
+        claims: &[(String, ProxyUrlClaims)],
+        suffix: &str,
+        expected_route: &str,
+        parent_expires_at: i64,
+        now: i64,
+        short_lived: bool,
+    ) {
+        let (route, claims) = hls_claim_for_target_suffix(claims, suffix);
+        assert_eq!(route, expected_route, "unexpected route for {suffix}");
+        if short_lived {
+            assert!(claims.expires_at > now, "expired signature for {suffix}");
+            assert!(
+                claims.expires_at <= now + HLS_ROLLING_RESOURCE_SIGNATURE_TTL_SECONDS,
+                "signature for {suffix} exceeded live resource TTL"
+            );
+        } else {
+            assert_eq!(
+                claims.expires_at, parent_expires_at,
+                "signature for {suffix} should inherit the parent lifetime"
+            );
+        }
+    }
+
+    #[test]
+    fn hls_signing_matrix_shortens_only_rolling_live_segments_and_parts() -> anyhow::Result<()> {
+        let signing_key =
+            ProxySigningKey::try_derive_from(b"test-secret-key-for-hls-resource-expiration")?;
+        let now = synctv_core::SystemClock.now().timestamp();
+        let parent_expires_at = now + 1800;
+        let claims = ProxyUrlClaims {
+            provider: "bilibili".to_string(),
+            version: "v1".to_string(),
+            resource: "hls-resources/main/0/*".to_string(),
+            room_id: "room-1".to_string(),
+            user_id: "user-1".to_string(),
+            expires_at: parent_expires_at,
+            target_url: None,
+        };
+        let rewrite = HlsRewriteSigning {
+            segment_base: "/api/playback-providers/bilibili/v1/hls-resources/main/0",
+            claims: &claims,
+            resource: "hls-resources/main/0/*",
+        };
+
+        let cases = [
+            (
+                synctv_proxy::HlsResourceKind::Segment,
+                synctv_proxy::HlsPlaylistKind::LiveMedia,
+                "media",
+                true,
+            ),
+            (
+                synctv_proxy::HlsResourceKind::Part,
+                synctv_proxy::HlsPlaylistKind::LiveMedia,
+                "media",
+                true,
+            ),
+            (
+                synctv_proxy::HlsResourceKind::Key,
+                synctv_proxy::HlsPlaylistKind::LiveMedia,
+                "media",
+                false,
+            ),
+            (
+                synctv_proxy::HlsResourceKind::Init,
+                synctv_proxy::HlsPlaylistKind::LiveMedia,
+                "media",
+                false,
+            ),
+            (
+                synctv_proxy::HlsResourceKind::Auxiliary,
+                synctv_proxy::HlsPlaylistKind::LiveMedia,
+                "media",
+                false,
+            ),
+            (
+                synctv_proxy::HlsResourceKind::Manifest,
+                synctv_proxy::HlsPlaylistKind::Master,
+                "manifest",
+                false,
+            ),
+            (
+                synctv_proxy::HlsResourceKind::Segment,
+                synctv_proxy::HlsPlaylistKind::EventMedia,
+                "media",
+                false,
+            ),
+            (
+                synctv_proxy::HlsResourceKind::Part,
+                synctv_proxy::HlsPlaylistKind::EventMedia,
+                "media",
+                false,
+            ),
+            (
+                synctv_proxy::HlsResourceKind::Segment,
+                synctv_proxy::HlsPlaylistKind::VodMedia,
+                "media",
+                false,
+            ),
+        ];
+
+        for (index, (resource_kind, playlist_kind, route_kind, short_lived)) in
+            cases.into_iter().enumerate()
+        {
+            let target_url = format!("https://cdn.example/resource-{index}");
+            let resource_url = build_hls_resource_url(
+                &signing_key,
+                rewrite,
+                rewrite.segment_base,
+                &target_url,
+                resource_kind,
+                playlist_kind,
+            );
+            assert!(resource_url.contains(&format!("/{route_kind}?")));
+            let resource_claims = signing_key.parse_and_verify_query(
+                resource_url
+                    .split_once('?')
+                    .map(|(_, query)| query)
+                    .expect("rewritten HLS resource URL should contain a query"),
+                "bilibili",
+                "v1",
+                &format!("hls-resources/main/0/{route_kind}"),
+            )?;
+            if short_lived {
+                assert!(resource_claims.expires_at > now);
+                assert!(
+                    resource_claims.expires_at <= now + HLS_ROLLING_RESOURCE_SIGNATURE_TTL_SECONDS
+                );
+            } else {
+                assert_eq!(resource_claims.expires_at, parent_expires_at);
+            }
+            assert_eq!(
+                resource_claims.target_url.as_deref(),
+                Some(target_url.as_str())
+            );
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn generated_hls_manifest_chunks_disable_caching_for_get_and_head() -> anyhow::Result<()>
+    {
+        for head in [false, true] {
+            let mut stream = hls_manifest_chunk_stream("#EXTM3U\n", 200, head);
+            let chunk = stream
+                .next()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("manifest stream should emit metadata"))?
+                .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+
+            assert_eq!(chunk.cache_control.as_deref(), Some("no-store"));
+            assert_eq!(
+                chunk.content_type.as_deref(),
+                Some("application/vnd.apple.mpegurl")
+            );
+            assert_eq!(chunk.data.is_empty(), head);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn realistic_hls_manifests_apply_route_and_lifetime_matrix_end_to_end(
+    ) -> anyhow::Result<()> {
+        let Some(mock_server) = start_mock_server_or_skip().await? else {
+            return Ok(());
+        };
+        let client = mock_proxy_client(&mock_server)?;
+        let ssrf_guard = test_ssrf_guard();
+        let proxy_slice_cache =
+            synctv_proxy::slice_cache::SliceCache::new_with_client_and_ssrf_guard(
+                synctv_proxy::slice_cache::SliceCacheConfig::default(),
+                client.clone(),
+                ssrf_guard.clone(),
+            )?;
+        let signing_key =
+            ProxySigningKey::try_derive_from(b"test-secret-key-for-realistic-hls-lifetime-matrix")?;
+        let now = synctv_core::SystemClock.now().timestamp();
+        let parent_expires_at = now + 1_800;
+        let claims = ProxyUrlClaims {
+            provider: "bilibili".to_string(),
+            version: "v1".to_string(),
+            resource: "hls-resources/durl/0/*".to_string(),
+            room_id: "room-1".to_string(),
+            user_id: "user-1".to_string(),
+            expires_at: parent_expires_at,
+            target_url: None,
+        };
+
+        let master = concat!(
+            "#EXTM3U\n",
+            "#EXT-X-VERSION:7\n",
+            "#EXT-X-SESSION-DATA:DATA-ID=\"com.example.metadata\",URI=\"metadata/session.json\"\n",
+            "#EXT-X-SESSION-KEY:METHOD=AES-128,URI=\"keys/session.key\"\n",
+            "#EXT-X-CONTENT-STEERING:SERVER-URI=\"steering/config.json\",PATHWAY-ID=\"cdn-a\"\n",
+            "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"English\",URI=\"audio/en.m3u8\"\n",
+            "#EXT-X-STREAM-INF:BANDWIDTH=3500000,CODECS=\"avc1.640028,mp4a.40.2\",AUDIO=\"audio\"\n",
+            "video/main.m3u8\n",
+        );
+        let master_chunk = rewrite_test_hls_body(
+            &signing_key,
+            &client,
+            &ssrf_guard,
+            &proxy_slice_cache,
+            &claims,
+            master,
+        )
+        .await?;
+        let master_claims =
+            parse_rewritten_hls_claims(&signing_key, std::str::from_utf8(&master_chunk.data)?)?;
+        assert_eq!(master_claims.len(), 5);
+        for (suffix, route) in [
+            ("metadata/session.json", "media"),
+            ("keys/session.key", "media"),
+            ("steering/config.json", "media"),
+            ("audio/en.m3u8", "manifest"),
+            ("video/main.m3u8", "manifest"),
+        ] {
+            assert_hls_resource_lifetime(
+                &master_claims,
+                suffix,
+                route,
+                parent_expires_at,
+                now,
+                false,
+            );
+        }
+
+        let live = concat!(
+            "#EXTM3U\n",
+            "#EXT-X-VERSION:9\n",
+            "#EXT-X-TARGETDURATION:4\n",
+            "#EXT-X-PART-INF:PART-TARGET=0.5\n",
+            "#EXT-X-MEDIA-SEQUENCE:901\n",
+            "#EXT-X-KEY:METHOD=AES-128,URI=\"keys/key-17.bin\",IV=0x1\n",
+            "#EXT-X-MAP:URI=\"init/init-17.mp4\"\n",
+            "#EXT-X-DATERANGE:ID=\"ad-1\",CLASS=\"com.example.ad\",X-ASSET-URI=\"metadata/ad-1.json\"\n",
+            "#EXT-X-PART:DURATION=0.5,URI=\"parts/901.0.m4s\",INDEPENDENT=YES\n",
+            "#EXT-X-PART:DURATION=0.5,URI=\"parts/901.1.m4s\"\n",
+            "#EXTINF:4.0,\n",
+            "segments/901.m4s\n",
+            "#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"parts/902.0.m4s\"\n",
+        );
+        let live_chunk = rewrite_test_hls_body(
+            &signing_key,
+            &client,
+            &ssrf_guard,
+            &proxy_slice_cache,
+            &claims,
+            live,
+        )
+        .await?;
+        let live_claims =
+            parse_rewritten_hls_claims(&signing_key, std::str::from_utf8(&live_chunk.data)?)?;
+        assert_eq!(live_claims.len(), 7);
+        for suffix in [
+            "parts/901.0.m4s",
+            "parts/901.1.m4s",
+            "segments/901.m4s",
+            "parts/902.0.m4s",
+        ] {
+            assert_hls_resource_lifetime(
+                &live_claims,
+                suffix,
+                "media",
+                parent_expires_at,
+                now,
+                true,
+            );
+        }
+        for suffix in ["keys/key-17.bin", "init/init-17.mp4", "metadata/ad-1.json"] {
+            assert_hls_resource_lifetime(
+                &live_claims,
+                suffix,
+                "media",
+                parent_expires_at,
+                now,
+                false,
+            );
+        }
+
+        let event = concat!(
+            "#EXTM3U\n",
+            "#EXT-X-VERSION:9\n",
+            "#EXT-X-PLAYLIST-TYPE:EVENT\n",
+            "#EXT-X-TARGETDURATION:4\n",
+            "#EXT-X-PART:DURATION=0.5,URI=\"event/part-1.m4s\"\n",
+            "#EXTINF:4.0,\n",
+            "event/segment-1.m4s\n",
+        );
+        let event_chunk = rewrite_test_hls_body(
+            &signing_key,
+            &client,
+            &ssrf_guard,
+            &proxy_slice_cache,
+            &claims,
+            event,
+        )
+        .await?;
+        let event_claims =
+            parse_rewritten_hls_claims(&signing_key, std::str::from_utf8(&event_chunk.data)?)?;
+        for suffix in ["event/part-1.m4s", "event/segment-1.m4s"] {
+            assert_hls_resource_lifetime(
+                &event_claims,
+                suffix,
+                "media",
+                parent_expires_at,
+                now,
+                false,
+            );
+        }
+
+        let vod = concat!(
+            "#EXTM3U\n",
+            "#EXT-X-VERSION:7\n",
+            "#EXT-X-PLAYLIST-TYPE:VOD\n",
+            "#EXT-X-MAP:URI=\"vod/init.mp4\"\n",
+            "#EXTINF:120.0,\n",
+            "vod/movie.m4s\n",
+            "#EXT-X-ENDLIST\n",
+        );
+        let vod_chunk = rewrite_test_hls_body(
+            &signing_key,
+            &client,
+            &ssrf_guard,
+            &proxy_slice_cache,
+            &claims,
+            vod,
+        )
+        .await?;
+        let vod_claims =
+            parse_rewritten_hls_claims(&signing_key, std::str::from_utf8(&vod_chunk.data)?)?;
+        for suffix in ["vod/init.mp4", "vod/movie.m4s"] {
+            assert_hls_resource_lifetime(
+                &vod_claims,
+                suffix,
+                "media",
+                parent_expires_at,
+                now,
+                false,
+            );
+        }
+
+        for chunk in [&master_chunk, &live_chunk, &event_chunk, &vod_chunk] {
+            assert_eq!(chunk.cache_control.as_deref(), Some("no-store"));
+        }
+        Ok(())
+    }
+
     #[test]
     fn live_flv_access_decodes_signed_public_user_id_at_api_boundary() {
         let codec = synctv_adapter::PublicIdCodec::plain();
@@ -1484,6 +2188,198 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fetch_and_forward_candidates_switches_before_response_commit() -> anyhow::Result<()> {
+        let Some(mock_server) = start_mock_server_or_skip().await? else {
+            return Ok(());
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/primary.mp4"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("primary failure"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/backup.mp4"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes([7_u8, 8, 9])
+                    .insert_header("Content-Type", "video/mp4"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = mock_proxy_client(&mock_server)?;
+        let ssrf_guard = test_ssrf_guard();
+        let proxy_slice_cache =
+            synctv_proxy::slice_cache::SliceCache::new_with_client_and_ssrf_guard(
+                synctv_proxy::slice_cache::SliceCacheConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+                client.clone(),
+                ssrf_guard.clone(),
+            )?;
+        let signing_key = crate::proxy_signature::ProxySigningKey::try_derive_from(
+            b"test-secret-key-for-playback-provider-candidate-failover",
+        )?;
+        let deps = PlaybackTransportExecutorDeps {
+            proxy_signing_key: &signing_key,
+            proxy_http_client: &client,
+            ssrf_guard: &ssrf_guard,
+            proxy_slice_cache: &proxy_slice_cache,
+            request_control: None,
+            hls_rewrite: None,
+        };
+        let action = PlaybackTransportAction::FetchAndForwardCandidates {
+            urls: vec![
+                mock_public_url(&mock_server, "/primary.mp4"),
+                mock_public_url(&mock_server, "/backup.mp4"),
+            ],
+            headers: HashMap::new(),
+            range_header: None,
+        };
+
+        let mut stream = playback_transport_action_to_chunk_stream(deps, action, false)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let metadata = stream
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("stream should emit metadata"))?
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(metadata.status, 200);
+        assert_eq!(metadata.content_type.as_deref(), Some("video/mp4"));
+
+        let mut body = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            body.extend(chunk.map_err(|error| anyhow::anyhow!("{error:?}"))?.data);
+        }
+        assert_eq!(body, vec![7, 8, 9]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fetch_and_forward_candidates_switches_on_first_body_read_error() -> anyhow::Result<()>
+    {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            for (expected_path, response) in [
+                (
+                    "/truncated.mp4",
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nContent-Type: video/mp4\r\nConnection: close\r\n\r\n"
+                        .as_slice(),
+                ),
+                (
+                    "/complete.mp4",
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Type: video/mp4\r\nConnection: close\r\n\r\n\x04\x05\x06"
+                        .as_slice(),
+                ),
+            ] {
+                let (mut socket, _) = listener.accept().await?;
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = socket.read(&mut buffer).await?;
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                let request = String::from_utf8_lossy(&request);
+                if !request.contains(expected_path) {
+                    return Err(std::io::Error::other(format!(
+                        "expected request path {expected_path}, got {request}"
+                    )));
+                }
+                socket.write_all(response).await?;
+                socket.shutdown().await?;
+            }
+            Ok::<(), std::io::Error>(())
+        });
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve("cdn.example.com", address)
+            .build()?;
+        let ssrf_guard = test_ssrf_guard();
+        let proxy_slice_cache =
+            synctv_proxy::slice_cache::SliceCache::new_with_client_and_ssrf_guard(
+                synctv_proxy::slice_cache::SliceCacheConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+                client.clone(),
+                ssrf_guard.clone(),
+            )?;
+        let signing_key = crate::proxy_signature::ProxySigningKey::try_derive_from(
+            b"test-secret-key-for-playback-provider-first-body-failover",
+        )?;
+        let deps = PlaybackTransportExecutorDeps {
+            proxy_signing_key: &signing_key,
+            proxy_http_client: &client,
+            ssrf_guard: &ssrf_guard,
+            proxy_slice_cache: &proxy_slice_cache,
+            request_control: None,
+            hls_rewrite: None,
+        };
+        let action = PlaybackTransportAction::FetchAndForwardCandidates {
+            urls: vec![
+                format!("http://cdn.example.com:{}/truncated.mp4", address.port()),
+                format!("http://cdn.example.com:{}/complete.mp4", address.port()),
+            ],
+            headers: HashMap::new(),
+            range_header: None,
+        };
+
+        let mut stream = playback_transport_action_to_chunk_stream(deps, action, false)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let metadata = stream
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("stream should emit metadata"))?
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(metadata.status, 200);
+
+        let mut body = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            body.extend(chunk.map_err(|error| anyhow::anyhow!("{error:?}"))?.data);
+        }
+        assert_eq!(body, vec![4, 5, 6]);
+        server.await??;
+        Ok(())
+    }
+
+    #[test]
+    fn hls_rewrite_maps_same_origin_absolute_targets_to_the_stable_source() {
+        assert_eq!(
+            stable_hls_rewrite_target(
+                "https://cdn.example/session-2/master.m3u8?token=new",
+                "https://dynamic-hls.synctv.invalid/session-1/master.m3u8",
+                "https://cdn.example/session-2/720p/index.m3u8?token=new",
+            ),
+            "https://dynamic-hls.synctv.invalid/session-1/720p/index.m3u8?token=new"
+        );
+        assert_eq!(
+            stable_hls_rewrite_target(
+                "https://cdn.example/session-2/master.m3u8",
+                "https://dynamic-hls.synctv.invalid/session-1/master.m3u8",
+                "https://external.example/key.bin",
+            ),
+            "https://external.example/key.bin"
+        );
+    }
+
+    #[tokio::test]
     async fn m3u8_rewrite_follows_validated_redirects() -> anyhow::Result<()> {
         let Some(mock_server) = start_mock_server_or_skip().await? else {
             return Ok(());
@@ -1502,7 +2398,8 @@ mod tests {
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_string("#EXTM3U\n#EXTINF:2,\nsegment.ts\n")
-                    .insert_header("Content-Type", "application/vnd.apple.mpegurl"),
+                    .insert_header("Content-Type", "application/vnd.apple.mpegurl")
+                    .insert_header("Cache-Control", "public, max-age=3600"),
             )
             .expect(1)
             .mount(&mock_server)
@@ -1556,10 +2453,28 @@ mod tests {
         let body = std::str::from_utf8(&chunk.data)?.to_string();
 
         assert_eq!(chunk.status, 200);
+        assert_eq!(chunk.cache_control.as_deref(), Some("no-store"));
         assert!(
             body.contains("/api/playback-providers/direct-url/v1/hls-resources/direct/0/media?")
         );
-        assert!(body.contains("targetUrl="));
+        let rewritten_media_url = body
+            .lines()
+            .find(|line| line.starts_with('/'))
+            .ok_or_else(|| anyhow::anyhow!("rewritten media URL should be present"))?;
+        let rewritten_query = rewritten_media_url
+            .split_once('?')
+            .map(|(_, query)| query)
+            .ok_or_else(|| anyhow::anyhow!("rewritten media URL should contain a query"))?;
+        let media_claims = signing_key.parse_and_verify_query(
+            rewritten_query,
+            "direct_url",
+            "v1",
+            "hls-resources/direct/0/media",
+        )?;
+        assert_eq!(
+            media_claims.target_url.as_deref(),
+            Some(mock_public_url(&mock_server, "/final/segment.ts").as_str())
+        );
         Ok(())
     }
 
@@ -1754,6 +2669,7 @@ mod tests {
         );
         assert_eq!(body.matches("targetUrl=").count(), 2);
         assert!(!body.contains("https://cdn.example/part-1.mp4\n"));
+        assert_eq!(chunk.cache_control.as_deref(), Some("no-store"));
         Ok(())
     }
 }

@@ -17,6 +17,10 @@ const MAX_REDIRECTS: usize = 10;
 /// each redirect to avoid breaking providers that require them on the final
 /// CDN request.
 pub(crate) const REDIRECT_PRESERVE_HEADERS: &[&str] = &[
+    "authorization",
+    "cookie",
+    "origin",
+    "proxy-authorization",
     "referer",
     "user-agent",
     "range",
@@ -28,10 +32,32 @@ pub(crate) const REDIRECT_PRESERVE_HEADERS: &[&str] = &[
 
 /// Headers to drop when a redirect crosses origin boundaries.
 ///
-/// The `Referer` header can leak the original request URL (including signed
-/// query parameters) to a third-party host. Dropping it on cross-origin
-/// redirects follows browser `strict-origin-when-cross-origin` behaviour.
-const CROSS_ORIGIN_DROP_HEADERS: &[&str] = &["referer"];
+/// Credential headers stay within one origin. Cross-origin `Referer` values
+/// are reduced to their origin below, matching `strict-origin-when-cross-origin`.
+const CROSS_ORIGIN_DROP_HEADERS: &[&str] = &["authorization", "cookie", "proxy-authorization"];
+
+fn preserve_redirect_header(name: &str, is_cross_origin: bool) -> bool {
+    REDIRECT_PRESERVE_HEADERS.contains(&name)
+        && !(is_cross_origin && CROSS_ORIGIN_DROP_HEADERS.contains(&name))
+}
+
+fn redirect_header_value(
+    name: &str,
+    value: &reqwest::header::HeaderValue,
+    is_cross_origin: bool,
+) -> Option<reqwest::header::HeaderValue> {
+    if !preserve_redirect_header(name, is_cross_origin) {
+        return None;
+    }
+    if !is_cross_origin || name != "referer" {
+        return Some(value.clone());
+    }
+    let referer = url::Url::parse(value.to_str().ok()?).ok()?;
+    let origin = referer.origin().ascii_serialization();
+    (origin != "null")
+        .then(|| reqwest::header::HeaderValue::from_str(&format!("{origin}/")).ok())
+        .flatten()
+}
 
 /// Result of `send_with_redirect_validation`.
 pub struct ProxyResponse {
@@ -134,7 +160,7 @@ async fn send_with_redirect_validation_inner(
     let preserved: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)> = built
         .headers()
         .iter()
-        .filter(|(name, _)| REDIRECT_PRESERVE_HEADERS.contains(&name.as_str()))
+        .filter(|(name, _)| preserve_redirect_header(name.as_str(), false))
         .map(|(n, v)| (n.clone(), v.clone()))
         .collect();
 
@@ -184,10 +210,10 @@ async fn send_with_redirect_validation_inner(
 
         let mut redirect_req = client.request(redirect_method.clone(), location.clone());
         for (name, value) in &preserved {
-            if is_cross_origin && CROSS_ORIGIN_DROP_HEADERS.contains(&name.as_str()) {
+            let Some(value) = redirect_header_value(name.as_str(), value, is_cross_origin) else {
                 continue;
-            }
-            redirect_req = redirect_req.header(name.clone(), value.clone());
+            };
+            redirect_req = redirect_req.header(name.clone(), value);
         }
 
         drop(response);
@@ -282,4 +308,39 @@ fn reqwest_error_has_ssrf_resolution_block(error: &reqwest::Error) -> bool {
         source = error.source();
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{preserve_redirect_header, redirect_header_value};
+
+    #[test]
+    fn sensitive_headers_only_survive_same_origin_redirects() {
+        for header in ["authorization", "cookie", "proxy-authorization"] {
+            assert!(preserve_redirect_header(header, false));
+            assert!(!preserve_redirect_header(header, true));
+        }
+        assert!(preserve_redirect_header("origin", false));
+        assert!(preserve_redirect_header("origin", true));
+        assert!(!preserve_redirect_header("x-private-token", false));
+    }
+
+    #[test]
+    fn cross_origin_referer_is_reduced_to_its_origin() {
+        let referer = reqwest::header::HeaderValue::from_static(
+            "https://live.example/private/path?token=secret",
+        );
+        assert_eq!(
+            redirect_header_value("referer", &referer, true)
+                .expect("valid referer should survive")
+                .to_str()
+                .expect("sanitized referer should be ASCII"),
+            "https://live.example/"
+        );
+        assert_eq!(
+            redirect_header_value("referer", &referer, false)
+                .expect("same-origin referer should survive"),
+            referer
+        );
+    }
 }

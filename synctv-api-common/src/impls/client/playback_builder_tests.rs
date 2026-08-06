@@ -3,7 +3,7 @@ use super::{
     build_start_playback_request, static_media_source_provider,
 };
 use synctv_core::models::{
-    Media, MediaId, PlaybackExternalMedia, PlaybackInfo, PlaybackMedia, PlaybackMediaProvider,
+    Media, MediaId, PlaybackDirectUrlMedia, PlaybackInfo, PlaybackMedia, PlaybackMediaProvider,
     PlaybackResult, PlaylistId, ProviderTarget, RoomId, SourceProvider,
 };
 
@@ -432,7 +432,8 @@ fn test_media(url: &str) -> PlaybackMedia {
         format: "mp4".to_string(),
         expire_at: None,
         metadata: None,
-        provider: PlaybackMediaProvider::External(PlaybackExternalMedia {
+        p2p_swarm_id: None,
+        provider: PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct {
             url: url.to_string(),
             headers: std::collections::HashMap::new(),
         }),

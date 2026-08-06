@@ -8,9 +8,9 @@ use super::{
     MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SourceConfig,
 };
 use crate::models::media::{
-    DirectUrlPlaybackMetadata, PlaybackDanmaku, PlaybackDanmakuProvider, PlaybackDirectUrlMedia,
-    PlaybackDirectUrlSubtitle, PlaybackExternalDanmaku, PlaybackExternalSubtitle, PlaybackMedia,
-    PlaybackMediaProvider, PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
+    DirectUrlPlaybackMetadata, PlaybackDanmaku, PlaybackDanmakuProvider, PlaybackDirectUrlDanmaku,
+    PlaybackDirectUrlMedia, PlaybackDirectUrlSubtitle, PlaybackMedia, PlaybackMediaProvider,
+    PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
 };
 use crate::models::{detect_direct_url_format, DirectUrlMediaSourceConfig};
 use async_trait::async_trait;
@@ -212,48 +212,64 @@ impl DirectUrlProvider {
                 "DirectUrl live source_config cannot set duration_seconds".to_string(),
             ));
         }
+        if config
+            .medias
+            .iter()
+            .filter_map(|media| media.expires_at)
+            .any(|expires_at| {
+                expires_at <= 0 || chrono::DateTime::from_timestamp(expires_at, 0).is_none()
+            })
+        {
+            return Err(ProviderError::InvalidConfig(
+                "DirectUrl media expires_at must be a representable Unix timestamp in seconds"
+                    .to_string(),
+            ));
+        }
+        if config
+            .subtitles
+            .iter()
+            .filter_map(|subtitle| subtitle.expires_at)
+            .chain(
+                config
+                    .danmakus
+                    .iter()
+                    .filter_map(|danmaku| danmaku.expires_at),
+            )
+            .any(|expires_at| {
+                expires_at <= 0 || chrono::DateTime::from_timestamp(expires_at, 0).is_none()
+            })
+        {
+            return Err(ProviderError::InvalidConfig(
+                "DirectUrl auxiliary expires_at must be a representable Unix timestamp in seconds"
+                    .to_string(),
+            ));
+        }
         Ok(())
     }
 }
 
-fn p2p_resource_id(media: &crate::models::DirectUrlMediaResourceConfig) -> String {
-    let mut headers = media.headers.iter().collect::<Vec<_>>();
+fn direct_url_resource_descriptor(
+    url: &str,
+    headers: &HashMap<String, String>,
+    format: &str,
+) -> String {
+    let mut headers = headers.iter().collect::<Vec<_>>();
     headers.sort_unstable_by(|left, right| left.0.cmp(right.0).then(left.1.cmp(right.1)));
     let canonical = serde_json::to_vec(&(
         "direct_url_v1",
-        media.url.split('#').next().unwrap_or_default(),
-        media.inferred_format().to_ascii_lowercase(),
+        url.split('#').next().unwrap_or_default(),
+        format.to_ascii_lowercase(),
         headers,
     ))
     .unwrap_or_default();
-    format!("direct_url:{}", hex::encode(Sha256::digest(canonical)))
-}
-
-fn p2p_descriptor(media: &PlaybackMedia) -> Option<String> {
-    let PlaybackMediaProvider::DirectUrl(
-        PlaybackDirectUrlMedia::Direct {
-            p2p_resource_id, ..
-        }
-        | PlaybackDirectUrlMedia::ProxyStream {
-            p2p_resource_id, ..
-        }
-        | PlaybackDirectUrlMedia::ProxyHlsManifest {
-            p2p_resource_id, ..
-        }
-        | PlaybackDirectUrlMedia::ProxyDashManifest {
-            p2p_resource_id, ..
-        },
-    ) = &media.provider
-    else {
-        return None;
-    };
-    Some(p2p_resource_id.clone())
+    hex::encode(Sha256::digest(canonical))
 }
 
 fn playback_media(
     name: String,
     format: String,
     expires_at: Option<i64>,
+    p2p_swarm_id: Option<String>,
     provider: PlaybackMediaProvider,
 ) -> PlaybackMedia {
     PlaybackMedia {
@@ -261,8 +277,27 @@ fn playback_media(
         format,
         expire_at: expires_at.and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0)),
         metadata: None,
+        p2p_swarm_id,
         provider,
     }
+}
+
+fn direct_url_expiration(explicit: Option<i64>, url: &str) -> Option<i64> {
+    explicit
+        .into_iter()
+        .chain(super::url_expiration_timestamp(url))
+        .min()
+}
+
+fn remap_filtered_default_index<T>(
+    resources: &[(usize, T)],
+    default_index: Option<usize>,
+) -> Option<usize> {
+    default_index.and_then(|default_index| {
+        resources
+            .iter()
+            .position(|(source_index, _)| *source_index == default_index)
+    })
 }
 
 fn mark_direct_url_playback_resources(
@@ -297,17 +332,16 @@ fn mark_direct_url_playback_resources(
             .filter_map(|(url_index, media)| {
                 let url = media.upstream_url()?.to_string();
                 let headers = media.upstream_headers();
-                let p2p_resource_id = p2p_descriptor(media)?;
                 Some((
                     url_index,
                     playback_media(
                         media.name.clone(),
                         media.format.clone(),
                         media.expire_at.map(|dt| dt.timestamp()),
+                        media.p2p_swarm_id.clone(),
                         PlaybackMediaProvider::DirectUrl(
                             if super::playback_media_is_dash(&mode_name, media) {
                                 PlaybackDirectUrlMedia::ProxyDashManifest {
-                                    p2p_resource_id,
                                     version: version.to_string(),
                                     expires_at,
                                     mode_name: mode_name.clone(),
@@ -317,7 +351,6 @@ fn mark_direct_url_playback_resources(
                                 }
                             } else if super::playback_media_is_hls(&mode_name, media) {
                                 PlaybackDirectUrlMedia::ProxyHlsManifest {
-                                    p2p_resource_id,
                                     version: version.to_string(),
                                     expires_at,
                                     mode_name: mode_name.clone(),
@@ -327,7 +360,6 @@ fn mark_direct_url_playback_resources(
                                 }
                             } else {
                                 PlaybackDirectUrlMedia::ProxyStream {
-                                    p2p_resource_id,
                                     version: version.to_string(),
                                     expires_at,
                                     mode_name: mode_name.clone(),
@@ -358,9 +390,15 @@ fn mark_direct_url_playback_resources(
                 name: subtitle.name().to_string(),
                 language: subtitle.language().to_string(),
                 format: subtitle.format().to_string(),
-                provider: PlaybackSubtitleProvider::DirectUrl(PlaybackDirectUrlSubtitle {
+                p2p_swarm_id: subtitle.p2p_swarm_id.clone(),
+                provider: PlaybackSubtitleProvider::DirectUrl(PlaybackDirectUrlSubtitle::Proxy {
                     version: version.to_string(),
-                    expires_at,
+                    expires_at: subtitle
+                        .expiration_timestamp()
+                        .into_iter()
+                        .chain(std::iter::once(expires_at))
+                        .min()
+                        .unwrap_or(expires_at),
                     mode_name: mode_name.clone(),
                     subtitle_index,
                     url: subtitle.upstream_url().to_string(),
@@ -618,53 +656,197 @@ impl MediaProvider for DirectUrlProvider {
             Self::validate_source_url(&danmaku.url, &self.ssrf_guard)?;
         }
 
+        let now = crate::SystemClock.now().timestamp();
+        let medias = config
+            .medias
+            .iter()
+            .enumerate()
+            .filter_map(|(index, media)| {
+                let expires_at = direct_url_expiration(media.expires_at, &media.url);
+                if expires_at.is_some_and(|expires_at| expires_at <= now) {
+                    tracing::warn!(
+                        media = %media.name,
+                        expires_at,
+                        "Skipping expired DirectUrl media"
+                    );
+                    return None;
+                }
+                Some((index, media))
+            })
+            .collect::<Vec<_>>();
+        if medias.is_empty() {
+            return Err(ProviderError::ApiError(
+                "All DirectUrl media resources have expired".to_string(),
+            ));
+        }
+        let has_expired_resources = medias.len() != config.medias.len()
+            || config.subtitles.iter().any(|subtitle| {
+                direct_url_expiration(subtitle.expires_at, &subtitle.url)
+                    .is_some_and(|expires_at| expires_at <= now)
+            })
+            || config.danmakus.iter().any(|danmaku| {
+                direct_url_expiration(danmaku.expires_at, &danmaku.url)
+                    .is_some_and(|expires_at| expires_at <= now)
+            });
+
         let cache_key = Self::playback_cache_key(config);
         let cache_ttl = Duration::from_hours(1); // 1 hour for direct URLs
 
         let store = _ctx.store.as_ref();
 
         // Check cache
-        if let Some(store) = store {
-            if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
-                if !cached.is_expired() {
-                    return super::build_cached_versioned_playback_response(
-                        cached,
-                        Self::NAME,
-                        _ctx,
-                        |result, version, expires_at| {
-                            mark_direct_url_playback_resources(
-                                result,
-                                version,
-                                expires_at,
-                                config.prefer_proxy == Some(true),
-                                config.proxy_only,
-                            );
-                        },
-                    )
-                    .await;
+        if !has_expired_resources {
+            if let Some(store) = store {
+                if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
+                    if super::versioned_playback_is_fresh(&cached) {
+                        return super::build_cached_versioned_playback_response(
+                            cached,
+                            Self::NAME,
+                            _ctx,
+                            |result, version, expires_at| {
+                                mark_direct_url_playback_resources(
+                                    result,
+                                    version,
+                                    expires_at,
+                                    config.prefer_proxy == Some(true),
+                                    config.proxy_only,
+                                );
+                            },
+                        )
+                        .await;
+                    }
                 }
             }
         }
 
-        let first_media = config
-            .medias
+        let first_media = medias
             .first()
+            .map(|(_, media)| *media)
             .ok_or_else(|| ProviderError::InvalidConfig("DirectUrl medias is empty".to_string()))?;
         let format = if first_media.format.is_empty() {
             Self::detect_format(&first_media.url)
         } else {
             first_media.format.clone()
         };
+        let playback_kind = config.inferred_playback_kind();
+        let media_p2p_enabled = playback_kind == Some(crate::models::PlaybackKind::Regular);
+
+        let subtitles = config
+            .subtitles
+            .iter()
+            .enumerate()
+            .filter_map(|(index, subtitle)| {
+                let expires_at = direct_url_expiration(subtitle.expires_at, &subtitle.url);
+                if expires_at.is_some_and(|expires_at| expires_at <= now) {
+                    tracing::warn!(
+                        subtitle = %subtitle.name,
+                        expires_at,
+                        "Skipping expired DirectUrl subtitle"
+                    );
+                    return None;
+                }
+                let format = if subtitle.format.is_empty() {
+                    Self::detect_format(&subtitle.url)
+                } else {
+                    subtitle.format.clone()
+                };
+                let resource_descriptor =
+                    direct_url_resource_descriptor(&subtitle.url, &subtitle.headers, &format);
+                Some((
+                    index,
+                    PlaybackSubtitle {
+                        name: if subtitle.name.is_empty() {
+                            format!("Subtitle {}", index + 1)
+                        } else {
+                            subtitle.name.clone()
+                        },
+                        language: if subtitle.language.is_empty() {
+                            "und".to_string()
+                        } else {
+                            subtitle.language.clone()
+                        },
+                        format,
+                        p2p_swarm_id: Some(super::provider_p2p_swarm_id(
+                            Self::NAME,
+                            _ctx.provider_instance_name(),
+                            "subtitle",
+                            &resource_descriptor,
+                        )),
+                        provider: PlaybackSubtitleProvider::DirectUrl(
+                            PlaybackDirectUrlSubtitle::Direct {
+                                url: subtitle.url.clone(),
+                                headers: subtitle.headers.clone(),
+                                expire_at: expires_at.and_then(|timestamp| {
+                                    chrono::DateTime::from_timestamp(timestamp, 0)
+                                }),
+                            },
+                        ),
+                    },
+                ))
+            })
+            .collect::<Vec<_>>();
+        let default_subtitle_index =
+            remap_filtered_default_index(&subtitles, config.default_subtitle_index);
+        let subtitles = subtitles
+            .into_iter()
+            .map(|(_, subtitle)| subtitle)
+            .collect();
+
+        let danmakus = config
+            .danmakus
+            .iter()
+            .enumerate()
+            .filter_map(|(index, danmaku)| {
+                let expires_at = direct_url_expiration(danmaku.expires_at, &danmaku.url);
+                if expires_at.is_some_and(|expires_at| expires_at <= now) {
+                    tracing::warn!(
+                        danmaku = %danmaku.name,
+                        expires_at,
+                        "Skipping expired DirectUrl danmaku"
+                    );
+                    return None;
+                }
+                let format = danmaku.format.as_deref().unwrap_or_default();
+                let resource_descriptor =
+                    direct_url_resource_descriptor(&danmaku.url, &danmaku.headers, format);
+                Some((
+                    index,
+                    PlaybackDanmaku {
+                        name: if danmaku.name.is_empty() {
+                            format!("Danmaku {}", index + 1)
+                        } else {
+                            danmaku.name.clone()
+                        },
+                        format: danmaku.format.clone(),
+                        p2p_swarm_id: Some(super::provider_p2p_swarm_id(
+                            Self::NAME,
+                            _ctx.provider_instance_name(),
+                            "danmaku",
+                            &resource_descriptor,
+                        )),
+                        provider: PlaybackDanmakuProvider::DirectUrl(PlaybackDirectUrlDanmaku {
+                            url: danmaku.url.clone(),
+                            headers: danmaku.headers.clone(),
+                            expire_at: expires_at.and_then(|timestamp| {
+                                chrono::DateTime::from_timestamp(timestamp, 0)
+                            }),
+                        }),
+                    },
+                ))
+            })
+            .collect::<Vec<_>>();
+        let default_danmaku_index =
+            remap_filtered_default_index(&danmakus, config.default_danmaku_index);
+        let danmakus = danmakus.into_iter().map(|(_, danmaku)| danmaku).collect();
 
         let mut playback_infos = HashMap::new();
+        let default_media_index = remap_filtered_default_index(&medias, config.default_media_index);
         playback_infos.insert(
             "direct".to_string(),
             PlaybackInfo {
                 thumbnail: None,
-                medias: config
-                    .medias
+                medias: medias
                     .iter()
-                    .enumerate()
                     .map(|(index, media)| {
                         let format = if media.format.is_empty() {
                             Self::detect_format(&media.url)
@@ -676,68 +858,40 @@ impl MediaProvider for DirectUrlProvider {
                         } else {
                             media.name.clone()
                         };
+                        let expires_at = media
+                            .expires_at
+                            .into_iter()
+                            .chain(super::url_expiration_timestamp(&media.url))
+                            .min();
+                        let resource_descriptor =
+                            direct_url_resource_descriptor(&media.url, &media.headers, &format);
                         playback_media(
                             name,
                             format,
-                            None,
+                            expires_at,
+                            media_p2p_enabled.then(|| {
+                                super::provider_p2p_swarm_id(
+                                    Self::NAME,
+                                    _ctx.provider_instance_name(),
+                                    "media",
+                                    &resource_descriptor,
+                                )
+                            }),
                             PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct {
-                                p2p_resource_id: p2p_resource_id(media),
                                 url: media.url.clone(),
                                 headers: media.headers.clone(),
                             }),
                         )
                     })
                     .collect(),
-                default_media_index: config.default_media_index,
-                subtitles: config
-                    .subtitles
-                    .iter()
-                    .enumerate()
-                    .map(|(index, subtitle)| PlaybackSubtitle {
-                        name: if subtitle.name.is_empty() {
-                            format!("Subtitle {}", index + 1)
-                        } else {
-                            subtitle.name.clone()
-                        },
-                        language: if subtitle.language.is_empty() {
-                            "und".to_string()
-                        } else {
-                            subtitle.language.clone()
-                        },
-                        format: if subtitle.format.is_empty() {
-                            Self::detect_format(&subtitle.url)
-                        } else {
-                            subtitle.format.clone()
-                        },
-                        provider: PlaybackSubtitleProvider::External(PlaybackExternalSubtitle {
-                            url: subtitle.url.clone(),
-                            headers: subtitle.headers.clone(),
-                        }),
-                    })
-                    .collect(),
-                default_subtitle_index: config.default_subtitle_index,
-                danmakus: config
-                    .danmakus
-                    .iter()
-                    .enumerate()
-                    .map(|(index, danmaku)| PlaybackDanmaku {
-                        name: if danmaku.name.is_empty() {
-                            format!("Danmaku {}", index + 1)
-                        } else {
-                            danmaku.name.clone()
-                        },
-                        format: danmaku.format.clone(),
-                        provider: PlaybackDanmakuProvider::External(PlaybackExternalDanmaku {
-                            url: danmaku.url.clone(),
-                            headers: danmaku.headers.clone(),
-                        }),
-                    })
-                    .collect(),
-                default_danmaku_index: config.default_danmaku_index,
+                default_media_index,
+                subtitles,
+                default_subtitle_index,
+                danmakus,
+                default_danmaku_index,
             },
         );
 
-        let playback_kind = config.inferred_playback_kind();
         let metadata = PlaybackMetadata::DirectUrl(DirectUrlPlaybackMetadata {
             format: Some(format.clone()),
             filename: first_media
@@ -856,9 +1010,11 @@ mod tests {
         assert_eq!(result.default_mode, "proxy_direct");
         assert!(!result.playback_infos.contains_key("direct"));
         assert!(result.playback_infos.contains_key("proxy_direct"));
-        let proxy = p2p_descriptor(&result.playback_infos["proxy_direct"].medias[0])
+        let proxy = result.playback_infos["proxy_direct"].medias[0]
+            .p2p_swarm_id
+            .as_deref()
             .expect("proxy resource should carry provider identity");
-        assert!(proxy.starts_with("direct_url:"));
+        assert!(proxy.starts_with("sm3_"));
     }
 
     #[tokio::test]
@@ -883,6 +1039,157 @@ mod tests {
             result.playback_infos["direct"].medias[0].upstream_headers()["authorization"],
             "Bearer secret"
         );
+    }
+
+    #[tokio::test]
+    async fn auxiliary_expiry_filters_stale_resources_and_bounds_proxy_signatures() {
+        let provider = DirectUrlProvider::new();
+        let ctx = test_context();
+        let now = crate::SystemClock.now().timestamp();
+        let future_expiry = now + 300;
+        let mut config = crate::models::DirectUrlMediaSourceConfig::single(
+            "https://example.com/video.mp4".to_string(),
+            HashMap::new(),
+        );
+        config.prefer_proxy = Some(true);
+        config.subtitles = vec![
+            crate::models::DirectUrlSubtitleSourceConfig {
+                name: "expired".to_string(),
+                language: "en".to_string(),
+                url: "https://example.com/expired.vtt".to_string(),
+                headers: HashMap::new(),
+                format: "vtt".to_string(),
+                expires_at: Some(now - 1),
+            },
+            crate::models::DirectUrlSubtitleSourceConfig {
+                name: "active".to_string(),
+                language: "en".to_string(),
+                url: "https://example.com/active.vtt".to_string(),
+                headers: HashMap::new(),
+                format: "vtt".to_string(),
+                expires_at: Some(future_expiry),
+            },
+        ];
+        config.default_subtitle_index = Some(1);
+        config.danmakus = vec![
+            crate::models::DirectUrlDanmakuSourceConfig {
+                name: "expired".to_string(),
+                url: "https://example.com/expired.xml".to_string(),
+                headers: HashMap::new(),
+                format: Some("xml".to_string()),
+                expires_at: Some(now - 1),
+            },
+            crate::models::DirectUrlDanmakuSourceConfig {
+                name: "active".to_string(),
+                url: "https://example.com/danmaku.xml".to_string(),
+                headers: HashMap::new(),
+                format: Some("xml".to_string()),
+                expires_at: Some(future_expiry + 60),
+            },
+        ];
+        config.default_danmaku_index = Some(1);
+
+        let result = provider
+            .generate_playback(&ctx, &crate::models::MediaSourceConfig::DirectUrl(config))
+            .await
+            .expect("direct URL playback should keep active auxiliary resources");
+
+        let direct = &result.playback_infos["direct"];
+        assert_eq!(direct.subtitles.len(), 1);
+        assert_eq!(direct.subtitles[0].name, "active");
+        assert_eq!(direct.default_subtitle_index, Some(0));
+        assert_eq!(direct.danmakus.len(), 1);
+        assert_eq!(direct.danmakus[0].name, "active");
+        assert_eq!(direct.default_danmaku_index, Some(0));
+        assert_eq!(
+            direct.subtitles[0].expiration_timestamp(),
+            Some(future_expiry)
+        );
+        let proxy = &result.playback_infos["proxy_direct"];
+        assert_eq!(proxy.subtitles.len(), 1);
+        assert_eq!(proxy.default_subtitle_index, Some(0));
+        assert_eq!(proxy.danmakus.len(), 1);
+        assert_eq!(proxy.default_danmaku_index, Some(0));
+        assert_eq!(
+            proxy.subtitles[0].expiration_timestamp(),
+            Some(future_expiry)
+        );
+    }
+
+    #[tokio::test]
+    async fn media_expiry_keeps_valid_fallbacks_and_remaps_the_default() {
+        let provider = DirectUrlProvider::new();
+        let ctx = test_context();
+        let now = crate::SystemClock.now().timestamp();
+        let config = crate::models::DirectUrlMediaSourceConfig {
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
+            duration_seconds: None,
+            prefer_proxy: Some(false),
+            proxy_only: false,
+            medias: vec![
+                crate::models::DirectUrlMediaResourceConfig {
+                    name: "expired".to_string(),
+                    url: "https://example.com/expired.m3u8".to_string(),
+                    headers: HashMap::new(),
+                    format: "hls".to_string(),
+                    expires_at: Some(now - 1),
+                },
+                crate::models::DirectUrlMediaResourceConfig {
+                    name: "active".to_string(),
+                    url: "https://example.com/active.m3u8".to_string(),
+                    headers: HashMap::new(),
+                    format: "hls".to_string(),
+                    expires_at: Some(now + 300),
+                },
+            ],
+            default_media_index: Some(1),
+            subtitles: Vec::new(),
+            default_subtitle_index: None,
+            danmakus: Vec::new(),
+            default_danmaku_index: None,
+        };
+
+        let result = provider
+            .generate_playback(&ctx, &crate::models::MediaSourceConfig::DirectUrl(config))
+            .await
+            .expect("DirectUrl should retain an active fallback media");
+        let direct = &result.playback_infos["direct"];
+
+        assert_eq!(direct.medias.len(), 1);
+        assert_eq!(direct.medias[0].name, "active");
+        assert_eq!(direct.default_media_index, Some(0));
+    }
+
+    #[tokio::test]
+    async fn media_expiry_fails_when_every_media_has_expired() {
+        let provider = DirectUrlProvider::new();
+        let ctx = test_context();
+        let mut config = crate::models::DirectUrlMediaSourceConfig::single(
+            "https://example.com/expired.mp4".to_string(),
+            HashMap::new(),
+        );
+        config.medias[0].expires_at = Some(crate::SystemClock.now().timestamp() - 1);
+
+        let error = provider
+            .generate_playback(&ctx, &crate::models::MediaSourceConfig::DirectUrl(config))
+            .await
+            .expect_err("DirectUrl should fail when every media has expired");
+
+        assert!(matches!(
+            error,
+            ProviderError::ApiError(message)
+                if message == "All DirectUrl media resources have expired"
+        ));
+    }
+
+    #[test]
+    fn filtered_default_indexes_clear_when_the_selected_resource_is_removed() {
+        let resources = vec![(0, "kept"), (2, "also-kept")];
+
+        assert_eq!(remap_filtered_default_index(&resources, Some(0)), Some(0));
+        assert_eq!(remap_filtered_default_index(&resources, Some(1)), None);
+        assert_eq!(remap_filtered_default_index(&resources, Some(2)), Some(1));
+        assert_eq!(remap_filtered_default_index(&resources, None), None);
     }
 
     #[tokio::test]
@@ -915,6 +1222,7 @@ mod tests {
             url: format!("https://example.com/{name}.{format}"),
             headers: HashMap::new(),
             format: format.to_string(),
+            expires_at: None,
         };
         let source_config = crate::models::MediaSourceConfig::DirectUrl(
             crate::models::DirectUrlMediaSourceConfig {
@@ -945,10 +1253,7 @@ mod tests {
 
         assert_eq!(result.default_mode, "direct");
         assert_eq!(direct.medias.len(), 4);
-        assert_eq!(
-            p2p_descriptor(&direct.medias[0]),
-            p2p_descriptor(&proxy.medias[0])
-        );
+        assert_eq!(direct.medias[0].p2p_swarm_id, proxy.medias[0].p2p_swarm_id);
 
         assert_eq!(
             proxy
@@ -995,12 +1300,14 @@ mod tests {
                             "Bearer secret".to_string(),
                         )]),
                         format: "mp4".to_string(),
+                        expires_at: None,
                     },
                     crate::models::DirectUrlMediaResourceConfig {
                         name: "Public DASH".to_string(),
                         url: "https://example.com/public.mpd".to_string(),
                         headers: HashMap::new(),
                         format: "dash".to_string(),
+                        expires_at: None,
                     },
                 ],
                 default_media_index: Some(1),
@@ -1051,6 +1358,7 @@ mod tests {
                     "Bearer secret".to_string(),
                 )]),
                 format: "dash".to_string(),
+                expires_at: None,
             }],
             default_media_index: None,
             subtitles: Vec::new(),

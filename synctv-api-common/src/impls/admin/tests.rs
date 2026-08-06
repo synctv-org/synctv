@@ -28,6 +28,30 @@ use synctv_livestream::{
     LiveStreamingInfrastructure, StreamError, StreamRegistryTrait, StreamTracker,
 };
 use synctv_realtime::sync::{ConnectionLimits, ConnectionManager, PublishRequest, RealtimeEvent};
+
+fn direct_url_playback_info(url: &str, name: &str) -> synctv_core::models::PlaybackInfo {
+    synctv_core::models::PlaybackInfo {
+        thumbnail: None,
+        medias: vec![synctv_core::models::PlaybackMedia {
+            name: name.to_string(),
+            format: String::new(),
+            expire_at: None,
+            metadata: None,
+            p2p_swarm_id: None,
+            provider: synctv_core::models::PlaybackMediaProvider::DirectUrl(
+                synctv_core::models::PlaybackDirectUrlMedia::Direct {
+                    url: url.to_string(),
+                    headers: HashMap::new(),
+                },
+            ),
+        }],
+        default_media_index: None,
+        subtitles: Vec::new(),
+        default_subtitle_index: None,
+        danmakus: Vec::new(),
+        default_danmaku_index: None,
+    }
+}
 use tokio::sync::mpsc;
 
 type TestResult<T = ()> = anyhow::Result<T>;
@@ -1164,10 +1188,7 @@ async fn create_room_media(
             Some(creator_id),
             name.to_string(),
             "direct",
-            synctv_core::models::PlaybackInfo::single_url(
-                "https://example.com/video.mp4".to_string(),
-                "default".to_string(),
-            ),
+            direct_url_playback_info("https://example.com/video.mp4", "default"),
             position,
         ),
         "direct media should build",
@@ -3073,7 +3094,7 @@ async fn test_runtime_settings_import_rolls_back_and_releases_fences_on_database
     )?;
 
     sqlx::query(
-        r#"
+        r"
         CREATE FUNCTION reject_runtime_settings_import() RETURNS trigger AS $$
         BEGIN
             IF NEW.key = 'server.name' THEN
@@ -3082,17 +3103,17 @@ async fn test_runtime_settings_import_rolls_back_and_releases_fences_on_database
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql;
-        "#,
+        ",
     )
     .execute(&pool)
     .await
     .map_err(|error| test_error(error.to_string()))?;
     sqlx::query(
-        r#"
+        r"
         CREATE TRIGGER reject_runtime_settings_import_trigger
         BEFORE INSERT OR UPDATE ON settings
         FOR EACH ROW EXECUTE FUNCTION reject_runtime_settings_import()
-        "#,
+        ",
     )
     .execute(&pool)
     .await

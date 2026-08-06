@@ -15,7 +15,7 @@ use super::{
     ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::media::{
-    PlaybackExternalMedia, PlaybackExternalSubtitle, PlaybackMedia, PlaybackMediaProvider,
+    PlaybackCloudreveMedia, PlaybackCloudreveSubtitle, PlaybackMedia, PlaybackMediaProvider,
     PlaybackSubtitle, PlaybackSubtitleProvider,
 };
 use crate::models::{
@@ -574,6 +574,8 @@ impl CloudreveProvider {
     async fn related_subtitles(
         client: &CloudreveClient,
         token: &str,
+        provider_instance_name: Option<&str>,
+        server_id: &str,
         path: &str,
     ) -> Vec<PlaybackSubtitle> {
         let (parent, video_name) = path.rsplit_once('/').unwrap_or(("cloudreve://my", path));
@@ -591,9 +593,15 @@ impl CloudreveProvider {
             let Ok(response) = client.file_url(token, &item.path).await else {
                 continue;
             };
-            let Some(url) = response.urls.into_iter().next().map(|entry| entry.url) else {
+            let response_expires_at = response.expires;
+            let Some(entry) = response.urls.into_iter().next() else {
                 continue;
             };
+            let expire_at = response_expires_at.into_iter().chain(entry.expire_at).min();
+            if expire_at.is_some_and(|value| value <= crate::SystemClock.now()) {
+                continue;
+            }
+            let url = entry.url;
             let format = item
                 .name
                 .rsplit('.')
@@ -604,9 +612,16 @@ impl CloudreveProvider {
                 name: item.name,
                 language: String::new(),
                 format,
-                provider: PlaybackSubtitleProvider::External(PlaybackExternalSubtitle {
+                p2p_swarm_id: Some(super::provider_p2p_swarm_id(
+                    Self::NAME,
+                    provider_instance_name,
+                    "subtitle",
+                    &format!("server:{server_id}:path:{}", item.path),
+                )),
+                provider: PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle {
                     url,
                     headers: HashMap::new(),
+                    expire_at,
                 }),
             });
         }
@@ -685,18 +700,32 @@ impl MediaProvider for CloudreveProvider {
         let (response, thumbnail, subtitles) = tokio::join!(
             client.file_url(&token, &config.path),
             client.thumbnail(&token, &config.path),
-            Self::related_subtitles(&client, &token, &config.path),
+            Self::related_subtitles(
+                &client,
+                &token,
+                instance_name.as_deref(),
+                &config.server_id,
+                &config.path,
+            ),
         );
         let response = response?;
-        let expire_at = response
-            .expires
-            .or_else(|| response.urls.first().and_then(|entry| entry.expire_at));
-        let url = response
+        let response_expires_at = response.expires;
+        let first_url = response
             .urls
             .into_iter()
             .next()
-            .map(|value| value.url)
-            .filter(|value| !value.trim().is_empty())
+            .ok_or(ProviderError::NotFound)?;
+        let expire_at = response_expires_at
+            .into_iter()
+            .chain(first_url.expire_at)
+            .min();
+        if expire_at.is_some_and(|value| value <= crate::SystemClock.now()) {
+            return Err(ProviderError::ApiError(
+                "Cloudreve returned an expired media URL".to_string(),
+            ));
+        }
+        let url = (!first_url.url.trim().is_empty())
+            .then_some(first_url.url)
             .ok_or(ProviderError::NotFound)?;
         let name = config
             .path
@@ -709,7 +738,13 @@ impl MediaProvider for CloudreveProvider {
             format: Self::format(&config.path),
             expire_at,
             metadata: None,
-            provider: PlaybackMediaProvider::External(PlaybackExternalMedia {
+            p2p_swarm_id: Some(super::provider_p2p_swarm_id(
+                Self::NAME,
+                instance_name.as_deref(),
+                "media",
+                &format!("server:{}:path:{}", config.server_id, config.path),
+            )),
+            provider: PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia {
                 url,
                 headers: HashMap::new(),
             }),

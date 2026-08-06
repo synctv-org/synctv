@@ -5,8 +5,59 @@ pub const MAX_M3U8_URLS: usize = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HlsResourceKind {
-    Media,
+    /// A child multivariant or media playlist.
     Manifest,
+    /// A complete media segment referenced by a media playlist URI line.
+    Segment,
+    /// A low-latency partial segment or part preload hint.
+    Part,
+    /// Media-encryption key material.
+    Key,
+    /// A media initialization section, including map preload hints.
+    Init,
+    /// Session data, content steering, and other URI-bearing metadata.
+    Auxiliary,
+}
+
+/// The lifecycle class of an HLS playlist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HlsPlaylistKind {
+    /// A multivariant playlist that points to child playlists.
+    Master,
+    /// A rolling media playlist whose segment window changes over time.
+    LiveMedia,
+    /// An append-only event media playlist.
+    EventMedia,
+    /// A complete media playlist, including an ended live playlist.
+    VodMedia,
+}
+
+/// Classifies an HLS playlist by tags that define its update lifecycle.
+#[must_use]
+pub fn classify_hls_playlist(m3u8: &str) -> HlsPlaylistKind {
+    let mut is_master = false;
+    let mut is_event = false;
+    let mut is_vod = false;
+    let mut has_endlist = false;
+
+    for line in m3u8.lines().map(str::trim) {
+        is_master |= is_master_playlist_tag(line);
+        has_endlist |= line == "#EXT-X-ENDLIST";
+        if let Some(value) = line.strip_prefix("#EXT-X-PLAYLIST-TYPE:") {
+            is_event |= value.trim().eq_ignore_ascii_case("EVENT");
+            is_vod |= value.trim().eq_ignore_ascii_case("VOD");
+        }
+    }
+
+    if is_master {
+        HlsPlaylistKind::Master
+    } else if is_event {
+        HlsPlaylistKind::EventMedia
+    } else if is_vod || has_endlist {
+        HlsPlaylistKind::VodMedia
+    } else {
+        HlsPlaylistKind::LiveMedia
+    }
 }
 
 /// Rewrite URLs inside an M3U8 playlist so they proxy through the server.
@@ -134,7 +185,7 @@ where
                 let kind = if next_uri_is_manifest {
                     HlsResourceKind::Manifest
                 } else {
-                    HlsResourceKind::Media
+                    HlsResourceKind::Segment
                 };
                 let proxied = proxy_url_for_target(proxy_base, &absolute, kind);
                 output.push_str(&proxied);
@@ -237,15 +288,7 @@ where
     let mut result = String::with_capacity(line.len());
     let mut remaining = line;
     let mut count = 0usize;
-    let kind = if line.starts_with("#EXT-X-MEDIA:")
-        || line.starts_with("#EXT-X-I-FRAME-STREAM-INF:")
-        || line.starts_with("#EXT-X-IMAGE-STREAM-INF:")
-        || line.starts_with("#EXT-X-RENDITION-REPORT:")
-    {
-        HlsResourceKind::Manifest
-    } else {
-        HlsResourceKind::Media
-    };
+    let kind = hls_tag_resource_kind(line);
 
     while let Some(start) = remaining.find(pattern) {
         result.push_str(&remaining[..start + pattern.len()]);
@@ -269,6 +312,71 @@ where
     (result, count)
 }
 
+fn hls_tag_resource_kind(line: &str) -> HlsResourceKind {
+    if line.starts_with("#EXT-X-MEDIA:")
+        || line.starts_with("#EXT-X-I-FRAME-STREAM-INF:")
+        || line.starts_with("#EXT-X-IMAGE-STREAM-INF:")
+        || line.starts_with("#EXT-X-RENDITION-REPORT:")
+    {
+        HlsResourceKind::Manifest
+    } else if line.starts_with("#EXT-X-PART:")
+        || (line.starts_with("#EXT-X-PRELOAD-HINT:")
+            && hls_attribute_value(line, "TYPE")
+                .is_some_and(|value| value.eq_ignore_ascii_case("PART")))
+    {
+        HlsResourceKind::Part
+    } else if line.starts_with("#EXT-X-KEY:") || line.starts_with("#EXT-X-SESSION-KEY:") {
+        HlsResourceKind::Key
+    } else if line.starts_with("#EXT-X-MAP:")
+        || (line.starts_with("#EXT-X-PRELOAD-HINT:")
+            && hls_attribute_value(line, "TYPE")
+                .is_some_and(|value| value.eq_ignore_ascii_case("MAP")))
+    {
+        HlsResourceKind::Init
+    } else {
+        HlsResourceKind::Auxiliary
+    }
+}
+
+fn is_master_playlist_tag(line: &str) -> bool {
+    line.starts_with("#EXT-X-STREAM-INF:")
+        || line.starts_with("#EXT-X-MEDIA:")
+        || line.starts_with("#EXT-X-I-FRAME-STREAM-INF:")
+        || line.starts_with("#EXT-X-IMAGE-STREAM-INF:")
+        || line.starts_with("#EXT-X-SESSION-DATA:")
+        || line.starts_with("#EXT-X-SESSION-KEY:")
+        || line.starts_with("#EXT-X-CONTENT-STEERING:")
+}
+
+fn hls_attribute_value<'a>(line: &'a str, name: &str) -> Option<&'a str> {
+    let attributes = line.split_once(':')?.1;
+    let mut field_start = 0;
+    let mut quoted = false;
+
+    for (index, byte) in attributes.bytes().enumerate() {
+        match byte {
+            b'"' => quoted = !quoted,
+            b',' if !quoted => {
+                if let Some(value) =
+                    hls_attribute_field_value(&attributes[field_start..index], name)
+                {
+                    return Some(value);
+                }
+                field_start = index + 1;
+            }
+            _ => {}
+        }
+    }
+
+    hls_attribute_field_value(&attributes[field_start..], name)
+}
+
+fn hls_attribute_field_value<'a>(field: &'a str, name: &str) -> Option<&'a str> {
+    let (key, value) = field.trim().split_once('=')?;
+    key.eq_ignore_ascii_case(name)
+        .then(|| value.trim().trim_matches('"'))
+}
+
 /// Percent-encode a string for use in URL query parameter values.
 ///
 /// This function first decodes any existing percent-encoded sequences, then
@@ -290,7 +398,7 @@ mod typed_resource_tests {
     use super::*;
 
     #[test]
-    fn classifies_extensionless_child_manifests_and_media_from_hls_tags() {
+    fn classifies_hls_uri_roles_from_tags() {
         let playlist = concat!(
             "#EXTM3U\n",
             "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",URI=\"audio/playlist\"\n",
@@ -298,6 +406,10 @@ mod typed_resource_tests {
             "#EXT-X-RENDITION-REPORT:URI=\"../alternate\",LAST-MSN=10\n",
             "#EXT-X-KEY:METHOD=AES-128,URI=\"keys/current\"\n",
             "#EXT-X-MAP:URI=\"init/current\"\n",
+            "#EXT-X-PART:DURATION=1.0,URI=\"parts/100.1\"\n",
+            "#EXT-X-PRELOAD-HINT:URI=\"parts/next,variant\",TYPE=PART\n",
+            "#EXT-X-PRELOAD-HINT:URI=\"init/next.mp4\",TYPE=MAP\n",
+            "#EXT-X-SESSION-DATA:DATA-ID=\"com.example.meta\",URI=\"metadata/session.json\"\n",
             "#EXT-X-STREAM-INF:BANDWIDTH=2000\n",
             "video/high\n",
             "#EXTINF:6,\n",
@@ -308,28 +420,93 @@ mod typed_resource_tests {
             playlist,
             "https://cdn.example.com/master/index",
             "/proxy",
-            |_, target, kind| {
-                let kind = match kind {
-                    HlsResourceKind::Manifest => "manifest",
-                    HlsResourceKind::Media => "media",
-                };
-                format!("/{kind}?target={target}")
-            },
+            |_, target, kind| format!("/{kind:?}?target={target}"),
         )
         .expect("HLS playlist should rewrite");
 
         assert!(rewritten
-            .contains("URI=\"/manifest?target=https://cdn.example.com/master/audio/playlist\""));
+            .contains("URI=\"/Manifest?target=https://cdn.example.com/master/audio/playlist\""));
         assert!(rewritten
-            .contains("URI=\"/manifest?target=https://cdn.example.com/master/iframe/playlist\""));
-        assert!(rewritten.contains("URI=\"/manifest?target=https://cdn.example.com/alternate\""));
-        assert!(rewritten.contains("/manifest?target=https://cdn.example.com/master/video/high"));
+            .contains("URI=\"/Manifest?target=https://cdn.example.com/master/iframe/playlist\""));
+        assert!(rewritten.contains("URI=\"/Manifest?target=https://cdn.example.com/alternate\""));
+        assert!(rewritten.contains("/Manifest?target=https://cdn.example.com/master/video/high"));
         assert!(
-            rewritten.contains("URI=\"/media?target=https://cdn.example.com/master/keys/current\"")
+            rewritten.contains("URI=\"/Key?target=https://cdn.example.com/master/keys/current\"")
         );
         assert!(
-            rewritten.contains("URI=\"/media?target=https://cdn.example.com/master/init/current\"")
+            rewritten.contains("URI=\"/Init?target=https://cdn.example.com/master/init/current\"")
         );
-        assert!(rewritten.contains("/media?target=https://cdn.example.com/master/segments/100"));
+        assert!(
+            rewritten.contains("URI=\"/Part?target=https://cdn.example.com/master/parts/100.1\"")
+        );
+        assert!(rewritten
+            .contains("URI=\"/Part?target=https://cdn.example.com/master/parts/next,variant\""));
+        assert!(
+            rewritten.contains("URI=\"/Init?target=https://cdn.example.com/master/init/next.mp4\"")
+        );
+        assert!(rewritten.contains(
+            "URI=\"/Auxiliary?target=https://cdn.example.com/master/metadata/session.json\""
+        ));
+        assert!(rewritten.contains("/Segment?target=https://cdn.example.com/master/segments/100"));
+    }
+
+    #[test]
+    fn classifies_session_keys_separately_from_media_segments() {
+        let playlist = concat!(
+            "#EXTM3U\n",
+            "#EXT-X-SESSION-KEY:METHOD=AES-128,URI=\"keys/session\"\n",
+            "#EXT-X-KEY:METHOD=AES-128,URI=\"keys/current\"\n",
+            "#EXTINF:6,\n",
+            "segments/100.ts\n",
+        );
+
+        let rewritten = rewrite_m3u8_with_typed_url_mapper(
+            playlist,
+            "https://cdn.example.com/live/index.m3u8",
+            "/proxy",
+            |_, target, kind| format!("/{kind:?}?target={target}"),
+        )
+        .expect("HLS playlist should rewrite");
+
+        assert!(rewritten.contains("URI=\"/Key?target=https://cdn.example.com/live/keys/session\""));
+        assert!(rewritten.contains("URI=\"/Key?target=https://cdn.example.com/live/keys/current\""));
+        assert!(rewritten.contains("/Segment?target=https://cdn.example.com/live/segments/100.ts"));
+    }
+
+    #[test]
+    fn classifies_master_live_event_and_vod_playlists() {
+        let master = concat!(
+            "#EXTM3U\n",
+            "#EXT-X-SESSION-DATA:DATA-ID=\"com.example.title\",VALUE=\"Example\"\n",
+            "#EXT-X-STREAM-INF:BANDWIDTH=1280000\n",
+            "video/main.m3u8\n",
+        );
+        let live = concat!(
+            "#EXTM3U\n",
+            "#EXT-X-TARGETDURATION:6\n",
+            "#EXT-X-MEDIA-SEQUENCE:1200\n",
+            "#EXTINF:6,\n",
+            "segment-1200.ts\n",
+        );
+        let event = concat!(
+            "#EXTM3U\n",
+            "#EXT-X-PLAYLIST-TYPE:EVENT\n",
+            "#EXTINF:6,\n",
+            "segment-1.ts\n",
+            "#EXT-X-ENDLIST\n",
+        );
+        let vod = concat!(
+            "#EXTM3U\n",
+            "#EXT-X-PLAYLIST-TYPE:VOD\n",
+            "#EXTINF:120,\n",
+            "movie.ts\n",
+        );
+        let ended_live = "#EXTM3U\n#EXTINF:6,\nsegment.ts\n#EXT-X-ENDLIST\n";
+
+        assert_eq!(classify_hls_playlist(master), HlsPlaylistKind::Master);
+        assert_eq!(classify_hls_playlist(live), HlsPlaylistKind::LiveMedia);
+        assert_eq!(classify_hls_playlist(event), HlsPlaylistKind::EventMedia);
+        assert_eq!(classify_hls_playlist(vod), HlsPlaylistKind::VodMedia);
+        assert_eq!(classify_hls_playlist(ended_live), HlsPlaylistKind::VodMedia);
     }
 }

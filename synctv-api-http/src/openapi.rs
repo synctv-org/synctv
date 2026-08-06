@@ -245,13 +245,13 @@ pub struct GoogleRpcStatusSchema {
         playback_provider_douyu::get_douyu_segment,
         playback_provider_douyu::watch_douyu_danmaku,
         playback_provider_douyin::get_resource,
-        playback_provider_douyin::get_segment,
+        playback_provider_douyin::get_hls_resource,
         playback_provider_douyin::watch_danmaku,
         playback_provider_tiktok::get_tiktok_resource,
-        playback_provider_tiktok::get_tiktok_segment,
+        playback_provider_tiktok::get_tiktok_hls_resource,
         playback_provider_tiktok::get_tiktok_subtitle,
         playback_provider_acfun::get_acfun_resource,
-        playback_provider_acfun::get_acfun_segment,
+        playback_provider_acfun::get_acfun_hls_resource,
         playback_provider_acfun::get_acfun_danmaku_file,
         playback_provider_acfun::watch_acfun_danmaku,
         playback_provider_cctv::get_cctv_resource,
@@ -1295,7 +1295,10 @@ mod tests {
                 "/api/playback-providers/douyin/{version}/resources/{modeName}/{mediaIndex}",
                 "get",
             ),
-            ("/api/playback-providers/douyin/{version}/segments", "get"),
+            (
+                "/api/playback-providers/douyin/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+                "get",
+            ),
             (
                 "/api/playback-providers/douyin/{version}/danmakus/{modeName}/{mediaIndex}",
                 "get",
@@ -1349,7 +1352,10 @@ mod tests {
                 "/api/playback-providers/tiktok/{version}/resources/{modeName}/{mediaIndex}",
                 "get",
             ),
-            ("/api/playback-providers/tiktok/{version}/segments", "get"),
+            (
+                "/api/playback-providers/tiktok/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+                "get",
+            ),
             (
                 "/api/playback-providers/tiktok/{version}/subtitles/{modeName}/{subtitleIndex}",
                 "get",
@@ -1861,7 +1867,7 @@ mod tests {
         let doc = openapi_json()?;
         for path in [
             "/api/playback-providers/acfun/{version}/resources/{modeName}/{mediaIndex}",
-            "/api/playback-providers/acfun/{version}/segments.ts",
+            "/api/playback-providers/acfun/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
             "/api/playback-providers/acfun/{version}/danmaku-files/{modeName}/{mediaIndex}",
             "/api/playback-providers/acfun/{version}/danmakus/{modeName}/{mediaIndex}",
         ] {

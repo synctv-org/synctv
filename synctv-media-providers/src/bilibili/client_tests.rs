@@ -36,6 +36,31 @@ fn test_http_client() -> reqwest::Client {
     reqwest::Client::new()
 }
 
+#[test]
+fn live_stream_expiry_uses_the_explicit_expires_query_parameter() {
+    assert_eq!(
+        parse_live_stream_expires_at(
+            "https://cdn.example/live.m3u8?token=abc&expires=1785945600&deadline=1",
+        ),
+        Some(1_785_945_600)
+    );
+    assert_eq!(
+        parse_live_stream_expires_at(
+            "https://cdn.example/live.m3u8?deadline=1785945600&wsTime=6a123456",
+        ),
+        None
+    );
+    assert_eq!(
+        parse_live_stream_expires_at("https://cdn.example/live.m3u8?expires=invalid"),
+        None
+    );
+    assert_eq!(
+        parse_live_stream_expires_at("https://cdn.example/live.m3u8?expires=0"),
+        None
+    );
+    assert_eq!(parse_live_stream_expires_at("not a URL"), None);
+}
+
 fn nav_response_with_wbi_keys(img_key: &str, sub_key: &str) -> serde_json::Value {
     json!({
         "data": {
@@ -316,7 +341,12 @@ fn test_video_url_resp_deserialize() -> TestResult {
                 "accept_quality": [80, 64, 32],
                 "accept_description": ["1080P", "720P", "480P"],
                 "quality": 80,
-                "durl": [{"url": "https://cdn.bilibili.com/video.flv", "size": 1000000, "length": 120}]
+                "durl": [{
+                    "url": "https://cdn.bilibili.com/video.flv",
+                    "backup_url": ["https://backup.bilibili.com/video.flv"],
+                    "size": 1000000,
+                    "length": 120
+                }]
             },
             "message": "0",
             "code": 0,
@@ -326,6 +356,12 @@ fn test_video_url_resp_deserialize() -> TestResult {
     assert_eq!(resp.data.quality, 80);
     assert_eq!(resp.data.durl.len(), 1);
     assert_eq!(resp.data.accept_quality, vec![80, 64, 32]);
+    let segments = video_segments_from_durls(&resp.data.durl);
+    assert_eq!(segments.len(), 1);
+    assert_eq!(
+        segments[0].backup_urls,
+        vec!["https://backup.bilibili.com/video.flv"]
+    );
     Ok(())
 }
 

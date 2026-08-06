@@ -156,7 +156,7 @@ impl ProxySigningKey {
         signature: &str,
     ) -> Result<(), ProxySignatureError> {
         let now = synctv_core::SystemClock.now().timestamp();
-        if now > claims.expires_at {
+        if now >= claims.expires_at {
             return Err(ProxySignatureError::Expired);
         }
         let (issued_at, signature) = signature
@@ -259,7 +259,7 @@ impl MediaSwarmSigningKey {
             .parse::<i64>()
             .map_err(|_| MediaSwarmTicketError::InvalidSignature)?;
         let now = synctv_core::SystemClock.now().timestamp();
-        if now > expires_at {
+        if now >= expires_at {
             return Err(MediaSwarmTicketError::Expired);
         }
         let lifetime = expires_at.saturating_sub(now);
@@ -583,6 +583,18 @@ mod tests {
         let key = test_key();
         let mut claims = test_claims();
         claims.expires_at = synctv_core::SystemClock.now().timestamp() - 1;
+        let sig = key.sign(&claims);
+        assert!(matches!(
+            key.verify(&claims, &sig),
+            Err(ProxySignatureError::Expired)
+        ));
+    }
+
+    #[test]
+    fn verify_rejects_the_expiry_boundary() {
+        let key = test_key();
+        let mut claims = test_claims();
+        claims.expires_at = synctv_core::SystemClock.now().timestamp();
         let sig = key.sign(&claims);
         assert!(matches!(
             key.verify(&claims, &sig),

@@ -20,6 +20,7 @@ fn direct_url_media_source_config(url: impl Into<String>) -> MediaSourceConfig {
             url: url.into(),
             headers: std::collections::HashMap::new(),
             format: String::new(),
+            expires_at: None,
         }],
         default_media_index: None,
         subtitles: Vec::new(),
@@ -27,6 +28,30 @@ fn direct_url_media_source_config(url: impl Into<String>) -> MediaSourceConfig {
         danmakus: Vec::new(),
         default_danmaku_index: None,
     })
+}
+
+fn direct_url_playback_info(url: &str, name: &str) -> crate::models::PlaybackInfo {
+    crate::models::PlaybackInfo {
+        thumbnail: None,
+        medias: vec![crate::models::PlaybackMedia {
+            name: name.to_string(),
+            format: String::new(),
+            expire_at: None,
+            metadata: None,
+            p2p_swarm_id: None,
+            provider: crate::models::PlaybackMediaProvider::DirectUrl(
+                crate::models::PlaybackDirectUrlMedia::Direct {
+                    url: url.to_string(),
+                    headers: std::collections::HashMap::new(),
+                },
+            ),
+        }],
+        default_media_index: None,
+        subtitles: Vec::new(),
+        default_subtitle_index: None,
+        danmakus: Vec::new(),
+        default_danmaku_index: None,
+    }
 }
 
 fn direct_url_first_media_url(source_config: &MediaSourceConfig) -> &str {
@@ -148,10 +173,7 @@ fn test_media_from_direct_single_mode() {
     let room_id = RoomId::new();
     let creator_id = UserId::new();
 
-    let playback_info = crate::models::media::PlaybackInfo::single_url(
-        "https://example.com/video.mp4".to_string(),
-        "1080P".to_string(),
-    );
+    let playback_info = direct_url_playback_info("https://example.com/video.mp4", "1080P");
 
     let media = Media::from_direct_single_mode(
         Some(playlist_id),
@@ -182,17 +204,11 @@ fn test_media_from_direct_multimode() {
     let mut playback_infos = std::collections::HashMap::new();
     playback_infos.insert(
         "direct".to_string(),
-        crate::models::media::PlaybackInfo::single_url(
-            "https://example.com/video.mp4".to_string(),
-            "1080P".to_string(),
-        ),
+        direct_url_playback_info("https://example.com/video.mp4", "1080P"),
     );
     playback_infos.insert(
         "proxied".to_string(),
-        crate::models::media::PlaybackInfo::single_url(
-            "https://proxy.example.com/video.mp4".to_string(),
-            "720P".to_string(),
-        ),
+        direct_url_playback_info("https://proxy.example.com/video.mp4", "720P"),
     );
 
     let media = Media::from_direct_multimode(crate::models::DirectMultimodeParams {

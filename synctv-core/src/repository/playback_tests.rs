@@ -18,6 +18,7 @@ fn direct_url_media_source_config(url: impl Into<String>) -> MediaSourceConfig {
             url: url.into(),
             headers: std::collections::HashMap::new(),
             format: String::new(),
+            expires_at: None,
         }],
         default_media_index: None,
         subtitles: Vec::new(),

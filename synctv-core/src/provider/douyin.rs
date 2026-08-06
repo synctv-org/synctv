@@ -14,6 +14,7 @@ use super::{
     DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult,
     ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
 };
+use crate::cache::{SingleFlight, SingleFlightError};
 use crate::models::{
     DouyinMediaSourceConfig, DouyinPlaybackMetadata, DouyinPlaybackResource,
     DouyinPlaylistSourceConfig, MediaSourceConfig, PlayMode, PlaybackDanmaku,
@@ -29,10 +30,43 @@ use synctv_media_providers::douyin::{
 
 const PAGE_SIZE: usize = 20;
 const SHUFFLE_LIMIT: usize = 200;
+const PLAYBACK_RESOURCE_CACHE_TTL: Duration = Duration::from_secs(15);
 
 pub struct DouyinProvider {
     client: DouyinClient,
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+    playback_resource_resolver: Arc<DouyinPlaybackResourceResolver>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedDouyinPlaybackTarget {
+    url: String,
+    original_root_url: String,
+    headers: HashMap<String, String>,
+    format: DouyinStreamFormat,
+}
+
+struct DouyinPlaybackResourceResolver {
+    cache: moka::future::Cache<String, ResolvedDouyinPlaybackTarget>,
+    singleflight:
+        SingleFlight<String, ResolvedDouyinPlaybackTarget, super::ProviderPlaybackFillError>,
+}
+
+impl DouyinPlaybackResourceResolver {
+    fn new() -> Self {
+        Self {
+            cache: moka::future::Cache::builder()
+                .max_capacity(2_048)
+                .time_to_live(PLAYBACK_RESOURCE_CACHE_TTL)
+                .build(),
+            singleflight: SingleFlight::new(),
+        }
+    }
+
+    async fn invalidate_all(&self) {
+        self.cache.invalidate_all();
+        self.cache.run_pending_tasks().await;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +112,7 @@ impl DouyinProvider {
         Self {
             client: DouyinClient::new().expect("Douyin HTTP client should build"),
             credential_repo: None,
+            playback_resource_resolver: Arc::new(DouyinPlaybackResourceResolver::new()),
         }
     }
 
@@ -86,6 +121,7 @@ impl DouyinProvider {
         Self {
             client: DouyinClient::with_http_client(client),
             credential_repo: None,
+            playback_resource_resolver: Arc::new(DouyinPlaybackResourceResolver::new()),
         }
     }
 
@@ -97,6 +133,7 @@ impl DouyinProvider {
         Self {
             client: self.client.clone(),
             credential_repo: Some(credential_repo),
+            playback_resource_resolver: self.playback_resource_resolver.clone(),
         }
     }
 
@@ -221,6 +258,7 @@ impl DouyinProvider {
             })
             .await
             .map_err(|error| ProviderError::Internal(error.to_string()))?;
+        self.playback_resource_resolver.invalidate_all().await;
         Ok(server_id)
     }
 
@@ -276,6 +314,7 @@ impl DouyinProvider {
         repo.delete(credential.id)
             .await
             .map_err(|error| ProviderError::Internal(error.to_string()))?;
+        self.playback_resource_resolver.invalidate_all().await;
         Ok(true)
     }
 
@@ -313,57 +352,150 @@ impl DouyinProvider {
         request_context: Option<&super::ExecutionControl>,
         range_header: Option<&str>,
     ) -> Result<super::PlaybackTransportAction, ProviderError> {
-        let versioned =
-            super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        let media = versioned
-            .result
-            .playback_infos
-            .get(mode_name)
-            .and_then(|info| info.medias.get(media_index))
-            .ok_or(ProviderError::NotFound)?;
-        let PlaybackMediaProvider::Douyin(PlaybackDouyinMedia::Refresh {
-            resource,
-            variant_key,
-            credential_owner_id,
-            provider_instance_name,
-        }) = &media.provider
-        else {
-            return Err(ProviderError::InvalidConfig(
-                "Douyin cached playback resource is invalid".to_string(),
-            ));
-        };
-        let session = self
-            .stored_session(*credential_owner_id, provider_instance_name.as_deref())
+        let target = self
+            .resolve_playback_target(store, version, mode_name, media_index, request_context)
             .await?;
-        let resolved = match resource {
-            DouyinPlaybackResource::Video { aweme_id } => {
-                self.client.video(aweme_id, Some(&session)).await?
-            }
-            DouyinPlaybackResource::Live { web_rid } => {
-                self.client.live(web_rid, Some(&session)).await?
-            }
-        };
-        let variant = resolved
-            .variants
-            .into_iter()
-            .find(|variant| variant_key_for(variant) == *variant_key)
-            .ok_or(ProviderError::NotFound)?;
-        super::playback_transport::transport_action_for_target_url(
-            variant.url,
-            douyin_headers(session.cookie.as_deref(), resolved.metadata.kind),
-            range_header,
-        )
+        if matches!(
+            target.format,
+            DouyinStreamFormat::Hls | DouyinStreamFormat::LlHls
+        ) {
+            return Ok(super::PlaybackTransportAction::M3u8RewriteWithSource {
+                url: target.url,
+                headers: target.headers,
+                source_url: super::playback_transport::dynamic_hls_source_url(
+                    &target.original_root_url,
+                )?,
+            });
+        }
+        Ok(super::PlaybackTransportAction::FetchAndForward {
+            url: target.url,
+            headers: target.headers,
+            range_header: range_header.map(ToString::to_string),
+        })
     }
 
-    pub fn get_segment(
+    async fn resolve_playback_target(
         &self,
-        target_url: String,
-        range_header: Option<&str>,
+        store: Option<&Arc<dyn super::ProviderStore>>,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<ResolvedDouyinPlaybackTarget, ProviderError> {
+        let cache_key = format!("{version}\n{mode_name}\n{media_index}");
+        if let Some(target) = self.playback_resource_resolver.cache.get(&cache_key).await {
+            return Ok(target);
+        }
+        self.playback_resource_resolver
+            .singleflight
+            .do_work(cache_key.clone(), async {
+                let result: Result<ResolvedDouyinPlaybackTarget, ProviderError> = async {
+                    if let Some(target) =
+                        self.playback_resource_resolver.cache.get(&cache_key).await
+                    {
+                        return Ok(target);
+                    }
+                    let versioned = super::playback_transport::lookup_versioned(
+                        store,
+                        version,
+                        request_context,
+                    )
+                    .await?;
+                    let media = versioned
+                        .result
+                        .playback_infos
+                        .get(mode_name)
+                        .and_then(|info| info.medias.get(media_index))
+                        .ok_or(ProviderError::NotFound)?;
+                    let PlaybackMediaProvider::Douyin(PlaybackDouyinMedia::Refresh {
+                        resource,
+                        variant_key,
+                        root_url,
+                        credential_owner_id,
+                        provider_instance_name,
+                    }) = &media.provider
+                    else {
+                        return Err(ProviderError::InvalidConfig(
+                            "Douyin cached playback resource is invalid".to_string(),
+                        ));
+                    };
+                    let stored_session = self
+                        .stored_session(*credential_owner_id, provider_instance_name.as_deref())
+                        .await?;
+                    let session = self.client.effective_session(Some(&stored_session)).await?;
+                    let resolved = match resource {
+                        DouyinPlaybackResource::Video { aweme_id } => {
+                            self.client.video(aweme_id, Some(&session)).await?
+                        }
+                        DouyinPlaybackResource::Live { web_rid } => {
+                            self.client.live(web_rid, Some(&session)).await?
+                        }
+                    };
+                    let variant = resolved
+                        .variants
+                        .into_iter()
+                        .find(|variant| variant_key_for(variant) == *variant_key)
+                        .ok_or(ProviderError::NotFound)?;
+                    let target = ResolvedDouyinPlaybackTarget {
+                        url: variant.url,
+                        original_root_url: root_url.clone(),
+                        headers: douyin_headers(
+                            variant
+                                .headers_required
+                                .then_some(session.cookie.as_deref())
+                                .flatten(),
+                            resolved.metadata.kind,
+                        ),
+                        format: variant.format,
+                    };
+                    self.playback_resource_resolver
+                        .cache
+                        .insert(cache_key, target.clone())
+                        .await;
+                    Ok(target)
+                }
+                .await;
+                result.map_err(super::ProviderPlaybackFillError::from)
+            })
+            .await
+            .map_err(|error| match error {
+                SingleFlightError::Inner(error) => ProviderError::from(error),
+                SingleFlightError::WorkerFailed => ProviderError::Internal(
+                    "Douyin playback resource resolver worker failed".to_string(),
+                ),
+            })
+    }
+
+    pub async fn get_hls_resource(
+        &self,
+        store: Option<&Arc<dyn super::ProviderStore>>,
+        request: super::HlsResourceRequest<'_>,
+        request_context: Option<&super::ExecutionControl>,
     ) -> Result<super::PlaybackTransportAction, ProviderError> {
-        super::playback_transport::transport_action_for_target_url(
-            target_url,
-            douyin_headers(None, DouyinMediaKind::Live),
-            range_header,
+        let root = self
+            .resolve_playback_target(
+                store,
+                request.version,
+                request.mode_name,
+                request.media_index,
+                request_context,
+            )
+            .await?;
+        if !matches!(
+            root.format,
+            DouyinStreamFormat::Hls | DouyinStreamFormat::LlHls
+        ) {
+            return Err(ProviderError::InvalidConfig(
+                "Douyin HLS resource requires an HLS playback media".to_string(),
+            ));
+        }
+        super::playback_transport::transport_action_for_dynamic_hls_target(
+            &root.original_root_url,
+            &root.url,
+            root.headers,
+            request.target_url,
+            request.is_manifest,
+            request.range_header,
         )
     }
 
@@ -520,6 +652,7 @@ impl DouyinProvider {
                         .then(|| PlaybackDanmaku {
                             name: "Douyin Live Danmaku".to_string(),
                             format: Some("synctv-douyin-live".to_string()),
+                            p2p_swarm_id: None,
                             provider: PlaybackDanmakuProvider::Douyin(
                                 PlaybackDouyinDanmaku::Refresh { media_index: 0 },
                             ),
@@ -530,9 +663,18 @@ impl DouyinProvider {
                         .then_some(0),
                 });
             let media_index = info.medias.len();
-            let is_preferred = preferred_video_key.as_deref()
-                == Some(variant_key_for(variant).as_str())
+            let variant_key = variant_key_for(variant);
+            let is_preferred = preferred_video_key.as_deref() == Some(variant_key.as_str())
                 || variant.quality.to_ascii_lowercase().contains("origin");
+            let p2p_swarm_id = match resource {
+                DouyinPlaybackResource::Video { aweme_id } => Some(super::provider_p2p_swarm_id(
+                    Self::NAME,
+                    provider_instance_name,
+                    "media",
+                    &format!("video:{aweme_id}:variant:{variant_key}"),
+                )),
+                DouyinPlaybackResource::Live { .. } => None,
+            };
             info.medias.push(PlaybackMedia {
                 name: variant.quality.clone(),
                 format: format.to_string(),
@@ -546,9 +688,11 @@ impl DouyinProvider {
                     codec: variant.codec.clone(),
                     fps: variant.fps.and_then(|value| i32::try_from(value).ok()),
                 }),
+                p2p_swarm_id,
                 provider: PlaybackMediaProvider::Douyin(PlaybackDouyinMedia::Refresh {
                     resource: resource.clone(),
-                    variant_key: variant_key_for(variant),
+                    variant_key,
+                    root_url: variant.url.clone(),
                     credential_owner_id,
                     provider_instance_name: provider_instance_name.map(str::to_owned),
                 }),
@@ -1040,6 +1184,46 @@ impl DynamicPlaylistProvider for DouyinProvider {
 mod tests {
     use super::*;
 
+    fn media(kind: DouyinMediaKind, id: &str, variant: DouyinVariant) -> DouyinMedia {
+        DouyinMedia {
+            resource: match kind {
+                DouyinMediaKind::Video => synctv_media_providers::douyin::DouyinResource::Video {
+                    aweme_id: id.to_string(),
+                },
+                DouyinMediaKind::Live => synctv_media_providers::douyin::DouyinResource::Live {
+                    web_rid: id.to_string(),
+                },
+            },
+            metadata: synctv_media_providers::douyin::DouyinMetadata {
+                id: id.to_string(),
+                kind,
+                title: "Playback".to_string(),
+                description: String::new(),
+                author: synctv_media_providers::douyin::DouyinAuthor {
+                    id: "author".to_string(),
+                    sec_uid: "sec-author".to_string(),
+                    unique_id: Some("author".to_string()),
+                    nickname: "Author".to_string(),
+                    avatar: None,
+                },
+                cover: None,
+                dynamic_cover: None,
+                duration_ms: (kind == DouyinMediaKind::Video).then_some(60_000),
+                created_at: None,
+                is_live: kind == DouyinMediaKind::Live,
+                view_count: None,
+                like_count: None,
+                comment_count: None,
+                share_count: None,
+                collect_count: None,
+                music_title: None,
+                music_author: None,
+            },
+            room_id: (kind == DouyinMediaKind::Live).then(|| "room".to_string()),
+            variants: vec![variant],
+        }
+    }
+
     fn variant(
         url: &str,
         quality: &str,
@@ -1112,5 +1296,61 @@ mod tests {
         );
 
         assert!(video_variant_score(&high) > video_variant_score(&low));
+    }
+
+    #[test]
+    fn playback_assigns_swarm_only_to_video_resources() {
+        let video_resource = DouyinPlaybackResource::Video {
+            aweme_id: "video-1".to_string(),
+        };
+        let video = DouyinProvider::playback_result(
+            media(
+                DouyinMediaKind::Video,
+                "video-1",
+                variant(
+                    "https://cdn.test/video.mp4",
+                    "1080p",
+                    1920,
+                    1080,
+                    60,
+                    4_000_000,
+                ),
+            ),
+            &video_resource,
+            UserId::expect_positive(1),
+            Some("primary"),
+        )
+        .expect("video playback should map");
+        assert!(video
+            .playback_infos
+            .values()
+            .flat_map(|info| &info.medias)
+            .all(|media| media.p2p_swarm_id.is_some()));
+
+        let mut live_variant = variant(
+            "https://cdn.test/live.m3u8",
+            "origin",
+            1920,
+            1080,
+            60,
+            4_000_000,
+        );
+        live_variant.format = DouyinStreamFormat::Hls;
+        let live_resource = DouyinPlaybackResource::Live {
+            web_rid: "live-1".to_string(),
+        };
+        let live = DouyinProvider::playback_result(
+            media(DouyinMediaKind::Live, "live-1", live_variant),
+            &live_resource,
+            UserId::expect_positive(1),
+            Some("primary"),
+        )
+        .expect("live playback should map");
+        let info = &live.playback_infos[&live.default_mode];
+        assert!(info.medias.iter().all(|media| media.p2p_swarm_id.is_none()));
+        assert!(info
+            .danmakus
+            .iter()
+            .all(|danmaku| danmaku.p2p_swarm_id.is_none()));
     }
 }

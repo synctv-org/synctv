@@ -1,10 +1,10 @@
 use futures::StreamExt;
-use synctv_core::provider::ExecutionControl;
+use synctv_core::provider::{ExecutionControl, HlsResourceRequest};
 use synctv_core::service::AcFunPlaybackProviderService;
 use synctv_proto::playback_provider::acfun::{
-    AcFunDanmakuEvent, AcFunDanmakuFileResponse, AcFunResourceResponse, AcFunSegmentResponse,
-    GetAcFunDanmakuFileRequest, GetAcFunResourceRequest, GetAcFunSegmentRequest,
-    WatchAcFunDanmakuRequest,
+    AcFunDanmakuEvent, AcFunDanmakuFileResponse, AcFunHlsResourceKind, AcFunHlsResourceResponse,
+    AcFunResourceResponse, GetAcFunDanmakuFileRequest, GetAcFunHlsResourceRequest,
+    GetAcFunResourceRequest, WatchAcFunDanmakuRequest,
 };
 
 use super::common::{
@@ -15,8 +15,6 @@ use super::common::{
 use crate::impls::ApiError;
 
 const PROVIDER: &str = synctv_core::provider::AcFunProvider::NAME;
-const SEGMENT_ROUTE: &str = "segments.ts";
-
 pub struct AcFunPlaybackProviderDeps<'a> {
     pub playback_provider_service: &'a AcFunPlaybackProviderService,
     pub runtime: PlaybackProviderApiRuntime<'a>,
@@ -26,8 +24,8 @@ pub struct AcFunPlaybackProviderDeps<'a> {
 pub type AcFunResourceResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<AcFunResourceResponse, ApiError>> + Send + 'static>,
 >;
-pub type AcFunSegmentResponseStream = std::pin::Pin<
-    Box<dyn futures::Stream<Item = Result<AcFunSegmentResponse, ApiError>> + Send + 'static>,
+pub type AcFunHlsResourceResponseStream = std::pin::Pin<
+    Box<dyn futures::Stream<Item = Result<AcFunHlsResourceResponse, ApiError>> + Send + 'static>,
 >;
 pub type AcFunDanmakuFileResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<AcFunDanmakuFileResponse, ApiError>> + Send + 'static>,
@@ -67,9 +65,15 @@ pub async fn get_acfun_resource(
         )
         .await
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base(PROVIDER, &req.version, SEGMENT_ROUTE);
+    let segment_base = format!(
+        "{}/{}/{}",
+        playback_provider_route_base(PROVIDER, &req.version, "hls-resources"),
+        urlencoding::encode(&req.mode_name),
+        req.media_index
+    );
+    let resource = format!("hls-resources/{}/{}/*", req.mode_name, req.media_index);
     let stream = playback_transport_action_to_chunk_stream(
-        deps.chunk_deps_with_hls(&segment_base, &claims),
+        deps.chunk_deps_with_hls(&segment_base, &claims, &resource),
         action,
         req.head,
     )
@@ -79,17 +83,22 @@ pub async fn get_acfun_resource(
     })))
 }
 
-pub async fn get_acfun_segment(
+pub async fn get_acfun_hls_resource(
     deps: AcFunPlaybackProviderDeps<'_>,
-    req: GetAcFunSegmentRequest,
-) -> Result<AcFunSegmentResponseStream, ApiError> {
+    req: GetAcFunHlsResourceRequest,
+) -> Result<AcFunHlsResourceResponseStream, ApiError> {
     crate::impls::validate_proto_request(&req)?;
-    let (_, claims) = verify_playback_provider_access_with_deps(
+    let kind = acfun_hls_resource_kind(req.resource_kind)?;
+    let kind_name = acfun_hls_resource_kind_name(kind);
+    let (store, claims) = verify_playback_provider_access_with_deps(
         &deps.access_deps(),
         PROVIDER,
         PlaybackProviderAccessRequest {
             version: &req.version,
-            resource: "segments".to_string(),
+            resource: format!(
+                "hls-resources/{}/{}/{kind_name}",
+                req.mode_name, req.media_index
+            ),
             signature: &req.sig,
             user_id: &req.uid,
             room_id: &req.rid,
@@ -100,17 +109,39 @@ pub async fn get_acfun_segment(
     .await?;
     let action = deps
         .playback_provider_service
-        .segment_action(req.target_url, req.range.as_deref())
+        .hls_resource_action(
+            HlsResourceRequest {
+                version: &req.version,
+                mode_name: &req.mode_name,
+                media_index: req.media_index as usize,
+                target_url: &req.target_url,
+                is_manifest: kind == AcFunHlsResourceKind::Manifest,
+                range_header: req.range.as_deref(),
+            },
+            store,
+            deps.request_control,
+        )
+        .await
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base(PROVIDER, &req.version, SEGMENT_ROUTE);
-    let stream = playback_transport_action_to_chunk_stream(
-        deps.chunk_deps_with_hls(&segment_base, &claims),
-        action,
-        req.head,
-    )
-    .await?;
+    let stream = if kind == AcFunHlsResourceKind::Manifest {
+        let segment_base = format!(
+            "{}/{}/{}",
+            playback_provider_route_base(PROVIDER, &req.version, "hls-resources"),
+            urlencoding::encode(&req.mode_name),
+            req.media_index
+        );
+        let resource = format!("hls-resources/{}/{}/*", req.mode_name, req.media_index);
+        playback_transport_action_to_chunk_stream(
+            deps.chunk_deps_with_hls(&segment_base, &claims, &resource),
+            action,
+            req.head,
+        )
+        .await?
+    } else {
+        playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, req.head).await?
+    };
     Ok(Box::pin(stream.map(|chunk| {
-        chunk.map(|chunk| AcFunSegmentResponse { chunk: Some(chunk) })
+        chunk.map(|chunk| AcFunHlsResourceResponse { chunk: Some(chunk) })
     })))
 }
 
@@ -216,14 +247,49 @@ impl<'a> AcFunPlaybackProviderDeps<'a> {
         &self,
         segment_base: &'a str,
         claims: &'a crate::proxy_signature::ProxyUrlClaims,
+        resource: &'a str,
     ) -> PlaybackTransportExecutorDeps<'a> {
         PlaybackTransportExecutorDeps {
             hls_rewrite: Some(HlsRewriteSigning {
                 segment_base,
                 claims,
-                resource: "segments",
+                resource,
             }),
             ..self.chunk_deps()
         }
+    }
+}
+
+fn acfun_hls_resource_kind(value: i32) -> Result<AcFunHlsResourceKind, ApiError> {
+    let kind = AcFunHlsResourceKind::try_from(value)
+        .map_err(|_| ApiError::InvalidInput("Invalid AcFun HLS resource kind".to_string()))?;
+    match kind {
+        AcFunHlsResourceKind::Media | AcFunHlsResourceKind::Manifest => Ok(kind),
+        AcFunHlsResourceKind::Unspecified => Err(ApiError::InvalidInput(
+            "AcFun HLS resource kind is required".to_string(),
+        )),
+    }
+}
+
+const fn acfun_hls_resource_kind_name(kind: AcFunHlsResourceKind) -> &'static str {
+    match kind {
+        AcFunHlsResourceKind::Media => "media",
+        AcFunHlsResourceKind::Manifest => "manifest",
+        AcFunHlsResourceKind::Unspecified => "unspecified",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hls_resource_kind_requires_a_typed_route() {
+        assert!(acfun_hls_resource_kind(AcFunHlsResourceKind::Unspecified as i32).is_err());
+        assert_eq!(
+            acfun_hls_resource_kind(AcFunHlsResourceKind::Manifest as i32)
+                .expect("manifest kind should validate"),
+            AcFunHlsResourceKind::Manifest
+        );
     }
 }

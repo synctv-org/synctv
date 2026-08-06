@@ -21,7 +21,13 @@ message TikTokResourceResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
-message GetTikTokSegmentRequest {
+enum TikTokHlsResourceKind {
+  TIK_TOK_HLS_RESOURCE_KIND_UNSPECIFIED = 0;
+  TIK_TOK_HLS_RESOURCE_KIND_MEDIA = 1;
+  TIK_TOK_HLS_RESOURCE_KIND_MANIFEST = 2;
+}
+
+message GetTikTokHlsResourceRequest {
   string version = 1 [(buf.validate.field).string.min_len = 1];
   string target_url = 2 [(buf.validate.field).string.min_len = 1];
   string sig = 3 [(buf.validate.field).string.min_len = 1];
@@ -30,9 +36,12 @@ message GetTikTokSegmentRequest {
   int64 exp = 6;
   optional string range = 7;
   bool head = 8;
+  string mode_name = 9 [(buf.validate.field).string.min_len = 1];
+  uint32 media_index = 10;
+  TikTokHlsResourceKind resource_kind = 11 [(buf.validate.field).enum.defined_only = true];
 }
 
-message TikTokSegmentResponse {
+message TikTokHlsResourceResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
@@ -54,6 +63,6 @@ message TikTokSubtitleResponse {
 
 service TikTokPlaybackProviderService {
   rpc GetResource(GetTikTokResourceRequest) returns (stream TikTokResourceResponse);
-  rpc GetSegment(GetTikTokSegmentRequest) returns (stream TikTokSegmentResponse);
+  rpc GetHlsResource(GetTikTokHlsResourceRequest) returns (stream TikTokHlsResourceResponse);
   rpc GetSubtitle(GetTikTokSubtitleRequest) returns (stream TikTokSubtitleResponse);
 }

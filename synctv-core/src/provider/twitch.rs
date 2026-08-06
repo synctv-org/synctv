@@ -771,6 +771,7 @@ impl TwitchProvider {
                         .then(|| PlaybackDanmaku {
                             name: "Twitch Chat".to_string(),
                             format: Some("synctv-twitch-live".to_string()),
+                            p2p_swarm_id: None,
                             provider: PlaybackDanmakuProvider::Twitch(
                                 PlaybackTwitchDanmaku::Refresh { media_index: 0 },
                             ),
@@ -783,6 +784,24 @@ impl TwitchProvider {
             let media_index = info.medias.len();
             let is_source = quality.name.eq_ignore_ascii_case("chunked")
                 || quality.name.to_ascii_lowercase().contains("source");
+            let resource_kind = match playback.resource.kind {
+                TwitchResourceKind::Channel => TwitchPlaybackResourceKind::Channel,
+                TwitchResourceKind::Video => TwitchPlaybackResourceKind::Video,
+                TwitchResourceKind::Clip => TwitchPlaybackResourceKind::Clip,
+            };
+            let p2p_swarm_id = (resource_kind != TwitchPlaybackResourceKind::Channel).then(|| {
+                super::provider_p2p_swarm_id(
+                    Self::NAME,
+                    provider_instance_name,
+                    "media",
+                    &format!(
+                        "{}:{}:quality:{}",
+                        twitch_resource_kind_name(resource_kind),
+                        playback.resource.id,
+                        quality.name
+                    ),
+                )
+            });
             info.medias.push(PlaybackMedia {
                 name: quality.name.clone(),
                 format: format.to_string(),
@@ -802,12 +821,9 @@ impl TwitchProvider {
                         .and_then(|value| value.parse::<f64>().ok())
                         .and_then(rounded_i32),
                 }),
+                p2p_swarm_id,
                 provider: PlaybackMediaProvider::Twitch(PlaybackTwitchMedia::Refresh {
-                    resource_kind: match playback.resource.kind {
-                        TwitchResourceKind::Channel => TwitchPlaybackResourceKind::Channel,
-                        TwitchResourceKind::Video => TwitchPlaybackResourceKind::Video,
-                        TwitchResourceKind::Clip => TwitchPlaybackResourceKind::Clip,
-                    },
+                    resource_kind,
                     resource_id: playback.resource.id.clone(),
                     quality_name: quality.name.clone(),
                     credential_owner_id,
@@ -862,6 +878,14 @@ impl TwitchProvider {
                 storyboard_url: metadata.storyboard_url,
             })),
         })
+    }
+}
+
+const fn twitch_resource_kind_name(kind: TwitchPlaybackResourceKind) -> &'static str {
+    match kind {
+        TwitchPlaybackResourceKind::Channel => "channel",
+        TwitchPlaybackResourceKind::Video => "video",
+        TwitchPlaybackResourceKind::Clip => "clip",
     }
 }
 
@@ -1605,6 +1629,11 @@ mod tests {
             .expect("test operation should succeed");
         assert_eq!(source.medias.len(), 2);
         assert_eq!(source.default_media_index, Some(0));
+        assert!(source
+            .medias
+            .iter()
+            .all(|media| media.p2p_swarm_id.is_none()));
+        assert!(source.danmakus[0].p2p_swarm_id.is_none());
         assert!(matches!(
             source.medias[0].provider,
             PlaybackMediaProvider::Twitch(PlaybackTwitchMedia::Refresh { .. })
@@ -1619,6 +1648,11 @@ mod tests {
             .playback_infos
             .get("hls")
             .expect("test operation should succeed");
+        assert!(source
+            .medias
+            .iter()
+            .all(|media| media.p2p_swarm_id.is_none()));
+        assert!(source.danmakus[0].p2p_swarm_id.is_none());
         assert!(matches!(
             source.medias[0].provider,
             PlaybackMediaProvider::Twitch(PlaybackTwitchMedia::Proxy {

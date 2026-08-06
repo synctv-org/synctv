@@ -264,6 +264,15 @@ impl DouyinClient {
         media_from_live(web_rid, room, envelope.data.user.as_ref())
     }
 
+    pub async fn effective_session(
+        &self,
+        session: Option<&DouyinSession>,
+    ) -> Result<DouyinSession, ProviderClientError> {
+        Ok(DouyinSession {
+            cookie: Some(self.session_cookie(session).await?),
+        })
+    }
+
     async fn session_cookie(
         &self,
         session: Option<&DouyinSession>,

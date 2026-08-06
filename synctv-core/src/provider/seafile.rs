@@ -44,6 +44,16 @@ pub struct SeafileBind {
     pub provider_instance_name: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SeafileHlsResourceRequest<'a> {
+    pub version: &'a str,
+    pub mode_name: &'a str,
+    pub media_index: usize,
+    pub target_url: &'a str,
+    pub is_manifest: bool,
+    pub range_header: Option<&'a str>,
+}
+
 #[async_trait]
 impl MediaProvider for SeafileProvider {
     fn name(&self) -> &'static str {
@@ -90,7 +100,13 @@ impl MediaProvider for SeafileProvider {
             can_edit: info.can_edit,
             has_thumbnail: config.has_thumbnail,
         };
-        let subtitles = discover_subtitles(&auth, &config.repository_id, &config.path).await?;
+        let subtitles = discover_subtitles(
+            &auth,
+            &config.server_id,
+            &config.repository_id,
+            &config.path,
+        )
+        .await?;
         let mut playback_infos = HashMap::new();
         playback_infos.insert(
             "original".to_string(),
@@ -101,6 +117,15 @@ impl MediaProvider for SeafileProvider {
                     format: detect_direct_url_format(&config.path).to_string(),
                     expire_at: None,
                     metadata: None,
+                    p2p_swarm_id: Some(super::provider_p2p_swarm_id(
+                        Self::NAME,
+                        auth.instance_name.as_deref(),
+                        "media",
+                        &format!(
+                            "server:{}:repository:{}:object:{}",
+                            config.server_id, config.repository_id, info.object_id
+                        ),
+                    )),
                     provider: PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Refresh {
                         credential_owner_id: owner.to_string(),
                         server_id: config.server_id.clone(),
@@ -550,6 +575,7 @@ fn mark_playback_resources(result: &mut PlaybackResult, version: &str, expires_a
 
 async fn discover_subtitles(
     auth: &AuthenticatedSeafile,
+    server_id: &str,
     repository_id: &str,
     media_path: &str,
 ) -> Result<Vec<PlaybackSubtitle>, ProviderError> {
@@ -570,6 +596,15 @@ async fn discover_subtitles(
                     name: item.name.clone(),
                     language: subtitle_language(media_path, &item.name),
                     format: subtitle_format(&item.name).unwrap_or_default().to_string(),
+                    p2p_swarm_id: Some(super::provider_p2p_swarm_id(
+                        SeafileProvider::NAME,
+                        auth.instance_name.as_deref(),
+                        "subtitle",
+                        &format!(
+                            "server:{server_id}:repository:{repository_id}:path:{}",
+                            item.path
+                        ),
+                    )),
                     provider: PlaybackSubtitleProvider::Seafile(PlaybackSeafileSubtitle {
                         version: String::new(),
                         expires_at: 0,
@@ -1114,18 +1149,12 @@ impl SeafileProvider {
             .get(mode_name)
             .and_then(|info| info.medias.get(media_index))
             .ok_or(ProviderError::NotFound)?;
-        let PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Proxy {
-            credential_owner_id,
-            server_id,
-            repository_id,
-            path,
-            ..
-        }) = &media.provider
-        else {
+        let PlaybackMediaProvider::Seafile(provider) = &media.provider else {
             return Err(ProviderError::InvalidConfig(
                 "Seafile cached playback resource is invalid".to_string(),
             ));
         };
+        let (credential_owner_id, server_id, repository_id, path) = resource_descriptor(provider);
         let owner = credential_owner_id
             .parse::<UserId>()
             .map_err(ProviderError::InvalidConfig)?;
@@ -1139,6 +1168,98 @@ impl SeafileProvider {
             url.into(),
             HashMap::new(),
             range_header,
+        )
+    }
+
+    pub async fn get_hls_manifest(
+        &self,
+        store: Option<&Arc<dyn super::ProviderStore>>,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<super::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let media = versioned
+            .result
+            .playback_infos
+            .get(mode_name)
+            .and_then(|info| info.medias.get(media_index))
+            .ok_or(ProviderError::NotFound)?;
+        if !super::playback_media_is_hls(mode_name, media) {
+            return Err(ProviderError::InvalidConfig(
+                "Seafile HLS manifest request references a non-HLS media resource".to_string(),
+            ));
+        }
+        let PlaybackMediaProvider::Seafile(provider) = &media.provider else {
+            return Err(ProviderError::InvalidConfig(
+                "Seafile cached HLS resource is invalid".to_string(),
+            ));
+        };
+        let (owner, server_id, repository_id, path) = resource_descriptor(provider);
+        let owner = owner
+            .parse::<UserId>()
+            .map_err(ProviderError::InvalidConfig)?;
+        let auth = self.authenticated(owner, server_id).await?;
+        auth.unlock_if_configured(repository_id).await?;
+        let url = auth
+            .client
+            .download_url(&auth.token, repository_id, path)
+            .await?;
+        super::playback_transport::transport_action_for_storage_hls_target(
+            url.into(),
+            HashMap::new(),
+            path,
+            true,
+            None,
+        )
+    }
+
+    pub async fn get_hls_resource(
+        &self,
+        store: Option<&Arc<dyn super::ProviderStore>>,
+        request: SeafileHlsResourceRequest<'_>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<super::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, request.version, request_context)
+                .await?;
+        let media = versioned
+            .result
+            .playback_infos
+            .get(request.mode_name)
+            .and_then(|info| info.medias.get(request.media_index))
+            .ok_or(ProviderError::NotFound)?;
+        if !super::playback_media_is_hls(request.mode_name, media) {
+            return Err(ProviderError::InvalidConfig(
+                "Seafile HLS child request references a non-HLS media resource".to_string(),
+            ));
+        }
+        let PlaybackMediaProvider::Seafile(provider) = &media.provider else {
+            return Err(ProviderError::InvalidConfig(
+                "Seafile cached HLS resource is invalid".to_string(),
+            ));
+        };
+        let (owner, server_id, repository_id, root_path) = resource_descriptor(provider);
+        let path =
+            super::playback_transport::storage_hls_resource_path(root_path, request.target_url)?;
+        validate_file_path(&path)?;
+        let owner = owner
+            .parse::<UserId>()
+            .map_err(ProviderError::InvalidConfig)?;
+        let auth = self.authenticated(owner, server_id).await?;
+        auth.unlock_if_configured(repository_id).await?;
+        let url = auth
+            .client
+            .download_url(&auth.token, repository_id, &path)
+            .await?;
+        super::playback_transport::transport_action_for_storage_hls_target(
+            url.into(),
+            HashMap::new(),
+            &path,
+            request.is_manifest,
+            request.range_header,
         )
     }
 
@@ -1172,18 +1293,7 @@ impl SeafileProvider {
         let PlaybackMediaProvider::Seafile(provider) = &media.provider else {
             return Err(ProviderError::NotFound);
         };
-        let (owner, server_id) = match provider {
-            PlaybackSeafileMedia::Refresh {
-                credential_owner_id,
-                server_id,
-                ..
-            }
-            | PlaybackSeafileMedia::Proxy {
-                credential_owner_id,
-                server_id,
-                ..
-            } => (credential_owner_id, server_id),
-        };
+        let (owner, server_id, _, _) = resource_descriptor(provider);
         let owner = owner
             .parse::<UserId>()
             .map_err(ProviderError::InvalidConfig)?;
@@ -1343,9 +1453,120 @@ fn parent_path(path: &str) -> String {
     )
 }
 
+fn resource_descriptor(provider: &PlaybackSeafileMedia) -> (&str, &str, &str, &str) {
+    match provider {
+        PlaybackSeafileMedia::Refresh {
+            credential_owner_id,
+            server_id,
+            repository_id,
+            path,
+            ..
+        }
+        | PlaybackSeafileMedia::Proxy {
+            credential_owner_id,
+            server_id,
+            repository_id,
+            path,
+            ..
+        } => (credential_owner_id, server_id, repository_id, path),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{related_stem, subtitle_format, subtitle_language};
+    use super::*;
+    use crate::provider::{
+        InMemoryProviderStore, ProviderStore, ProviderStoreExt, VersionedPlayback,
+    };
+
+    #[tokio::test]
+    async fn resource_action_accepts_refresh_media_from_version_mapping() {
+        let version = "seafile-refresh";
+        let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(16));
+        let media = PlaybackSeafileMedia::Refresh {
+            credential_owner_id: "42".to_string(),
+            server_id: "seafile-main".to_string(),
+            repository_id: "library".to_string(),
+            path: "/Videos/Movie.mkv".to_string(),
+            object_id: "object".to_string(),
+        };
+        let versioned = VersionedPlayback {
+            version: version.to_string(),
+            result: PlaybackResult {
+                playback_infos: HashMap::from([(
+                    "proxy".to_string(),
+                    PlaybackInfo {
+                        thumbnail: None,
+                        medias: vec![PlaybackMedia {
+                            name: "Movie".to_string(),
+                            format: "mkv".to_string(),
+                            expire_at: None,
+                            metadata: None,
+                            p2p_swarm_id: None,
+                            provider: PlaybackMediaProvider::Seafile(media),
+                        }],
+                        default_media_index: Some(0),
+                        subtitles: Vec::new(),
+                        default_subtitle_index: None,
+                        danmakus: Vec::new(),
+                        default_danmaku_index: None,
+                    },
+                )]),
+                default_mode: "proxy".to_string(),
+                provider: SeafileProvider::NAME.to_string(),
+                provider_instance_name: None,
+                duration_seconds: None,
+                playback_kind: Some(crate::models::PlaybackKind::Regular),
+                metadata: None,
+            },
+            expires_at: crate::SystemClock.now().timestamp() + 60,
+            playback_context: None,
+        };
+        store
+            .set(&format!("v:{version}"), &versioned, Duration::from_mins(1))
+            .await
+            .expect("version mapping should be stored");
+
+        let provider = SeafileProvider::with_http_client(reqwest::Client::new());
+        let Err(error) = provider
+            .get_resource(Some(&store), version, "proxy", 0, None, None)
+            .await
+        else {
+            panic!("missing credentials should prevent a successful action");
+        };
+
+        assert!(matches!(
+            error,
+            ProviderError::Internal(message)
+                if message == "Seafile credential repository is unavailable"
+        ));
+    }
+
+    #[test]
+    fn resource_descriptor_accepts_refresh_and_proxy_media() {
+        let refresh = PlaybackSeafileMedia::Refresh {
+            credential_owner_id: "42".to_string(),
+            server_id: "seafile-main".to_string(),
+            repository_id: "library".to_string(),
+            path: "/Videos/Movie.mkv".to_string(),
+            object_id: "object".to_string(),
+        };
+        let proxy = PlaybackSeafileMedia::Proxy {
+            version: "version".to_string(),
+            expires_at: 1_800_000_000,
+            mode_name: "direct".to_string(),
+            media_index: 0,
+            credential_owner_id: "42".to_string(),
+            server_id: "seafile-main".to_string(),
+            repository_id: "library".to_string(),
+            path: "/Videos/Movie.mkv".to_string(),
+            object_id: "object".to_string(),
+        };
+
+        let expected = ("42", "seafile-main", "library", "/Videos/Movie.mkv");
+        assert_eq!(resource_descriptor(&refresh), expected);
+        assert_eq!(resource_descriptor(&proxy), expected);
+    }
 
     #[test]
     fn discovers_only_related_subtitle_names() {

@@ -3,8 +3,9 @@ use std::sync::Arc;
 use futures::FutureExt;
 use synctv_proto::playback_provider::seafile::seafile_playback_provider_service_server::SeafilePlaybackProviderService;
 use synctv_proto::playback_provider::seafile::{
-    GetSeafileResourceRequest, GetSeafileSubtitleRequest, SeafileResourceResponse,
-    SeafileSubtitleResponse,
+    GetSeafileHlsManifestRequest, GetSeafileHlsResourceRequest, GetSeafileResourceRequest,
+    GetSeafileSubtitleRequest, SeafileHlsManifestResponse, SeafileHlsResourceResponse,
+    SeafileResourceResponse, SeafileSubtitleResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -36,6 +37,8 @@ impl SeafilePlaybackProviderGrpcService {
 #[allow(clippy::result_large_err)]
 impl SeafilePlaybackProviderService for SeafilePlaybackProviderGrpcService {
     type GetResourceStream = GrpcResponseStream<SeafileResourceResponse>;
+    type GetHlsManifestStream = GrpcResponseStream<SeafileHlsManifestResponse>;
+    type GetHlsResourceStream = GrpcResponseStream<SeafileHlsResourceResponse>;
     type GetSubtitleStream = GrpcResponseStream<SeafileSubtitleResponse>;
 
     async fn get_resource(
@@ -49,6 +52,48 @@ impl SeafilePlaybackProviderService for SeafilePlaybackProviderGrpcService {
             let state = state.clone();
             async move {
                 synctv_api_common::playback_provider::seafile::get_seafile_resource(
+                    deps(&state, Some(&control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn get_hls_manifest(
+        &self,
+        request: Request<GetSeafileHlsManifestRequest>,
+    ) -> Result<Response<Self::GetHlsManifestStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+        execute_playback_provider_stream(state.clone(), metadata, move |control| {
+            let state = state.clone();
+            async move {
+                synctv_api_common::playback_provider::seafile::get_seafile_hls_manifest(
+                    deps(&state, Some(&control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn get_hls_resource(
+        &self,
+        request: Request<GetSeafileHlsResourceRequest>,
+    ) -> Result<Response<Self::GetHlsResourceStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+        execute_playback_provider_stream(state.clone(), metadata, move |control| {
+            let state = state.clone();
+            async move {
+                synctv_api_common::playback_provider::seafile::get_seafile_hls_resource(
                     deps(&state, Some(&control)),
                     req,
                 )

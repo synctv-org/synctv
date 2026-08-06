@@ -536,7 +536,7 @@ pub struct VersionedPlayback {
 
 impl VersionedPlayback {
     pub fn is_expired(&self) -> bool {
-        crate::SystemClock.now().timestamp() > self.expires_at
+        crate::SystemClock.now().timestamp() >= self.expires_at
     }
 }
 
@@ -658,6 +658,12 @@ mod tests {
             playback_context: None,
         };
         assert!(vp.is_expired());
+
+        let vp_at_boundary = VersionedPlayback {
+            expires_at: crate::SystemClock.now().timestamp(),
+            ..vp.clone()
+        };
+        assert!(vp_at_boundary.is_expired());
 
         let vp_future = VersionedPlayback {
             expires_at: crate::SystemClock.now().timestamp() + 3600,

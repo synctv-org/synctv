@@ -10,7 +10,7 @@ fn seafile_services_are_registered_in_descriptor_pools() {
     let playback = synctv_proto::PLAYBACK_PROVIDER_DESCRIPTOR_POOL
         .get_service_by_name("synctv.playback_provider.seafile.SeafilePlaybackProviderService")
         .expect("Seafile playback provider service descriptor");
-    assert_eq!(playback.methods().count(), 2);
+    assert_eq!(playback.methods().count(), 4);
 }
 
 #[test]

@@ -11,7 +11,7 @@ fn qnap_services_are_registered_in_descriptor_pools() {
     let playback = synctv_proto::PLAYBACK_PROVIDER_DESCRIPTOR_POOL
         .get_service_by_name("synctv.playback_provider.qnap.QnapPlaybackProviderService")
         .expect("QNAP playback provider service descriptor");
-    assert_eq!(playback.methods().count(), 3);
+    assert_eq!(playback.methods().count(), 5);
 }
 
 #[test]

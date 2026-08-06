@@ -43,6 +43,7 @@ fn direct_url_media_source_config(
                         url: url.to_string(),
                         headers: Default::default(),
                         format: String::new(),
+                        expires_at: None,
                     }],
                     default_media_index: None,
                     subtitles: Vec::new(),
@@ -73,6 +74,27 @@ fn alist_playlist_source_config(
             ),
         ),
     })
+}
+
+#[test]
+fn playback_resources_share_the_explicit_p2p_delivery_contract() {
+    let pool = &synctv_proto::DESCRIPTOR_POOL;
+    let delivery = pool
+        .get_message_by_name("synctv.client.P2pResourceDelivery")
+        .expect("P2pResourceDelivery descriptor should exist");
+
+    for message_name in ["PlaybackMedia", "PlaybackSubtitle", "PlaybackDanmaku"] {
+        let message = pool
+            .get_message_by_name(&format!("synctv.client.{message_name}"))
+            .expect("playback resource descriptor should exist");
+        let field = message
+            .get_field_by_name("p2p_delivery")
+            .expect("playback resource should declare p2p_delivery");
+        let Kind::Message(field_message) = field.kind() else {
+            panic!("p2p_delivery should be a message field");
+        };
+        assert_eq!(field_message.full_name(), delivery.full_name());
+    }
 }
 
 #[test]

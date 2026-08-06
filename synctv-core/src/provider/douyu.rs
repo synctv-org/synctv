@@ -205,6 +205,7 @@ impl DouyuProvider {
                     .then(|| PlaybackDanmaku {
                         name: "Douyu Danmaku".to_string(),
                         format: Some("synctv-douyu-live".to_string()),
+                        p2p_swarm_id: None,
                         provider: PlaybackDanmakuProvider::Douyu(PlaybackDouyuDanmaku::Refresh {
                             media_index: 0,
                         }),
@@ -229,6 +230,7 @@ impl DouyuProvider {
                     codec: Some(codec.to_string()),
                     fps: None,
                 }),
+                p2p_swarm_id: None,
                 provider: PlaybackMediaProvider::Douyu(PlaybackDouyuMedia::Refresh {
                     room_id: playback.room_id.clone(),
                     quality_name: quality.name,

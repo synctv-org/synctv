@@ -15,7 +15,7 @@ use crate::{
     },
     provider::{
         provider_requires_credential_repo, PlaybackResult, ProviderAccessService, ProviderContext,
-        ProviderStoreResolver, SourceConfig, SourceCover,
+        ProviderResourceMetadata, ProviderStoreResolver, SourceConfig, SourceCover,
     },
     repository::{realtime_outbox::NewRealtimeOutboxEvent, UserProviderCredentialRepository},
     repository::{MediaRepository, PlaylistRepository, UserRepository},
@@ -30,6 +30,7 @@ use crate::{
 use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 mod cover;
 mod dynamic;
@@ -46,6 +47,8 @@ pub type RealtimeOutboxMediaEventFactory =
     Arc<dyn Fn(&Media) -> Result<NewRealtimeOutboxEvent> + Send + Sync>;
 pub type RealtimeOutboxMediaBatchEventFactory =
     Arc<dyn Fn(&[Media]) -> Result<Vec<NewRealtimeOutboxEvent>> + Send + Sync>;
+
+const PROVIDER_METADATA_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
 pub struct MediaServiceRuntime {
@@ -450,6 +453,59 @@ impl MediaService {
             .source_cover(&ctx, SourceConfig::media(&media.source_config))
             .await
             .map_err(|error| Error::Internal(error.to_string()))
+    }
+
+    /// Resolve lightweight provider metadata for a persisted media resource.
+    ///
+    /// Metadata is an enrichment of the primary resource response. Provider
+    /// failures and slow upstreams are therefore logged and treated as an
+    /// omitted metadata payload, while provider resolution failures remain
+    /// visible to the caller.
+    pub async fn media_provider_metadata(
+        &self,
+        viewer_id: Option<UserId>,
+        media: &Media,
+    ) -> Result<Option<ProviderResourceMetadata>> {
+        let provider = self
+            .resolve_media_provider(
+                media.source_provider,
+                media.provider_instance_name.as_deref(),
+            )
+            .await?;
+        let ctx = self.build_provider_context(
+            provider.name(),
+            viewer_id.as_ref(),
+            &media.room_id,
+            media.creator_id.as_ref(),
+            media.provider_instance_name.as_deref(),
+        );
+        let metadata = match tokio::time::timeout(
+            PROVIDER_METADATA_TIMEOUT,
+            provider.media_metadata(&ctx, &media.source_config),
+        )
+        .await
+        {
+            Ok(Ok(metadata)) => metadata,
+            Ok(Err(error)) => {
+                tracing::debug!(
+                    media_id = %media.id,
+                    provider = provider.name(),
+                    error = %error,
+                    "provider media metadata unavailable"
+                );
+                None
+            }
+            Err(_) => {
+                tracing::debug!(
+                    media_id = %media.id,
+                    provider = provider.name(),
+                    timeout_ms = PROVIDER_METADATA_TIMEOUT.as_millis(),
+                    "provider media metadata timed out"
+                );
+                None
+            }
+        };
+        Ok(metadata)
     }
 
     pub async fn playlist_source_cover(

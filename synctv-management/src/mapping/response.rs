@@ -996,6 +996,7 @@ fn media_resource_metadata_to_proto(
 
     client_proto::ResourceMetadata {
         source: Some(source),
+        provider: None,
     }
 }
 
@@ -1213,6 +1214,7 @@ pub(crate) fn created_playlist_to_client_proto(
         provider_instance_name: playlist.provider_instance_name.clone().unwrap_or_default(),
         description: playlist.description.clone(),
         cover: None,
+        metadata: None,
         creator_id: playlist
             .creator_id
             .map(|id| encode_user_id(id, public_id_codec))

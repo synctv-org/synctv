@@ -39,6 +39,56 @@ impl PreparedDynamicPlaylist {
 }
 
 impl MediaService {
+    pub async fn playlist_provider_metadata(
+        &self,
+        viewer_id: Option<UserId>,
+        playlist: &Playlist,
+    ) -> Result<Option<crate::provider::ProviderResourceMetadata>> {
+        let (provider_name, provider) = self.get_dynamic_playlist_provider(playlist).await?;
+        self.ensure_provider_credential_repo(&provider_name)?;
+        let prepared = PreparedDynamicPlaylist {
+            playlist: playlist.clone(),
+            provider_name,
+            provider,
+        };
+        let ctx = self.dynamic_playlist_context(
+            &prepared,
+            viewer_id.as_ref(),
+            playlist.creator_id.as_ref(),
+        );
+        let source_config = prepared
+            .playlist
+            .source_config
+            .as_ref()
+            .ok_or_else(|| Error::InvalidInput("Missing source_config".to_string()))?;
+        let dynamic_provider = prepared.dynamic_playlist_provider()?;
+        let metadata = match tokio::time::timeout(
+            super::PROVIDER_METADATA_TIMEOUT,
+            dynamic_provider.playlist_metadata(&ctx, source_config),
+        )
+        .await
+        {
+            Ok(Ok(metadata)) => metadata,
+            Ok(Err(error)) => {
+                tracing::debug!(
+                    playlist_id = %playlist.id,
+                    error = %error,
+                    "provider playlist metadata unavailable"
+                );
+                None
+            }
+            Err(_) => {
+                tracing::debug!(
+                    playlist_id = %playlist.id,
+                    timeout_ms = super::PROVIDER_METADATA_TIMEOUT.as_millis(),
+                    "provider playlist metadata timed out"
+                );
+                None
+            }
+        };
+        Ok(metadata)
+    }
+
     pub async fn preview_dynamic_playlist_items(
         &self,
         request: DynamicPlaylistPreviewRequest,

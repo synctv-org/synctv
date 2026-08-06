@@ -1663,6 +1663,7 @@ impl BilibiliClient {
                     cover,
                     collection,
                     live_started_at: None,
+                    is_currently_live: false,
                 })
             }
         })
@@ -2013,6 +2014,7 @@ impl BilibiliClient {
                     cover,
                     collection: None,
                     live_started_at: None,
+                    is_currently_live: false,
                 })
             }
         })
@@ -2434,6 +2436,7 @@ impl BilibiliClient {
                     cover,
                     collection: None,
                     live_started_at,
+                    is_currently_live: data.live_status == 1,
                 })
             }
         })
@@ -4125,6 +4128,7 @@ pub struct VideoPageInfo {
     pub cover: String,
     pub collection: Option<BilibiliCollectionInfo>,
     pub live_started_at: Option<i64>,
+    pub is_currently_live: bool,
 }
 
 #[derive(Debug, Clone)]

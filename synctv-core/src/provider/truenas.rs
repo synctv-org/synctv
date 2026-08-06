@@ -10,8 +10,8 @@ use rand::seq::IndexedRandom;
 use sha2::{Digest, Sha256};
 
 use super::{
-    DirectoryItem, DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult,
-    DynamicPagination, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
+    DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
+    DynamicPlaylistItem, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
     PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency, ProviderError,
     SourceConfig, SourceCover,
 };
@@ -836,7 +836,7 @@ fn map_list_response(response: TrueNasList) -> TrueNasListResponse {
     }
 }
 
-fn map_directory_item(item: TrueNasFileItem) -> Option<DirectoryItem> {
+fn map_directory_item(item: TrueNasFileItem) -> Option<DynamicPlaylistItem> {
     let is_directory = item.is_directory();
     let item_type = if is_directory {
         ItemType::Playlist
@@ -853,7 +853,7 @@ fn map_directory_item(item: TrueNasFileItem) -> Option<DirectoryItem> {
         .chain(item.attributes.iter())
         .next()
         .cloned();
-    Some(DirectoryItem {
+    Some(DynamicPlaylistItem {
         name: item.name,
         item_type,
         target: ProviderTarget::truenas(item.path),
@@ -862,6 +862,7 @@ fn map_directory_item(item: TrueNasFileItem) -> Option<DirectoryItem> {
         description,
         modified_at: None,
         source_config: None,
+        metadata: None,
     })
 }
 
@@ -1073,7 +1074,11 @@ fn is_playable(name: &str) -> bool {
     )
 }
 
-fn enough_for_next(media: &[DirectoryItem], target: &ProviderTarget, play_mode: PlayMode) -> bool {
+fn enough_for_next(
+    media: &[DynamicPlaylistItem],
+    target: &ProviderTarget,
+    play_mode: PlayMode,
+) -> bool {
     match play_mode {
         PlayMode::Sequential | PlayMode::RepeatAll => media
             .iter()

@@ -244,13 +244,13 @@ impl PreparedSourceConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemType {
-    Playlist, // Folder/directory (playlist)
-    Media,    // File (video/audio/live stream)
+    Playlist,
+    Media, // File (video/audio/live stream)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
-pub enum DirectoryItemThumbnail {
+pub enum DynamicPlaylistItemThumbnail {
     Url(String),
     Emby {
         server_id: String,
@@ -339,9 +339,9 @@ pub enum SourceCover {
     },
 }
 
-/// Directory item (file or folder)
+/// Item returned by a provider-backed dynamic playlist.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DirectoryItem {
+pub struct DynamicPlaylistItem {
     /// Item name
     pub name: String,
 
@@ -357,7 +357,7 @@ pub struct DirectoryItem {
 
     /// Thumbnail metadata (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub thumbnail: Option<DirectoryItemThumbnail>,
+    pub thumbnail: Option<DynamicPlaylistItemThumbnail>,
 
     /// Upstream item description or summary.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -369,12 +369,22 @@ pub struct DirectoryItem {
 
     /// Typed source config that can be submitted directly to an add endpoint.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_config: Option<DirectoryItemSourceConfig>,
+    pub source_config: Option<DynamicPlaylistItemSourceConfig>,
+
+    /// Provider-owned metadata for this dynamic item.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<ProviderResourceMetadata>,
 }
+
+/// Provider-owned metadata shared by resource listings and playback responses.
+///
+/// The enum remains provider-specific at the boundary while allowing the API
+/// layer to transport one stable protobuf oneof for all providers.
+pub type ProviderResourceMetadata = crate::models::PlaybackMetadata;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "config", rename_all = "camelCase")]
-pub enum DirectoryItemSourceConfig {
+pub enum DynamicPlaylistItemSourceConfig {
     Media(crate::models::MediaSourceConfig),
     Playlist(crate::models::PlaylistSourceConfig),
 }
@@ -399,7 +409,7 @@ pub struct DynamicListQuery {
     pub page_size: usize,
     /// Optional provider-side search term.
     pub search: Option<String>,
-    /// Force the upstream provider to refresh its directory cache when supported.
+    /// Force the provider listing cache to refresh when supported.
     pub refresh: bool,
 }
 
@@ -415,13 +425,13 @@ impl DynamicListQuery {
 
 #[derive(Debug, Clone, Default)]
 pub struct DynamicListResult {
-    pub items: Vec<DirectoryItem>,
+    pub items: Vec<DynamicPlaylistItem>,
     pub pagination: DynamicPagination,
     pub has_more: bool,
 }
 
 impl std::ops::Deref for DynamicListResult {
-    type Target = [DirectoryItem];
+    type Target = [DynamicPlaylistItem];
 
     fn deref(&self) -> &Self::Target {
         &self.items
@@ -429,8 +439,8 @@ impl std::ops::Deref for DynamicListResult {
 }
 
 impl IntoIterator for DynamicListResult {
-    type Item = DirectoryItem;
-    type IntoIter = std::vec::IntoIter<DirectoryItem>;
+    type Item = DynamicPlaylistItem;
+    type IntoIter = std::vec::IntoIter<DynamicPlaylistItem>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.items.into_iter()
@@ -499,6 +509,20 @@ pub trait MediaProvider: Send + Sync {
         ctx: &ProviderContext<'_>,
         source_config: &crate::models::MediaSourceConfig,
     ) -> Result<PlaybackResult, ProviderError>;
+
+    /// Return lightweight provider metadata for a persisted media resource.
+    ///
+    /// Providers own the upstream lookup and cache for this boundary. The
+    /// default keeps providers without lightweight metadata support out of
+    /// the library listing path.
+    async fn media_metadata(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: &crate::models::MediaSourceConfig,
+    ) -> Result<Option<ProviderResourceMetadata>, ProviderError> {
+        let _ = (ctx, source_config);
+        Ok(None)
+    }
 
     /// Cast to `DynamicPlaylistProvider` trait if supported
     ///
@@ -613,6 +637,19 @@ pub trait BilibiliLiveDanmakuProvider: Send + Sync {
 /// 2. Provide next item for auto-play
 #[async_trait]
 pub trait DynamicPlaylistProvider: MediaProvider {
+    /// Return lightweight metadata for a persisted dynamic playlist.
+    ///
+    /// The provider receives its exact playlist source configuration and owns
+    /// any upstream lookup or cache needed to produce the provider-specific
+    /// metadata payload.
+    async fn playlist_metadata(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        _source_config: &crate::models::PlaylistSourceConfig,
+    ) -> Result<Option<ProviderResourceMetadata>, ProviderError> {
+        Ok(None)
+    }
+
     /// List playlist contents
     ///
     /// Used to browse a dynamic playlist and load its contents.
@@ -624,7 +661,7 @@ pub trait DynamicPlaylistProvider: MediaProvider {
     /// - `query`: Provider-side list/search options. Page numbers are 1-indexed at this
     ///   boundary; callers must pass `1` for the first page.
     /// # Returns
-    /// List of items (videos, folders) in the dynamic playlist
+    /// List of items (videos, sub-playlists) in the dynamic playlist
     async fn list_playlist(
         &self,
         ctx: &ProviderContext<'_>,
@@ -671,8 +708,8 @@ pub trait DynamicPlaylistProvider: MediaProvider {
     /// // playing_media.source_config = {"playlist_id": "123", "current_index": 5}
     /// // Returns item at index 6
     ///
-    /// // Alist folder scenario
-    /// // target = provider-defined folder cursor
+    /// // Alist path scenario
+    /// // target = provider-defined path cursor
     /// // Returns next playable item in that dynamic playlist
     /// ```
     async fn next(

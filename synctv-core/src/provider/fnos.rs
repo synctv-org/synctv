@@ -11,8 +11,8 @@ use rand::seq::IndexedRandom;
 use sha2::{Digest, Sha256};
 
 use super::{
-    DirectoryItem, DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult,
-    DynamicPagination, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
+    DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
+    DynamicPlaylistItem, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
     PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency, ProviderError,
     ProviderPlaybackSessionLifecycle, SourceConfig, SourceCover,
 };
@@ -1209,7 +1209,7 @@ impl FnosProvider {
 
     fn next_item(
         base: &FnosPlaylistSourceConfig,
-        item: &DirectoryItem,
+        item: &DynamicPlaylistItem,
     ) -> Result<NextPlayItem, ProviderError> {
         let relative = decode_file_target(Some(&item.target))?.ok_or_else(|| {
             ProviderError::InvalidConfig("FNOS item target is required".to_string())
@@ -1229,7 +1229,7 @@ impl FnosProvider {
 
     fn next_media_item(
         base: &FnosPlaylistSourceConfig,
-        item: &DirectoryItem,
+        item: &DynamicPlaylistItem,
     ) -> Result<NextPlayItem, ProviderError> {
         let (item_guid, media_guid) =
             decode_media_target(Some(&item.target))?.ok_or_else(|| {
@@ -1257,7 +1257,7 @@ impl FnosProvider {
         target: &ProviderTarget,
         page_size: usize,
         play_mode: PlayMode,
-    ) -> Result<Vec<DirectoryItem>, ProviderError> {
+    ) -> Result<Vec<DynamicPlaylistItem>, ProviderError> {
         let mut media = Vec::new();
         let mut page = 1;
         loop {
@@ -1435,7 +1435,10 @@ fn relative_path(base: &str, full_path: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn map_directory_item(base_path: &str, file: FnosFile) -> Result<DirectoryItem, ProviderError> {
+fn map_directory_item(
+    base_path: &str,
+    file: FnosFile,
+) -> Result<DynamicPlaylistItem, ProviderError> {
     let item_type = item_type(&file).ok_or(ProviderError::NotFound)?;
     let relative = relative_path(base_path, &file.path).ok_or_else(|| {
         ProviderError::ApiError(format!(
@@ -1443,7 +1446,7 @@ fn map_directory_item(base_path: &str, file: FnosFile) -> Result<DirectoryItem, 
             file.path
         ))
     })?;
-    Ok(DirectoryItem {
+    Ok(DynamicPlaylistItem {
         name: file.name,
         item_type,
         target: encode_file_target(&relative)?,
@@ -1452,6 +1455,7 @@ fn map_directory_item(base_path: &str, file: FnosFile) -> Result<DirectoryItem, 
         description: None,
         modified_at: file.modified_at,
         source_config: None,
+        metadata: None,
     })
 }
 
@@ -1459,7 +1463,7 @@ fn map_media_item(
     item: synctv_media_providers::fnos::FnosMediaItem,
     credential_owner_id: UserId,
     server_id: &str,
-) -> Result<DirectoryItem, ProviderError> {
+) -> Result<DynamicPlaylistItem, ProviderError> {
     let item_type = if item.is_folder() {
         ItemType::Playlist
     } else if item.is_playable() {
@@ -1468,15 +1472,15 @@ fn map_media_item(
         return Err(ProviderError::NotFound);
     };
     let name = item.display_title();
-    let thumbnail = item
-        .poster
-        .clone()
-        .map(|image_path| super::DirectoryItemThumbnail::Fnos {
-            server_id: server_id.to_string(),
-            credential_owner_id,
-            image_path,
-        });
-    Ok(DirectoryItem {
+    let thumbnail =
+        item.poster
+            .clone()
+            .map(|image_path| super::DynamicPlaylistItemThumbnail::Fnos {
+                server_id: server_id.to_string(),
+                credential_owner_id,
+                image_path,
+            });
+    Ok(DynamicPlaylistItem {
         name,
         item_type,
         target: ProviderTarget::fnos_media(item.guid, item.media_guid),
@@ -1485,6 +1489,7 @@ fn map_media_item(
         description: item.overview,
         modified_at: None,
         source_config: None,
+        metadata: None,
     })
 }
 
@@ -1494,7 +1499,7 @@ fn paginate_media_items(
     server_id: &str,
     page: usize,
     page_size: usize,
-) -> (Vec<DirectoryItem>, bool) {
+) -> (Vec<DynamicPlaylistItem>, bool) {
     let start = page.saturating_sub(1).saturating_mul(page_size);
     let has_more = start.saturating_add(page_size) < items.len();
     let items = items
@@ -2762,7 +2767,7 @@ impl DynamicPlaylistProvider for FnosProvider {
                 let play = client
                     .play_info(&token, &item_guid, media_guid.as_deref())
                     .await?;
-                let item = DirectoryItem {
+                let item = DynamicPlaylistItem {
                     name: play
                         .item
                         .title
@@ -2775,6 +2780,7 @@ impl DynamicPlaylistProvider for FnosProvider {
                     description: play.item.overview,
                     modified_at: None,
                     source_config: None,
+                    metadata: None,
                 };
                 Self::next_media_item(base, &item).map(Some)
             }

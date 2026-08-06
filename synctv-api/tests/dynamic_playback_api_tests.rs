@@ -19,7 +19,7 @@ use synctv_core::{
         SignupMethod, User, UserId, UserRole, UserStatus,
     },
     provider::{
-        DirectoryItem, DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult,
+        DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPlaylistItem,
         DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem, PlaybackInfo,
         PlaybackResult, ProviderContext, ProviderError,
     },
@@ -319,7 +319,7 @@ impl DynamicPlaylistProvider for StubDynamicProvider {
             .as_deref()
             .unwrap_or_default()
         {
-            "" => vec![DirectoryItem {
+            "" => vec![DynamicPlaylistItem {
                 name: self.folder_cursor().to_string(),
                 item_type: ItemType::Playlist,
                 target: alist_target(self.folder_cursor()),
@@ -328,8 +328,9 @@ impl DynamicPlaylistProvider for StubDynamicProvider {
                 description: None,
                 modified_at: None,
                 source_config: None,
+                metadata: None,
             }],
-            cursor if cursor == self.folder_cursor() => vec![DirectoryItem {
+            cursor if cursor == self.folder_cursor() => vec![DynamicPlaylistItem {
                 name: self
                     .first_item_path()
                     .rsplit('/')
@@ -343,6 +344,7 @@ impl DynamicPlaylistProvider for StubDynamicProvider {
                 description: None,
                 modified_at: None,
                 source_config: None,
+                metadata: None,
             }],
             _ => Vec::new(),
         };

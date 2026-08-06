@@ -9,9 +9,8 @@ use synctv_core::{
 const ADMIN_MEDIA_LOAD_CONCURRENCY: usize = 16;
 
 use crate::impls::client::convert::{
-    optional_provider_target_to_proto, provider_target_from_proto,
-    try_media_to_proto_for_viewer_with_cover, try_playlist_path_node_to_proto,
-    try_playlist_to_proto_for_viewer_with_cover, MediaProtoView,
+    optional_provider_target_to_proto, provider_resource_metadata_to_proto,
+    provider_target_from_proto, try_playlist_path_node_to_proto, MediaProtoView,
 };
 use crate::impls::client::media::{
     prepare_delete_entries_outbox_fanout, MoveMediaFanoutPlanner, PrepareDeleteEntriesOutboxFanout,
@@ -76,7 +75,20 @@ impl AdminApiImpl {
             })
             .transpose()?
             .flatten();
-        try_media_to_proto_for_viewer_with_cover(
+        let provider_metadata = self
+            .room_service
+            .media_service()
+            .media_provider_metadata(media.creator_id, media)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::debug!(
+                    media_id = %media.id,
+                    error = %error,
+                    "failed to resolve admin media provider metadata"
+                );
+                None
+            });
+        crate::impls::client::convert::try_media_to_proto_for_viewer_with_cover(
             media,
             MediaProtoView {
                 is_available,
@@ -87,6 +99,7 @@ impl AdminApiImpl {
                 thumbnail_access: thumbnail_access.as_ref(),
                 public_id_codec: &self.public_id_codec,
             },
+            provider_metadata.as_ref(),
         )
     }
 
@@ -162,7 +175,23 @@ impl AdminApiImpl {
             })
             .transpose()?
             .flatten();
-        try_playlist_to_proto_for_viewer_with_cover(
+        let provider_metadata = if playlist.is_dynamic() {
+            self.room_service
+                .media_service()
+                .playlist_provider_metadata(playlist.creator_id, playlist)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::debug!(
+                        playlist_id = %playlist.id,
+                        error = %error,
+                        "failed to resolve admin playlist provider metadata"
+                    );
+                    None
+                })
+        } else {
+            None
+        };
+        crate::impls::client::convert::try_playlist_to_proto_for_viewer_with_cover(
             playlist,
             item_count,
             is_available,
@@ -170,6 +199,7 @@ impl AdminApiImpl {
             cover.as_ref(),
             cover_access.as_ref(),
             &self.public_id_codec,
+            provider_metadata.as_ref(),
         )
     }
 
@@ -225,7 +255,7 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound(format!("Playlist {playlist_id} not found")))?;
 
-        let (child_folder_count, media_count) = tokio::join!(
+        let (child_playlist_count, media_count) = tokio::join!(
             self.room_service
                 .playlist_service()
                 .count_room_children(&rid, &pid),
@@ -233,8 +263,8 @@ impl AdminApiImpl {
                 .media_service()
                 .count_room_playlist_media(&rid, &pid),
         );
-        let child_folder_count = i64_to_i32_api(
-            child_folder_count.map_err(ApiError::from)?,
+        let child_playlist_count = i64_to_i32_api(
+            child_playlist_count.map_err(ApiError::from)?,
             "child playlist count",
         )?;
         let media_count =
@@ -245,7 +275,7 @@ impl AdminApiImpl {
                 self.playlist_to_proto_for_admin_with_loaded_cover(&playlist, media_count, true)
                     .await?,
             ),
-            child_folder_count,
+            child_playlist_count,
             media_count,
         })
     }
@@ -557,25 +587,25 @@ impl AdminApiImpl {
                 sort_by: map_admin_media_sort(req.sort_by)?,
                 sort_direction: map_client_sort_direction(req.sort_direction)?,
             };
-            let (folder_count, file_count) = tokio::join!(
+            let (playlist_count, file_count) = tokio::join!(
                 self.room_service
                     .count_client_playlists(&rid, None, &playlist_query),
                 self.room_service
                     .count_client_media(&rid, None, &media_query),
             );
-            let folder_count = folder_count
+            let playlist_count = playlist_count
                 .map_err(ApiError::from)
                 .and_then(|count| i64_count_to_usize(count, "root playlist count"))?;
             let file_count = file_count
                 .map_err(ApiError::from)
                 .and_then(|count| i64_count_to_usize(count, "root media count"))?;
-            let total = folder_count.checked_add(file_count).ok_or_else(|| {
+            let total = playlist_count.checked_add(file_count).ok_or_else(|| {
                 ApiError::Internal("root playlist/media count exceeds usize::MAX".to_string())
             })?;
             let page_size = crate::impls::proto_page_size_u32_usize(req.page_size, 50, 100)?;
             let page = page_u32_to_usize(crate::impls::client::media::playlist_items_page(&req)?)?;
             let skip = page_offset_usize(page, page_size, "root playlist/media offset")?;
-            let (playlists, media) = if skip < folder_count {
+            let (playlists, media) = if skip < playlist_count {
                 let playlist_limit = usize_to_i64_api(page_size, "playlist page size")?;
                 let playlist_offset = usize_to_i64_api(skip, "playlist offset")?;
                 let playlists = self
@@ -601,7 +631,7 @@ impl AdminApiImpl {
                 };
                 (playlists, media)
             } else {
-                let media_skip = skip - folder_count;
+                let media_skip = skip - playlist_count;
                 let media_limit = usize_to_i64_api(page_size, "media page size")?;
                 let media_offset = usize_to_i64_api(media_skip, "media offset")?;
                 let media = self
@@ -611,11 +641,11 @@ impl AdminApiImpl {
                     .map_err(ApiError::from)?;
                 (Vec::new(), media)
             };
-            let folder_ids: Vec<_> = playlists.iter().map(|pl| pl.playlist.id).collect();
+            let playlist_ids: Vec<_> = playlists.iter().map(|pl| pl.playlist.id).collect();
             let counts = self
                 .room_service
                 .media_service()
-                .count_playlist_media_batch(&folder_ids)
+                .count_playlist_media_batch(&playlist_ids)
                 .await
                 .map_err(ApiError::from)?;
             let (proto_playlists, proto_media) = tokio::try_join!(
@@ -627,7 +657,7 @@ impl AdminApiImpl {
                 playlists: proto_playlists,
                 media: proto_media,
                 total: Some(usize_to_u64_api(total, "playlist item total")?),
-                folder_count: usize_to_u64_api(folder_count, "playlist folder count")?,
+                playlist_count: usize_to_u64_api(playlist_count, "playlist count")?,
                 file_count: usize_to_u64_api(file_count, "playlist file count")?,
                 dynamic_items: Vec::new(),
                 current_path: Vec::new(),
@@ -666,7 +696,7 @@ impl AdminApiImpl {
                     playlists: Vec::new(),
                     media: Vec::new(),
                     total: Some(0),
-                    folder_count: 0,
+                    playlist_count: 0,
                     file_count: 0,
                     dynamic_items: Vec::new(),
                     current_path,
@@ -706,15 +736,15 @@ impl AdminApiImpl {
                 .items
                 .into_iter()
                 .map(|item| {
-                    use synctv_core::provider::{DirectoryItemThumbnail, ItemType};
+                    use synctv_core::provider::{DynamicPlaylistItemThumbnail, ItemType};
                     let item_type = match item.item_type {
                         ItemType::Playlist => synctv_proto::client::ItemType::Playlist as i32,
                         ItemType::Media => synctv_proto::client::ItemType::Media as i32,
                     };
 
                     let thumbnail = match item.thumbnail {
-                        Some(DirectoryItemThumbnail::Url(thumbnail)) => Some(thumbnail),
-                        Some(DirectoryItemThumbnail::Emby {
+                        Some(DynamicPlaylistItemThumbnail::Url(thumbnail)) => Some(thumbnail),
+                        Some(DynamicPlaylistItemThumbnail::Emby {
                             server_id,
                             credential_owner_id,
                             item_id,
@@ -756,7 +786,7 @@ impl AdminApiImpl {
                                 .map_err(ApiError::Internal)?,
                             )
                         }
-                        Some(DirectoryItemThumbnail::Fnos {
+                        Some(DynamicPlaylistItemThumbnail::Fnos {
                             server_id,
                             credential_owner_id,
                             image_path,
@@ -789,7 +819,7 @@ impl AdminApiImpl {
                                 .map_err(ApiError::Internal)?,
                             )
                         }
-                        Some(DirectoryItemThumbnail::Qnap {
+                        Some(DynamicPlaylistItemThumbnail::Qnap {
                             server_id,
                             credential_owner_id,
                             path,
@@ -822,7 +852,7 @@ impl AdminApiImpl {
                                 .map_err(ApiError::Internal)?,
                             )
                         }
-                        Some(DirectoryItemThumbnail::Nextcloud {
+                        Some(DynamicPlaylistItemThumbnail::Nextcloud {
                             server_id,
                             credential_owner_id,
                             file_id,
@@ -857,7 +887,7 @@ impl AdminApiImpl {
                                 .map_err(ApiError::Internal)?,
                             )
                         }
-                        Some(DirectoryItemThumbnail::Seafile {
+                        Some(DynamicPlaylistItemThumbnail::Seafile {
                             server_id,
                             credential_owner_id,
                             repository_id,
@@ -892,7 +922,7 @@ impl AdminApiImpl {
                                 .map_err(ApiError::Internal)?,
                             )
                         }
-                        Some(DirectoryItemThumbnail::SynologyFile {
+                        Some(DynamicPlaylistItemThumbnail::SynologyFile {
                             server_id,
                             credential_owner_id,
                             path,
@@ -931,7 +961,7 @@ impl AdminApiImpl {
                                 .map_err(ApiError::Internal)?,
                             )
                         }
-                        Some(DirectoryItemThumbnail::SynologyPoster {
+                        Some(DynamicPlaylistItemThumbnail::SynologyPoster {
                             server_id,
                             credential_owner_id,
                             item_id,
@@ -976,6 +1006,17 @@ impl AdminApiImpl {
                         }
                         None => None,
                     };
+                    let metadata = item
+                        .metadata
+                        .as_ref()
+                        .map(|metadata| {
+                            provider_resource_metadata_to_proto(metadata, &self.public_id_codec)
+                        })
+                        .transpose()?
+                        .map(|provider| synctv_proto::client::ResourceMetadata {
+                            source: None,
+                            provider: Some(provider),
+                        });
 
                     Ok(synctv_proto::client::PlaylistItem {
                         name: item.name,
@@ -986,6 +1027,7 @@ impl AdminApiImpl {
                         modified_at: item.modified_at,
                         description: item.description.unwrap_or_default(),
                         source_config: None,
+                        metadata,
                     })
                 })
                 .collect::<Result<Vec<_>, ApiError>>()?;
@@ -1013,7 +1055,7 @@ impl AdminApiImpl {
                 playlists: Vec::new(),
                 media: Vec::new(),
                 total: None,
-                folder_count: 0,
+                playlist_count: 0,
                 file_count: 0,
                 dynamic_items,
                 current_path,
@@ -1075,25 +1117,25 @@ impl AdminApiImpl {
             sort_by: map_admin_media_sort(req.sort_by)?,
             sort_direction: map_client_sort_direction(req.sort_direction)?,
         };
-        let (folder_count, file_count) = tokio::join!(
+        let (playlist_count, file_count) = tokio::join!(
             self.room_service
                 .count_client_playlists(&rid, Some(&playlist_id), &playlist_query,),
             self.room_service
                 .count_client_media(&rid, Some(&playlist_id), &media_query),
         );
-        let folder_count = folder_count
+        let playlist_count = playlist_count
             .map_err(ApiError::from)
             .and_then(|count| i64_count_to_usize(count, "playlist child playlist count"))?;
         let file_count = file_count
             .map_err(ApiError::from)
             .and_then(|count| i64_count_to_usize(count, "playlist child media count"))?;
-        let total = folder_count.checked_add(file_count).ok_or_else(|| {
+        let total = playlist_count.checked_add(file_count).ok_or_else(|| {
             ApiError::Internal("playlist child count exceeds usize::MAX".to_string())
         })?;
         let page_size = crate::impls::proto_page_size_u32_usize(req.page_size, 50, 100)?;
         let page = page_u32_to_usize(crate::impls::client::media::playlist_items_page(&req)?)?;
         let skip = page_offset_usize(page, page_size, "playlist child offset")?;
-        let (playlists, media) = if skip < folder_count {
+        let (playlists, media) = if skip < playlist_count {
             let playlist_limit = usize_to_i64_api(page_size, "playlist page size")?;
             let playlist_offset = usize_to_i64_api(skip, "playlist offset")?;
             let playlists = self
@@ -1119,7 +1161,7 @@ impl AdminApiImpl {
             };
             (playlists, media)
         } else {
-            let media_skip = skip - folder_count;
+            let media_skip = skip - playlist_count;
             let media_limit = usize_to_i64_api(page_size, "media page size")?;
             let media_offset = usize_to_i64_api(media_skip, "media offset")?;
             let media = self
@@ -1135,11 +1177,11 @@ impl AdminApiImpl {
                 .map_err(ApiError::from)?;
             (Vec::new(), media)
         };
-        let folder_ids: Vec<_> = playlists.iter().map(|pl| pl.playlist.id).collect();
+        let playlist_ids: Vec<_> = playlists.iter().map(|pl| pl.playlist.id).collect();
         let counts = self
             .room_service
             .media_service()
-            .count_playlist_media_batch(&folder_ids)
+            .count_playlist_media_batch(&playlist_ids)
             .await
             .map_err(ApiError::from)?;
         let (proto_playlists, proto_media) = tokio::try_join!(
@@ -1151,7 +1193,7 @@ impl AdminApiImpl {
             playlists: proto_playlists,
             media: proto_media,
             total: Some(usize_to_u64_api(total, "playlist item total")?),
-            folder_count: usize_to_u64_api(folder_count, "playlist folder count")?,
+            playlist_count: usize_to_u64_api(playlist_count, "playlist count")?,
             file_count: usize_to_u64_api(file_count, "playlist file count")?,
             dynamic_items: Vec::new(),
             current_path,

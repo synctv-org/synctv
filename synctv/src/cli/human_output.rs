@@ -831,7 +831,7 @@ pub(in crate::cli) struct HumanPlaylistItemsResponse<P, M> {
     playlists: Vec<P>,
     media: Vec<M>,
     total: Option<u64>,
-    folder_count: u64,
+    playlist_count: u64,
     file_count: u64,
     dynamic_items: Vec<synctv_proto::client::PlaylistItem>,
     current_path: Vec<synctv_proto::client::PlaylistBrowsePathNode>,
@@ -879,7 +879,7 @@ pub(in crate::cli) struct HumanJoinRoomResponse<R, P, M> {
 #[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanGetPlaylistResponse<T> {
     playlist: Option<T>,
-    child_folder_count: i32,
+    child_playlist_count: i32,
     media_count: i32,
 }
 
@@ -1874,7 +1874,7 @@ impl ToHuman for synctv_proto::client::GetPlaylistResponse {
     fn to_human(&self) -> Self::Human {
         HumanGetPlaylistResponse {
             playlist: self.playlist.to_human(),
-            child_folder_count: self.child_folder_count,
+            child_playlist_count: self.child_playlist_count,
             media_count: self.media_count,
         }
     }
@@ -1910,7 +1910,7 @@ impl ToHuman for synctv_proto::client::ListPlaylistItemsResponse {
             playlists: self.playlists.to_human(),
             media: self.media.to_human(),
             total: self.total,
-            folder_count: self.folder_count,
+            playlist_count: self.playlist_count,
             file_count: self.file_count,
             dynamic_items: self.dynamic_items.clone(),
             current_path: self.current_path.clone(),

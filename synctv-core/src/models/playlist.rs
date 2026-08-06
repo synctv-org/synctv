@@ -1,4 +1,4 @@
-//! Playlist model (directory/folder in tree structure)
+//! Playlist model for the room's playlist tree.
 //!
 //! Design reference: external design doc 04-database-design.md §2.4.1
 
@@ -53,7 +53,7 @@ impl Default for PlaylistListQuery {
     }
 }
 
-/// Playlist (directory/folder)
+/// A room playlist, optionally nested under another playlist.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Playlist {
     pub id: PlaylistId,
@@ -66,7 +66,7 @@ pub struct Playlist {
     pub parent_id: Option<PlaylistId>,
     pub position: f64,
 
-    // Dynamic folder fields
+    // Dynamic playlist fields
     pub source_provider: Option<SourceProvider>,
     pub source_config: Option<PlaylistSourceConfig>,
     pub provider_instance_name: Option<String>,
@@ -91,7 +91,7 @@ impl Playlist {
         self.source_provider.is_some()
     }
 
-    /// Check if this is a static folder
+    /// Check if this is a static playlist.
     #[must_use]
     pub const fn is_static(&self) -> bool {
         self.source_provider.is_none()
@@ -107,7 +107,7 @@ pub struct CreatePlaylistRequest {
     pub description: String,
     pub parent_id: Option<PlaylistId>,
 
-    // Dynamic folder fields
+    // Dynamic playlist fields
     pub source_provider: Option<SourceProvider>,
     pub source_config: Option<PlaylistSourceConfig>,
     pub provider_instance_name: Option<String>,

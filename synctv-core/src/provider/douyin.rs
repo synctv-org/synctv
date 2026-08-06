@@ -10,13 +10,14 @@ use futures::StreamExt;
 use sha2::{Digest, Sha256};
 
 use super::{
-    DirectoryItem, DirectoryItemThumbnail, DynamicListQuery, DynamicListResult, DynamicPagination,
-    DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult,
-    ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
+    DynamicListQuery, DynamicListResult, DynamicPagination, DynamicPlaylistItem,
+    DynamicPlaylistItemThumbnail, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
+    PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency, ProviderError,
+    SourceConfig, SourceCover,
 };
 use crate::cache::{SingleFlight, SingleFlightError};
 use crate::models::{
-    DouyinMediaSourceConfig, DouyinPlaybackMetadata, DouyinPlaybackResource,
+    DouyinMediaSourceConfig, DouyinPlaybackKind, DouyinPlaybackMetadata, DouyinPlaybackResource,
     DouyinPlaylistSourceConfig, MediaSourceConfig, PlayMode, PlaybackDanmaku,
     PlaybackDanmakuProvider, PlaybackDouyinDanmaku, PlaybackDouyinMedia, PlaybackMedia,
     PlaybackMediaMetadata, PlaybackMediaProvider, PlaybackMetadata, PlaylistSourceConfig,
@@ -25,7 +26,7 @@ use crate::models::{
 use crate::repository::UserProviderCredentialRepository;
 use synctv_media_providers::douyin::{
     DouyinClient, DouyinDanmakuEvent as ClientDanmakuEvent, DouyinListItem, DouyinMedia,
-    DouyinMediaKind, DouyinSession, DouyinStreamFormat, DouyinVariant,
+    DouyinMediaKind, DouyinMetadata, DouyinSession, DouyinStreamFormat, DouyinVariant,
 };
 
 const PAGE_SIZE: usize = 20;
@@ -618,6 +619,32 @@ impl DouyinProvider {
         })
     }
 
+    fn metadata_model(metadata: DouyinMetadata, room_id: Option<String>) -> DouyinPlaybackMetadata {
+        let is_live = metadata.kind == DouyinMediaKind::Live;
+        DouyinPlaybackMetadata {
+            id: metadata.id,
+            kind: match metadata.kind {
+                DouyinMediaKind::Video => DouyinPlaybackKind::Video,
+                DouyinMediaKind::Live => DouyinPlaybackKind::Live,
+            },
+            author_id: metadata.author.id,
+            author_sec_uid: metadata.author.sec_uid,
+            author_name: metadata.author.nickname,
+            description: metadata.description,
+            view_count: metadata.view_count,
+            like_count: metadata.like_count,
+            comment_count: metadata.comment_count,
+            share_count: metadata.share_count,
+            collect_count: metadata.collect_count,
+            created_at: metadata.created_at,
+            music_title: metadata.music_title,
+            music_author: metadata.music_author,
+            is_live,
+            is_currently_live: is_live.then_some(metadata.is_live),
+            room_id,
+        }
+    }
+
     fn playback_result(
         media: DouyinMedia,
         resource: &DouyinPlaybackResource,
@@ -716,57 +743,59 @@ impl DouyinProvider {
             .then(|| "hls".to_string())
             .or_else(|| infos.keys().min().cloned())
             .ok_or_else(|| ProviderError::ApiError("Douyin playback is empty".to_string()))?;
+        let duration_seconds = media
+            .metadata
+            .duration_ms
+            .map(|duration| std::time::Duration::from_millis(duration).as_secs_f64());
+        let playback_kind = if media.metadata.kind == DouyinMediaKind::Live {
+            crate::models::PlaybackKind::Live
+        } else {
+            crate::models::PlaybackKind::Regular
+        };
+        let metadata = Self::metadata_model(media.metadata, media.room_id);
         Ok(PlaybackResult {
             playback_infos: infos,
             default_mode,
             provider: Self::NAME.to_string(),
             provider_instance_name: None,
-            duration_seconds: media
-                .metadata
-                .duration_ms
-                .map(|duration| std::time::Duration::from_millis(duration).as_secs_f64()),
-            playback_kind: Some(if media.metadata.is_live {
-                crate::models::PlaybackKind::Live
-            } else {
-                crate::models::PlaybackKind::Regular
-            }),
-            metadata: Some(PlaybackMetadata::Douyin(DouyinPlaybackMetadata {
-                id: media.metadata.id,
-                kind: match media.metadata.kind {
-                    DouyinMediaKind::Video => "video",
-                    DouyinMediaKind::Live => "live",
-                }
-                .to_string(),
-                author_id: media.metadata.author.id,
-                author_sec_uid: media.metadata.author.sec_uid,
-                author_name: media.metadata.author.nickname,
-                description: media.metadata.description,
-                view_count: media.metadata.view_count,
-                like_count: media.metadata.like_count,
-                comment_count: media.metadata.comment_count,
-                share_count: media.metadata.share_count,
-                collect_count: media.metadata.collect_count,
-                created_at: media.metadata.created_at,
-                music_title: media.metadata.music_title,
-                music_author: media.metadata.music_author,
-                is_live: media.metadata.is_live,
-                room_id: media.room_id,
-            })),
+            duration_seconds,
+            playback_kind: Some(playback_kind),
+            metadata: Some(PlaybackMetadata::Douyin(metadata)),
         })
     }
 
-    fn directory_item(item: DouyinListItem) -> DirectoryItem {
-        DirectoryItem {
+    fn directory_item(item: DouyinListItem) -> DynamicPlaylistItem {
+        let metadata = PlaybackMetadata::Douyin(DouyinPlaybackMetadata {
+            id: item.aweme_id.clone(),
+            kind: DouyinPlaybackKind::Video,
+            author_id: item.author.id.clone(),
+            author_sec_uid: item.author.sec_uid.clone(),
+            author_name: item.author.nickname.clone(),
+            description: item.title.clone(),
+            view_count: None,
+            like_count: None,
+            comment_count: None,
+            share_count: None,
+            collect_count: None,
+            created_at: item.created_at,
+            music_title: None,
+            music_author: None,
+            is_live: false,
+            is_currently_live: None,
+            room_id: None,
+        });
+        DynamicPlaylistItem {
             name: item.title,
             item_type: ItemType::Media,
             target: ProviderTarget::douyin(item.aweme_id),
             size: None,
             thumbnail: item
                 .cover
-                .map(|cover| DirectoryItemThumbnail::Url(cover.url)),
+                .map(|cover| DynamicPlaylistItemThumbnail::Url(cover.url)),
             description: Some(item.author.nickname).filter(|value| !value.is_empty()),
             modified_at: item.created_at,
             source_config: None,
+            metadata: Some(metadata),
         }
     }
 
@@ -781,7 +810,7 @@ impl DouyinProvider {
 
     fn next_item(
         config: &DouyinPlaylistSourceConfig,
-        item: &DirectoryItem,
+        item: &DynamicPlaylistItem,
     ) -> Result<NextPlayItem, ProviderError> {
         Ok(NextPlayItem {
             name: item.name.clone(),
@@ -941,6 +970,34 @@ impl MediaProvider for DouyinProvider {
                     credential_owner_id,
                     provider_instance_name.as_deref(),
                 )
+            },
+        )
+        .await
+    }
+
+    async fn media_metadata(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: &MediaSourceConfig,
+    ) -> Result<Option<PlaybackMetadata>, ProviderError> {
+        ctx.check_active()
+            .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
+        let config = Self::media_config(source_config)?;
+        let cache_key = serde_json::to_string(source_config)
+            .map_err(|error| ProviderError::Internal(error.to_string()))?;
+        let shared = Self::media_shared(config);
+        super::cached_provider_metadata_or_fill(
+            Self::NAME,
+            &cache_key,
+            Duration::from_secs(15),
+            ctx,
+            || async {
+                let session = self.session(ctx, shared).await?;
+                let media = self.resolve_media(config, &session).await?;
+                Ok(Some(PlaybackMetadata::Douyin(Self::metadata_model(
+                    media.metadata,
+                    media.room_id,
+                ))))
             },
         )
         .await

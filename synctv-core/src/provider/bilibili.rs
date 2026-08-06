@@ -5,10 +5,10 @@
 use super::{
     access::BilibiliAccess,
     provider_client::{create_remote_bilibili_client, BilibiliClientArc, ProviderClientManager},
-    DirectoryItem, DirectoryItemSourceConfig, DirectoryItemThumbnail, DynamicListQuery,
-    DynamicListResult, DynamicPagination, DynamicPlaylistProvider, ItemType, MediaProvider,
-    NextPlayItem, PlaybackInfo, PlaybackResult, PreparedSourceConfig, ProviderContext,
-    ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
+    DynamicListQuery, DynamicListResult, DynamicPagination, DynamicPlaylistItem,
+    DynamicPlaylistItemSourceConfig, DynamicPlaylistItemThumbnail, DynamicPlaylistProvider,
+    ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, PreparedSourceConfig,
+    ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
 };
 use aes_gcm::{
     aead::{Aead, AeadCore, Generate, KeyInit as AeadKeyInit},
@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use crate::models::media::{
     BilibiliDashAudioStream, BilibiliDashManifest, BilibiliDashManifestSlot,
-    BilibiliDashSegmentBase, BilibiliDashVideoStream, BilibiliDurlSegment,
+    BilibiliDashSegmentBase, BilibiliDashVideoStream, BilibiliDurlSegment, BilibiliPlaybackKind,
     BilibiliPlaybackMetadata, PlaybackBilibiliDanmaku, PlaybackBilibiliMedia,
     PlaybackBilibiliSubtitle, PlaybackDanmaku, PlaybackDanmakuProvider, PlaybackMedia,
     PlaybackMediaProvider, PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
@@ -115,6 +115,7 @@ pub struct BilibiliPageInfo {
     pub cover: String,
     pub collection: Option<BilibiliCollectionInfo>,
     pub live_started_at: Option<i64>,
+    pub is_currently_live: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1545,6 +1546,7 @@ impl BilibiliProvider {
             season_id: page_info.season_id,
             cover: page_info.cover,
             live_started_at: page_info.live_started_at,
+            is_currently_live: page_info.is_currently_live,
             collection: page_info
                 .collection
                 .map(|collection| BilibiliCollectionInfo {
@@ -2739,6 +2741,37 @@ impl BilibiliProvider {
         }
     }
 
+    fn directory_metadata(target: &ProviderTarget) -> Option<PlaybackMetadata> {
+        let ProviderTarget::Bilibili(target) = target else {
+            return None;
+        };
+        let metadata = match target {
+            BilibiliTarget::Video { bvid, aid } => BilibiliPlaybackMetadata {
+                bvid: (!bvid.is_empty()).then(|| bvid.clone()),
+                aid: (*aid > 0).then_some(*aid),
+                ..BilibiliPlaybackMetadata::new(BilibiliPlaybackKind::Video)
+            },
+            BilibiliTarget::VideoPart { bvid, aid, cid, .. } => BilibiliPlaybackMetadata {
+                bvid: (!bvid.is_empty()).then(|| bvid.clone()),
+                aid: (*aid > 0).then_some(*aid),
+                cid: (*cid > 0).then_some(*cid),
+                ..BilibiliPlaybackMetadata::new(BilibiliPlaybackKind::Video)
+            },
+            BilibiliTarget::PgcEpisode { epid, cid } => BilibiliPlaybackMetadata {
+                epid: (*epid > 0).then_some(*epid),
+                cid: (*cid > 0).then_some(*cid),
+                ..BilibiliPlaybackMetadata::new(BilibiliPlaybackKind::Pgc)
+            },
+            BilibiliTarget::Live { room_id } => BilibiliPlaybackMetadata {
+                room_id: (*room_id > 0).then_some(*room_id),
+                is_live: true,
+                is_currently_live: Some(true),
+                ..BilibiliPlaybackMetadata::new(BilibiliPlaybackKind::Live)
+            },
+        };
+        Some(PlaybackMetadata::Bilibili(metadata))
+    }
+
     fn media_config_for_target(
         config: &BilibiliPlaylistSourceConfig,
         target: &BilibiliTarget,
@@ -2774,14 +2807,14 @@ impl BilibiliProvider {
     fn directory_source_config_for_target(
         config: &BilibiliPlaylistSourceConfig,
         target: &ProviderTarget,
-    ) -> Result<DirectoryItemSourceConfig, ProviderError> {
+    ) -> Result<DynamicPlaylistItemSourceConfig, ProviderError> {
         let ProviderTarget::Bilibili(target) = target else {
             return Err(ProviderError::InvalidConfig(
                 "Bilibili target is required".to_string(),
             ));
         };
         match target {
-            BilibiliTarget::Video { bvid, aid } => Ok(DirectoryItemSourceConfig::Playlist(
+            BilibiliTarget::Video { bvid, aid } => Ok(DynamicPlaylistItemSourceConfig::Playlist(
                 PlaylistSourceConfig::Bilibili(BilibiliPlaylistSourceConfig {
                     source: BilibiliPlaylistSource::VideoParts {
                         bvid: bvid.clone(),
@@ -2792,7 +2825,7 @@ impl BilibiliProvider {
             )),
             BilibiliTarget::VideoPart { .. }
             | BilibiliTarget::PgcEpisode { .. }
-            | BilibiliTarget::Live { .. } => Ok(DirectoryItemSourceConfig::Media(
+            | BilibiliTarget::Live { .. } => Ok(DynamicPlaylistItemSourceConfig::Media(
                 Self::media_config_for_target(config, target)?,
             )),
         }
@@ -2973,6 +3006,99 @@ impl MediaProvider for BilibiliProvider {
 
     fn name(&self) -> &'static str {
         Self::NAME
+    }
+
+    async fn media_metadata(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: &MediaSourceConfig,
+    ) -> Result<Option<PlaybackMetadata>, ProviderError> {
+        let config = BilibiliSourceConfig::from_media_config(source_config)?;
+        let (cache_key, cache_ttl) = match &config {
+            BilibiliSourceConfig::Video(config) => {
+                let identifier =
+                    BilibiliVideoIdentifier::parse(config.bvid.as_deref(), config.aid)?;
+                (
+                    format!("video:{}:{}", identifier.cache_key_part(), config.cid),
+                    Duration::from_hours(2),
+                )
+            }
+            BilibiliSourceConfig::Pgc(config) => (
+                format!("pgc:{}:{}", config.epid, config.cid),
+                Duration::from_hours(2),
+            ),
+            BilibiliSourceConfig::Live(config) => (
+                format!("live:{}:{}", config.room_id, config.shared),
+                Duration::from_secs(15),
+            ),
+        };
+
+        super::cached_provider_metadata_or_fill(
+            Self::NAME,
+            &cache_key,
+            cache_ttl,
+            ctx,
+            || async move {
+                let metadata = match config {
+                    BilibiliSourceConfig::Video(config) => {
+                        let (bvid, aid) =
+                            resolve_bilibili_video_identifier(config.bvid.as_deref(), config.aid)?;
+                        BilibiliPlaybackMetadata {
+                            bvid,
+                            aid: Some(aid),
+                            cid: Some(config.cid),
+                            ..BilibiliPlaybackMetadata::new(BilibiliPlaybackKind::Video)
+                        }
+                    }
+                    BilibiliSourceConfig::Pgc(config) => BilibiliPlaybackMetadata {
+                        epid: Some(config.epid),
+                        cid: Some(config.cid),
+                        ..BilibiliPlaybackMetadata::new(BilibiliPlaybackKind::Pgc)
+                    },
+                    BilibiliSourceConfig::Live(config) => {
+                        let credential_owner_id = if config.shared {
+                            ctx.credential_owner_id().ok_or_else(|| {
+                                ProviderError::Internal(
+                                    "credential_owner_id not available in ProviderContext"
+                                        .to_string(),
+                                )
+                            })?
+                        } else {
+                            ctx.user_id().ok_or_else(|| {
+                                ProviderError::Internal(
+                                    "user_id not available in ProviderContext".to_string(),
+                                )
+                            })?
+                        };
+                        let (cookies, _) =
+                            resolve_optional_bilibili_cookies(ctx, *credential_owner_id).await?;
+                        let client = self
+                            .get_client_with_context(
+                                super::bound_provider_instance_name(ctx),
+                                ctx.request_context(),
+                            )
+                            .await?;
+                        let page = client
+                            .parse_live_page(bilibili_parse_live_page_request(
+                                BilibiliParseLivePageRequest {
+                                    cookies,
+                                    room_id: config.room_id,
+                                },
+                            ))
+                            .await?;
+                        BilibiliPlaybackMetadata {
+                            room_id: Some(config.room_id),
+                            live_started_at: page.live_started_at,
+                            is_live: true,
+                            is_currently_live: Some(page.is_currently_live),
+                            ..BilibiliPlaybackMetadata::new(BilibiliPlaybackKind::Live)
+                        }
+                    }
+                };
+                Ok(Some(PlaybackMetadata::Bilibili(metadata)))
+            },
+        )
+        .await
     }
 
     async fn generate_playback(
@@ -3339,18 +3465,19 @@ impl DynamicPlaylistProvider for BilibiliProvider {
                     .flatten()
                     .collect::<Vec<_>>()
                     .join(" · ");
-                    Ok(DirectoryItem {
+                    Ok(DynamicPlaylistItem {
                         name: item.title,
                         item_type: ItemType::Media,
                         source_config: Some(Self::directory_source_config_for_target(
                             config, &target,
                         )?),
-                        target,
+                        target: target.clone(),
                         size: None,
                         thumbnail: (!item.cover.trim().is_empty())
-                            .then_some(DirectoryItemThumbnail::Url(item.cover)),
+                            .then_some(DynamicPlaylistItemThumbnail::Url(item.cover)),
                         description: (!description.is_empty()).then_some(description),
                         modified_at: (item.viewed_at > 0).then_some(item.viewed_at),
+                        metadata: Self::directory_metadata(&target),
                     })
                 })
                 .collect::<Result<Vec<_>, ProviderError>>()?;
@@ -3409,18 +3536,19 @@ impl DynamicPlaylistProvider for BilibiliProvider {
                     } else {
                         item.episode_cover
                     };
-                    Ok(DirectoryItem {
+                    Ok(DynamicPlaylistItem {
                         name,
                         item_type: ItemType::Media,
                         source_config: Some(Self::directory_source_config_for_target(
                             config, &target,
                         )?),
-                        target,
+                        target: target.clone(),
                         size: None,
                         thumbnail: (!cover.trim().is_empty())
-                            .then_some(DirectoryItemThumbnail::Url(cover)),
+                            .then_some(DynamicPlaylistItemThumbnail::Url(cover)),
                         description: (!description.is_empty()).then_some(description),
                         modified_at: (item.publish_at > 0).then_some(item.publish_at),
+                        metadata: Self::directory_metadata(&target),
                     })
                 })
                 .collect::<Result<Vec<_>, ProviderError>>()?;
@@ -3460,18 +3588,19 @@ impl DynamicPlaylistProvider for BilibiliProvider {
                     .flatten()
                     .collect::<Vec<_>>()
                     .join(" · ");
-                    Ok(DirectoryItem {
+                    Ok(DynamicPlaylistItem {
                         name: room.title,
                         item_type: ItemType::Media,
                         source_config: Some(Self::directory_source_config_for_target(
                             config, &target,
                         )?),
-                        target,
+                        target: target.clone(),
                         size: None,
                         thumbnail: (!room.cover.trim().is_empty())
-                            .then_some(DirectoryItemThumbnail::Url(room.cover)),
+                            .then_some(DynamicPlaylistItemThumbnail::Url(room.cover)),
                         description: (!description.is_empty()).then_some(description),
                         modified_at: None,
+                        metadata: Self::directory_metadata(&target),
                     })
                 })
                 .collect::<Result<Vec<_>, ProviderError>>()?;
@@ -3502,21 +3631,23 @@ impl DynamicPlaylistProvider for BilibiliProvider {
                     let target = ProviderTarget::bilibili_video_part(
                         part.bvid, part.aid, part.cid, part.page,
                     );
-                    Ok(DirectoryItem {
+                    let metadata = Self::directory_metadata(&target);
+                    Ok(DynamicPlaylistItem {
                         name: part.title,
                         item_type: ItemType::Media,
                         source_config: Some(Self::directory_source_config_for_target(
                             config, &target,
                         )?),
-                        target,
+                        target: target.clone(),
                         size: None,
                         thumbnail: (!part.cover.trim().is_empty())
-                            .then_some(DirectoryItemThumbnail::Url(part.cover)),
+                            .then_some(DynamicPlaylistItemThumbnail::Url(part.cover)),
                         description: Some(format!(
                             "{}x{} · {}s",
                             part.width, part.height, part.duration_seconds
                         )),
                         modified_at: None,
+                        metadata,
                     })
                 })
                 .collect::<Result<Vec<_>, ProviderError>>()?;
@@ -3545,21 +3676,22 @@ impl DynamicPlaylistProvider for BilibiliProvider {
                     let target = ProviderTarget::bilibili_video_part(
                         part.bvid, part.aid, part.cid, part.page,
                     );
-                    Ok(DirectoryItem {
+                    Ok(DynamicPlaylistItem {
                         name: part.title,
                         item_type: ItemType::Media,
                         source_config: Some(Self::directory_source_config_for_target(
                             config, &target,
                         )?),
-                        target,
+                        target: target.clone(),
                         size: None,
                         thumbnail: (!part.cover.trim().is_empty())
-                            .then_some(DirectoryItemThumbnail::Url(part.cover)),
+                            .then_some(DynamicPlaylistItemThumbnail::Url(part.cover)),
                         description: Some(format!(
                             "{}x{} · {}s",
                             part.width, part.height, part.duration_seconds
                         )),
                         modified_at: None,
+                        metadata: Self::directory_metadata(&target),
                     })
                 })
                 .collect::<Result<Vec<_>, ProviderError>>()?;
@@ -3589,16 +3721,17 @@ impl DynamicPlaylistProvider for BilibiliProvider {
                 } else {
                     ItemType::Media
                 };
-                Ok(DirectoryItem {
+                Ok(DynamicPlaylistItem {
                     name: item.title,
                     item_type,
                     source_config: Some(Self::directory_source_config_for_target(config, &target)?),
-                    target,
+                    target: target.clone(),
                     size: None,
                     thumbnail: (!item.cover.trim().is_empty())
-                        .then_some(DirectoryItemThumbnail::Url(item.cover)),
+                        .then_some(DynamicPlaylistItemThumbnail::Url(item.cover)),
                     description: (!item.description.trim().is_empty()).then_some(item.description),
                     modified_at: (item.published_at > 0).then_some(item.published_at),
+                    metadata: Self::directory_metadata(&target),
                 })
             })
             .collect::<Result<Vec<_>, ProviderError>>()?;
@@ -3672,7 +3805,7 @@ impl DynamicPlaylistProvider for BilibiliProvider {
             const PAGE_SIZE: usize = 30;
             const MAX_SHUFFLE_ITEMS: usize = 200;
             let mut cursor = None;
-            let mut first: Option<DirectoryItem> = None;
+            let mut first: Option<DynamicPlaylistItem> = None;
             let mut found_current = false;
             let mut candidates = Vec::new();
             loop {
@@ -3742,7 +3875,7 @@ impl DynamicPlaylistProvider for BilibiliProvider {
         if matches!(config.source, BilibiliPlaylistSource::PgcTimeline { .. }) {
             const PAGE_SIZE: usize = 50;
             let mut page = 1;
-            let mut first: Option<DirectoryItem> = None;
+            let mut first: Option<DynamicPlaylistItem> = None;
             let mut found_current = false;
             let mut candidates = Vec::new();
             loop {
@@ -3943,8 +4076,10 @@ mod tests {
     };
     use crate::models::media::{
         BilibiliDashManifest, BilibiliDashManifests, BilibiliDashVideoStream, BilibiliDurlSegment,
-        BilibiliPlaybackMetadata, PlaybackBilibiliMedia, PlaybackMediaProvider, PlaybackMetadata,
+        BilibiliPlaybackKind, BilibiliPlaybackMetadata, PlaybackBilibiliMedia,
+        PlaybackMediaProvider, PlaybackMetadata,
     };
+    use crate::models::{BilibiliTarget, ProviderTarget};
     use crate::provider::{PlaybackInfo, PlaybackResult};
     use std::collections::HashMap;
 
@@ -4039,6 +4174,20 @@ mod tests {
         assert_eq!(decoded.view_at, 123_456);
         assert_eq!(decoded.business, "archive");
         Ok(())
+    }
+
+    #[test]
+    fn dynamic_items_keep_provider_owned_metadata() {
+        let target = ProviderTarget::Bilibili(BilibiliTarget::Live {
+            room_id: 21_292_831,
+        });
+        let Some(PlaybackMetadata::Bilibili(metadata)) =
+            BilibiliProvider::directory_metadata(&target)
+        else {
+            panic!("expected Bilibili metadata");
+        };
+        assert_eq!(metadata.kind, BilibiliPlaybackKind::Live);
+        assert_eq!(metadata.room_id, Some(21_292_831));
     }
 
     #[test]
@@ -4153,7 +4302,6 @@ mod tests {
             duration_seconds: Some(10.0),
             playback_kind: Some(crate::models::PlaybackKind::Regular),
             metadata: Some(PlaybackMetadata::Bilibili(BilibiliPlaybackMetadata {
-                content_type: Some("video".to_string()),
                 bvid: Some("BV1test".to_string()),
                 cid: Some(42),
                 dash_manifests: BilibiliDashManifests {
@@ -4172,7 +4320,7 @@ mod tests {
                         ..Default::default()
                     }),
                 },
-                ..Default::default()
+                ..BilibiliPlaybackMetadata::new(BilibiliPlaybackKind::Video)
             })),
         };
 
@@ -4758,17 +4906,17 @@ fn bilibili_content_descriptor(result: &PlaybackResult) -> Option<String> {
     let Some(PlaybackMetadata::Bilibili(metadata)) = result.metadata.as_ref() else {
         return None;
     };
-    match metadata.content_type.as_deref() {
-        Some("video") => Some(bilibili_video_content_descriptor(
+    match metadata.kind {
+        BilibiliPlaybackKind::Video => Some(bilibili_video_content_descriptor(
             metadata.bvid.as_deref(),
             metadata.aid.unwrap_or_default(),
             metadata.cid?,
         )),
-        Some("pgc") => Some(bilibili_pgc_content_descriptor(
+        BilibiliPlaybackKind::Pgc => Some(bilibili_pgc_content_descriptor(
             metadata.epid?,
             metadata.cid?,
         )),
-        _ => None,
+        BilibiliPlaybackKind::Live => None,
     }
 }
 
@@ -5110,11 +5258,10 @@ impl BilibiliProvider {
                 };
 
                 let mut metadata = PlaybackMetadata::Bilibili(BilibiliPlaybackMetadata {
-                    content_type: Some("video".to_string()),
                     bvid,
                     aid: Some(aid),
                     cid: Some(cid),
-                    ..Default::default()
+                    ..BilibiliPlaybackMetadata::new(BilibiliPlaybackKind::Video)
                 });
                 let mut subtitles = Vec::new();
 
@@ -5284,10 +5431,9 @@ impl BilibiliProvider {
                 };
 
                 let mut metadata = PlaybackMetadata::Bilibili(BilibiliPlaybackMetadata {
-                    content_type: Some("pgc".to_string()),
                     epid: Some(epid),
                     cid: Some(cid),
-                    ..Default::default()
+                    ..BilibiliPlaybackMetadata::new(BilibiliPlaybackKind::Pgc)
                 });
                 let mut subtitles = Vec::new();
 
@@ -5467,10 +5613,11 @@ impl BilibiliProvider {
                 };
 
                 let metadata = PlaybackMetadata::Bilibili(BilibiliPlaybackMetadata {
-                    content_type: Some("live".to_string()),
                     room_id: Some(room_id),
                     live_started_at,
-                    ..Default::default()
+                    is_live: true,
+                    is_currently_live: Some(true),
+                    ..BilibiliPlaybackMetadata::new(BilibiliPlaybackKind::Live)
                 });
                 let danmakus: Vec<_> = bilibili_live_danmaku_track(ctx).into_iter().collect();
                 let playback_infos =

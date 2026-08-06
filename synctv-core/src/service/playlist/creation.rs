@@ -5,7 +5,7 @@ use crate::{
 
 use super::{dynamic, PlaylistService, RealtimeOutboxPlaylistEventFactory};
 
-/// Request to create a playlist/folder
+/// Request to create a playlist.
 #[derive(Debug, Clone)]
 pub struct CreatePlaylistRequest {
     pub room_id: RoomId,
@@ -13,14 +13,14 @@ pub struct CreatePlaylistRequest {
     pub description: String,
     pub parent_id: Option<PlaylistId>,
 
-    // Dynamic folder fields
+    // Provider-backed playlist fields.
     pub source_provider: Option<SourceProvider>,
     pub source_config: Option<PlaylistSourceConfig>,
     pub provider_instance_name: Option<String>,
 }
 
 impl PlaylistService {
-    /// Create a new playlist/folder
+    /// Create a new playlist.
     pub async fn create_playlist(
         &self,
         room_id: RoomId,

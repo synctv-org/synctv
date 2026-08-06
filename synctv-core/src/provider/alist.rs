@@ -7,8 +7,8 @@ use super::upstream_transport::alist as alist_upstream;
 use super::{
     access::{AlistAccess, AlistBinding},
     provider_client::{create_remote_alist_client, AlistClientArc, ProviderClientManager},
-    DirectoryItem, DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult,
-    DynamicPagination, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
+    DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
+    DynamicPlaylistItem, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
     PlaybackClientProfile, PlaybackInfo, PlaybackResult, PlaybackStreamPreference,
     PlaybackSubtitlePreference, PreparedSourceConfig, ProviderContext,
     ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
@@ -2778,7 +2778,7 @@ impl DynamicPlaylistProvider for AlistProvider {
             .map(str::trim)
             .filter(|s| !s.is_empty());
 
-        let items: Vec<DirectoryItem> = if let Some(keywords) = search {
+        let items: Vec<DynamicPlaylistItem> = if let Some(keywords) = search {
             let search_resp = client
                 .fs_search(alist_resolved_search_request(
                     &resolved,
@@ -2808,7 +2808,7 @@ impl DynamicPlaylistProvider for AlistProvider {
                             },
                         )?;
 
-                    Ok(DirectoryItem {
+                    Ok(DynamicPlaylistItem {
                         name: file_item.name,
                         item_type,
                         target: Self::encode_target(&item_relative_path)?,
@@ -2817,6 +2817,7 @@ impl DynamicPlaylistProvider for AlistProvider {
                         description: None,
                         modified_at: None,
                         source_config: None,
+                        metadata: None,
                     })
                 })
                 .collect::<Result<Vec<_>, ProviderError>>()?
@@ -2845,7 +2846,7 @@ impl DynamicPlaylistProvider for AlistProvider {
                         format!("/{}", file_item.name)
                     };
 
-                    Ok(DirectoryItem {
+                    Ok(DynamicPlaylistItem {
                         name: file_item.name,
                         item_type,
                         target: Self::encode_target(&item_relative_path)?,
@@ -2853,13 +2854,14 @@ impl DynamicPlaylistProvider for AlistProvider {
                         thumbnail: if file_item.thumb.is_empty() {
                             None
                         } else {
-                            Some(crate::provider::DirectoryItemThumbnail::Url(
+                            Some(crate::provider::DynamicPlaylistItemThumbnail::Url(
                                 file_item.thumb,
                             ))
                         },
                         description: None,
                         modified_at: Some(alist_modified_to_i64(file_item.modified)?),
                         source_config: None,
+                        metadata: None,
                     })
                 })
                 .collect::<Result<Vec<_>, ProviderError>>()?

@@ -14,7 +14,7 @@ use synctv_core::models::{
     PlaylistListQuery as CorePlaylistListQuery, PlaylistListSortBy as CorePlaylistListSortBy,
     RoomId, SortDirection as CoreSortDirection, StoreFileUploadResult, UserId,
 };
-use synctv_core::provider::{DirectoryItemSourceConfig, DynamicListQuery, DynamicPagination};
+use synctv_core::provider::{DynamicListQuery, DynamicPagination, DynamicPlaylistItemSourceConfig};
 use synctv_core::service::{
     AddMediaRequest as CoreAddMediaRequest, CreateMediaCoverUploadSession,
     CreateMediaThumbnailUploadSession, MoveMediaRequest as CoreMoveMediaRequest,
@@ -104,17 +104,17 @@ fn dynamic_response_pagination(
     })
 }
 
-fn directory_item_source_config_to_proto(
-    source_config: Option<DirectoryItemSourceConfig>,
+fn dynamic_playlist_item_source_config_to_proto(
+    source_config: Option<DynamicPlaylistItemSourceConfig>,
 ) -> Result<Option<synctv_proto::client::playlist_item::SourceConfig>, ApiError> {
     source_config
         .map(|source_config| match source_config {
-            DirectoryItemSourceConfig::Media(config) => Ok(
+            DynamicPlaylistItemSourceConfig::Media(config) => Ok(
                 synctv_proto::client::playlist_item::SourceConfig::MediaSourceConfig(
                     media_source_config_to_proto(&config)?,
                 ),
             ),
-            DirectoryItemSourceConfig::Playlist(config) => Ok(
+            DynamicPlaylistItemSourceConfig::Playlist(config) => Ok(
                 synctv_proto::client::playlist_item::SourceConfig::PlaylistSourceConfig(
                     playlist_source_config_to_proto(&config)?,
                 ),
@@ -946,36 +946,6 @@ fn hash_proto_message<M: prost::Message>(hasher: &mut Sha256, message: &M) -> Re
     Ok(())
 }
 
-fn hash_string(hasher: &mut Sha256, value: &str) -> Result<(), ApiError> {
-    hasher.update(usize_to_u64_api(value.len(), "string length")?.to_le_bytes());
-    hasher.update(value.as_bytes());
-    Ok(())
-}
-
-fn hash_optional_proto_message<M: prost::Message>(
-    hasher: &mut Sha256,
-    value: Option<&M>,
-) -> Result<(), ApiError> {
-    match value {
-        Some(value) => {
-            hasher.update([1]);
-            hash_proto_message(hasher, value)?;
-        }
-        None => hasher.update([0]),
-    }
-    Ok(())
-}
-
-fn hash_optional_i64(hasher: &mut Sha256, value: Option<i64>) {
-    match value {
-        Some(value) => {
-            hasher.update([1]);
-            hasher.update(value.to_le_bytes());
-        }
-        None => hasher.update([0]),
-    }
-}
-
 fn hash_optional_u64(hasher: &mut Sha256, value: Option<u64>) {
     match value {
         Some(value) => {
@@ -990,9 +960,9 @@ pub fn compute_playlist_items_response_version(
     response: &synctv_proto::client::ListPlaylistItemsResponse,
 ) -> Result<String, ApiError> {
     let mut hasher = Sha256::new();
-    hasher.update(b"playlist-items-snapshot-v1");
+    hasher.update(b"playlist-items-snapshot-v2");
     hash_optional_u64(&mut hasher, response.total);
-    hasher.update(response.folder_count.to_le_bytes());
+    hasher.update(response.playlist_count.to_le_bytes());
     hasher.update(response.file_count.to_le_bytes());
 
     for playlist in &response.playlists {
@@ -1002,18 +972,7 @@ pub fn compute_playlist_items_response_version(
         hash_proto_message(&mut hasher, media)?;
     }
     for item in &response.dynamic_items {
-        hash_string(&mut hasher, &item.name)?;
-        hasher.update(item.item_type.to_le_bytes());
-        hash_optional_proto_message(&mut hasher, item.target.as_ref())?;
-        hash_optional_u64(&mut hasher, item.size);
-        match item.thumbnail.as_deref() {
-            Some(thumbnail) => {
-                hasher.update([1]);
-                hash_string(&mut hasher, thumbnail)?;
-            }
-            None => hasher.update([0]),
-        }
-        hash_optional_i64(&mut hasher, item.modified_at);
+        hash_proto_message(&mut hasher, item)?;
     }
     for node in &response.current_path {
         hash_proto_message(&mut hasher, node)?;
@@ -2223,11 +2182,26 @@ impl ClientApiImpl {
                 .items
                 .into_iter()
                 .map(|item| {
-                    use synctv_core::provider::{DirectoryItemThumbnail, ItemType};
-                    let source_config = directory_item_source_config_to_proto(item.source_config)?;
+                    use synctv_core::provider::{DynamicPlaylistItemThumbnail, ItemType};
+                    let source_config =
+                        dynamic_playlist_item_source_config_to_proto(item.source_config)?;
+                    let metadata = item
+                        .metadata
+                        .as_ref()
+                        .map(|metadata| {
+                            super::convert::provider_resource_metadata_to_proto(
+                                metadata,
+                                &self.public_id_codec,
+                            )
+                        })
+                        .transpose()?
+                        .map(|provider| synctv_proto::client::ResourceMetadata {
+                            source: None,
+                            provider: Some(provider),
+                        });
                     let thumbnail = match item.thumbnail {
-                        Some(DirectoryItemThumbnail::Url(url)) => Some(url),
-                        Some(DirectoryItemThumbnail::Emby {
+                        Some(DynamicPlaylistItemThumbnail::Url(url)) => Some(url),
+                        Some(DynamicPlaylistItemThumbnail::Emby {
                             server_id,
                             credential_owner_id,
                             item_id,
@@ -2273,6 +2247,7 @@ impl ClientApiImpl {
                         modified_at: item.modified_at,
                         description: item.description.unwrap_or_default(),
                         source_config,
+                        metadata,
                     })
                 })
                 .collect::<Result<Vec<_>, ApiError>>()?;
@@ -2281,7 +2256,7 @@ impl ClientApiImpl {
                     playlists: Vec::new(),
                     media: Vec::new(),
                     total: None,
-                    folder_count: 0,
+                    playlist_count: 0,
                     file_count: 0,
                     dynamic_items,
                     current_path: Vec::new(),
@@ -2336,7 +2311,7 @@ impl ClientApiImpl {
                 sort_by: media_sort_by,
                 sort_direction,
             };
-            let folder_count = self
+            let playlist_count = self
                 .room_service
                 .count_client_playlists(&rid, None, &playlist_query)
                 .await
@@ -2348,12 +2323,12 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)
                 .and_then(|count| i64_count_to_usize(count, "root media count"))?;
-            let total = folder_count + file_count;
+            let total = playlist_count + file_count;
             let page_size = crate::impls::proto_page_size_u32_usize(req.page_size, 50, 100)?;
             let skip = page_u32_to_usize(playlist_items_page(&req)?)?
                 .saturating_sub(1)
                 .saturating_mul(page_size);
-            let (playlists, media) = if skip < folder_count {
+            let (playlists, media) = if skip < playlist_count {
                 let playlist_limit = usize_to_i64_api(page_size, "playlist page size")?;
                 let playlist_offset = usize_to_i64_api(skip, "playlist offset")?;
                 let playlists = self
@@ -2379,7 +2354,7 @@ impl ClientApiImpl {
                 };
                 (playlists, media)
             } else {
-                let media_skip = skip - folder_count;
+                let media_skip = skip - playlist_count;
                 let media_limit = usize_to_i64_api(page_size, "media page size")?;
                 let media_offset = usize_to_i64_api(media_skip, "media offset")?;
                 let media = self
@@ -2389,24 +2364,25 @@ impl ClientApiImpl {
                     .map_err(ApiError::from)?;
                 (Vec::new(), media)
             };
-            let folder_ids: Vec<synctv_core::models::PlaylistId> =
+            let playlist_ids: Vec<synctv_core::models::PlaylistId> =
                 playlists.iter().map(|pl| pl.playlist.id).collect();
             let counts = self
                 .room_service
                 .media_service()
-                .count_playlist_media_batch(&folder_ids)
+                .count_playlist_media_batch(&playlist_ids)
                 .await
                 .map_err(ApiError::from)?;
-            let proto_playlists =
-                playlist_list_items_to_proto(self, &playlists, &counts, viewer_id).await?;
-            let proto_media = media_list_items_to_proto(self, &media, viewer_id).await?;
+            let (proto_playlists, proto_media) = tokio::try_join!(
+                playlist_list_items_to_proto(self, &playlists, &counts, viewer_id),
+                media_list_items_to_proto(self, &media, viewer_id),
+            )?;
 
             return finalize_playlist_items_response_version(
                 synctv_proto::client::ListPlaylistItemsResponse {
                     playlists: proto_playlists,
                     media: proto_media,
                     total: Some(usize_to_u64_api(total, "playlist item total")?),
-                    folder_count: usize_to_u64_api(folder_count, "playlist folder count")?,
+                    playlist_count: usize_to_u64_api(playlist_count, "playlist count")?,
                     file_count: usize_to_u64_api(file_count, "playlist file count")?,
                     dynamic_items: Vec::new(),
                     current_path: Vec::new(),
@@ -2452,7 +2428,7 @@ impl ClientApiImpl {
                         playlists: Vec::new(),
                         media: Vec::new(),
                         total: Some(0),
-                        folder_count: 0,
+                        playlist_count: 0,
                         file_count: 0,
                         dynamic_items: Vec::new(),
                         current_path,
@@ -2491,20 +2467,35 @@ impl ClientApiImpl {
                 .map_err(ApiError::from)?;
             let response_pagination = result.pagination.clone();
 
-            // Convert provider DirectoryItem to proto PlaylistItem
+            // Convert provider DynamicPlaylistItem to proto PlaylistItem
             let dynamic_items: Vec<_> = result
                 .items
                 .into_iter()
                 .map(|item| {
-                    use synctv_core::provider::{DirectoryItemThumbnail, ItemType};
-                    let source_config = directory_item_source_config_to_proto(item.source_config)?;
+                    use synctv_core::provider::{DynamicPlaylistItemThumbnail, ItemType};
+                    let source_config =
+                        dynamic_playlist_item_source_config_to_proto(item.source_config)?;
+                    let metadata = item
+                        .metadata
+                        .as_ref()
+                        .map(|metadata| {
+                            super::convert::provider_resource_metadata_to_proto(
+                                metadata,
+                                &self.public_id_codec,
+                            )
+                        })
+                        .transpose()?
+                        .map(|provider| synctv_proto::client::ResourceMetadata {
+                            source: None,
+                            provider: Some(provider),
+                        });
                     let item_type = match item.item_type {
                         ItemType::Playlist => synctv_proto::client::ItemType::Playlist as i32,
                         ItemType::Media => synctv_proto::client::ItemType::Media as i32,
                     };
                     let thumbnail = match item.thumbnail {
-                        Some(DirectoryItemThumbnail::Url(thumbnail)) => Some(thumbnail),
-                        Some(DirectoryItemThumbnail::Emby {
+                        Some(DynamicPlaylistItemThumbnail::Url(thumbnail)) => Some(thumbnail),
+                        Some(DynamicPlaylistItemThumbnail::Emby {
                             server_id,
                             credential_owner_id,
                             item_id,
@@ -2544,7 +2535,7 @@ impl ClientApiImpl {
                                 .map_err(ApiError::Internal)?,
                             )
                         }
-                        Some(DirectoryItemThumbnail::Fnos {
+                        Some(DynamicPlaylistItemThumbnail::Fnos {
                             server_id,
                             credential_owner_id,
                             image_path,
@@ -2577,7 +2568,7 @@ impl ClientApiImpl {
                                 .map_err(ApiError::Internal)?,
                             )
                         }
-                        Some(DirectoryItemThumbnail::Qnap {
+                        Some(DynamicPlaylistItemThumbnail::Qnap {
                             server_id,
                             credential_owner_id,
                             path,
@@ -2610,7 +2601,7 @@ impl ClientApiImpl {
                                 .map_err(ApiError::Internal)?,
                             )
                         }
-                        Some(DirectoryItemThumbnail::Nextcloud {
+                        Some(DynamicPlaylistItemThumbnail::Nextcloud {
                             server_id,
                             credential_owner_id,
                             file_id,
@@ -2645,7 +2636,7 @@ impl ClientApiImpl {
                                 .map_err(ApiError::Internal)?,
                             )
                         }
-                        Some(DirectoryItemThumbnail::Seafile {
+                        Some(DynamicPlaylistItemThumbnail::Seafile {
                             server_id,
                             credential_owner_id,
                             repository_id,
@@ -2680,7 +2671,7 @@ impl ClientApiImpl {
                                 .map_err(ApiError::Internal)?,
                             )
                         }
-                        Some(DirectoryItemThumbnail::SynologyFile {
+                        Some(DynamicPlaylistItemThumbnail::SynologyFile {
                             server_id,
                             credential_owner_id,
                             path,
@@ -2719,7 +2710,7 @@ impl ClientApiImpl {
                                 .map_err(ApiError::Internal)?,
                             )
                         }
-                        Some(DirectoryItemThumbnail::SynologyPoster {
+                        Some(DynamicPlaylistItemThumbnail::SynologyPoster {
                             server_id,
                             credential_owner_id,
                             item_id,
@@ -2777,6 +2768,7 @@ impl ClientApiImpl {
                         modified_at: item.modified_at,
                         description: item.description.unwrap_or_default(),
                         source_config,
+                        metadata,
                     })
                 })
                 .collect::<Result<Vec<_>, ApiError>>()?;
@@ -2805,7 +2797,7 @@ impl ClientApiImpl {
                     playlists: Vec::new(),
                     media: Vec::new(),
                     total: None,
-                    folder_count: 0,
+                    playlist_count: 0,
                     file_count: 0,
                     dynamic_items,
                     current_path,
@@ -2854,7 +2846,7 @@ impl ClientApiImpl {
             sort_by: media_sort_by,
             sort_direction,
         };
-        let folder_count = self
+        let playlist_count = self
             .room_service
             .count_client_playlists(&rid, Some(&playlist_id), &playlist_query)
             .await
@@ -2866,12 +2858,12 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)
             .and_then(|count| i64_count_to_usize(count, "playlist child media count"))?;
-        let total = folder_count + file_count;
+        let total = playlist_count + file_count;
         let page_size = crate::impls::proto_page_size_u32_usize(req.page_size, 50, 100)?;
         let skip = page_u32_to_usize(playlist_items_page(&req)?)?
             .saturating_sub(1)
             .saturating_mul(page_size);
-        let (playlists, media) = if skip < folder_count {
+        let (playlists, media) = if skip < playlist_count {
             let playlist_limit = usize_to_i64_api(page_size, "playlist page size")?;
             let playlist_offset = usize_to_i64_api(skip, "playlist offset")?;
             let playlists = self
@@ -2897,7 +2889,7 @@ impl ClientApiImpl {
             };
             (playlists, media)
         } else {
-            let media_skip = skip - folder_count;
+            let media_skip = skip - playlist_count;
             let media_limit = usize_to_i64_api(page_size, "media page size")?;
             let media_offset = usize_to_i64_api(media_skip, "media offset")?;
             let media = self
@@ -2913,23 +2905,24 @@ impl ClientApiImpl {
                 .map_err(ApiError::from)?;
             (Vec::new(), media)
         };
-        let folder_ids: Vec<synctv_core::models::PlaylistId> =
+        let playlist_ids: Vec<synctv_core::models::PlaylistId> =
             playlists.iter().map(|pl| pl.playlist.id).collect();
         let counts = self
             .room_service
             .media_service()
-            .count_playlist_media_batch(&folder_ids)
+            .count_playlist_media_batch(&playlist_ids)
             .await
             .map_err(ApiError::from)?;
-        let proto_playlists =
-            playlist_list_items_to_proto(self, &playlists, &counts, viewer_id).await?;
-        let proto_media = media_list_items_to_proto(self, &media, viewer_id).await?;
+        let (proto_playlists, proto_media) = tokio::try_join!(
+            playlist_list_items_to_proto(self, &playlists, &counts, viewer_id),
+            media_list_items_to_proto(self, &media, viewer_id),
+        )?;
 
         finalize_playlist_items_response_version(synctv_proto::client::ListPlaylistItemsResponse {
             playlists: proto_playlists,
             media: proto_media,
             total: Some(usize_to_u64_api(total, "playlist item total")?),
-            folder_count: usize_to_u64_api(folder_count, "playlist folder count")?,
+            playlist_count: usize_to_u64_api(playlist_count, "playlist count")?,
             file_count: usize_to_u64_api(file_count, "playlist file count")?,
             dynamic_items: Vec::new(),
             current_path,
@@ -3137,7 +3130,7 @@ mod tests {
             playlists: Vec::new(),
             media: Vec::new(),
             total: Some(1),
-            folder_count: 0,
+            playlist_count: 0,
             file_count: 1,
             dynamic_items: vec![synctv_proto::client::PlaylistItem {
                 name: "Episode 1".to_string(),
@@ -3154,6 +3147,7 @@ mod tests {
                 modified_at: Some(456),
                 description: String::new(),
                 source_config: None,
+                metadata: None,
             }],
             current_path: Vec::new(),
             version: String::new(),
@@ -3170,6 +3164,55 @@ mod tests {
         assert_ne!(
             original, changed,
             "thumbnail-only changes must invalidate playlist item snapshots"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_playlist_items_response_version_changes_with_provider_metadata(
+    ) -> Result<(), crate::impls::ApiError> {
+        let make_response =
+            |is_currently_live: bool| synctv_proto::client::ListPlaylistItemsResponse {
+                playlists: Vec::new(),
+                media: Vec::new(),
+                total: Some(1),
+                playlist_count: 0,
+                file_count: 1,
+                dynamic_items: vec![synctv_proto::client::PlaylistItem {
+                    name: "Live room".to_string(),
+                    item_type: synctv_proto::client::ItemType::Media as i32,
+                    target: None,
+                    size: None,
+                    thumbnail: None,
+                    modified_at: None,
+                    description: String::new(),
+                    source_config: None,
+                    metadata: Some(synctv_proto::client::ResourceMetadata {
+                        source: None,
+                        provider: Some(synctv_proto::client::PlaybackMetadata {
+                            metadata: Some(
+                                synctv_proto::client::playback_metadata::Metadata::Bilibili(
+                                    synctv_proto::client::BilibiliPlaybackMetadata {
+                                        is_live: true,
+                                        is_currently_live: Some(is_currently_live),
+                                        ..Default::default()
+                                    },
+                                ),
+                            ),
+                        }),
+                    }),
+                }],
+                current_path: Vec::new(),
+                version: String::new(),
+                pagination: None,
+            };
+
+        let live = compute_playlist_items_response_version(&make_response(true))?;
+        let offline = compute_playlist_items_response_version(&make_response(false))?;
+
+        assert_ne!(
+            live, offline,
+            "metadata-only changes must invalidate playlist item snapshots"
         );
         Ok(())
     }
@@ -3616,7 +3659,7 @@ mod tests {
     #[test]
     fn test_validate_dynamic_playlist_query_support_allows_search() -> TestResult {
         let playlist = make_playlist(
-            "Dynamic Folder",
+            "Dynamic Playlist",
             Some(synctv_core::models::SourceProvider::Alist),
             Some("alist-main"),
         );
@@ -3700,7 +3743,7 @@ mod tests {
     #[test]
     fn test_require_dynamic_playlist_creator_allows_creator() -> TestResult {
         let playlist = make_playlist(
-            "Dynamic Folder",
+            "Dynamic Playlist",
             Some(synctv_core::models::SourceProvider::Alist),
             Some("alist-main"),
         );
@@ -3715,7 +3758,7 @@ mod tests {
     #[test]
     fn test_require_dynamic_playlist_creator_rejects_other_user() {
         let playlist = make_playlist(
-            "Dynamic Folder",
+            "Dynamic Playlist",
             Some(synctv_core::models::SourceProvider::Alist),
             Some("alist-main"),
         );
@@ -3732,7 +3775,7 @@ mod tests {
     #[test]
     fn test_require_dynamic_playlist_creator_rejects_unowned_playlist() {
         let mut playlist = make_playlist(
-            "Dynamic Folder",
+            "Dynamic Playlist",
             Some(synctv_core::models::SourceProvider::Alist),
             Some("alist-main"),
         );

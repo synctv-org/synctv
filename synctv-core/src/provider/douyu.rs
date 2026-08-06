@@ -306,6 +306,7 @@ fn map_danmaku(event: UpstreamDanmakuEvent) -> DouyuDanmakuEvent {
 }
 
 fn metadata_model(metadata: DouyuMetadata) -> DouyuPlaybackMetadata {
+    let is_live_resource = !metadata.is_replay;
     DouyuPlaybackMetadata {
         room_id: metadata.room_id,
         title: metadata.title,
@@ -317,6 +318,8 @@ fn metadata_model(metadata: DouyuMetadata) -> DouyuPlaybackMetadata {
         is_vip: metadata.is_vip,
         viewer_count: metadata.viewer_count,
         started_at: metadata.started_at,
+        is_live: is_live_resource,
+        is_currently_live: is_live_resource.then_some(metadata.is_live),
     }
 }
 
@@ -385,6 +388,27 @@ fn mark_douyu_playback_resources(result: &mut PlaybackResult, version: &str, exp
 impl MediaProvider for DouyuProvider {
     fn name(&self) -> &'static str {
         Self::NAME
+    }
+
+    async fn media_metadata(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: &MediaSourceConfig,
+    ) -> Result<Option<PlaybackMetadata>, ProviderError> {
+        ctx.check_active()
+            .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
+        let resource = Self::resource(Self::config(source_config)?)?;
+        super::cached_provider_metadata_or_fill(
+            Self::NAME,
+            &Self::cache_key(&resource),
+            Duration::from_secs(15),
+            ctx,
+            || async move {
+                let metadata = self.client.metadata(&resource, None).await?;
+                Ok(Some(PlaybackMetadata::Douyu(metadata_model(metadata))))
+            },
+        )
+        .await
     }
 
     async fn generate_playback(
@@ -514,5 +538,42 @@ mod tests {
         let info = result.playback_infos.values().next().expect("replay mode");
         assert!(info.danmakus.is_empty());
         assert_eq!(info.default_danmaku_index, None);
+    }
+
+    #[test]
+    fn replay_metadata_uses_regular_playback_semantics() {
+        let result = DouyuProvider::playback_result(DouyuMedia {
+            metadata: DouyuMetadata {
+                room_id: "123".to_string(),
+                title: "Replay".to_string(),
+                author: "Anchor".to_string(),
+                category: None,
+                thumbnail_url: None,
+                avatar_url: None,
+                is_live: false,
+                is_replay: true,
+                is_vip: false,
+                viewer_count: None,
+                started_at: None,
+            },
+            playback: DouyuPlayback {
+                room_id: "123".to_string(),
+                qualities: vec![DouyuQuality {
+                    name: "Replay".to_string(),
+                    cdn: "tct-h5".to_string(),
+                    cdn_name: "Tencent".to_string(),
+                    rate: 0,
+                    bitrate: None,
+                    codec: DouyuCodec::Avc,
+                    format: DouyuStreamFormat::Hls,
+                }],
+            },
+        })
+        .expect("replay should map");
+        let Some(PlaybackMetadata::Douyu(metadata)) = result.metadata else {
+            panic!("Douyu metadata should be present");
+        };
+        assert!(!metadata.is_live);
+        assert_eq!(metadata.is_currently_live, None);
     }
 }

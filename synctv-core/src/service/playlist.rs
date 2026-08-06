@@ -2,8 +2,8 @@
 //!
 //! Design reference: external design doc 04-database-design.md §2.4.1
 //!
-//! Manages playlist/folder operations including:
-//! - Creating folders (static and dynamic)
+//! Manages playlist operations including:
+//! - Creating static and provider-backed playlists
 //! - Tree structure navigation
 //! - Position management
 
@@ -49,8 +49,8 @@ fn ensure_playlist_creator_can_edit(playlist: &Playlist, user_id: &UserId) -> Re
 
 /// Playlist management service
 ///
-/// Responsible for playlist/folder operations:
-/// - Create static folders (manually added media)
+/// Responsible for playlist operations:
+/// - Create static playlists for manually added media
 /// - Create provider-backed dynamic playlists
 /// - Tree structure navigation
 #[derive(Clone)]

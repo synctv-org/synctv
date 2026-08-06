@@ -5822,7 +5822,7 @@ async fn test_list_media_respects_search_filters_and_sort_for_static_root() -> T
     )?;
 
     assert_eq!(response.total, Some(1));
-    assert_eq!(response.folder_count, 0);
+    assert_eq!(response.playlist_count, 0);
     assert_eq!(response.file_count, 1);
     assert!(response.playlists.is_empty());
     assert_eq!(response.media.len(), 1);

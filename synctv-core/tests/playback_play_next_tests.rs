@@ -22,7 +22,7 @@ use synctv_core::{
         SourceProvider, User, UserId, UserRole, UserStatus,
     },
     provider::{
-        DirectoryItem, DynamicListQuery, DynamicListResult, DynamicPagination,
+        DynamicListQuery, DynamicListResult, DynamicPagination, DynamicPlaylistItem,
         DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem, PlaybackInfo,
         PlaybackResult, ProviderContext, ProviderError,
     },
@@ -418,7 +418,7 @@ impl DynamicPlaylistProvider for TestDynamicProvider {
             .unwrap_or_default()
         {
             "" => vec![
-                DirectoryItem {
+                DynamicPlaylistItem {
                     name: self
                         .first_episode_path()
                         .trim_start_matches('/')
@@ -430,8 +430,9 @@ impl DynamicPlaylistProvider for TestDynamicProvider {
                     description: None,
                     modified_at: None,
                     source_config: None,
+                    metadata: None,
                 },
-                DirectoryItem {
+                DynamicPlaylistItem {
                     name: self
                         .second_episode_path()
                         .trim_start_matches('/')
@@ -443,6 +444,7 @@ impl DynamicPlaylistProvider for TestDynamicProvider {
                     description: None,
                     modified_at: None,
                     source_config: None,
+                    metadata: None,
                 },
             ],
             _ => Vec::new(),

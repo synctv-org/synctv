@@ -449,7 +449,10 @@ impl AcFunProvider {
             } else {
                 crate::models::PlaybackKind::Regular
             }),
-            metadata: Some(PlaybackMetadata::AcFun(metadata_model(metadata))),
+            metadata: Some(PlaybackMetadata::AcFun(metadata_model(
+                metadata,
+                playback.resource.kind == AcFunResourceKind::Live,
+            ))),
         })
     }
 }
@@ -514,7 +517,7 @@ fn map_live_danmaku(value: UpstreamLiveDanmaku) -> AcFunLiveDanmakuEvent {
     }
 }
 
-fn metadata_model(metadata: AcFunMetadata) -> AcFunPlaybackMetadata {
+fn metadata_model(metadata: AcFunMetadata, is_live_resource: bool) -> AcFunPlaybackMetadata {
     AcFunPlaybackMetadata {
         resource_id: metadata.id,
         title: metadata.title,
@@ -530,6 +533,8 @@ fn metadata_model(metadata: AcFunMetadata) -> AcFunPlaybackMetadata {
         comment_count: metadata.comment_count,
         published_at: metadata.published_at,
         started_at: metadata.started_at,
+        is_live: is_live_resource,
+        is_currently_live: is_live_resource.then_some(metadata.is_live),
     }
 }
 
@@ -633,6 +638,35 @@ fn mark_acfun_playback_resources(result: &mut PlaybackResult, version: &str, exp
 impl MediaProvider for AcFunProvider {
     fn name(&self) -> &'static str {
         Self::NAME
+    }
+
+    async fn media_metadata(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: &MediaSourceConfig,
+    ) -> Result<Option<PlaybackMetadata>, ProviderError> {
+        ctx.check_active()
+            .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
+        let resource = Self::resource(Self::config(source_config)?)?;
+        let cache_ttl = if resource.kind == AcFunResourceKind::Live {
+            Duration::from_secs(15)
+        } else {
+            Duration::from_hours(2)
+        };
+        super::cached_provider_metadata_or_fill(
+            Self::NAME,
+            &Self::cache_key(&resource),
+            cache_ttl,
+            ctx,
+            || async move {
+                let metadata = self.client.metadata(&resource, None).await?;
+                Ok(Some(PlaybackMetadata::AcFun(metadata_model(
+                    metadata,
+                    resource.kind == AcFunResourceKind::Live,
+                ))))
+            },
+        )
+        .await
     }
 
     async fn generate_playback(

@@ -780,29 +780,6 @@ impl ClientApiImpl {
             })
             .transpose()?
             .flatten();
-        let source_cover_url = if cover.is_none() {
-            match self
-                .room_service
-                .media_service()
-                .media_source_cover(viewer_id, media)
-                .await
-            {
-                Ok(Some(source_cover)) => {
-                    self.source_cover_url(media.room_id, viewer_id, source_cover)?
-                }
-                Ok(None) => None,
-                Err(error) => {
-                    tracing::debug!(
-                        media_id = %media.id,
-                        error = %error,
-                        "failed to resolve media source cover"
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
         let thumbnail_access = thumbnail
             .as_ref()
             .map(|file| {
@@ -813,6 +790,47 @@ impl ClientApiImpl {
             })
             .transpose()?
             .flatten();
+        let (source_cover_url, provider_metadata) = tokio::join!(
+            async {
+                if cover.is_some() {
+                    return Ok(None);
+                }
+                match self
+                    .room_service
+                    .media_service()
+                    .media_source_cover(viewer_id, media)
+                    .await
+                {
+                    Ok(Some(source_cover)) => {
+                        self.source_cover_url(media.room_id, viewer_id, source_cover)
+                    }
+                    Ok(None) => Ok(None),
+                    Err(error) => {
+                        tracing::debug!(
+                            media_id = %media.id,
+                            error = %error,
+                            "failed to resolve media source cover"
+                        );
+                        Ok(None)
+                    }
+                }
+            },
+            async {
+                self.room_service
+                    .media_service()
+                    .media_provider_metadata(viewer_id, media)
+                    .await
+                    .unwrap_or_else(|error| {
+                        tracing::debug!(
+                            media_id = %media.id,
+                            error = %error,
+                            "failed to resolve media provider metadata"
+                        );
+                        None
+                    })
+            }
+        );
+        let source_cover_url = source_cover_url?;
         let mut proto = convert::try_media_to_proto_for_viewer_with_cover(
             media,
             convert::MediaProtoView {
@@ -824,6 +842,7 @@ impl ClientApiImpl {
                 thumbnail_access: thumbnail_access.as_ref(),
                 public_id_codec: &self.public_id_codec,
             },
+            provider_metadata.as_ref(),
         )?;
         if proto.cover.is_none() {
             proto.cover = source_cover_url.map(convert::source_url_to_media_cover);
@@ -851,29 +870,51 @@ impl ClientApiImpl {
             })
             .transpose()?
             .flatten();
-        let source_cover_url = if cover.is_none() {
-            match self
-                .room_service
-                .media_service()
-                .playlist_source_cover(viewer_id, playlist)
-                .await
-            {
-                Ok(Some(source_cover)) => {
-                    self.source_cover_url(playlist.room_id, viewer_id, source_cover)?
+        let (source_cover_url, provider_metadata) = tokio::join!(
+            async {
+                if cover.is_some() {
+                    return Ok(None);
                 }
-                Ok(None) => None,
-                Err(error) => {
-                    tracing::debug!(
-                        playlist_id = %playlist.id,
-                        error = %error,
-                        "failed to resolve playlist source cover"
-                    );
+                match self
+                    .room_service
+                    .media_service()
+                    .playlist_source_cover(viewer_id, playlist)
+                    .await
+                {
+                    Ok(Some(source_cover)) => {
+                        self.source_cover_url(playlist.room_id, viewer_id, source_cover)
+                    }
+                    Ok(None) => Ok(None),
+                    Err(error) => {
+                        tracing::debug!(
+                            playlist_id = %playlist.id,
+                            error = %error,
+                            "failed to resolve playlist source cover"
+                        );
+                        Ok(None)
+                    }
+                }
+            },
+            async {
+                if playlist.is_dynamic() {
+                    self.room_service
+                        .media_service()
+                        .playlist_provider_metadata(viewer_id, playlist)
+                        .await
+                        .unwrap_or_else(|error| {
+                            tracing::debug!(
+                                playlist_id = %playlist.id,
+                                error = %error,
+                                "failed to resolve playlist provider metadata"
+                            );
+                            None
+                        })
+                } else {
                     None
                 }
             }
-        } else {
-            None
-        };
+        );
+        let source_cover_url = source_cover_url?;
         let mut proto = convert::try_playlist_to_proto_for_viewer_with_cover(
             playlist,
             item_count,
@@ -882,6 +923,7 @@ impl ClientApiImpl {
             cover.as_ref(),
             cover_access.as_ref(),
             &self.public_id_codec,
+            provider_metadata.as_ref(),
         )?;
         if proto.cover.is_none() {
             proto.cover = source_cover_url.map(convert::source_url_to_resource_cover);

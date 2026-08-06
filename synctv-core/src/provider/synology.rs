@@ -10,10 +10,11 @@ use rand::seq::IndexedRandom;
 use sha2::{Digest, Sha256};
 
 use super::{
-    DirectoryItem, DirectoryItemThumbnail, DynamicBrowsePathSegment, DynamicListQuery,
-    DynamicListResult, DynamicPagination, DynamicPlaylistProvider, ItemType, MediaProvider,
-    NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency,
-    ProviderError, ProviderPlaybackSessionLifecycle, SourceConfig, SourceCover,
+    DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
+    DynamicPlaylistItem, DynamicPlaylistItemThumbnail, DynamicPlaylistProvider, ItemType,
+    MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext,
+    ProviderCredentialDependency, ProviderError, ProviderPlaybackSessionLifecycle, SourceConfig,
+    SourceCover,
 };
 use crate::models::{
     detect_direct_url_format, normalize_provider_instance_name,
@@ -1437,7 +1438,7 @@ async fn list_dynamic_page(
                     response
                         .tvshows
                         .into_iter()
-                        .map(|item| DirectoryItem {
+                        .map(|item| DynamicPlaylistItem {
                             name: item.metadata.title,
                             item_type: ItemType::Playlist,
                             target: ProviderTarget::synology_tv_show(*library_id, item.metadata.id),
@@ -1452,6 +1453,7 @@ async fn list_dynamic_page(
                             description: non_empty(item.metadata.additional.summary),
                             modified_at: Some(item.metadata.create_time),
                             source_config: None,
+                            metadata: None,
                         })
                         .collect(),
                     response.total,
@@ -1576,7 +1578,7 @@ async fn list_episode_page(
     search: Option<&str>,
     owner: UserId,
     server_id: &str,
-) -> Result<(Vec<DirectoryItem>, u64), ProviderError> {
+) -> Result<(Vec<DynamicPlaylistItem>, u64), ProviderError> {
     let sid = required_video_sid(auth)?;
     let response = auth
         .client
@@ -1613,14 +1615,14 @@ fn map_file_item(
     file: SynologyFile,
     owner: UserId,
     server_id: &str,
-) -> Result<DirectoryItem, ProviderError> {
+) -> Result<DynamicPlaylistItem, ProviderError> {
     let relative = file
         .path
         .strip_prefix(root.trim_end_matches('/'))
         .unwrap_or(&file.path)
         .trim_start_matches('/')
         .to_string();
-    Ok(DirectoryItem {
+    Ok(DynamicPlaylistItem {
         name: file.name,
         item_type: if file.isdir {
             ItemType::Playlist
@@ -1629,7 +1631,7 @@ fn map_file_item(
         },
         target: ProviderTarget::synology_file(relative),
         size: (!file.isdir).then_some(file.additional.size),
-        thumbnail: (!file.isdir).then_some(DirectoryItemThumbnail::SynologyFile {
+        thumbnail: (!file.isdir).then_some(DynamicPlaylistItemThumbnail::SynologyFile {
             server_id: server_id.to_string(),
             credential_owner_id: owner,
             path: file.path,
@@ -1637,6 +1639,7 @@ fn map_file_item(
         description: None,
         modified_at: i64::try_from(file.additional.time.mtime).ok(),
         source_config: None,
+        metadata: None,
     })
 }
 
@@ -1646,9 +1649,9 @@ fn map_video_item(
     parent_id: Option<i64>,
     owner: UserId,
     server_id: &str,
-) -> Option<DirectoryItem> {
+) -> Option<DynamicPlaylistItem> {
     let file = metadata.additional.file.first()?;
-    Some(DirectoryItem {
+    Some(DynamicPlaylistItem {
         name: metadata.title,
         item_type: ItemType::Media,
         target: ProviderTarget::synology_library_item(kind, metadata.id, file.id, parent_id),
@@ -1663,6 +1666,7 @@ fn map_video_item(
         description: non_empty(metadata.additional.summary),
         modified_at: Some(metadata.create_time),
         source_config: None,
+        metadata: None,
     })
 }
 
@@ -1672,8 +1676,8 @@ fn synology_thumbnail(
     item_id: i64,
     media_type: &str,
     poster_mtime: Option<String>,
-) -> DirectoryItemThumbnail {
-    DirectoryItemThumbnail::SynologyPoster {
+) -> DynamicPlaylistItemThumbnail {
+    DynamicPlaylistItemThumbnail::SynologyPoster {
         server_id: server_id.to_string(),
         credential_owner_id: owner,
         item_id,
@@ -1696,7 +1700,7 @@ fn non_empty(value: String) -> Option<String> {
 }
 
 fn has_enough_media_for_next(
-    media: &[DirectoryItem],
+    media: &[DynamicPlaylistItem],
     target: &ProviderTarget,
     play_mode: PlayMode,
 ) -> bool {
@@ -1711,10 +1715,10 @@ fn has_enough_media_for_next(
 }
 
 fn select_next_media<'a>(
-    media: &'a [DirectoryItem],
+    media: &'a [DynamicPlaylistItem],
     target: &ProviderTarget,
     play_mode: PlayMode,
-) -> Option<&'a DirectoryItem> {
+) -> Option<&'a DynamicPlaylistItem> {
     match play_mode {
         PlayMode::Sequential => media
             .iter()
@@ -2005,7 +2009,7 @@ async fn generate_video_playback(
         genres: item.additional.genre.clone(),
         item_id,
         file_id,
-        kind: media_type(kind).to_string(),
+        kind,
         path: file.sharepath.clone(),
         size: file.filesize,
         duration_seconds: duration.unwrap_or_default(),
@@ -2358,8 +2362,8 @@ const fn stream_profile(profile: SynologyPlaybackProfile) -> SynologyStreamProfi
 mod tests {
     use super::*;
 
-    fn media_item(index: usize) -> DirectoryItem {
-        DirectoryItem {
+    fn media_item(index: usize) -> DynamicPlaylistItem {
+        DynamicPlaylistItem {
             name: format!("Movie {index}"),
             item_type: ItemType::Media,
             target: ProviderTarget::synology_library_item(
@@ -2373,6 +2377,7 @@ mod tests {
             description: None,
             modified_at: None,
             source_config: None,
+            metadata: None,
         }
     }
 

@@ -51,6 +51,7 @@ mod twitch;
 mod youtube;
 
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 pub use access::{
     AlistAccess, AlistBinding, BilibiliAccess, CachedProviderAccessService, EmbyAccess,
@@ -78,13 +79,14 @@ pub use store::{
     VersionedPlayback, VersionedPlaybackContext,
 };
 pub use synctv_common::{ExecutionControl, ExecutionControlError};
+pub use traits::ProviderResourceMetadata;
 pub use traits::{
     BilibiliLiveDanmakuEvent, BilibiliLiveDanmakuEventKind, BilibiliLiveDanmakuProvider,
-    BilibiliLiveDanmakuStream, DirectoryItem, DirectoryItemSourceConfig, DirectoryItemThumbnail,
-    DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
-    DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult,
-    PreparedSourceConfig, ProviderCredentialDependency, ProviderPlaybackSessionLifecycle,
-    SourceConfig, SourceConfigKind, SourceCover,
+    BilibiliLiveDanmakuStream, DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult,
+    DynamicPagination, DynamicPlaylistItem, DynamicPlaylistItemSourceConfig,
+    DynamicPlaylistItemThumbnail, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
+    PlaybackInfo, PlaybackResult, PreparedSourceConfig, ProviderCredentialDependency,
+    ProviderPlaybackSessionLifecycle, SourceConfig, SourceConfigKind, SourceCover,
 };
 
 pub(crate) fn playback_profile_prefers_transcode(
@@ -123,8 +125,8 @@ use crate::models::media::{
     PlaybackDanmaku, PlaybackMedia, PlaybackMediaProvider, PlaybackRtmpMedia, PlaybackSubtitle,
 };
 use crate::models::{normalize_provider_instance_name, MediaId, RoomId};
+use sha2::{Digest, Sha256};
 use std::future::Future;
-use std::time::Duration;
 
 use crate::cache::{SingleFlight, SingleFlightError};
 
@@ -537,6 +539,8 @@ impl From<ProviderPlaybackFillError> for ProviderError {
 static PLAYBACK_FILL_SINGLEFLIGHT: LazyLock<
     SingleFlight<String, VersionedPlayback, ProviderPlaybackFillError>,
 > = LazyLock::new(SingleFlight::new);
+static PROVIDER_METADATA_CACHE: LazyLock<ProviderMetadataCache> =
+    LazyLock::new(ProviderMetadataCache::new);
 static SOURCE_COVER_CACHE: LazyLock<ProviderSourceCoverCache> =
     LazyLock::new(ProviderSourceCoverCache::new);
 
@@ -1199,6 +1203,140 @@ async fn read_cached_source_cover(
     }
 }
 
+fn provider_metadata_cache_key(
+    provider_name: &str,
+    resource_key: &str,
+    ctx: &ProviderContext<'_>,
+) -> String {
+    let user_id = ctx.user_id.map(|id| id.to_string()).unwrap_or_default();
+    let credential_owner_id = ctx
+        .credential_owner_id
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    let room_id = ctx.room_id.map(|id| id.to_string()).unwrap_or_default();
+    let provider_instance_name = ctx.provider_instance_name.unwrap_or_default();
+    let mut hasher = Sha256::new();
+    for component in [
+        provider_name,
+        user_id.as_str(),
+        credential_owner_id.as_str(),
+        room_id.as_str(),
+        provider_instance_name,
+        resource_key,
+    ] {
+        hasher.update(component.len().to_le_bytes());
+        hasher.update(component.as_bytes());
+    }
+    format!("metadata:{}", hex::encode(hasher.finalize()))
+}
+
+struct ProviderMetadataCache {
+    l1: moka::future::Cache<String, Option<ProviderResourceMetadata>>,
+    singleflight: SingleFlight<String, Option<ProviderResourceMetadata>, ProviderPlaybackFillError>,
+}
+
+impl ProviderMetadataCache {
+    fn new() -> Self {
+        Self {
+            l1: moka::future::Cache::builder()
+                .max_capacity(10_000)
+                .time_to_live(Duration::from_secs(10))
+                .build(),
+            singleflight: SingleFlight::new(),
+        }
+    }
+}
+
+/// Cache provider-owned resource metadata independently from signed playback
+/// URLs. Live providers use a short TTL so an offline/online transition is
+/// reflected quickly while repeated library reads avoid duplicate upstream
+/// requests.
+pub(crate) async fn cached_provider_metadata_or_fill<F, Fut>(
+    provider_name: &'static str,
+    cache_key: &str,
+    cache_ttl: Duration,
+    ctx: &ProviderContext<'_>,
+    fill: F,
+) -> std::result::Result<Option<ProviderResourceMetadata>, ProviderError>
+where
+    F: FnOnce() -> Fut + Send,
+    Fut: Future<Output = std::result::Result<Option<ProviderResourceMetadata>, ProviderError>>
+        + Send,
+{
+    let key = provider_metadata_cache_key(provider_name, cache_key, ctx);
+    if let Some(cached) = PROVIDER_METADATA_CACHE.l1.get(&key).await {
+        return Ok(cached);
+    }
+    let Some(store) = ctx.store.as_ref() else {
+        let fill = Box::pin(fill());
+        let metadata = PROVIDER_METADATA_CACHE
+            .singleflight
+            .do_work(key.clone(), async {
+                fill.await.map_err(ProviderPlaybackFillError::from)
+            })
+            .await
+            .map_err(|error| match error {
+                SingleFlightError::Inner(error) => ProviderError::from(error),
+                SingleFlightError::WorkerFailed => ProviderError::Internal(format!(
+                    "Provider '{provider_name}' metadata singleflight worker failed"
+                )),
+            })?;
+        PROVIDER_METADATA_CACHE
+            .l1
+            .insert(key, metadata.clone())
+            .await;
+        return Ok(metadata);
+    };
+    if let Ok(Some(cached)) = store.get::<Option<ProviderResourceMetadata>>(&key).await {
+        PROVIDER_METADATA_CACHE.l1.insert(key, cached.clone()).await;
+        return Ok(cached);
+    }
+    let lock_key = format!("lock:{key}");
+    let lock = store.lock(&lock_key, Duration::from_secs(5)).await.ok();
+    if lock.is_none() {
+        for _ in 0..4 {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            if let Ok(Some(cached)) = store.get::<Option<ProviderResourceMetadata>>(&key).await {
+                PROVIDER_METADATA_CACHE.l1.insert(key, cached.clone()).await;
+                return Ok(cached);
+            }
+        }
+    } else if let Ok(Some(cached)) = store.get::<Option<ProviderResourceMetadata>>(&key).await {
+        PROVIDER_METADATA_CACHE.l1.insert(key, cached.clone()).await;
+        return Ok(cached);
+    }
+    let fill = Box::pin(fill());
+    let metadata = PROVIDER_METADATA_CACHE
+        .singleflight
+        .do_work(key.clone(), async {
+            if let Ok(Some(cached)) = store.get::<Option<ProviderResourceMetadata>>(&key).await {
+                return Ok(cached);
+            }
+            let metadata = fill.await.map_err(ProviderPlaybackFillError::from)?;
+            if let Err(error) = store.set(&key, &metadata, cache_ttl).await {
+                tracing::debug!(
+                    provider = provider_name,
+                    cache_key = key,
+                    error = %error,
+                    "Provider metadata cache write failed"
+                );
+            }
+            Ok(metadata)
+        })
+        .await
+        .map_err(|error| match error {
+            SingleFlightError::Inner(error) => ProviderError::from(error),
+            SingleFlightError::WorkerFailed => ProviderError::Internal(format!(
+                "Provider '{provider_name}' metadata singleflight worker failed"
+            )),
+        })?;
+    PROVIDER_METADATA_CACHE
+        .l1
+        .insert(key, metadata.clone())
+        .await;
+    Ok(metadata)
+}
+
 pub(crate) async fn cached_source_cover_or_fill<F, Fut>(
     provider_name: &'static str,
     cache_key: &str,
@@ -1526,6 +1664,162 @@ mod source_cover_cache_tests {
         .await
         .expect("negative cache read should succeed");
         assert!(second.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[cfg(test)]
+mod provider_metadata_cache_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn metadata(kind: crate::models::BilibiliPlaybackKind) -> Option<ProviderResourceMetadata> {
+        Some(crate::models::PlaybackMetadata::Bilibili(
+            crate::models::BilibiliPlaybackMetadata::new(kind),
+        ))
+    }
+
+    #[tokio::test]
+    async fn provider_metadata_cache_keeps_values_and_negative_results() {
+        let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(16));
+        let ctx = ProviderContext::new("metadata-cache-test")
+            .with_user_id(crate::models::UserId::expect_positive(1))
+            .with_store(store);
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        for (resource_key, value) in [
+            ("value", metadata(crate::models::BilibiliPlaybackKind::Live)),
+            ("none", None),
+        ] {
+            let first_calls = calls.clone();
+            let first_value = value.clone();
+            let first = cached_provider_metadata_or_fill(
+                "bilibili",
+                resource_key,
+                Duration::from_secs(60),
+                &ctx,
+                || async move {
+                    first_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(first_value)
+                },
+            )
+            .await
+            .expect("first metadata fill should succeed");
+            assert_eq!(first.is_some(), value.is_some());
+
+            let second_calls = calls.clone();
+            let second = cached_provider_metadata_or_fill(
+                "bilibili",
+                resource_key,
+                Duration::from_secs(60),
+                &ctx,
+                || async move {
+                    second_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(metadata(crate::models::BilibiliPlaybackKind::Video))
+                },
+            )
+            .await
+            .expect("cached metadata read should succeed");
+            assert_eq!(second.is_some(), value.is_some());
+        }
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn provider_metadata_cache_isolates_ambiguous_instance_and_resource_keys() {
+        let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(16));
+        let first_ctx = ProviderContext::new("metadata-cache-test")
+            .with_provider_instance_name("instance:resource")
+            .with_store(store.clone());
+        let second_ctx = ProviderContext::new("metadata-cache-test")
+            .with_provider_instance_name("instance")
+            .with_store(store);
+
+        let first = cached_provider_metadata_or_fill(
+            "bilibili",
+            "key",
+            Duration::from_secs(60),
+            &first_ctx,
+            || async { Ok(metadata(crate::models::BilibiliPlaybackKind::Video)) },
+        )
+        .await
+        .expect("first metadata fill should succeed");
+        let second = cached_provider_metadata_or_fill(
+            "bilibili",
+            "resource:key",
+            Duration::from_secs(60),
+            &second_ctx,
+            || async { Ok(metadata(crate::models::BilibiliPlaybackKind::Pgc)) },
+        )
+        .await
+        .expect("second metadata fill should succeed");
+
+        let kind = |value: Option<ProviderResourceMetadata>| match value {
+            Some(crate::models::PlaybackMetadata::Bilibili(metadata)) => Some(metadata.kind),
+            _ => None,
+        };
+        assert_eq!(
+            kind(first),
+            Some(crate::models::BilibiliPlaybackKind::Video)
+        );
+        assert_eq!(kind(second), Some(crate::models::BilibiliPlaybackKind::Pgc));
+        assert_ne!(
+            provider_metadata_cache_key("bilibili", "key", &first_ctx),
+            provider_metadata_cache_key("bilibili", "resource:key", &second_ctx),
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_metadata_cache_deduplicates_slow_concurrent_fills() {
+        let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(16));
+        let ctx = ProviderContext::new("metadata-cache-test").with_store(store);
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let resolve = || {
+            let calls = calls.clone();
+            cached_provider_metadata_or_fill(
+                "bilibili",
+                "slow-concurrent-fill",
+                Duration::from_secs(60),
+                &ctx,
+                || async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    Ok(metadata(crate::models::BilibiliPlaybackKind::Live))
+                },
+            )
+        };
+        let (first, second) = tokio::join!(resolve(), resolve());
+
+        assert!(first.expect("first fill should succeed").is_some());
+        assert!(second.expect("second fill should succeed").is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn provider_metadata_cache_deduplicates_without_store() {
+        let ctx = ProviderContext::new("metadata-cache-test");
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let resolve = || {
+            let calls = calls.clone();
+            cached_provider_metadata_or_fill(
+                "bilibili",
+                "slow-concurrent-fill-without-store",
+                Duration::from_secs(60),
+                &ctx,
+                || async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    Ok(metadata(crate::models::BilibiliPlaybackKind::Live))
+                },
+            )
+        };
+        let (first, second) = tokio::join!(resolve(), resolve());
+
+        assert!(first.expect("first fill should succeed").is_some());
+        assert!(second.expect("second fill should succeed").is_some());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

@@ -9,10 +9,10 @@ use chrono::Utc;
 use sha2::{Digest, Sha256};
 
 use super::{
-    DirectoryItem, DirectoryItemSourceConfig, DirectoryItemThumbnail, DynamicListQuery,
-    DynamicListResult, DynamicPagination, DynamicPlaylistProvider, ItemType, MediaProvider,
-    NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency,
-    ProviderError, SourceConfig, SourceCover,
+    DynamicListQuery, DynamicListResult, DynamicPagination, DynamicPlaylistItem,
+    DynamicPlaylistItemSourceConfig, DynamicPlaylistItemThumbnail, DynamicPlaylistProvider,
+    ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext,
+    ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::{
     MediaSourceConfig, PlayMode, PlaybackMedia, PlaybackMediaMetadata, PlaybackMediaProvider,
@@ -521,16 +521,34 @@ impl YoutubeProvider {
         })
     }
 
-    fn directory_item(item: YoutubeListItem, shared: bool) -> DirectoryItem {
+    fn directory_item(item: YoutubeListItem, shared: bool) -> DynamicPlaylistItem {
         let video_id = item.video_id.clone();
-        DirectoryItem {
+        let metadata = PlaybackMetadata::Youtube(YoutubePlaybackMetadata {
+            video_id: video_id.clone(),
+            channel_id: item.channel_id.clone(),
+            channel_name: item.channel_name.clone(),
+            description: String::new(),
+            view_count: None,
+            publish_date: None,
+            upload_date: None,
+            category: None,
+            is_live: item.is_live,
+            is_currently_live: item.is_live.then_some(true),
+            live_start: None,
+            live_end: None,
+            storyboard_spec: None,
+            automatic_caption_count: 0,
+            manual_caption_count: 0,
+            translation_languages: Vec::new(),
+        });
+        DynamicPlaylistItem {
             name: item.title,
             item_type: ItemType::Media,
             target: ProviderTarget::youtube(video_id.clone()),
             size: None,
             thumbnail: item
                 .thumbnail
-                .map(|thumbnail| DirectoryItemThumbnail::Url(thumbnail.url)),
+                .map(|thumbnail| DynamicPlaylistItemThumbnail::Url(thumbnail.url)),
             description: Some(
                 [
                     item.channel_name,
@@ -544,9 +562,10 @@ impl YoutubeProvider {
             )
             .filter(|value| !value.is_empty()),
             modified_at: None,
-            source_config: Some(DirectoryItemSourceConfig::Media(
+            source_config: Some(DynamicPlaylistItemSourceConfig::Media(
                 MediaSourceConfig::Youtube(YoutubeMediaSourceConfig { video_id, shared }),
             )),
+            metadata: Some(metadata),
         }
     }
 
@@ -562,7 +581,7 @@ impl YoutubeProvider {
 
     fn next_item(
         base: &YoutubePlaylistSourceConfig,
-        item: &DirectoryItem,
+        item: &DynamicPlaylistItem,
     ) -> Result<NextPlayItem, ProviderError> {
         let video_id = Self::decode_target(&item.target)?.to_string();
         Ok(NextPlayItem {
@@ -573,6 +592,62 @@ impl YoutubeProvider {
                 shared: Self::playlist_shared(base),
             }),
             target: item.target.clone(),
+        })
+    }
+
+    fn metadata_model(
+        player: &YoutubePlayerResponse,
+    ) -> Result<YoutubePlaybackMetadata, ProviderError> {
+        let details = player.video_details.as_ref().ok_or_else(|| {
+            ProviderError::ApiError("YouTube player returned no video details".to_string())
+        })?;
+        let microformat = player
+            .microformat
+            .as_ref()
+            .and_then(|value| value.player_microformat_renderer.as_ref());
+        let live = microformat.and_then(|value| value.live_broadcast_details.as_ref());
+        let tracklist = player
+            .captions
+            .as_ref()
+            .and_then(|captions| captions.player_captions_tracklist_renderer.as_ref());
+        let is_live = details.is_live || details.is_live_content;
+        Ok(YoutubePlaybackMetadata {
+            video_id: details.video_id.clone(),
+            channel_id: details.channel_id.clone(),
+            channel_name: details.author.clone(),
+            description: details.short_description.clone(),
+            view_count: details.view_count.parse().ok(),
+            publish_date: microformat.and_then(|value| value.publish_date.clone()),
+            upload_date: microformat.and_then(|value| value.upload_date.clone()),
+            category: microformat.and_then(|value| value.category.clone()),
+            is_live,
+            is_currently_live: is_live.then_some(details.is_live),
+            live_start: live.and_then(|value| value.start_timestamp.clone()),
+            live_end: live.and_then(|value| value.end_timestamp.clone()),
+            storyboard_spec: player
+                .storyboards
+                .as_ref()
+                .and_then(|value| value.player_storyboard_spec_renderer.as_ref())
+                .map(|value| value.spec.clone()),
+            automatic_caption_count: tracklist.map_or(0, |value| {
+                value
+                    .caption_tracks
+                    .iter()
+                    .filter(|track| track.is_automatic())
+                    .count()
+            }),
+            manual_caption_count: tracklist.map_or(0, |value| {
+                value
+                    .caption_tracks
+                    .iter()
+                    .filter(|track| !track.is_automatic())
+                    .count()
+            }),
+            translation_languages: tracklist
+                .into_iter()
+                .flat_map(|value| &value.translation_languages)
+                .map(|language| language.language_code.clone())
+                .collect(),
         })
     }
 
@@ -684,15 +759,7 @@ impl YoutubeProvider {
         .ok_or_else(|| {
             ProviderError::ApiError("YouTube returned no playable formats".to_string())
         })?;
-        let microformat = player
-            .microformat
-            .as_ref()
-            .and_then(|value| value.player_microformat_renderer.as_ref());
-        let live = microformat.and_then(|value| value.live_broadcast_details.as_ref());
-        let tracklist = player
-            .captions
-            .as_ref()
-            .and_then(|captions| captions.player_captions_tracklist_renderer.as_ref());
+        let metadata = Self::metadata_model(player)?;
         Ok(PlaybackResult {
             playback_infos,
             default_mode,
@@ -704,43 +771,7 @@ impl YoutubeProvider {
             } else {
                 crate::models::PlaybackKind::Regular
             }),
-            metadata: Some(PlaybackMetadata::Youtube(YoutubePlaybackMetadata {
-                video_id: details.video_id.clone(),
-                channel_id: details.channel_id.clone(),
-                channel_name: details.author.clone(),
-                description: details.short_description.clone(),
-                view_count: details.view_count.parse().ok(),
-                publish_date: microformat.and_then(|value| value.publish_date.clone()),
-                upload_date: microformat.and_then(|value| value.upload_date.clone()),
-                category: microformat.and_then(|value| value.category.clone()),
-                is_live: details.is_live || details.is_live_content,
-                live_start: live.and_then(|value| value.start_timestamp.clone()),
-                live_end: live.and_then(|value| value.end_timestamp.clone()),
-                storyboard_spec: player
-                    .storyboards
-                    .as_ref()
-                    .and_then(|value| value.player_storyboard_spec_renderer.as_ref())
-                    .map(|value| value.spec.clone()),
-                automatic_caption_count: tracklist.map_or(0, |value| {
-                    value
-                        .caption_tracks
-                        .iter()
-                        .filter(|track| track.is_automatic())
-                        .count()
-                }),
-                manual_caption_count: tracklist.map_or(0, |value| {
-                    value
-                        .caption_tracks
-                        .iter()
-                        .filter(|track| !track.is_automatic())
-                        .count()
-                }),
-                translation_languages: tracklist
-                    .into_iter()
-                    .flat_map(|value| &value.translation_languages)
-                    .map(|language| language.language_code.clone())
-                    .collect(),
-            })),
+            metadata: Some(PlaybackMetadata::Youtube(metadata)),
         })
     }
 }
@@ -998,6 +1029,41 @@ impl MediaProvider for YoutubeProvider {
 
     fn as_dynamic_playlist_provider(&self) -> Option<&dyn DynamicPlaylistProvider> {
         Some(self)
+    }
+
+    async fn media_metadata(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: &MediaSourceConfig,
+    ) -> Result<Option<PlaybackMetadata>, ProviderError> {
+        ctx.check_active()
+            .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
+        let config = Self::media_config(source_config)?;
+        let video_id = normalize_video_id(&config.video_id)?;
+        let cache_key = serde_json::to_string(source_config)
+            .map_err(|error| ProviderError::Internal(error.to_string()))?;
+        super::cached_provider_metadata_or_fill(
+            Self::NAME,
+            &cache_key,
+            Duration::from_secs(30),
+            ctx,
+            || async {
+                let session = self.session(ctx, config.shared).await?;
+                let player = self
+                    .client
+                    .player(
+                        &video_id,
+                        session.visitor_data.as_deref(),
+                        session.po_token.as_deref(),
+                        session.cookie.as_deref(),
+                    )
+                    .await?;
+                Ok(Some(PlaybackMetadata::Youtube(Self::metadata_model(
+                    &player,
+                )?)))
+            },
+        )
+        .await
     }
 
     async fn generate_playback(
@@ -1529,7 +1595,7 @@ mod tests {
             true,
         );
 
-        let Some(DirectoryItemSourceConfig::Media(MediaSourceConfig::Youtube(config))) =
+        let Some(DynamicPlaylistItemSourceConfig::Media(MediaSourceConfig::Youtube(config))) =
             item.source_config
         else {
             panic!("YouTube directory item should contain typed source config");

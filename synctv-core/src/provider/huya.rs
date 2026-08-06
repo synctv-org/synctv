@@ -331,7 +331,10 @@ impl HuyaProvider {
             } else {
                 crate::models::PlaybackKind::Regular
             }),
-            metadata: Some(PlaybackMetadata::Huya(metadata_model(metadata))),
+            metadata: Some(PlaybackMetadata::Huya(metadata_model(
+                metadata,
+                playback.resource.kind == HuyaResourceKind::Live,
+            ))),
         })
     }
 }
@@ -357,7 +360,7 @@ fn route_name(cdn: &str) -> String {
     }
 }
 
-fn metadata_model(metadata: HuyaMetadata) -> HuyaPlaybackMetadata {
+fn metadata_model(metadata: HuyaMetadata, is_live_resource: bool) -> HuyaPlaybackMetadata {
     HuyaPlaybackMetadata {
         resource_id: metadata.id,
         title: metadata.title,
@@ -371,6 +374,8 @@ fn metadata_model(metadata: HuyaMetadata) -> HuyaPlaybackMetadata {
         comment_count: metadata.comment_count,
         like_count: metadata.like_count,
         published_at: metadata.published_at,
+        is_live: is_live_resource,
+        is_currently_live: is_live_resource.then_some(metadata.is_live),
     }
 }
 
@@ -437,6 +442,35 @@ fn mark_huya_playback_resources(result: &mut PlaybackResult, version: &str, expi
 impl MediaProvider for HuyaProvider {
     fn name(&self) -> &'static str {
         Self::NAME
+    }
+
+    async fn media_metadata(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: &MediaSourceConfig,
+    ) -> Result<Option<PlaybackMetadata>, ProviderError> {
+        ctx.check_active()
+            .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
+        let resource = Self::resource(Self::config(source_config)?)?;
+        let cache_ttl = if resource.kind == HuyaResourceKind::Live {
+            Duration::from_secs(15)
+        } else {
+            Duration::from_hours(2)
+        };
+        super::cached_provider_metadata_or_fill(
+            Self::NAME,
+            &Self::cache_key(&resource),
+            cache_ttl,
+            ctx,
+            || async move {
+                let metadata = self.client.metadata(&resource, None).await?;
+                Ok(Some(PlaybackMetadata::Huya(metadata_model(
+                    metadata,
+                    resource.kind == HuyaResourceKind::Live,
+                ))))
+            },
+        )
+        .await
     }
 
     async fn generate_playback(

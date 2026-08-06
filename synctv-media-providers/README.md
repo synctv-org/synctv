@@ -35,7 +35,7 @@ Provider support crosses three API boundaries:
 | Public SyncTV API | `synctv-proto/proto/providers/`, `synctv-proto/proto/playback_provider/`, `synctv-api/` | Exposes typed parse, preview, list, binding, and playback operations to App and CLI clients |
 
 The Core adapters live in `synctv-core/src/provider/`. They connect upstream
-clients to credentials, persistent source configs and targets, dynamic folders,
+clients to credentials, persistent source configs and targets, dynamic playlists,
 autoplay, `PlaybackResult`, and proxy resource resolution.
 
 Current standalone remote gRPC services cover Alist, Bilibili, and Emby. Other
@@ -93,7 +93,7 @@ the deployment.
 2. Implement a dedicated module under `src/<provider>/` with its own DTOs,
    pagination, signing, and protocol tests.
 3. Add typed source configs and targets, then implement the Core provider and
-   dynamic folder behavior.
+   dynamic playlist behavior.
 4. Add public protobuf messages, HTTP/gRPC handlers, OpenAPI schemas, CLI paths,
    and every generated playback-resource resolver.
 5. Add internal remote transport when that provider needs separate deployment.

@@ -10,10 +10,10 @@ use rand::seq::IndexedRandom;
 use sha2::{Digest, Sha256};
 
 use super::{
-    DirectoryItem, DirectoryItemThumbnail, DynamicBrowsePathSegment, DynamicListQuery,
-    DynamicListResult, DynamicPagination, DynamicPlaylistProvider, ItemType, MediaProvider,
-    NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency,
-    ProviderError, SourceConfig, SourceCover,
+    DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
+    DynamicPlaylistItem, DynamicPlaylistItemThumbnail, DynamicPlaylistProvider, ItemType,
+    MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext,
+    ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::{
     detect_direct_url_format, normalize_provider_instance_name,
@@ -1072,7 +1072,7 @@ fn map_directory_item(
     item: NextcloudDavItem,
     owner: UserId,
     server_id: &str,
-) -> Option<DirectoryItem> {
+) -> Option<DynamicPlaylistItem> {
     let item_type = if item.is_directory {
         ItemType::Playlist
     } else if is_playable(&item) {
@@ -1080,13 +1080,13 @@ fn map_directory_item(
     } else {
         return None;
     };
-    Some(DirectoryItem {
+    Some(DynamicPlaylistItem {
         name: item.name,
         item_type,
         target: ProviderTarget::nextcloud(item.path, item.file_id),
         size: (!item.is_directory).then_some(item.size),
         thumbnail: (!item.is_directory && item.has_preview).then(|| {
-            DirectoryItemThumbnail::Nextcloud {
+            DynamicPlaylistItemThumbnail::Nextcloud {
                 server_id: server_id.to_string(),
                 credential_owner_id: owner,
                 file_id: item.file_id,
@@ -1095,6 +1095,7 @@ fn map_directory_item(
         description: item.blurhash,
         modified_at: None,
         source_config: None,
+        metadata: None,
     })
 }
 
@@ -1348,7 +1349,11 @@ fn is_playable(item: &NextcloudDavItem) -> bool {
         )
 }
 
-fn enough_for_next(media: &[DirectoryItem], target: &ProviderTarget, play_mode: PlayMode) -> bool {
+fn enough_for_next(
+    media: &[DynamicPlaylistItem],
+    target: &ProviderTarget,
+    play_mode: PlayMode,
+) -> bool {
     match play_mode {
         PlayMode::Sequential | PlayMode::RepeatAll => media
             .iter()

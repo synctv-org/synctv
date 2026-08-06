@@ -10,10 +10,10 @@ use rand::seq::IndexedRandom;
 use sha2::{Digest, Sha256};
 
 use super::{
-    DirectoryItem, DirectoryItemThumbnail, DynamicBrowsePathSegment, DynamicListQuery,
-    DynamicListResult, DynamicPagination, DynamicPlaylistProvider, ItemType, MediaProvider,
-    NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency,
-    ProviderError, SourceConfig, SourceCover,
+    DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
+    DynamicPlaylistItem, DynamicPlaylistItemThumbnail, DynamicPlaylistProvider, ItemType,
+    MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext,
+    ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::{
     detect_direct_url_format, normalize_provider_instance_name,
@@ -501,7 +501,11 @@ fn map_list_response(response: SeafileList) -> SeafileListResponse {
     }
 }
 
-fn map_directory_item(item: SeafileItem, owner: UserId, server_id: &str) -> Option<DirectoryItem> {
+fn map_directory_item(
+    item: SeafileItem,
+    owner: UserId,
+    server_id: &str,
+) -> Option<DynamicPlaylistItem> {
     let item_type = if item.is_directory {
         ItemType::Playlist
     } else if is_playable(&item.name) {
@@ -514,7 +518,7 @@ fn map_directory_item(item: SeafileItem, owner: UserId, server_id: &str) -> Opti
             .ok()
             .map(|value| value.timestamp())
     });
-    Some(DirectoryItem {
+    Some(DynamicPlaylistItem {
         name: item.name,
         item_type,
         target: ProviderTarget::seafile(
@@ -525,7 +529,7 @@ fn map_directory_item(item: SeafileItem, owner: UserId, server_id: &str) -> Opti
         ),
         size: (!item.is_directory).then_some(item.size),
         thumbnail: (!item.is_directory && item.has_thumbnail).then(|| {
-            DirectoryItemThumbnail::Seafile {
+            DynamicPlaylistItemThumbnail::Seafile {
                 server_id: server_id.to_string(),
                 credential_owner_id: owner,
                 repository_id: item.repository_id,
@@ -535,6 +539,7 @@ fn map_directory_item(item: SeafileItem, owner: UserId, server_id: &str) -> Opti
         description: (!item.repository_name.is_empty()).then_some(item.repository_name),
         modified_at,
         source_config: None,
+        metadata: None,
     })
 }
 
@@ -768,7 +773,11 @@ fn is_playable(name: &str) -> bool {
     )
 }
 
-fn enough_for_next(media: &[DirectoryItem], target: &ProviderTarget, play_mode: PlayMode) -> bool {
+fn enough_for_next(
+    media: &[DynamicPlaylistItem],
+    target: &ProviderTarget,
+    play_mode: PlayMode,
+) -> bool {
     match play_mode {
         PlayMode::Sequential | PlayMode::RepeatAll => media
             .iter()

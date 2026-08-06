@@ -540,7 +540,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
         .unwrap();
 
     assert_eq!(response.total, Some(4));
-    assert_eq!(response.folder_count, 2);
+    assert_eq!(response.playlist_count, 2);
     assert_eq!(response.file_count, 2);
     assert_eq!(response.playlists.len(), 2);
     assert_eq!(response.media.len(), 2);
@@ -657,7 +657,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
         .unwrap();
 
     assert_eq!(page_one.total, Some(2));
-    assert_eq!(page_one.folder_count, 1);
+    assert_eq!(page_one.playlist_count, 1);
     assert_eq!(page_one.file_count, 1);
     assert_eq!(page_one.playlists.len(), 1);
     assert!(page_one.media.is_empty());
@@ -690,7 +690,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
         .unwrap();
 
     assert_eq!(page_two.total, Some(2));
-    assert_eq!(page_two.folder_count, 1);
+    assert_eq!(page_two.playlist_count, 1);
     assert_eq!(page_two.file_count, 1);
     assert!(page_two.playlists.is_empty());
     assert_eq!(page_two.media.len(), 1);

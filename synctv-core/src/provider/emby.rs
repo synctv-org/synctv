@@ -5,14 +5,15 @@
 use super::{
     access::EmbyAccess,
     provider_client::{create_remote_emby_client, EmbyClientArc, ProviderClientManager},
-    DirectoryItem, DirectoryItemSourceConfig, DirectoryItemThumbnail, DynamicBrowsePathSegment,
-    DynamicListQuery, DynamicListResult, DynamicPagination, DynamicPlaylistProvider, ItemType,
-    MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo, PlaybackResult,
-    PreparedSourceConfig, ProviderContext, ProviderCredentialDependency, ProviderError,
-    ProviderPlaybackSessionLifecycle, SourceConfig, SourceCover,
+    DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
+    DynamicPlaylistItem, DynamicPlaylistItemSourceConfig, DynamicPlaylistItemThumbnail,
+    DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem, PlaybackClientProfile,
+    PlaybackInfo, PlaybackResult, PreparedSourceConfig, ProviderContext,
+    ProviderCredentialDependency, ProviderError, ProviderPlaybackSessionLifecycle, SourceConfig,
+    SourceCover,
 };
 use crate::models::media::{
-    EmbyPlaybackMetadata, PlaybackEmbyMedia, PlaybackEmbySubtitle, PlaybackMedia,
+    EmbyPlaybackKind, EmbyPlaybackMetadata, PlaybackEmbyMedia, PlaybackEmbySubtitle, PlaybackMedia,
     PlaybackMediaProvider, PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
 };
 use crate::models::{
@@ -1217,10 +1218,18 @@ impl EmbyProvider {
         if item.is_folder {
             Some(ItemType::Playlist)
         } else {
-            match item.item_type.as_str() {
-                "Movie" | "Episode" | "Video" | "Audio" | "MusicAlbum" => Some(ItemType::Media),
-                _ => None,
-            }
+            Self::playback_kind(&item.item_type).map(|_| ItemType::Media)
+        }
+    }
+
+    fn playback_kind(item_type: &str) -> Option<EmbyPlaybackKind> {
+        match item_type {
+            "Movie" => Some(EmbyPlaybackKind::Movie),
+            "Episode" => Some(EmbyPlaybackKind::Episode),
+            "Video" => Some(EmbyPlaybackKind::Video),
+            "Audio" => Some(EmbyPlaybackKind::Audio),
+            "MusicAlbum" => Some(EmbyPlaybackKind::MusicAlbum),
+            _ => None,
         }
     }
 
@@ -1331,9 +1340,15 @@ impl EmbyProvider {
             .get_item(item_request)
             .await
             .map(Self::emby_item_from_provider)?;
+        let kind = Self::playback_kind(&item.item_type).ok_or_else(|| {
+            ProviderError::InvalidConfig(format!(
+                "Unsupported Emby playback item type: {}",
+                item.item_type
+            ))
+        })?;
 
         let mut metadata = EmbyPlaybackMetadata {
-            item_type: Some(item.item_type.clone()),
+            kind,
             series_name: (!item.series_name.is_empty()).then_some(item.series_name.clone()),
             season_name: (!item.season_name.is_empty()).then_some(item.season_name.clone()),
             play_session_id: None,
@@ -2437,21 +2452,21 @@ impl DynamicPlaylistProvider for EmbyProvider {
                             item_id: item_id.clone(),
                         }
                     };
-                    DirectoryItemSourceConfig::Playlist(PlaylistSourceConfig::Emby(
+                    DynamicPlaylistItemSourceConfig::Playlist(PlaylistSourceConfig::Emby(
                         EmbyPlaylistSourceConfig {
                             server_id: base_config.server_id.clone(),
                             source,
                         },
                     ))
                 } else {
-                    DirectoryItemSourceConfig::Media(MediaSourceConfig::Emby(
+                    DynamicPlaylistItemSourceConfig::Media(MediaSourceConfig::Emby(
                         EmbyMediaSourceConfig {
                             item_id: item_id.clone(),
                             server_id: base_config.server_id.clone(),
                         },
                     ))
                 };
-                Ok(DirectoryItem {
+                Ok(DynamicPlaylistItem {
                     name: item.name,
                     target: if people_listing {
                         crate::models::ProviderTarget::emby_person(item.id.clone())
@@ -2465,7 +2480,7 @@ impl DynamicPlaylistProvider for EmbyProvider {
                     },
                     item_type,
                     size: None,
-                    thumbnail: Some(DirectoryItemThumbnail::Emby {
+                    thumbnail: Some(DynamicPlaylistItemThumbnail::Emby {
                         server_id: base_config.server_id.clone(),
                         credential_owner_id: *credential_owner_id,
                         item_id: item.id,
@@ -2473,6 +2488,7 @@ impl DynamicPlaylistProvider for EmbyProvider {
                     description: (!item.description.trim().is_empty()).then_some(item.description),
                     modified_at: None,
                     source_config: Some(source_config),
+                    metadata: None,
                 })
             })
             .collect::<Result<Vec<_>, ProviderError>>()?;
@@ -2800,6 +2816,20 @@ impl DynamicPlaylistProvider for EmbyProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playable_item_types_share_the_metadata_kind_parser() {
+        for (item_type, expected) in [
+            ("Movie", EmbyPlaybackKind::Movie),
+            ("Episode", EmbyPlaybackKind::Episode),
+            ("Video", EmbyPlaybackKind::Video),
+            ("Audio", EmbyPlaybackKind::Audio),
+            ("MusicAlbum", EmbyPlaybackKind::MusicAlbum),
+        ] {
+            assert_eq!(EmbyProvider::playback_kind(item_type), Some(expected));
+        }
+        assert_eq!(EmbyProvider::playback_kind("Person"), None);
+    }
 
     #[test]
     fn playback_cache_key_is_room_scoped() {

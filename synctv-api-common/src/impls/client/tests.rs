@@ -913,6 +913,7 @@ fn test_media_to_proto_basic() -> TestResult {
         true,
         None,
         &public_id_codec,
+        None,
     ))?;
     let creator_id = media
         .creator_id
@@ -943,6 +944,43 @@ fn test_media_to_proto_basic() -> TestResult {
 }
 
 #[test]
+fn test_media_to_proto_preserves_provider_resource_metadata() -> TestResult {
+    let public_id_codec = test_public_id_codec();
+    let media = make_test_media();
+    let provider_metadata = synctv_core::models::PlaybackMetadata::Bilibili(
+        synctv_core::models::BilibiliPlaybackMetadata {
+            room_id: Some(21_292_831),
+            ..synctv_core::models::BilibiliPlaybackMetadata::new(
+                synctv_core::models::BilibiliPlaybackKind::Live,
+            )
+        },
+    );
+    let proto = api_ok(try_media_to_proto_for_viewer_without_cover(
+        &media,
+        true,
+        None,
+        &public_id_codec,
+        Some(&provider_metadata),
+    ))?;
+    let metadata = proto
+        .metadata
+        .ok_or_else(|| test_error("resource metadata should be present"))?;
+    let provider = metadata
+        .provider
+        .ok_or_else(|| test_error("provider metadata should be present"))?;
+    let Some(synctv_proto::client::playback_metadata::Metadata::Bilibili(metadata)) =
+        provider.metadata
+    else {
+        return Err(test_error("Bilibili provider metadata should be present"));
+    };
+    assert_eq!(
+        metadata.kind,
+        synctv_proto::client::BilibiliPlaybackKind::Live as i32
+    );
+    Ok(())
+}
+
+#[test]
 fn test_media_to_proto_with_cover_includes_cover_payload() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let media = make_test_media();
@@ -961,6 +999,7 @@ fn test_media_to_proto_with_cover_includes_cover_payload() -> TestResult {
             thumbnail_access: None,
             public_id_codec: &public_id_codec,
         },
+        None,
     ))?;
     let proto_cover = proto
         .cover
@@ -1010,6 +1049,7 @@ fn test_media_to_proto_with_object_access_cover_includes_structured_access() -> 
             thumbnail_access: None,
             public_id_codec: &public_id_codec,
         },
+        None,
     ))?;
     let proto_cover = proto
         .cover
@@ -1054,6 +1094,7 @@ fn test_media_to_proto_with_thumbnail_includes_distinct_payload() -> TestResult 
             thumbnail_access: Some(&thumbnail_access),
             public_id_codec: &public_id_codec,
         },
+        None,
     ))?;
     let proto_thumbnail = proto
         .thumbnail
@@ -1091,6 +1132,7 @@ fn test_media_to_proto_for_owner_includes_source_metadata() -> TestResult {
         true,
         Some(owner_id),
         &public_id_codec,
+        None,
     ))?;
 
     assert_eq!(
@@ -1123,6 +1165,7 @@ fn test_seafile_source_metadata_uses_native_path() -> TestResult {
         true,
         media.creator_id,
         &public_id_codec,
+        None,
     ))?;
 
     assert_eq!(
@@ -1153,6 +1196,7 @@ fn test_media_to_proto_direct_media_omits_default_instance_binding() -> TestResu
         true,
         None,
         &public_id_codec,
+        None,
     ))?;
     assert_eq!(
         proto.source_provider,
@@ -1269,6 +1313,7 @@ fn test_playlist_to_proto() -> TestResult {
         true,
         None,
         &public_id_codec,
+        None,
     ))?;
 
     assert_eq!(
@@ -1321,6 +1366,7 @@ fn test_playlist_to_proto_with_cover_includes_cover_payload() -> TestResult {
         Some(&cover),
         Some(&cover_access),
         &public_id_codec,
+        None,
     ))?;
     let proto_cover = proto
         .cover
@@ -1372,6 +1418,7 @@ fn test_playlist_to_proto_dynamic() -> TestResult {
         true,
         None,
         &public_id_codec,
+        None,
     ))?;
     let parent_id = playlist
         .parent_id
@@ -1420,6 +1467,7 @@ fn test_playlist_to_proto_for_owner_includes_source_config() -> TestResult {
         true,
         Some(owner_id),
         &public_id_codec,
+        None,
     ))?;
 
     assert!(proto.source_config.is_some());
@@ -1455,6 +1503,7 @@ fn test_playlist_to_proto_for_non_owner_hides_source_config() -> TestResult {
         true,
         Some(UserId::expect_positive(999)),
         &public_id_codec,
+        None,
     ))?;
 
     assert!(proto.source_config.is_none());
@@ -1468,7 +1517,7 @@ fn test_playlist_to_proto_dynamic_requires_source_config() -> TestResult {
         id: PlaylistId::expect_positive(307),
         room_id: RoomId::expect_positive(301),
         creator_id: Some(UserId::expect_positive(304)),
-        name: "Broken Dynamic Folder".to_string(),
+        name: "Broken Dynamic Playlist".to_string(),
         description: String::new(),
         cover_file_reference_id: None,
         parent_id: None,
@@ -1482,7 +1531,14 @@ fn test_playlist_to_proto_dynamic_requires_source_config() -> TestResult {
     };
 
     assert!(matches!(
-        try_playlist_to_proto_for_viewer_without_cover(&playlist, 5, true, None, &public_id_codec),
+        try_playlist_to_proto_for_viewer_without_cover(
+            &playlist,
+            5,
+            true,
+            None,
+            &public_id_codec,
+            None,
+        ),
         Err(ApiError::Internal(message))
             if message.contains("Dynamic playlist")
                 && message.contains("source_config")

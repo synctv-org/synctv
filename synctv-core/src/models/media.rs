@@ -7,7 +7,7 @@ use super::file_storage::FileReferenceTarget;
 use super::id::{MediaId, PlaylistId, RoomId, UserId};
 use super::normalize_provider_instance_name_owned;
 use super::query::SortDirection;
-use super::{MediaSourceConfig, PlaybackKind, ProviderTarget};
+use super::{MediaSourceConfig, PlaybackKind, ProviderTarget, SynologyLibraryItemKind};
 
 sort_field_enum! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1862,6 +1862,7 @@ pub struct YoutubePlaybackMetadata {
     pub upload_date: Option<String>,
     pub category: Option<String>,
     pub is_live: bool,
+    pub is_currently_live: Option<bool>,
     pub live_start: Option<String>,
     pub live_end: Option<String>,
     pub storyboard_spec: Option<String>,
@@ -1870,11 +1871,18 @@ pub struct YoutubePlaybackMetadata {
     pub translation_languages: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DouyinPlaybackKind {
+    Video,
+    Live,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DouyinPlaybackMetadata {
     pub id: String,
-    pub kind: String,
+    pub kind: DouyinPlaybackKind,
     pub author_id: String,
     pub author_sec_uid: String,
     pub author_name: String,
@@ -1888,14 +1896,22 @@ pub struct DouyinPlaybackMetadata {
     pub music_title: Option<String>,
     pub music_author: Option<String>,
     pub is_live: bool,
+    pub is_currently_live: Option<bool>,
     pub room_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TikTokPlaybackKind {
+    Video,
+    Live,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TikTokPlaybackMetadata {
     pub id: String,
-    pub kind: String,
+    pub kind: TikTokPlaybackKind,
     pub author_id: String,
     pub author_sec_uid: String,
     pub author_unique_id: String,
@@ -1912,6 +1928,7 @@ pub struct TikTokPlaybackMetadata {
     pub music_author: Option<String>,
     pub subtitle_count: usize,
     pub is_live: bool,
+    pub is_currently_live: Option<bool>,
     pub room_id: Option<String>,
 }
 
@@ -1999,11 +2016,10 @@ pub struct AlistVideoPreviewMetadata {
     pub subtitle_count: usize,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BilibiliPlaybackMetadata {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content_type: Option<String>,
+    pub kind: BilibiliPlaybackKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bvid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2022,8 +2038,43 @@ pub struct BilibiliPlaybackMetadata {
     pub room_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_started_at: Option<i64>,
+    /// Whether this provider resource uses live playback semantics.
+    #[serde(default)]
+    pub is_live: bool,
+    /// Current upstream state when the provider could determine it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_currently_live: Option<bool>,
     #[serde(default, skip_serializing_if = "BilibiliDashManifests::is_empty")]
     pub dash_manifests: BilibiliDashManifests,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BilibiliPlaybackKind {
+    Video,
+    Pgc,
+    Live,
+}
+
+impl BilibiliPlaybackMetadata {
+    #[must_use]
+    pub fn new(kind: BilibiliPlaybackKind) -> Self {
+        Self {
+            kind,
+            bvid: None,
+            aid: None,
+            epid: None,
+            cid: None,
+            min_buffer_time: None,
+            fallback_format: None,
+            quality: None,
+            room_id: None,
+            live_started_at: None,
+            is_live: false,
+            is_currently_live: None,
+            dash_manifests: BilibiliDashManifests::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2139,17 +2190,26 @@ impl BilibiliDashManifestSlot {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbyPlaybackMetadata {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub item_type: Option<String>,
+    pub kind: EmbyPlaybackKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub series_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub season_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub play_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EmbyPlaybackKind {
+    Movie,
+    Episode,
+    Video,
+    Audio,
+    MusicAlbum,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2159,9 +2219,6 @@ pub struct DirectUrlPlaybackMetadata {
     pub format: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
-    /// Provider-confirmed eligibility for static byte sharing.
-    #[serde(default)]
-    pub p2p_eligible: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2200,6 +2257,11 @@ pub struct TwitchPlaybackMetadata {
     pub chapters: Vec<TwitchChapterMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storyboard_url: Option<String>,
+    /// Whether this provider resource uses live playback semantics.
+    #[serde(default)]
+    pub is_live: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_currently_live: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2234,6 +2296,9 @@ pub struct HuyaPlaybackMetadata {
     pub like_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_at: Option<i64>,
+    #[serde(default)]
+    pub is_live: bool,
+    pub is_currently_live: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2254,6 +2319,9 @@ pub struct DouyuPlaybackMetadata {
     pub viewer_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
+    #[serde(default)]
+    pub is_live: bool,
+    pub is_currently_live: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2284,6 +2352,9 @@ pub struct AcFunPlaybackMetadata {
     pub published_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<i64>,
+    #[serde(default)]
+    pub is_live: bool,
+    pub is_currently_live: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2484,7 +2555,7 @@ pub struct TrueNasPlaybackMetadata {
     pub group: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SynologyPlaybackMetadata {
     pub title: String,
@@ -2498,7 +2569,7 @@ pub struct SynologyPlaybackMetadata {
     pub genres: Vec<String>,
     pub item_id: i64,
     pub file_id: i64,
-    pub kind: String,
+    pub kind: SynologyLibraryItemKind,
     pub path: String,
     pub size: u64,
     pub duration_seconds: u64,

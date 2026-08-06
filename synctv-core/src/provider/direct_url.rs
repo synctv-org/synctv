@@ -899,7 +899,6 @@ impl MediaProvider for DirectUrlProvider {
                 .split('/')
                 .next_back()
                 .map(ToString::to_string),
-            p2p_eligible: playback_kind == Some(crate::models::PlaybackKind::Regular),
         });
         let duration_seconds = if playback_kind == Some(crate::models::PlaybackKind::Live) {
             None

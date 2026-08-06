@@ -5753,6 +5753,7 @@ fn render_human_output_includes_media_and_playlist_availability() {
         name: "Example".into(),
         metadata: Some(synctv_proto::client::ResourceMetadata {
             source: Some("direct_url".to_string()),
+            provider: None,
         }),
         position: 1.0,
         added_at: 1_775_291_657_i64,
@@ -5784,6 +5785,7 @@ fn render_human_output_includes_media_and_playlist_availability() {
         source_config: alist_playlist_source_config("/shows"),
         description: String::new(),
         cover: None,
+        metadata: None,
     })
     .expect("playlist human output should render");
 
@@ -5819,6 +5821,7 @@ fn render_human_output_includes_playlist_items_snapshot_version() {
             source_config: None,
             description: String::new(),
             cover: None,
+            metadata: None,
         }],
         media: vec![synctv_proto::client::Media {
             id: "media-1".into(),
@@ -5827,6 +5830,7 @@ fn render_human_output_includes_playlist_items_snapshot_version() {
             name: "Example".into(),
             metadata: Some(synctv_proto::client::ResourceMetadata {
                 source: Some("direct_url".to_string()),
+                provider: None,
             }),
             position: 1.0,
             added_at: 3,
@@ -5840,7 +5844,7 @@ fn render_human_output_includes_playlist_items_snapshot_version() {
             thumbnail: None,
         }],
         total: Some(2),
-        folder_count: 1,
+        playlist_count: 1,
         file_count: 1,
         dynamic_items: Vec::new(),
         current_path: Vec::new(),

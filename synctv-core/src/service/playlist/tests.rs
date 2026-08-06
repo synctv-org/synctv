@@ -334,14 +334,14 @@ fn dynamic_playlist_allows_default_provider_instance() {
 }
 
 #[test]
-fn static_folder_rejects_dynamic_fields_without_provider() {
+fn static_playlist_rejects_dynamic_fields_without_provider() {
     let err = err(
         normalize_dynamic_playlist_fields(
             None,
             Some(alist_playlist_source_config("srv", "/movies")),
             Some("alist-main".to_string()),
         ),
-        "static folder should reject dynamic fields",
+        "static playlist should reject dynamic fields",
     );
 
     match err {

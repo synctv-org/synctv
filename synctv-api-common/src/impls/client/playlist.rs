@@ -242,7 +242,7 @@ impl ClientApiImpl {
         let actor_id = uid;
         let rid = self.parse_room_id(room_id)?;
 
-        // Playlists/folders and media are both media resources; creating either
+        // Playlists and media are both media resources; creating either
         // requires the shared resource creation permission.
         self.room_service
             .check_permission(
@@ -609,7 +609,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound(format!("Playlist {playlist_id} not found")))?;
-        let (playlist_availability, child_folder_count, media_count) = tokio::join!(
+        let (playlist_availability, child_playlist_count, media_count) = tokio::join!(
             self.room_service.playlist_availability(&playlist),
             self.room_service
                 .playlist_service()
@@ -617,8 +617,8 @@ impl ClientApiImpl {
             self.playlist_media_count_i32(&rid, &pid),
         );
         let playlist_availability = playlist_availability.map_err(ApiError::from)?;
-        let child_folder_count = child_folder_count.map_err(ApiError::from)?;
-        let child_folder_count = i64_to_i32_api(child_folder_count, "child folder count")?;
+        let child_playlist_count = child_playlist_count.map_err(ApiError::from)?;
+        let child_playlist_count = i64_to_i32_api(child_playlist_count, "child playlist count")?;
         let media_count = media_count?;
 
         Ok(synctv_proto::client::GetPlaylistResponse {
@@ -631,12 +631,12 @@ impl ClientApiImpl {
                 )
                 .await?,
             ),
-            child_folder_count,
+            child_playlist_count,
             media_count,
         })
     }
 
-    /// List playlists (folders) in a room or under a parent
+    /// List playlists in a room or under a parent.
     ///
     /// Supports pagination via `page` and `page_size` fields.
     /// Default page_size is 50, maximum is 100.

@@ -9,10 +9,10 @@ use futures::{stream, StreamExt};
 use sha2::{Digest, Sha256};
 
 use super::{
-    DirectoryItem, DirectoryItemThumbnail, DynamicBrowsePathSegment, DynamicListQuery,
-    DynamicListResult, DynamicPagination, DynamicPlaylistProvider, ItemType, MediaProvider,
-    NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency,
-    ProviderError, SourceConfig, SourceCover,
+    DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
+    DynamicPlaylistItem, DynamicPlaylistItemThumbnail, DynamicPlaylistProvider, ItemType,
+    MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext,
+    ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::media::{
     PlaybackCloudreveMedia, PlaybackCloudreveSubtitle, PlaybackMedia, PlaybackMediaProvider,
@@ -33,16 +33,16 @@ const THUMBNAIL_CONCURRENCY: usize = 8;
 
 #[derive(Default)]
 struct SequentialMediaScan {
-    first: Option<DirectoryItem>,
+    first: Option<DynamicPlaylistItem>,
     found_current: bool,
 }
 
 impl SequentialMediaScan {
     fn observe(
         &mut self,
-        item: DirectoryItem,
+        item: DynamicPlaylistItem,
         current_target: &ProviderTarget,
-    ) -> Option<DirectoryItem> {
+    ) -> Option<DynamicPlaylistItem> {
         if self.first.is_none() {
             self.first = Some(item.clone());
         }
@@ -55,7 +55,7 @@ impl SequentialMediaScan {
         None
     }
 
-    fn finish(self, repeat_all: bool) -> Option<DirectoryItem> {
+    fn finish(self, repeat_all: bool) -> Option<DynamicPlaylistItem> {
         (repeat_all && self.found_current)
             .then_some(self.first)
             .flatten()
@@ -630,7 +630,7 @@ impl CloudreveProvider {
 
     fn next_item(
         base: &CloudrevePlaylistSourceConfig,
-        item: &DirectoryItem,
+        item: &DynamicPlaylistItem,
     ) -> Result<NextPlayItem, ProviderError> {
         let relative = Self::decode_target(Some(&item.target))?.ok_or_else(|| {
             ProviderError::InvalidConfig("Cloudreve item target is required".to_string())
@@ -999,8 +999,8 @@ impl DynamicPlaylistProvider for CloudreveProvider {
                     })?;
                 let thumbnail = Some(file.thumbnail())
                     .filter(|value| !value.is_empty())
-                    .map(DirectoryItemThumbnail::Url);
-                Ok(DirectoryItem {
+                    .map(DynamicPlaylistItemThumbnail::Url);
+                Ok(DynamicPlaylistItem {
                     name: file.name,
                     item_type,
                     target: Self::encode_target(&relative_path)?,
@@ -1009,6 +1009,7 @@ impl DynamicPlaylistProvider for CloudreveProvider {
                     description: None,
                     modified_at: file.updated_at.map(|value| value.timestamp()),
                     source_config: None,
+                    metadata: None,
                 })
             })
             .collect::<Result<Vec<_>, ProviderError>>()?;
@@ -1282,7 +1283,7 @@ mod tests {
     #[test]
     fn sequential_scan_advances_across_the_two_hundred_item_boundary() {
         let items = (1..=202)
-            .map(|index| DirectoryItem {
+            .map(|index| DynamicPlaylistItem {
                 name: format!("Episode {index}"),
                 item_type: ItemType::Media,
                 target: CloudreveProvider::encode_target(&format!("/Episode {index}.mp4"))
@@ -1292,6 +1293,7 @@ mod tests {
                 description: None,
                 modified_at: None,
                 source_config: None,
+                metadata: None,
             })
             .collect::<Vec<_>>();
         let current = items[199].target.clone();
@@ -1317,7 +1319,7 @@ mod tests {
 
     #[test]
     fn repeat_all_scan_wraps_from_the_last_item_to_the_first() {
-        let first = DirectoryItem {
+        let first = DynamicPlaylistItem {
             name: "Episode 1".to_string(),
             item_type: ItemType::Media,
             target: CloudreveProvider::encode_target("/Episode 1.mp4")
@@ -1327,8 +1329,9 @@ mod tests {
             description: None,
             modified_at: None,
             source_config: None,
+            metadata: None,
         };
-        let last = DirectoryItem {
+        let last = DynamicPlaylistItem {
             name: "Episode 202".to_string(),
             item_type: ItemType::Media,
             target: CloudreveProvider::encode_target("/Episode 202.mp4")
@@ -1338,6 +1341,7 @@ mod tests {
             description: None,
             modified_at: None,
             source_config: None,
+            metadata: None,
         };
         let last_target = last.target.clone();
         let mut scan = SequentialMediaScan::default();
@@ -1401,7 +1405,7 @@ mod tests {
             server_id: "server-id".to_string(),
             path: "cloudreve://my/Shows".to_string(),
         };
-        let item = DirectoryItem {
+        let item = DynamicPlaylistItem {
             name: "Episode 1".to_string(),
             item_type: ItemType::Media,
             target: CloudreveProvider::encode_target("/Season 1/Episode 1.mp4")
@@ -1411,6 +1415,7 @@ mod tests {
             description: None,
             modified_at: None,
             source_config: None,
+            metadata: None,
         };
 
         let next =

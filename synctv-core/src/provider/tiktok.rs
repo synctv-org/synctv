@@ -10,22 +10,23 @@ use sha2::{Digest, Sha256};
 use url::Url;
 
 use super::{
-    DirectoryItem, DirectoryItemThumbnail, DynamicListQuery, DynamicListResult, DynamicPagination,
-    DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult,
-    ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
+    DynamicListQuery, DynamicListResult, DynamicPagination, DynamicPlaylistItem,
+    DynamicPlaylistItemThumbnail, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
+    PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency, ProviderError,
+    SourceConfig, SourceCover,
 };
 use crate::cache::{SingleFlight, SingleFlightError};
 use crate::models::{
     MediaSourceConfig, PlayMode, PlaybackMedia, PlaybackMediaMetadata, PlaybackMediaProvider,
     PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider, PlaybackTikTokMedia,
     PlaybackTikTokSubtitle, PlaylistSourceConfig, ProviderCredential, ProviderTarget,
-    TikTokMediaSourceConfig, TikTokPlaybackMetadata, TikTokPlaybackResource,
+    TikTokMediaSourceConfig, TikTokPlaybackKind, TikTokPlaybackMetadata, TikTokPlaybackResource,
     TikTokPlaylistSourceConfig, UserId, UserProviderCredential,
 };
 use crate::repository::UserProviderCredentialRepository;
 use synctv_media_providers::tiktok::{
-    TikTokClient, TikTokListItem, TikTokMedia, TikTokMediaKind, TikTokSession, TikTokStreamFormat,
-    TikTokVariant,
+    TikTokClient, TikTokListItem, TikTokMedia, TikTokMediaKind, TikTokMetadata, TikTokSession,
+    TikTokStreamFormat, TikTokVariant,
 };
 
 const PAGE_SIZE: usize = 20;
@@ -586,6 +587,36 @@ impl TikTokProvider {
         })
     }
 
+    fn metadata_model(metadata: TikTokMetadata, room_id: Option<String>) -> TikTokPlaybackMetadata {
+        let is_live = metadata.kind == TikTokMediaKind::Live;
+        let subtitle_count = metadata.subtitles.len();
+        TikTokPlaybackMetadata {
+            id: metadata.id,
+            kind: match metadata.kind {
+                TikTokMediaKind::Video => TikTokPlaybackKind::Video,
+                TikTokMediaKind::Live => TikTokPlaybackKind::Live,
+            },
+            author_id: metadata.author.id,
+            author_sec_uid: metadata.author.sec_uid,
+            author_unique_id: metadata.author.unique_id,
+            author_name: metadata.author.nickname,
+            description: metadata.description,
+            view_count: metadata.view_count,
+            like_count: metadata.like_count,
+            comment_count: metadata.comment_count,
+            share_count: metadata.share_count,
+            collect_count: metadata.collect_count,
+            concurrent_viewers: metadata.concurrent_viewers,
+            created_at: metadata.created_at,
+            music_title: metadata.music_title,
+            music_author: metadata.music_author,
+            subtitle_count,
+            is_live,
+            is_currently_live: is_live.then_some(metadata.is_live),
+            room_id,
+        }
+    }
+
     fn playback_result(
         media: TikTokMedia,
         resource: &TikTokPlaybackResource,
@@ -603,7 +634,6 @@ impl TikTokProvider {
             })
             .flatten();
         let mut preferred_video_mode = None;
-        let subtitle_count = media.metadata.subtitles.len();
         let subtitles = media
             .metadata
             .subtitles
@@ -708,60 +738,62 @@ impl TikTokProvider {
             .or(preferred_video_mode)
             .or_else(|| infos.keys().min().cloned())
             .ok_or_else(|| ProviderError::ApiError("TikTok playback is empty".to_string()))?;
+        let duration_seconds = media
+            .metadata
+            .duration_ms
+            .map(|duration| std::time::Duration::from_millis(duration).as_secs_f64());
+        let playback_kind = if media.metadata.kind == TikTokMediaKind::Live {
+            crate::models::PlaybackKind::Live
+        } else {
+            crate::models::PlaybackKind::Regular
+        };
+        let metadata = Self::metadata_model(media.metadata, media.room_id);
         Ok(PlaybackResult {
             playback_infos: infos,
             default_mode,
             provider: Self::NAME.to_string(),
             provider_instance_name: None,
-            duration_seconds: media
-                .metadata
-                .duration_ms
-                .map(|duration| std::time::Duration::from_millis(duration).as_secs_f64()),
-            playback_kind: Some(if media.metadata.is_live {
-                crate::models::PlaybackKind::Live
-            } else {
-                crate::models::PlaybackKind::Regular
-            }),
-            metadata: Some(PlaybackMetadata::TikTok(TikTokPlaybackMetadata {
-                id: media.metadata.id,
-                kind: match media.metadata.kind {
-                    TikTokMediaKind::Video => "video",
-                    TikTokMediaKind::Live => "live",
-                }
-                .to_string(),
-                author_id: media.metadata.author.id,
-                author_sec_uid: media.metadata.author.sec_uid,
-                author_unique_id: media.metadata.author.unique_id,
-                author_name: media.metadata.author.nickname,
-                description: media.metadata.description,
-                view_count: media.metadata.view_count,
-                like_count: media.metadata.like_count,
-                comment_count: media.metadata.comment_count,
-                share_count: media.metadata.share_count,
-                collect_count: media.metadata.collect_count,
-                concurrent_viewers: media.metadata.concurrent_viewers,
-                created_at: media.metadata.created_at,
-                music_title: media.metadata.music_title,
-                music_author: media.metadata.music_author,
-                subtitle_count,
-                is_live: media.metadata.is_live,
-                room_id: media.room_id,
-            })),
+            duration_seconds,
+            playback_kind: Some(playback_kind),
+            metadata: Some(PlaybackMetadata::TikTok(metadata)),
         })
     }
 
-    fn directory_item(item: TikTokListItem) -> DirectoryItem {
-        DirectoryItem {
+    fn directory_item(item: TikTokListItem) -> DynamicPlaylistItem {
+        let metadata = PlaybackMetadata::TikTok(TikTokPlaybackMetadata {
+            id: item.video_id.clone(),
+            kind: TikTokPlaybackKind::Video,
+            author_id: item.author.id.clone(),
+            author_sec_uid: item.author.sec_uid.clone(),
+            author_unique_id: item.author.unique_id.clone(),
+            author_name: item.author.nickname.clone(),
+            description: item.title.clone(),
+            view_count: None,
+            like_count: None,
+            comment_count: None,
+            share_count: None,
+            collect_count: None,
+            concurrent_viewers: None,
+            created_at: item.created_at,
+            music_title: None,
+            music_author: None,
+            subtitle_count: 0,
+            is_live: false,
+            is_currently_live: None,
+            room_id: None,
+        });
+        DynamicPlaylistItem {
             name: item.title,
             item_type: ItemType::Media,
             target: ProviderTarget::tiktok(item.video_id),
             size: None,
             thumbnail: item
                 .cover
-                .map(|cover| DirectoryItemThumbnail::Url(cover.url)),
+                .map(|cover| DynamicPlaylistItemThumbnail::Url(cover.url)),
             description: Some(item.author.nickname).filter(|value| !value.is_empty()),
             modified_at: item.created_at,
             source_config: None,
+            metadata: Some(metadata),
         }
     }
 
@@ -776,7 +808,7 @@ impl TikTokProvider {
 
     fn next_item(
         config: &TikTokPlaylistSourceConfig,
-        item: &DirectoryItem,
+        item: &DynamicPlaylistItem,
     ) -> Result<NextPlayItem, ProviderError> {
         Ok(NextPlayItem {
             name: item.name.clone(),
@@ -790,11 +822,11 @@ impl TikTokProvider {
     }
 
     fn scan_ordered_page(
-        items: Vec<DirectoryItem>,
+        items: Vec<DynamicPlaylistItem>,
         target: &ProviderTarget,
-        first: &mut Option<DirectoryItem>,
+        first: &mut Option<DynamicPlaylistItem>,
         found_current: &mut bool,
-    ) -> Option<DirectoryItem> {
+    ) -> Option<DynamicPlaylistItem> {
         for item in items {
             first.get_or_insert_with(|| item.clone());
             if *found_current {
@@ -957,6 +989,34 @@ impl MediaProvider for TikTokProvider {
                     credential_owner_id,
                     provider_instance_name.as_deref(),
                 )
+            },
+        )
+        .await
+    }
+
+    async fn media_metadata(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: &MediaSourceConfig,
+    ) -> Result<Option<PlaybackMetadata>, ProviderError> {
+        ctx.check_active()
+            .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
+        let config = Self::media_config(source_config)?;
+        let cache_key = serde_json::to_string(source_config)
+            .map_err(|error| ProviderError::Internal(error.to_string()))?;
+        let shared = Self::media_shared(config);
+        super::cached_provider_metadata_or_fill(
+            Self::NAME,
+            &cache_key,
+            Duration::from_secs(15),
+            ctx,
+            || async {
+                let session = self.session(ctx, shared).await?;
+                let media = self.resolve_media(config, &session).await?;
+                Ok(Some(PlaybackMetadata::TikTok(Self::metadata_model(
+                    media.metadata,
+                    media.room_id,
+                ))))
             },
         )
         .await
@@ -1260,8 +1320,8 @@ mod tests {
         }
     }
 
-    fn item(video_id: &str) -> DirectoryItem {
-        DirectoryItem {
+    fn item(video_id: &str) -> DynamicPlaylistItem {
+        DynamicPlaylistItem {
             name: video_id.to_string(),
             item_type: ItemType::Media,
             target: ProviderTarget::tiktok(video_id.to_string()),
@@ -1270,6 +1330,7 @@ mod tests {
             description: None,
             modified_at: None,
             source_config: None,
+            metadata: None,
         }
     }
 

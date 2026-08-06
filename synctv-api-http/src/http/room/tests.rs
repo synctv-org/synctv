@@ -664,7 +664,7 @@ fn test_delete_entries_body_deserializes_force_true() -> TestResult {
 fn test_create_playlist_body_deserializes_dynamic_fields() -> TestResult {
     let body: CreatePlaylistRequest = serde_json::from_str(
         r#"{
-            "name":"Dynamic Folder",
+            "name":"Dynamic Playlist",
             "parentId":"playlist-root",
             "sourceProvider":3,
             "sourceConfig":{"alist":{"serverId":"alist-server","path":"/tv"}},
@@ -672,7 +672,7 @@ fn test_create_playlist_body_deserializes_dynamic_fields() -> TestResult {
         }"#,
     )?;
 
-    assert_eq!(body.name, "Dynamic Folder");
+    assert_eq!(body.name, "Dynamic Playlist");
     assert_eq!(body.parent_id, "playlist-root");
     assert_eq!(
         body.source_provider,

@@ -10,10 +10,10 @@ use rand::seq::IndexedRandom;
 use sha2::{Digest, Sha256};
 
 use super::{
-    DirectoryItem, DirectoryItemThumbnail, DynamicBrowsePathSegment, DynamicListQuery,
-    DynamicListResult, DynamicPagination, DynamicPlaylistProvider, ItemType, MediaProvider,
-    NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency,
-    ProviderError, SourceConfig, SourceCover,
+    DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
+    DynamicPlaylistItem, DynamicPlaylistItemThumbnail, DynamicPlaylistProvider, ItemType,
+    MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext,
+    ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::{
     detect_direct_url_format, normalize_provider_instance_name,
@@ -1161,7 +1161,7 @@ impl DynamicPlaylistProvider for QnapProvider {
 }
 
 fn has_enough_media_for_next(
-    media: &[DirectoryItem],
+    media: &[DynamicPlaylistItem],
     target: &ProviderTarget,
     play_mode: PlayMode,
 ) -> bool {
@@ -1176,10 +1176,10 @@ fn has_enough_media_for_next(
 }
 
 fn select_next_media<'a>(
-    media: &'a [DirectoryItem],
+    media: &'a [DynamicPlaylistItem],
     target: &ProviderTarget,
     play_mode: PlayMode,
-) -> Option<&'a DirectoryItem> {
+) -> Option<&'a DynamicPlaylistItem> {
     match play_mode {
         PlayMode::Sequential => media
             .iter()
@@ -1471,7 +1471,7 @@ fn map_directory_item(
     item: QnapListItem,
     owner: UserId,
     server_id: &str,
-) -> Result<DirectoryItem, ProviderError> {
+) -> Result<DynamicPlaylistItem, ProviderError> {
     let item_type = if item.is_dir {
         ItemType::Playlist
     } else if is_playable(&item.name) {
@@ -1485,12 +1485,12 @@ fn map_directory_item(
             item.path
         ))
     })?;
-    Ok(DirectoryItem {
+    Ok(DynamicPlaylistItem {
         name: item.name,
         item_type,
         target: ProviderTarget::qnap(relative),
         size: (!item.is_dir).then_some(item.size),
-        thumbnail: (!item.is_dir).then(|| DirectoryItemThumbnail::Qnap {
+        thumbnail: (!item.is_dir).then(|| DynamicPlaylistItemThumbnail::Qnap {
             server_id: server_id.to_string(),
             credential_owner_id: owner,
             path: item.path,
@@ -1500,6 +1500,7 @@ fn map_directory_item(
             .ok()
             .filter(|modified_at| *modified_at > 0),
         source_config: None,
+        metadata: None,
     })
 }
 
@@ -1598,7 +1599,7 @@ mod tests {
     #[test]
     fn sequential_autoplay_scans_past_two_hundred_items() {
         let media = (1..=250)
-            .map(|index| DirectoryItem {
+            .map(|index| DynamicPlaylistItem {
                 name: format!("Movie {index}"),
                 item_type: ItemType::Media,
                 target: ProviderTarget::qnap(format!("Movie-{index}.mkv")),
@@ -1607,6 +1608,7 @@ mod tests {
                 description: None,
                 modified_at: None,
                 source_config: None,
+                metadata: None,
             })
             .collect::<Vec<_>>();
         let item_200 = ProviderTarget::qnap("Movie-200.mkv".to_string());

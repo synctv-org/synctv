@@ -18,6 +18,62 @@ fn playback_kind_to_proto(kind: synctv_core::models::PlaybackKind) -> i32 {
     }
 }
 
+fn bilibili_playback_kind_to_proto(kind: synctv_core::models::BilibiliPlaybackKind) -> i32 {
+    match kind {
+        synctv_core::models::BilibiliPlaybackKind::Video => {
+            client_proto::BilibiliPlaybackKind::Video as i32
+        }
+        synctv_core::models::BilibiliPlaybackKind::Pgc => {
+            client_proto::BilibiliPlaybackKind::Pgc as i32
+        }
+        synctv_core::models::BilibiliPlaybackKind::Live => {
+            client_proto::BilibiliPlaybackKind::Live as i32
+        }
+    }
+}
+
+fn douyin_playback_kind_to_proto(kind: synctv_core::models::DouyinPlaybackKind) -> i32 {
+    match kind {
+        synctv_core::models::DouyinPlaybackKind::Video => {
+            client_proto::DouyinPlaybackKind::Video as i32
+        }
+        synctv_core::models::DouyinPlaybackKind::Live => {
+            client_proto::DouyinPlaybackKind::Live as i32
+        }
+    }
+}
+
+fn emby_playback_kind_to_proto(kind: synctv_core::models::EmbyPlaybackKind) -> i32 {
+    match kind {
+        synctv_core::models::EmbyPlaybackKind::Movie => {
+            client_proto::EmbyPlaybackKind::Movie as i32
+        }
+        synctv_core::models::EmbyPlaybackKind::Episode => {
+            client_proto::EmbyPlaybackKind::Episode as i32
+        }
+        synctv_core::models::EmbyPlaybackKind::Video => {
+            client_proto::EmbyPlaybackKind::Video as i32
+        }
+        synctv_core::models::EmbyPlaybackKind::Audio => {
+            client_proto::EmbyPlaybackKind::Audio as i32
+        }
+        synctv_core::models::EmbyPlaybackKind::MusicAlbum => {
+            client_proto::EmbyPlaybackKind::MusicAlbum as i32
+        }
+    }
+}
+
+fn tiktok_playback_kind_to_proto(kind: synctv_core::models::TikTokPlaybackKind) -> i32 {
+    match kind {
+        synctv_core::models::TikTokPlaybackKind::Video => {
+            client_proto::TikTokPlaybackKind::Video as i32
+        }
+        synctv_core::models::TikTokPlaybackKind::Live => {
+            client_proto::TikTokPlaybackKind::Live as i32
+        }
+    }
+}
+
 pub struct PlaybackHttpSigningContext<'a> {
     pub signing_key: &'a crate::proxy_signature::ProxySigningKey,
     pub media_swarm_signing_key: &'a crate::proxy_signature::MediaSwarmSigningKey,
@@ -2488,14 +2544,25 @@ pub fn try_media_to_proto_for_viewer_without_cover(
     is_available: bool,
     viewer_id: Option<synctv_core::models::UserId>,
     public_id_codec: &synctv_adapter::PublicIdCodec,
+    provider_metadata: Option<&synctv_core::provider::ProviderResourceMetadata>,
 ) -> Result<synctv_proto::client::Media, crate::impls::ApiError> {
     let can_view_source = can_browse_library_source_config(media, viewer_id);
+    let metadata = (can_view_source || provider_metadata.is_some())
+        .then(|| {
+            media_resource_metadata_to_proto(
+                &media.source_config,
+                can_view_source,
+                provider_metadata,
+                public_id_codec,
+            )
+        })
+        .transpose()?;
     Ok(synctv_proto::client::Media {
         id: encode_media_id_for_proto(media.id, public_id_codec)?,
         room_id: encode_room_id_for_proto(media.room_id, public_id_codec)?,
         source_provider: core_source_provider_to_proto(media.source_provider),
         name: media.name.clone(),
-        metadata: can_view_source.then(|| media_resource_metadata_to_proto(&media.source_config)),
+        metadata,
         position: media.position,
         added_at: media.added_at.timestamp(),
         creator_id: media
@@ -2515,7 +2582,10 @@ pub fn try_media_to_proto_for_viewer_without_cover(
 
 fn media_resource_metadata_to_proto(
     source_config: &synctv_core::models::MediaSourceConfig,
-) -> synctv_proto::client::ResourceMetadata {
+    include_source: bool,
+    provider_metadata: Option<&synctv_core::provider::ProviderResourceMetadata>,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
+) -> Result<synctv_proto::client::ResourceMetadata, crate::impls::ApiError> {
     let source = match source_config {
         synctv_core::models::MediaSourceConfig::DirectUrl(config) => config
             .medias
@@ -2619,9 +2689,12 @@ fn media_resource_metadata_to_proto(
         synctv_core::models::MediaSourceConfig::TrueNas(config) => config.path.clone(),
     };
 
-    synctv_proto::client::ResourceMetadata {
-        source: Some(source),
-    }
+    Ok(synctv_proto::client::ResourceMetadata {
+        source: include_source.then_some(source),
+        provider: provider_metadata
+            .map(|metadata| provider_resource_metadata_to_proto(metadata, public_id_codec))
+            .transpose()?,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -2638,12 +2711,14 @@ pub struct MediaProtoView<'a> {
 pub fn try_media_to_proto_for_viewer_with_cover(
     media: &synctv_core::models::Media,
     view: MediaProtoView<'_>,
+    provider_metadata: Option<&synctv_core::provider::ProviderResourceMetadata>,
 ) -> Result<synctv_proto::client::Media, crate::impls::ApiError> {
     let mut proto = try_media_to_proto_for_viewer_without_cover(
         media,
         view.is_available,
         view.viewer_id,
         view.public_id_codec,
+        provider_metadata,
     )?;
     proto.cover = view
         .cover
@@ -2662,6 +2737,7 @@ pub fn try_playlist_to_proto_for_viewer_without_cover(
     is_available: bool,
     viewer_id: Option<synctv_core::models::UserId>,
     public_id_codec: &synctv_adapter::PublicIdCodec,
+    provider_metadata: Option<&synctv_core::provider::ProviderResourceMetadata>,
 ) -> Result<synctv_proto::client::Playlist, crate::impls::ApiError> {
     if playlist.source_provider.is_some() && playlist.source_config.is_none() {
         return Err(crate::impls::ApiError::Internal(format!(
@@ -2679,6 +2755,13 @@ pub fn try_playlist_to_proto_for_viewer_without_cover(
         Some(provider) => core_source_provider_to_proto(provider),
         None => source_config_proto::SourceProvider::Unspecified as i32,
     };
+    let metadata = provider_metadata
+        .map(|metadata| provider_resource_metadata_to_proto(metadata, public_id_codec))
+        .transpose()?
+        .map(|provider| synctv_proto::client::ResourceMetadata {
+            source: None,
+            provider: Some(provider),
+        });
 
     Ok(synctv_proto::client::Playlist {
         id: encode_playlist_id_for_proto(playlist.id, public_id_codec)?,
@@ -2701,6 +2784,7 @@ pub fn try_playlist_to_proto_for_viewer_without_cover(
         provider_instance_name: playlist.provider_instance_name.clone().unwrap_or_default(),
         description: playlist.description.clone(),
         cover: empty_resource_cover(),
+        metadata,
         creator_id: playlist
             .creator_id
             .map(|creator_id| public_id_codec.encode_user_id(creator_id))
@@ -2740,6 +2824,9 @@ pub fn dynamic_playlist_source_fields(
     })
 }
 
+// This entry point deliberately mirrors the independent fields needed to
+// authorize, enrich, and render a playlist resource in one conversion.
+#[allow(clippy::too_many_arguments)]
 pub fn try_playlist_to_proto_for_viewer_with_cover(
     playlist: &synctv_core::models::Playlist,
     item_count: i32,
@@ -2748,6 +2835,7 @@ pub fn try_playlist_to_proto_for_viewer_with_cover(
     cover: Option<&synctv_core::models::StoredFileReference>,
     cover_access: Option<&crate::impls::stored_files::StoredFileObjectAccess>,
     public_id_codec: &synctv_adapter::PublicIdCodec,
+    provider_metadata: Option<&synctv_core::provider::ProviderResourceMetadata>,
 ) -> Result<synctv_proto::client::Playlist, crate::impls::ApiError> {
     let mut proto = try_playlist_to_proto_for_viewer_without_cover(
         playlist,
@@ -2755,6 +2843,7 @@ pub fn try_playlist_to_proto_for_viewer_with_cover(
         is_available,
         viewer_id,
         public_id_codec,
+        provider_metadata,
     )?;
     proto.cover = cover
         .map(|file| stored_file_reference_to_resource_cover(file, cover_access))
@@ -3031,12 +3120,19 @@ fn playback_metadata_to_proto(
     result: &synctv_core::models::media::PlaybackResult,
     public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<Option<synctv_proto::client::PlaybackMetadata>, crate::impls::ApiError> {
+    result
+        .metadata
+        .as_ref()
+        .map(|metadata| provider_resource_metadata_to_proto(metadata, public_id_codec))
+        .transpose()
+}
+
+pub(crate) fn provider_resource_metadata_to_proto(
+    metadata: &synctv_core::models::media::PlaybackMetadata,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
+) -> Result<synctv_proto::client::PlaybackMetadata, crate::impls::ApiError> {
     use synctv_core::models::media::PlaybackMetadata;
     use synctv_proto::client::playback_metadata;
-
-    let Some(metadata) = result.metadata.as_ref() else {
-        return Ok(None);
-    };
 
     let metadata = match metadata {
         PlaybackMetadata::Alist(metadata) => {
@@ -3099,7 +3195,7 @@ fn playback_metadata_to_proto(
         }
         PlaybackMetadata::Bilibili(metadata) => {
             playback_metadata::Metadata::Bilibili(synctv_proto::client::BilibiliPlaybackMetadata {
-                content_type: metadata.content_type.clone(),
+                kind: bilibili_playback_kind_to_proto(metadata.kind),
                 bvid: metadata.bvid.clone(),
                 aid: metadata.aid,
                 epid: metadata.epid,
@@ -3109,11 +3205,13 @@ fn playback_metadata_to_proto(
                 quality: metadata.quality,
                 room_id: metadata.room_id,
                 live_started_at: metadata.live_started_at,
+                is_live: metadata.is_live,
+                is_currently_live: metadata.is_currently_live,
             })
         }
         PlaybackMetadata::Emby(metadata) => {
             playback_metadata::Metadata::Emby(synctv_proto::client::EmbyPlaybackMetadata {
-                item_type: metadata.item_type.clone(),
+                kind: emby_playback_kind_to_proto(metadata.kind),
                 series_name: metadata.series_name.clone(),
                 season_name: metadata.season_name.clone(),
                 play_session_id: metadata.play_session_id.clone(),
@@ -3160,6 +3258,8 @@ fn playback_metadata_to_proto(
                     })
                     .collect(),
                 storyboard_url: metadata.storyboard_url.clone(),
+                is_live: metadata.is_live,
+                is_currently_live: metadata.is_currently_live,
             })
         }
         PlaybackMetadata::Youtube(metadata) => {
@@ -3191,6 +3291,7 @@ fn playback_metadata_to_proto(
                     },
                 )?,
                 translation_languages: metadata.translation_languages.clone(),
+                is_currently_live: metadata.is_currently_live,
             })
         }
         PlaybackMetadata::Huya(metadata) => {
@@ -3207,6 +3308,8 @@ fn playback_metadata_to_proto(
                 comment_count: metadata.comment_count,
                 like_count: metadata.like_count,
                 published_at: metadata.published_at,
+                is_live: metadata.is_live,
+                is_currently_live: metadata.is_currently_live,
             })
         }
         PlaybackMetadata::Douyu(metadata) => {
@@ -3221,12 +3324,14 @@ fn playback_metadata_to_proto(
                 is_vip: metadata.is_vip,
                 viewer_count: metadata.viewer_count,
                 started_at: metadata.started_at.clone(),
+                is_live: metadata.is_live,
+                is_currently_live: metadata.is_currently_live,
             })
         }
         PlaybackMetadata::Douyin(metadata) => {
             playback_metadata::Metadata::Douyin(synctv_proto::client::DouyinPlaybackMetadata {
                 id: metadata.id.clone(),
-                kind: metadata.kind.clone(),
+                kind: douyin_playback_kind_to_proto(metadata.kind),
                 author_id: metadata.author_id.clone(),
                 author_sec_uid: metadata.author_sec_uid.clone(),
                 author_name: metadata.author_name.clone(),
@@ -3241,12 +3346,13 @@ fn playback_metadata_to_proto(
                 music_author: metadata.music_author.clone(),
                 is_live: metadata.is_live,
                 room_id: metadata.room_id.clone(),
+                is_currently_live: metadata.is_currently_live,
             })
         }
         PlaybackMetadata::TikTok(metadata) => {
             playback_metadata::Metadata::Tiktok(synctv_proto::client::TikTokPlaybackMetadata {
                 id: metadata.id.clone(),
-                kind: metadata.kind.clone(),
+                kind: tiktok_playback_kind_to_proto(metadata.kind),
                 author_id: metadata.author_id.clone(),
                 author_sec_uid: metadata.author_sec_uid.clone(),
                 author_unique_id: metadata.author_unique_id.clone(),
@@ -3264,6 +3370,7 @@ fn playback_metadata_to_proto(
                 subtitle_count: u32::try_from(metadata.subtitle_count).unwrap_or(u32::MAX),
                 is_live: metadata.is_live,
                 room_id: metadata.room_id.clone(),
+                is_currently_live: metadata.is_currently_live,
             })
         }
         PlaybackMetadata::AcFun(metadata) => {
@@ -3282,6 +3389,8 @@ fn playback_metadata_to_proto(
                 comment_count: metadata.comment_count,
                 published_at: metadata.published_at,
                 started_at: metadata.started_at,
+                is_live: metadata.is_live,
+                is_currently_live: metadata.is_currently_live,
             })
         }
         PlaybackMetadata::Cctv(metadata) => {
@@ -3403,7 +3512,7 @@ fn playback_metadata_to_proto(
                 genres: metadata.genres.clone(),
                 item_id: metadata.item_id,
                 file_id: metadata.file_id,
-                kind: metadata.kind.clone(),
+                kind: synology_kind_to_proto(metadata.kind),
                 path: metadata.path.clone(),
                 size: metadata.size,
                 duration_seconds: metadata.duration_seconds,
@@ -3511,9 +3620,9 @@ fn playback_metadata_to_proto(
         }
     };
 
-    Ok(Some(synctv_proto::client::PlaybackMetadata {
+    Ok(synctv_proto::client::PlaybackMetadata {
         metadata: Some(metadata),
-    }))
+    })
 }
 
 fn signed_provider_thumbnail_url(
@@ -4767,6 +4876,30 @@ mod playback_conversion_tests {
 
     fn codec() -> synctv_adapter::PublicIdCodec {
         synctv_adapter::PublicIdCodec::plain()
+    }
+
+    #[test]
+    fn provider_playback_kinds_map_to_typed_proto_enums() {
+        assert_eq!(
+            bilibili_playback_kind_to_proto(synctv_core::models::BilibiliPlaybackKind::Pgc),
+            synctv_proto::client::BilibiliPlaybackKind::Pgc as i32
+        );
+        assert_eq!(
+            douyin_playback_kind_to_proto(synctv_core::models::DouyinPlaybackKind::Live),
+            synctv_proto::client::DouyinPlaybackKind::Live as i32
+        );
+        assert_eq!(
+            emby_playback_kind_to_proto(synctv_core::models::EmbyPlaybackKind::MusicAlbum),
+            synctv_proto::client::EmbyPlaybackKind::MusicAlbum as i32
+        );
+        assert_eq!(
+            tiktok_playback_kind_to_proto(synctv_core::models::TikTokPlaybackKind::Video),
+            synctv_proto::client::TikTokPlaybackKind::Video as i32
+        );
+        assert_eq!(
+            synology_kind_to_proto(synctv_core::models::SynologyLibraryItemKind::TvRecording),
+            synctv_proto::source_config::SynologyLibraryItemKind::TvRecording as i32
+        );
     }
 
     fn playback_result(info: PlaybackInfo) -> PlaybackResult {

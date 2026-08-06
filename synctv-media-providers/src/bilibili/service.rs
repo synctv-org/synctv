@@ -340,6 +340,7 @@ fn to_proto_page_info(page_info: super::client::VideoPageInfo) -> VideoPageInfo 
             }
         }),
         live_started_at: page_info.live_started_at,
+        is_currently_live: page_info.is_currently_live,
         video_infos: page_info
             .video_infos
             .into_iter()

@@ -10,9 +10,10 @@ use futures::StreamExt;
 use sha2::{Digest, Sha256};
 
 use super::{
-    DirectoryItem, DirectoryItemThumbnail, DynamicListQuery, DynamicListResult, DynamicPagination,
-    DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult,
-    ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
+    DynamicListQuery, DynamicListResult, DynamicPagination, DynamicPlaylistItem,
+    DynamicPlaylistItemThumbnail, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
+    PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency, ProviderError,
+    SourceConfig, SourceCover,
 };
 use crate::models::{
     MediaSourceConfig, PlayMode, PlaybackDanmaku, PlaybackDanmakuProvider, PlaybackMedia,
@@ -660,14 +661,29 @@ impl TwitchProvider {
         })
     }
 
-    fn directory_item(item: TwitchBrowseItem) -> Result<DirectoryItem, ProviderError> {
+    fn directory_item(item: TwitchBrowseItem) -> Result<DynamicPlaylistItem, ProviderError> {
+        let resource = item.resource.clone();
+        let metadata = PlaybackMetadata::Twitch(TwitchPlaybackMetadata {
+            resource_id: resource.id.clone(),
+            title: item.title.clone(),
+            author: String::new(),
+            category: None,
+            thumbnail_url: item.thumbnail_url.clone(),
+            description: None,
+            view_count: item.view_count,
+            published_at: item.published_at.clone(),
+            chapters: Vec::new(),
+            storyboard_url: None,
+            is_live: false,
+            is_currently_live: None,
+        });
         let description = item.view_count.map(|views| format!("{views} views"));
-        Ok(DirectoryItem {
+        Ok(DynamicPlaylistItem {
             name: item.title,
             item_type: ItemType::Media,
             target: Self::encode_target(&item.resource)?,
             size: None,
-            thumbnail: item.thumbnail_url.map(DirectoryItemThumbnail::Url),
+            thumbnail: item.thumbnail_url.map(DynamicPlaylistItemThumbnail::Url),
             description,
             modified_at: item
                 .published_at
@@ -675,16 +691,32 @@ impl TwitchProvider {
                 .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
                 .map(|value| value.timestamp()),
             source_config: None,
+            metadata: Some(metadata),
         })
     }
 
-    fn stream_directory_item(item: TwitchStreamItem) -> Result<DirectoryItem, ProviderError> {
+    fn stream_directory_item(item: TwitchStreamItem) -> Result<DynamicPlaylistItem, ProviderError> {
+        let channel = item.channel.clone();
+        let metadata = PlaybackMetadata::Twitch(TwitchPlaybackMetadata {
+            resource_id: channel.clone(),
+            title: item.title.clone(),
+            author: item.display_name.clone(),
+            category: (!item.category_name.is_empty()).then_some(item.category_name.clone()),
+            thumbnail_url: (!item.thumbnail_url.is_empty()).then_some(item.thumbnail_url.clone()),
+            description: None,
+            view_count: Some(item.viewer_count),
+            published_at: Some(item.started_at.clone()),
+            chapters: Vec::new(),
+            storyboard_url: None,
+            is_live: true,
+            is_currently_live: Some(true),
+        });
         let category = (!item.category_name.is_empty()).then_some(item.category_name);
         let description = match category {
             Some(category) => Some(format!("{category} · {} viewers", item.viewer_count)),
             None => Some(format!("{} viewers", item.viewer_count)),
         };
-        Ok(DirectoryItem {
+        Ok(DynamicPlaylistItem {
             name: item.title,
             item_type: ItemType::Media,
             target: Self::encode_target(&TwitchResource {
@@ -693,18 +725,19 @@ impl TwitchProvider {
             })?,
             size: None,
             thumbnail: (!item.thumbnail_url.is_empty())
-                .then_some(DirectoryItemThumbnail::Url(item.thumbnail_url)),
+                .then_some(DynamicPlaylistItemThumbnail::Url(item.thumbnail_url)),
             description,
             modified_at: chrono::DateTime::parse_from_rfc3339(&item.started_at)
                 .ok()
                 .map(|value| value.timestamp()),
             source_config: None,
+            metadata: Some(metadata),
         })
     }
 
     fn next_item(
         base: &TwitchPlaylistSourceConfig,
-        item: &DirectoryItem,
+        item: &DynamicPlaylistItem,
     ) -> Result<NextPlayItem, ProviderError> {
         let resource = Self::decode_target(&item.target)?;
         let source_config = match resource.kind {
@@ -730,11 +763,11 @@ impl TwitchProvider {
     }
 
     fn scan_ordered_page(
-        items: Vec<DirectoryItem>,
+        items: Vec<DynamicPlaylistItem>,
         target: &ProviderTarget,
-        first: &mut Option<DirectoryItem>,
+        first: &mut Option<DynamicPlaylistItem>,
         found_current: &mut bool,
-    ) -> Option<DirectoryItem> {
+    ) -> Option<DynamicPlaylistItem> {
         for item in items {
             first.get_or_insert_with(|| item.clone());
             if *found_current {
@@ -743,6 +776,31 @@ impl TwitchProvider {
             *found_current = item.target == *target;
         }
         None
+    }
+
+    fn metadata_model(metadata: TwitchMetadata, is_live_resource: bool) -> TwitchPlaybackMetadata {
+        TwitchPlaybackMetadata {
+            resource_id: metadata.id,
+            title: metadata.title,
+            author: metadata.author,
+            category: metadata.game,
+            thumbnail_url: metadata.thumbnail_url,
+            description: metadata.description,
+            view_count: metadata.view_count,
+            published_at: metadata.published_at,
+            chapters: metadata
+                .chapters
+                .into_iter()
+                .map(|chapter| TwitchChapterMetadata {
+                    title: chapter.title,
+                    start_seconds: chapter.start_seconds,
+                    end_seconds: chapter.end_seconds,
+                })
+                .collect(),
+            storyboard_url: metadata.storyboard_url,
+            is_live: is_live_resource,
+            is_currently_live: is_live_resource.then_some(metadata.is_live),
+        }
     }
 
     fn playback_result(
@@ -844,39 +902,25 @@ impl TwitchProvider {
             .then(|| "hls".to_string())
             .or_else(|| infos.keys().min().cloned())
             .ok_or_else(|| ProviderError::ApiError("Twitch playback is empty".to_string()))?;
+        let duration_seconds = metadata
+            .duration_seconds
+            .map(|value| std::time::Duration::from_secs(value).as_secs_f64());
+        let is_live_resource = playback.resource.kind == TwitchResourceKind::Channel;
         Ok(PlaybackResult {
             playback_infos: infos,
             default_mode,
             provider: Self::NAME.to_string(),
             provider_instance_name: None,
-            duration_seconds: metadata
-                .duration_seconds
-                .map(|value| std::time::Duration::from_secs(value).as_secs_f64()),
+            duration_seconds,
             playback_kind: Some(if metadata.is_live {
                 crate::models::PlaybackKind::Live
             } else {
                 crate::models::PlaybackKind::Regular
             }),
-            metadata: Some(PlaybackMetadata::Twitch(TwitchPlaybackMetadata {
-                resource_id: metadata.id,
-                title: metadata.title,
-                author: metadata.author,
-                category: metadata.game,
-                thumbnail_url: metadata.thumbnail_url,
-                description: metadata.description,
-                view_count: metadata.view_count,
-                published_at: metadata.published_at,
-                chapters: metadata
-                    .chapters
-                    .into_iter()
-                    .map(|chapter| TwitchChapterMetadata {
-                        title: chapter.title,
-                        start_seconds: chapter.start_seconds,
-                        end_seconds: chapter.end_seconds,
-                    })
-                    .collect(),
-                storyboard_url: metadata.storyboard_url,
-            })),
+            metadata: Some(PlaybackMetadata::Twitch(Self::metadata_model(
+                metadata,
+                is_live_resource,
+            ))),
         })
     }
 }
@@ -935,6 +979,39 @@ impl MediaProvider for TwitchProvider {
 
     fn as_dynamic_playlist_provider(&self) -> Option<&dyn DynamicPlaylistProvider> {
         Some(self)
+    }
+
+    async fn media_metadata(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: &MediaSourceConfig,
+    ) -> Result<Option<PlaybackMetadata>, ProviderError> {
+        ctx.check_active()
+            .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
+        let config = Self::twitch_config(source_config)?;
+        let resource = Self::resource(config)?;
+        let cache_key = serde_json::to_string(source_config)
+            .map_err(|error| ProviderError::Internal(error.to_string()))?;
+        let shared = Self::media_shared(config);
+        super::cached_provider_metadata_or_fill(
+            Self::NAME,
+            &cache_key,
+            if resource.kind == TwitchResourceKind::Channel {
+                Duration::from_secs(15)
+            } else {
+                Duration::from_secs(300)
+            },
+            ctx,
+            || async {
+                let session = self.session(ctx, shared).await?;
+                let metadata = self.client.metadata(&resource, Some(&session)).await?;
+                Ok(Some(PlaybackMetadata::Twitch(Self::metadata_model(
+                    metadata,
+                    resource.kind == TwitchResourceKind::Channel,
+                ))))
+            },
+        )
+        .await
     }
 
     async fn generate_playback(
@@ -1403,8 +1480,8 @@ mod tests {
         assert!(provider.as_dynamic_playlist_provider().is_some());
     }
 
-    fn item(kind: TwitchTargetKind, id: &str) -> DirectoryItem {
-        DirectoryItem {
+    fn item(kind: TwitchTargetKind, id: &str) -> DynamicPlaylistItem {
+        DynamicPlaylistItem {
             name: id.to_string(),
             item_type: ItemType::Media,
             target: ProviderTarget::twitch(kind, id.to_string()),
@@ -1413,6 +1490,7 @@ mod tests {
             description: None,
             modified_at: None,
             source_config: None,
+            metadata: None,
         }
     }
 
@@ -1518,7 +1596,7 @@ mod tests {
             content: TwitchPlaylistContent::Clips,
             shared: true,
         };
-        let item = DirectoryItem {
+        let item = DynamicPlaylistItem {
             name: "A clip".to_string(),
             item_type: ItemType::Media,
             target: ProviderTarget::twitch(TwitchTargetKind::Clip, "ClipSlug".to_string()),
@@ -1527,6 +1605,7 @@ mod tests {
             description: None,
             modified_at: None,
             source_config: None,
+            metadata: None,
         };
 
         let next = TwitchProvider::next_item(&base, &item).expect("test operation should succeed");
@@ -1547,7 +1626,7 @@ mod tests {
             category_name: "Development".to_string(),
             shared: true,
         };
-        let item = DirectoryItem {
+        let item = DynamicPlaylistItem {
             name: "Live channel".to_string(),
             item_type: ItemType::Media,
             target: ProviderTarget::twitch(TwitchTargetKind::Live, "synctv".to_string()),
@@ -1556,6 +1635,7 @@ mod tests {
             description: None,
             modified_at: None,
             source_config: None,
+            metadata: None,
         };
 
         let next = TwitchProvider::next_item(&base, &item).expect("test operation should succeed");

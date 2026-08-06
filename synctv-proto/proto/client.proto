@@ -479,6 +479,8 @@ message FileMetadata {
 
 message ResourceMetadata {
   optional string source = 1;
+  // Provider-owned metadata. The oneof keeps each provider's fields typed.
+  optional PlaybackMetadata provider = 2;
 }
 
 message ChatPresentationMetadata {
@@ -624,6 +626,7 @@ message Playlist {
   string description = 15;
   ResourceCover cover = 16;
   string creator_id = 17;
+  ResourceMetadata metadata = 18;
 }
 
 message ResourceCover {
@@ -1995,11 +1998,11 @@ message GetPlaylistRequest {
 
 message GetPlaylistResponse {
   Playlist playlist = 1;
-  int32 child_folder_count = 2; // Number of child playlists (folders)
+  int32 child_playlist_count = 2; // Number of child playlists
   int32 media_count = 3; // Number of media items (files)
 }
 
-// List playlists (folders) in a room or under a parent
+// List playlists in a room or under a parent.
 message ListPlaylistsRequest {
   option (buf.validate.message).cel = {
     id: "list_playlists.parent_id.format"
@@ -2240,7 +2243,7 @@ message ListPlaylistItemsRequest {
   MediaListSortBy sort_by = 9 [(buf.validate.field).enum.defined_only = true];
   SortDirection sort_direction = 10 [(buf.validate.field).enum.defined_only = true];
   ResourceAvailabilityFilter availability = 11 [(buf.validate.field).enum.defined_only = true];
-  bool refresh = 12; // For provider playlists, force upstream directory cache refresh when supported.
+  bool refresh = 12; // For provider playlists, force an upstream cache refresh when supported.
   synctv.source_config.PlaylistSourceConfig preview_source_config = 13; // Transient provider source used for pre-create preview.
 }
 
@@ -2253,14 +2256,14 @@ message CursorPagination {
 }
 
 message ListPlaylistItemsResponse {
-  repeated Playlist playlists = 1; // Child playlists (folders, listed first)
-  repeated Media media = 2; // Media items (files, listed after folders)
+  repeated Playlist playlists = 1; // Child playlists, listed first
+  repeated Media media = 2; // Media items, listed after playlists
   optional uint64 total = 3; // Total number of items when the provider reports one.
-  uint64 folder_count = 4; // Number of playlists (folders)
-  uint64 file_count = 5; // Number of media items (files)
+  uint64 playlist_count = 4; // Number of playlists
+  uint64 file_count = 5; // Number of media items
 
   // For dynamic playlists only
-  repeated PlaylistItem dynamic_items = 6; // Remote provider items (used when browsing dynamic folders)
+  repeated PlaylistItem dynamic_items = 6; // Remote provider items for dynamic playlist browsing.
   repeated PlaylistBrowsePathNode current_path = 7; // Breadcrumb path for the current browse location
   string version = 8; // Snapshot version for this browse result
   oneof pagination {
@@ -2271,7 +2274,7 @@ message ListPlaylistItemsResponse {
 
 enum ItemType {
   ITEM_TYPE_UNSPECIFIED = 0;
-  ITEM_TYPE_PLAYLIST = 1; // Folder/directory (playlist)
+  ITEM_TYPE_PLAYLIST = 1; // Playlist entry.
   ITEM_TYPE_MEDIA = 2; // File (video/audio/live stream)
 }
 
@@ -2287,6 +2290,7 @@ message PlaylistItem {
     synctv.source_config.MediaSourceConfig media_source_config = 8;
     synctv.source_config.PlaylistSourceConfig playlist_source_config = 9;
   }
+  ResourceMetadata metadata = 10;
 }
 
 message PlaylistBrowsePathNode {
@@ -2571,8 +2575,15 @@ message AlistVideoPreviewMetadata {
   uint64 subtitle_count = 6;
 }
 
+enum BilibiliPlaybackKind {
+  BILIBILI_PLAYBACK_KIND_UNSPECIFIED = 0;
+  BILIBILI_PLAYBACK_KIND_VIDEO = 1;
+  BILIBILI_PLAYBACK_KIND_PGC = 2;
+  BILIBILI_PLAYBACK_KIND_LIVE = 3;
+}
+
 message BilibiliPlaybackMetadata {
-  optional string content_type = 1;
+  BilibiliPlaybackKind kind = 1;
   optional string bvid = 2;
   optional uint64 aid = 3;
   optional uint64 epid = 4;
@@ -2582,10 +2593,21 @@ message BilibiliPlaybackMetadata {
   optional uint64 quality = 8;
   optional uint64 room_id = 9;
   optional int64 live_started_at = 10;
+  bool is_live = 11;
+  optional bool is_currently_live = 12;
+}
+
+enum EmbyPlaybackKind {
+  EMBY_PLAYBACK_KIND_UNSPECIFIED = 0;
+  EMBY_PLAYBACK_KIND_MOVIE = 1;
+  EMBY_PLAYBACK_KIND_EPISODE = 2;
+  EMBY_PLAYBACK_KIND_VIDEO = 3;
+  EMBY_PLAYBACK_KIND_AUDIO = 4;
+  EMBY_PLAYBACK_KIND_MUSIC_ALBUM = 5;
 }
 
 message EmbyPlaybackMetadata {
-  optional string item_type = 1;
+  EmbyPlaybackKind kind = 1;
   optional string series_name = 2;
   optional string season_name = 3;
   optional string play_session_id = 4;
@@ -2626,6 +2648,8 @@ message TwitchPlaybackMetadata {
   optional string published_at = 8;
   repeated TwitchChapterMetadata chapters = 9;
   optional string storyboard_url = 10;
+  bool is_live = 11;
+  optional bool is_currently_live = 12;
 }
 
 message TwitchChapterMetadata {
@@ -2650,11 +2674,18 @@ message YoutubePlaybackMetadata {
   uint32 automatic_caption_count = 13;
   uint32 manual_caption_count = 14;
   repeated string translation_languages = 15;
+  optional bool is_currently_live = 16;
+}
+
+enum DouyinPlaybackKind {
+  DOUYIN_PLAYBACK_KIND_UNSPECIFIED = 0;
+  DOUYIN_PLAYBACK_KIND_VIDEO = 1;
+  DOUYIN_PLAYBACK_KIND_LIVE = 2;
 }
 
 message DouyinPlaybackMetadata {
   string id = 1;
-  string kind = 2;
+  DouyinPlaybackKind kind = 2;
   string author_id = 3;
   string author_sec_uid = 4;
   string author_name = 5;
@@ -2669,11 +2700,18 @@ message DouyinPlaybackMetadata {
   optional string music_author = 14;
   bool is_live = 15;
   optional string room_id = 16;
+  optional bool is_currently_live = 17;
+}
+
+enum TikTokPlaybackKind {
+  TIK_TOK_PLAYBACK_KIND_UNSPECIFIED = 0;
+  TIK_TOK_PLAYBACK_KIND_VIDEO = 1;
+  TIK_TOK_PLAYBACK_KIND_LIVE = 2;
 }
 
 message TikTokPlaybackMetadata {
   string id = 1;
-  string kind = 2;
+  TikTokPlaybackKind kind = 2;
   string author_id = 3;
   string author_sec_uid = 4;
   string author_unique_id = 5;
@@ -2691,6 +2729,7 @@ message TikTokPlaybackMetadata {
   uint32 subtitle_count = 17;
   bool is_live = 18;
   optional string room_id = 19;
+  optional bool is_currently_live = 20;
 }
 
 message HuyaPlaybackMetadata {
@@ -2706,6 +2745,8 @@ message HuyaPlaybackMetadata {
   optional uint64 comment_count = 10;
   optional uint64 like_count = 11;
   optional int64 published_at = 12;
+  bool is_live = 13;
+  optional bool is_currently_live = 14;
 }
 
 message DouyuPlaybackMetadata {
@@ -2719,6 +2760,8 @@ message DouyuPlaybackMetadata {
   bool is_vip = 8;
   optional uint64 viewer_count = 9;
   optional string started_at = 10;
+  bool is_live = 11;
+  optional bool is_currently_live = 12;
 }
 
 message AcFunPlaybackMetadata {
@@ -2736,6 +2779,8 @@ message AcFunPlaybackMetadata {
   optional uint64 comment_count = 12;
   optional int64 published_at = 13;
   optional int64 started_at = 14;
+  bool is_live = 15;
+  optional bool is_currently_live = 16;
 }
 
 message CctvChapterMetadata {
@@ -2809,7 +2854,7 @@ message SynologyPlaybackMetadata {
   repeated string genres = 9;
   int64 item_id = 10;
   int64 file_id = 11;
-  string kind = 12;
+  synctv.source_config.SynologyLibraryItemKind kind = 12;
   string path = 13;
   uint64 size = 14;
   uint64 duration_seconds = 15;

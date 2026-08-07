@@ -4,9 +4,10 @@ description: 在一台主机上安装和运行 SyncTV、PostgreSQL 与 Redis。
 ---
 
 import { Aside, Code, Steps } from '@astrojs/starlight/components';
+import ComposeEnvGenerator from '../../../components/ComposeEnvGenerator.astro';
 import {
-  dockerImageReference,
-  githubCloneUrl,
+  dockerImage,
+  githubRawComposeUrl,
 } from '../../../lib/project';
 
 此方法使用预构建镜像，在一台服务器、NAS 或虚拟机上运行 SyncTV、PostgreSQL 和 Redis。Kubernetes 环境使用 [Helm 部署](../helm/)。
@@ -15,62 +16,63 @@ import {
 
 ## 前置条件
 
-- Docker 和 Docker Compose。
-- GNU Make 和 `openssl`，用于生成环境文件和长期 secret。
+- Docker Engine 和 Docker Compose v2。
 - 一个长期保留的工作目录，用于保存 Compose 配置、环境文件和数据卷。
-- 使用密码管理器生成的初始 root 密码。
+- 一个密码管理器，用于保存生成的 root 密码和长期密钥。
+
+## 生成环境文件
+
+<ComposeEnvGenerator locale="zh" />
+
+生成器会下载三个文件：
+
+- `.env.synctv`：SyncTV 数据库连接、认证密钥和 root 初始化参数。
+- `.env.postgres`：PostgreSQL 用户、密码和数据库名。
+- `.env.redis`：Redis AUTH 密码。
+
+随机密钥只在当前页面内存中生成，不写入浏览器存储或服务端。把这些文件放进部署目录并妥善备份。
 
 ## 安装
 
 <Steps>
-1. 获取生产 Compose 配置：
+1. 创建工作目录并下载生产 Compose 配置：
 
-    <Code code={`git clone --depth 1 ${githubCloneUrl} synctv\ncd synctv`} lang="bash" />
+    <Code code={`mkdir -p synctv && cd synctv\ncurl -fsSL ${githubRawComposeUrl} -o docker-compose.yml`} lang="bash" />
 
-2. 生成 `.env.postgres`、`.env.redis` 和 `.env.synctv`：
+2. [返回“生成环境文件”](#生成环境文件)，下载三个环境文件并放到当前目录。
 
-    ```bash
-    make compose-init
-    ```
-
-3. 编辑 `.env.synctv`，设置初始 root 密码。前端与 API 使用不同 origin 时，同时填写 CORS origin：
-
-    ```dotenv
-    SYNCTV_BOOTSTRAP_ROOT_PASSWORD=replace-with-a-strong-password
-    SYNCTV_SERVER_CORS_ALLOWED_ORIGINS=["https://app.example.com"]
-    ```
-
-4. 检查最终 Compose 配置：
+3. 检查最终 Compose 配置：
 
     ```bash
-    make compose-config
+    docker compose -f docker-compose.yml config --quiet
     ```
 
-5. 在后台启动服务：
+4. 拉取镜像并在后台启动服务：
 
     ```bash
-    make compose-up
+    docker compose -f docker-compose.yml up -d
     ```
 </Steps>
 
-`make compose-init` 使用 `openssl` 生成 PostgreSQL、Redis、JWT、cluster、Provider credential、email outbox 和 OPAQUE secret。PostgreSQL 与 Redis 密码使用 URL 安全的十六进制格式。Compose 默认使用镜像 <code>{dockerImageReference}</code>。
+Compose 固定使用镜像 <code>{dockerImage}:latest</code>。发布版本由维护者更新 Compose 文件中的镜像 tag。
 
 ## 验证
 
-查看容器状态并请求 readiness endpoint：
+查看容器状态，并在 SyncTV 容器内部请求 readiness endpoint：
 
 ```bash
-make compose-ps
-curl -fsS http://localhost:8081/health/ready
+docker compose -f docker-compose.yml ps
+docker compose -f docker-compose.yml exec synctv \
+  curl -fsS http://localhost:8081/health/ready
 ```
 
-浏览器打开 `http://localhost:8080`。默认 root 用户名是 `root`，密码来自 `.env.synctv` 里的 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`。
+HTTP API 使用 `http://localhost:8080`。首次启动数据库为空时，root 用户名和密码来自 `.env.synctv`。
 
 ## 环境文件与版本
 
-Docker Compose 会通过 `env_file` 分别加载必需的 `.env.postgres`、`.env.redis` 和 `.env.synctv`：PostgreSQL 只读取数据库变量，Redis 只读取 `REDIS_PASSWORD`，`synctv` 只读取 `SYNCTV_*` 应用配置。`make compose-init` 会把同一个 Redis 密码写入 `.env.redis` 的 `REDIS_PASSWORD`，并写入 `.env.synctv` 中带认证信息的 `SYNCTV_REDIS_URL`。请备份这三个文件；重启、换 shell、服务器重启或升级时都应复用同一组环境文件。缺少任一文件时，`make compose-config` 会直接失败。
+Docker Compose 通过 `env_file` 分别加载必需的 `.env.postgres`、`.env.redis` 和 `.env.synctv`：PostgreSQL 读取数据库变量，Redis 读取 `REDIS_PASSWORD`，SyncTV 读取 `SYNCTV_*` 应用配置。Compose 文件另外固定将 `SYNCTV_DATA_DIR` 设置为 `/data`，让运行数据写入命名卷。重启、换 shell、服务器重启或升级时都应复用同一组环境文件。缺少任一文件时，`docker compose config` 会直接失败。
 
-示例 Compose 文件默认使用 `latest`。生产部署可在运行 Compose 前将 `SYNCTV_IMAGE_TAG` 设置为目标发布版本，或在自己的 Compose 覆盖文件中固定镜像版本，以保证部署可复现。
+生产 Compose 文件固定使用 `latest` 镜像以及 HTTP 8080、RTMP 1935、STUN 3478/udp 宿主机端口。容器内的健康端口 `8081`、metrics 端口 `9090` 不会被默认 Compose 文件映射到宿主机。
 
 ## 数据卷
 
@@ -80,31 +82,28 @@ Compose 使用 volume 保存数据：
 - Redis 数据。
 - SyncTV `/data` 运行时目录。
 
-`/data` 对应：
+Compose 文件将 SyncTV 的数据目录固定为 `/data`：
 
-```bash
-SYNCTV_DATA_DIR=/data
+```yaml
+environment:
+  SYNCTV_DATA_DIR: /data
 ```
 
-这个目录可能包含：
-
-- 管理 socket 相关运行时文件。
-- HLS 文件。
-- proxy slice cache 文件。
-- 其他运行时输出。
+这个目录可能包含管理 socket 相关运行时文件、HLS 文件、proxy slice cache 文件和其他运行时输出。
 
 ## 端口
 
-默认暴露：
+宿主机映射和容器内部监听端口分开管理：
 
-| 宿主端口 | 容器端口 | 用途 |
+| 宿主机端口 | 容器端口 | 用途 |
 | --- | --- | --- |
-| `8080` | `8080` | HTTP REST + gRPC |
-| `8081` | `8081` | 健康检查 |
+| `8080` | `8080` | HTTP REST + public gRPC |
 | `1935` | `1935` | RTMP |
 | `3478/udp` | `3478/udp` | STUN |
+| 无宿主机映射 | `8081` | liveness/readiness，供容器 healthcheck 使用 |
+| 无宿主机映射 | `9090` | Prometheus metrics，供容器网络内的 Prometheus 抓取 |
 
-如果宿主机端口冲突，可以修改 Compose ports。
+宿主机端口冲突时，修改 Compose 文件中的宿主机端口映射并重新执行 `docker compose config`。
 
 ## 备份
 
@@ -119,7 +118,7 @@ SYNCTV_DATA_DIR=/data
 | `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` | 首次创建 root 用户 |
 
 <Aside type="caution">
-长期复用 `.env.synctv` 中的 secret。OPAQUE secret 关联现有密码记录，两个加密 key 分别关联 Provider 凭据和待发邮件。
+长期复用 `.env.synctv` 中的 secret。OPAQUE secret 关联现有密码记录，Provider 凭据和待发邮件分别依赖对应的加密 key。
 </Aside>
 
 Redis 保存缓存和共享状态。恢复或清空 Redis 会影响 OAuth2 state、token blacklist、限流计数器等短期状态。
@@ -128,11 +127,11 @@ Redis 保存缓存和共享状态。恢复或清空 Redis 会影响 OAuth2 state
 
 | 现象 | 处理 |
 | --- | --- |
-| `make compose-config` 提示变量或文件缺失 | 运行 `make compose-init`，并在当前目录保留三个环境文件。 |
-| `/health/ready` 失败 | 运行 `make compose-logs SERVICE=synctv`，检查第一条启动错误。 |
-| 浏览器出现 CORS 错误 | 在 `.env.synctv` 中设置 `SYNCTV_SERVER_CORS_ALLOWED_ORIGINS`，值使用 origin 数组。 |
+| `docker compose config` 提示变量或文件缺失 | 确认三个环境文件和 `docker-compose.yml` 位于同一目录。 |
+| `/health/ready` 失败 | 查看 `docker compose logs synctv`，检查第一条启动错误。 |
 | root 用户无法登录 | 确认首次启动数据库前已经设置 root 密码，并检查 bootstrap 日志。 |
-| 宿主机端口冲突 | 修改 Compose 的端口映射，然后重新运行 `make compose-config`。 |
+| 宿主机端口冲突 | 修改 Compose 文件中的宿主机端口，然后重新执行 `docker compose config`。 |
+| Prometheus 无法抓取 metrics | 将 Prometheus 放入同一 Docker 网络，或为受信任的采集器显式增加 9090 映射。 |
 
 ## 上线前
 

@@ -106,11 +106,12 @@ RUN command -v synctv && synctv --version
 
 # Expose ports
 # 8080: HTTP API + public gRPC (also serves HLS via /api/room/movie/live/hls/*)
-# 8081: dedicated health endpoints
+# 8081: internal health endpoints (liveness and readiness)
 # 50051: dedicated cluster gRPC
+# 9090: internal Prometheus metrics listener
 # 1935: RTMP (livestream)
 # 3478/udp: STUN (WebRTC)
-EXPOSE 8080 8081 50051 1935 3478/udp
+EXPOSE 8080 8081 50051 9090 1935 3478/udp
 
 # Health check against the HTTP health endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

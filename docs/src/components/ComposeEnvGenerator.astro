@@ -1,0 +1,635 @@
+---
+interface Props {
+  locale?: 'zh' | 'en';
+}
+
+const { locale = 'zh' } = Astro.props;
+const isEnglish = locale === 'en';
+const copy = isEnglish
+  ? {
+      title: 'Generate your Compose environment',
+      intro:
+        'Choose the values you want to control. Database credentials and application secrets are generated in page memory and included in the downloaded files.',
+      deployment: 'Deployment settings',
+      username: 'Initial root username',
+      password: 'Initial root password',
+      passwordHelp: 'This account is created on the first startup when the database is empty.',
+      generatePassword: 'Generate',
+      showPassword: 'Show',
+      hidePassword: 'Hide',
+      downloads: 'Download files',
+      downloadTab: 'Download',
+      downloadAll: 'Download all files',
+      downloadPostgres: 'Download .env.postgres',
+      downloadRedis: 'Download .env.redis',
+      downloadSynctv: 'Download .env.synctv',
+      previewWarning: 'Warning: this file contains passwords and long-lived secrets. Do not share it, commit it to a repository, or upload it to a third-party service.',
+      generated: 'Files are ready to download.',
+      composeNote: 'Save the three files in the same directory as docker-compose.yml, then run docker compose up -d.',
+      invalidPassword: 'Enter a root password without line breaks.',
+    }
+  : {
+      title: '生成 Compose 环境文件',
+      intro:
+        '填写需要控制的参数。数据库凭据和应用密钥只在当前页面内存中生成，并写入下载的环境文件。',
+      deployment: '部署参数',
+      username: '初始 root 用户名',
+      password: '初始 root 密码',
+      passwordHelp: '数据库为空时，服务首次启动会创建这个账号。',
+      generatePassword: '生成密码',
+      showPassword: '显示密码',
+      hidePassword: '隐藏密码',
+      downloads: '下载文件',
+      downloadTab: '下载',
+      downloadAll: '下载全部文件',
+      downloadPostgres: '下载 .env.postgres',
+      downloadRedis: '下载 .env.redis',
+      downloadSynctv: '下载 .env.synctv',
+      previewWarning: '警告：文件包含密码和长期密钥。请勿分享、提交到代码仓库或上传到第三方服务。',
+      generated: '文件已经生成，可以下载。',
+      composeNote: '把三个文件放在 docker-compose.yml 同一目录，然后运行 docker compose up -d。',
+      invalidPassword: '请输入不含换行的 root 密码。',
+    };
+---
+
+<section
+  class="compose-generator"
+  data-compose-env-generator
+  data-invalid-password={copy.invalidPassword}
+  data-show-password={copy.showPassword}
+  data-hide-password={copy.hidePassword}
+  data-generated={copy.generated}
+>
+  <div class="compose-generator__header">
+    <h3>{copy.title}</h3>
+    <p>{copy.intro}</p>
+  </div>
+
+  <form class="compose-generator__form" data-generator-form novalidate>
+    <fieldset>
+      <legend>{copy.deployment}</legend>
+      <div class="compose-generator__grid">
+        <label>
+          <span>{copy.username}</span>
+          <input data-field="username" value="root" autocomplete="username" required />
+        </label>
+        <label class="compose-generator__password">
+          <span>{copy.password}</span>
+          <div class="compose-generator__password-row">
+            <input data-field="rootPassword" type="password" autocomplete="new-password" required />
+            <button type="button" class="compose-generator__toggle-button" data-action="toggle-password" aria-label={copy.showPassword} title={copy.showPassword}>{copy.showPassword}</button>
+            <button type="button" class="compose-generator__secondary-button" data-action="generate-password">{copy.generatePassword}</button>
+          </div>
+          <small>{copy.passwordHelp}</small>
+        </label>
+      </div>
+    </fieldset>
+
+  </form>
+
+  <div class="compose-generator__downloads" data-downloads>
+    <div class="compose-generator__tabs" role="tablist" aria-label={copy.downloads}>
+      <button type="button" role="tab" aria-selected="true" aria-controls="compose-generator-download-panel" data-tab="download">{copy.downloadTab}</button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="compose-generator-preview-panel" data-tab=".env.synctv">.env.synctv</button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="compose-generator-preview-panel" data-tab=".env.postgres">.env.postgres</button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="compose-generator-preview-panel" data-tab=".env.redis">.env.redis</button>
+    </div>
+    <div id="compose-generator-download-panel" role="tabpanel" tabindex="0" data-panel="download">
+      <div class="compose-generator__downloads-header">
+        <div>
+          <h4>{copy.downloads}</h4>
+          <p data-status>{copy.generated}</p>
+        </div>
+        <button type="button" class="compose-generator__primary-button" data-action="download-all">{copy.downloadAll}</button>
+      </div>
+      <div class="compose-generator__file-list">
+        <button type="button" data-action="download-synctv">{copy.downloadSynctv}</button>
+        <button type="button" data-action="download-postgres">{copy.downloadPostgres}</button>
+        <button type="button" data-action="download-redis">{copy.downloadRedis}</button>
+      </div>
+      <p class="compose-generator__note">{copy.composeNote}</p>
+    </div>
+    <div id="compose-generator-preview-panel" role="tabpanel" tabindex="0" data-panel="preview" hidden>
+      <div class="compose-generator__preview-header">
+        <h4 data-preview-title></h4>
+        <p class="compose-generator__warning">{copy.previewWarning}</p>
+      </div>
+      <pre class="compose-generator__preview" data-preview-content></pre>
+    </div>
+  </div>
+</section>
+
+<script>
+  const generator = document.querySelector('[data-compose-env-generator]');
+
+  if (generator instanceof HTMLElement) {
+    const form = generator.querySelector('[data-generator-form]');
+    const rootPassword = generator.querySelector('[data-field="rootPassword"]');
+    const status = generator.querySelector('[data-status]');
+    const previewTitle = generator.querySelector('[data-preview-title]');
+    const previewContent = generator.querySelector('[data-preview-content]');
+    const downloadPanel = generator.querySelector('[data-panel="download"]');
+    const previewPanel = generator.querySelector('[data-panel="preview"]');
+    if (
+      !(form instanceof HTMLFormElement) ||
+      !(rootPassword instanceof HTMLInputElement) ||
+      !(status instanceof HTMLElement) ||
+      !(previewTitle instanceof HTMLElement) ||
+      !(previewContent instanceof HTMLPreElement) ||
+      !(downloadPanel instanceof HTMLElement) ||
+      !(previewPanel instanceof HTMLElement)
+    ) {
+      throw new Error('Compose environment generator markup is incomplete');
+    }
+    const copy = {
+      invalidPassword: generator.dataset.invalidPassword ?? '',
+      showPassword: generator.dataset.showPassword ?? '',
+      hidePassword: generator.dataset.hidePassword ?? '',
+      generated: generator.dataset.generated ?? '',
+    };
+    const bytesToHex = (bytes: Uint8Array) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    const randomHex = (byteLength = 32): string => {
+      const bytes = new Uint8Array(byteLength);
+      crypto.getRandomValues(bytes);
+      return bytesToHex(bytes);
+    };
+    const passwordCharacterGroups = [
+      'ABCDEFGHJKLMNPQRSTUVWXYZ',
+      'abcdefghijkmnopqrstuvwxyz',
+      '23456789',
+      '!@%^&*()-_=+[]{}:,.?',
+    ];
+    const passwordCharacters = passwordCharacterGroups.join('');
+    const secureRandomIndex = (length: number): number => {
+      const limit = 256 - (256 % length);
+      const randomByte = new Uint8Array(1);
+      do crypto.getRandomValues(randomByte); while (randomByte[0] >= limit);
+      return randomByte[0] % length;
+    };
+    const randomCharacter = (characters: string): string => characters[secureRandomIndex(characters.length)];
+    const randomPassword = (length = 32): string => {
+      const characters = passwordCharacterGroups.map(randomCharacter);
+      while (characters.length < length) characters.push(randomCharacter(passwordCharacters));
+      for (let index = characters.length - 1; index > 0; index -= 1) {
+        const swapIndex = secureRandomIndex(index + 1);
+        [characters[index], characters[swapIndex]] = [characters[swapIndex], characters[index]];
+      }
+      return characters.join('');
+    };
+    const secrets: Record<string, string> = {};
+    const secretKeys = [
+      'postgresPassword',
+      'redisPassword',
+      'jwtSecret',
+      'clusterSecret',
+      'credentialKey',
+      'totpKey',
+      'emailOutboxKey',
+      'opaqueSecret',
+      'proxySigningKey',
+      'mediaSwarmSigningKey',
+      'providerSessionKey',
+      'loginDiscoveryKey',
+      'webauthnEnumerationKey',
+      'fileUploadTokenSecret',
+    ];
+    const initializeSecrets = () => {
+      for (const key of secretKeys) secrets[key] = randomHex(32);
+      rootPassword.value = randomPassword();
+    };
+    const field = (name: string): HTMLInputElement => {
+      const element = generator.querySelector(`[data-field="${name}"]`);
+      if (!(element instanceof HTMLInputElement)) throw new Error(`Unknown generator field: ${name}`);
+      return element;
+    };
+    const value = (name: string) => field(name).value.trim();
+    let activeTab = 'download';
+    const quoteEnv = (input: string) => {
+      const text = String(input);
+      return /^[A-Za-z0-9_./:@+=,-]+$/.test(text) ? text : JSON.stringify(text);
+    };
+    const validate = () => {
+      if (!value('rootPassword') || /[\r\n]/.test(value('rootPassword'))) return copy.invalidPassword;
+      return null;
+    };
+    const generatedFiles = (): Record<string, string> => {
+      const rootUser = value('username') || 'root';
+      const postgres = [
+        '# SyncTV PostgreSQL Compose Environment',
+        '# Generated by the SyncTV documentation environment generator.',
+        'POSTGRES_USER=synctv',
+        `POSTGRES_PASSWORD=${secrets.postgresPassword}`,
+        'POSTGRES_DB=synctv',
+        '',
+      ].join('\n');
+      const redis = [
+        '# SyncTV Redis Compose Environment',
+        '# Generated by the SyncTV documentation environment generator.',
+        `REDIS_PASSWORD=${secrets.redisPassword}`,
+        '',
+      ].join('\n');
+      const synctv = [
+        '# SyncTV Production Compose Environment',
+        '# Generated by the SyncTV documentation environment generator.',
+        `SYNCTV_DATABASE_URL=postgresql://synctv:${secrets.postgresPassword}@postgres:5432/synctv`,
+        `SYNCTV_REDIS_URL=redis://:${secrets.redisPassword}@redis:6379`,
+        `SYNCTV_JWT_SECRET=${secrets.jwtSecret}`,
+        `SYNCTV_CLUSTER_SECRET=${secrets.clusterSecret}`,
+        `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY=${secrets.credentialKey}`,
+        `SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY=${secrets.totpKey}`,
+        `SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY=${secrets.emailOutboxKey}`,
+        `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=${secrets.opaqueSecret}`,
+        `SYNCTV_SECURITY_PROXY_SIGNING_KEY=${secrets.proxySigningKey}`,
+        `SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY=${secrets.mediaSwarmSigningKey}`,
+        `SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY=${secrets.providerSessionKey}`,
+        `SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY=${secrets.loginDiscoveryKey}`,
+        `SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY=${secrets.webauthnEnumerationKey}`,
+        `SYNCTV_FILE_UPLOAD_TOKEN_SECRET=${secrets.fileUploadTokenSecret}`,
+        'SYNCTV_SECURITY_SSRF_ENABLED=false',
+        'SYNCTV_SECURITY_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS=false',
+        'SYNCTV_BOOTSTRAP_CREATE_ROOT_USER=true',
+        `SYNCTV_BOOTSTRAP_ROOT_USERNAME=${quoteEnv(rootUser)}`,
+        `SYNCTV_BOOTSTRAP_ROOT_PASSWORD=${quoteEnv(value('rootPassword'))}`,
+        '',
+      ].filter(Boolean).join('\n');
+      return {
+        '.env.synctv': synctv,
+        '.env.postgres': postgres,
+        '.env.redis': redis,
+      };
+    };
+    const renderPreview = (filename: string) => {
+      const files = generatedFiles();
+      previewTitle.textContent = filename;
+      previewContent.textContent = files[filename] ?? '';
+    };
+    const setActiveTab = (tab: string) => {
+      activeTab = tab;
+      generator.querySelectorAll('[role="tab"]').forEach((element) => {
+        if (!(element instanceof HTMLButtonElement)) return;
+        const selected = element.dataset.tab === tab;
+        element.setAttribute('aria-selected', String(selected));
+        element.tabIndex = selected ? 0 : -1;
+      });
+      const showingDownload = tab === 'download';
+      downloadPanel.hidden = !showingDownload;
+      previewPanel.hidden = showingDownload;
+      if (!showingDownload) renderPreview(tab);
+    };
+    const download = (filename: string, content: string) => {
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = filename;
+      link.hidden = true;
+      document.body.append(link);
+      link.click();
+      setTimeout(() => {
+        link.remove();
+        URL.revokeObjectURL(link.href);
+      }, 1000);
+    };
+    const downloadFiles = (selected: string[]) => {
+      const error = validate();
+      if (error) {
+        status.textContent = error;
+        status.dataset.error = 'true';
+        return;
+      }
+      status.textContent = copy.generated;
+      delete status.dataset.error;
+      const files = generatedFiles();
+      for (const filename of selected) download(filename, files[filename]);
+    };
+    const bind = (action: string, callback: (event: Event) => void) => {
+      generator.querySelector(`[data-action="${action}"]`)?.addEventListener('click', callback);
+    };
+
+    initializeSecrets();
+    generator.querySelectorAll('[role="tab"]').forEach((element) => {
+      element.addEventListener('click', () => {
+        if (element instanceof HTMLButtonElement && element.dataset.tab) setActiveTab(element.dataset.tab);
+      });
+      element.addEventListener('keydown', (event) => {
+        if (!(event instanceof KeyboardEvent) || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        const tabs = [...generator.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+        const current = tabs.indexOf(element as HTMLButtonElement);
+        if (current < 0) return;
+        const next = event.key === 'Home'
+          ? 0
+          : event.key === 'End'
+            ? tabs.length - 1
+            : (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+        event.preventDefault();
+        tabs[next].focus();
+        setActiveTab(tabs[next].dataset.tab ?? 'download');
+      });
+    });
+    setActiveTab('download');
+    bind('generate-password', () => {
+      rootPassword.value = randomPassword();
+      if (activeTab !== 'download') renderPreview(activeTab);
+    });
+    bind('toggle-password', (event) => {
+      const button = event.currentTarget;
+      if (!(button instanceof HTMLButtonElement)) return;
+      const visible = rootPassword.type === 'text';
+      rootPassword.type = visible ? 'password' : 'text';
+      button.setAttribute('aria-label', visible ? copy.showPassword : copy.hidePassword);
+      button.setAttribute('title', visible ? copy.showPassword : copy.hidePassword);
+      button.textContent = visible ? copy.showPassword : copy.hidePassword;
+    });
+    bind('download-all', () => downloadFiles(Object.keys(generatedFiles())));
+    bind('download-postgres', () => downloadFiles(['.env.postgres']));
+    bind('download-redis', () => downloadFiles(['.env.redis']));
+    bind('download-synctv', () => downloadFiles(['.env.synctv']));
+    form?.addEventListener('input', () => {
+      delete status.dataset.error;
+      status.textContent = copy.generated;
+      if (activeTab !== 'download') renderPreview(activeTab);
+    });
+    window.addEventListener('pagehide', () => {
+      for (const key of secretKeys) secrets[key] = '';
+      rootPassword.value = '';
+    }, { once: true });
+  }
+</script>
+
+<style>
+  .compose-generator {
+    margin: 1.5rem 0 2rem;
+    padding: 1.15rem;
+    border: 1px solid var(--docs-border);
+    border-radius: 8px;
+    background: var(--docs-surface);
+  }
+
+  .compose-generator__header h3,
+  .compose-generator__downloads h4 {
+    margin: 0;
+    color: var(--sl-color-white);
+  }
+
+  .compose-generator__header p,
+  .compose-generator__help,
+  .compose-generator__note,
+  .compose-generator small {
+    color: var(--sl-color-gray-2);
+    font-size: 0.84rem;
+    line-height: 1.5;
+  }
+
+  .compose-generator__header p {
+    margin: 0.45rem 0 1rem;
+  }
+
+  .compose-generator fieldset {
+    min-width: 0;
+    margin: 0;
+    padding: 1rem 0;
+    border: 0;
+    border-top: 1px solid var(--docs-border);
+  }
+
+  .compose-generator fieldset:first-of-type {
+    padding-top: 0.35rem;
+    border-top: 0;
+  }
+
+  .compose-generator legend {
+    padding: 0;
+    color: var(--sl-color-white);
+    font-size: 0.9rem;
+    font-weight: 650;
+  }
+
+  .compose-generator__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.85rem;
+  }
+
+  .compose-generator label > span {
+    display: block;
+    margin-bottom: 0.3rem;
+    color: var(--sl-color-white);
+    font-size: 0.84rem;
+    font-weight: 600;
+  }
+
+  .compose-generator input {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid var(--docs-border);
+    border-radius: 5px;
+    padding: 0.52rem 0.6rem;
+    color: var(--sl-color-white);
+    background: var(--sl-color-bg);
+    font: inherit;
+  }
+
+  .compose-generator input:focus {
+    border-color: var(--docs-focus);
+    outline: 2px solid color-mix(in srgb, var(--docs-focus) 25%, transparent);
+    outline-offset: 1px;
+  }
+
+  .compose-generator small {
+    display: block;
+    margin-top: 0.3rem;
+  }
+
+  .compose-generator__password-row {
+    --compose-generator-control-height: 2.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .compose-generator__password {
+    grid-column: 1 / -1;
+  }
+
+  .compose-generator__password-row input {
+    min-width: 0;
+    height: var(--compose-generator-control-height);
+    min-height: var(--compose-generator-control-height);
+    flex: 1;
+  }
+
+  .compose-generator__password-row > button {
+    flex: 0 0 5rem;
+    width: 5rem;
+    height: var(--compose-generator-control-height);
+    min-height: var(--compose-generator-control-height);
+    margin: 0;
+    padding-inline: 0.35rem;
+    text-align: center;
+  }
+
+  .compose-generator button {
+    cursor: pointer;
+    border: 1px solid var(--docs-border);
+    border-radius: 5px;
+    padding: 0.5rem 0.7rem;
+    color: var(--sl-color-white);
+    background: var(--docs-surface-raised);
+    font: inherit;
+    font-size: 0.82rem;
+    white-space: nowrap;
+  }
+
+  .compose-generator button:hover {
+    border-color: var(--sl-color-gray-3);
+  }
+
+  .compose-generator__toggle-button {
+    color: var(--sl-color-text-accent) !important;
+  }
+
+  .compose-generator__primary-button {
+    border-color: var(--sl-color-accent) !important;
+    background: var(--sl-color-accent) !important;
+    color: var(--sl-color-text-invert) !important;
+    font-weight: 650 !important;
+  }
+
+  .compose-generator__help {
+    margin: 0.55rem 0 0;
+  }
+
+  .compose-generator__downloads {
+    border-top: 1px solid var(--docs-border);
+    padding-top: 1rem;
+  }
+
+  .compose-generator__tabs {
+    display: flex;
+    gap: 0.2rem;
+    margin-bottom: 1rem;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--docs-border);
+    scrollbar-width: thin;
+  }
+
+  .compose-generator__tabs > button {
+    flex: 0 0 auto;
+    margin: 0 0 -1px;
+    border-color: transparent;
+    border-bottom-color: transparent;
+    border-radius: 5px 5px 0 0;
+    padding: 0.55rem 0.75rem;
+    background: transparent;
+    color: var(--sl-color-gray-2);
+  }
+
+  .compose-generator__tabs > button:hover {
+    border-color: transparent;
+    color: var(--sl-color-white);
+    background: var(--docs-surface-raised);
+  }
+
+  .compose-generator__tabs > button[aria-selected='true'] {
+    border-color: var(--docs-border);
+    border-bottom-color: var(--docs-surface);
+    color: var(--sl-color-text-accent);
+    background: var(--docs-surface);
+  }
+
+  .compose-generator__tabs > button:focus-visible {
+    outline: 2px solid var(--docs-focus);
+    outline-offset: -2px;
+  }
+
+  .compose-generator [role='tabpanel']:focus-visible {
+    outline: 2px solid var(--docs-focus);
+    outline-offset: 3px;
+  }
+
+  .compose-generator__downloads-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .compose-generator__downloads-header p {
+    margin: 0.3rem 0 0;
+    color: var(--docs-green);
+    font-size: 0.82rem;
+  }
+
+  .compose-generator__downloads-header p[data-error='true'] {
+    color: #e08282;
+  }
+
+  .compose-generator__preview-header h4 {
+    font-family: var(--__sl-font-mono);
+  }
+
+  .compose-generator__warning {
+    margin: 0.45rem 0 0;
+    color: #f0b76c;
+    font-size: 0.84rem;
+    line-height: 1.5;
+  }
+
+  .compose-generator__preview {
+    max-height: 28rem;
+    margin: 0.8rem 0 0;
+    overflow: auto;
+    border: 1px solid var(--docs-border);
+    border-radius: 5px;
+    padding: 0.85rem;
+    color: var(--sl-color-gray-1);
+    background: var(--sl-color-bg);
+    font-size: 0.76rem;
+    line-height: 1.55;
+    white-space: pre;
+  }
+
+  .compose-generator__file-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.5rem;
+    margin-top: 0.8rem;
+  }
+
+  .compose-generator__file-list button {
+    width: 100%;
+    min-height: 2.5rem;
+    margin: 0;
+    padding-inline: 0.35rem;
+    white-space: nowrap;
+  }
+
+  .compose-generator__file-list button {
+    color: var(--sl-color-text-accent);
+  }
+
+  .compose-generator__note {
+    margin: 0.7rem 0 0;
+  }
+
+  @media (max-width: 640px) {
+    .compose-generator {
+      padding: 0.8rem;
+    }
+
+    .compose-generator__file-list {
+      grid-template-columns: 1fr;
+    }
+
+    .compose-generator__downloads-header {
+      flex-direction: column;
+    }
+
+    .compose-generator__tabs {
+      margin-inline: -0.15rem;
+    }
+
+    .compose-generator__primary-button {
+      width: 100%;
+    }
+  }
+</style>

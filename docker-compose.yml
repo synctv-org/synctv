@@ -42,14 +42,16 @@ services:
     restart: unless-stopped
 
   synctv:
-    image: synctvorg/synctv:${SYNCTV_IMAGE_TAG:-latest}
+    image: synctvorg/synctv:latest
     container_name: synctv-app
     env_file:
       - path: .env.synctv
         required: true
+    environment:
+      # Keep application runtime data on the named volume.
+      SYNCTV_DATA_DIR: /data
     ports:
       - "8080:8080"
-      - "8081:8081"
       - "1935:1935"
       - "3478:3478/udp"
     depends_on:

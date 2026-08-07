@@ -375,27 +375,24 @@ validate_rendered_synctv_config_with_file_storage_s3_secret_files() {
 chart_version="$(ruby -ryaml -e 'puts YAML.load_file(ARGV.fetch(0)).fetch("version")' "$chart_dir/Chart.yaml")"
 app_version="$(ruby -ryaml -e 'puts YAML.load_file(ARGV.fetch(0)).fetch("appVersion")' "$chart_dir/Chart.yaml")"
 cargo_version="$(cargo metadata --format-version 1 --no-deps | node -e 'const fs = require("fs"); const meta = JSON.parse(fs.readFileSync(0, "utf8")); process.stdout.write(meta.workspace_default_members.length ? meta.packages.find((pkg) => pkg.id === meta.workspace_default_members[0]).version : meta.packages[0].version);')"
-compose_image_tag="$(ruby -ryaml -e '
+compose_image="$(ruby -ryaml -e '
   compose = YAML.load_file(ARGV.fetch(0))
-  image = compose.fetch("services").fetch("synctv").fetch("image")
-  match = image.match(/\$\{SYNCTV_IMAGE_TAG:-([^}]+)\}/)
-  abort("docker-compose.yml synctv image must use SYNCTV_IMAGE_TAG fallback") unless match
-  puts match[1]
+  puts compose.fetch("services").fetch("synctv").fetch("image")
 ' docker-compose.yml)"
 docs_default_app_version="$(node --input-type=module -e 'const project = await import("./docs/src/lib/project.ts"); process.stdout.write(project.dockerImageTag);')"
 
 [ -n "$chart_version" ] || fail "$chart_dir/Chart.yaml must define version"
 [ -n "$app_version" ] || fail "$chart_dir/Chart.yaml must define appVersion"
 [ -n "$cargo_version" ] || fail "Cargo.toml must define workspace.package.version"
-[ -n "$compose_image_tag" ] || fail "docker-compose.yml must define SYNCTV_IMAGE_TAG fallback"
+[ -n "$compose_image" ] || fail "docker-compose.yml must define the synctv image"
 [ -n "$docs_default_app_version" ] || fail "docs/src/lib/project.ts must define defaultAppVersion"
 
 [ "$chart_version" = "$cargo_version" ] ||
   fail "chart version ($chart_version) must match Cargo workspace version ($cargo_version)"
 [ "$app_version" = "$cargo_version" ] ||
   fail "chart appVersion ($app_version) must match Cargo workspace version ($cargo_version)"
-[ "$compose_image_tag" = "latest" ] ||
-  fail "Compose image fallback tag ($compose_image_tag) must be latest"
+[ "$compose_image" = "synctvorg/synctv:latest" ] ||
+  fail "Compose image ($compose_image) must be synctvorg/synctv:latest"
 [ "$docs_default_app_version" = "$cargo_version" ] ||
   fail "docs default app version ($docs_default_app_version) must match Cargo workspace version ($cargo_version)"
 

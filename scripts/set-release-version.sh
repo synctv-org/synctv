@@ -45,10 +45,6 @@ perl -0pi -e '
 ' docs/src/lib/project.ts
 
 perl -0pi -e '
-  s/(\$\{SYNCTV_IMAGE_TAG:-)[^}]+(\})/${1}latest$2/g;
-' docker-compose.yml
-
-perl -0pi -e '
   my $version = $ENV{"SYNCTV_RELEASE_VERSION"};
   s/(--version\s+)[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?/$1$version/g;
 ' helm/synctv/README.md
@@ -60,12 +56,9 @@ docs_package_version="$(node -p 'require("./docs/package.json").version')"
 docs_lock_version="$(node -p 'require("./docs/package-lock.json").version')"
 docs_lock_root_version="$(node -p 'require("./docs/package-lock.json").packages[""].version')"
 docs_default_app_version="$(node --input-type=module -e 'const project = await import("./docs/src/lib/project.ts"); process.stdout.write(project.dockerImageTag);')"
-compose_image_tag="$(ruby -ryaml -e '
+compose_image="$(ruby -ryaml -e '
   compose = YAML.load_file(ARGV.fetch(0))
-  image = compose.fetch("services").fetch("synctv").fetch("image")
-  match = image.match(/\$\{SYNCTV_IMAGE_TAG:-([^}]+)\}/)
-  abort("docker-compose.yml synctv image must use SYNCTV_IMAGE_TAG fallback") unless match
-  puts match[1]
+  puts compose.fetch("services").fetch("synctv").fetch("image")
 ' docker-compose.yml)"
 
 if [ "$cargo_version" != "$version" ] ||
@@ -75,7 +68,7 @@ if [ "$cargo_version" != "$version" ] ||
   [ "$docs_lock_version" != "$version" ] ||
   [ "$docs_lock_root_version" != "$version" ] ||
   [ "$docs_default_app_version" != "$version" ] ||
-  [ "$compose_image_tag" != "latest" ]; then
+  [ "$compose_image" != "synctvorg/synctv:latest" ]; then
   echo "Failed to synchronize release version across Cargo.toml, Helm chart, Compose, and docs metadata." >&2
   exit 1
 fi

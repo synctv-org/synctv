@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use bytes::Bytes;
 use ffmpeg_next::{codec, encoder, format, media, Rational};
+use ffmpeg_sys_next as _;
 use rust_h265::{parse_annex_b as parse_hevc_annex_b, Decoder as HevcDecoder, PixelData};
 use rusty_aac::{
     audio_specific_config_bytes, parse_audio_specific_config, AacDecoder, AacEncoder,

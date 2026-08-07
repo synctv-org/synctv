@@ -1,0 +1,113 @@
+---
+title: Metrics Catalog
+description: SyncTV Prometheus metric names, types, and labels.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Scrape
+
+Metrics are exposed by a separate metrics listener. See [Metrics Monitoring](../../configuration/metrics/) for configuration.
+
+```bash
+curl -fsS \
+  -H "Authorization: Bearer $METRICS_TOKEN" \
+  http://localhost:9090/metrics
+```
+
+<Aside type="note">
+Disabled or unused features may not emit their metrics. Do not expose the metrics listener directly to the public internet.
+</Aside>
+
+## HTTP And WebSocket
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `http_requests_total` | counter | `method`, `path`, `status` | HTTP requests |
+| `http_request_duration_seconds` | histogram | `method`, `path` | HTTP request duration |
+| `http_error_rate_total` | counter | `method`, `path`, `error_type` | HTTP errors |
+| `http_requests_in_flight` | gauge | none | In-flight HTTP requests |
+| `websocket_connections_active` | gauge | none | Active WebSocket connections |
+| `websocket_connections_total` | counter | `status` | WebSocket connection attempts |
+| `websocket_messages_total` | counter | `direction`, `type` | WebSocket messages |
+| `websocket_errors_total` | counter | `error_type` | WebSocket errors |
+| `websocket_connection_duration_seconds` | histogram | none | WebSocket connection duration |
+| `users_online` | gauge | none | Online users |
+| `rooms_active` | gauge | none | Active rooms |
+
+## Database And Cache
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `db_query_duration_seconds` | histogram | `operation`, `table` | Database query duration |
+| `db_operations_total` | counter | `operation`, `table`, `result` | Database operations |
+| `db_connections_active` | gauge | none | Active DB connections |
+| `db_connections_idle` | gauge | none | Idle DB connections |
+| `db_connections_waiting` | gauge | none | Requests waiting for a connection |
+| `db_pool_utilization_ratio` | gauge | `pool` | Pool utilization, from 0 to 1 |
+| `db_connection_acquire_duration_seconds` | histogram | `pool` | Connection acquire duration |
+| `db_query_errors_total` | counter | `operation`, `error_type` | DB query errors |
+| `cache_hits_total` | counter | `cache_type`, `level` | Cache hits |
+| `cache_misses_total` | counter | `cache_type`, `level` | Cache misses |
+| `cache_evictions_total` | counter | `cache_type` | Cache evictions |
+| `cache_errors_total` | counter | `cache_type`, `operation` | Cache operation errors |
+| `cache_fill_duration_seconds` | histogram | `cache_type` | Cache fill duration |
+
+## Business And Rate Limits
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `chat_messages_total` | counter | none | Persisted chat messages |
+| `synctv_file_object_delete_attempts_total` | counter | `origin`, `backend` | File object delete attempts |
+| `synctv_file_object_delete_failures_total` | counter | `origin`, `backend` | File object delete failures |
+| `synctv_file_cleanup_jobs_due` | gauge | none | Due file cleanup jobs waiting for retry |
+| `synctv_file_cleanup_jobs_total` | counter | `action`, `origin`, `backend` | File cleanup retry job actions |
+| `playlist_items_total` | counter | none | Added playlist items |
+| `webrtc_peers_active` | gauge | none | Active WebRTC peers |
+| `active_connections` | gauge | none | Active connections |
+| `spawned_task_panics_total` | counter | `task_name` | Background task panics caught by `spawn_monitored` |
+| `email_delivery_queue_depth` | gauge | none | Email jobs awaiting delivery in the PostgreSQL outbox |
+| `email_delivery_in_flight` | gauge | none | Email jobs being delivered by this instance |
+| `email_delivery_jobs_total` | counter | `kind`, `status` | Email job outcomes: `sent`, `retry`, `dead`, `superseded`, `fenced`, `persist_failed`, or `ack_failed` |
+| `email_delivery_duration_seconds` | histogram | `kind`, `status` | Delivery duration by job kind and outcome |
+| `rate_limit_checks_total` | counter | `backend`, `category` | Rate-limit checks |
+| `rate_limit_rejections_total` | counter | `backend`, `category` | Rate-limit rejections |
+| `rate_limit_redis_fallbacks_total` | counter | `category` | In-memory fallback after Redis rate-limit errors |
+
+## Cluster
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `synctv_cluster_connections_total` | gauge | none | Cluster connections on this node |
+| `synctv_realtime_events_published_total` | counter | `event_type` | Published realtime events |
+| `synctv_realtime_events_received_total` | counter | `event_type` | Received realtime events |
+| `synctv_realtime_events_dropped_total` | counter | `reason` | Dropped realtime events |
+| `synctv_cluster_heartbeat_failures` | gauge | none | Consecutive heartbeat failures |
+| `synctv_node_active_rooms` | gauge | none | Active rooms on this node |
+| `synctv_cluster_node_health_status` | gauge | none | Node health status; 1 means healthy |
+| `synctv_cluster_leader_election_state` | gauge | none | Leader election state; 1 means leader |
+| `synctv_cluster_leader_election_epoch` | gauge | none | Current leader epoch |
+| `synctv_cluster_leader_election_consecutive_failures` | gauge | none | Consecutive leader election failures |
+| `synctv_cluster_epoch_mismatch_quarantine` | gauge | none | Epoch mismatch quarantine state |
+| `synctv_cluster_redis_pubsub_health` | gauge | none | Redis pub/sub connection health |
+| `synctv_cluster_member_count` | gauge | none | Cluster member count |
+| `synctv_cluster_sync_errors_total` | counter | `error_type` | Cluster synchronization errors |
+
+## Media And Livestream
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `stream_relay_duration_seconds` | histogram | `stream_type` | Stream relay operation duration |
+| `active_relay_streams` | gauge | none | Active relay streams |
+| `stream_errors_total` | counter | `stream_type`, `error_type` | Stream errors |
+| `streamhub_restarts_total` | counter | `reason` | StreamHub event loop restarts |
+| `livestream_active_publishers` | gauge | none | Active livestream publishers |
+| `livestream_active_viewers` | gauge | none | Active livestream viewers |
+| `livestream_bytes_total` | counter | `direction` | Livestream bytes transferred |
+| `livestream_stream_duration_seconds` | histogram | `stream_type` | Livestream session duration |
+| `livestream_pull_errors_total` | counter | `error_type` | Livestream pull errors |
+| `livestream_relay_frame_drops_total` | counter | none | Relay frame drops caused by backpressure |
+| `gop_cache_size` | gauge | none | Current GOP cache entries |
+| `gop_cache_drops_total` | counter | none | GOP cache evictions |
+| `gop_cache_memory_bytes` | gauge | none | GOP cache memory usage |
+| `livestream_flv_slow_client_terminations_total` | counter | none | FLV slow-client terminations |

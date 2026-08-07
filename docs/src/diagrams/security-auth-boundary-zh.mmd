@@ -1,0 +1,18 @@
+flowchart LR
+  Local[本地第一因素<br/>密码 / OPAQUE / WebAuthn / 邮箱]
+  MFA[MFA 会话<br/>剩余本地验证方式]
+  OAuth2[OAuth2 Provider]
+  Tokens[Access / refresh token<br/>携带认证上下文]
+  API[HTTP / gRPC 业务 API]
+  Management[管理 gRPC<br/>独立运维 token]
+
+  Local -->|开启 2FA| MFA
+  MFA -->|第二因素通过| Tokens
+  Local -->|未开启 2FA| Tokens
+  OAuth2 -->|独立登录信任| Tokens
+  Tokens --> API
+
+  CLI[CLI / 运维人员] --> Management
+
+  Note[OAuth2 不计入本地 2FA 因素。<br/>开启 2FA 的用户仍可通过 OAuth2 登录。]
+  OAuth2 -.-> Note

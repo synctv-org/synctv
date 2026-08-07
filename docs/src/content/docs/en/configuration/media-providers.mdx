@@ -1,0 +1,89 @@
+---
+title: Media Providers
+description: Configure built-in and remote media Providers, request timeouts, credential encryption, and Provider instances.
+---
+
+## Provider Types and Configuration
+
+Media providers are SyncTV's integration points for external media sources, including:
+
+- Video platforms: Bilibili, Twitch, YouTube, Douyin, TikTok, Huya, Douyu, AcFun, and CCTV.
+- Media servers and file services: Alist, Cloudreve, and Emby/Jellyfin.
+- NAS and private cloud: FNOS, QNAP, Synology, Nextcloud, Seafile, and TrueNAS.
+- Direct URL, RTMP, and live proxy.
+- Remote Provider instances.
+
+`media_providers` only configures local built-in provider adapters in this SyncTV process. Each provider has explicit fields:
+
+```yaml
+media_providers:
+  alist:
+    request_timeout_seconds: 30
+    connect_timeout_seconds: 10
+  bilibili:
+    request_timeout_seconds: 30
+    connect_timeout_seconds: 10
+  emby:
+    request_timeout_seconds: 30
+    connect_timeout_seconds: 10
+```
+
+Remote provider instances are not configured in this YAML object. They are persisted through the management API/CLI and only store connection details that SyncTV needs to reach the remote provider, such as `endpoint`, `tls`, `jwt_secret`, `custom_ca`, `timeout`, `insecure_tls`, and `providers`. The remote provider's own Alist, Emby, or Bilibili configuration belongs in the remote provider deployment.
+
+Create remote Provider instances through the management API or CLI, and keep Alist, Emby/Jellyfin, Bilibili, and other upstream configuration in the matching Provider service. See [Provider Management](../../admin/providers/) for enable, reconnect, and credential maintenance tasks.
+
+## Provider Instances
+
+Every source can select a Provider instance. An empty instance name selects the default local instance. Named instances can point at separately configured local or remote gRPC backends. Administrators configure endpoint, TLS, authentication secret, timeout, and allowed Provider names through Provider-instance management APIs.
+
+User credentials retain `provider_instance_name`. Binding one upstream through several instances creates independent credential scopes. The App stores the selected instance with media and playlist bindings, and playback, covers, and dynamic lists reuse it.
+
+## Local Provider Timeout Fields
+
+`request_timeout_seconds` default: `30`.
+
+This is the total timeout for one upstream HTTP request made by that provider.
+
+`connect_timeout_seconds` default: `10`.
+
+This is the TCP connection timeout for that provider. Validation reports an unreasonable config if it is larger than the same provider's request timeout.
+
+Alist:
+
+```yaml
+media_providers:
+  alist:
+    request_timeout_seconds: 30
+    connect_timeout_seconds: 10
+```
+
+Emby:
+
+```yaml
+media_providers:
+  emby:
+    request_timeout_seconds: 30
+    connect_timeout_seconds: 10
+```
+
+Bilibili:
+
+```yaml
+media_providers:
+  bilibili:
+    request_timeout_seconds: 30
+    connect_timeout_seconds: 10
+```
+
+Other built-in Providers use the same timeout contract. Upstream endpoints, Cookies, tokens, account passwords, and API keys are persisted through user binding APIs.
+
+## Credential Encryption
+
+If provider credentials are stored, production should configure:
+
+```yaml
+security:
+  credential_encryption_key_file: "/run/secrets/credential_encryption_key"
+```
+
+Without a stable credential encryption key, creating or updating encrypted provider credentials may fail, and previously encrypted credentials may become unreadable if the key is lost.

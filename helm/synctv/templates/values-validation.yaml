@@ -1,0 +1,178 @@
+{{- /*
+Validate production-impacting value combinations before rendering resources.
+*/ -}}
+{{- $clusterEnabled := .Values.config.cluster.enabled | default false -}}
+{{- $allowStandaloneReplicas := .Values.safety.allowStandaloneReplicas | default false -}}
+{{- $replicaCount := int (.Values.replicaCount | default 1) -}}
+{{- $autoscalingEnabled := .Values.autoscaling.enabled | default false -}}
+{{- $hpaMinReplicas := int (.Values.autoscaling.minReplicas | default 1) -}}
+{{- $hpaMaxReplicas := int (.Values.autoscaling.maxReplicas | default $hpaMinReplicas) -}}
+{{- if and (not $clusterEnabled) (not $allowStandaloneReplicas) (gt $replicaCount 1) -}}
+{{- fail "replicaCount > 1 requires config.cluster.enabled=true, or set safety.allowStandaloneReplicas=true to acknowledge independent standalone pods" -}}
+{{- end -}}
+{{- if and (not $clusterEnabled) (not $allowStandaloneReplicas) $autoscalingEnabled (gt $hpaMaxReplicas 1) -}}
+{{- fail "autoscaling.maxReplicas > 1 requires config.cluster.enabled=true, or set safety.allowStandaloneReplicas=true to acknowledge independent standalone pods" -}}
+{{- end -}}
+{{- if and $autoscalingEnabled (lt $hpaMaxReplicas $hpaMinReplicas) -}}
+{{- fail "autoscaling.maxReplicas must be greater than or equal to autoscaling.minReplicas" -}}
+{{- end -}}
+{{- if and .Values.podDisruptionBudget.enabled .Values.podDisruptionBudget.minAvailable .Values.podDisruptionBudget.maxUnavailable -}}
+{{- fail "podDisruptionBudget.minAvailable and podDisruptionBudget.maxUnavailable are mutually exclusive" -}}
+{{- end -}}
+{{- if and (not .Values.existingSecret) (not .Values.secretBootstrap.enabled) -}}
+{{- fail "secretBootstrap.enabled=false requires existingSecret" -}}
+{{- end -}}
+{{- if and (not .Values.existingSecret) .Values.secretBootstrap.enabled (not (.Values.secretBootstrap.image.repository | default "")) -}}
+{{- fail "secretBootstrap.image.repository is required when secretBootstrap.enabled=true" -}}
+{{- end -}}
+{{- if and (not .Values.existingSecret) .Values.secretBootstrap.enabled (not (.Values.secretBootstrap.image.tag | default "")) -}}
+{{- fail "secretBootstrap.image.tag is required when secretBootstrap.enabled=true" -}}
+{{- end -}}
+{{- $builtinStunEnabled := .Values.config.webrtc.enableBuiltinStun | default false -}}
+{{- $stunServiceEnabled := .Values.stunService.enabled | default false -}}
+{{- $stunServiceType := .Values.stunService.type | default "ClusterIP" -}}
+{{- $stunExternalAddr := .Values.config.webrtc.stunExternalAddr | default "" -}}
+{{- if and $builtinStunEnabled $stunServiceEnabled $stunExternalAddr (eq $stunServiceType "ClusterIP") -}}
+{{- fail "config.webrtc.stunExternalAddr with stunService.type=ClusterIP is not client-reachable; use stunService.type=LoadBalancer/NodePort or disable stunService" -}}
+{{- end -}}
+{{- if not .Values.existingSecret -}}
+  {{- range $name, $value := dict
+    "credentialEncryptionKey" (.Values.secrets.security.credentialEncryptionKey | default "" | trim)
+    "totpEncryptionKey" (.Values.secrets.security.totpEncryptionKey | default "" | trim)
+    "emailOutboxEncryptionKey" (.Values.secrets.security.emailOutboxEncryptionKey | default "" | trim) -}}
+    {{- if and $value (not (regexMatch "^[0-9A-Fa-f]{64}$" $value)) -}}
+      {{- fail (printf "secrets.security.%s must contain exactly 64 hexadecimal characters" $name) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $credentialEncryptionKey := .Values.secrets.security.credentialEncryptionKey | default "" | trim | lower -}}
+  {{- if has $credentialEncryptionKey (list
+    "111102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+  ) -}}
+    {{- fail "secrets.security.credentialEncryptionKey uses a known development value" -}}
+  {{- end -}}
+
+  {{- $opaqueSecret := .Values.secrets.security.opaqueServerSetupSecret | default "" | trim -}}
+  {{- if and $opaqueSecret (lt (len $opaqueSecret) 32) -}}
+    {{- fail "secrets.security.opaqueServerSetupSecret must contain at least 32 characters" -}}
+  {{- end -}}
+  {{- if and $opaqueSecret (or
+    (eq $opaqueSecret "change-me-in-production")
+    (hasPrefix "CHANGE_ME_" $opaqueSecret)
+    (has $opaqueSecret (list
+      "dev-opaque-server-setup-secret-please-change-1234567890"
+      "dev-opaque-server-setup-secret-please-change-in-production"
+    ))
+  ) -}}
+    {{- fail "secrets.security.opaqueServerSetupSecret uses a placeholder or known development value" -}}
+  {{- end -}}
+
+  {{- range $name, $value := dict
+    "proxySigningKey" (.Values.secrets.security.proxySigningKey | default "" | trim)
+    "mediaSwarmSigningKey" (.Values.secrets.security.mediaSwarmSigningKey | default "" | trim)
+    "providerSessionEncryptionKey" (.Values.secrets.security.providerSessionEncryptionKey | default "" | trim)
+    "loginDiscoveryKey" (.Values.secrets.security.loginDiscoveryKey | default "" | trim)
+    "webauthnEnumerationKey" (.Values.secrets.security.webauthnEnumerationKey | default "" | trim)
+    "fileUploadTokenSecret" (.Values.secrets.security.fileUploadTokenSecret | default "" | trim) -}}
+    {{- if and $value (lt (len $value) 32) -}}
+      {{- fail (printf "secrets.security.%s must contain at least 32 characters" $name) -}}
+    {{- end -}}
+    {{- if and $value (or (eq $value "change-me-in-production") (hasPrefix "CHANGE_ME_" $value)) -}}
+      {{- fail (printf "secrets.security.%s uses a placeholder value" $name) -}}
+    {{- end -}}
+  {{- end -}}
+
+  {{- $jwtSecret := .Values.secrets.jwt.secret | default "" -}}
+  {{- if and $jwtSecret (lt (len $jwtSecret) 32) -}}
+    {{- fail "secrets.jwt.secret must contain at least 32 characters" -}}
+  {{- end -}}
+  {{- if and $jwtSecret (or
+    (eq $jwtSecret "change-me-in-production")
+    (hasPrefix "CHANGE_ME_" $jwtSecret)
+    (has $jwtSecret (list
+      "aDsPda5skjBg4km/8XFxBntIQ2ppbBTAAFT7P2PdzPA="
+      "dev-jwt-secret-please-change-in-production-1234567890"
+    ))
+  ) -}}
+    {{- fail "secrets.jwt.secret uses a placeholder or known development value" -}}
+  {{- end -}}
+
+  {{- $clusterSecret := .Values.secrets.cluster.grpcSecret | default "" -}}
+  {{- if and $clusterSecret (lt (len $clusterSecret) 16) -}}
+    {{- fail "secrets.cluster.grpcSecret must contain at least 16 characters" -}}
+  {{- end -}}
+  {{- if eq $clusterSecret "dev-cluster-secret-please-change-in-production-1234567890" -}}
+    {{- fail "secrets.cluster.grpcSecret uses a known development value" -}}
+  {{- end -}}
+
+  {{- $configuredSecrets := compact (list
+    ($jwtSecret | trim)
+    ($clusterSecret | trim)
+    (.Values.secrets.security.credentialEncryptionKey | default "" | trim)
+    (.Values.secrets.security.totpEncryptionKey | default "" | trim)
+    (.Values.secrets.security.emailOutboxEncryptionKey | default "" | trim)
+    ($opaqueSecret | trim)
+    (.Values.secrets.security.proxySigningKey | default "" | trim)
+    (.Values.secrets.security.mediaSwarmSigningKey | default "" | trim)
+    (.Values.secrets.security.providerSessionEncryptionKey | default "" | trim)
+    (.Values.secrets.security.loginDiscoveryKey | default "" | trim)
+    (.Values.secrets.security.webauthnEnumerationKey | default "" | trim)
+    (.Values.secrets.security.fileUploadTokenSecret | default "" | trim)
+  ) -}}
+  {{- $normalizedSecrets := list -}}
+  {{- range $value := $configuredSecrets -}}
+    {{- if regexMatch "^[0-9A-Fa-f]{64}$" $value -}}
+      {{- $normalizedSecrets = append $normalizedSecrets (lower $value) -}}
+    {{- else -}}
+      {{- $normalizedSecrets = append $normalizedSecrets $value -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if ne (len $normalizedSecrets) (len (uniq $normalizedSecrets)) -}}
+    {{- fail "secrets used by different security domains must have distinct values" -}}
+  {{- end -}}
+{{- end -}}
+{{- $fileStorage := .Values.config.fileStorage | default dict -}}
+{{- range $name, $backend := ($fileStorage.backends | default dict) -}}
+  {{- $backendType := index $backend "type" | default "disabled" -}}
+  {{- if not (has $backendType (list "disabled" "database" "s3")) -}}
+    {{- fail (printf "config.fileStorage.backends.%s.type must be one of: disabled, database, s3" $name) -}}
+  {{- end -}}
+  {{- if eq $backendType "database" -}}
+    {{- $compression := $backend.compression | default "zstd" -}}
+    {{- if not (has $compression (list "none" "lz4" "zstd")) -}}
+      {{- fail (printf "config.fileStorage.backends.%s.compression must be one of: none, lz4, zstd" $name) -}}
+    {{- end -}}
+    {{- $compressionMinSizeBytes := int64 ($backend.compressionMinSizeBytes | default 4096) -}}
+    {{- if lt $compressionMinSizeBytes 0 -}}
+      {{- fail (printf "config.fileStorage.backends.%s.compressionMinSizeBytes must be non-negative" $name) -}}
+    {{- end -}}
+    {{- $compressionMinSavingsPercent := int64 ($backend.compressionMinSavingsPercent | default 10) -}}
+    {{- if or (lt $compressionMinSavingsPercent 0) (gt $compressionMinSavingsPercent 100) -}}
+      {{- fail (printf "config.fileStorage.backends.%s.compressionMinSavingsPercent must be between 0 and 100" $name) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if eq $backendType "s3" -}}
+    {{- if not ($backend.endpoint | default "") -}}
+      {{- fail (printf "config.fileStorage.backends.%s.endpoint is required when type=s3" $name) -}}
+    {{- end -}}
+    {{- if not ($backend.bucket | default "") -}}
+      {{- fail (printf "config.fileStorage.backends.%s.bucket is required when type=s3" $name) -}}
+    {{- end -}}
+    {{- if not ($backend.region | default "auto") -}}
+      {{- fail (printf "config.fileStorage.backends.%s.region is required when type=s3" $name) -}}
+    {{- end -}}
+    {{- if not ($backend.publicBaseUrl | default "") -}}
+      {{- fail (printf "config.fileStorage.backends.%s.publicBaseUrl is required when type=s3" $name) -}}
+    {{- end -}}
+    {{- if not (or ($backend.accessKeyId | default "") ($backend.accessKeyIdFile | default "")) -}}
+      {{- fail (printf "config.fileStorage.backends.%s requires accessKeyId or accessKeyIdFile when type=s3" $name) -}}
+    {{- end -}}
+    {{- if not (or ($backend.secretAccessKey | default "") ($backend.secretAccessKeyFile | default "")) -}}
+      {{- fail (printf "config.fileStorage.backends.%s requires secretAccessKey or secretAccessKeyFile when type=s3" $name) -}}
+    {{- end -}}
+    {{- $uploadExpiresSeconds := int64 ($backend.uploadExpiresSeconds | default 900) -}}
+    {{- if le $uploadExpiresSeconds 0 -}}
+      {{- fail (printf "config.fileStorage.backends.%s.uploadExpiresSeconds must be greater than 0" $name) -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}

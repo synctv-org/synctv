@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO realtime_outbox (\n                    id, aggregate_type, aggregate_id, event_type, payload, status,\n                    next_retry_at, created_at, dispatched_at\n                )\n                VALUES ($1, 'room', '1', 'room_updated', '{}'::jsonb, $2, $3, $4, $5)\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int2",
+        "Timestamptz",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "02a2d799b85e0d7edd2ede97300748a8ff71dd7c2e730866166255bd92a44c95"
+}

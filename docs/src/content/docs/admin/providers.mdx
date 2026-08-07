@@ -1,0 +1,43 @@
+---
+title: Provider 管理
+description: 创建、启停、更新、重连和删除远程 Provider gRPC instance。
+---
+
+Provider instance 是 SyncTV 连接远程 Provider gRPC 服务的实例配置，只保存 `endpoint`、TLS、JWT secret、custom CA、timeout 和该远程服务声明支持的 Provider type。上游媒体源账号、token、cookie、UA 或特定后端参数属于用户 Provider 凭据或远程 Provider 服务自己的部署配置，不属于这里的 instance 配置。
+
+远程 Provider instance 的 `--provider` 接受 CLI 支持的全部 Provider type：`direct-url`、`bilibili`、`alist`、`emby`、`rtmp`、`live-proxy`、`cloudreve`、`twitch`、`huya`、`douyu`、`douyin`、`acfun`、`cctv`、`fnos`、`qnap`、`synology`、`nextcloud`、`seafile`、`truenas`、`youtube` 和 `tiktok`。远程服务实际启用的类型由其自身部署决定。
+
+## 常见操作
+
+```bash
+synctv provider-instance available
+synctv provider-instance list
+synctv provider-instance create <NAME> <ENDPOINT> --provider alist
+synctv provider-instance update <NAME> --instance-endpoint <ENDPOINT>
+synctv provider-instance enable <NAME>
+synctv provider-instance disable <NAME>
+synctv provider-instance reconnect <NAME>
+synctv provider-instance delete <NAME>
+```
+
+## 操作前检查
+
+| 操作 | 先确认 |
+| --- | --- |
+| 创建 | endpoint、TLS/JWT/CA 配置正确，声明的 `--provider` 在远程服务支持范围内 |
+| 更新 | 新旧 endpoint、TLS、JWT secret、CA、timeout 和支持的 Provider type |
+| 禁用 | 当前是否仍有用户默认 Provider 或房间媒体依赖 |
+| 删除 | 是否仍被播放列表、用户偏好或远程实例引用 |
+| 重连 | 上游是否可达，凭据是否过期 |
+
+## 播放验证
+
+修改 Provider 后，至少验证：
+
+1. 管理员账号可以浏览或搜索媒体。
+2. 普通用户能按权限看到可用媒体。
+3. 直连播放和代理播放都符合预期。
+4. 支持 Range 的上游可以 seek。
+5. Bilibili、Alist 等对 header 敏感的来源使用了正确的 `User-Agent`、`Referer`、`Range` 和认证 header。
+
+Provider 类型、连接参数和凭据存储见 [媒体 Provider 配置](../../configuration/media-providers/)。

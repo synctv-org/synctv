@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE notifications\n                SET is_read = TRUE, updated_at = NOW()\n                WHERE user_id = $1 AND is_read = FALSE AND created_at <= $2\n                  AND created_at >= NOW() - INTERVAL '6 months'\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ad4ec8b3e700691d991cf338c110e27e8fe87bf749c7f8a08ac6cf6da37c6ec4"
+}

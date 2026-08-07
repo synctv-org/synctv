@@ -1,10 +1,39 @@
 version: 2
 updates:
-  - package-ecosystem: "github-actions"
+  - package-ecosystem: cargo
     directory: "/"
     schedule:
-      interval: "daily"
-  - package-ecosystem: "gomod"
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: cargo
+    groups:
+      cargo-non-breaking:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      cargo-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions-non-breaking:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      github-actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"

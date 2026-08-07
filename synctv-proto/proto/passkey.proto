@@ -1,0 +1,210 @@
+syntax = "proto3";
+
+package synctv.client;
+
+import "proto/buf/validate/validate.proto";
+
+enum PasskeyUserVerificationRequirement {
+  PASSKEY_USER_VERIFICATION_REQUIREMENT_UNSPECIFIED = 0;
+  PASSKEY_USER_VERIFICATION_REQUIREMENT_REQUIRED = 1;
+  PASSKEY_USER_VERIFICATION_REQUIREMENT_PREFERRED = 2;
+  PASSKEY_USER_VERIFICATION_REQUIREMENT_DISCOURAGED = 3;
+}
+
+enum PasskeyAttestationConveyancePreference {
+  PASSKEY_ATTESTATION_CONVEYANCE_PREFERENCE_UNSPECIFIED = 0;
+  PASSKEY_ATTESTATION_CONVEYANCE_PREFERENCE_NONE = 1;
+  PASSKEY_ATTESTATION_CONVEYANCE_PREFERENCE_INDIRECT = 2;
+  PASSKEY_ATTESTATION_CONVEYANCE_PREFERENCE_DIRECT = 3;
+}
+
+enum PasskeyAuthenticatorTransport {
+  PASSKEY_AUTHENTICATOR_TRANSPORT_UNSPECIFIED = 0;
+  PASSKEY_AUTHENTICATOR_TRANSPORT_USB = 1;
+  PASSKEY_AUTHENTICATOR_TRANSPORT_NFC = 2;
+  PASSKEY_AUTHENTICATOR_TRANSPORT_BLE = 3;
+  PASSKEY_AUTHENTICATOR_TRANSPORT_INTERNAL = 4;
+  PASSKEY_AUTHENTICATOR_TRANSPORT_HYBRID = 5;
+  PASSKEY_AUTHENTICATOR_TRANSPORT_TEST = 6;
+  PASSKEY_AUTHENTICATOR_TRANSPORT_UNKNOWN = 7;
+}
+
+enum PasskeyAuthenticatorAttachment {
+  PASSKEY_AUTHENTICATOR_ATTACHMENT_UNSPECIFIED = 0;
+  PASSKEY_AUTHENTICATOR_ATTACHMENT_PLATFORM = 1;
+  PASSKEY_AUTHENTICATOR_ATTACHMENT_CROSS_PLATFORM = 2;
+}
+
+enum PasskeyResidentKeyRequirement {
+  PASSKEY_RESIDENT_KEY_REQUIREMENT_UNSPECIFIED = 0;
+  PASSKEY_RESIDENT_KEY_REQUIREMENT_DISCOURAGED = 1;
+  PASSKEY_RESIDENT_KEY_REQUIREMENT_PREFERRED = 2;
+  PASSKEY_RESIDENT_KEY_REQUIREMENT_REQUIRED = 3;
+}
+
+enum PasskeyPublicKeyCredentialHint {
+  PASSKEY_PUBLIC_KEY_CREDENTIAL_HINT_UNSPECIFIED = 0;
+  PASSKEY_PUBLIC_KEY_CREDENTIAL_HINT_SECURITY_KEY = 1;
+  PASSKEY_PUBLIC_KEY_CREDENTIAL_HINT_CLIENT_DEVICE = 2;
+  PASSKEY_PUBLIC_KEY_CREDENTIAL_HINT_HYBRID = 3;
+}
+
+enum PasskeyAttestationFormat {
+  PASSKEY_ATTESTATION_FORMAT_UNSPECIFIED = 0;
+  PASSKEY_ATTESTATION_FORMAT_PACKED = 1;
+  PASSKEY_ATTESTATION_FORMAT_TPM = 2;
+  PASSKEY_ATTESTATION_FORMAT_ANDROID_KEY = 3;
+  PASSKEY_ATTESTATION_FORMAT_ANDROID_SAFETYNET = 4;
+  PASSKEY_ATTESTATION_FORMAT_FIDO_U2F = 5;
+  PASSKEY_ATTESTATION_FORMAT_APPLE = 6;
+  PASSKEY_ATTESTATION_FORMAT_NONE = 7;
+}
+
+enum PasskeyCredentialProtectionPolicy {
+  PASSKEY_CREDENTIAL_PROTECTION_POLICY_UNSPECIFIED = 0;
+  PASSKEY_CREDENTIAL_PROTECTION_POLICY_USER_VERIFICATION_OPTIONAL = 1;
+  PASSKEY_CREDENTIAL_PROTECTION_POLICY_USER_VERIFICATION_OPTIONAL_WITH_CREDENTIAL_ID_LIST = 2;
+  PASSKEY_CREDENTIAL_PROTECTION_POLICY_USER_VERIFICATION_REQUIRED = 3;
+}
+
+enum PasskeyMediationRequirement {
+  PASSKEY_MEDIATION_REQUIREMENT_UNSPECIFIED = 0;
+  PASSKEY_MEDIATION_REQUIREMENT_CONDITIONAL = 1;
+}
+
+enum PasskeyPublicKeyCredentialType {
+  PASSKEY_PUBLIC_KEY_CREDENTIAL_TYPE_UNSPECIFIED = 0;
+  PASSKEY_PUBLIC_KEY_CREDENTIAL_TYPE_PUBLIC_KEY = 1;
+}
+
+message PasskeyRelyingParty {
+  string name = 1 [(buf.validate.field).string = {min_len: 1, max_len: 255}];
+  string id = 2 [(buf.validate.field).string = {min_len: 1, max_len: 255}];
+}
+
+message PasskeyUserEntity {
+  bytes id = 1 [(buf.validate.field).bytes = {min_len: 1, max_len: 1024}];
+  string name = 2 [(buf.validate.field).string = {min_len: 1, max_len: 320}];
+  string display_name = 3 [(buf.validate.field).string = {min_len: 1, max_len: 320}];
+}
+
+message PasskeyPubKeyCredentialParam {
+  PasskeyPublicKeyCredentialType type = 1 [(buf.validate.field).enum.defined_only = true];
+  int64 alg = 2;
+}
+
+message PasskeyCredentialDescriptor {
+  PasskeyPublicKeyCredentialType type = 1 [(buf.validate.field).enum.defined_only = true];
+  bytes id = 2 [(buf.validate.field).bytes = {min_len: 1, max_len: 4096}];
+  repeated PasskeyAuthenticatorTransport transports = 3;
+}
+
+message PasskeyAuthenticatorSelectionCriteria {
+  PasskeyAuthenticatorAttachment authenticator_attachment = 1;
+  PasskeyResidentKeyRequirement resident_key = 2;
+  bool require_resident_key = 3;
+  PasskeyUserVerificationRequirement user_verification = 4;
+}
+
+message PasskeyCredProtectInput {
+  PasskeyCredentialProtectionPolicy credential_protection_policy = 1 [(buf.validate.field).enum.defined_only = true];
+  optional bool enforce_credential_protection_policy = 2;
+}
+
+message PasskeyRegistrationExtensionsInput {
+  PasskeyCredProtectInput cred_protect = 1;
+  optional bool uvm = 2;
+  optional bool cred_props = 3;
+  optional bool min_pin_length = 4;
+  optional bool hmac_create_secret = 5;
+}
+
+message PasskeyHmacGetSecretInput {
+  bytes output1 = 1 [(buf.validate.field).bytes = {min_len: 1, max_len: 4096}];
+  bytes output2 = 2 [(buf.validate.field).bytes = {max_len: 4096}];
+}
+
+message PasskeyAuthenticationExtensionsInput {
+  string appid = 1 [(buf.validate.field).string = {max_len: 2048}];
+  optional bool uvm = 2;
+  PasskeyHmacGetSecretInput hmac_get_secret = 3;
+}
+
+message PasskeyPublicKeyCredentialCreationOptions {
+  PasskeyRelyingParty rp = 1 [(buf.validate.field).required = true];
+  PasskeyUserEntity user = 2 [(buf.validate.field).required = true];
+  bytes challenge = 3 [(buf.validate.field).bytes = {min_len: 1, max_len: 4096}];
+  repeated PasskeyPubKeyCredentialParam pub_key_cred_params = 4 [(buf.validate.field).repeated = {min_items: 1}];
+  optional uint32 timeout = 5;
+  repeated PasskeyCredentialDescriptor exclude_credentials = 6;
+  PasskeyAuthenticatorSelectionCriteria authenticator_selection = 7;
+  repeated PasskeyPublicKeyCredentialHint hints = 8;
+  PasskeyAttestationConveyancePreference attestation = 9;
+  repeated PasskeyAttestationFormat attestation_formats = 10;
+  PasskeyRegistrationExtensionsInput extensions = 11;
+}
+
+message PasskeyCreationChallenge {
+  PasskeyPublicKeyCredentialCreationOptions public_key = 1 [(buf.validate.field).required = true];
+}
+
+message PasskeyPublicKeyCredentialRequestOptions {
+  bytes challenge = 1 [(buf.validate.field).bytes = {min_len: 1, max_len: 4096}];
+  optional uint32 timeout = 2;
+  string rp_id = 3 [(buf.validate.field).string = {min_len: 1, max_len: 255}];
+  repeated PasskeyCredentialDescriptor allow_credentials = 4;
+  PasskeyUserVerificationRequirement user_verification = 5 [(buf.validate.field).enum.defined_only = true];
+  repeated PasskeyPublicKeyCredentialHint hints = 6;
+  PasskeyAuthenticationExtensionsInput extensions = 7;
+}
+
+message PasskeyRequestChallenge {
+  PasskeyPublicKeyCredentialRequestOptions public_key = 1 [(buf.validate.field).required = true];
+  PasskeyMediationRequirement mediation = 2;
+}
+
+message PasskeyAuthenticationExtensionsClientOutputs {
+  optional bool appid = 1;
+  PasskeyHmacGetSecretInput hmac_get_secret = 2;
+}
+
+message PasskeyRegistrationCredProps {
+  optional bool rk = 1;
+}
+
+message PasskeyRegistrationExtensionsClientOutputs {
+  optional bool appid = 1;
+  PasskeyRegistrationCredProps cred_props = 2;
+  optional bool hmac_secret = 3;
+  PasskeyCredentialProtectionPolicy cred_protect = 4;
+  optional uint32 min_pin_length = 5;
+}
+
+message PasskeyAuthenticatorAssertionResponse {
+  bytes authenticator_data = 1 [(buf.validate.field).bytes = {min_len: 1, max_len: 65536}];
+  bytes client_data_json = 2 [json_name = "clientDataJSON", (buf.validate.field).bytes = {min_len: 1, max_len: 65536}];
+  bytes signature = 3 [(buf.validate.field).bytes = {min_len: 1, max_len: 65536}];
+  bytes user_handle = 4 [(buf.validate.field).bytes = {max_len: 4096}];
+}
+
+message PasskeyAuthenticatorAttestationResponse {
+  bytes attestation_object = 1 [(buf.validate.field).bytes = {min_len: 1, max_len: 65536}];
+  bytes client_data_json = 2 [json_name = "clientDataJSON", (buf.validate.field).bytes = {min_len: 1, max_len: 65536}];
+  repeated PasskeyAuthenticatorTransport transports = 3;
+}
+
+message PasskeyAuthenticationCredential {
+  string id = 1 [(buf.validate.field).string = {min_len: 1, max_len: 4096}];
+  bytes raw_id = 2 [(buf.validate.field).bytes = {min_len: 1, max_len: 4096}];
+  PasskeyAuthenticatorAssertionResponse response = 3 [(buf.validate.field).required = true];
+  PasskeyAuthenticationExtensionsClientOutputs extensions = 4;
+  PasskeyPublicKeyCredentialType type = 5 [(buf.validate.field).enum.defined_only = true];
+}
+
+message PasskeyRegistrationCredential {
+  string id = 1 [(buf.validate.field).string = {min_len: 1, max_len: 4096}];
+  bytes raw_id = 2 [(buf.validate.field).bytes = {min_len: 1, max_len: 4096}];
+  PasskeyAuthenticatorAttestationResponse response = 3 [(buf.validate.field).required = true];
+  PasskeyPublicKeyCredentialType type = 4 [(buf.validate.field).enum.defined_only = true];
+  PasskeyRegistrationExtensionsClientOutputs extensions = 5;
+}

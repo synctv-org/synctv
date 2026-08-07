@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM media\n             WHERE playlist_id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4cf129bbb9f1b7af1ab1b1f31ff724b3dc4907808aa1698e3440bc1f8832ce4f"
+}

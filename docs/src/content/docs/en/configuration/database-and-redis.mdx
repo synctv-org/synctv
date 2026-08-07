@@ -1,0 +1,173 @@
+---
+title: Database and Redis
+description: PostgreSQL, Redis, connection pools, Sentinel, single-node mode, and cluster dependencies.
+---
+
+## PostgreSQL
+
+PostgreSQL is the primary persistent store for SyncTV. User accounts, rooms, playlists, media metadata, audit data, provider credentials, and most durable application state live in PostgreSQL.
+
+Production deployments should treat PostgreSQL as mandatory infrastructure. Back it up before upgrades, test migrations outside production first, and avoid using ephemeral storage for the database.
+
+## `database.url`
+
+Default:
+
+```yaml
+database:
+  url: "postgresql://synctv:synctv@localhost:5432/synctv"
+  # Optional; used only for allowlisted eventually-consistent reads.
+  read_url: "postgresql://synctv:synctv@postgres-read:5432/synctv"
+```
+
+For production, prefer a secret file:
+
+```yaml
+database:
+  url_file: "/run/secrets/database_url"
+  read_url_file: "/run/secrets/database_read_url"
+```
+
+Environment variables:
+
+```bash
+SYNCTV_DATABASE_URL=postgresql://synctv:password@postgres:5432/synctv
+SYNCTV_DATABASE_URL_FILE=/run/secrets/database_url
+SYNCTV_DATABASE_READ_URL=postgresql://synctv:password@postgres-read:5432/synctv
+SYNCTV_DATABASE_READ_URL_FILE=/run/secrets/database_read_url
+SYNCTV_DATABASE_READ_HOST=postgres-read
+SYNCTV_DATABASE_READ_PORT=5432
+```
+
+`read_url` has highest priority. You can also configure only `read_host` / `SYNCTV_DATABASE_READ_HOST`; SyncTV reuses the primary username, password, and database name, swaps the host, and reuses the primary port when `read_port` is empty.
+
+`read_url` / `read_host` is used only by explicitly allowlisted list/discovery queries. Writes, transactions, migrations, permission checks, cache rebuilds, and authentication security paths always use the primary connection.
+
+## Split Database Configuration
+
+Instead of a full URL, you can use split fields:
+
+```yaml
+database:
+  host: "postgres.example.com"
+  port: 5432
+  username: "synctv"
+  password_file: "/run/secrets/database_password"
+  name: "synctv"
+  read_host: "postgres-read.example.com"
+  read_port: 5432
+```
+
+If split fields are used without `database.url`, SyncTV clears the default URL and builds the connection from the split fields. The username field is `username`, and the environment variable is `SYNCTV_DATABASE_USERNAME`.
+
+## Connection Pool
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `database.max_connections` | `20` | Maximum PostgreSQL pool size |
+| `database.min_connections` | `5` | Minimum idle connections |
+| `database.connect_timeout_seconds` | `10` | Timeout while opening a new connection |
+| `database.idle_timeout_seconds` | `600` | How long idle connections may stay open |
+| `database.max_lifetime_seconds` | `1800` | Maximum lifetime before a connection is recycled |
+
+For small single-node deployments, defaults are usually enough. Increase `max_connections` only after checking PostgreSQL capacity and other application pools that share the same database.
+
+## Redis Role
+
+Redis is optional in simple single-node mode but strongly recommended for production. It is required for cluster mode.
+
+Redis backs or improves:
+
+- Token blacklist and revocation sharing.
+- Rate limit counters.
+- Brute-force protection state.
+- Username, permission, and small business caches.
+- OAuth2 state storage.
+- WebAuthn/passkey challenge storage.
+- MFA session storage.
+- Cache invalidation.
+- Cluster pub/sub, node discovery, health state, and stream catch-up.
+
+If Redis is absent in standalone mode, SyncTV uses in-memory fallbacks where possible. Those fallbacks are lost on restart and cannot be shared across replicas.
+
+## `redis.url`
+
+Single Redis instance:
+
+```yaml
+redis:
+  url_file: "/run/secrets/redis_url"
+  key_prefix: "synctv:"
+```
+
+Environment variables:
+
+```bash
+SYNCTV_REDIS_URL=redis://redis:6379
+SYNCTV_REDIS_URL_FILE=/run/secrets/redis_url
+```
+
+## Split Redis Configuration
+
+```yaml
+redis:
+  host: "redis.example.com"
+  port: 6379
+  username: ""
+  password_file: "/run/secrets/redis_password"
+  database: 0
+```
+
+The username field is `username`, and the environment variable is `SYNCTV_REDIS_USERNAME`.
+
+## Redis Timeouts and Pipeline Buffer
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `redis.connect_timeout_seconds` | `5` | Timeout while opening a Redis connection |
+| `redis.response_timeout_seconds` | `5` | Timeout while waiting for a Redis command response |
+| `redis.pipeline_buffer_size` | `512` | Internal pipeline buffer size for the Redis connection manager |
+
+Increase `response_timeout_seconds` only when Redis is remote, proxied, or has expected failover windows. If response timeouts happen often, check Redis CPU, slow queries, network latency, and connection pressure before raising the value.
+
+The default `pipeline_buffer_size` fits most deployments. Raising it can help high-concurrency, short-command workloads absorb bursts with less scheduling pressure, at the cost of more memory. Do not set it to `0`.
+
+## Redis Sentinel
+
+Sentinel mode connects to a Redis Sentinel deployment. After repeated health-check failures, SyncTV queries Sentinel for the current master and performs a best-effort Redis connection rebuild and hot-swap.
+
+This is not a strict failover guarantee: in-flight Redis operations can still fail during the failover window, and cluster coordination that relies on Redis locks and pub/sub can still be unsafe. For that reason, Sentinel mode cannot be used with `cluster.enabled=true`.
+
+```yaml
+redis:
+  deployment_mode: "sentinel"
+  sentinel_master_name: "mymaster"
+  sentinel_addresses:
+    - "redis://sentinel-0.redis:26379"
+    - "redis://sentinel-1.redis:26379"
+    - "redis://sentinel-2.redis:26379"
+```
+
+For clustered SyncTV, prefer a stable single Redis endpoint, a managed Redis service, or a platform that provides stable connection semantics.
+
+## Cluster Dependency
+
+When `cluster.enabled=true`, Redis must be configured. Cluster mode also requires `cluster.secret`.
+
+```yaml
+cluster:
+  enabled: true
+  secret_file: "/run/secrets/cluster_secret"
+
+redis:
+  url_file: "/run/secrets/redis_url"
+```
+
+Without Redis, multi-replica coordination cannot safely provide node registry, pub/sub, health monitoring, catch-up, and distributed leader election behavior.
+
+## Operational Notes
+
+- PostgreSQL must be backed up before upgrades and migrations.
+- Redis is usually short-lived shared state, but losing it can invalidate OAuth2 state, rate-limit counters, token blacklist data, and cluster coordination state.
+- Use a stable `redis.key_prefix` when sharing a Redis instance with other systems.
+- Do not expose PostgreSQL or Redis directly to the public internet.

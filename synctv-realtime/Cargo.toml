@@ -1,0 +1,80 @@
+[package]
+name = "synctv-realtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = ["tls-aws-lc", "tls-webpki-roots"]
+tls-aws-lc = [
+    "synctv-core/tls-aws-lc",
+    "synctv-common/tls-aws-lc",
+    "synctv-cluster/tls-aws-lc",
+    "tonic/tls-aws-lc",
+]
+tls-ring = [
+    "synctv-core/tls-ring",
+    "synctv-common/tls-ring",
+    "synctv-cluster/tls-ring",
+    "tonic/tls-ring",
+]
+tls-webpki-roots = [
+    "synctv-core/tls-webpki-roots",
+    "synctv-common/tls-webpki-roots",
+    "synctv-cluster/tls-webpki-roots",
+    "tonic/tls-webpki-roots",
+    "redis/tokio-rustls-comp",
+    "redis/tls-rustls-webpki-roots",
+]
+tls-native-roots = [
+    "synctv-core/tls-native-roots",
+    "synctv-common/tls-native-roots",
+    "synctv-cluster/tls-native-roots",
+    "tonic/tls-native-roots",
+    "redis/tokio-rustls-comp",
+]
+
+[dependencies]
+synctv-core = { workspace = true, default-features = false }
+synctv-common = { workspace = true, default-features = false }
+synctv-cluster = { workspace = true, default-features = false }
+
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+prost.workspace = true
+redis.workspace = true
+dashmap.workspace = true
+moka.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+tracing.workspace = true
+subtle.workspace = true
+
+[lints]
+workspace = true
+
+[build-dependencies]
+tonic-prost-build.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+mockall.workspace = true
+synctv-core = { workspace = true, default-features = false, features = ["test-support"] }
+synctv-cluster = { workspace = true, default-features = false, features = ["test-support"] }
+synctv-core-testing.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[[bench]]
+name = "connection_manager_ttl_refresh"
+harness = false

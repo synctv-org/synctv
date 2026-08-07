@@ -1,0 +1,251 @@
+---
+title: WebAuthn 与 Passkey
+description: passkey 登录、WebAuthn RP ID、Origin、安全域名和集群依赖配置。
+---
+
+## 支持的认证方式
+
+WebAuthn 是浏览器、操作系统和硬件安全密钥支持的无密码/多因素认证标准。用户看到的产品形态通常叫：
+
+- passkey
+- 通行密钥
+- 安全密钥
+- 指纹/面容/系统解锁登录
+
+SyncTV 的配置字段使用标准名 `webauthn`，产品文案可以叫 passkey。
+
+## 生产环境要求
+
+生产环境必须满足：
+
+- 使用 HTTPS。
+- 有稳定域名。
+- `rp_id` 与 `rp_origin` 的域名关系正确。
+- 多副本部署必须使用 Redis 保存 challenge 状态。
+
+## `webauthn.enabled`
+
+默认值：
+
+```yaml
+webauthn:
+  enabled: false
+```
+
+开启后，passkey 注册和登录接口可用。
+
+Passkey 登录使用 WebAuthn discoverable credential 和 conditional UI。登录开始请求不包含用户名或邮箱；浏览器或操作系统的 passkey UI 会让用户选择当前 RP ID 下的凭据，服务端再通过返回的 credential ID 解析账号。客户端应将它作为 passkey 登录，并要求浏览器/认证器组合支持 discoverable credential。
+
+## `webauthn.rp_id`
+
+Relying Party ID。可以理解为“认证器认为这是哪个网站”。
+
+通常填写主域名，不带协议、不带端口、不带路径。
+
+示例：
+
+```yaml
+webauthn:
+  rp_id: "example.com"
+```
+
+如果前端是：
+
+```text
+https://app.example.com
+```
+
+`rp_id` 可以是：
+
+```text
+example.com
+```
+
+或在某些场景中是：
+
+```text
+app.example.com
+```
+
+不要填写：
+
+- `https://example.com`
+- `example.com/login`
+- `localhost:8080`
+
+## `webauthn.rp_origin`
+
+用户实际访问的前端 origin。
+
+示例：
+
+```yaml
+webauthn:
+  rp_origin: "https://app.example.com"
+```
+
+origin 只能包含：
+
+- 协议
+- 域名
+- 可选端口
+
+不能包含路径、query、fragment。
+
+正确：
+
+```text
+https://app.example.com
+```
+
+错误：
+
+```text
+https://app.example.com/login
+```
+
+## `webauthn.rp_name`
+
+显示给用户的服务名称。
+
+默认：
+
+```yaml
+webauthn:
+  rp_name: "SyncTV"
+```
+
+用户在系统 passkey 管理界面可能会看到这个名称。
+
+## `webauthn.allowed_origins`
+
+额外允许的 origin。
+
+例如你同时有 Web 前端和桌面客户端开发地址：
+
+```yaml
+webauthn:
+  rp_origin: "https://app.example.com"
+  allowed_origins:
+    - "https://admin.example.com"
+```
+
+保持最小集合，不要随便添加不使用的域名。
+
+## 原生 App 关联
+
+Apple 平台通过 `webauthn.apple_app_ids` 配置允许使用该 RP ID 的原生 App。每一项使用 Apple application identifier，格式为 `TeamID.BundleID`：
+
+```yaml
+webauthn:
+  apple_app_ids:
+    - "ABCDE12345.org.synctv.app"
+```
+
+服务器会在 `/.well-known/apple-app-site-association` 返回 `webcredentials.apps` 和 App Link 关联。App Link 路径从 HTTPS 主机与当前请求域名相同的 `oauth2.allowedRedirectUrls` 条目自动派生。启用 OAuth2 登录时，App 的 Associated Domains entitlement 需要同时包含 `webcredentials:example.com` 和 `applinks:example.com`。
+
+Android 平台通过包名和发布证书 SHA-256 指纹配置：
+
+```yaml
+webauthn:
+  android_apps:
+    - package_name: "org.synctv.app"
+      sha256_cert_fingerprints:
+        - "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+```
+
+服务器会在 `/.well-known/assetlinks.json` 返回 `delegate_permission/common.get_login_creds` 和 `delegate_permission/common.handle_all_urls` 关联声明。证书轮换期间可以同时配置多个指纹。
+
+对应环境变量接受 JSON：
+
+```text
+SYNCTV_WEBAUTHN_APPLE_APP_IDS=["ABCDE12345.org.synctv.app"]
+SYNCTV_WEBAUTHN_ANDROID_APPS=[{"package_name":"org.synctv.app","sha256_cert_fingerprints":["AA:BB:..."]}]
+```
+
+### 官方 App 与自托管服务器
+
+Android 官方 App 可以动态支持任意自托管 SyncTV 域名。每个正式签名的 GitHub Release 都会附带 `SyncTV-<version>-android-passkey-server-config.yaml`，其中包含公开的官方包名和发布证书 SHA-256 指纹。将文件中的 `android_apps` 合并到服务器的 `webauthn` 配置，并为服务器自己的域名设置 `rp_id` 和 `rp_origin`：
+
+```yaml
+webauthn:
+  enabled: true
+  rp_id: "tv.example.com"
+  rp_origin: "https://tv.example.com"
+  android_apps:
+    - package_name: "org.synctv.app"
+      sha256_cert_fingerprints:
+        - "<官方 Release 配置文件中的 SHA-256 指纹>"
+```
+
+包名和证书指纹属于公开身份信息。Android 使用它们验证当前 App 是否获得域名授权；keystore、签名私钥和密码继续保密。每个签名身份都需要配置对应安装包的实际证书指纹。
+
+证书指纹由签名密钥决定。自行构建 App 时，读取实际安装包的签名证书 SHA-256 指纹并写入服务端配置；后续版本继续使用同一签名密钥，服务端授权即可保持稳定。临时测试包可能使用不同证书，每个安装包都要配置对应指纹。
+
+同一服务端可以同时授权官方 App 和 fork App。相同包名使用一个 `android_apps` 条目并列出多个指纹：
+
+```yaml
+webauthn:
+  android_apps:
+    - package_name: "org.synctv.app"
+      sha256_cert_fingerprints:
+        - "<官方 App 证书 SHA-256>"
+        - "<fork App 证书 SHA-256>"
+```
+
+使用自定义包名的 App 增加独立的 `android_apps` 条目。每个 App 使用自己的签名密钥和证书指纹，可以同时连接同一台自托管服务器。
+
+GitHub APK 使用 Release 配置文件中公布的证书。未来通过 Google Play 分发时，Google Play App Signing 可能使用另一份安装包签名证书，服务端需要将 Play Console 中的 App signing certificate SHA-256 一并加入 `sha256_cert_fingerprints`。
+
+Apple 将允许的 RP ID 固定在签名 App 的 Associated Domains entitlement 中。SyncTV 官方预构建的 iOS/macOS App 只能对构建时列入 `SYNCTV_PASSKEY_RP_IDS` 的域名使用原生 Passkey，因此任意独立域名的自托管服务器无法动态加入官方 Apple App。自托管部署可以选择以下路径：
+
+- 自行构建并使用 Apple Developer Team 签名 App，将服务器 RP ID 加入 `SYNCTV_PASSKEY_RP_IDS`，同时将 `<TeamID>.org.synctv.app` 加入服务端 `apple_app_ids`。
+- 使用系统浏览器承载 WebAuthn，让浏览器按自托管域名管理 Passkey；当前官方 App 仅提供原生 Passkey，采用此路径需要后续实现浏览器认证流程。
+- 使用已由官方 Apple App entitlement 覆盖的 RP 域名。
+
+Android 的授权方向由每个自托管服务器控制，因此官方预构建 App 可以在运行时扩展到新域名。Apple 的原生授权同时受构建签名和服务器 AASA 约束，因此域名集合需要在构建时确定。
+
+## `webauthn.allow_subdomains`
+
+默认值：`false`。
+
+作用：是否允许配置域名的子域名也通过验证。
+
+普通部署保持 `false` 更安全。
+
+## `webauthn.allow_any_port`
+
+默认值：`false`。
+
+作用：验证 origin 时是否忽略端口。
+
+只建议本地开发使用。例如前端开发服务器端口经常变化。
+
+生产环境不要开启。
+
+## `webauthn.timeout_seconds`
+
+默认值：`300`。
+
+作用：passkey 注册或登录 challenge 的有效时间。
+
+用户需要在这个时间内完成系统弹窗确认。
+
+## 与两步验证的关系
+
+Passkey 可以作为本地验证方式之一。用户开启两步验证时，至少需要两种本地验证方式，常见组合：
+
+- password + email
+- password + webauthn
+- email + webauthn
+
+OAuth2 不参与本地两步验证。
+
+## Redis 依赖
+
+WebAuthn challenge 必须一次性使用。多副本部署时，如果 challenge 保存在某个 Pod 内存里，用户下一步请求打到另一个 Pod 就会失败。
+
+因此：
+
+- 单机：可以不用 Redis。
+- 多副本或 `cluster.enabled=true`：必须配置 Redis。

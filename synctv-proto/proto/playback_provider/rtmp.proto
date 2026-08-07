@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package synctv.playback_provider.rtmp;
+
+import "proto/buf/validate/validate.proto";
+import "proto/playback_provider/common.proto";
+
+message GetRtmpFlvStreamRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string sig = 2 [(buf.validate.field).string.min_len = 1];
+  string uid = 3 [(buf.validate.field).string.min_len = 1];
+  string rid = 4 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 5;
+  bool head = 6;
+}
+
+message RtmpFlvStreamResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetRtmpHlsMasterRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string sig = 2 [(buf.validate.field).string.min_len = 1];
+  string uid = 3 [(buf.validate.field).string.min_len = 1];
+  string rid = 4 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 5;
+}
+
+message RtmpHlsMasterResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetRtmpHlsPlaylistRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string generation_id = 2 [(buf.validate.field).string.min_len = 1];
+  string sig = 3 [(buf.validate.field).string.min_len = 1];
+  string uid = 4 [(buf.validate.field).string.min_len = 1];
+  string rid = 5 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 6;
+}
+
+message RtmpHlsPlaylistResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetRtmpHlsSegmentRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string generation_id = 2 [(buf.validate.field).string.min_len = 1];
+  string segment_name = 3 [(buf.validate.field).string.min_len = 1];
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+  optional string range = 8;
+  bool head = 9;
+}
+
+message RtmpHlsSegmentResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+service RtmpPlaybackProviderService {
+  rpc GetFlvStream(GetRtmpFlvStreamRequest) returns (stream RtmpFlvStreamResponse);
+  rpc GetHlsMaster(GetRtmpHlsMasterRequest) returns (stream RtmpHlsMasterResponse);
+  rpc GetHlsPlaylist(GetRtmpHlsPlaylistRequest) returns (stream RtmpHlsPlaylistResponse);
+  rpc GetHlsSegment(GetRtmpHlsSegmentRequest) returns (stream RtmpHlsSegmentResponse);
+}

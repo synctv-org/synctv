@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO auth_password_credentials (\n                user_id, opaque_record, opaque_credential_identifier, opaque_ciphersuite,\n                opaque_server_setup_version, changed_at, version,\n                created_at, updated_at\n            )\n            SELECT $1, $2, $3, $4, $5, $7, 0, $6, $7\n            WHERE $2::BYTEA IS NOT NULL\n            RETURNING user_id AS \"user_id!: UserId\",\n                      changed_at AS \"changed_at!\",\n                      version AS \"version!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "auth_password_credentials",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "changed_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "auth_password_credentials",
+            "name": "changed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "version!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "auth_password_credentials",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Bytea",
+        "Varchar",
+        "Int4",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1a9739a10e892880866df360af34a8dc7faf74d0913b4bd9c07eb50a77b15769"
+}

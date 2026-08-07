@@ -1,0 +1,57 @@
+---
+title: 实现 P2P 媒体客户端
+description: 使用 WebRTC DataChannel、本地播放器 gateway、分片缓存和来源回退实现 P2P 媒体传输。
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+`PlaybackInfo.medias` 中每个 `PlaybackMedia` 独立携带 URL、`format` 和可选的 `p2p_delivery`：
+
+| 字段 | 客户端用途 |
+| --- | --- |
+| `PlaybackMedia.format` | 选择 progressive、HLS 或 DASH 的本地 gateway 处理方式 |
+| `p2p_delivery.swarm_id` | 标识房间内可共享同一字节内容的资源 |
+| `p2p_delivery.swarm_ticket` | 加入媒体 swarm 时提交的短期凭据 |
+
+Provider 负责判断资源字节是否等价。客户端直接使用服务端返回的 swarm ID；URL、代理路径、签名参数和用户专属 header 都属于传输细节。直播和缺少稳定资源身份的表示不会包含 `p2p_delivery`。
+
+## 连接生命周期
+
+<Steps>
+1. 选择一个 `PlaybackMedia`，读取该条目的 `format` 和 `p2p_delivery`。
+2. 用户已开启 P2P 且存在 `p2p_delivery` 时，启动仅监听回环地址的随机本地 HTTP gateway。
+3. 发送 `WebRTCMediaSwarmJoin`，发现 Peer，并为每个 DataChannel 交换 `WebRTCMediaOffer`、`WebRTCMediaAnswer` 和 `WebRTCMediaIceCandidate` 事件。
+4. gateway 按播放器请求生成分片键，依次检查内存热缓存、持久化缓存、可用 Peer 和来源 HTTP。
+5. 媒体或线路切换、用户关闭 P2P、退出房间时，发送 leave 并释放该 swarm 的连接和本地映射。
+</Steps>
+
+## 播放器 gateway
+
+HLS gateway 重写 manifest 和分片 URL；DASH gateway 通过本地 `BaseURL` 接收播放器展开后的 segment 请求；普通文件使用对齐的 Range 分片。字幕等小型静态资源可以使用完整资源分片。gateway 应合并相同分片的并发请求，并对缓存、资源映射、Peer 请求和来源 HTTP 使用明确的容量与超时上限。
+
+## 缓存容量与回收
+
+客户端允许用户选择 64、128、256、512 或 1024 MiB 的持久化缓存容量，默认 128 MiB。磁盘缓存按 `swarm_id + piece_key` 保存，可跨播放会话复用；容量回收采用 LRU，条目每次访问都会刷新时间，连续 10 分钟未访问后过期。客户端在缓存启动、读取、写入、每分钟维护和正常关闭时删除过期条目，并在下次启动时清理异常退出遗留的过期文件、损坏索引和孤儿临时文件。内存热层最多使用 32 MiB，并受所选缓存容量的更小值约束。
+
+## 来源回退
+
+- Header 阶段从来源请求发起时计时。2 秒仍未收到响应头时查询 Peer；Peer 明确缺片后每 1 秒重试，整个 header 阶段最多等待 15 秒。来源响应头到达会取消 discovery、availability 查询、传输和许可队列中的旧 Peer 请求；Peer 先完成则取消来源请求。
+- Body 阶段以最后一个 chunk 为基准维护 3 秒 idle timer。连续 3 秒没有字节、观察 2 秒后的平均速率低于 256 KiB/s，或当前分片读取超过 5 秒，任一条件都会启动 Peer 对冲。来源继续读取，正在进行的 Peer 查询继续保留；Peer 明确缺片后每 1 秒重试，来源或 Peer 任一完成都会取消另一侧。
+- 普通 progressive 媒体在当前分片交付后，从 Peer 预取后续两个对齐的 1 MiB 分片。消费预取分片时先提供 150 ms 接合窗口；随后立即启动来源并保留预取请求参与竞速。全局最多保留两个预取任务。HLS 和 DASH 继续由播放器的分片请求窗口驱动预取，本地 gateway 对相同分片执行并发去重。
+
+## 完整性校验
+
+| 等级 | 行为 | 开销与边界 |
+| --- | --- | --- |
+| 标准 | 校验传输帧、声明长度、分片大小上限和超时 | 默认值；安全校验本身不增加网络流量，信任通过房间鉴权加入的 Peer |
+| 来源抽样 | 随机选择 10% 的 Peer 分片，同时读取来源数据并比较 SHA-256 | 抽中分片会产生等量来源流量；冲突时使用来源字节并在当前 swarm 会话隔离对应 Peer |
+
+来源抽样以 Provider 返回的来源 HTTP 为信任锚。来源暂时不可用时，客户端记录一次无法完成的校验并继续使用 Peer 分片，以维持播放可用性。多个 Peer 对同一个摘要达成多数共识无法抵抗多个协同身份；文件头或关键帧解析只能证明格式可解析，因此两者不作为内容真实性依据。服务端未来提供可信分片摘要后，客户端应优先执行逐片摘要校验。
+
+安全等级只控制完整性校验行为。Header/body 竞速、重复 Peer 查询、来源与 Peer 并行、取消前已接收的字节以及 progressive 预取属于所有安全等级共享的调度策略，因此标准模式也可能产生额外传输流量。
+
+## 客户端指标
+
+客户端应持续记录 Peer 数、HTTP/P2P 下载、P2P 上传、累计字节、缓存和命中率。指标采样不参与播放正确性判断，来源 HTTP 始终承担可用性回退。
+
+播放模式与 Provider header 见 [播放与代理](../playback-and-proxy/)，ICE/STUN/TURN 配置见 [WebRTC](../../configuration/webrtc/)。

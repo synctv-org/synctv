@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM room_resource_events\n            WHERE created_at < NOW() - ($1::bigint::text || ' seconds')::interval\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "41e9c20f9b1b4c6721485658475577ca67ad47b338c631f7f2c40dd91bfebe00"
+}

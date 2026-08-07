@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH retained AS (\n                SELECT id, created_at\n                FROM chat_messages\n                WHERE room_id = $1\n                  AND created_at > NOW() - make_interval(days => $2)\n                ORDER BY created_at DESC, id DESC\n                LIMIT $3\n            )\n            SELECT COUNT(*) AS \"count!\"\n            FROM chat_messages m\n            WHERE m.room_id = $1\n              AND m.created_at > NOW() - make_interval(days => $2)\n              AND NOT EXISTS (\n                  SELECT 1\n                  FROM retained r\n                  WHERE r.id = m.id\n                    AND r.created_at = m.created_at\n              )\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e5f449172d0fe9d90dd832ff086c84169a56eb7e4641a4cd726e9f0cc7d76d00"
+}

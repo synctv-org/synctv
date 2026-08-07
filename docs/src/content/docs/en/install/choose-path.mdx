@@ -1,0 +1,30 @@
+---
+title: Choose a Deployment
+description: Compare the infrastructure and operating requirements of Docker Compose and Helm.
+---
+
+Docker Compose covers most self-hosted installations. Helm is for platforms that already run Kubernetes, Ingress, and centralized secret management.
+
+<table class="deployment-matrix">
+  <thead><tr><th>Requirement</th><th>Docker Compose</th><th>Helm</th></tr></thead>
+  <tbody>
+    <tr><td>Environment</td><td>One Linux server, NAS, or virtual machine</td><td>Existing Kubernetes cluster</td></tr>
+    <tr><td>SyncTV replicas</td><td>One</td><td>One or more</td></tr>
+    <tr><td>PostgreSQL / Redis</td><td>Started by Compose</td><td>In-cluster or managed services</td></tr>
+    <tr><td>TLS entry point</td><td>Existing reverse proxy</td><td>Ingress Controller</td></tr>
+    <tr><td>Secrets</td><td>Local env files</td><td>Kubernetes Secret or an external secret system</td></tr>
+    <tr><td>Installation</td><td><a href="../docker-compose/">Docker Compose</a></td><td><a href="../helm/">Helm</a></td></tr>
+  </tbody>
+</table>
+
+## Production Requirements
+
+Complete these items before serving production traffic:
+
+- Persistent PostgreSQL data and tested backups.
+- A durable production secret set backed up with the database.
+- HTTPS on public entry points.
+- Shared PostgreSQL, Redis, and cluster secrets for multiple replicas.
+- A backup and migration check before upgrades.
+
+The [Production Checklist](../production-checklist/) contains the full set of checks. Follow [Upgrades and Migrations](../../operations/upgrades/) for an existing installation.

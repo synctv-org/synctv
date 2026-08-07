@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package synctv.provider.tiktok;
+
+import "proto/providers/tiktok.proto";
+
+service TikTokProviderService {
+  rpc Bind(BindRequest) returns (BindResponse);
+  rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+  rpc Unbind(UnbindRequest) returns (UnbindResponse);
+  rpc Resolve(ResolveRequest) returns (ResolveResponse);
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  rpc ListUserPosts(ListUserPostsRequest) returns (ListUserPostsResponse);
+}

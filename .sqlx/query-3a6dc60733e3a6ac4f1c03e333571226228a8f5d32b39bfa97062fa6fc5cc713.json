@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT selected_by_user_id AS \"selected_by_user_id: UserId\"\n            FROM room_playback_history\n            WHERE room_id = $1\n            ORDER BY sequence DESC\n            LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "selected_by_user_id: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_history",
+            "name": "selected_by_user_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "3a6dc60733e3a6ac4f1c03e333571226228a8f5d32b39bfa97062fa6fc5cc713"
+}

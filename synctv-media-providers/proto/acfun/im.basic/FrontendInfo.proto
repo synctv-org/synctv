@@ -1,0 +1,8 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+message FrontendInfo {
+    string ip = 1;
+    int32 port = 2;
+}

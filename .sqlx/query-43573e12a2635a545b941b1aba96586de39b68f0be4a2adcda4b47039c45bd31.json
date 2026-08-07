@@ -1,0 +1,105 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO chat_read_states (\n                room_id, user_id, last_read_message_id, last_read_message_created_at,\n                last_read_event_id, last_read_event_sequence, updated_at\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, NOW())\n            ON CONFLICT (room_id, user_id) DO UPDATE\n            SET last_read_message_id = EXCLUDED.last_read_message_id,\n                last_read_message_created_at = EXCLUDED.last_read_message_created_at,\n                last_read_event_id = EXCLUDED.last_read_event_id,\n                last_read_event_sequence = EXCLUDED.last_read_event_sequence,\n                updated_at = NOW()\n            WHERE chat_read_states.last_read_message_created_at IS NULL\n               OR (chat_read_states.last_read_message_created_at, chat_read_states.last_read_message_id)\n                  < (EXCLUDED.last_read_message_created_at, EXCLUDED.last_read_message_id)\n               OR (\n                    EXCLUDED.last_read_event_sequence IS NOT NULL\n                    AND (\n                        chat_read_states.last_read_event_sequence IS NULL\n                        OR chat_read_states.last_read_event_sequence < EXCLUDED.last_read_event_sequence\n                    )\n               )\n            RETURNING room_id AS \"room_id!: RoomId\",\n                      user_id AS \"user_id!: UserId\",\n                      last_read_message_id,\n                      last_read_message_created_at,\n                      last_read_event_id,\n                      last_read_event_sequence,\n                      updated_at AS \"updated_at!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_read_states",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_read_states",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "last_read_message_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_read_states",
+            "name": "last_read_message_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "last_read_message_created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_read_states",
+            "name": "last_read_message_created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "last_read_event_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_read_states",
+            "name": "last_read_event_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "last_read_event_sequence",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_read_states",
+            "name": "last_read_event_sequence"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_read_states",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Timestamptz",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "43573e12a2635a545b941b1aba96586de39b68f0be4a2adcda4b47039c45bd31"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE file_upload_sessions SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE storage_backend = $1 AND upload_session_key = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "897488345957b6976d9d2af7e82f199c364f19daa399f43ec3016a0a6aa6ba0f"
+}

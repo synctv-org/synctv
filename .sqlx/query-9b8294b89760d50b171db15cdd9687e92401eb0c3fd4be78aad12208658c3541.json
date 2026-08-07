@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM chat_messages m\n        USING UNNEST($1::BIGINT[], $2::TIMESTAMPTZ[]) AS c(id, created_at)\n        WHERE m.id = c.id\n          AND m.created_at = c.created_at\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "TimestamptzArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9b8294b89760d50b171db15cdd9687e92401eb0c3fd4be78aad12208658c3541"
+}

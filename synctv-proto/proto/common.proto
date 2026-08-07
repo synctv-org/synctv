@@ -1,0 +1,133 @@
+syntax = "proto3";
+
+package synctv.common;
+
+// ==================== Shared Enums ====================
+
+// Global user role for RBAC
+enum UserRole {
+  USER_ROLE_UNSPECIFIED = 0;
+  USER_ROLE_ROOT = 1;
+  USER_ROLE_ADMIN = 2;
+  USER_ROLE_USER = 3;
+}
+
+// Effective account availability. Registration review is represented by ReviewStatus on request APIs.
+enum UserStatus {
+  USER_STATUS_UNSPECIFIED = 0;
+  USER_STATUS_ACTIVE = 1;
+  USER_STATUS_BANNED = 2;
+}
+
+// Room member role
+enum RoomMemberRole {
+  ROOM_MEMBER_ROLE_UNSPECIFIED = 0;
+  ROOM_MEMBER_ROLE_CREATOR = 1;
+  ROOM_MEMBER_ROLE_ADMIN = 2;
+  ROOM_MEMBER_ROLE_MEMBER = 3;
+  ROOM_MEMBER_ROLE_GUEST = 4;
+}
+
+enum MemberStatus {
+  MEMBER_STATUS_UNSPECIFIED = 0;
+  MEMBER_STATUS_ACTIVE = 1;
+}
+
+// Room lifecycle status. Banned state is tracked via is_banned.
+enum RoomStatus {
+  ROOM_STATUS_UNSPECIFIED = 0;
+  ROOM_STATUS_ACTIVE = 1;
+  ROOM_STATUS_CLOSED = 2;
+}
+
+// Human review workflow status for request resources.
+enum ReviewStatus {
+  REVIEW_STATUS_UNSPECIFIED = 0;
+  REVIEW_STATUS_PENDING = 1;
+  REVIEW_STATUS_APPROVED = 2;
+  REVIEW_STATUS_REJECTED = 3;
+}
+
+enum ListSortDirection {
+  LIST_SORT_DIRECTION_UNSPECIFIED = 0;
+  LIST_SORT_DIRECTION_ASC = 1;
+  LIST_SORT_DIRECTION_DESC = 2;
+}
+
+// Error codes for ErrorMessage
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_UNAUTHORIZED = 1;
+  ERROR_CODE_FORBIDDEN = 2;
+  ERROR_CODE_NOT_FOUND = 3;
+  ERROR_CODE_RATE_LIMITED = 4;
+  ERROR_CODE_VALIDATION_FAILED = 5;
+  ERROR_CODE_INTERNAL = 6;
+}
+
+// ==================== Shared Types ====================
+
+// Room member information (shared between admin and client APIs)
+message RoomMember {
+  string room_id = 1;
+  string user_id = 2;
+  string username = 3;
+  RoomMemberRole role = 4;
+
+  // Effective permissions (calculated from role + added/removed)
+  uint64 permissions = 5;
+
+  // Allow/Deny permission pattern fields
+  // For member role: uses added_permissions/removed_permissions
+  // For admin role: uses admin_added_permissions/admin_removed_permissions
+  uint64 added_permissions = 6;
+  uint64 removed_permissions = 7;
+  uint64 admin_added_permissions = 8;
+  uint64 admin_removed_permissions = 9;
+
+  int64 joined_at = 10;
+  bool is_online = 11;
+  int32 connection_count = 12;
+  string remark_name = 13;
+  string display_tag = 14;
+}
+
+message NodeConnectionCount {
+  string node_id = 1;
+  int32 connection_count = 2;
+}
+
+message RoomPresenceStats {
+  int32 online_user_count = 1;
+  int32 connection_count = 2;
+  repeated NodeConnectionCount node_connection_counts = 3;
+  int64 sampled_at = 4;
+  uint64 version = 5;
+}
+
+message UserPresenceStats {
+  int32 connection_count = 1;
+  repeated NodeConnectionCount node_connection_counts = 2;
+  int32 room_count = 3;
+  repeated string room_ids = 4;
+  int64 sampled_at = 5;
+  uint64 version = 6;
+}
+
+message NodePresenceStats {
+  string node_id = 1;
+  int32 connection_count = 2;
+  int32 online_user_count = 3;
+  int32 room_count = 4;
+  int64 sampled_at = 5;
+  uint64 version = 6;
+}
+
+message PresenceOverview {
+  int32 online_user_count = 1;
+  int32 connection_count = 2;
+  int32 active_room_count = 3;
+  repeated NodePresenceStats nodes = 4;
+  int64 sampled_at = 5;
+  uint64 version = 6;
+}

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO chat_message_idempotency (\n                    room_id, user_id, client_message_id, request_hash\n                )\n                VALUES ($1, $2, $3, $4)\n                ON CONFLICT (room_id, user_id, client_message_id) DO NOTHING\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eadc217379f3723ef4d3823532c20a30e3ebe4efab12be73c17dd242cc4bb63e"
+}

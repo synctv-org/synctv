@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package acproto;
+
+message ZtLiveScStatusChanged {
+	Type type = 1;
+	int64 maxRandomDelayMs = 2;
+	BannedInfo bannedInfo = 3;
+
+	enum Type {
+		UNKNOWN = 0;
+		LIVE_CLOSED = 1;
+		NEW_LIVE_OPENED = 2;
+		LIVE_URL_CHANGED = 3;
+		LIVE_BANNED = 4;
+	}
+
+	message BannedInfo {
+		string banReason = 1;
+	}
+}

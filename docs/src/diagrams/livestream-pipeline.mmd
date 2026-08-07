@@ -1,0 +1,24 @@
+flowchart LR
+  Publisher[Publisher<br/>OBS / RTMP client]
+  RTMP[RTMP ingest<br/>auth + publish registry]
+  Hub[StreamHub<br/>live packets]
+  FLV[HTTP-FLV session<br/>low latency]
+  Remux[HLS remuxer<br/>segments + playlist state]
+  Storage[(HLS storage<br/>memory / file / S3)]
+  Playlist[HLS playlist route]
+  Segment[HLS segment route]
+  Viewer[Viewer client]
+  Registry[(publisher registry<br/>in-memory or Redis)]
+  Remote[Remote node<br/>HLS/FLV request]
+  HLSProxy[Publisher-node<br/>HLS gRPC proxy]
+
+  Publisher --> RTMP --> Hub
+  RTMP --> Registry
+  Hub --> FLV --> Viewer
+  Hub --> Remux --> Storage
+  Viewer --> Playlist --> Storage
+  Viewer --> Segment --> Storage
+  Remote -. lookup publisher .-> Registry
+  Remote -. FLV relay .-> Hub
+  Remote -. playlist/segment proxy .-> HLSProxy
+  HLSProxy -. local read .-> Storage

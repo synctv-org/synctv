@@ -1,0 +1,172 @@
+---
+title: 升级与迁移
+description: SyncTV 版本升级、数据库 migration、配置变更、Helm/Compose 发布和回滚注意事项。
+---
+
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## 升级模型
+
+升级时要把三件事分开看：
+
+- **二进制或镜像版本**：决定代码行为和 API。
+- **数据库 migration**：决定数据库结构，可能不可逆。
+- **配置和部署模板**：决定服务入口、secret、依赖、缓存、集群和观测行为。
+
+<Aside type="caution">
+不要把“镜像可以回滚”理解成“系统一定可以回滚”。如果 migration 修改了数据库结构，回滚前必须确认旧版本是否还能读取新结构。
+</Aside>
+
+## 升级前检查
+
+<Steps>
+1. 阅读新版本 release notes 或变更记录。
+2. 备份 PostgreSQL 和生产 secret。
+3. 如果涉及 secret 管理方式变化，先按 [安全加固与密钥轮换](../security-hardening-and-rotation/) 判断是否能直接轮换。
+4. 在测试环境使用生产同结构数据启动目标版本，验证自动 migration 和业务读写。
+5. 运行 `synctv config validate --strict`。
+6. 运行 `synctv config show --output yaml` 保存当前有效配置快照。
+7. 对比 [配置总索引](../../reference/configuration-index/) 和 [完整配置示例](../../configuration/full-example/)。
+8. 如果使用 Helm，执行 `helm lint` 和 `helm template`。
+9. 如果使用 Compose，执行 `make compose-config`。
+</Steps>
+
+## 数据库 Migration
+
+SyncTV 服务启动阶段会自动执行 embedded SQLx migrations。migration 状态记录在 `_sqlx_migrations`，并由 SQLx 在数据库侧加锁保证同一套 migration 不会被多个副本并发执行。多副本同时启动时，不需要额外用 Job 来人工串行化 migration，也不需要管理员判断“这次是否需要迁移”。
+
+`synctv db migrate` 仍然保留为显式运维命令，适合升级前预检、测试环境和排障。它执行的 migration 与服务启动时自动执行的是同一套 embedded migrations。
+
+查询状态：
+
+```bash
+synctv db status
+```
+
+可选预检：
+
+```bash
+synctv db migrate
+```
+
+容器中执行示例：
+
+```bash
+docker compose run --rm synctv synctv db migrate
+```
+
+生产环境可以单独运行 `synctv db migrate`，提前发现 dirty migration、checksum drift 或数据库权限问题。服务启动时也会自动执行尚未应用的 migration。
+
+## Docker Compose 升级
+
+以下命令需要在生产 Compose 文件目录执行。如果还没有部署目录，先按 [Docker Compose 部署](../../install/docker-compose/#获取生产-compose-文件) 获取 `docker-compose.yml`、env example 和初始化脚本。
+
+<Steps>
+1. 拉取新镜像。
+2. 备份数据库和 secret。
+3. 运行 `make compose-config` 确认最终配置。
+4. 可选执行 `synctv db migrate` 做发布前预检。
+5. 重启服务，启动阶段会自动完成 pending migrations。
+6. 检查 `/health/ready`、登录、WebSocket、Provider 和 metrics。
+</Steps>
+
+常用命令：
+
+```bash
+make compose-pull
+make compose-up
+make compose-logs SERVICE=synctv
+```
+
+## Helm 升级
+
+<Tabs syncKey="helm-upgrade">
+  <TabItem label="渲染检查" icon="cloud-download">
+
+```bash
+helm lint ./helm/synctv
+helm template synctv ./helm/synctv -f values.production.yaml
+```
+
+重点检查：HTTP Service 和 gRPC Service 是否分开；HTTP Ingress 和 gRPC Ingress 是否分开；gRPC Ingress 是否设置 `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"`；secret、volume、env、ServiceMonitor 或 VMServiceScrape 是否符合预期。
+
+  </TabItem>
+  <TabItem label="发布" icon="rocket">
+
+```bash
+helm upgrade --install synctv ./helm/synctv \
+  -n synctv \
+  -f values.production.yaml
+```
+
+发布后检查：
+
+```bash
+kubectl -n synctv rollout status deploy/synctv
+kubectl -n synctv logs deploy/synctv --tail=200
+kubectl -n synctv get ingress,svc,pod
+```
+
+  </TabItem>
+</Tabs>
+
+## 滚动更新与长连接
+
+SyncTV 有 WebSocket、HTTP-FLV、HLS、gRPC stream 等长连接或流式请求。滚动更新时要给连接 drain 留时间。
+
+发布规则：
+
+- `server.shutdown_drain_timeout_seconds` 与 Kubernetes `terminationGracePeriodSeconds` 匹配。
+- readiness probe 在进程开始关闭时尽快失败。
+- 不要把 `terminationGracePeriodSeconds` 设置得比 drain timeout 更短。
+- 对直播或大量 WebSocket 场景，先在低峰期发布。
+
+## 配置变更策略
+
+升级时不要无差别复制全量默认配置。先保存有效配置：
+
+```bash
+synctv --config /etc/synctv/synctv.yaml config show --output yaml > effective-before.yaml
+```
+
+然后只修改你明确需要负责的字段：
+
+- secret 和 secret 文件路径。
+- 数据库、Redis、SMTP、OAuth2、WebAuthn。
+- 端口、域名、CORS、可信代理。
+- 集群、HLS 共享存储、slice cache 文件后端。
+- metrics、日志格式和限流。
+
+## 回滚
+
+回滚前先判断：
+
+| 情况 | 处理 |
+| --- | --- |
+| 只改了配置或镜像，目标版本没有新的 migration | 可以按部署系统回滚 |
+| 新版本已启动并自动执行 migration，但旧版本兼容新 schema | 可以回滚镜像，但要重点观察错误日志 |
+| 新版本已执行不可逆 migration | 优先前滚修复；如必须回滚，需要恢复数据库备份 |
+| secret 被错误轮换 | 恢复旧 secret，然后重启服务 |
+
+回滚后仍要运行：
+
+```bash
+synctv db status
+synctv config validate --strict
+curl -fsS http://localhost:8081/health/ready
+```
+
+## 发布后验证
+
+至少确认：
+
+- 新 Pod 或容器 ready。
+- `/health/ready` 返回成功。
+- root/admin 能登录。
+- 开启 2FA 的用户能完成 MFA。
+- OAuth2、WebAuthn、邮箱验证码按需正常。
+- 房间 WebSocket 同步正常。
+- Provider 直连和代理路径正常。
+- metrics 能被抓取。
+- 日志没有持续 migration、Redis、数据库连接或 Provider 错误。
+- 高峰容量或连接模型变化时，按 [容量规划](../capacity-planning/) 复查数据库连接、Redis、WebSocket 和代理带宽。

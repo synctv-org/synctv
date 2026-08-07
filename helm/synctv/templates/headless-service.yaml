@@ -1,0 +1,19 @@
+{{- if or .Values.headlessService.enabled (and .Values.config.cluster.enabled (eq (.Values.config.cluster.discoveryMode | default "redis") "k8s_dns")) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "synctv.headlessServiceName" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "synctv.appSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: cluster
+      port: {{ .Values.config.cluster.port | default 50051 }}
+      targetPort: cluster
+      protocol: TCP
+{{- end }}

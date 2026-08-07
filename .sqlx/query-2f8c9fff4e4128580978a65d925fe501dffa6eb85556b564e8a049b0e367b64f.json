@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id as \"id: crate::models::UserId\"\n            FROM users\n            WHERE deleted_at IS NOT NULL\n              AND deleted_at < CURRENT_TIMESTAMP - make_interval(days => $1)\n            ORDER BY deleted_at ASC, id ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: crate::models::UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2f8c9fff4e4128580978a65d925fe501dffa6eb85556b564e8a049b0e367b64f"
+}

@@ -1,0 +1,57 @@
+---
+title: Implement a P2P Media Client
+description: Implement P2P media delivery with WebRTC DataChannels, a local player gateway, piece caching, and origin fallback.
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+Every entry in `PlaybackInfo.medias` carries its own URL, `format`, and optional `p2p_delivery`:
+
+| Field | Client use |
+| --- | --- |
+| `PlaybackMedia.format` | Select progressive, HLS, or DASH local-gateway handling |
+| `p2p_delivery.swarm_id` | Identify byte-equivalent content within the room |
+| `p2p_delivery.swarm_ticket` | Short-lived credential for joining the media swarm |
+
+The Provider decides byte equivalence. Clients use the server-returned swarm ID directly; URLs, proxy paths, signatures, and viewer-specific headers are transport details. Live representations and resources without a stable identity omit `p2p_delivery`.
+
+## Connection Lifecycle
+
+<Steps>
+1. Select one `PlaybackMedia` and read its `format` and `p2p_delivery`.
+2. When the user enables P2P and delivery metadata is present, start a random local HTTP gateway bound only to loopback.
+3. Send `WebRTCMediaSwarmJoin`, discover peers, and exchange `WebRTCMediaOffer`, `WebRTCMediaAnswer`, and `WebRTCMediaIceCandidate` events for each DataChannel.
+4. Build piece keys from player requests and check the memory hot cache, persistent cache, available peers, then the HTTP origin.
+5. On media or source changes, P2P disable, or room exit, send leave and release the swarm connections and local mapping.
+</Steps>
+
+## Player Gateway
+
+The HLS gateway rewrites manifests and segment URLs. The DASH gateway supplies a local `BaseURL` for segment requests expanded by the player. Progressive media uses aligned Range pieces. Small static resources such as subtitles can use whole-resource pieces. Gateways should deduplicate concurrent requests for the same piece and apply explicit capacity and timeout limits to caches, resource mappings, peer requests, and origin HTTP.
+
+## Cache Capacity and Eviction
+
+Clients let users select a persistent-cache capacity of 64, 128, 256, 512, or 1024 MiB, with 128 MiB as the default. Disk entries use `swarm_id + piece_key` and remain reusable across playback sessions. Capacity eviction follows LRU; every access refreshes an entry, and ten minutes without access expires it. Clients remove expired entries during cache initialization, reads, writes, minutely maintenance, and clean shutdown. The next initialization also removes expired files, corrupted index entries, and orphaned temporary files left by an interrupted process. The memory hot tier uses at most 32 MiB and is further bounded by the selected cache capacity.
+
+## Origin Fallback
+
+- The header phase starts timing when the origin request begins. After 2 seconds without response headers, the client queries peers and retries every second after a confirmed miss. The complete header phase has a 15-second budget. Origin headers cancel the old peer discovery, availability query, transfer, and queued permit; a completed peer piece cancels the origin request.
+- The body phase maintains a 3-second idle timer from the latest chunk. A peer hedge starts when no bytes arrive for 3 seconds, the average rate after a 2-second observation stays below 256 KiB/s, or the current piece has been reading for more than 5 seconds. The origin keeps reading and an in-flight peer query stays active. Confirmed peer misses retry every second, and either completed side cancels the other.
+- Progressive media prefetches the next two aligned 1 MiB pieces from peers after delivering the current piece. Consumption gives an active prefetch a 150 ms join window, then starts the origin while preserving that peer request in the race. At most two prefetch tasks stay active globally. HLS and DASH keep using the player's segment request window for prefetch, while the local gateway deduplicates concurrent requests for the same piece.
+
+## Integrity Validation
+
+| Level | Behavior | Cost and boundary |
+| --- | --- | --- |
+| Standard | Validate transfer framing, declared length, piece-size limits, and timeouts | Default; validation itself adds no network traffic and trusts peers admitted through room authorization |
+| Origin sampling | Randomly select 10% of peer pieces, read the same bytes from the origin, and compare SHA-256 | A sampled piece adds an equal amount of origin traffic; a conflict uses origin bytes and isolates that peer for the current swarm session |
+
+Origin sampling treats the Provider-returned origin HTTP resource as the trust anchor. When the origin is temporarily unavailable, the client records an unavailable check and continues with the peer piece to preserve playback availability. Majority agreement among peers cannot resist coordinated identities, while container-header or keyframe parsing proves only that bytes are parseable. Neither signal establishes content authenticity. If the server later supplies trusted piece digests, clients should prefer complete per-piece digest validation.
+
+The security level controls integrity validation only. Header and body racing, repeated peer lookup, concurrent origin and peer work, bytes received before cancellation, and progressive prefetch are shared scheduling policies across every security level. Standard mode can therefore produce additional transfer traffic.
+
+## Client Metrics
+
+Clients should continuously record peer count, HTTP and P2P download, P2P upload, transferred bytes, cache size, and hit rate. Metrics stay outside playback correctness decisions, and origin HTTP remains the availability fallback.
+
+See [Playback and Proxy](../playback-and-proxy/) for playback modes and Provider headers, and [WebRTC](../../configuration/webrtc/) for ICE, STUN, and TURN configuration.

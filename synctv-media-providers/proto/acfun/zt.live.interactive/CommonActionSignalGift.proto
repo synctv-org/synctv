@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package acproto;
+
+import "ZtLiveUserInfo.proto";
+import "ZtDrawGiftInfo.proto";
+
+message CommonActionSignalGift {
+	ZtLiveUserInfo user = 1;  //userInfo
+	int64 sendTimeMs = 2;
+	int64 giftId = 3;
+	int32 count = 4;  //batchSize
+	int32 combo = 5;  //comboCount
+	int64 value = 6;  //rank
+	string comboId = 7;  //comboKey
+	int64 slotDisplayDurationMs = 8;
+	int64 expireDurationMs = 9;
+	ZtDrawGiftInfo drawGiftInfo = 10;
+}

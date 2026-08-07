@@ -1,0 +1,227 @@
+---
+title: 集群配置
+description: 多副本、Redis 协调、节点发现、leader election、静态发现和 Kubernetes DNS 配置。
+---
+
+import Diagram from '../../../components/Diagram.astro';
+import clusterRuntimeDark from '../../../assets/diagrams/cluster-runtime-zh-dark.svg';
+import clusterRuntimeLight from '../../../assets/diagrams/cluster-runtime-zh-light.svg';
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+## 启用条件
+
+单进程部署不需要集群模式。
+
+以下场景启用：
+
+- Kubernetes 中运行多个副本。
+- 多台服务器共同服务同一个 SyncTV 实例。
+- 需要跨节点踢人、房间同步、缓存失效、直播协调。
+
+```yaml
+cluster:
+  enabled: true
+```
+
+启用后，Redis 和 `cluster.secret` 必填。
+
+## `cluster.secret`
+
+集群内部 gRPC 共享密钥。`cluster.enabled=true` 时必填。
+
+```yaml
+cluster:
+  secret_file: "/run/secrets/cluster_secret"
+```
+
+生成：
+
+```bash
+openssl rand -hex 32
+```
+
+## 状态与协调边界
+
+集群模式解决的是“多个 SyncTV 进程共同服务同一个实例”时的运行时一致性问题。它不是简单的负载均衡开关，也不替代 PostgreSQL、Redis、Ingress 或直播存储/代理策略。
+
+- **状态单一来源**： PostgreSQL 保存 durable state：用户、房间、权限、Provider、偏好设置和审计数据。所有节点必须连接同一个数据库。
+- **运行时协调**： Redis 保存 ephemeral/shared state：节点注册、pub/sub、Redis Stream catch-up、leader election、限流和短期认证状态。
+- **节点间信任**： `cluster.secret` 用于节点间 gRPC 调用认证。所有节点必须一致，且不能暴露给客户端。
+- **直播可达性**： RTMP publisher 可能在任意节点上，观众请求也可能落到任意节点；因此直播需要 publisher registry、HLS gRPC proxy 和明确的 HLS 存储边界。
+
+<Diagram
+  light={clusterRuntimeLight}
+  dark={clusterRuntimeDark}
+  alt="SyncTV 集群运行时架构图，展示客户端通过 HTTP/gRPC 入口访问多个节点，节点共享 PostgreSQL 和 Redis，并通过 HLS backend 或 publisher-node proxy 读取直播分片。"
+  caption="集群模式下，业务持久状态进入 PostgreSQL，跨节点运行时状态进入 Redis。本地 HLS backend 使用 publisher-node proxy；shared_file 会让当前节点从共享挂载读取 TS 分片，S3 则提供对象存储边界。"
+/>
+
+## 节点协同流程
+
+<Steps>
+1. 每个节点启动后使用相同配置连接 PostgreSQL 和 Redis，并生成或读取自己的节点 ID。
+2. 节点通过 `cluster.discovery_mode` 注册和发现其他节点。默认 `redis` 模式适合大多数环境；Kubernetes 可以选择 `k8s_dns` 辅助发现 Pod。
+3. 房间事件、踢人、权限变化等 cluster realtime event 通过 Redis Pub/Sub 分发，并通过 Redis Stream 在 `cluster.catchup_window_secs` 窗口内补事件；业务缓存失效另有专用 Redis Stream/XREADGROUP runtime。
+4. 后台任务通过 `cluster.leader_election_mode` 选出一个 leader，避免多个副本重复执行同一类全局任务。
+5. 直播 publisher 会登记到共享 registry，其他节点可以知道某个房间/媒体当前由哪个节点持有。
+6. HLS 请求落到非 publisher 节点时，本地 backend 会通过 HLS gRPC proxy 向 publisher 节点读取 playlist/segment；`shared_file` 的 TS 分片请求由当前节点从共享路径读取。
+</Steps>
+
+<Aside type="caution">
+集群模式不能修复底层依赖不一致。多个副本必须共享同一个 PostgreSQL、Redis 和 `cluster.secret`。HLS 本地 backend 可以通过 publisher-node proxy 工作，因此 publisher 节点不可达、重启或网络分区时，远端节点读取分片会受影响；`shared_file` 会让 TS 分片从当前节点挂载的共享路径读取，S3 则提供对象存储分片。
+</Aside>
+
+## 部署形态
+
+| 部署形态 | 适用场景 | 推荐配置 |
+| --- | --- | --- |
+| 单进程 | 小规模、自托管、开发测试 | `cluster.enabled=false`；生产仍建议配置 Redis |
+| 多进程固定节点 | 多台 VM 或裸机，节点数量稳定 | `cluster.enabled=true`、`discovery_mode=static` 或 `redis` |
+| Kubernetes 多副本 | 水平扩缩容、滚动升级、Ingress 暴露 | `cluster.enabled=true`、`discovery_mode=redis` 或 `k8s_dns`、HTTP/gRPC 独立 Service |
+| 多副本直播，小流量 | HLS/FLV 需要跨节点播放，但 segment 请求量不高 | `cluster.enabled=true`，可使用 `memory` 或本地 `file`，依赖 publisher-node proxy |
+| 多副本直播，高流量 | HLS 请求量高、需要更稳定的滚动升级边界 | 在集群配置基础上增加 `shared_file` 或 `s3` HLS backend |
+
+## 必备条件
+
+- 所有节点连接同一个 PostgreSQL。
+- 所有节点连接同一个 Redis。
+- 所有节点使用同一个 `cluster.secret`。
+- 节点之间能访问彼此的 API/gRPC 地址。
+
+## 事件通道容量
+
+| 字段 | 默认值 | 用途 |
+| --- | --- | --- |
+| `cluster.critical_channel_capacity` | `10000` | 踢人、权限变更等高优先级事件 |
+| `cluster.publish_channel_capacity` | `100000` | 普通 Redis publish 事件 |
+
+critical 事件满队列时会反压发送方；普通事件在极端拥塞时可能丢弃并记录 warning。
+
+## `cluster.discovery_mode`
+
+可选值：
+
+- `redis`
+- `static`
+- `k8s_dns`
+
+### `redis`
+
+默认模式。节点通过 Redis 注册和发现，适合 Docker、服务器和 Kubernetes。
+
+### `static`
+
+手动配置节点地址。
+
+```yaml
+cluster:
+  discovery_mode: "static"
+  peers:
+    - "node2.example.com:50051"
+    - "node3.example.com"
+```
+
+适合固定服务器数量的小集群。
+
+如果 peer 不写端口，SyncTV 使用 `cluster.port`。
+
+### `k8s_dns`
+
+通过 Kubernetes headless service DNS 发现 Pod。
+
+必需环境变量：
+
+- `HEADLESS_SERVICE_NAME`
+- `POD_NAMESPACE`
+
+`k8s_dns` 不替代 Redis。Redis 仍负责健康状态、负载状态、pub/sub 和 catch-up。
+
+## Leader election
+
+| 模式 | 场景 |
+| --- | --- |
+| `redis` | 默认；适合 Docker、服务器和 Kubernetes |
+| `k8s_lease` | 使用 Kubernetes `coordination.k8s.io/v1 Lease` |
+
+需要：
+
+- `POD_NAME`
+- `POD_NAMESPACE`
+- RBAC 权限
+
+Helm chart 会在需要时渲染相关 RBAC。
+
+## Stream catch-up
+
+`cluster.catchup_window_secs` 默认值：`300`。节点加入或重连时，在这个窗口内回放 Redis Stream 事件。
+
+`cluster.stream_max_length` 默认值：`100000`。它控制 Redis Stream 近似保留长度。太小会让断线节点还没追上时事件已被裁剪；太大会占用更多 Redis 内存。
+
+## 多副本 HLS 模型
+
+集群 HLS 不只有共享存储一种模式。SyncTV 通过 publisher registry 定位推流所在节点；本地 backend 在需要时通过 HLS gRPC proxy 从 publisher 节点读取 playlist/segment，`shared_file` 的 TS 分片由当前节点从共享路径读取。
+
+### Publisher-node proxy
+
+适用 backend：
+
+- `memory`
+- `file`
+
+这种模型部署简单，不要求所有副本共享分片目录。代价是非 publisher 节点的 HLS segment 请求会跨节点回源到 publisher 节点；publisher 节点重启、不可达或网络分区时，远端节点可能无法继续读取该直播的分片。
+
+示例：
+
+```yaml
+livestream:
+  hls_storage:
+    type: "memory"
+```
+
+或：
+
+```yaml
+livestream:
+  hls_storage:
+    type: "file"
+    path: "/var/lib/synctv/hls"
+```
+
+### 共享 backend
+
+共享 backend 表示 HLS 分片不会只存在于 publisher 节点本地磁盘。它有利于持久化、重启恢复和统一清理策略。`shared_file` 模式下，`.ts` 请求由当前节点从共享路径读取，不再为了 TS 文件回源 publisher 节点。
+
+文件系统方案：
+
+```yaml
+livestream:
+  hls_storage:
+    type: "shared_file"
+    path: "/var/lib/synctv/hls"
+```
+
+并确保所有 Pod 都能读写同一个路径，例如 NFS、RWX PVC 或 CSI volume。
+
+对象存储方案：
+
+```yaml
+livestream:
+  hls_storage:
+    type: "s3"
+    endpoint: "https://s3.example.com"
+    bucket: "synctv-hls"
+    base_path: "synctv/hls/"
+```
+
+`s3` backend 使用 S3 兼容对象存储。
+
+## Helm 中的集群建议
+
+Helm chart 默认不启用集群模式。扩容前显式设置 `config.cluster.enabled=true`。HLS 可以先使用 publisher-node proxy；需要更稳定的分片存储和恢复边界时，使用 `shared_file` 或 `s3`。
+
+扩容前必须确认：
+
+- Redis 可用。
+- `cluster.secret` 稳定且所有副本一致。
+- HLS 模型已明确：小规模使用本地 backend + publisher-node proxy；需要持久共享存储时使用 `shared_file + RWX/PVC` 或 `s3`。
+- gRPC Service/Ingress 与内部节点访问符合你的网络设计。

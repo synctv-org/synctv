@@ -1,0 +1,142 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO room_labels (\n                key, name, description, color, category_id, sort_order, is_enabled\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7)\n            ON CONFLICT (key) DO UPDATE SET\n                name = EXCLUDED.name,\n                description = EXCLUDED.description,\n                color = EXCLUDED.color,\n                category_id = EXCLUDED.category_id,\n                sort_order = EXCLUDED.sort_order,\n                is_enabled = EXCLUDED.is_enabled,\n                updated_at = CURRENT_TIMESTAMP\n            RETURNING id AS \"id: RoomLabelId\",\n                      key,\n                      name,\n                      description,\n                      color,\n                      category_id AS \"category_id: RoomCategoryId\",\n                      sort_order,\n                      is_enabled,\n                      created_at,\n                      updated_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: RoomLabelId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_labels",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_labels",
+            "name": "key"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_labels",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_labels",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "color",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_labels",
+            "name": "color"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "category_id: RoomCategoryId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_labels",
+            "name": "category_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "sort_order",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "room_labels",
+            "name": "sort_order"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "is_enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "room_labels",
+            "name": "is_enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_labels",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_labels",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int4",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "989f7d609d547a9b3af9c9b1aa367dcf2e965cfae4e858b4a022ce3f2162bb18"
+}

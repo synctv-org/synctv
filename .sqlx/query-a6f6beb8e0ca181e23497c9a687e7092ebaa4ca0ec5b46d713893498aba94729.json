@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT p.id AS \"id: PlaylistId\", p.room_id AS \"room_id: RoomId\"\n             FROM playlists p\n             JOIN rooms r ON r.id = p.room_id\n             WHERE p.creator_id = $1\n               AND r.deleted_at IS NULL\n             ORDER BY p.room_id, p.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: PlaylistId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "playlists",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "playlists",
+            "name": "room_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "a6f6beb8e0ca181e23497c9a687e7092ebaa4ca0ec5b46d713893498aba94729"
+}

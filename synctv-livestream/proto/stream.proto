@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package synctv.stream;
+
+// Stream relay service for cross-node RTMP streaming and HLS proxy
+// Only contains cross-node gRPC calls. Other operations (register/unregister/query)
+// are handled directly via Redis.
+service StreamRelayService {
+    // Pull RTMP stream from publisher node (server streaming)
+    // Live-frame relay used by a puller on another node.
+    rpc PullRtmpStream(PullRtmpStreamRequest) returns (stream RtmpPacket);
+
+    // Get HLS M3U8 playlist from publisher node (proxy for non-publisher nodes)
+    rpc GetHlsPlaylist(GetHlsPlaylistRequest) returns (GetHlsPlaylistResponse);
+
+    // Get HLS TS segment from publisher node (proxy for non-publisher nodes)
+    rpc GetHlsSegment(GetHlsSegmentRequest) returns (GetHlsSegmentResponse);
+}
+
+// Pull RTMP stream from publisher node
+// Service-to-service internal call, no need for stream_key
+message PullRtmpStreamRequest {
+    string room_id = 1;
+    string media_id = 2;
+    // Immutable identity of the source publication being relayed.
+    string generation_id = 3;
+    // Ownership fencing token for the source publication.
+    uint64 expected_lease_epoch = 4;
+    // When true, this is a reconnection after a transient failure.
+    // The server should prioritize sending cached GOP frames for fast recovery.
+    // (StreamHub already does this automatically, but this flag allows the server
+    // to log reconnection events and apply reconnection-specific optimizations.)
+    bool is_reconnect = 5;
+}
+
+// RTMP packet with timestamp
+message RtmpPacket {
+    bytes data = 1;       // Raw RTMP packet data (audio/video/metadata payload)
+    uint32 timestamp = 2; // Timestamp in milliseconds
+    FrameType frame_type = 3; // Frame type
+}
+
+enum FrameType {
+    FRAME_TYPE_UNSPECIFIED = 0;
+    FRAME_TYPE_VIDEO = 1;
+    FRAME_TYPE_AUDIO = 2;
+    FRAME_TYPE_METADATA = 3;
+}
+
+// HLS proxy messages for cross-node HLS streaming
+
+message GetHlsPlaylistRequest {
+    string room_id = 1;
+    string media_id = 2;
+    string generation_id = 3;
+    uint64 expected_lease_epoch = 4;
+    // URL prefix and suffix around each HLS segment name in generated M3U8.
+    // Example: prefix="/api/.../segment/", suffix=".png?sig=..."
+    string segment_url_base = 5;
+    string segment_url_suffix = 6;
+}
+
+message GetHlsPlaylistResponse {
+    string playlist = 1;
+    bool found = 2;
+}
+
+message GetHlsSegmentRequest {
+    string room_id = 1;
+    string media_id = 2;
+    string generation_id = 3;
+    string segment_name = 4;
+    // Publisher fencing token observed by the proxying node.
+    uint64 expected_lease_epoch = 5;
+}
+
+message GetHlsSegmentResponse {
+    bytes data = 1;
+    bool found = 2;
+}

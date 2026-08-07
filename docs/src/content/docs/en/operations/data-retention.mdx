@@ -1,0 +1,122 @@
+---
+title: Data, Privacy, and Retention
+description: What SyncTV stores, which fields are sensitive, how cleanup works, and how backups and logs should be handled.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Data Locations
+
+| Location | Data | Persistence |
+| --- | --- | --- |
+| PostgreSQL | Users, auth credentials, rooms, members, playlists, media, chat, notifications, audit logs, provider instances, user provider credentials, runtime settings, user preferences | Must be persistent |
+| Redis | Rate limits, brute-force protection, token blacklist, OAuth2 state, WebAuthn challenges, cluster state, cache invalidation messages | Usually short-lived state; HA or persistence is recommended for multi-replica deployments |
+| `data_dir` | Management socket, log files, HLS files, proxy slice cache files, and other runtime-owned output | Depends on enabled features |
+| Logging platform | Requests, errors, audit context, dependency failures, runtime state | Retained according to your logging policy |
+| Backups | PostgreSQL dumps, secrets, config files, optional HLS or cache data | Retained according to your backup policy |
+
+## Sensitive Data
+
+| Category | Examples | Handling requirement |
+| --- | --- | --- |
+| User identifiers | Username, user ID, role, creation time | Can be linked to user activity |
+| Email | User email, email identity, notification recipient | PII; only return to the user themselves or administrators |
+| Authentication data | Password credential, OPAQUE credential, WebAuthn credential, OAuth2 identity, email token, refresh token or blacklist | Highly sensitive; should not enter logs |
+| Provider credentials | Alist token, Emby API key, Bilibili cookie, remote provider JWT secret | Highly sensitive; protected by `security.credential_encryption_key` |
+| Room data | Room name, members, permissions, playlists, media, playback state, invitation notifications, review records | Business data |
+| Message data | Chat and notification content | May contain user input and sensitive context |
+| Audit data | Actor, action, target, details, IP, User-Agent | Useful for security investigations; may also contain personal data |
+
+`User` in `client.proto` contains email and should only be returned to the user themselves or administrators. Public contexts should use `UserPublicView`, which omits email and other PII.
+
+## User Preference Data
+
+User preferences are stored in `user_preferences`:
+
+- `two_factor_enabled`: user-level 2FA.
+- Notification fields: in-app and email notification preferences.
+- `settings` JSONB: low-priority extension payload. Core preferences should use explicit database columns instead of being placed in JSON.
+
+`settings` JSONB must not store secrets, tokens, passwords, cookies, or provider credentials.
+Provider instance bindings live on user provider credentials created during provider login.
+
+## Provider Credential Encryption
+
+Production should configure:
+
+```yaml
+security:
+  credential_encryption_key_file: "/run/secrets/credential_encryption_key"
+```
+
+Requirements:
+
+- The key is a 64-character hex value.
+- The key must remain stable.
+- If the key is lost, encrypted provider credentials cannot be reliably recovered.
+- If the key leaks, rotate affected provider credentials and assess database backup exposure.
+
+See [Security and Secrets](../../configuration/security/) and [Media Providers](../../configuration/media-providers/).
+
+## Retention Behavior
+
+| Data | Default behavior | Configuration surface |
+| --- | --- | --- |
+| Soft-deleted users | Permanently purged after 90 days by default | Internal cleanup configuration |
+| Soft-deleted rooms | Permanently purged after 90 days by default | Internal cleanup configuration |
+| Expired email tokens | Deleted 7 days after expiry by default | Internal cleanup configuration |
+| Expired provider credentials | Deleted after `expires_at` plus a 1-hour buffer | Internal cleanup configuration |
+| Read notifications | Deleted after 30 days by default | Internal cleanup configuration |
+| All notifications | Maximum retention is 90 days by default | Internal cleanup configuration |
+| Notification partitions | 6 months retained by default | Internal partition management |
+| Chat messages | Absolute retention cap `chat.message_retention_days=90` days | Runtime settings |
+| Per-room chat count | `chat.max_messages_per_room=500`; `0` means unlimited | Runtime settings |
+| Playback history | 90 days and 1,000 entries per room by default; the cursor and adjacent entries are protected | `playback_history.retention_days`, `playback_history.max_entries_per_room` |
+| Playback history partitions | Daily range partitions by `created_at` | Internal partition management |
+| Unreferenced uploaded files | Cleaned after `file_storage.unreferenced_object_retention_seconds=86400` seconds by default | Startup configuration |
+| Chat partitions | 90 days retained by default | Internal partition management |
+| Audit log partitions | 12 months retained by default | Internal partition management |
+| Token blacklist | Expired entries are cleaned in the background | Internal cleanup configuration |
+
+In multi-replica deployments, cleanup tasks are leader-gated. Periodic database maintenance cleans email tokens, notifications, expired provider credentials, old chat messages, playback history, and file objects that were uploaded without a product reference. Playback history is deleted in batches of 5,000; sequence gaps are supported and navigation selects the nearest retained entry.
+
+<Aside type="note">
+  Runtime settings are database-backed hot-reload settings for chat and playback-history retention controls. Startup configuration remains responsible for process initialization, and secret storage uses the dedicated security configuration.
+</Aside>
+
+## User and Room Deletion
+
+User deletion uses soft delete plus transactional resource cleanup:
+
+- The user row enters a `deleted_at` state.
+- OAuth2 mappings, email identities, email tokens, provider credentials, notifications, and related user data are cleaned as part of the deletion flow.
+- Room memberships are removed.
+- Chat messages may be anonymized or retained with necessary context according to user cleanup semantics.
+- Soft-deleted records are permanently purged after the retention window.
+
+Room deletion also starts with soft delete and cleans room playlists, media, members, invitation notifications, review records, playback state, and related resources. The room row is hard-deleted after the retention window.
+
+## Backups
+
+Backups usually contain the most complete and sensitive data set. Protect:
+
+- PostgreSQL backups.
+- The complete production secret set, including authentication, encryption, signing, cluster, and management keys.
+- Provider tokens, SMTP passwords, OAuth2 client secrets, and management tokens.
+- Helm Secrets, Compose `.env`, Kubernetes Secrets, and external secret-manager snapshots.
+
+Deleting data from the live database does not remove it from historical backups. Define backup retention, encryption, and destruction procedures in your operational policy.
+
+## Logs and Metrics
+
+Logs:
+
+- Use structured logs in production.
+- Do not log Authorization, Cookie, OAuth2 codes, email codes, passwords, provider tokens, or SMTP passwords.
+- Review `config show`, request headers, and error logs before sharing them in issues or internal tickets.
+
+Metrics:
+
+- Do not expose `/metrics` publicly.
+- Inject metrics bearer tokens or Basic passwords through secrets.
+- Metrics should describe capacity, error rates, connection counts, and latency. They should not contain user content.

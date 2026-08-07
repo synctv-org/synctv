@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO user_bans (user_id, banned_by, reason, starts_at)\n                VALUES ($1, $2, $3, CURRENT_TIMESTAMP)\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2669e562589d5429ecbec2cd82715dbe13bbbc078e31364b09760579e6d54350"
+}

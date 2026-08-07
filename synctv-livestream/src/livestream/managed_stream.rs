@@ -1,0 +1,1010 @@
+// Shared lifecycle state and pool utilities for managed streams.
+
+use crate::util::unix_now_secs;
+use anyhow::Result;
+use async_trait::async_trait;
+use dashmap::DashMap;
+use futures::{stream, StreamExt as _};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, info_span, warn, Instrument};
+
+/// Shared lifecycle state for pull streams and external publish streams.
+///
+/// The cleanup contract is: active viewer paths increment or touch this state,
+/// idle cleanup claims only streams with zero subscribers, and the claim marks
+/// the stream unhealthy before teardown. HLS requests usually touch lifecycle
+/// per playlist/segment request; FLV holds a subscriber guard for the streaming
+/// task lifetime.
+pub(crate) struct StreamLifecycle {
+    subscriber_count: AtomicUsize,
+    admission_gate: parking_lot::Mutex<()>,
+    last_active_secs: AtomicU64,
+    is_running: Arc<AtomicBool>,
+    task_handle: Mutex<Option<tokio::task::JoinHandle<Result<()>>>>,
+    abort_handle: parking_lot::Mutex<Option<tokio::task::AbortHandle>>,
+}
+
+impl StreamLifecycle {
+    #[must_use]
+    pub(crate) fn new() -> Self {
+        Self {
+            subscriber_count: AtomicUsize::new(0),
+            admission_gate: parking_lot::Mutex::new(()),
+            last_active_secs: AtomicU64::new(unix_now_secs()),
+            is_running: Arc::new(AtomicBool::new(false)),
+            task_handle: Mutex::new(None),
+            abort_handle: parking_lot::Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn subscriber_count(&self) -> usize {
+        self.subscriber_count.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn increment_subscriber_count(&self) {
+        let _gate = self.admission_gate.lock();
+        self.subscriber_count.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn try_increment_subscriber_count(&self) -> bool {
+        let _gate = self.admission_gate.lock();
+        if !self.is_running.load(Ordering::Acquire) {
+            return false;
+        }
+        self.subscriber_count.fetch_add(1, Ordering::AcqRel);
+        true
+    }
+
+    pub(crate) fn decrement_subscriber_count(&self) {
+        let result = self
+            .subscriber_count
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |v| {
+                if v > 0 {
+                    Some(v - 1)
+                } else {
+                    None
+                }
+            });
+        if result.is_err() {
+            warn!("Attempted to decrement subscriber count below zero");
+        }
+    }
+
+    pub(crate) async fn is_healthy(&self) -> bool {
+        if !self.is_running.load(Ordering::Acquire) {
+            return false;
+        }
+
+        if let Some(handle) = self.task_handle.lock().await.as_ref() {
+            !handle.is_finished()
+        } else {
+            true
+        }
+    }
+
+    pub(crate) fn set_running(&self) {
+        self.is_running.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn mark_stopping(&self) {
+        self.is_running.store(false, Ordering::Release);
+    }
+
+    pub(crate) fn restore_running(&self) {
+        self.is_running.store(true, Ordering::Release);
+    }
+
+    /// Claim the stream for idle cleanup after marking it unhealthy.
+    ///
+    /// The admission gate serializes cleanup claims with new viewer admission.
+    /// A concurrent subscriber either enters before the claim and keeps the
+    /// stream running, or waits until the claim has made the stream unhealthy.
+    pub(crate) fn try_claim_for_cleanup(&self) -> bool {
+        let _gate = self.admission_gate.lock();
+        if !self.is_running.load(Ordering::Acquire) {
+            return false;
+        }
+        self.mark_stopping();
+        if self.subscriber_count.load(Ordering::Acquire) != 0 {
+            self.restore_running();
+            return false;
+        }
+
+        true
+    }
+
+    pub(crate) fn is_running_clone(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.is_running)
+    }
+
+    pub(crate) fn last_active_elapsed_secs(&self) -> u64 {
+        let last = self.last_active_secs.load(Ordering::Acquire);
+        unix_now_secs().saturating_sub(last)
+    }
+
+    pub(crate) fn update_last_active_time(&self) {
+        self.last_active_secs
+            .store(unix_now_secs(), Ordering::Release);
+    }
+
+    pub(crate) async fn set_task_handle(&self, handle: tokio::task::JoinHandle<Result<()>>) {
+        *self.abort_handle.lock() = Some(handle.abort_handle());
+        *self.task_handle.lock().await = Some(handle);
+    }
+
+    pub(crate) async fn abort_task(&self) {
+        if let Some(handle) = self.task_handle.lock().await.take() {
+            handle.abort();
+        }
+    }
+}
+
+impl Default for StreamLifecycle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for StreamLifecycle {
+    fn drop(&mut self) {
+        self.is_running.store(false, Ordering::Release);
+
+        if let Some(ah) = self.abort_handle.lock().take() {
+            ah.abort();
+        }
+    }
+}
+
+/// Trait for streams managed by [`StreamPool`].
+#[async_trait]
+pub(crate) trait ManagedStream: Send + Sync + 'static {
+    fn lifecycle(&self) -> &StreamLifecycle;
+
+    async fn stop_managed(&self) {
+        self.lifecycle().mark_stopping();
+        self.lifecycle().abort_task().await;
+    }
+}
+
+struct CreationLockEntry {
+    lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl CreationLockEntry {
+    fn new() -> Self {
+        Self {
+            lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+}
+
+pub(crate) struct CreationLockGuard {
+    key: String,
+    creation_locks: Arc<DashMap<String, Arc<CreationLockEntry>>>,
+    entry: Arc<CreationLockEntry>,
+    _pool_read_guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for CreationLockGuard {
+    fn drop(&mut self) {
+        self.creation_locks.remove_if(&self.key, |_, current| {
+            Arc::ptr_eq(current, &self.entry) && Arc::strong_count(current) == 2
+        });
+    }
+}
+
+pub(crate) struct StreamPool<S: ManagedStream> {
+    pub(crate) streams: Arc<DashMap<String, Arc<S>>>,
+    creation_locks: Arc<DashMap<String, Arc<CreationLockEntry>>>,
+    pub(crate) cleanup_check_interval: Duration,
+    pub(crate) idle_timeout: Duration,
+    stop_gate: Arc<RwLock<()>>,
+    cleanup_token: Arc<parking_lot::Mutex<CancellationToken>>,
+}
+
+impl<S: ManagedStream> StreamPool<S> {
+    const STOP_CONCURRENCY: usize = 16;
+
+    #[must_use]
+    pub(crate) fn new(cleanup_check_interval: Duration, idle_timeout: Duration) -> Self {
+        Self {
+            streams: Arc::new(DashMap::new()),
+            creation_locks: Arc::new(DashMap::new()),
+            cleanup_check_interval,
+            idle_timeout,
+            stop_gate: Arc::new(RwLock::new(())),
+            cleanup_token: Arc::new(parking_lot::Mutex::new(CancellationToken::new())),
+        }
+    }
+
+    pub(crate) async fn stop_all(&self) {
+        // Block both fast-path reuse and per-key creation while the current
+        // generation is being removed. A new generation can be admitted once
+        // the write guard is released.
+        let _stop_guard = self.stop_gate.write().await;
+        let old_cleanup_token = {
+            let mut token = self.cleanup_token.lock();
+            let old = token.clone();
+            *token = CancellationToken::new();
+            old
+        };
+        old_cleanup_token.cancel();
+
+        let keys: Vec<String> = self.streams.iter().map(|e| e.key().clone()).collect();
+        stream::iter(&keys)
+            .for_each_concurrent(Self::STOP_CONCURRENCY, |key| async move {
+                self.remove_and_stop(key).await;
+            })
+            .await;
+        self.creation_locks.clear();
+        debug!("Stopped all managed streams ({} removed)", keys.len());
+    }
+
+    async fn remove_and_stop(&self, stream_key: &str) {
+        let Some((_, stream)) = self.streams.remove(stream_key) else {
+            return;
+        };
+        stream.stop_managed().await;
+    }
+
+    pub(crate) async fn remove_if_same_and_stop(
+        &self,
+        stream_key: &str,
+        expected: &Arc<S>,
+    ) -> bool {
+        let Some((_, stream)) = self
+            .streams
+            .remove_if(stream_key, |_, current| Arc::ptr_eq(current, expected))
+        else {
+            return false;
+        };
+        stream.stop_managed().await;
+        true
+    }
+
+    /// Returns a healthy stream with its subscriber count already incremented.
+    pub(crate) async fn get_existing(&self, stream_key: &str) -> Option<Arc<S>> {
+        let _pool_read_guard = self.stop_gate.read().await;
+        if let Some(stream) = self
+            .streams
+            .get(stream_key)
+            .map(|entry| Arc::clone(entry.value()))
+        {
+            if stream.lifecycle().is_healthy().await {
+                if !stream.lifecycle().try_increment_subscriber_count() {
+                    self.remove_if_same_and_stop(stream_key, &stream).await;
+                    return None;
+                }
+
+                if stream.lifecycle().is_healthy().await {
+                    stream.lifecycle().update_last_active_time();
+                    return Some(stream);
+                }
+
+                stream.lifecycle().decrement_subscriber_count();
+            }
+            self.remove_if_same_and_stop(stream_key, &stream).await;
+        }
+        None
+    }
+
+    pub(crate) async fn acquire_creation_lock(&self, stream_key: &str) -> CreationLockGuard {
+        let pool_read_guard = self.stop_gate.clone().read_owned().await;
+        let entry = Arc::clone(
+            self.creation_locks
+                .entry(stream_key.to_string())
+                .or_insert_with(|| Arc::new(CreationLockEntry::new()))
+                .value(),
+        );
+        let lock = Arc::clone(&entry.lock);
+        CreationLockGuard {
+            key: stream_key.to_string(),
+            creation_locks: Arc::clone(&self.creation_locks),
+            entry,
+            _pool_read_guard: pool_read_guard,
+            _guard: lock.lock_owned().await,
+        }
+    }
+
+    pub(crate) fn insert_and_cleanup<F>(
+        &self,
+        stream_key: String,
+        stream: Arc<S>,
+        on_idle_cleanup: F,
+    ) where
+        F: Fn(&str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.streams.insert(stream_key.clone(), Arc::clone(&stream));
+
+        let streams = Arc::clone(&self.streams);
+        let check_interval = self.cleanup_check_interval;
+        let idle_timeout = self.idle_timeout;
+        let child_token = self.cleanup_token.lock().child_token();
+
+        let span = info_span!("stream_cleanup", stream_key = %stream_key);
+        tokio::spawn(
+            async move {
+                tokio::select! {
+                    () = child_token.cancelled() => {
+                        debug!("Cleanup task cancelled for {} (shutdown)", stream_key);
+                    }
+                    result = Self::cleanup_loop_with_token(
+                        &stream_key,
+                        &stream,
+                        &streams,
+                        check_interval,
+                        idle_timeout,
+                        &on_idle_cleanup,
+                        &child_token,
+                    ) => {
+                        if let Err(e) = result {
+                            error!("Cleanup task failed for {}: {}", stream_key, e);
+                            stream.lifecycle().abort_task().await;
+                            streams.remove(&stream_key);
+                        }
+                    }
+                }
+            }
+            .instrument(span),
+        );
+    }
+
+    async fn cleanup_loop_with_token<F>(
+        stream_key: &str,
+        stream: &Arc<S>,
+        streams: &Arc<DashMap<String, Arc<S>>>,
+        check_interval: Duration,
+        idle_timeout: Duration,
+        on_idle_cleanup: &F,
+        cancel_token: &CancellationToken,
+    ) -> Result<()>
+    where
+        F: Fn(&str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let mut interval = tokio::time::interval(check_interval);
+
+        loop {
+            interval.tick().await;
+
+            // A source task can end independently of an idle viewer cleanup.
+            // Remove the dead instance immediately so its registry/pool state
+            // cannot wait for a future request or the Redis TTL.
+            if !stream.lifecycle().is_running.load(Ordering::Acquire) {
+                tokio::select! {
+                    () = cancel_token.cancelled() => break,
+                    () = on_idle_cleanup(stream_key) => {}
+                }
+                streams.remove_if(stream_key, |_, current| Arc::ptr_eq(current, stream));
+                break;
+            }
+
+            if stream.lifecycle().subscriber_count() == 0 {
+                let idle_secs = stream.lifecycle().last_active_elapsed_secs();
+
+                if idle_secs > idle_timeout.as_secs() {
+                    if !stream.lifecycle().try_claim_for_cleanup() {
+                        let current_count = stream.lifecycle().subscriber_count();
+                        debug!(
+                            "Cleanup aborted for {}: {} late subscriber(s) detected after mark_stopping",
+                            stream_key,
+                            current_count,
+                        );
+
+                        let is_same_instance = streams
+                            .get(stream_key)
+                            .is_some_and(|map_entry| Arc::ptr_eq(map_entry.value(), stream));
+                        if !is_same_instance {
+                            debug!(
+                                "Cleanup exiting for {}: stream was replaced by concurrent viewer",
+                                stream_key,
+                            );
+                            stream.lifecycle().mark_stopping();
+                            break;
+                        }
+                        continue;
+                    }
+
+                    info!(
+                        "Auto cleanup: Stopping stream {} (idle for {}s)",
+                        stream_key, idle_secs
+                    );
+
+                    tokio::select! {
+                        () = cancel_token.cancelled() => break,
+                        () = on_idle_cleanup(stream_key) => {}
+                    }
+
+                    streams.remove_if(stream_key, |_, current| Arc::ptr_eq(current, stream));
+                    stream.stop_managed().await;
+                    break;
+                }
+            } else {
+                stream.lifecycle().update_last_active_time();
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<S: ManagedStream> Drop for StreamPool<S> {
+    fn drop(&mut self) {
+        self.cleanup_token.lock().cancel();
+
+        for entry in self.streams.iter() {
+            entry
+                .value()
+                .lifecycle()
+                .is_running
+                .store(false, Ordering::Release);
+            if let Some(ah) = entry.value().lifecycle().abort_handle.lock().take() {
+                ah.abort();
+            }
+        }
+
+        let count = self.streams.len();
+        self.streams.clear();
+        self.creation_locks.clear();
+        if count > 0 {
+            debug!("StreamPool dropped, cleaned up {} streams", count);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+        anyhow::anyhow!(message.into()).into()
+    }
+
+    struct TestStream {
+        lifecycle: StreamLifecycle,
+        stop_count: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ManagedStream for TestStream {
+        fn lifecycle(&self) -> &StreamLifecycle {
+            &self.lifecycle
+        }
+
+        async fn stop_managed(&self) {
+            self.stop_count.fetch_add(1, Ordering::AcqRel);
+            self.lifecycle.mark_stopping();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_lifecycle_subscriber_count() {
+        let lc = StreamLifecycle::new();
+        lc.increment_subscriber_count();
+        assert_eq!(lc.subscriber_count(), 1);
+        lc.increment_subscriber_count();
+        assert_eq!(lc.subscriber_count(), 2);
+        lc.decrement_subscriber_count();
+        assert_eq!(lc.subscriber_count(), 1);
+        lc.decrement_subscriber_count();
+        assert_eq!(lc.subscriber_count(), 0);
+        // Underflow should be a no-op
+        lc.decrement_subscriber_count();
+        assert_eq!(lc.subscriber_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_stream_lifecycle_health() {
+        let lc = StreamLifecycle::new();
+        assert!(!lc.is_healthy().await);
+
+        lc.set_running();
+        assert!(lc.is_healthy().await);
+
+        lc.mark_stopping();
+        assert!(!lc.is_healthy().await);
+
+        lc.restore_running();
+        assert!(lc.is_healthy().await);
+    }
+
+    #[tokio::test]
+    async fn test_stream_pool_get_existing_empty() {
+        let pool: StreamPool<TestStream> =
+            StreamPool::new(Duration::from_mins(1), Duration::from_mins(5));
+        assert!(pool.get_existing("key").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stream_pool_get_existing_healthy() -> TestResult {
+        let pool: StreamPool<TestStream> =
+            StreamPool::new(Duration::from_mins(1), Duration::from_mins(5));
+
+        let stream = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            stop_count: AtomicUsize::new(0),
+        });
+        stream.lifecycle().set_running();
+
+        pool.streams
+            .insert("room:media".to_string(), stream.clone());
+
+        let found = pool.get_existing("room:media").await;
+        let found = found.ok_or_else(|| test_error("healthy stream should exist"))?;
+        assert_eq!(found.lifecycle().subscriber_count(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_stream_pool_get_existing_unhealthy_removed() {
+        let pool: StreamPool<TestStream> =
+            StreamPool::new(Duration::from_mins(1), Duration::from_mins(5));
+
+        let stream = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            stop_count: AtomicUsize::new(0),
+        });
+        // Not running, so unhealthy
+
+        pool.streams
+            .insert("room:media".to_string(), stream.clone());
+
+        let found = pool.get_existing("room:media").await;
+        assert!(found.is_none());
+        assert!(pool.streams.is_empty());
+        assert_eq!(
+            stream.stop_count.load(Ordering::Acquire),
+            1,
+            "unhealthy streams removed on access must run the stream-specific stop protocol"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_if_same_stops_exact_stream_instance() {
+        let pool: StreamPool<TestStream> =
+            StreamPool::new(Duration::from_mins(1), Duration::from_mins(5));
+        let current = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            stop_count: AtomicUsize::new(0),
+        });
+        let stale_reference = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            stop_count: AtomicUsize::new(0),
+        });
+        pool.streams
+            .insert("room:media".to_string(), Arc::clone(&current));
+
+        assert!(
+            !pool
+                .remove_if_same_and_stop("room:media", &stale_reference)
+                .await
+        );
+        assert!(pool.streams.contains_key("room:media"));
+        assert_eq!(stale_reference.stop_count.load(Ordering::Acquire), 0);
+
+        assert!(pool.remove_if_same_and_stop("room:media", &current).await);
+        assert!(pool.streams.is_empty());
+        assert_eq!(current.stop_count.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn test_creation_lock_reuses_entry_while_waiter_is_queued() -> TestResult {
+        let pool: Arc<StreamPool<TestStream>> = Arc::new(StreamPool::new(
+            Duration::from_mins(1),
+            Duration::from_mins(5),
+        ));
+        let first_guard = pool.acquire_creation_lock("room:media").await;
+
+        let (second_acquired_tx, second_acquired_rx) = tokio::sync::oneshot::channel();
+        let (release_second_tx, release_second_rx) = tokio::sync::oneshot::channel();
+        let second_pool = Arc::clone(&pool);
+        let second_task = tokio::spawn(async move {
+            let _guard = second_pool.acquire_creation_lock("room:media").await;
+            let _ = second_acquired_tx.send(());
+            let _ = release_second_rx.await;
+        });
+
+        tokio::time::timeout(Duration::from_millis(20), async {
+            while pool
+                .creation_locks
+                .get("room:media")
+                .is_none_or(|entry| Arc::strong_count(entry.value()) < 3)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| test_error("second task should queue on the existing lock entry"))?;
+
+        drop(first_guard);
+        second_acquired_rx
+            .await
+            .map_err(|_| test_error("second task should acquire after first guard drops"))?;
+
+        let (third_acquired_tx, third_acquired_rx) = tokio::sync::oneshot::channel();
+        let third_pool = Arc::clone(&pool);
+        let third_task = tokio::spawn(async move {
+            let _guard = third_pool.acquire_creation_lock("room:media").await;
+            let _ = third_acquired_tx.send(());
+        });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), third_acquired_rx)
+                .await
+                .is_err(),
+            "third task should wait behind the second holder"
+        );
+
+        release_second_tx
+            .send(())
+            .map_err(|()| test_error("second task should still be waiting for release"))?;
+        second_task
+            .await
+            .map_err(|error| test_error(error.to_string()))?;
+        third_task
+            .await
+            .map_err(|error| test_error(error.to_string()))?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stop_all_blocks_new_creation_until_existing_guard_finishes() -> TestResult {
+        let pool: Arc<StreamPool<TestStream>> = Arc::new(StreamPool::new(
+            Duration::from_millis(10),
+            Duration::from_secs(1),
+        ));
+        let first_guard = pool.acquire_creation_lock("room:media").await;
+
+        let stop_pool = Arc::clone(&pool);
+        let stop_task = tokio::spawn(async move {
+            stop_pool.stop_all().await;
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !stop_task.is_finished(),
+            "stop_all should wait for creation"
+        );
+
+        let create_pool = Arc::clone(&pool);
+        let create_task = tokio::spawn(async move {
+            let _guard = create_pool.acquire_creation_lock("room:media").await;
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !create_task.is_finished(),
+            "new creation should remain fenced"
+        );
+
+        drop(first_guard);
+        stop_task
+            .await
+            .map_err(|error| test_error(error.to_string()))?;
+        create_task
+            .await
+            .map_err(|error| test_error(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Test that try_claim_for_cleanup succeeds when subscriber count is 0.
+    #[tokio::test]
+    async fn test_try_claim_for_cleanup_succeeds_with_zero_subscribers() {
+        let lc = StreamLifecycle::new();
+        lc.set_running();
+        assert!(lc.is_healthy().await);
+
+        // Claim for cleanup should succeed (count == 0)
+        let claimed = lc.try_claim_for_cleanup();
+        assert!(
+            claimed,
+            "Should claim for cleanup when subscriber_count == 0"
+        );
+
+        // After claim, stream should not be healthy (marked stopping)
+        assert!(!lc.is_healthy().await);
+    }
+
+    /// Test that try_claim_for_cleanup fails when subscriber count > 0,
+    /// simulating a concurrent subscriber that raced in.
+    #[tokio::test]
+    async fn test_try_claim_for_cleanup_fails_with_active_subscriber() {
+        let lc = StreamLifecycle::new();
+        lc.set_running();
+        lc.increment_subscriber_count();
+
+        // Claim for cleanup should fail (count == 1)
+        let claimed = lc.try_claim_for_cleanup();
+        assert!(
+            !claimed,
+            "Should not claim for cleanup when subscriber_count > 0"
+        );
+
+        // Stream should still be healthy (restore_running was called)
+        assert!(lc.is_healthy().await);
+        assert_eq!(lc.subscriber_count(), 1);
+    }
+
+    /// Test that concurrent subscribe during cleanup is handled gracefully.
+    /// Simulates the race: cleanup claims the stream, then a subscriber tries to attach.
+    #[tokio::test]
+    async fn test_concurrent_subscribe_during_cleanup_handled_gracefully() {
+        let pool: StreamPool<TestStream> =
+            StreamPool::new(Duration::from_mins(1), Duration::from_mins(5));
+
+        let stream = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            stop_count: AtomicUsize::new(0),
+        });
+        stream.lifecycle().set_running();
+        pool.streams
+            .insert("room:media".to_string(), stream.clone());
+
+        // Simulate cleanup claiming the stream
+        let claimed = stream.lifecycle().try_claim_for_cleanup();
+        assert!(claimed);
+
+        // Now try to get_existing - should fail because stream is marked stopping
+        let found = pool.get_existing("room:media").await;
+        assert!(
+            found.is_none(),
+            "get_existing should return None for a stream being cleaned up"
+        );
+    }
+
+    /// Test that get_existing correctly handles the double-check pattern
+    /// when a stream becomes unhealthy between initial check and increment.
+    #[tokio::test]
+    async fn test_get_existing_double_check_on_concurrent_stop() {
+        let pool: StreamPool<TestStream> =
+            StreamPool::new(Duration::from_mins(1), Duration::from_mins(5));
+
+        let stream = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            stop_count: AtomicUsize::new(0),
+        });
+        stream.lifecycle().set_running();
+        pool.streams
+            .insert("room:media".to_string(), stream.clone());
+
+        // First get_existing should succeed
+        let found = pool.get_existing("room:media").await;
+        assert!(found.is_some());
+        assert_eq!(stream.lifecycle().subscriber_count(), 1);
+
+        // Decrement the subscriber (simulating disconnect)
+        stream.lifecycle().decrement_subscriber_count();
+
+        // Mark stopping (simulating cleanup)
+        stream.lifecycle().mark_stopping();
+
+        // get_existing should fail for stopped stream
+        let found = pool.get_existing("room:media").await;
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stop_all_uses_stream_specific_stop_protocol() {
+        let pool: StreamPool<TestStream> =
+            StreamPool::new(Duration::from_mins(1), Duration::from_mins(5));
+
+        let stream = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            stop_count: AtomicUsize::new(0),
+        });
+        stream.lifecycle().set_running();
+        pool.streams
+            .insert("room:media".to_string(), stream.clone());
+
+        pool.stop_all().await;
+
+        assert_eq!(
+            stream.stop_count.load(Ordering::Acquire),
+            1,
+            "stop_all must call the stream-specific stop protocol"
+        );
+        assert!(pool.streams.is_empty());
+        assert!(!stream.lifecycle().is_healthy().await);
+    }
+
+    #[tokio::test]
+    async fn test_idle_cleanup_stops_stream_and_removes_pool_entry() {
+        let pool: StreamPool<TestStream> =
+            StreamPool::new(Duration::from_millis(10), Duration::from_millis(20));
+
+        let stream = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            stop_count: AtomicUsize::new(0),
+        });
+        stream.lifecycle().set_running();
+
+        let cleanup_count = Arc::new(AtomicUsize::new(0));
+        let cleanup_count_for_task = Arc::clone(&cleanup_count);
+        pool.insert_and_cleanup(
+            "room:media".to_string(),
+            Arc::clone(&stream),
+            move |_stream_key| {
+                let cleanup_count = Arc::clone(&cleanup_count_for_task);
+                Box::pin(async move {
+                    cleanup_count.fetch_add(1, Ordering::AcqRel);
+                })
+            },
+        );
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !pool.streams.contains_key("room:media") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("idle cleanup should remove the stream");
+
+        assert_eq!(cleanup_count.load(Ordering::Acquire), 1);
+        assert_eq!(stream.stop_count.load(Ordering::Acquire), 1);
+        assert!(!stream.lifecycle().is_healthy().await);
+    }
+
+    #[tokio::test]
+    async fn ended_stream_is_removed_without_waiting_for_a_new_viewer() {
+        let pool: StreamPool<TestStream> =
+            StreamPool::new(Duration::from_millis(10), Duration::from_secs(30));
+        let stream = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            stop_count: AtomicUsize::new(0),
+        });
+        stream.lifecycle().set_running();
+        let cleanup_count = Arc::new(AtomicUsize::new(0));
+        let cleanup_count_for_task = Arc::clone(&cleanup_count);
+        pool.insert_and_cleanup(
+            "room:media".to_string(),
+            Arc::clone(&stream),
+            move |_stream_key| {
+                let cleanup_count = Arc::clone(&cleanup_count_for_task);
+                Box::pin(async move {
+                    cleanup_count.fetch_add(1, Ordering::AcqRel);
+                })
+            },
+        );
+        stream.lifecycle().mark_stopping();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while pool.streams.contains_key("room:media") {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("ended stream should leave the pool");
+        assert_eq!(cleanup_count.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn idle_cleanup_cannot_remove_replacement_stream() -> TestResult {
+        let streams = Arc::new(DashMap::new());
+        let old = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            stop_count: AtomicUsize::new(0),
+        });
+        old.lifecycle.set_running();
+        old.lifecycle.last_active_secs.store(
+            crate::util::unix_now_secs().saturating_sub(10),
+            Ordering::Release,
+        );
+        streams.insert("room:media".to_string(), Arc::clone(&old));
+
+        let replacement = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            stop_count: AtomicUsize::new(0),
+        });
+        replacement.lifecycle.set_running();
+
+        let (cleanup_started_tx, cleanup_started_rx) = tokio::sync::oneshot::channel();
+        let (release_cleanup_tx, release_cleanup_rx) = tokio::sync::oneshot::channel();
+        let cleanup_started_tx = parking_lot::Mutex::new(Some(cleanup_started_tx));
+        let release_cleanup_rx = parking_lot::Mutex::new(Some(release_cleanup_rx));
+        let cleanup = move |_stream_key: &str| {
+            let started = cleanup_started_tx.lock().take();
+            let release = release_cleanup_rx.lock().take();
+            Box::pin(async move {
+                if let Some(started) = started {
+                    let _ = started.send(());
+                }
+                if let Some(release) = release {
+                    let _ = release.await;
+                }
+            }) as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        };
+
+        let old_for_cleanup = Arc::clone(&old);
+        let streams_for_cleanup = Arc::clone(&streams);
+        let cleanup_task = tokio::spawn(async move {
+            let cleanup_token = CancellationToken::new();
+            StreamPool::cleanup_loop_with_token(
+                "room:media",
+                &old_for_cleanup,
+                &streams_for_cleanup,
+                Duration::from_millis(1),
+                Duration::from_secs(1),
+                &cleanup,
+                &cleanup_token,
+            )
+            .await
+        });
+
+        cleanup_started_rx.await?;
+        streams.insert("room:media".to_string(), Arc::clone(&replacement));
+        let _ = release_cleanup_tx.send(());
+        cleanup_task.await??;
+
+        let current = streams
+            .get("room:media")
+            .ok_or_else(|| test_error("replacement stream should remain in the pool"))?;
+        assert!(Arc::ptr_eq(current.value(), &replacement));
+        assert_eq!(replacement.stop_count.load(Ordering::Acquire), 0);
+        assert_eq!(old.stop_count.load(Ordering::Acquire), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_idle_cleanup_waits_for_subscriber_guard_release() -> TestResult {
+        let pool: StreamPool<TestStream> =
+            StreamPool::new(Duration::from_millis(10), Duration::from_millis(20));
+
+        let stream = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            stop_count: AtomicUsize::new(0),
+        });
+        stream.lifecycle().set_running();
+        stream.lifecycle().increment_subscriber_count();
+
+        let cleanup_count = Arc::new(AtomicUsize::new(0));
+        let cleanup_count_for_task = Arc::clone(&cleanup_count);
+        pool.insert_and_cleanup(
+            "room:media".to_string(),
+            Arc::clone(&stream),
+            move |_stream_key| {
+                let cleanup_count = Arc::clone(&cleanup_count_for_task);
+                Box::pin(async move {
+                    cleanup_count.fetch_add(1, Ordering::AcqRel);
+                })
+            },
+        );
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(
+            pool.streams.contains_key("room:media"),
+            "active subscribers should keep the stream in the pool"
+        );
+        assert_eq!(cleanup_count.load(Ordering::Acquire), 0);
+        assert_eq!(stream.stop_count.load(Ordering::Acquire), 0);
+
+        stream.lifecycle().decrement_subscriber_count();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !pool.streams.contains_key("room:media") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .map_err(|_| test_error("idle cleanup should run after subscriber release"))?;
+
+        assert_eq!(cleanup_count.load(Ordering::Acquire), 1);
+        assert_eq!(stream.stop_count.load(Ordering::Acquire), 1);
+        Ok(())
+    }
+}

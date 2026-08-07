@@ -2,18 +2,32 @@
 
 ## Supported Versions
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
-
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.x.x   | :white_check_mark: |
-|  dev    | :x:                |
+SyncTV is currently developed on the main branch. Until stable release branches are published, security fixes target the current main branch and the latest published release, if one exists.
 
 ## Reporting a Vulnerability
 
-If you believe you have found a security vulnerability, please report it immediately by creating a new issue in the issue tracker.
+Do not open a public issue with exploit details, tokens, credentials, logs containing secrets, or private user data.
 
-We take all security vulnerabilities seriously and will respond to your report as quickly as possible. 
+Preferred reporting path:
 
-Thank you for helping to keep our project secure!
+1. Open a private GitHub Security Advisory for this repository if the feature is available.
+2. If private advisories are not available, contact the maintainers through the repository first and ask for a private disclosure channel.
+3. Include affected version or commit, deployment mode, impact, reproduction steps, and any relevant logs after removing secrets.
+
+## Scope
+
+Security reports may cover:
+
+- Authentication, authorization, MFA, OAuth2, passkeys, token handling, and account recovery.
+- Provider credentials, media proxying, request header handling, and SSRF-related behavior.
+- HTTP, gRPC, WebSocket, management, metrics, and cluster control surfaces.
+- Docker Compose, Helm, Kubernetes Ingress, and default deployment hardening.
+- Protobuf/API design issues that can lead to privilege escalation, data exposure, or denial of service.
+
+## Disclosure Expectations
+
+Give maintainers reasonable time to investigate, patch, and publish guidance before public disclosure. Avoid sharing exploit code or live-service targets unless maintainers explicitly request controlled reproduction details.
+
+## Handling Secrets
+
+If a report includes accidental secrets, assume they are compromised. Rotate JWT secrets, OPAQUE setup secrets, provider tokens, OAuth2 client secrets, SMTP passwords, management tokens, and credential encryption keys according to the blast radius.

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT label_id AS \"label_id: RoomLabelId\"\n            FROM room_creation_request_labels\n            WHERE request_id = $1\n            ORDER BY label_id ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "label_id: RoomLabelId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_creation_request_labels",
+            "name": "label_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1786394035cf3771d76f302bd66eff1142d2400296055a26e58cea56aee709e2"
+}

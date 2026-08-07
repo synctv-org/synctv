@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*)\n            FROM user_registration_requests\n            WHERE status = $1\n              AND ($2 = '' OR username ILIKE $2 ESCAPE '\\' OR COALESCE(email, '') ILIKE $2 ESCAPE '\\')\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6eaf61865d876d8ed00f1b08f96e772979174fda57dd42288c88a82a9c0dd438"
+}

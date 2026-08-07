@@ -1,0 +1,104 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO file_object_groups (\n                id, storage_backend, original_object_key, media_kind, metadata\n            )\n            VALUES ($1, $2, $3, $4, $5)\n            ON CONFLICT (storage_backend, original_object_key)\n            DO UPDATE SET\n                media_kind = EXCLUDED.media_kind,\n                metadata = EXCLUDED.metadata,\n                updated_at = CURRENT_TIMESTAMP\n            RETURNING id, storage_backend, original_object_key, media_kind,\n                      metadata AS \"metadata!: FileMetadata\",\n                      created_at, updated_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_object_groups",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "storage_backend",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_object_groups",
+            "name": "storage_backend"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "original_object_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_object_groups",
+            "name": "original_object_key"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "media_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_object_groups",
+            "name": "media_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "metadata!: FileMetadata",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "file_object_groups",
+            "name": "metadata"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_object_groups",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_object_groups",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "966831daa70e166a4f8986a72c2c412729e99111f54c23f5b7af24953a2b4a26"
+}

@@ -1,0 +1,9 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+enum ZtLiveChatProto {
+	a = 0;
+	b = 1;
+	c = 2;
+}

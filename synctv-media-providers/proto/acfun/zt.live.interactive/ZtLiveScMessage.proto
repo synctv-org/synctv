@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package acproto;
+
+message ZtLiveScMessage {
+	string messageType = 1;
+	CompressionType compressionType = 2;
+	bytes payload = 3;
+	string liveId = 4;
+	string ticket = 5;
+	int64 serverTimestampMs = 6;
+
+	enum CompressionType {
+		UNKNOWN = 0;
+		NONE = 1;
+		GZIP = 2;
+	}
+}

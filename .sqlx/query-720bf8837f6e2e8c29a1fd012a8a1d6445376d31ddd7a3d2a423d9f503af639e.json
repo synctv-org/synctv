@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT compression, octet_length(data)::BIGINT AS stored_size_bytes\n            FROM file_blob_parts\n            WHERE storage_backend = $1 AND object_key = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "compression",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "file_blob_parts",
+            "name": "compression"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "stored_size_bytes",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "720bf8837f6e2e8c29a1fd012a8a1d6445376d31ddd7a3d2a423d9f503af639e"
+}

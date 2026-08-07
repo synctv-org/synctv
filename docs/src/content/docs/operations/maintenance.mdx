@@ -1,0 +1,46 @@
+---
+title: 执行维护任务
+description: 查看系统状态、清理 stream、驱逐 slice cache，并验证维护操作没有影响在线用户。
+---
+
+维护任务用于处理实例状态、在线 stream 和代理缓存。执行前先判断是否会影响正在播放的用户；执行后检查健康状态、日志、metrics 和用户路径。
+
+## 系统状态
+
+```bash
+synctv system stats
+synctv system stream list
+synctv system stream kick <STREAM_ID>
+```
+
+使用场景：
+
+| 操作 | 用途 |
+| --- | --- |
+| `system stats` | 查看服务、连接和内部状态 |
+| `system stream list` | 找到当前流媒体连接或异常 stream |
+| `system stream kick` | 断开指定 stream，处理卡死或违规连接 |
+
+## Slice cache
+
+```bash
+synctv slice-cache stats
+synctv slice-cache evict-expired
+synctv slice-cache purge
+```
+
+注意事项：
+
+- slice cache 是否启用由 `proxy_slice_cache.enabled` 启动配置决定。
+- CLI 不支持动态启停 slice cache，只提供统计、过期驱逐和清空。
+- `purge` 会清理缓存数据，不影响 PostgreSQL 持久业务数据，但会降低后续缓存命中率。
+
+## 维护后验证
+
+1. `/health/ready` 返回成功。
+2. 登录、房间列表、WebSocket、聊天和播放控制可用。
+3. Provider 浏览、直连播放和代理播放可用。
+4. metrics 没有持续增长的错误。
+5. 日志没有持续的数据库、Redis、Provider 或 Realtime 错误。
+
+生产排障见 [排障入口](../../operations/troubleshooting/)；观测指标见 [观测与运行手册](../../operations/observability/)。

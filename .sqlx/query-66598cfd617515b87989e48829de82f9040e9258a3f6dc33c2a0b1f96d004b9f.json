@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE room_join_requests\n            SET status = $2,\n                reviewed_at = CURRENT_TIMESTAMP,\n                reviewed_by = $3,\n                rejection_reason = $4\n            WHERE id = $1\n              AND room_id = $5\n              AND reviewed_at IS NULL\n              AND status = $6\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Int8",
+        "Text",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "66598cfd617515b87989e48829de82f9040e9258a3f6dc33c2a0b1f96d004b9f"
+}

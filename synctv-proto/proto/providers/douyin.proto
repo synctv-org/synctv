@@ -1,0 +1,143 @@
+syntax = "proto3";
+
+package synctv.provider.douyin;
+
+import "proto/buf/validate/validate.proto";
+import "proto/source_config.proto";
+
+message BindRequest {
+  string label = 1 [(buf.validate.field).string.min_len = 1];
+  string cookie = 2 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 3;
+}
+
+message BindResponse {
+  string server_id = 1;
+}
+
+message GetBindsRequest {
+  string instance_name = 1;
+}
+
+message GetBindsResponse {
+  repeated BindInfo binds = 1;
+}
+
+message BindInfo {
+  string id = 1;
+  string server_id = 2;
+  string label = 3;
+  bool has_cookie = 4;
+  int64 created_at = 5;
+  string provider_instance_name = 6;
+}
+
+message UnbindRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message UnbindResponse {
+  bool removed = 1;
+}
+
+message ResolveRequest {
+  string resource = 1 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 2;
+}
+
+message Image {
+  string url = 1;
+  optional uint32 width = 2;
+  optional uint32 height = 3;
+}
+
+message Author {
+  string id = 1;
+  string sec_uid = 2;
+  optional string unique_id = 3;
+  string nickname = 4;
+  optional Image avatar = 5;
+}
+
+enum MediaKind {
+  MEDIA_KIND_UNSPECIFIED = 0;
+  MEDIA_KIND_VIDEO = 1;
+  MEDIA_KIND_LIVE = 2;
+}
+
+enum StreamFormat {
+  STREAM_FORMAT_UNSPECIFIED = 0;
+  STREAM_FORMAT_MP4 = 1;
+  STREAM_FORMAT_FLV = 2;
+  STREAM_FORMAT_HLS = 3;
+  STREAM_FORMAT_DASH = 4;
+  STREAM_FORMAT_CMAF = 5;
+  STREAM_FORMAT_LL_HLS = 6;
+  STREAM_FORMAT_HTTP_TS = 7;
+}
+
+message Metadata {
+  string id = 1;
+  MediaKind kind = 2;
+  string title = 3;
+  string description = 4;
+  Author author = 5;
+  optional Image cover = 6;
+  optional Image dynamic_cover = 7;
+  optional uint64 duration_ms = 8;
+  optional int64 created_at = 9;
+  bool is_live = 10;
+  optional uint64 view_count = 11;
+  optional uint64 like_count = 12;
+  optional uint64 comment_count = 13;
+  optional uint64 share_count = 14;
+  optional uint64 collect_count = 15;
+  optional string music_title = 16;
+  optional string music_author = 17;
+}
+
+message Variant {
+  string url = 1;
+  StreamFormat format = 2;
+  string quality = 3;
+  optional string codec = 4;
+  optional uint32 width = 5;
+  optional uint32 height = 6;
+  optional uint32 fps = 7;
+  optional uint64 bitrate = 8;
+  bool audio_only = 9;
+  bool headers_required = 10;
+}
+
+message ResolveResponse {
+  Metadata metadata = 1;
+  optional string room_id = 2;
+  repeated Variant variants = 3;
+  synctv.source_config.DouyinMediaSourceConfig source_config = 4;
+}
+
+message ListUserPostsRequest {
+  string sec_uid = 1 [(buf.validate.field).string = {
+    min_len: 1,
+    max_len: 256
+  }];
+  optional string cursor = 2;
+  uint32 page_size = 3 [(buf.validate.field).uint32.lte = 50];
+  string instance_name = 4;
+}
+
+message ListItem {
+  string aweme_id = 1;
+  string title = 2;
+  Author author = 3;
+  optional Image cover = 4;
+  optional uint64 duration_ms = 5;
+  optional int64 created_at = 6;
+}
+
+message ListUserPostsResponse {
+  repeated ListItem items = 1;
+  optional string cursor = 2;
+  bool has_more = 3;
+  synctv.source_config.DouyinPlaylistSourceConfig source_config = 4;
+}

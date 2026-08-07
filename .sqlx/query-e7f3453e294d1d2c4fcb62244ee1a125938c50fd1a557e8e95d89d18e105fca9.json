@@ -1,0 +1,260 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n             WITH inserted AS (\n                 INSERT INTO rooms (name, description, cover_file_reference_id, category_id,\n                                created_by, closed_at, created_at, updated_at, version, last_activity_at)\n                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n                 RETURNING id,\n                           name,\n                           description,\n                           cover_file_reference_id,\n                           category_id,\n                           created_by,\n                           closed_at,\n                           created_at,\n                           updated_at,\n                           deleted_at,\n                           version,\n                           last_activity_at\n             )\n             SELECT i.id AS \"id!: RoomId\",\n                    i.name,\n                    i.description,\n                    i.cover_file_reference_id,\n                    rc.id AS \"category_id?: RoomCategoryId\",\n                    rc.key AS \"category_key?\",\n                    rc.name AS \"category_name?\",\n                    rc.description AS \"category_description?\",\n                    rc.sort_order AS \"category_sort_order?\",\n                    rc.is_enabled AS \"category_is_enabled?\",\n                    rc.created_at AS \"category_created_at?\",\n                    rc.updated_at AS \"category_updated_at?\",\n                    i.created_by AS \"created_by!: UserId\",\n                    i.closed_at,\n                    false AS \"is_banned!\",\n                    i.created_at,\n                    i.updated_at,\n                    i.deleted_at,\n                    i.version,\n                    i.last_activity_at\n             FROM inserted i\n             LEFT JOIN room_categories rc ON rc.id = i.category_id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "cover_file_reference_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "cover_file_reference_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "category_id?: RoomCategoryId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_categories",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "category_key?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_categories",
+            "name": "key"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "category_name?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_categories",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "category_description?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_categories",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "category_sort_order?",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "room_categories",
+            "name": "sort_order"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "category_is_enabled?",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "room_categories",
+            "name": "is_enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "category_created_at?",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_categories",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "category_updated_at?",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_categories",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "created_by!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "closed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "closed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "is_banned!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 15,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "deleted_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "deleted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "last_activity_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "last_activity_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Timestamptz",
+        "Timestamptz",
+        "Timestamptz",
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      null,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "e7f3453e294d1d2c4fcb62244ee1a125938c50fd1a557e8e95d89d18e105fca9"
+}

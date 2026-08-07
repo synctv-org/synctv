@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package acproto;
+
+message ZtLiveActionSignalItem {
+	string signalType = 1;
+	repeated bytes payload = 2;
+}

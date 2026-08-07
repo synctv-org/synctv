@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO auth_password_credentials (\n            user_id, opaque_record, opaque_credential_identifier, opaque_ciphersuite,\n            opaque_server_setup_version,\n            changed_at, version, created_at, updated_at\n        )\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Bytea",
+        "Varchar",
+        "Int4",
+        "Timestamptz",
+        "Int4",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dd0283bb7298050f0a57fe12a81a1cabb31f404bce1add5b1d728d620a4ae19e"
+}

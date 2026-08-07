@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                user_id AS \"user_id!: UserId\",\n                reaction_key AS \"reaction_key!\",\n                updated_at AS \"reacted_at!\"\n            FROM chat_message_reactions\n            WHERE room_id = $1\n              AND message_id = $2\n              AND message_created_at = $3\n              AND reaction_key = $4\n              AND (\n                  $5::timestamptz IS NULL\n                  OR (updated_at, user_id) < ($5::timestamptz, $6::bigint)\n              )\n            ORDER BY updated_at DESC, user_id DESC\n            LIMIT $7\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_reactions",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "reaction_key!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_reactions",
+            "name": "reaction_key"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "reacted_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_message_reactions",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Timestamptz",
+        "Text",
+        "Timestamptz",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "511412d8f1f7c30a58717978fd63bc3018da0b0d4e5d3f61aa2e7a465233dc67"
+}

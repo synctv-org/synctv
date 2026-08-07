@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package acproto;
+
+import "ZtLiveStateSignalItem.proto";
+
+message ZtLiveScStateSignal {
+	repeated ZtLiveStateSignalItem item = 1;
+}

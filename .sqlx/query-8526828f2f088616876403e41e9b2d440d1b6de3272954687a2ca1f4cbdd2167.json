@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT assigned_by AS \"assigned_by: UserId\"\n        FROM room_label_assignments\n        WHERE room_id = $1 AND label_id = $2\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "assigned_by: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_label_assignments",
+            "name": "assigned_by"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "8526828f2f088616876403e41e9b2d440d1b6de3272954687a2ca1f4cbdd2167"
+}

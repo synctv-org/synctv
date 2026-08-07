@@ -1,0 +1,69 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH existing_room AS (\n                SELECT id\n                FROM rooms\n                WHERE id = $1 AND deleted_at IS NULL\n            )\n            INSERT INTO room_password_credentials (\n                room_id, opaque_record, opaque_credential_identifier, opaque_ciphersuite,\n                opaque_server_setup_version, enabled, changed_at, version, created_at, updated_at\n            )\n            SELECT r.id, $2, $3, $4, $5, true, $6, COALESCE(existing_rpc.version, 0) + 1, $6, $6\n            FROM existing_room r\n            LEFT JOIN room_password_credentials existing_rpc ON existing_rpc.room_id = r.id\n            ON CONFLICT (room_id) DO UPDATE\n            SET opaque_record = EXCLUDED.opaque_record,\n                opaque_credential_identifier = EXCLUDED.opaque_credential_identifier,\n                opaque_ciphersuite = EXCLUDED.opaque_ciphersuite,\n                opaque_server_setup_version = EXCLUDED.opaque_server_setup_version,\n                enabled = true,\n                changed_at = EXCLUDED.changed_at,\n                version = room_password_credentials.version + 1,\n                updated_at = EXCLUDED.updated_at\n            RETURNING room_id AS \"room_id!: RoomId\", enabled, changed_at, version\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "changed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "changed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Bytea",
+        "Varchar",
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4bfbd3a737f7003fce2658d7c21d7c8455bf07d53aeaa4162af5bdc320bb6da0"
+}

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE auth_totp_credentials\n            SET setup_id = NULL, setup_expires_at = NULL, confirmed_at = $4,\n                last_used_step = $3, recovery_code_hashes = $5\n            WHERE user_id = $1 AND setup_id = $2 AND confirmed_at IS NULL\n              AND setup_expires_at > $4\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Int8",
+        "Timestamptz",
+        "ByteaArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c58bf25e4bd05ae8e12fc28b209150d4ef62f3e686f9091c8b5ba44e6210ccea"
+}

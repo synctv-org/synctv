@@ -1,0 +1,138 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE room_playback_progress\n            SET \"position\" = $3,\n                version = version + 1\n            WHERE id = $1\n              AND room_id = $2\n            RETURNING id AS \"id!\",\n                      room_id AS \"room_id!: RoomId\",\n                      media_id AS \"media_id?: MediaId\",\n                      playlist_id AS \"playlist_id?: PlaylistId\",\n                      target AS \"target?: crate::models::ProviderTarget\",\n                      target_hash AS \"target_hash!\",\n                      \"position\" AS \"position!\",\n                      created_at AS \"created_at!\",\n                      updated_at AS \"updated_at!\",\n                      version AS \"version!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "media_id?: MediaId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "media_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "playlist_id?: PlaylistId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "playlist_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "target?: crate::models::ProviderTarget",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "target"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "target_hash!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "target_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "position!",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "position"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "version!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ba1c87d5843bd937f135f6d31f1e4d4125bc6e93d5b2d4c3620477bb67c3597c"
+}

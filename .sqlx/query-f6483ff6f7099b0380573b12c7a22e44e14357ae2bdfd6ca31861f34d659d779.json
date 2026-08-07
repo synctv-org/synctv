@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE child_playlists AS (\n            SELECT id, 0 AS depth\n            FROM playlists\n            WHERE room_id = $1\n              AND (\n                  ($2::BIGINT IS NULL AND parent_id IS NULL)\n                  OR parent_id = $2\n              )\n            UNION ALL\n            SELECT p.id, cp.depth + 1\n            FROM playlists p\n            JOIN child_playlists cp ON p.parent_id = cp.id\n            WHERE p.room_id = $1\n        )\n        SELECT id AS \"playlist_id!: PlaylistId\", COALESCE(MAX(depth), 0) AS \"depth!: i32\"\n        FROM child_playlists\n        GROUP BY id\n        ORDER BY MAX(depth) DESC, id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "playlist_id!: PlaylistId",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "depth!: i32",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "f6483ff6f7099b0380573b12c7a22e44e14357ae2bdfd6ca31861f34d659d779"
+}

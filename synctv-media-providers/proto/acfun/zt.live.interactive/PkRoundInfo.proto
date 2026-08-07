@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package acproto;
+
+message PkRoundInfo {
+    int64 a = 1;
+    int32 b = 2;
+    int32 c = 3;
+    int64 d = 4;
+    int32 e = 5; //enum
+}

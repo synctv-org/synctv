@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package acproto;
+
+message PingRequest {
+    enum PingType {
+        kInvalid = 0;
+        kPriorRegister = 1;
+        kPostRegister = 2;
+    }
+    PingType pingType = 1;
+    uint32 pingRound = 2;
+}
+
+message PingResponse {
+    sfixed32 serverTimestamp = 1;
+    fixed32 clientIp = 2;
+    fixed32 redirectIp = 3;
+    uint32 redirectPort = 4;
+    bytes clientIpV6 = 5;
+}

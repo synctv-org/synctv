@@ -1,0 +1,128 @@
+---
+title: 邮件与 OAuth2
+description: 邮件登录与 OAuth2 provider runtime 配置说明
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+## 配置存储位置
+
+邮件登录和 OAuth2 provider 都通过 runtime settings 配置。邮件使用 `email` 分组，OAuth2 provider 使用 `oauth2.providers`。
+
+## 邮件配置
+
+邮件配置存储在 PostgreSQL，并在集群节点间热更新：
+
+```bash
+synctv settings update \
+  --set email.smtpHost=smtp.example.com \
+  --set email.smtpPort=465 \
+  --set 'email.smtpCredentials={"username":"synctv@example.com","password":"secret"}' \
+  --set 'email.smtpProxy={"url":"socks5://proxy.example.com:1080"}' \
+  --set email.useTls=true \
+  --set email.fromEmail=synctv@example.com \
+  --set email.fromName=SyncTV \
+  --set email.enabled=true
+```
+
+| 字段 | 默认值 | 作用 |
+| --- | --- | --- |
+| `email.enabled` | `false` | 启用邮件发送 |
+| `email.smtpHost` | `null` | SMTP 服务器地址 |
+| `email.smtpPort` | `587` | SMTP 端口 |
+| `email.smtpCredentials` | `null` | 可选 SMTP 登录凭据 `{username, password}` |
+| `email.smtpProxy` | `null` | 可选 SOCKS5 代理 `{url, credentials?}` |
+| `email.fromEmail` | `null` | 发件邮箱，启用邮件时必须是合法地址 |
+| `email.fromName` | `SyncTV` | 发件人显示名 |
+| `email.useTls` | `true` | 是否使用 TLS 连接 SMTP |
+
+`updateMask` 指定需要覆盖的字段。清除 `smtpHost`、`fromEmail`、`smtpCredentials` 或 `smtpProxy` 时，在 `updateMask` 中保留对应路径，并在 `settings.email` 中省略该字段。管理读取接口返回用户名和代理 URL，并省略密码。保留相同用户名且省略 `password` 时沿用现有密码；新凭据和用户名变更需要提供密码。代理负责解析 SMTP 目标域名。邮件验证码、密码重置、邮件 MFA 都依赖这组 SMTP 配置。独立邮箱登录只服务已有账号；请求验证码接口会返回统一文案，避免泄露邮箱是否已注册。邮件注册是否开放、是否需要审核见 [运行时设置](../../reference/runtime-settings/#user)。
+
+## OAuth2 runtime 配置
+
+`oauth2.providers` 是 `OAuth2ProviderSettings` 数组。每个元素的 `instanceName` 是 provider 实例名，例如 `github`、`logto1`、`corp_oidc`。实例名只能包含 ASCII 字母、数字、`_` 和 `-`。
+
+每个实例使用共享字段加一个 provider oneof 字段：
+
+```json
+{
+  "instanceName": "github",
+  "enableSignup": true,
+  "signupNeedReview": false,
+  "github": {
+    "clientId": "github-client-id",
+    "clientSecret": "github-client-secret",
+    "redirectUrl": "https://app.example.com/oauth2/callback"
+  }
+}
+```
+
+字段含义：
+
+| 字段 | 作用 |
+| --- | --- |
+| `instanceName` | provider 实例名 |
+| `enableSignup` | 是否允许这个 provider 的首次登录自动创建本地账号 |
+| `signupNeedReview` | 首次登录是否进入注册审核 |
+| provider oneof 字段 | 例如 `github`、`google`、`logto`、`oidc`、`casdoor`。每个对象内写 provider 私有字段 |
+
+## 常见 provider 示例
+
+<Tabs>
+<TabItem label="GitHub" value="github">
+
+```json
+[
+  {
+    "instanceName": "github",
+    "enableSignup": true,
+    "signupNeedReview": false,
+    "github": {
+      "clientId": "github-client-id",
+      "clientSecret": "github-client-secret",
+      "redirectUrl": "https://app.example.com/oauth2/callback"
+    }
+  }
+]
+```
+
+</TabItem>
+<TabItem label="OIDC" value="oidc">
+
+```json
+[
+  {
+    "instanceName": "corp_oidc",
+    "enableSignup": false,
+    "signupNeedReview": false,
+    "oidc": {
+      "clientId": "synctv",
+      "clientSecret": "oidc-client-secret",
+      "issuer": "https://idp.example.com",
+      "redirectUrl": "https://app.example.com/oauth2/callback"
+    }
+  }
+]
+```
+
+默认使用 `issuer` 进行 OIDC discovery。只有在 IdP 没有标准 discovery 文档时才手动配置 `authUrl`、`tokenUrl` 和 `jwksUrl`；`userinfoUrl` 可选，缺失时会使用已验证的 ID Token claims。
+
+</TabItem>
+</Tabs>
+
+## 运行时行为
+
+- 运行时 settings 修改后，OAuth2 服务会按新配置重建 provider map。
+- 缺失某个实例名，就等于这个入口不可用。
+- `enableSignup=false` 只影响首次 OAuth2 建号，不影响已绑定账号登录。
+- `signupNeedReview=true` 会把首次 OAuth2 注册送入审核流程。
+
+## 回调地址与密钥
+
+### Redirect URL
+
+每个 provider 实例通过 `redirectUrl` 配置完整回调地址。不同 provider 可以使用各自的回调路径和协议。
+
+### `clientSecret` 应该放哪里
+
+放在 `clientSecret`，并通过 runtime settings 管理。

@@ -1,0 +1,90 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT sequence AS \"sequence!\",\n                   event_id AS \"event_id!\",\n                   room_id AS \"room_id?\",\n                   actor_user_id AS \"actor_user_id?\",\n                   payload AS \"event_payload?: sqlx::types::Json<ChatMessageEvent>\",\n                   occurred_at AS \"occurred_at!\"\n            FROM chat_message_events\n            WHERE room_id = $1\n              AND event_id = $2\n              AND event_type = ANY($3::text[])\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sequence!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_events",
+            "name": "sequence"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "event_id!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_events",
+            "name": "event_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "room_id?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_events",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "actor_user_id?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_events",
+            "name": "actor_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "event_payload?: sqlx::types::Json<ChatMessageEvent>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "chat_message_events",
+            "name": "payload"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "occurred_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_message_events",
+            "name": "occurred_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d276eefb43b1392846f559dd50a23beeb28e05d92acb82ac89aea4c6c435088a"
+}

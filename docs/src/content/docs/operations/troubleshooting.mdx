@@ -1,0 +1,119 @@
+---
+title: 排障入口
+description: 按错误文本、状态码和运行现象定位 SyncTV 问题。
+---
+
+import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## 先跑这些命令
+
+<Tabs syncKey="troubleshooting-runtime">
+  <TabItem label="二进制" icon="laptop">
+
+```bash
+synctv --config /etc/synctv/synctv.yaml config show --output yaml
+synctv --config /etc/synctv/synctv.yaml config validate
+synctv --config /etc/synctv/synctv.yaml serve
+```
+
+  </TabItem>
+  <TabItem label="Docker Compose" icon="seti:docker">
+
+```bash
+make compose-config
+make compose-ps
+make compose-logs SERVICE=synctv
+docker compose exec synctv synctv system stats
+```
+
+  </TabItem>
+  <TabItem label="Helm" icon="cloud-download">
+
+```bash
+helm lint ./helm/synctv
+helm template synctv ./helm/synctv --values values.yaml
+kubectl -n synctv get pods
+kubectl -n synctv describe pod -l app.kubernetes.io/name=synctv
+kubectl -n synctv logs deploy/synctv -f
+```
+
+  </TabItem>
+</Tabs>
+
+排障时优先看第一条错误。后续错误经常只是依赖失败后的级联结果。
+
+## 错误文本速查
+
+| 现象或错误 | 原因 | 处理 |
+| --- | --- | --- |
+| `jwt.secret` 是占位值或太弱 | 生产仍使用示例 secret | 生成强 secret，并通过 secret/env 注入 |
+| `opaque_server_setup_secret` 为空或无效 | OPAQUE 长期 secret 未配置 | 生成并长期保存 `security.opaque_server_setup_secret` |
+| `credential_encryption_key` 格式错误 | 不是 64 个十六进制字符 | 用 `openssl rand -hex 32` 生成 |
+| `required variable ... is missing` | 生产 Compose 缺 `.env.postgres`、`.env.redis` 或 `.env.synctv` | 运行 `make compose-init` |
+| `/health/ready` 不是 200 | 数据库、Redis 或启动依赖未就绪 | 看 readiness 响应体和启动日志第一条错误 |
+| 浏览器 CORS 报错 | origin 未配置、填了 path 或代理拦截 OPTIONS | `server.cors_allowed_origins` 只填真实 origin |
+| gRPC Ingress 失败但 HTTP 正常 | gRPC 没有独立 Ingress 或 backend protocol | 设置 `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` |
+| `synctv system stats` 连不上 | management endpoint、socket、TCP token 或环境变量错误 | 检查 `management.*` 和 `SYNCTV_MANAGEMENT_ENDPOINT` |
+| WebSocket 401/403 | token/ticket 失效、不是房间成员或 origin 被拒绝 | 重新申请 ticket，确认成员和 origin |
+| OAuth2 callback/state 错误 | redirect 不一致或多副本没有共享 Redis | 对齐 provider 注册值，多副本配置 Redis |
+| WebAuthn/passkey 失败 | `rp_origin` 和真实 HTTPS origin 不一致 | 修正 `webauthn.rp_origin` 和 `webauthn.rp_id` |
+| Range seek 或代理播放失败 | Provider header 不完整或上游不支持 Range | 检查 Provider header 和上游 `Accept-Ranges` |
+| 多副本 HLS 间歇 404 | publisher 节点不可达或 HLS 存储模型不一致 | 使用 publisher-node proxy、`shared_file` 或 S3 |
+
+## 快速检查
+
+### Readiness
+
+```bash
+curl -i http://localhost:8081/health/ready
+```
+
+成功条件是 200。失败时先看响应体，再看服务日志。
+
+### CORS
+
+```bash
+curl -i \
+  -X OPTIONS \
+  -H 'Origin: https://app.example.com' \
+  -H 'Access-Control-Request-Method: POST' \
+  http://localhost:8080/api/auth/opaque/login/start
+```
+
+响应需要包含：
+
+```http
+Access-Control-Allow-Origin: https://app.example.com
+```
+
+### Provider Range
+
+```bash
+curl -I -H 'Range: bytes=0-1023' 'https://upstream.example.com/video.mp4'
+```
+
+支持 Range 的上游通常返回 `206 Partial Content`。返回 `200 OK` 时，SyncTV 会绕过 slice cache，不写 full-body cache。
+
+## 按层级定位
+
+| 层级 | 检查点 | 页面 |
+| --- | --- | --- |
+| 配置 | 生效配置、secret、环境变量覆盖、`*_file` 路径 | [配置文件如何工作](../../configuration/how-configuration-works/) |
+| 部署 | Compose env、Helm values、Service、Ingress、Secret key | [Docker Compose](../../install/docker-compose/)、[Helm](../../install/helm/) |
+| 认证 | SMTP、OAuth2 redirect、WebAuthn origin、2FA、限流 | [安全模型](../../admin/authentication-security/)、[邮件与 OAuth2](../../configuration/email-oauth2/)、[WebAuthn](../../configuration/webauthn/) |
+| 媒体 | Provider header、Range、proxy、slice cache、HLS backend | [播放与代理](../../integrations/playback-and-proxy/) |
+| 容量 | WebSocket、数据库连接池、Redis、Provider、代理带宽、直播 | [容量规划](../capacity-planning/)、[指标目录](../../reference/metrics-catalog/) |
+
+## 收集信息
+
+- SyncTV 版本和部署方式。
+- `synctv config show --output yaml` 输出。提交前复查敏感值。
+- `synctv config validate` 完整错误。
+- Compose/Helm 渲染后的 Service、Ingress、ConfigMap 和 Secret key。
+- 服务日志中的第一条错误。
+- HTTP 错误响应里的 `requestId`、`status` 和 `code`。
+- 触发问题的请求路径、方法、状态码和必要 header。
+
+<Aside type="caution">
+不要提交 JWT、OAuth2 code、Cookie、Provider token、SMTP 密码、数据库 URL 或任何 secret 明文。
+</Aside>

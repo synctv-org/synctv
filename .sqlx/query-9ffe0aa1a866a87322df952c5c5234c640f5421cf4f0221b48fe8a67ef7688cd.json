@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT reference_kind, reference_id\n            FROM file_cleanup_jobs\n            WHERE storage_backend = $1 AND object_key = $2 AND completed_at IS NULL\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "reference_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_cleanup_jobs",
+            "name": "reference_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "reference_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_cleanup_jobs",
+            "name": "reference_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "9ffe0aa1a866a87322df952c5c5234c640f5421cf4f0221b48fe8a67ef7688cd"
+}

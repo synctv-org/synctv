@@ -1,0 +1,248 @@
+syntax = "proto3";
+
+package synctv.provider.twitch;
+
+import "proto/buf/validate/validate.proto";
+import "proto/source_config.proto";
+
+message BindRequest {
+  string auth_token = 1 [(buf.validate.field).string.min_len = 1];
+  optional string device_id = 2;
+  optional string client_integrity = 3;
+  string instance_name = 4;
+}
+
+message BindResponse {
+  string server_id = 1;
+  string login = 2;
+  string twitch_user_id = 3;
+  string client_id = 4;
+  repeated string scopes = 5;
+  optional uint64 expires_in = 6;
+}
+
+message GetBindsRequest {
+  string instance_name = 1;
+}
+
+message GetBindsResponse {
+  repeated BindInfo binds = 1;
+}
+
+message BindInfo {
+  string id = 1;
+  string server_id = 2;
+  string login = 3;
+  string twitch_user_id = 4;
+  string client_id = 5;
+  repeated string scopes = 6;
+  int64 created_at = 7;
+  string provider_instance_name = 8;
+}
+
+message UnbindRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message UnbindResponse {
+  bool removed = 1;
+}
+
+enum ResourceKind {
+  RESOURCE_KIND_UNSPECIFIED = 0;
+  RESOURCE_KIND_CHANNEL = 1;
+  RESOURCE_KIND_VIDEO = 2;
+  RESOURCE_KIND_CLIP = 3;
+}
+
+message ResolveRequest {
+  string resource = 1 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 2;
+}
+
+message Chapter {
+  string title = 1;
+  uint64 start_seconds = 2;
+  uint64 end_seconds = 3;
+}
+
+message Metadata {
+  string id = 1;
+  string title = 2;
+  string author = 3;
+  optional string category = 4;
+  optional string thumbnail_url = 5;
+  bool is_live = 6;
+  optional string description = 7;
+  optional uint64 duration_seconds = 8;
+  optional uint64 view_count = 9;
+  optional string published_at = 10;
+  repeated Chapter chapters = 11;
+  optional string storyboard_url = 12;
+}
+
+message Quality {
+  string name = 1;
+  string url = 2;
+  optional uint64 bandwidth = 3;
+  optional uint32 width = 4;
+  optional uint32 height = 5;
+  optional string frame_rate = 6;
+  optional string codecs = 7;
+}
+
+message ResolveResponse {
+  ResourceKind kind = 1;
+  Metadata metadata = 2;
+  repeated Quality qualities = 3;
+  synctv.source_config.TwitchMediaSourceConfig source_config = 4;
+}
+
+message ListChannelItemsRequest {
+  string channel = 1 [(buf.validate.field).string = {
+    min_len: 3,
+    max_len: 25
+  }];
+  synctv.source_config.TwitchPlaylistContent content = 2;
+  optional string cursor = 3;
+  uint32 page_size = 4 [(buf.validate.field).uint32.lte = 100];
+  string instance_name = 5;
+}
+
+message ListItem {
+  ResourceKind kind = 1;
+  string id = 2;
+  string title = 3;
+  optional string thumbnail_url = 4;
+  optional uint64 duration_seconds = 5;
+  optional uint64 view_count = 6;
+  optional string published_at = 7;
+}
+
+message ListChannelItemsResponse {
+  repeated ListItem items = 1;
+  optional string cursor = 2;
+  bool has_more = 3;
+  synctv.source_config.TwitchPlaylistSourceConfig source_config = 4;
+}
+
+message StreamItem {
+  string stream_id = 1;
+  string user_id = 2;
+  string channel = 3;
+  string display_name = 4;
+  string title = 5;
+  string category_id = 6;
+  string category_name = 7;
+  string thumbnail_url = 8;
+  uint64 viewer_count = 9;
+  string started_at = 10;
+  string language = 11;
+  repeated string tags = 12;
+  bool is_mature = 13;
+  synctv.source_config.TwitchMediaSourceConfig source_config = 14;
+}
+
+message ListFollowedLiveRequest {
+  optional string cursor = 1;
+  uint32 page_size = 2 [(buf.validate.field).uint32.lte = 100];
+  string instance_name = 3;
+}
+
+message ListFollowedLiveResponse {
+  repeated StreamItem items = 1;
+  optional string cursor = 2;
+  bool has_more = 3;
+  synctv.source_config.TwitchPlaylistSourceConfig source_config = 4;
+}
+
+message ListCategoryStreamsRequest {
+  string category_id = 1 [(buf.validate.field).string.min_len = 1];
+  string category_name = 2;
+  optional string cursor = 3;
+  uint32 page_size = 4 [(buf.validate.field).uint32.lte = 100];
+  string instance_name = 5;
+}
+
+message ListCategoryStreamsResponse {
+  repeated StreamItem items = 1;
+  optional string cursor = 2;
+  bool has_more = 3;
+  synctv.source_config.TwitchPlaylistSourceConfig source_config = 4;
+}
+
+message CategoryItem {
+  string id = 1;
+  string name = 2;
+  string box_art_url = 3;
+  synctv.source_config.TwitchPlaylistSourceConfig source_config = 4;
+}
+
+message ListTopCategoriesRequest {
+  optional string cursor = 1;
+  uint32 page_size = 2 [(buf.validate.field).uint32.lte = 100];
+  string instance_name = 3;
+}
+
+message ListTopCategoriesResponse {
+  repeated CategoryItem items = 1;
+  optional string cursor = 2;
+  bool has_more = 3;
+}
+
+message SearchLiveChannelsRequest {
+  string query = 1 [(buf.validate.field).string.min_len = 1];
+  optional string cursor = 2;
+  uint32 page_size = 3 [(buf.validate.field).uint32.lte = 100];
+  string instance_name = 4;
+}
+
+message SearchChannelItem {
+  string user_id = 1;
+  string channel = 2;
+  string display_name = 3;
+  string title = 4;
+  string category_id = 5;
+  string category_name = 6;
+  string thumbnail_url = 7;
+  bool is_live = 8;
+  string started_at = 9;
+  string language = 10;
+  repeated string tags = 11;
+  synctv.source_config.TwitchMediaSourceConfig source_config = 12;
+}
+
+message SearchLiveChannelsResponse {
+  repeated SearchChannelItem items = 1;
+  optional string cursor = 2;
+  bool has_more = 3;
+  synctv.source_config.TwitchPlaylistSourceConfig source_config = 4;
+}
+
+message ListScheduleRequest {
+  string broadcaster_id = 1 [(buf.validate.field).string.min_len = 1];
+  optional string cursor = 2;
+  uint32 page_size = 3 [(buf.validate.field).uint32.lte = 25];
+  string instance_name = 4;
+}
+
+message ScheduleSegment {
+  string id = 1;
+  string start_time = 2;
+  string end_time = 3;
+  string title = 4;
+  optional string category_id = 5;
+  optional string category_name = 6;
+  optional string canceled_until = 7;
+  bool is_recurring = 8;
+}
+
+message ListScheduleResponse {
+  string broadcaster_id = 1;
+  string broadcaster_login = 2;
+  string broadcaster_name = 3;
+  repeated ScheduleSegment segments = 4;
+  optional string cursor = 5;
+  bool has_more = 6;
+  synctv.source_config.TwitchMediaSourceConfig source_config = 7;
+}

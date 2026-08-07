@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package synctv.provider.truenas;
+
+import "proto/providers/truenas.proto";
+
+service TrueNasProviderService {
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc List(ListRequest) returns (ListResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+}

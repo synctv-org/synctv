@@ -1,0 +1,541 @@
+---
+title: CLI Reference
+description: synctv command-line usage for local configuration, service control, management commands, and common operations.
+---
+
+import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## What the CLI Does
+
+The `synctv` binary can start the service and act as an administrative CLI.
+
+It supports:
+
+- Local operations: load configuration, validate configuration, run database migrations, and start the service.
+- Management operations: manage users, rooms, providers, settings, and system state through the management gRPC endpoint.
+- Helper operations: generate shell completions and print version information.
+
+General help:
+
+```bash
+synctv --help
+```
+
+Command help:
+
+<Tabs>
+  <TabItem label="Overview" icon="list-format">
+
+```bash
+synctv --help
+```
+
+  </TabItem>
+  <TabItem label="Users" icon="setting">
+
+```bash
+synctv user --help
+```
+
+  </TabItem>
+  <TabItem label="Playback" icon="youtube">
+
+```bash
+synctv room playback --help
+```
+
+  </TabItem>
+  <TabItem label="Provider" icon="seti:config">
+
+```bash
+synctv provider alist --help
+```
+
+  </TabItem>
+</Tabs>
+
+<Aside type="tip">
+Command families and common usage are listed here. Exact flags should be checked with `synctv <command> --help`, because clap help is generated from the current binary.
+</Aside>
+
+See [Administration](../../admin/) for operational semantics and [Roles, Permissions, and Preferences](../../admin/permissions/) for room roles, permission bits, room settings, and user preferences.
+
+## Global Flags
+
+### `--config <PATH>`
+
+Explicit configuration file:
+
+```bash
+synctv --config /etc/synctv/synctv.yaml config validate
+```
+
+This has higher precedence than default search paths and `SYNCTV_CONFIG_PATH`.
+
+### `--data-dir <PATH>`
+
+Override runtime data directory:
+
+```bash
+synctv --data-dir /var/lib/synctv serve
+```
+
+This affects management socket, HLS storage, slice cache, file logs, and similar runtime-owned paths. It does not affect `*_file` secret paths.
+
+### `--no-dotenv`
+
+Do not load `.env`:
+
+```bash
+synctv --no-dotenv config validate
+```
+
+Useful for deployment automation, production scripts, and environments controlled entirely through explicit files and environment variables.
+
+### `-v` / `--verbose`
+
+Print more detailed configuration loading diagnostics:
+
+```bash
+synctv -v config validate
+```
+
+### `--endpoint <ENDPOINT>`
+
+Management endpoint.
+
+Unix socket:
+
+```bash
+synctv --endpoint unix:///var/lib/synctv/synctv.sock system stats
+```
+
+TCP:
+
+```bash
+synctv --endpoint http://127.0.0.1:50052 system stats
+```
+
+Environment variable:
+
+```bash
+SYNCTV_MANAGEMENT_ENDPOINT=http://127.0.0.1:50052
+```
+
+### `--auth-token` and `--auth-token-file`
+
+TCP management requires a bearer token.
+
+```bash
+synctv --endpoint http://127.0.0.1:50052 --auth-token "$TOKEN" system stats
+```
+
+Prefer file input:
+
+```bash
+synctv --endpoint http://127.0.0.1:50052 --auth-token-file /run/secrets/management_token system stats
+```
+
+Environment variables:
+
+```bash
+SYNCTV_MANAGEMENT_AUTH_TOKEN=...
+SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE=/run/secrets/management_token
+```
+
+## Output Formats
+
+Remote management commands commonly support:
+
+- `--output human`
+- `--output json`
+- `--output yaml`
+
+Example:
+
+```bash
+synctv user list --output json
+```
+
+Configuration output supports:
+
+- `--output yaml`
+- `--output json`
+- `--output toml`
+
+```bash
+synctv config show --output json
+```
+
+## Service Commands
+
+Start service:
+
+```bash
+synctv serve
+synctv serve --config synctv.yaml
+```
+
+Dry-run startup:
+
+```bash
+synctv serve --dry-run
+```
+
+Stop a running service through management:
+
+```bash
+synctv stop
+synctv stop --force
+```
+
+`--force` asks for faster shutdown and reduces drain waiting.
+
+## Configuration Commands
+
+Validate effective configuration:
+
+```bash
+synctv config validate
+synctv --config /etc/synctv/synctv.yaml config validate
+synctv --config /etc/synctv/synctv.yaml config validate --strict
+```
+
+`--strict` rejects unsupported config-file keys and unsupported `SYNCTV_` environment variables instead of only warning and ignoring them.
+
+Show merged configuration with secrets redacted:
+
+```bash
+synctv config show
+synctv config show --output json
+```
+
+## Database Commands
+
+Run embedded SQLx migrations without starting the service. Startup runs the same migrations automatically, so this command is mainly for deployment preflight, staging, and troubleshooting:
+
+```bash
+synctv db migrate
+```
+
+Check database connectivity and migration state:
+
+```bash
+synctv db status
+synctv db status --output yaml
+```
+
+## User Management
+
+Common commands:
+
+```bash
+synctv user list
+synctv user get alice
+synctv user create alice --email alice@example.com
+synctv user delete alice
+synctv user ban alice --reason "abuse"
+synctv user unban alice
+synctv user set-role alice admin
+synctv user require-password-reset alice --reason "support reset"
+synctv user set-username alice --username alice2
+synctv user rooms alice
+```
+
+Preferences:
+
+```bash
+synctv user preferences get alice
+synctv user preferences set alice --two-factor-enabled true
+```
+
+Admin role:
+
+```bash
+synctv user admin grant alice
+synctv user admin revoke alice
+synctv user admin list
+```
+
+Batch operations:
+
+```bash
+synctv user batch ban alice bob --reason "spam"
+synctv user batch delete alice bob
+```
+
+Privileged operations follow role hierarchy. A non-root admin cannot modify root or higher-privilege users' sensitive settings.
+
+## Room Management
+
+Rooms:
+
+```bash
+synctv room create "Movie Room" --username alice
+synctv room list
+synctv room get <ROOM_ID>
+synctv room set-password <ROOM_ID> --password "room-pass"
+synctv room transfer-owner <ROOM_ID> --username alice bob
+synctv room ban <ROOM_ID> --reason "policy"
+synctv room unban <ROOM_ID>
+synctv room delete <ROOM_ID>
+```
+
+Room settings:
+
+```bash
+synctv room settings get <ROOM_ID>
+synctv room settings update <ROOM_ID> --set requireApproval=true --set autoPlay.mode=shuffle
+synctv room settings update <ROOM_ID> --unset autoPlay.mode
+synctv room settings reset <ROOM_ID>
+```
+
+Members:
+
+```bash
+synctv room member list <ROOM_ID>
+synctv room member add <ROOM_ID> alice
+synctv room member set-permissions <ROOM_ID> alice --role admin
+synctv room member kick <ROOM_ID> alice --kick-cooldown-seconds 300
+```
+
+Playback:
+
+```bash
+synctv room playback get <ROOM_ID>
+synctv room playback start <ROOM_ID> --media-id <MEDIA_ID>
+synctv room playback play <ROOM_ID>
+synctv room playback pause <ROOM_ID>
+synctv room playback seek <ROOM_ID> --position 60
+synctv room playback speed <ROOM_ID> --speed 1.25
+synctv room playback stop <ROOM_ID>
+```
+
+Streams:
+
+```bash
+synctv room stream list <ROOM_ID>
+```
+
+## Reviews and Bans
+
+User registration review:
+
+```bash
+synctv review user-registration list
+synctv review user-registration approve <REVIEW_ID>
+synctv review user-registration reject <REVIEW_ID> --reason "reason"
+```
+
+Room creation review:
+
+```bash
+synctv review room-creation list
+synctv review room-creation approve <REVIEW_ID>
+synctv review room-creation reject <REVIEW_ID> --reason "reason"
+```
+
+Room join review:
+
+```bash
+synctv review room-join list
+synctv review room-join approve <REVIEW_ID>
+synctv review room-join reject <REVIEW_ID> --reason "reason"
+```
+
+Ban records:
+
+```bash
+synctv ban list
+```
+
+## Playlists and Media
+
+Playlists:
+
+```bash
+synctv playlist list <ROOM_ID>
+synctv playlist get <ROOM_ID> <PLAYLIST_ID>
+synctv playlist create <ROOM_ID> --username alice "Weekend List"
+synctv playlist update <ROOM_ID> <PLAYLIST_ID> --name "New Title"
+synctv playlist move <ROOM_ID> <PLAYLIST_ID> --after-playlist-id <OTHER_PLAYLIST_ID>
+synctv playlist delete <ROOM_ID> <PLAYLIST_ID>
+```
+
+Media:
+
+```bash
+synctv media list <ROOM_ID>
+synctv media add-url <ROOM_ID> --username alice "https://example.com/video.mp4" --name "Video"
+synctv media add <ROOM_ID> --username alice --source-provider direct-url --source-config-json '{"medias":[{"url":"https://example.com/video.mp4"}]}' --name "Video"
+synctv media update <ROOM_ID> <MEDIA_ID> --name "New Name"
+synctv media move <ROOM_ID> <MEDIA_ID> --after-media-id <OTHER_MEDIA_ID>
+synctv media delete <ROOM_ID> <MEDIA_ID>
+```
+
+Provider-backed media:
+
+```bash
+synctv playlist provider alist <ROOM_ID> ...
+synctv playlist provider emby <ROOM_ID> ...
+synctv media provider alist <ROOM_ID> ...
+synctv media provider emby <ROOM_ID> ...
+synctv media provider bilibili video <ROOM_ID> ...
+synctv media provider bilibili pgc <ROOM_ID> ...
+synctv media provider bilibili live <ROOM_ID> ...
+```
+
+Use `--help` for exact provider-specific arguments.
+
+Parameter convention: primary command targets, including room IDs and resource URLs, use positional arguments. Filters, optional related IDs, Provider instance bindings, and connection settings use explicit `--kebab-case` options.
+
+## Provider Management
+
+Provider instances:
+
+```bash
+synctv provider-instance available
+synctv provider backends alist
+synctv provider-instance list
+synctv provider-instance create <NAME> <ENDPOINT> --provider alist
+synctv provider-instance update <NAME> --instance-endpoint <ENDPOINT>
+synctv provider-instance enable <NAME>
+synctv provider-instance disable <NAME>
+synctv provider-instance reconnect <NAME>
+synctv provider-instance delete <NAME>
+```
+
+Alist:
+
+```bash
+synctv provider alist login --username alice --server-endpoint https://alist.example --account-username alice --password 'pass' --instance-name alist-main
+synctv provider alist list --username alice --server-id <SERVER_ID> --path / --instance-name alist-main
+synctv provider alist search --username alice --server-id <SERVER_ID> --parent / --keywords movie --instance-name alist-main
+synctv provider alist me --username alice --server-id <SERVER_ID> --instance-name alist-main
+synctv provider alist binds --username alice
+synctv provider alist logout --username alice --server-id <SERVER_ID>
+```
+
+Emby:
+
+```bash
+synctv provider emby login --username alice --server-endpoint https://emby.example --account-username alice --password 'pass' --instance-name emby-main
+synctv provider emby list --username alice --server-id <SERVER_ID> --path / --instance-name emby-main
+synctv provider emby me --username alice --server-id <SERVER_ID> --instance-name emby-main
+synctv provider emby binds --username alice
+synctv provider emby logout --username alice --server-id <SERVER_ID>
+```
+
+Bilibili:
+
+```bash
+synctv provider bilibili parse "https://www.bilibili.com/video/..." --username alice
+synctv provider bilibili login-qr --username alice --instance-name bilibili-main
+synctv provider bilibili check-qr --username alice --key <KEY> --instance-name bilibili-main
+synctv provider bilibili start-sms-login --username alice --instance-name bilibili-main
+synctv provider bilibili send-sms --username alice --phone 13800000000 --session-token <SESSION_TOKEN> --validate <VALIDATE>
+synctv provider bilibili login-sms --username alice --session-token <UPDATED_SESSION_TOKEN> --code 123456
+synctv provider bilibili me --username alice --instance-name bilibili-main
+synctv provider bilibili binds --username alice
+synctv provider bilibili logout --username alice
+```
+
+RTMP:
+
+```bash
+synctv provider rtmp create-publish-key --room-id <ROOM_ID> <MEDIA_ID> --username alice
+synctv provider rtmp get-stream-info --room-id <ROOM_ID> <MEDIA_ID>
+```
+
+Provider service operations:
+
+```bash
+synctv provider acfun resolve <RESOURCE> --username alice
+synctv provider cctv resolve <RESOURCE> --username alice
+synctv provider douyu resolve <RESOURCE> --username alice
+synctv provider huya resolve <RESOURCE> --username alice
+synctv provider youtube resolve <RESOURCE> --username alice
+synctv provider youtube unbind --server-id <SERVER_ID> --username alice
+synctv provider cloudreve login --username alice --server-endpoint https://cloudreve.example --account-email alice@example.com --password <PASSWORD>
+synctv provider fnos login --username alice --server-endpoint https://fnos.example --account-username nas-alice --password <PASSWORD>
+synctv provider nextcloud login --username alice --server-endpoint https://nextcloud.example --account-username cloud-alice --app-password <APP_PASSWORD>
+synctv provider qnap login --username alice --server-endpoint https://qnap.example --account-username nas-alice --password <PASSWORD>
+synctv provider seafile login --username alice --server-endpoint https://seafile.example --account-username files-alice --password <PASSWORD>
+synctv provider synology login --username alice --server-endpoint https://synology.example --account-username nas-alice --password <PASSWORD>
+synctv provider cloudreve me --server-id <SERVER_ID> --username alice
+synctv provider cloudreve logout --server-id <SERVER_ID> --username alice
+synctv provider nextcloud logout --server-id <SERVER_ID> --username alice
+synctv provider qnap capabilities --server-id <SERVER_ID> --username alice
+synctv provider seafile logout --server-id <SERVER_ID> --username alice
+synctv provider synology logout --server-id <SERVER_ID> --username alice
+synctv provider truenas logout --server-id <SERVER_ID> --username alice
+synctv provider cloudreve list --username alice --server-id <SERVER_ID> --path /
+synctv provider synology movies --username alice --server-id <SERVER_ID> --library-id 1
+```
+
+`--username`, `--user-id`, and `--email` select the SyncTV actor. Login commands use `--server-endpoint` for the provider account server and `--account-username` or `--account-email` for provider account identity.
+
+## Runtime Settings
+
+Runtime settings are changed through the management endpoint. They are not the same as YAML startup configuration.
+
+```bash
+synctv settings list
+synctv settings get email
+synctv settings update --set email.whitelistEnabled=true --set 'email.whitelistDomains=["example.com"]'
+synctv settings update --unset email.smtpProxy
+synctv settings export --file runtime-settings.json
+synctv settings import runtime-settings.json --dry-run
+synctv settings import runtime-settings.json
+synctv settings test-email admin@example.com
+```
+
+`--set PATH=VALUE` and `--unset PATH` are repeatable, and the CLI builds the FieldMask. `--request-json` accepts the standard `UpdateSettingsRequest` ProtoJSON shape and is mutually exclusive with set/unset mode.
+
+`settings export` produces a complete, versioned JSON snapshot with `formatVersion`. The snapshot contains OAuth client secrets, SMTP passwords, and proxy passwords. File output is atomic, uses mode `0600` on Unix, and requires `--force` to replace an existing file. Omitting `--file` writes the snapshot to stdout.
+
+`settings import` reads a snapshot from a file; use `-` for stdin. The server validates the format version, complete credentials, and every runtime business rule before replacing all runtime settings in one transaction. `--dry-run` reports the planned changed sections while preserving the stored values.
+
+Export and import require root authorization. The management CLI uses its local root actor identity and still requires a valid management token.
+
+See [Runtime Settings Reference](../runtime-settings/) for all keys, defaults, and validation rules.
+
+SMTP host, port, credentials, SOCKS5 proxy, and sender identity are managed through the `email` runtime settings. `settings test-email` uses the current hot-reloaded configuration. Regular settings reads redact SMTP and proxy passwords; export snapshots retain complete credentials for restoration.
+
+Security note: do not expose the management TCP endpoint publicly. Use strong tokens and prefer internal networks or VPNs.
+
+## System and Slice Cache
+
+System state:
+
+```bash
+synctv system stats
+synctv system stream list
+synctv system stream kick <STREAM_ID>
+```
+
+Slice cache operations:
+
+```bash
+synctv slice-cache stats
+synctv slice-cache evict-expired
+synctv slice-cache purge
+```
+
+Slice cache enablement is controlled by startup config `proxy_slice_cache.enabled`. CLI operations only provide stats, cleanup, and expiration eviction.
+
+## Shell Completions
+
+```bash
+synctv completion bash > synctv.bash
+synctv completion zsh > _synctv
+synctv completion fish > synctv.fish
+```
+
+Installation paths depend on the shell and OS distribution.
+
+## Version
+
+```bash
+synctv version
+```

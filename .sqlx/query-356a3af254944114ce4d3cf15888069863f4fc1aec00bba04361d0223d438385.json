@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT EXISTS (\n                SELECT 1\n                FROM pg_inherits index_inherits\n                JOIN pg_class child_index\n                  ON child_index.oid = index_inherits.inhrelid\n                JOIN pg_class parent_index\n                  ON parent_index.oid = index_inherits.inhparent\n                JOIN pg_index child_pg_index\n                  ON child_pg_index.indexrelid = child_index.oid\n                JOIN pg_class child_table\n                  ON child_table.oid = child_pg_index.indrelid\n                WHERE parent_index.relname = 'idx_chat_messages_created_at'\n                  AND child_table.relname ~ '^chat_messages_[0-9]{4}_[0-9]{2}_[0-9]{2}$'\n            )\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "356a3af254944114ce4d3cf15888069863f4fc1aec00bba04361d0223d438385"
+}

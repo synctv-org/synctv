@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM file_objects WHERE storage_backend = $1 AND object_key = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5b5fc7b958b559de99f6ced7137f376a962f78e93738a177f80fb96ab889df3c"
+}

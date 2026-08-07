@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package acproto;
+
+import "PkPlayerInfo.proto";
+
+message CommonStateSignalPKReady {
+    string a = 1;
+    repeated PkPlayerInfo b = 2;
+}

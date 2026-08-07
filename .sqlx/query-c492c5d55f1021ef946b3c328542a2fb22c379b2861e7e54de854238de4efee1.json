@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE file_cleanup_jobs\n            SET completed_at = CURRENT_TIMESTAMP,\n                locked_at = NULL,\n                locked_by = NULL,\n                updated_at = CURRENT_TIMESTAMP\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c492c5d55f1021ef946b3c328542a2fb22c379b2861e7e54de854238de4efee1"
+}

@@ -1,0 +1,58 @@
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+{{- $serviceMonitorNamespace := .Values.metrics.serviceMonitor.namespace | default .Release.Namespace }}
+{{- $metricsAuthMode := .Values.metrics.auth.mode | default "bearer_token" }}
+{{- if and (ne $serviceMonitorNamespace .Release.Namespace) (or .Values.metrics.tls.enabled (ne $metricsAuthMode "kubernetes")) }}
+{{- fail "metrics.serviceMonitor.namespace must match the release namespace when metrics TLS is enabled or metrics.auth.mode is bearer_token/basic because ServiceMonitor Secret references are namespace-scoped; use metrics.auth.mode=kubernetes for cross-namespace ServiceMonitor objects, or leave metrics.serviceMonitor.namespace empty" }}
+{{- end }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "synctv.fullname" . }}
+  namespace: {{ $serviceMonitorNamespace }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "synctv.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: metrics
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval | default "30s" }}
+      {{- with .Values.metrics.serviceMonitor.scrapeTimeout }}
+      scrapeTimeout: {{ . }}
+      {{- end }}
+      {{- if .Values.metrics.tls.enabled }}
+      scheme: https
+      tlsConfig:
+        serverName: {{ include "synctv.metricsTlsServerName" . }}
+        ca:
+          secret:
+            name: {{ include "synctv.metricsTlsSecretName" . }}
+            key: ca.crt
+      {{- end }}
+      {{- if eq (.Values.metrics.auth.mode | default "bearer_token") "kubernetes" }}
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      {{- else if eq (.Values.metrics.auth.mode | default "bearer_token") "bearer_token" }}
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ include "synctv.secretName" . }}
+          key: SYNCTV_METRICS_AUTH_BEARER_TOKEN
+      {{- else if eq (.Values.metrics.auth.mode | default "bearer_token") "basic" }}
+      basicAuth:
+        username:
+          name: {{ include "synctv.secretName" . }}
+          key: SYNCTV_METRICS_AUTH_BASIC_USERNAME
+        password:
+          name: {{ include "synctv.secretName" . }}
+          key: SYNCTV_METRICS_AUTH_BASIC_PASSWORD
+      {{- end }}
+{{- end }}

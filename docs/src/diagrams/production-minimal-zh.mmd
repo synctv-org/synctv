@@ -1,0 +1,11 @@
+flowchart LR
+  Client[客户端应用]
+  Edge[TLS 反向代理<br/>或 Ingress]
+  App[SyncTV]
+  PG[(PostgreSQL)]
+  Redis[(Redis)]
+
+  Client --> Edge
+  Edge --> App
+  App --> PG
+  App --> Redis

@@ -1,0 +1,119 @@
+---
+title: 播放与代理
+description: SyncTV 播放信息、播放 URL、Provider header、代理模式、Range、slice cache、WebRTC 和直播播放边界。
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+## 边界
+
+播放问题经常发生在客户端、SyncTV、Provider 和上游媒体服务器的边界。Provider 明确返回播放信息和上游 header，客户端按播放结果执行；底层 proxy 不猜测客户端 header。
+
+## 播放链路
+
+<Steps>
+1. 客户端请求房间当前播放或指定媒体的播放信息。
+2. SyncTV 根据房间状态、媒体、用户、Provider 凭据和客户端能力生成 `Playback`。
+3. Provider 返回一个或多个 `PlaybackInfo`，每个模式包含 URL、format、header、字幕、过期时间和 metadata。
+4. 客户端选择合适模式：直连、proxy、转码、HLS、FLV 或字幕 URL。
+5. URL 过期、媒体切换、Provider 凭据变化或客户端能力变化后，客户端重新获取播放信息。
+</Steps>
+
+## 直连和代理
+
+| 模式 | 适合场景 | 风险 |
+| --- | --- | --- |
+| 直连 | 客户端能访问上游，并能设置必要 header | 浏览器限制 header、CORS、暴露上游地址 |
+| SyncTV proxy | 上游只能被服务端访问，或需要服务端统一 header/凭据 | SyncTV 承担带宽和延迟，需规划容量 |
+| Provider 转码或变体 | 上游提供多清晰度、多编码或字幕 | 客户端必须按能力选择，不能固定第一个 URL |
+| 直播 HLS/FLV | RTMP 推流转播放 | 多副本需要 HLS backend 或 publisher proxy |
+
+<Aside type="note">
+SyncTV proxy 只使用 Provider 明确给出的 header。它不会把浏览器请求里的 Cookie、Authorization 或任意 header 自动转发给上游。
+</Aside>
+
+Alist 播放 URL 可能绑定特定 `User-Agent`。Bilibili 常依赖 `User-Agent`、`Referer`、Cookie 和 Range。直连与代理表现不一致时，对比 Provider 返回给客户端的 header 与代理发往上游的 header；客户端受浏览器限制时选择代理 URL。
+
+## 客户端选择策略
+
+客户端应根据环境和能力选择播放结果：
+
+| 客户端条件 | 处理 |
+| --- | --- |
+| 浏览器不能设置 `Referer` 或自定义 header | 优先选择 proxy URL |
+| 原生客户端可设置 header 且能访问上游 | 可使用直连 URL |
+| 移动端不支持某些 codec/container | 在 `PlaybackClientProfile` 中声明能力，选择转码或兼容模式 |
+| URL 有 `expires_at` | 到期前重新获取播放信息 |
+| 字幕有独立 header | 使用字幕 URL 自带 header；proxy 字幕时 header 会合并 |
+
+## Range 与 slice cache
+
+媒体 seek 通常依赖 HTTP Range：
+
+```http
+Range: bytes=1048576-2097151
+```
+
+SyncTV proxy slice cache 的边界：
+
+- 只缓存可 Range 切片的媒体字节。
+- 不做 full-body cache。
+- 上游不支持 Range 时直接 bypass。
+- 文件后端可以跨进程重启保留数据，但没有跨进程共享索引或分布式锁。
+- 多副本可以用共享存储，但不要把 slice cache 当作强一致分布式缓存。
+
+配置细节见 [Proxy slice cache](../../configuration/proxy-slice-cache/)。
+
+## 播放信息和 Realtime
+
+新客户端使用 Realtime 资源观察订阅播放信息：
+
+- `playbackState`：当前播放位置、状态和版本。
+- `playback`：当前媒体的播放 URL、headers、字幕和过期时间。
+
+断线重连时，重新获取 `playbackState`，并用当前 `playbackClientProfile` 观察 `playback`。播放信息是当前播放源可直接交给播放器使用的数据，生命周期跟随其中的 URL。
+
+完整协议见 [Realtime 协议](../realtime-api/)。
+
+## P2P 媒体分发
+
+原生客户端可以在播放同步设置中动态开启 P2P 媒体分发。符合条件的点播 `PlaybackMedia` 会包含 `p2p_delivery`；客户端通过 WebRTC DataChannel 从同一房间、同一资源 swarm 的其他观众获取媒体分片，并保留原始 HTTP 地址作为回退路径。
+
+| 项目 | 行为 |
+| --- | --- |
+| 资源范围 | Provider 为静态点播资源生成房间隔离的 swarm；直播省略 `p2p_delivery` |
+| 媒体格式 | 客户端根据所选 `PlaybackMedia.format` 处理普通文件、HLS 和 DASH |
+| 直连与代理 | Provider 确认两种模式字节一致时，两者使用同一个 swarm |
+| 权限 | 房间成员或游客需要 `use_p2p_media` |
+| 动态开关 | 关闭后客户端离开 swarm、停止 P2P 连接并继续通过 HTTP 播放 |
+| 本地缓存 | 可选择 64、128、256、512 或 1024 MiB，默认 128 MiB；最近使用的分片可跨播放会话复用，连续 10 分钟未访问后自动过期 |
+
+播放器的 P2P 指标展示已连接 Peer、总下载和上传速度、HTTP 下载、P2P 下载与上传、累计流量、缓存大小及命中率。Peer 暂时不可用、ICE 连接失败或分片传输超时时，播放请求会自动使用来源 HTTP。
+
+<Aside type="caution">
+swarm ticket 负责房间、用户和资源隔离。当前传输协议允许 Peer 返回任意媒体字节，适用于彼此信任的房间成员。
+</Aside>
+
+## WebRTC 和直播
+
+WebRTC 和直播不是普通点播 proxy：
+
+| 能力 | 边界 |
+| --- | --- |
+| WebRTC | 为语音聊天和 P2P 媒体分发提供独立会话，依赖 ICE/STUN/TURN 配置及对应的 `use_voice_chat`、`use_p2p_media` 权限 |
+| RTMP 推流 | 推流入口，通常由主播或房间管理员使用 |
+| HTTP-FLV | 低延迟直播播放路径，受长连接和客户端慢速读取影响 |
+| HLS | playlist/segment 文件路径，多副本需要本地 proxy、共享文件或 S3 backend |
+
+WebRTC 配置见 [WebRTC 配置](../../configuration/webrtc/)，直播见 [直播配置](../../configuration/livestream/)。
+
+## 排障矩阵
+
+| 现象 | 可能层级 | 检查 |
+| --- | --- | --- |
+| 播放器立刻 403 | Provider 凭据或 header | Provider 返回 header、上游状态码 |
+| seek 后失败 | Range 或 slice cache | 上游 `Accept-Ranges`、`Content-Range`、proxy 日志 |
+| 只有浏览器失败 | CORS 或 header 限制 | 选择 proxy，检查浏览器 Network |
+| 只有代理失败 | SyncTV 到上游网络或 header | 服务端网络、DNS、proxy header |
+| 多副本直播偶发失败 | HLS 存储模型 | publisher 节点、共享存储、S3 或 gRPC proxy |
+| 播放 URL 一段时间后失效 | `expires_at` | 订阅或重新拉取播放信息 |

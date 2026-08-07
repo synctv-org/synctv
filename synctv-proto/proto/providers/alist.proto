@@ -1,0 +1,127 @@
+// Alist Provider Client API
+//
+// This is the client-facing gRPC API for Alist provider
+//
+// SECURITY: Login transmits credentials (password or hashed_password) as plaintext
+// in the protobuf payload. Deployments MUST use TLS for all connections to this service.
+
+syntax = "proto3";
+
+package synctv.provider.alist;
+
+import "proto/buf/validate/validate.proto";
+
+// Login request
+// SECURITY: Prefer hashed_password over password when possible to reduce plaintext exposure.
+message LoginRequest {
+  string host = 1 [(buf.validate.field).string.min_len = 1];
+  string username = 2 [(buf.validate.field).string.min_len = 1];
+  oneof credential {
+    string password = 3; // SECURITY: Plaintext credential - requires TLS in transit. Prefer hashed_password.
+    string hashed_password = 4; // Hashed password preferred when available.
+  }
+  string otp_code = 5; // Optional current TOTP/2FA code for one-time login verification.
+  string otp_secret = 6; // Optional TOTP secret to persist for automatic token refresh.
+  string instance_name = 7; // Optional provider instance name
+}
+
+// Login response
+message LoginResponse {
+  string token = 1;
+  string server_id = 2; // SHA-256(host) identifier for stored credential
+}
+
+// List directory request
+message ListRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1]; // Stored credential identifier
+  string path = 2;
+  string password = 3; // Directory password (optional)
+  uint64 page = 4;
+  uint64 per_page = 5;
+  bool refresh = 6;
+  string instance_name = 7; // Optional provider instance name
+}
+
+// List directory response
+message ListResponse {
+  repeated FileItem content = 1;
+  uint64 total = 2;
+}
+
+// Search files and directories under a stored Alist credential.
+message SearchRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1]; // Stored credential identifier
+  string parent = 2; // Directory path to search under
+  string keywords = 3;
+  uint64 scope = 4; // 0: all, 1: directories, 2: files
+  uint64 page = 5;
+  uint64 per_page = 6;
+  string password = 7; // Directory password (optional)
+  string instance_name = 8; // Optional provider instance name
+}
+
+message SearchResponse {
+  repeated SearchItem content = 1;
+  uint64 total = 2;
+}
+
+message SearchItem {
+  string parent = 1;
+  string name = 2;
+  bool is_dir = 3;
+  uint64 size = 4;
+  uint64 type = 5;
+}
+
+// File/directory item
+message FileItem {
+  string name = 1;
+  uint64 size = 2;
+  bool is_dir = 3;
+  uint64 modified = 4;
+  string sign = 5;
+  string thumb = 6;
+  uint64 type = 7;
+}
+
+// Get user info request
+message GetMeRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1]; // Stored credential identifier
+  string instance_name = 2; // Optional provider instance name
+}
+
+// Get user info response
+message GetMeResponse {
+  string username = 1;
+  string base_path = 2;
+}
+
+// Logout request
+message LogoutRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1]; // Which credential to unbind
+}
+
+// Logout response
+message LogoutResponse {
+  string message = 1;
+}
+
+// Get binds request
+message GetBindsRequest {
+  string instance_name = 1; // Optional provider instance name
+}
+
+// Get binds response
+message GetBindsResponse {
+  repeated BindInfo binds = 1;
+}
+
+// Saved credential information
+message BindInfo {
+  string id = 1;
+  string server_id = 2;
+  string host = 3;
+  string username = 4;
+  int64 created_at = 5; // Unix epoch timestamp
+  string provider_instance_name = 6; // Empty when the credential is not instance-scoped
+}

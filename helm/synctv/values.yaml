@@ -1,0 +1,946 @@
+# SyncTV Helm Chart - default install values
+# Documentation: https://docs.syncs.tv
+#
+# These defaults prioritize a simple first install: one SyncTV replica,
+# chart-managed single-instance PostgreSQL/Redis, cluster mode disabled, and
+# memory HLS storage. For HA or production-scale traffic, review the Helm guide
+# and set cluster, shared storage, backing data-service, HPA/PDB, and Secret
+# management values explicitly.
+
+## Global Settings
+global:
+  imagePullSecrets: []
+  storageClass: ""
+
+## Safety gates for production-impacting Helm values.
+safety:
+  ## SyncTV runs without cross-pod coordination when config.cluster.enabled=false.
+  ## Keep this false unless you intentionally accept independent standalone pods.
+  allowStandaloneReplicas: false
+
+## Backing data services for SyncTV itself.
+## mode:
+## - standard: chart-managed StatefulSet/Service
+## - kubeblocks: chart-managed KubeBlocks Cluster resources
+## - external: connect to an existing PostgreSQL service; no PostgreSQL resources rendered
+## These database services are internal-only. Access them from outside the cluster
+## only via temporary kubectl port-forward when needed.
+postgresql:
+  mode: standard
+  standard:
+    auth:
+      username: "synctv"
+      database: "synctv"
+    image:
+      repository: postgres
+      tag: "18.1-bookworm"
+      pullPolicy: IfNotPresent
+    service:
+      port: 5432
+    persistence:
+      size: 20Gi
+      storageClass: ""
+    resources: {}
+  kubeblocks:
+    clusterName: ""
+    clusterDef: "postgresql"
+    componentDef: "postgresql"
+    topology: "replication"
+    serviceVersion: ""
+    appUsername: "synctv"
+    database: "synctv"
+    ## SyncTV bootstraps a least-privilege PostgreSQL app role/database from
+    ## the KubeBlocks-generated postgres system account before the app starts.
+    bootstrapAppDatabase: true
+    bootstrapImage:
+      repository: postgres
+      tag: "18.1-bookworm"
+      pullPolicy: IfNotPresent
+    replicas: 2
+    terminationPolicy: Retain
+    disableExporter: true
+    storage:
+      size: 20Gi
+      storageClass: ""
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  external:
+    host: ""
+    port: 5432
+    username: "synctv"
+    database: "synctv"
+
+redis:
+  mode: standard
+  standard:
+    auth:
+      username: ""
+      database: 0
+    image:
+      repository: redis
+      tag: "8.4.0-bookworm"
+      pullPolicy: IfNotPresent
+    service:
+      port: 6379
+    persistence:
+      size: 8Gi
+      storageClass: ""
+    resources: {}
+  kubeblocks:
+    clusterName: ""
+    clusterDef: "redis"
+    redisComponentDef: "redis"
+    sentinelComponentDef: "redis-sentinel"
+    topology: "replication"
+    serviceVersion: ""
+    replicas: 2
+    terminationPolicy: Retain
+    disableExporter: true
+    storage:
+      size: 20Gi
+      storageClass: ""
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    sentinel:
+      replicas: 3
+      storageSize: 20Gi
+      storageClass: ""
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+  external:
+    host: ""
+    port: 6379
+    username: ""
+    database: 0
+
+## Name Overrides
+nameOverride: ""
+fullnameOverride: ""
+
+## ============================================================================
+## SyncTV Deployment (Single binary: HTTP + gRPC + RTMP in one process)
+## ============================================================================
+replicaCount: 1
+
+image:
+  registry: ghcr.io
+  repository: synctv-org/synctv
+  tag: "" # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+## Headless Service (for inter-node gRPC discovery).
+## Automatically rendered when config.cluster.enabled=true and
+## config.cluster.discoveryMode=k8s_dns, even if this switch is false.
+headlessService:
+  enabled: false
+
+## HTTP API Service Configuration
+service:
+  type: ClusterIP
+  annotations: {}
+  loadBalancerIP: ""
+  loadBalancerSourceRanges: []
+  sessionAffinity: ""
+
+## RTMP ingest Service Configuration
+## Expose this Service separately when publishers need to connect from outside
+## the cluster. Keeping RTMP independent from the API avoids coupling public
+## livestream ingest to API exposure.
+rtmpService:
+  enabled: true
+  type: ClusterIP
+  annotations: {}
+  loadBalancerIP: ""
+  loadBalancerSourceRanges: []
+  sessionAffinity: ""
+  nodePort: 31935
+
+## Built-in STUN Service Configuration
+## Rendered only when config.webrtc.enableBuiltinStun=true. Many cloud
+## providers handle UDP load balancers differently from TCP load balancers, so
+## STUN has its own Service rather than sharing the API/RTMP Service. Enable it
+## only when you expose it through a client-reachable NodePort or LoadBalancer.
+stunService:
+  enabled: false
+  type: ClusterIP
+  annotations: {}
+  loadBalancerIP: ""
+  loadBalancerSourceRanges: []
+  sessionAffinity: ""
+  nodePort: 31478
+
+## gRPC Service Configuration
+## gRPC uses the same container port as HTTP, but is exposed through an
+## independent Service so ingress controllers can apply GRPC backend protocol
+## handling without affecting HTTP/REST traffic.
+grpcService:
+  type: ClusterIP
+  annotations: {}
+  port: "" # defaults to config.server.port
+  sessionAffinity: ""
+
+## Ingress Configuration (for HTTP API access)
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+    # - host: synctv.example.com
+    #   paths:
+    #     - path: /
+    #       pathType: Prefix
+  tls: []
+  ## gRPC Ingress (separate Ingress with GRPC backend-protocol annotation)
+  grpc:
+    enabled: false
+    className: "" # defaults to ingress.className
+    annotations: {}
+    hosts: []
+      # - host: synctv.example.com
+      #   paths:
+      #     - path: /
+      #       pathType: Prefix
+    tls: [] # defaults to ingress.tls when empty
+
+## Resource Limits
+resources:
+  limits:
+    cpu: 2000m
+    memory: 4Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+## Autoscaling
+autoscaling:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+## Pod Disruption Budget
+podDisruptionBudget:
+  enabled: false
+  minAvailable: ""
+  maxUnavailable: ""
+
+## Health Checks
+startupProbe:
+  httpGet:
+    path: /health/ready
+    port: health
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 60 # 5 + 60*5 = 305s max startup time (matching MIGRATION_MAX_WAIT=300s)
+
+livenessProbe:
+  httpGet:
+    path: /health/live
+    port: health
+  initialDelaySeconds: 0
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health/ready
+    port: health
+  initialDelaySeconds: 0
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+## Pod Settings
+podAnnotations: {}
+podLabels: {}
+
+## Graceful Shutdown
+## Must exceed the total shutdown time budget used by the process itself.
+terminationGracePeriodSeconds: 240
+
+## Lifecycle Hooks
+## Empty by default. Set custom hooks only when you explicitly need them.
+lifecycle: {}
+
+## Node Selection
+nodeSelector: {}
+tolerations: []
+
+## Affinity rules (overrides podAntiAffinity when set)
+## Uncomment and configure to use custom affinity rules:
+# affinity:
+#   podAntiAffinity:
+#     requiredDuringSchedulingIgnoredDuringExecution:
+#       - topologyKey: kubernetes.io/hostname
+
+## Pod Anti-Affinity (used when custom affinity is not set)
+podAntiAffinity:
+  enabled: true
+
+## Topology Spread Constraints (zone-aware scheduling)
+topologySpread:
+  enabled: true
+  maxSkew: 1
+  topologyKey: topology.kubernetes.io/zone
+  ## Prefer spreading across zones, but do not leave pods pending on clusters
+  ## with a single zone or temporarily unavailable topology domains.
+  whenUnsatisfiable: ScheduleAnyway
+
+## ============================================================================
+## Application Configuration
+## Values use chart-friendly camelCase and templates render SyncTV's Rust
+## snake_case config file fields.
+## ============================================================================
+config:
+  ## Shared root directory for runtime-owned local files.
+  ## It rebases relative:
+  ## - management.unix_socket_path
+  ## - server logging file output path
+  ## - livestream.hls_storage.path
+  ## - proxy_slice_cache.file_cache_dir
+  ## It does NOT rebase *_file secrets or metrics TLS cert/key paths.
+  ## Leave empty to use SyncTV's built-in platform/container defaults.
+  dataDir: "/data"
+
+  ## TimeConfig
+  time:
+    ## IANA timezone name. Leave empty to fall back to SYNCTV_TIME_TIMEZONE, TZ,
+    ## then the system timezone, and finally UTC.
+    timezone: ""
+    clockSync:
+      enabled: false
+      provider:
+        type: sntp
+        servers:
+          - "time.cloudflare.com:123"
+          - "pool.ntp.org:123"
+        intervalSeconds: 300
+        timeoutMillis: 1000
+
+  ## Process-wide logging for shared infrastructure and unmatched targets.
+  logging:
+    level: info
+    format: text
+    ## File output example:
+    ## output: {type: file, path: /data/logs/global.log, rotation: {strategy: daily, maxFiles: 30}}
+    output: stdout
+    color: auto
+
+  ## ServerConfig
+  server:
+    host: "0.0.0.0"
+    port: 8080
+    projectUrl: "https://github.com/synctv-org/synctv"
+    enableReflection: false
+    shutdownDrainTimeoutSeconds: 30
+    grpcMaxMessageSizeBytes: 16777216
+    ## Allow public and cluster gRPC peers to negotiate gzip compression.
+    grpcCompressionEnabled: true
+    # trustedProxies: ["10.0.0.0/8", "172.16.0.0/12"]
+    corsAllowedOrigins: []
+    logging:
+      level: info
+      format: text
+      ## File output example:
+      ## output: {type: file, path: /data/logs/server.log, rotation: {strategy: daily, maxFiles: 30}}
+      output: stdout
+      color: auto
+
+  health:
+    enabled: true
+    host: "0.0.0.0"
+    port: 8081
+    logging:
+      level: info
+      format: text
+      output: stdout
+      color: auto
+
+  ## PublicIdsConfig
+  publicIds:
+    sqids:
+      enabled: false
+      alphabet: ""
+      minLength: 12
+
+  ## SecurityConfig
+  security:
+    ## Global SSRF policy for server-side outbound requests.
+    ## Disabled by default for self-hosted private media providers. Enable it for public deployments.
+    ## Prefer allowedHosts / allowedIpRanges for known internal media endpoints.
+    ## Set allowPrivateNetworkTargets=true only in a trusted private deployment.
+    ssrf:
+      enabled: false
+      allowPrivateNetworkTargets: false
+      allowedHosts: []
+      allowedIpRanges: []
+
+  ## ManagementConfig
+  ## transport=tcp is always loopback-only inside the process; only the port is configurable.
+  ## TCP transport requires secrets.management.authToken (auto-generated if left empty).
+  ## Unix transport can also enforce the token, but defaults to empty and may rely on
+  ## owner-only socket permissions.
+  ## Raw SyncTV config files support auth_token_file, but this chart prefers Secret-backed
+  ## injection through secrets.management.authToken or existingSecret.
+  management:
+    enabled: true
+    transport: "unix"
+    unixSocketPath: "/run/synctv/synctv.sock"
+    port: 50052
+    enableReflection: false
+    logging:
+      level: info
+      format: text
+      output: stdout
+      color: auto
+
+  ## DatabaseConfig (url composed from secrets; these are for connection pool)
+  database:
+    ## Set true when existingSecret provides SYNCTV_DATABASE_READ_URL.
+    ## The actual read replica DSN belongs in secrets.database.readUrl or the external Secret.
+    useSecretReadUrl: false
+    maxConnections: 20
+    minConnections: 5
+    connectTimeoutSeconds: 10
+    idleTimeoutSeconds: 600
+    maxLifetimeSeconds: 1800
+
+  ## RedisConfig (url composed from secrets; these are for connection settings)
+  redis:
+    connectTimeoutSeconds: 5
+    ## Maximum time to wait for a Redis command response.
+    responseTimeoutSeconds: 5
+    ## Redis connection manager pipeline buffer for bursty short commands.
+    pipelineBufferSize: 512
+    keyPrefix: "synctv:"
+    deploymentMode: "standalone"
+    sentinelMasterName: ""
+    sentinelAddresses: []
+
+  ## JwtConfig (secret injected via SYNCTV_JWT_SECRET env var)
+  ## Raw SyncTV config files also support jwt.secret_file, but this chart uses Secret env injection.
+  jwt:
+    accessTokenDurationHours: 1
+    refreshTokenDurationDays: 30
+    guestTokenDurationHours: 4
+    clockSkewLeewaySecs: 60
+
+  ## CacheConfig: business L1/L2 caches.
+  cache:
+    l1Capacity: 5000
+    l1TtlSeconds: 300
+    l2TtlSeconds: 300
+    usernameCacheCapacity: 10000
+    usernameCacheTtlSeconds: 3600
+
+  ## ProxySliceCacheConfig: media proxy Range-slice cache.
+  proxySliceCache:
+    enabled: true
+    sliceSizeBytes: 2097152
+    maxCacheSizeBytes: 536870912
+    segmentTtlSeconds: 300
+    staleMaxAgeSeconds: 60
+    staleWhileRevalidate: true
+    fileBackendEnabled: false
+    fileCacheDir: ""
+    evictionIntervalSeconds: 60
+    watermarkRatio: 0.875
+
+  ## LivestreamConfig
+  livestream:
+    rtmpPort: 1935
+    ## Public host returned in RTMP publish URLs. Set this when streamers
+    ## connect through a public domain, LoadBalancer address, or node public IP.
+    ## If empty, SyncTV uses only the local bind host fallback and does not
+    ## reuse internal Pod IPs or server.advertise_host.
+    publicRtmpHost: ""
+    logging:
+      level: info
+      format: text
+      output: stdout
+      color: auto
+    gopCacheSize: 2
+    streamTimeoutSeconds: 300
+    cleanupCheckIntervalSeconds: 60
+    pullMaxRetries: 10
+    pullInitialBackoffMs: 1000
+    pullMaxBackoffMs: 30000
+    maxFlvTagSizeBytes: 10485760
+    gopCacheMaxMemoryMb: 100
+    ## HLS storage. type values: memory, file, shared_file, s3.
+    hlsStorage:
+      type: "memory"
+      ## For type=memory.
+      memoryMaxMb: 0
+      ## For type=file or shared_file. Kubernetes deployments require an absolute path.
+      path: ""
+      ## For type=s3.
+      endpoint: ""
+      bucket: ""
+      region: ""
+      basePath: "hls/"
+    flvMaxConnectionDurationSeconds: 86400
+    flvWriteTimeoutSeconds: 30
+
+  ## FileStorageConfig
+  ## The built-in "disabled" backend always exists. Database backends store
+  ## object bytes as permanent PostgreSQL file_blob_parts segments and support
+  ## HTTP Range reads; compression accepts none, lz4, zstd. S3 backends use
+  ## native multipart upload URLs for resumable direct uploads.
+  ## S3 backend credentials can be read from Secret-mounted files with
+  ## accessKeyIdFile / secretAccessKeyFile. Inline accessKeyId / secretAccessKey
+  ## are still supported and render into the generated config file.
+  fileStorage:
+    defaultBackend: "disabled"
+    chatAttachmentsBackend: ""
+    userAvatarsBackend: ""
+    mediaCoversBackend: ""
+    roomCoversBackend: ""
+    playlistCoversBackend: ""
+    unreferencedObjectRetentionSeconds: 86400
+    backends: {}
+    # backends:
+    #   database:
+    #     type: "database"
+    #     compression: "zstd"
+    #     compressionMinSizeBytes: 4096
+    #     compressionMinSavingsPercent: 10
+    #   s3_public:
+    #     type: "s3"
+    #     endpoint: "https://s3.example.com"
+    #     accessKeyIdFile: "/run/secrets/file-storage-s3/access_key_id"
+    #     secretAccessKeyFile: "/run/secrets/file-storage-s3/secret_access_key"
+    #     bucket: "synctv-files"
+    #     region: "auto"
+    #     basePath: "files/"
+    #     publicBaseUrl: "https://cdn.example.com/files"
+    #     uploadExpiresSeconds: 900
+
+  ## ClusterChannelConfig (matches code defaults)
+  cluster:
+    ## Enable only for multi-replica deployments. Local HLS backends work through
+    ## publisher-node gRPC proxying; shared_file storage or S3 is recommended
+    ## for production multi-replica HLS traffic.
+    enabled: false
+    host: "0.0.0.0"
+    port: 50051
+    advertiseHost: ""
+    advertisePort: 0
+    logging:
+      level: warn
+      format: text
+      output: stdout
+      color: auto
+    criticalChannelCapacity: 10000
+    publishChannelCapacity: 100000
+    ## Discovery mode: "redis" (default), "static", or "k8s_dns" (uses headless service DNS)
+    ## The chart defaults to Redis discovery so config validation does not
+    ## depend on pod-local DNS environment variables.
+    discoveryMode: "redis"
+    ## Leader election mode: "redis" (default) or "k8s_lease" (uses Kubernetes Lease)
+    leaderElectionMode: "redis"
+    peers: []
+    catchupWindowSecs: 300
+    streamMaxLength: 100000
+
+  ## WebRTCConfig
+  webrtc:
+    ## Allowed values: signaling_only, peer_to_peer
+    mode: "peer_to_peer"
+    enableBuiltinStun: true
+    stunPort: 3478
+    stunHost: "0.0.0.0"
+    ## Public client-reachable STUN address, e.g. "stun.example.com:3478"
+    ## or a LoadBalancer / node public IP. Do not use a Pod IP or ClusterIP
+    ## Service IP; the application rejects private addresses for public STUN.
+    ## When empty, startup tries advertise_host, STUN_EXTERNAL_IP, and cloud
+    ## metadata, and skips the built-in STUN server if no public address exists.
+    stunExternalAddr: ""
+    ## External ICE servers are configured dynamically via the settings API.
+    filterPrivateIceCandidates: false
+    logging:
+      level: info
+      format: text
+      output: stdout
+      color: auto
+
+  ## ConnectionLimitsConfig
+  connectionLimits:
+    maxPerUser: 20
+    maxPerRoom: 2000
+    maxTotal: 100000
+    idleTimeoutSeconds: 300
+    maxDurationSeconds: 86400
+    wsMessageRateLimitPerSecond: 50
+
+  ## MessagingRateLimitConfig
+  messagingRateLimits:
+    chatPerSecond: 10
+    windowSeconds: 1
+
+  ## RequestRateLimitConfig
+  requestRateLimits:
+    authMaxRequests: 5
+    authWindowSeconds: 60
+    writeMaxRequests: 120
+    writeWindowSeconds: 60
+    readMaxRequests: 600
+    readWindowSeconds: 60
+    mediaMaxRequests: 120
+    mediaWindowSeconds: 60
+    adminMaxRequests: 180
+    adminWindowSeconds: 60
+    streamingMaxRequests: 1200
+    streamingWindowSeconds: 60
+    websocketMaxRequests: 60
+    websocketWindowSeconds: 60
+
+  ## BootstrapConfig
+  bootstrap:
+    ## Helm enables first-install root creation by default so a fresh release is
+    ## usable immediately. Disable this after bootstrap, or set it false from
+    ## the start when root user creation is handled out of band.
+    createRootUser: true
+    rootUsername: "root"
+
+  ## PasswordComplexityConfig
+  passwordComplexity:
+    minLength: 8
+    requireUppercase: true
+    requireLowercase: true
+    requireDigit: true
+    requireSpecial: false
+    maxRepeatedChars: 3
+    zxcvbnEnabled: false
+    zxcvbnMinScore: 3
+
+  ## BufferSizesConfig
+  bufferSizes:
+    websocketOutbound: 256
+    auditBuffer: 10000
+
+  ## WebAuthnConfig
+  webauthn:
+    enabled: false
+    rpId: ""
+    rpOrigin: ""
+    rpName: "SyncTV"
+    allowedOrigins: []
+    ## Native app identities authorized to use passkeys for this RP ID.
+    appleAppIds: []
+      # - "ABCDE12345.org.synctv.app"
+    androidApps: []
+      # - packageName: "org.synctv.app"
+      #   sha256CertFingerprints:
+      #     - "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+    allowSubdomains: false
+    allowAnyPort: false
+    timeoutSeconds: 300
+
+  ## MediaProvidersConfig
+  mediaProviders:
+    alist:
+      requestTimeoutSeconds: 30
+      connectTimeoutSeconds: 10
+    bilibili:
+      requestTimeoutSeconds: 30
+      connectTimeoutSeconds: 10
+    emby:
+      requestTimeoutSeconds: 30
+      connectTimeoutSeconds: 10
+
+## ============================================================================
+## Secrets (sensitive values injected as env vars with SYNCTV_ prefix)
+##
+## AUTOMATIC PASSWORD GENERATION: The in-cluster bootstrap Job creates the Secret
+## once on first install. Helm template output remains deterministic.
+##
+## On first install: Random secure passwords are generated through the Kubernetes API
+## On upgrades: The bootstrap Job preserves existing values and initializes missing keys
+##
+## To view generated passwords:
+##   kubectl get secret synctv-secrets -n <namespace> -o jsonpath='{.data}' | jq 'map_values(@base64d)'
+##
+## Chart-generated secrets are suitable for simple installs if the release
+## Secret is backed up and kept stable. For externally managed production secret
+## lifecycles, provide explicit values or set existingSecret.
+## Raw SyncTV config files also support *_file secret references, but this chart's default
+## path is to inject sensitive values via Kubernetes Secrets and environment variables.
+## ============================================================================
+secretBootstrap:
+  enabled: true
+  image:
+    repository: alpine/k8s
+    tag: "1.34.1"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
+
+secrets:
+  ## Database credentials injected via SYNCTV_DATABASE_USERNAME / SYNCTV_DATABASE_PASSWORD
+  database:
+    ## Leave empty to auto-generate a secure 32-character random password (recommended)
+    ## On upgrades, the existing password is preserved automatically
+    password: ""
+    ## Optional read-only replica DSN injected via SYNCTV_DATABASE_READ_URL.
+    ## Strong reads, writes, migrations, and cache rebuilds use the primary URL.
+    ## In kubeblocks mode with replicas > 1, the chart auto-injects
+    ## SYNCTV_DATABASE_READ_HOST / SYNCTV_DATABASE_READ_PORT through a secondary
+    ## Service when this explicit URL is empty.
+    readUrl: ""
+
+  ## Redis password injected via SYNCTV_REDIS_PASSWORD
+  redis:
+    ## Leave empty to auto-generate a secure 32-character random password (recommended)
+    ## On upgrades, the existing password is preserved automatically
+    password: ""
+
+  ## JWT Secret (256-bit random string)
+  jwt:
+    ## Leave empty to auto-generate a secure 64-character random secret (recommended)
+    ## On upgrades, the existing secret is preserved automatically
+    secret: ""
+
+  ## Cluster gRPC Auth Secret
+  cluster:
+    ## Leave empty to auto-generate a secure 32-character random secret (recommended)
+    ## On upgrades, the existing secret is preserved automatically
+    grpcSecret: ""
+
+  ## Security secrets injected via SYNCTV_SECURITY_*.
+  security:
+    ## Credential encryption key (64-char hex string for AES-256-GCM).
+    ## Leave empty to auto-generate a 64-digit hex-compatible key.
+    credentialEncryptionKey: ""
+    ## Dedicated TOTP encryption key (64-char hex string for AES-256-GCM).
+    totpEncryptionKey: ""
+    ## Dedicated email outbox encryption key (64-char hex string for AES-256-GCM).
+    ## Leave empty to auto-generate and preserve a random key in the release Secret.
+    emailOutboxEncryptionKey: ""
+    ## Stable OPAQUE setup derivation secret.
+    ## Leave empty to auto-generate a secure random string.
+    opaqueServerSetupSecret: ""
+    ## Independent random keys for separate security domains.
+    proxySigningKey: ""
+    mediaSwarmSigningKey: ""
+    providerSessionEncryptionKey: ""
+    loginDiscoveryKey: ""
+    webauthnEnumerationKey: ""
+    fileUploadTokenSecret: ""
+
+  ## Bootstrap root password (only used when bootstrap.createRootUser is true)
+  bootstrap:
+    ## Leave empty to auto-generate a secure 16-character random password (recommended)
+    ## On upgrades, the existing password is preserved automatically
+    rootPassword: ""
+
+  ## Metrics endpoint static credentials
+  metrics:
+    ## Used when metrics.auth.mode=bearer_token. Leave empty to auto-generate on first install.
+    bearerToken: ""
+    ## Used when metrics.auth.mode=basic.
+    basicUsername: "metrics"
+    ## Leave empty to auto-generate on first install when mode=basic.
+    basicPassword: ""
+
+  ## Management endpoint bearer token
+  management:
+    ## Required when config.management.transport=tcp.
+    ## Leave empty to auto-generate on first install when tcp transport is enabled.
+    ## Unix transport can also use this token, but defaults to empty and may rely on
+    ## filesystem permissions.
+    authToken: ""
+
+  ## Livestream storage credentials.
+  livestream:
+    hlsStorage:
+      ## Required when config.livestream.hlsStorage.type=s3.
+      accessKeyId: ""
+      ## Required when config.livestream.hlsStorage.type=s3.
+      secretAccessKey: ""
+
+## ============================================================================
+## Additional Settings
+## ============================================================================
+
+## Application data and HLS storage mounts.
+## `data` stores runtime-owned local files. HLS file/shared_file backends use `hls`.
+## shared_file requires `hls.existingClaim` so every replica sees the same segments.
+persistence:
+  data:
+    existingClaim: ""
+  hls:
+    existingClaim: ""
+
+## Service Account
+serviceAccount:
+  create: true
+  ## When metrics.auth.mode=kubernetes, the chart automatically forces token
+  ## automount on because SyncTV must call TokenReview/SubjectAccessReview.
+  automount: false
+  annotations: {}
+  name: ""
+
+## Pod Security Context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+## Container Security Context
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+## Metrics
+## Metrics are served on a dedicated listener and Service port.
+## Default auth uses a static bearer token generated into the chart secret.
+## auth.mode=kubernetes requires a SyncTV image compiled with the k8s feature.
+## The chart can render the required RBAC and service account token settings,
+## but it cannot change the feature set of the container image.
+metrics:
+  enabled: false
+  host: "0.0.0.0"
+  port: 9090
+  logging:
+    level: warn
+    format: text
+    output: stdout
+    color: auto
+  auth:
+    mode: "bearer_token"
+    kubernetes:
+      audience: ""
+      authenticationCacheTtlSeconds: 60
+      authorizationCacheTtlSeconds: 60
+      allowedServiceAccounts: []
+      # - name: prometheus
+      #   namespace: monitoring
+      # - name: vmagent-victoria-metrics-k8s-stack
+      #   namespace: vm
+  tls:
+    enabled: false
+    ## Requires cert-manager. When issuerRef.name is empty, the chart creates
+    ## a namespace-scoped self-signed Issuer and a Certificate automatically.
+    duration: "2160h"
+    renewBefore: "720h"
+    issuerRef:
+      name: ""
+      kind: "Issuer"
+      group: "cert-manager.io"
+  scrapeAnnotations:
+    enabled: false
+  service:
+    type: ClusterIP
+    annotations: {}
+    sessionAffinity: ""
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    interval: "30s"
+    scrapeTimeout: ""
+    labels: {}
+  vmServiceScrape:
+    enabled: false
+    namespace: ""
+    interval: "30s"
+    scrapeTimeout: ""
+    labels: {}
+
+## Alerting (PrometheusRule)
+## Requires metrics.enabled=true and Prometheus Operator CRDs installed.
+## Disabled by default so enabling metrics does not require CRDs.
+alerting:
+  enabled: false
+  evaluationInterval: "30s"
+
+## Network Policy
+networkPolicy:
+  enabled: false
+  policyTypes:
+    - Ingress
+    - Egress
+  ## Namespaces allowed to reach the HTTP API through an ingress controller.
+  ## Default matches the common ingress-nginx deployment namespace.
+  ingressControllerNamespaces:
+    - ingress-nginx
+  ## Namespaces allowed to scrape the metrics listener when metrics are enabled.
+  ## Adjust this when your Prometheus/vmagent runs outside the default monitoring namespace.
+  metricsSourceNamespaces:
+    - monitoring
+  ## Allow RTMP traffic from any IPv4 source. Keep false in production unless
+  ## the RTMP Service is intentionally internet-facing.
+  allowAnyRtmpSource: false
+  ## CIDR ranges allowed to send RTMP traffic.
+  rtmpSourceCIDRs: []
+  # rtmpSourceCIDRs:
+  #   - "10.0.0.0/8"
+  #   - "192.168.0.0/16"
+  ## Allow built-in STUN traffic from any IPv4 source. Set true when the STUN
+  ## Service is intentionally reachable by arbitrary clients.
+  allowAnyStunSource: false
+  stunSourceCIDRs: []
+  ## CIDR ranges allowed for external PostgreSQL/Redis egress when the matching
+  ## dependency mode is "external". Set allowAnyExternalDatabaseEgress=true for
+  ## dynamic externally hosted databases, or provide explicit CIDRs.
+  allowAnyExternalDatabaseEgress: false
+  externalPostgresqlCIDRs: []
+  externalRedisCIDRs: []
+  ## CIDR ranges allowed for outbound HTTP/HTTPS calls such as OAuth providers,
+  ## metadata endpoints, and media-provider APIs. Set allowAnyExternalHttpEgress
+  ## when providers cannot be represented by stable CIDR ranges.
+  allowAnyExternalHttpEgress: false
+  externalHttpCIDRs: []
+
+## Extra Environment Variables
+extraEnvVars: []
+
+## Extra volumes and mounts for externally managed files, such as Secret-backed
+## file-storage S3 credentials referenced by accessKeyIdFile/secretAccessKeyFile.
+extraVolumes: []
+  # - name: file-storage-s3
+  #   secret:
+  #     secretName: synctv-file-storage-s3
+extraVolumeMounts: []
+  # - name: file-storage-s3
+  #   mountPath: /run/secrets/file-storage-s3
+  #   readOnly: true
+
+## Existing Secret/ConfigMap (if you manage secrets externally)
+existingSecret: ""
+## Change this value whenever the referenced Secret changes to trigger a Deployment rollout.
+## External Secret controllers can alternatively set a reloader annotation through podAnnotations.
+secretRolloutChecksum: ""
+existingConfigMap: ""
+
+## Image Pull Secrets
+## Top-level imagePullSecrets override global.imagePullSecrets when non-empty.
+imagePullSecrets: []
+  # - name: registry-credentials

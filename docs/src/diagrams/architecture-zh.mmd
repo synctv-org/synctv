@@ -1,0 +1,37 @@
+flowchart TB
+  Client[客户端应用]
+  Edge[TLS 反向代理 / Ingress]
+  CLI[CLI / 管理工具]
+
+  subgraph SyncTV["SyncTV 单二进制"]
+    direction TB
+    HTTP[HTTP REST<br/>OpenAPI / 健康检查 / 代理路由]
+    GRPC[公开 gRPC]
+    WS[WebSocket 实时协作]
+    MGMT[管理 gRPC]
+    Provider[媒体 Provider]
+    Proxy[媒体代理<br/>slice cache]
+    Live[直播<br/>RTMP / STUN / HLS]
+    Cluster[集群协调]
+  end
+
+  PG[(PostgreSQL)]
+  Redis[(Redis<br/>协调 / 短期状态 / 事件回放)]
+  External[外部媒体服务]
+  HLS[(HLS 后端<br/>本地 / 共享 / S3)]
+
+  Client --> Edge
+  Edge --> HTTP
+  Edge --> GRPC
+  Edge --> WS
+  CLI --> MGMT
+
+  HTTP --> PG
+  GRPC --> PG
+  MGMT --> PG
+  WS --> Cluster
+  Cluster --> Redis
+  Provider --> External
+  Proxy --> External
+  Live --> HLS
+  Live -. publisher registry .-> Cluster

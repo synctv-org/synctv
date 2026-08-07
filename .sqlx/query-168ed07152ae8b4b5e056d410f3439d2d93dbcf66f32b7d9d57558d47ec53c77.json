@@ -1,0 +1,227 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT rcr.id AS \"id!: RoomId\",\n                   rcr.requested_by AS \"requested_by!: UserId\",\n                   COALESCE(u.username, '') AS \"requested_by_username!\",\n                   rcr.name AS \"name!\",\n                   rcr.description AS \"description!\",\n                   rc.id AS \"category_id: RoomCategoryId\",\n                   rc.key AS \"category_key?\",\n                   rc.name AS \"category_name?\",\n                   rc.description AS \"category_description?\",\n                   rc.sort_order AS \"category_sort_order?\",\n                   rc.is_enabled AS \"category_is_enabled?\",\n                   rc.created_at AS \"category_created_at?\",\n                   rc.updated_at AS \"category_updated_at?\",\n                   rcr.status AS \"status!: ReviewStatus\",\n                   rcr.requested_at AS \"requested_at!\",\n                   rcr.reviewed_at AS \"reviewed_at?\",\n                   rcr.reviewed_by AS \"reviewed_by?: UserId\",\n                   rcr.rejection_reason AS \"rejection_reason?\"\n            FROM room_creation_requests rcr\n            LEFT JOIN users u ON u.id = rcr.requested_by\n            LEFT JOIN room_categories rc ON rc.id = rcr.category_id\n            WHERE rcr.id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "requested_by!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "requested_by"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "requested_by_username!",
+        "type_info": "Varchar",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "name!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "description!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "category_id: RoomCategoryId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_categories",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "category_key?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_categories",
+            "name": "key"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "category_name?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_categories",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "category_description?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_categories",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "category_sort_order?",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "room_categories",
+            "name": "sort_order"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "category_is_enabled?",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "room_categories",
+            "name": "is_enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "category_created_at?",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_categories",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "category_updated_at?",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_categories",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "status!: ReviewStatus",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "requested_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "requested_at"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "reviewed_at?",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "reviewed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "reviewed_by?: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "reviewed_by"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "rejection_reason?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "rejection_reason"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "168ed07152ae8b4b5e056d410f3439d2d93dbcf66f32b7d9d57558d47ec53c77"
+}

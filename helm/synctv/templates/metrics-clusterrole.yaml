@@ -1,0 +1,33 @@
+{{- if and .Values.metrics.enabled (eq (.Values.metrics.auth.mode | default "bearer_token") "kubernetes") }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "synctv.fullname" . }}-metrics-kubernetes-auth
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - authentication.k8s.io
+    resources:
+      - tokenreviews
+    verbs:
+      - create
+  - apiGroups:
+      - authorization.k8s.io
+    resources:
+      - subjectaccessreviews
+    verbs:
+      - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "synctv.fullname" . }}-metrics-reader
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+rules:
+  - nonResourceURLs:
+      - "/metrics"
+    verbs:
+      - get
+{{- end }}

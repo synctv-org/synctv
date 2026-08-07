@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH resource_insert AS (\n                INSERT INTO room_resource_events (\n                    event_id,\n                    scope_type,\n                    room_id,\n                    user_id,\n                    aggregate_type,\n                    aggregate_id,\n                    resource_type,\n                    resource_id,\n                    event_type,\n                    event_version,\n                    aggregate_version,\n                    actor_user_id,\n                    payload,\n                    summary,\n                    occurred_at\n                )\n                SELECT\n                    $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24\n                WHERE $10::text IS NOT NULL\n                ON CONFLICT (event_id) DO NOTHING\n            ),\n            inserted AS (\n                INSERT INTO realtime_outbox (\n                    id,\n                    aggregate_type,\n                    aggregate_id,\n                    event_type,\n                    event_version,\n                    aggregate_version,\n                    payload,\n                    status\n                )\n                SELECT $1, $2, $3, $4, $5, $6, $7, $8\n                WHERE $25\n                RETURNING id\n            )\n            SELECT pg_notify($9, id) FROM inserted\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pg_notify",
+        "type_info": "Void",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Jsonb",
+        "Int2",
+        "Text",
+        "Text",
+        "Int2",
+        "Int8",
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Jsonb",
+        "Jsonb",
+        "Timestamptz",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "74612376680d0c98f79c2b82733aff8eab255c97e46347df45f1526a150d2157"
+}

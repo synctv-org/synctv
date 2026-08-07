@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO provider_playback_sessions (\n                   room_id, playback_generation, provider_instance_name,\n                   credential_owner_id, resource_key, resource_version, session,\n                   state, lease_expires_at, cleanup_attempts, cleanup_fence\n               )\n               VALUES ($1, $2, $3, $4, $5, $6, $7, 1, $8, 0, 0)\n               ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text",
+        "Int8",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "01836554839b16cd121dbf6c96d39bd3e6eef087a58a0cfab076da1beeb10fc3"
+}

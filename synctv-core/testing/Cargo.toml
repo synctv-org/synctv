@@ -1,0 +1,53 @@
+[package]
+name = "synctv-core-testing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+synctv-core = { path = "..", default-features = false, features = ["test-support"] }
+synctv-common.workspace = true
+synctv-xiu = { workspace = true, optional = true }
+
+anyhow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+hex.workspace = true
+opaque-ke.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sha2_010.workspace = true
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "chrono", "uuid", "json"] }
+testcontainers = { workspace = true, features = ["reusable-containers"] }
+testcontainers-modules = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+redis = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true
+
+[features]
+default = []
+docker = []
+streaming = ["dep:synctv-xiu"]
+tls-aws-lc = [
+    "synctv-core/tls-aws-lc",
+    "testcontainers/aws-lc-rs",
+    "testcontainers-modules/aws-lc-rs",
+]
+tls-ring = [
+    "synctv-core/tls-ring",
+    "testcontainers/ring",
+    "testcontainers-modules/ring",
+]
+
+[lib]
+name = "synctv_core_testing"
+path = "src/lib.rs"

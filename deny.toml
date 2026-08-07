@@ -1,0 +1,41 @@
+[advisories]
+unmaintained = "all"
+unsound = "all"
+yanked = "warn"
+ignore = [
+    { id = "RUSTSEC-2023-0071", reason = "rsa is only reached transitively and the advisory has no upstream fixed version yet" },
+    { id = "RUSTSEC-2024-0436", reason = "paste remains required by direct macros and transitive cel usage with no maintained drop-in replacement available" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is still required for PEM parsing and the advisory has no replacement release to upgrade to" },
+    { id = "RUSTSEC-2025-0141", reason = "bincode 2 is still required by the on-disk cache format and the advisory is maintenance-only with no fixed successor release" },
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "MPL-2.0",
+    "OpenSSL",
+    "NCSA",
+    "Unicode-3.0",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "allow"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

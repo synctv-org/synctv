@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT EXISTS (\n            SELECT 1\n            FROM room_members rm\n            WHERE rm.room_id = $1\n              AND rm.user_id = $2\n              AND NOT EXISTS (\n                  SELECT 1\n                  FROM room_member_kick_cooldowns rmkc\n                  WHERE rmkc.room_id = rm.room_id\n                    AND rmkc.user_id = rm.user_id\n                    AND rmkc.ends_at > CURRENT_TIMESTAMP\n              )\n            FOR UPDATE\n        ) AS \"exists!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "4fa20f4bc8fb15609cbf83235d3d4cc254f57610d263dc6789e99763685e8c44"
+}

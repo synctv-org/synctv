@@ -1,0 +1,75 @@
+//! Provider gRPC Services
+//!
+//! Provider-specific gRPC services for parse, browse, proxy, etc.
+
+pub(crate) mod acfun;
+pub(crate) mod alist;
+pub(crate) mod bilibili;
+pub(crate) mod cctv;
+pub(crate) mod cloudreve;
+pub(crate) mod common;
+pub(crate) mod douyin;
+pub(crate) mod douyu;
+pub(crate) mod emby;
+pub(crate) mod fnos;
+pub(crate) mod huya;
+pub(crate) mod nextcloud;
+pub(crate) mod playback_provider;
+pub(crate) mod qnap;
+pub(crate) mod rtmp;
+pub(crate) mod seafile;
+pub(crate) mod synology;
+pub(crate) mod tiktok;
+pub(crate) mod truenas;
+pub(crate) mod twitch;
+pub(crate) mod youtube;
+
+pub(crate) fn provider_request_metadata<T>(
+    request: &tonic::Request<T>,
+    runtime_settings: &synctv_api_common::ApiRuntimeSettings,
+) -> Result<synctv_api_common::impls::RequestMetadata, tonic::Status> {
+    crate::grpc::request_metadata(
+        request,
+        runtime_settings,
+        Some(crate::grpc::grpc_unary_request_timeout()),
+    )
+}
+
+pub(crate) fn provider_instance_name(instance_name: &str) -> Result<Option<String>, tonic::Status> {
+    synctv_api_common::providers::common::provider_instance_name_from_query(
+        &synctv_proto::providers::common::ProviderInstanceQuery {
+            instance_name: instance_name.to_string(),
+        },
+    )
+    .map(|name| name.map(str::to_owned))
+    .map_err(crate::grpc::map_api_error)
+}
+
+#[cfg(test)]
+mod tests {
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    #[test]
+    fn provider_instance_name_rejects_invalid_grpc_body_field() -> TestResult {
+        let Err(status) = super::provider_instance_name("bad/name") else {
+            return Err(test_error(
+                "gRPC body instance_name validation accepted invalid input",
+            ));
+        };
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        Ok(())
+    }
+
+    #[test]
+    fn provider_instance_name_trims_valid_value() -> TestResult {
+        let instance_name = super::provider_instance_name("  alist-main  ")?;
+
+        assert_eq!(instance_name.as_deref(), Some("alist-main"));
+        Ok(())
+    }
+}

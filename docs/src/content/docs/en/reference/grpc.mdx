@@ -1,0 +1,77 @@
+---
+title: gRPC API
+description: Access and debug SyncTV gRPC APIs with reflection or protobuf definitions.
+---
+
+import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## gRPC Entry Point
+
+SyncTV public gRPC and HTTP REST share `server.port`, default `8080`.
+
+`server.enable_reflection=false` by default. Enable reflection temporarily in a test or trusted internal environment to explore services with `grpcurl`. Use the protobuf files when calling a public instance.
+
+<Aside type="caution">
+gRPC reflection exposes service and message structure. It is useful for development, internal debugging, and staging, but should not be left enabled on public production endpoints.
+</Aside>
+
+## Use `grpcurl`
+
+<Tabs>
+  <TabItem label="Reflection" icon="magnifier">
+
+Enable reflection in the deployment configuration, then restart SyncTV:
+
+```bash
+SYNCTV_SERVER_ENABLE_REFLECTION=true
+```
+
+List services:
+
+```bash
+grpcurl -plaintext localhost:8080 list
+grpcurl -plaintext localhost:8080 list synctv.client.AuthService
+```
+
+Public client services include `synctv.client.AuthService`, `UserService`, `RoomService`, `PublicService`, `EmailService`, `NotificationService`, `OAuth2Service`, `ProviderCommonService`, `AlistProviderService`, `BilibiliProviderService`, `EmbyProviderService`, and `RtmpProviderService`. The public admin gRPC service is `synctv.admin.AdminService`. The management gRPC service is a separate endpoint named `synctv.management.ManagementService`; it is not served on `server.port`.
+
+  </TabItem>
+  <TabItem label="Protobuf Files" icon="document">
+
+Use repository protobuf files without reflection:
+
+```bash
+grpcurl -plaintext \
+  -import-path synctv-proto \
+  -proto proto/client.proto \
+  localhost:8080 \
+  synctv.client.AuthService/Login
+```
+
+  </TabItem>
+</Tabs>
+
+`-plaintext` is for local development or trusted internal networks only. Production deployments should use TLS at the proxy or client connection layer.
+
+## Register Example
+
+```bash
+grpcurl -plaintext -d '{
+  "username": "alice",
+  "email": "alice@example.com",
+  "password": "SecurePassword123"
+}' localhost:8080 synctv.client.AuthService/Register
+```
+
+## Login Example
+
+```bash
+grpcurl -plaintext -d '{
+  "username": "alice",
+  "password": "SecurePassword123"
+}' localhost:8080 synctv.client.AuthService/Login
+```
+
+## Relationship With OpenAPI
+
+OpenAPI documents HTTP APIs only. gRPC debugging uses reflection or protobuf files. See [OpenAPI Access](../openapi/) for Swagger UI and OpenAPI JSON.

@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package acproto;
+
+enum ZtLiveDownstreamPayloadErrorCode {
+	SUCCESS_DOWNSTREAM_PAYLOAD = 0;
+	CS_CMD_PARSE_ERROR = 100001;
+	CS_CMD_CMD_NOT_SUPPORT = 100002;
+	CS_CMD_TICKET_ILLEGAL = 100003;
+}

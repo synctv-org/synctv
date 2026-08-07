@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package acproto;
+
+import "TokenInfo.proto";
+
+message PacketHeader {
+    int32 appId = 1;
+    int64 uid = 2;
+    int64 instanceId = 3;
+    uint32 flags = 5;
+    EncodingType encodingType = 6;
+    uint32 decodedPayloadLen = 7;
+    EncryptionMode encryptionMode = 8;
+    TokenInfo tokenInfo = 9;
+    int64 seqId = 10;
+    repeated Feature features = 11;
+    string kpn = 12;
+
+    enum Flags {
+        option allow_alias = true;
+        kDirUpstream = 0;
+        kDirDownstream = 1;
+        kDirMask = 1;
+    }
+    enum EncodingType {
+        kEncodingNone = 0;
+        kEncodingLz4 = 1;
+    }
+    enum EncryptionMode {
+        kEncryptionNone = 0;
+        kEncryptionServiceToken =1;
+        kEncryptionSessionKey = 2;
+    }
+    enum Feature {
+        kReserve = 0;
+        kCompressLz4 = 1;
+    }
+}

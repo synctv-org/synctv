@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT details AS \"details!: serde_json::Value\" FROM audit_logs WHERE actor_id = '100109'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "details!: serde_json::Value",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "details"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "73aa0809a4e813a1dd796ae65b36ddf94eb1359bb9e692a0937e9f2233af1c20"
+}

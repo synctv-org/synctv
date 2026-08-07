@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE room_members\n         SET admin_removed_permissions = admin_removed_permissions | $3,\n             added_permissions = 0,\n             removed_permissions = 0\n         WHERE room_id = $1 AND user_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "946b0fcc88d7d821f6e65f7a3464d39b9d996916f9d1097630b4b63a5e6431d5"
+}

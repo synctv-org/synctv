@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM chat_messages\n            WHERE created_at <= NOW() - INTERVAL '90 days'\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "401132bddf01263a4f25442e6cc9c829bedfd65b7018d84d1d5921c553a062ed"
+}

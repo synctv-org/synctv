@@ -1,0 +1,76 @@
+---
+title: SyncTV Server
+description: 部署、配置和运营 SyncTV Server。
+tableOfContents: false
+---
+
+import LocaleRedirect from '../../components/LocaleRedirect.astro';
+import LocaleChoiceTracker from '../../components/LocaleChoiceTracker.astro';
+import { Icon } from '@astrojs/starlight/components';
+import { dockerImageTag } from '../../lib/project';
+
+<LocaleRedirect />
+<LocaleChoiceTracker />
+
+<div class="docs-home-kicker">Server {dockerImageTag}</div>
+
+<p class="docs-home-lead">
+在单台服务器上使用 Docker Compose；在现有 Kubernetes 集群中使用 Helm。安装完成后配置公网入口、长期密钥、备份和监控。
+</p>
+
+<nav class="docs-home-actions" aria-label="安装入口">
+  <a href="install/docker-compose/"><Icon name="rocket" />Docker Compose 安装</a>
+  <a href="install/choose-path/"><Icon name="list-format" />选择部署方式</a>
+</nav>
+
+<div class="docs-directory">
+  <section>
+    <div class="docs-directory-heading"><Icon name="rocket" /><h2>部署</h2></div>
+    <ul class="docs-link-list">
+      <li><a href="install/docker-compose/"><strong>Docker Compose 安装</strong><span>服务器、NAS 或虚拟机</span></a></li>
+      <li><a href="install/helm/"><strong>Helm 安装</strong><span>Kubernetes、Ingress 与多副本</span></a></li>
+      <li><a href="operations/upgrades/"><strong>升级现有实例</strong><span>备份、迁移与回滚</span></a></li>
+      <li><a href="install/production-checklist/"><strong>生产部署清单</strong><span>TLS、密钥、数据与监控</span></a></li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="docs-directory-heading"><Icon name="setting" /><h2>配置</h2></div>
+    <ul class="docs-link-list">
+      <li><a href="configuration/how-configuration-works/"><strong>加载顺序</strong><span>YAML、环境变量与 secret 文件</span></a></li>
+      <li><a href="configuration/full-example/"><strong>配置示例</strong><span>最小生产配置和完整字段模板</span></a></li>
+      <li><a href="configuration/security/"><strong>安全与密钥</strong><span>JWT、OPAQUE、CORS 与凭据加密</span></a></li>
+      <li><a href="reference/configuration-index/"><strong>配置字段</strong><span>类型、默认值与重启要求</span></a></li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="docs-directory-heading"><Icon name="laptop" /><h2>管理</h2></div>
+    <ul class="docs-link-list">
+      <li><a href="admin/"><strong>管理 SyncTV</strong><span>用户、房间、权限与 Provider</span></a></li>
+      <li><a href="admin/users/"><strong>用户管理</strong><span>角色、封禁与账号安全状态</span></a></li>
+      <li><a href="admin/rooms-members/"><strong>房间与成员</strong><span>房间生命周期、成员角色与播放控制</span></a></li>
+      <li><a href="admin/runtime-settings/"><strong>运行设置</strong><span>查看和修改数据库中的动态设置</span></a></li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="docs-directory-heading"><Icon name="laptop" /><h2>运维</h2></div>
+    <ul class="docs-link-list">
+      <li><a href="operations/upgrades/"><strong>升级与迁移</strong><span>备份、数据库迁移与回滚</span></a></li>
+      <li><a href="operations/observability/"><strong>监控与运行手册</strong><span>健康检查、metrics、日志与告警</span></a></li>
+      <li><a href="operations/backup-restore/"><strong>备份与恢复</strong><span>PostgreSQL、密钥与恢复演练</span></a></li>
+      <li><a href="operations/troubleshooting/"><strong>排障</strong><span>按错误、状态码和运行信号定位问题</span></a></li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="docs-directory-heading"><Icon name="puzzle" /><h2>API 与参考</h2></div>
+    <ul class="docs-link-list">
+      <li><a href="integrations/client-integration/"><strong>客户端集成</strong><span>认证、HTTP、gRPC 与 Realtime</span></a></li>
+      <li><a href="reference/cli/"><strong>CLI</strong><span>服务控制与管理命令</span></a></li>
+      <li><a href="reference/openapi/"><strong>OpenAPI</strong><span>HTTP API 规范与客户端生成</span></a></li>
+      <li><a href="reference/environment-variables/"><strong>环境变量</strong><span>容器和服务配置覆盖项</span></a></li>
+    </ul>
+  </section>
+</div>

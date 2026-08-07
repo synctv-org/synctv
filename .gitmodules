@@ -1,6 +1,0 @@
-[submodule "vendors"]
-	path = vendors
-	url = https://github.com/synctv-org/vendors
-[submodule "synctv-web"]
-	path = synctv-web
-	url = https://github.com/synctv-org/synctv-web

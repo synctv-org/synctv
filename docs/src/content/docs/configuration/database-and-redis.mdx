@@ -1,0 +1,171 @@
+---
+title: 数据库与 Redis
+description: PostgreSQL、Redis、连接池、Sentinel、单机模式和集群依赖。
+---
+
+## PostgreSQL
+
+PostgreSQL 是 SyncTV 的主持久化存储。用户、房间、播放列表、媒体元数据、审计数据、Provider 凭据和大部分持久业务状态都在 PostgreSQL 中。
+
+生产环境必须持久化 PostgreSQL，在升级前备份，并先在非生产环境验证 migration。
+
+## `database.url`
+
+默认值：
+
+```yaml
+database:
+  url: "postgresql://synctv:synctv@localhost:5432/synctv"
+  # 可选，只用于白名单内的最终一致读
+  read_url: "postgresql://synctv:synctv@postgres-read:5432/synctv"
+```
+
+生产环境使用 secret file：
+
+```yaml
+database:
+  url_file: "/run/secrets/database_url"
+  read_url_file: "/run/secrets/database_read_url"
+```
+
+环境变量：
+
+```bash
+SYNCTV_DATABASE_URL=postgresql://synctv:password@postgres:5432/synctv
+SYNCTV_DATABASE_URL_FILE=/run/secrets/database_url
+SYNCTV_DATABASE_READ_URL=postgresql://synctv:password@postgres-read:5432/synctv
+SYNCTV_DATABASE_READ_URL_FILE=/run/secrets/database_read_url
+SYNCTV_DATABASE_READ_HOST=postgres-read
+SYNCTV_DATABASE_READ_PORT=5432
+```
+
+`read_url` 优先级最高。也可以只配置 `read_host` / `SYNCTV_DATABASE_READ_HOST`，SyncTV 会复用主库连接里的用户名、密码和库名，只替换 host，并在 `read_port` 为空时复用主库端口。
+
+`read_url` / `read_host` 仅用于显式标记为最终一致的列表/发现类查询。写入、事务、迁移、权限检查、缓存重建和认证安全路径始终使用主库连接。
+
+## 拆分数据库配置
+
+```yaml
+database:
+  host: "postgres.example.com"
+  port: 5432
+  username: "synctv"
+  password_file: "/run/secrets/database_password"
+  name: "synctv"
+  read_host: "postgres-read.example.com"
+  read_port: 5432
+```
+
+使用拆分字段且没有显式 `database.url` 时，SyncTV 会清空默认 URL 并从拆分字段构建连接。用户名字段统一使用 `username`，环境变量统一使用 `SYNCTV_DATABASE_USERNAME`。
+
+## 连接池
+
+| 字段 | 默认值 | 用途 |
+| --- | --- | --- |
+| `database.max_connections` | `20` | PostgreSQL 连接池最大连接数 |
+| `database.min_connections` | `5` | 最小空闲连接数 |
+| `database.connect_timeout_seconds` | `10` | 建立连接超时 |
+| `database.idle_timeout_seconds` | `600` | 空闲连接保留时间 |
+| `database.max_lifetime_seconds` | `1800` | 连接回收前最大生命周期 |
+
+小型单机部署通常保留默认值。调大 `max_connections` 前，先确认 PostgreSQL 总连接上限和其他应用连接池。
+
+## Redis 作用
+
+Redis 在单机模式下可选，在生产环境建议配置，在集群模式下必需。
+
+Redis 支撑或增强：
+
+- token blacklist 和跨节点撤销
+- 限流计数
+- 暴力破解防护状态
+- 用户名、权限和小型业务缓存
+- OAuth2 state
+- WebAuthn/passkey challenge
+- MFA session
+- 缓存失效
+- 集群 pub/sub、节点发现、健康状态和 stream catch-up
+
+没有 Redis 的单机模式会尽量使用内存 fallback。内存状态会在重启后丢失，也无法跨副本共享。
+
+## `redis.url`
+
+单 Redis 实例：
+
+```yaml
+redis:
+  url_file: "/run/secrets/redis_url"
+  key_prefix: "synctv:"
+```
+
+环境变量：
+
+```bash
+SYNCTV_REDIS_URL=redis://redis:6379
+SYNCTV_REDIS_URL_FILE=/run/secrets/redis_url
+```
+
+## 拆分 Redis 配置
+
+```yaml
+redis:
+  host: "redis.example.com"
+  port: 6379
+  username: ""
+  password_file: "/run/secrets/redis_password"
+  database: 0
+```
+
+用户名字段统一使用 `username`，环境变量统一使用 `SYNCTV_REDIS_USERNAME`。
+
+## Redis 超时和 pipeline buffer
+
+| 字段 | 默认值 | 用途 |
+| --- | --- | --- |
+| `redis.connect_timeout_seconds` | `5` | 建立 Redis 连接超时 |
+| `redis.response_timeout_seconds` | `5` | Redis 命令响应超时 |
+| `redis.pipeline_buffer_size` | `512` | Redis connection manager 内部 pipeline buffer |
+
+只有 Redis 跨网络、经过代理或存在预期 failover 窗口时才调大 `response_timeout_seconds`。频繁超时时，先检查 Redis CPU、慢查询、网络延迟和连接压力。
+
+`pipeline_buffer_size` 默认适合大多数部署。高并发短命令突刺可以适度调大，代价是更多内存。不要设为 `0`。
+
+## Redis Sentinel
+
+Sentinel 模式连接 Redis Sentinel 部署。连续健康检查失败后，SyncTV 会向 Sentinel 查询当前 master，并尽力重建和热替换 Redis 连接。
+
+这不是强 failover 保证。failover 窗口内的 Redis 操作仍可能失败；依赖 Redis 锁和 pub/sub 的集群协调也可能不安全。因此 Sentinel 模式不能与 `cluster.enabled=true` 同时使用。
+
+```yaml
+redis:
+  deployment_mode: "sentinel"
+  sentinel_master_name: "mymaster"
+  sentinel_addresses:
+    - "redis://sentinel-0.redis:26379"
+    - "redis://sentinel-1.redis:26379"
+    - "redis://sentinel-2.redis:26379"
+```
+
+集群模式使用稳定单入口 Redis、托管 Redis，或由平台保证连接语义的方案。
+
+## 集群依赖
+
+`cluster.enabled=true` 时必须配置 Redis 和 `cluster.secret`。
+
+```yaml
+cluster:
+  enabled: true
+  secret_file: "/run/secrets/cluster_secret"
+
+redis:
+  url_file: "/run/secrets/redis_url"
+```
+
+没有 Redis 时，多副本无法安全提供节点注册、pub/sub、健康监控、事件补偿和分布式 leader election。
+
+## 运维要点
+
+- PostgreSQL 在升级和 migration 前备份。
+- Redis 丢失会影响 OAuth2 state、限流计数、token blacklist 和集群短期状态。
+- 共用 Redis 时使用稳定且唯一的 `redis.key_prefix`。
+- 不要把 PostgreSQL 或 Redis 直接暴露公网。

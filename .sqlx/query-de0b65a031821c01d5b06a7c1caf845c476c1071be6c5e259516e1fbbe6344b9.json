@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE provider_playback_sessions\n               SET credential_owner_id = $2,\n                   resource_version = $3,\n                   session = $4,\n                   state = 1,\n                   lease_expires_at = $5,\n                   stop_position = NULL,\n                   stop_reason = NULL,\n                   cleanup_attempts = 0,\n                   next_cleanup_at = NULL,\n                   cleanup_lease_until = NULL,\n                   cleanup_fence = cleanup_fence\n                       + CASE WHEN state IN (2, 3) THEN 1 ELSE 0 END\n               WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text",
+        "Jsonb",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "de0b65a031821c01d5b06a7c1caf845c476c1071be6c5e259516e1fbbe6344b9"
+}

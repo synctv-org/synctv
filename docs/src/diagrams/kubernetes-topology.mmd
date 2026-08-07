@@ -1,0 +1,41 @@
+flowchart TB
+  Client[Client apps]
+
+  subgraph Edge["Kubernetes edge"]
+    HTTPIngress[HTTP Ingress]
+    GRPCIngress[gRPC Ingress<br/>backend-protocol: GRPC]
+    HTTPService[HTTP Service]
+    GRPCService[gRPC Service]
+  end
+
+  subgraph Workload["SyncTV workload"]
+    PodA[SyncTV pod]
+    PodB[SyncTV pod]
+    PodC[SyncTV pod]
+  end
+
+  PG[(PostgreSQL)]
+  Redis[(Redis)]
+  HLS[(Optional shared HLS storage<br/>or publisher-node proxy)]
+  External[External media providers]
+
+  Client --> HTTPIngress --> HTTPService
+  Client --> GRPCIngress --> GRPCService
+  HTTPService --> PodA
+  HTTPService --> PodB
+  HTTPService --> PodC
+  GRPCService --> PodA
+  GRPCService --> PodB
+  GRPCService --> PodC
+  PodA --> PG
+  PodB --> PG
+  PodC --> PG
+  PodA --> Redis
+  PodB --> Redis
+  PodC --> Redis
+  PodA --> HLS
+  PodB --> HLS
+  PodC --> HLS
+  PodA --> External
+  PodB --> External
+  PodC --> External

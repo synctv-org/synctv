@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT settings AS \"settings!: RoomSettings\"\n            FROM room_settings\n            WHERE room_id = $1\n            FOR UPDATE\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "settings!: RoomSettings",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "room_settings",
+            "name": "settings"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "69362415adf56968dc0169025a432792f3f0f3711125f4cc9181caf60201650c"
+}

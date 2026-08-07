@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO room_password_credentials (\n                room_id,\n                opaque_record,\n                opaque_credential_identifier,\n                opaque_ciphersuite,\n                opaque_server_setup_version,\n                enabled,\n                version\n             ) VALUES ($1, $2, $3, $4, $5, TRUE, 1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Bytea",
+        "Varchar",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b60385c019ed2ecd3adde381d406dd4e427561316a45b900a9efcad82dccfaf9"
+}

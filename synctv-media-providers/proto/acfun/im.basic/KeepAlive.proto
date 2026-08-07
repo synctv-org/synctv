@@ -1,0 +1,27 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+import "Register.proto";
+import "PushServiceToken.proto";
+import "AccessPointsConfig.proto";
+
+message KeepAliveRequest {
+	RegisterRequest.PresenceStatus presenceStatus = 1;
+	RegisterRequest.ActiveStatus appActiveStatus = 2;
+	PushServiceToken pushServiceToken = 3;
+	repeated PushServiceToken pushServiceTokenList = 4;
+	int32 keepaliveIntervalSec = 5;
+	bool ipv6Available = 6;
+}
+
+message KeepAliveResponse {
+	AccessPointsConfig accessPointsConfig = 1;
+	int64 serverMsec = 2;
+	AccessPointsConfig accessPointsConfigIpv6 = 3;
+	AccessPointsConfig accessPointsConfigQUic = 6;
+	AccessPointsConfig accessPointsConfigQuicIpv6 = 7;
+	float flowCostSampleRate = 8;
+	float commandSampleRate = 9;
+	AccessPointsConfig accessPointsConfigWs = 10;
+}

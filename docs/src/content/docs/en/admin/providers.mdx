@@ -1,0 +1,41 @@
+---
+title: Provider Management
+description: Create, enable, disable, update, reconnect, and delete remote Provider gRPC instances.
+---
+
+A Provider instance is SyncTV's connection configuration for a remote Provider gRPC service. It stores only the `endpoint`, TLS settings, JWT secret, custom CA, timeout, and the Provider types declared by that remote service. Upstream media-source accounts, tokens, cookies, user agents, and backend-specific settings belong to user Provider credentials or the remote Provider deployment, not this instance configuration.
+
+Remote Provider instances accept every Provider type supported by the CLI: `direct-url`, `bilibili`, `alist`, `emby`, `rtmp`, `live-proxy`, `cloudreve`, `twitch`, `huya`, `douyu`, `douyin`, `acfun`, `cctv`, `fnos`, `qnap`, `synology`, `nextcloud`, `seafile`, `truenas`, `youtube`, and `tiktok`. The enabled types are determined by the remote service deployment.
+
+## Common Commands
+
+```bash
+synctv provider-instance available
+synctv provider-instance list
+synctv provider-instance create <NAME> <ENDPOINT> --provider alist
+synctv provider-instance update <NAME> --instance-endpoint <ENDPOINT>
+synctv provider-instance enable <NAME>
+synctv provider-instance disable <NAME>
+synctv provider-instance reconnect <NAME>
+synctv provider-instance delete <NAME>
+```
+
+## Before You Change a Provider
+
+| Operation | Check first |
+| --- | --- |
+| Create | Endpoint, TLS/JWT/CA settings, and declared `--provider` values match the remote service |
+| Update | Endpoint, TLS, JWT secret, CA, timeout, and supported Provider types |
+| Disable | Whether playlists, media rows, or provider credentials still depend on it |
+| Delete | Whether playlists, media rows, provider credentials, or remote instances still reference it |
+| Reconnect | Upstream reachability and credential expiry |
+
+## Playback Validation
+
+1. An administrator can browse or search media.
+2. A normal user sees media according to permissions.
+3. Direct and proxy playback behave as expected.
+4. Range seek works for upstreams that support Range.
+5. Header-sensitive sources use correct `User-Agent`, `Referer`, `Range`, and authentication headers.
+
+See [Media Provider Configuration](../../configuration/media-providers/) for types, connection parameters, and credential storage.

@@ -1,0 +1,210 @@
+---
+title: 服务监听与运行时路径
+description: server、time、data_dir、logging、management 配置。
+---
+
+这些配置决定 SyncTV 监听地址、外部访问方式、运行时文件目录、日志格式和 CLI 管理端点。
+
+## `server`
+
+HTTP REST 和公开 gRPC 共用 `server.port`。
+
+### `server.host`
+
+默认值：
+
+```yaml
+server:
+  host: "0.0.0.0"
+```
+
+| 值 | 含义 | 场景 |
+| --- | --- | --- |
+| `0.0.0.0` | 监听所有 IPv4 网卡 | Docker、Kubernetes、服务器部署 |
+| `127.0.0.1` | 只监听本机 | 本地开发、只允许反向代理访问 |
+| `::` | 监听所有 IPv6 网卡 | IPv6 环境 |
+
+### `server.port`
+
+默认值：
+
+```yaml
+server:
+  port: 8080
+```
+
+HTTP REST、公开 gRPC 和健康检查使用这个端口。Helm 会把 HTTP 和 gRPC 暴露成独立 Service，但它们仍指向同一个容器端口。
+
+### `server.enable_reflection`
+
+默认值：`false`。
+
+开启公开 gRPC reflection。默认关闭；本地开发和受控内网调试可以显式开启，公网生产环境应保持关闭。
+
+### `server.grpc_max_message_size_bytes`
+
+默认值：`16777216`，即 16 MiB。
+
+限制 gRPC 请求和响应大小。只有批量操作确实需要时才调高。
+
+### `server.grpc_compression_enabled`
+
+默认值：`true`。
+
+允许主 SyncTV 进程中的 gRPC 客户端和服务端协商 gzip 压缩，包括公开 gRPC、management gRPC、cluster/livestream 内部 gRPC 链路，以及出站远程 media-provider gRPC client。它不强制所有请求压缩。
+
+独立部署的远程 media-provider server 不读取主 SyncTV 配置文件。它的服务端压缩协商使用 `PROVIDER_GRPC_COMPRESSION_ENABLED` 配置。
+
+### `server.trusted_proxies`
+
+默认值：`[]`。
+
+允许指定哪些反向代理的 `X-Forwarded-For` / `X-Real-IP` 可信：
+
+```yaml
+server:
+  trusted_proxies:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+```
+
+不要使用 `0.0.0.0/0` 或 `::/0`。不确定时保持空列表，SyncTV 使用 socket peer address。
+
+### `server.cors_allowed_origins`
+
+默认值：`[]`。
+
+允许浏览器跨域访问 API 的前端 origin：
+
+```yaml
+server:
+  cors_allowed_origins:
+    - "https://app.example.com"
+```
+
+值必须是 origin，只包含协议、域名和可选端口。不要包含路径、query 或 fragment。
+
+环境变量：
+
+```bash
+SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
+```
+
+### `server.advertise_host`
+
+其他节点访问本节点时使用的地址。
+
+| 场景 | 值 |
+| --- | --- |
+| Kubernetes | Pod IP 或可解析的 Pod DNS |
+| 静态多节点 | 内网 IP 或内部 DNS |
+| 单机 | 留空 |
+
+留空时，SyncTV 会尝试 `POD_IP`，再尝试系统 hostname。
+
+### `server.shutdown_drain_timeout_seconds`
+
+默认值：`30`。
+
+关闭时等待已有连接 drain 的时间。Kubernetes rolling update 中，termination grace period 应大于这个值。
+
+## `time.timezone`
+
+示例：
+
+```yaml
+time:
+  timezone: "Asia/Shanghai"
+```
+
+解析顺序：
+
+1. `time.timezone`
+2. `SYNCTV_TIME_TIMEZONE`
+3. `TZ`
+4. 系统时区
+5. `UTC`
+
+## `data_dir`
+
+```yaml
+data_dir: "/var/lib/synctv"
+```
+
+`data_dir` 用于 SyncTV 自己写入的本地运行时文件：
+
+- management Unix socket
+- 文件日志
+- HLS 直播分片
+- proxy slice cache 文件
+
+容器部署通常使用 `/data` 并挂载 volume。`data_dir` 不影响 `*_file` secret 路径。
+
+## `logging`
+
+顶层 `logging` 是全局兜底输出，覆盖数据库、Redis、缓存、代理、realtime、outbox、迁移、启动流程、第三方依赖和其余 target。`server`、`health`、`metrics`、`management`、`cluster`、`livestream`、`webrtc` 使用各自的专属输出。每条事件只进入一个输出：专属 target 进入对应组件，其余 target 进入全局输出。
+
+| 字段 | 默认值 | 用途 |
+| --- | --- | --- |
+| `logging.level` | `info` | 全局日志级别 |
+| `logging.format` | `text` | 全局日志格式（`text` 或 `json`） |
+| `logging.output` | `stdout` | 全局 `stdout`、`stderr` 或文件对象 |
+| `logging.color` | `auto` | 全局颜色策略（`auto`、`always` 或 `never`） |
+| `<component>.logging.level` | `info`（metrics/cluster 为 `warn`） | 组件日志级别 |
+| `<component>.logging.format` | `text` | 组件日志格式（`text` 或 `json`） |
+| `<component>.logging.output` | `stdout` | 组件独立的 `stdout`、`stderr` 或文件对象 |
+| `<component>.logging.color` | `auto` | `auto`、`always` 或 `never` |
+
+Kubernetes 或日志采集系统使用 JSON：
+
+```yaml
+logging:
+  level: "info"
+  format: "json"
+  output: stdout
+  color: never
+
+server:
+  logging:
+    level: "info"
+    format: "json"
+    output: stdout
+    color: never
+
+livestream:
+  logging:
+    level: "info"
+    format: "json"
+    output:
+      type: file
+      path: "logs/livestream.log"
+      rotation:
+        strategy: daily
+        max_files: 30
+    color: never
+
+webrtc:
+  logging:
+    level: "info"
+    format: "json"
+    output: stdout
+    color: never
+```
+
+全局和组件日志的相对文件路径都按 `data_dir` 解析。文件输出支持 `daily`、`hourly` 和 `never` 三种轮转策略；`rotation.max_files` 默认保留 30 个文件。容器环境通常把所有目标输出到 stdout，由日志采集系统按 JSON 字段处理。
+
+## `management`
+
+management endpoint 供 `synctv` CLI 执行受控管理操作，不是客户端业务 API。
+
+| 字段 | 默认值 | 用途 |
+| --- | --- | --- |
+| `management.enabled` | `true` | 启用管理端点 |
+| `management.transport` | Unix-like 默认 Unix，其他平台默认 TCP | 传输模式 |
+| `management.port` | `50052` | TCP 管理端口 |
+| `management.unix_socket_path` | `data_dir` 下的平台相关路径 | Unix socket 路径 |
+| `management.auth_token` | `""` | TCP management bearer token |
+| `management.enable_reflection` | `false` | management gRPC reflection |
+
+TCP management 必须配置强 token，不要暴露公网。Unix socket 路径可以相对 `data_dir`。

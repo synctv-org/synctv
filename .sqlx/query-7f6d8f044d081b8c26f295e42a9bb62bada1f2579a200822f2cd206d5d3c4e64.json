@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM provider_playback_sessions WHERE id = $1 AND state = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7f6d8f044d081b8c26f295e42a9bb62bada1f2579a200822f2cd206d5d3c4e64"
+}

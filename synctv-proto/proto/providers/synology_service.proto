@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package synctv.provider.synology;
+
+import "proto/providers/synology.proto";
+
+service SynologyProviderService {
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
+  rpc ListLibraries(ListLibrariesRequest) returns (ListLibrariesResponse);
+  rpc ListMovies(ListMoviesRequest) returns (ListVideoItemsResponse);
+  rpc ListTvShows(ListTvShowsRequest) returns (ListVideoItemsResponse);
+  rpc ListEpisodes(ListEpisodesRequest) returns (ListVideoItemsResponse);
+  rpc ListHomeVideos(ListHomeVideosRequest) returns (ListVideoItemsResponse);
+  rpc ListTvRecordings(ListTvRecordingsRequest) returns (ListVideoItemsResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+}

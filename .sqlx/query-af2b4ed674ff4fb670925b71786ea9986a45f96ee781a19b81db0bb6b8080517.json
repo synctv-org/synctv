@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO room_join_requests (\n                    room_id, user_id, requested_role, status, requested_at\n                )\n                VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int2",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "af2b4ed674ff4fb670925b71786ea9986a45f96ee781a19b81db0bb6b8080517"
+}

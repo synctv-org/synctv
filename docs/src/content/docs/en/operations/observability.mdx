@@ -1,0 +1,154 @@
+---
+title: Observability Runbook
+description: SyncTV health checks, metrics, logs, key monitoring signals, and incident data collection.
+---
+
+import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## Coverage
+
+Production monitoring covers request handling, external dependencies, authentication, realtime connections, and media paths:
+
+- HTTP/gRPC/API requests are being handled.
+- PostgreSQL and Redis are available.
+- Login, 2FA, OAuth2, WebAuthn, and email codes work.
+- WebSocket and room realtime sync work.
+- Provider, proxy, slice cache, and livestream paths do not show sustained failures.
+- Cluster registration, event publish, and catch-up are healthy.
+
+## Health Checks
+
+Main service readiness:
+
+```bash
+curl -fsS http://localhost:8081/health/ready
+```
+
+Probe requirements:
+
+- Use readiness semantics for readiness probes, not only TCP checks.
+- Keep liveness probes conservative to avoid restart loops during transient dependency issues.
+- During rolling updates, readiness should fail quickly after shutdown begins so traffic stops entering old pods.
+
+## Metrics
+
+Enable metrics:
+
+```yaml
+metrics:
+  enabled: true
+  host: "0.0.0.0"
+  port: 9090
+  auth:
+    mode: "bearer_token"
+    bearer_token_file: "/run/secrets/metrics_token"
+```
+
+Scrape test:
+
+```bash
+curl -fsS \
+  -H "Authorization: Bearer $METRICS_TOKEN" \
+  http://localhost:9090/metrics
+```
+
+Production requirements:
+
+- Do not expose metrics publicly.
+- In Kubernetes, prefer ServiceMonitor, VMServiceScrape, or controlled scraping.
+- If using Kubernetes auth, make sure the scraper service account has the required permissions.
+
+## Logs
+
+Service logs use text by default:
+
+```yaml
+server:
+  logging:
+    level: "info"
+    format: "text"
+    output: stdout
+    color: auto
+```
+
+For troubleshooting:
+
+```yaml
+server:
+  logging:
+    level: "debug"
+    format: "text"
+    output: stdout
+    color: auto
+```
+
+Notes:
+
+- `trace` can produce very large logs and should not stay enabled.
+- File log paths follow configuration path-resolution rules; avoid read-only directories.
+- Config display redacts secrets, but do not paste raw environment variables or values files containing real secrets into public issues.
+
+## Key Signals
+
+- **Dependencies**: PostgreSQL connectivity, pool exhaustion, Redis connectivity, Redis latency, and Redis key-prefix collisions.
+- **Authentication**: Login failures, MFA failures, email send failures, OAuth2 state errors, and brute-force lockouts.
+- **Realtime**: WebSocket connections, per-user/per-room limits, message rate limiting, and reconnect spikes.
+- **Media**: Provider error rate, upstream timeouts, proxy bypass, slice-cache hit rate, Range anomalies, and livestream retries.
+- **Logging**: `logging_dropped_lines_total{component=...}` should remain at zero; an increase means that component's non-blocking queue reached capacity.
+
+## Alert Starting Points
+
+| Alert | Possible cause | First checks |
+| --- | --- | --- |
+| Readiness keeps failing | DB/Redis unavailable, migration issue, config error | `synctv db status`, service logs |
+| Login failures spike | Brute force, OAuth2 callback error, wrong JWT rotation | Rate-limit logs, OAuth2 config, secret changes |
+| Email sending fails | SMTP credentials, TLS, provider rate limit | `synctv settings test-email`, SMTP logs |
+| WebSocket disconnect spike | Ingress timeout, rolling update, low connection limits | Ingress timeout, shutdown drain, connection limits |
+| Provider errors spike | Upstream unavailable, header mismatch, expired credential | Provider config, proxy headers, upstream response |
+| Redis errors | Redis restart, network issue, Sentinel misconfiguration | Redis logs, `redis.deployment_mode`, connection URL |
+| `logging_dropped_lines_total` increases | Log sink is slow or a component produces logs faster than its sink can drain | Component log level, disk/collector latency, component output configuration |
+
+## Incident Data Collection
+
+Collect shareable information first. Do not paste secrets.
+
+<Steps>
+1. Record version, deployment method, and whether cluster mode is enabled.
+2. Save redacted `synctv config show --output yaml`.
+3. Save recent service logs and restart events.
+4. Save `/health/ready` and `/metrics` availability results.
+5. Save `synctv db status` output.
+6. For Kubernetes, save `kubectl describe pod`, `kubectl get ingress,svc,pod`, and rollout status.
+7. For media issues, record provider type, direct/proxy mode, whether Range was used, and upstream HTTP status.
+</Steps>
+
+## Kubernetes Quick Checks
+
+<Tabs syncKey="k8s-observability">
+  <TabItem label="Pod" icon="cloud-download">
+
+```bash
+kubectl -n synctv get pod -o wide
+kubectl -n synctv describe pod <pod>
+kubectl -n synctv logs <pod> --tail=200
+```
+
+  </TabItem>
+  <TabItem label="Service/Ingress" icon="cloud-download">
+
+```bash
+kubectl -n synctv get svc,ingress
+kubectl -n synctv describe ingress synctv
+kubectl -n synctv describe ingress synctv-grpc
+```
+
+  </TabItem>
+  <TabItem label="Rollout" icon="rocket">
+
+```bash
+kubectl -n synctv rollout status deploy/synctv
+kubectl -n synctv rollout history deploy/synctv
+```
+
+  </TabItem>
+</Tabs>

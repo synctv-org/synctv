@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE provider_playback_sessions\n               SET state = 2, stop_position = COALESCE(stop_position, 0.0),\n                   stop_reason = $1, next_cleanup_at = NOW(), cleanup_lease_until = NULL\n               WHERE state = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e33c7cef9c993c91fd5668cb6d3a0394af28ff143ecf7d0d2caaaaa1d0587411"
+}

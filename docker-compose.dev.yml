@@ -1,0 +1,360 @@
+services:
+  postgres:
+    image: postgres:18
+    container_name: synctv-postgres-dev
+    environment:
+      POSTGRES_USER: synctv
+      POSTGRES_PASSWORD: synctv
+      POSTGRES_DB: synctv
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synctv"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - synctv-dev
+    restart: unless-stopped
+
+  redis:
+    image: redis:8
+    container_name: synctv-redis-dev
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_dev_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - synctv-dev
+    restart: unless-stopped
+
+  rustfs:
+    image: rustfs/rustfs:latest-glibc
+    container_name: synctv-rustfs-dev
+    profiles: ["storage"]
+    environment:
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_CONSOLE_ENABLE: "true"
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - rustfs_dev_data:/data
+    command: rustfs /data --address 0.0.0.0:9000 --console-address 0.0.0.0:9001
+    networks:
+      - synctv-dev
+    restart: unless-stopped
+
+  rustfs-init:
+    image: minio/mc:latest
+    container_name: synctv-rustfs-init-dev
+    profiles: ["storage"]
+    depends_on:
+      rustfs:
+        condition: service_started
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        until mc alias set rustfs http://rustfs:9000 rustfsadmin rustfsadmin; do
+          sleep 2
+        done
+        mc mb --ignore-existing rustfs/synctv-dev
+        mc anonymous set download rustfs/synctv-dev
+    networks:
+      - synctv-dev
+    restart: "no"
+
+  openlist:
+    image: openlistteam/openlist:latest
+    container_name: synctv-openlist-dev
+    profiles: ["media"]
+    user: "0:0"
+    environment:
+      UMASK: "022"
+      OPENLIST_ADMIN_PASSWORD: synctv-openlist
+    ports:
+      - "127.0.0.1:5244:5244"
+    volumes:
+      - openlist_dev_data:/opt/openlist/data
+      - openlist_dev_media:/opt/openlist/dev-media
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:5244/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    networks:
+      - synctv-dev
+    restart: unless-stopped
+
+  openlist-init:
+    image: curlimages/curl:latest
+    container_name: synctv-openlist-init-dev
+    profiles: ["media"]
+    user: "0:0"
+    depends_on:
+      openlist:
+        condition: service_healthy
+    volumes:
+      - openlist_dev_media:/opt/openlist/dev-media
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mkdir -p /opt/openlist/dev-media
+        if [ ! -f /opt/openlist/dev-media/hello.txt ]; then
+          printf "hello from openlist dev media\n" > /opt/openlist/dev-media/hello.txt
+        fi
+
+        token="$$(curl -fsS -X POST http://openlist:5244/api/auth/login \
+          -H 'Content-Type: application/json' \
+          -d '{"username":"admin","password":"synctv-openlist"}' \
+          | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+        if [ -z "$$token" ]; then
+          printf "OpenList admin login did not return a token.\n" >&2
+          exit 1
+        fi
+
+        if curl -fsS -H "Authorization: $$token" http://openlist:5244/api/admin/storage/list \
+          | grep -q '"mount_path":"/"'; then
+          curl -fsS -X POST -H "Authorization: $$token" http://openlist:5244/api/admin/storage/load_all
+        else
+          curl -fsS -X POST http://openlist:5244/api/admin/storage/create \
+            -H "Authorization: $$token" \
+            -H 'Content-Type: application/json' \
+            -d '{"driver":"Local","mount_path":"/","order":0,"remark":"SyncTV dev media","addition":"{\"root_folder_path\":\"/opt/openlist/dev-media\",\"thumbnail\":false,\"show_hidden\":true,\"mkdir_perm\":\"777\"}"}'
+          curl -fsS -X POST -H "Authorization: $$token" http://openlist:5244/api/admin/storage/load_all
+        fi
+    networks:
+      - synctv-dev
+    restart: "no"
+
+  emby-init:
+    image: curlimages/curl:latest
+    container_name: synctv-emby-init-dev
+    profiles: ["media"]
+    depends_on:
+      emby:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        emby=http://emby:8096
+        auth_header='X-Emby-Authorization: MediaBrowser Client="SyncTVDev", Device="curl", DeviceId="synctv-dev-emby", Version="1"'
+
+        until curl -fsS "$$emby/System/Info/Public" >/dev/null; do
+          sleep 2
+        done
+
+        user="$$(curl -fsS "$$emby/Startup/User" | sed -n 's/.*"Name":"\([^"]*\)".*/\1/p')"
+        if [ -z "$$user" ]; then
+          user=MyEmbyUser
+        fi
+
+        auth="$$(curl -fsS -X POST "$$emby/Users/AuthenticateByName" \
+          -H 'Content-Type: application/json' \
+          -H "$$auth_header" \
+          -d "{\"Username\":\"$$user\",\"Pw\":\"\"}" || true)"
+        if ! printf '%s' "$$auth" | grep -q '"AccessToken"'; then
+          auth="$$(curl -fsS -X POST "$$emby/Users/AuthenticateByName" \
+            -H 'Content-Type: application/json' \
+            -H "$$auth_header" \
+            -d "{\"Username\":\"$$user\",\"Pw\":\"synctv-emby\"}")"
+        fi
+
+        token="$$(printf '%s' "$$auth" | sed -n 's/.*"AccessToken":"\([^"]*\)".*/\1/p')"
+        user_id="$$(printf '%s' "$$auth" | sed -n 's/.*"User":{[^}]*"Id":"\([^"]*\)".*/\1/p')"
+        if [ -z "$$token" ] || [ -z "$$user_id" ]; then
+          printf "Emby login did not return token and user id.\n" >&2
+          exit 1
+        fi
+
+        curl -fsS -X POST "$$emby/Users/$$user_id/Password" \
+          -H "X-Emby-Token: $$token" \
+          -H 'Content-Type: application/json' \
+          -d '{"NewPw":"synctv-emby"}' >/dev/null
+
+        if ! curl -fsS "$$emby/Library/VirtualFolders" -H "X-Emby-Token: $$token" \
+          | grep -q '"Name":"SyncTV Dev Media"'; then
+          curl -fsS -X POST "$$emby/Library/VirtualFolders" \
+            -H "X-Emby-Token: $$token" \
+            -H 'Content-Type: application/json' \
+            -d '{"Name":"SyncTV Dev Media","CollectionType":"homevideos","RefreshLibrary":true,"LibraryOptions":{"ContentType":"homevideos","PathInfos":[{"Path":"/mnt/share1"}],"EnablePhotos":false,"EnableRealtimeMonitor":false}}' >/dev/null
+        fi
+
+        curl -fsS -X POST "$$emby/Library/Refresh" -H "X-Emby-Token: $$token" >/dev/null
+    networks:
+      - synctv-dev
+    restart: "no"
+
+  emby:
+    image: emby/embyserver:latest
+    container_name: synctv-emby-dev
+    profiles: ["media"]
+    environment:
+      UID: "1000"
+      GID: "1000"
+      GIDLIST: "1000"
+    ports:
+      - "127.0.0.1:8096:8096"
+      - "127.0.0.1:8920:8920"
+    volumes:
+      - emby_dev_config:/config
+      - emby_dev_media:/mnt/share1
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8096/System/Info/Public || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+    networks:
+      - synctv-dev
+    restart: unless-stopped
+
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    container_name: synctv-jellyfin-dev
+    profiles: ["media"]
+    ports:
+      - "127.0.0.1:8097:8096"
+    volumes:
+      - jellyfin_dev_config:/config
+      - jellyfin_dev_cache:/cache
+      - jellyfin_dev_media:/media
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8096/System/Info/Public >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+    networks:
+      - synctv-dev
+    restart: unless-stopped
+
+  jellyfin-init:
+    image: curlimages/curl:latest
+    container_name: synctv-jellyfin-init-dev
+    profiles: ["media"]
+    depends_on:
+      jellyfin:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        jellyfin=http://jellyfin:8096
+        auth_header='Authorization: MediaBrowser Client="SyncTVDev", Device="curl", DeviceId="synctv-dev-jellyfin", Version="1"'
+
+        until curl -fsS "$$jellyfin/System/Info/Public" >/dev/null; do
+          sleep 2
+        done
+
+        curl -fsS -X POST "$$jellyfin/Startup/Configuration" \
+          -H 'Content-Type: application/json' \
+          -d '{"ServerName":"SyncTV Jellyfin Dev","UICulture":"en-US","MetadataCountryCode":"US","PreferredMetadataLanguage":"en"}' >/dev/null || true
+        curl -fsS -X POST "$$jellyfin/Startup/RemoteAccess" \
+          -H 'Content-Type: application/json' \
+          -d '{"EnableRemoteAccess":true,"EnableAutomaticPortMapping":false}' >/dev/null || true
+
+        user="$$(curl -fsS "$$jellyfin/Startup/FirstUser" | sed -n 's/.*"Name":"\([^"]*\)".*/\1/p')"
+        if [ -z "$$user" ]; then
+          user=root
+        fi
+
+        auth="$$(curl -fsS -X POST "$$jellyfin/Users/AuthenticateByName" \
+          -H 'Content-Type: application/json' \
+          -H "$$auth_header" \
+          -d "{\"Username\":\"$$user\",\"Pw\":\"\"}" || true)"
+        if ! printf '%s' "$$auth" | grep -q '"AccessToken"'; then
+          auth="$$(curl -fsS -X POST "$$jellyfin/Users/AuthenticateByName" \
+            -H 'Content-Type: application/json' \
+            -H "$$auth_header" \
+            -d "{\"Username\":\"$$user\",\"Pw\":\"synctv-jellyfin\"}")"
+        fi
+
+        token="$$(printf '%s' "$$auth" | sed -n 's/.*"AccessToken":"\([^"]*\)".*/\1/p')"
+        user_id="$$(printf '%s' "$$auth" | sed -n 's/.*"User":{[^}]*"Id":"\([^"]*\)".*/\1/p')"
+        if [ -z "$$token" ] || [ -z "$$user_id" ]; then
+          printf "Jellyfin login did not return token and user id.\n" >&2
+          exit 1
+        fi
+
+        curl -fsS -X POST "$$jellyfin/Users/Password?userId=$$user_id" \
+          -H "X-Emby-Token: $$token" \
+          -H 'Content-Type: application/json' \
+          -d '{"CurrentPw":"","NewPw":"synctv-jellyfin"}' >/dev/null || true
+        curl -fsS -X POST "$$jellyfin/Startup/Complete" >/dev/null || true
+
+        if ! curl -fsS "$$jellyfin/Library/VirtualFolders" -H "X-Emby-Token: $$token" \
+          | grep -q '"Name":"SyncTV Dev Media"'; then
+          curl -fsS -X POST "$$jellyfin/Library/VirtualFolders?name=SyncTV%20Dev%20Media&collectionType=homevideos&paths=/media&refreshLibrary=true" \
+            -H "X-Emby-Token: $$token" \
+            -H 'Content-Type: application/json' \
+            -d '{"LibraryOptions":{"EnablePhotos":false,"EnableRealtimeMonitor":false}}' >/dev/null
+        fi
+
+        curl -fsS -X POST "$$jellyfin/Library/Refresh" -H "X-Emby-Token: $$token" >/dev/null
+    networks:
+      - synctv-dev
+    restart: "no"
+
+  casdoor:
+    image: casbin/casdoor:latest
+    container_name: synctv-casdoor-dev
+    profiles: ["auth"]
+    environment:
+      driverName: postgres
+      dataSourceName: "user=synctv password=synctv host=postgres port=5432 sslmode=disable dbname=casdoor"
+      runmode: dev
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8000/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    networks:
+      - synctv-dev
+    restart: unless-stopped
+
+volumes:
+  postgres_dev_data:
+    driver: local
+  redis_dev_data:
+    driver: local
+  rustfs_dev_data:
+    driver: local
+  openlist_dev_data:
+    driver: local
+  openlist_dev_media:
+    driver: local
+  emby_dev_config:
+    driver: local
+  emby_dev_media:
+    driver: local
+  jellyfin_dev_config:
+    driver: local
+  jellyfin_dev_cache:
+    driver: local
+  jellyfin_dev_media:
+    driver: local
+
+networks:
+  synctv-dev:
+    driver: bridge

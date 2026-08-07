@@ -1,0 +1,199 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT room_id AS \"room_id!: RoomId\",\n                   media_id AS \"media_id?: MediaId\",\n                   playlist_id AS \"playlist_id?: PlaylistId\",\n                   target_hash,\n                   media_name,\n                   playlist_name,\n                   playback_kind AS \"playback_kind!: PlaybackKind\",\n                   duration_seconds,\n                   duration_status AS \"duration_status!: PlaybackDurationStatus\",\n                   duration_source AS \"duration_source?: PlaybackDurationSource\",\n                   duration_error,\n                   next_retry_at,\n                   created_at,\n                   updated_at,\n                   version\n            FROM playback_source_metadata\n            WHERE room_id = $1\n              AND media_id IS NOT DISTINCT FROM $2\n              AND playlist_id IS NOT DISTINCT FROM $3\n              AND target_hash = $4\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "media_id?: MediaId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "media_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "playlist_id?: PlaylistId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "playlist_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "target_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "target_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "media_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "media_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "playlist_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "playlist_name"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "playback_kind!: PlaybackKind",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "playback_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "duration_seconds",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "duration_seconds"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "duration_status!: PlaybackDurationStatus",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "duration_status"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "duration_source?: PlaybackDurationSource",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "duration_source"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "duration_error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "duration_error"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "next_retry_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "next_retry_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "36300e3be1c241c6fd58adb7c63906966551f55fdd25852c70d5cbe150c46285"
+}

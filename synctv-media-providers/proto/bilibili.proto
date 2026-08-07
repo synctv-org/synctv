@@ -1,0 +1,681 @@
+syntax = "proto3";
+
+package synctv.media.bilibili;
+
+
+service Bilibili {
+  rpc NewQRCode(Empty) returns (NewQRCodeResp);
+  rpc LoginWithQRCode(LoginWithQRCodeReq) returns (LoginWithQRCodeResp);
+  rpc NewCaptcha(Empty) returns (NewCaptchaResp);
+  rpc NewSMS(NewSMSReq) returns (NewSMSResp);
+  rpc LoginWithSMS(LoginWithSMSReq) returns (LoginWithSMSResp);
+  rpc ParseVideoPage(ParseVideoPageReq) returns (VideoPageInfo);
+  rpc GetVideoURL(GetVideoURLReq) returns (VideoURL);
+  rpc GetDashVideoURL(GetDashVideoURLReq) returns (GetDashVideoURLResp);
+  rpc GetSubtitles(GetSubtitlesReq) returns (GetSubtitlesResp);
+  rpc ParsePGCPage(ParsePGCPageReq) returns (VideoPageInfo);
+  rpc GetPGCURL(GetPGCURLReq) returns (VideoURL);
+  rpc GetDashPGCURL(GetDashPGCURLReq) returns (GetDashPGCURLResp);
+  rpc UserInfo(UserInfoReq) returns (UserInfoResp);
+  rpc Match(MatchReq) returns (MatchResp);
+  rpc GetLiveStreams(GetLiveStreamsReq) returns (GetLiveStreamsResp);
+  rpc ParseLivePage(ParseLivePageReq) returns (VideoPageInfo);
+  rpc GetLiveDanmuInfo(GetLiveDanmuInfoReq) returns (GetLiveDanmuInfoResp);
+  rpc ListVideos(ListVideosReq) returns (ListVideosResp);
+  rpc ListVideoParts(ListVideoPartsReq) returns (ListVideoPartsResp);
+  rpc ListLiveRooms(ListLiveRoomsReq) returns (ListLiveRoomsResp);
+  rpc ListLiveAreas(ListLiveAreasReq) returns (ListLiveAreasResp);
+  rpc ListFavoriteFolders(ListFavoriteFoldersReq) returns (ListFavoriteFoldersResp);
+  rpc ListFollowedPgc(ListFollowedPgcReq) returns (ListFollowedPgcResp);
+  rpc ListHistory(ListHistoryReq) returns (ListHistoryResp);
+  rpc ListPgcTimeline(ListPgcTimelineReq) returns (ListPgcTimelineResp);
+  rpc ListPgcSeasons(ListPgcSeasonsReq) returns (ListPgcSeasonsResp);
+  rpc WatchBilibiliLiveDanmaku(WatchBilibiliLiveDanmakuReq) returns (stream BilibiliLiveDanmakuEvent);
+}
+
+message Empty {}
+
+message NewQRCodeResp {
+  string url = 1;
+  string key = 2;
+}
+
+message LoginWithQRCodeReq { string key = 1; }
+
+enum QRCodeStatus {
+  UNKNOWN = 0;
+  EXPIRED = 1;
+  NOTSCANNED = 2;
+  SCANNED = 3;
+  SUCCESS = 4;
+}
+
+message LoginWithQRCodeResp {
+  QRCodeStatus status = 1;
+  map<string, string> cookies = 2;
+}
+
+message NewCaptchaResp {
+  string token = 1;
+  string gt = 2;
+  string challenge = 3;
+}
+
+message NewSMSReq {
+  string phone = 1;
+  string token = 2;
+  string challenge = 3;
+  string validate = 4;
+}
+
+message NewSMSResp { string captcha_key = 1; }
+
+message LoginWithSMSReq {
+  string phone = 1;
+  string code = 2;
+  string captcha_key = 3;
+}
+
+message LoginWithSMSResp { map<string, string> cookies = 1; }
+
+message VideoPageInfo {
+  string title = 1;
+  string actors = 2;
+  repeated VideoInfo video_infos = 3;
+  uint64 season_id = 4;
+  string cover = 5;
+  BilibiliCollectionInfo collection = 6;
+  optional int64 live_started_at = 7;
+  bool is_currently_live = 8;
+}
+
+message VideoInfo {
+  string bvid = 1;
+  uint64 aid = 2;
+  uint64 cid = 3;
+  uint64 epid = 4;
+  uint32 page = 5;
+  string name = 6;
+  string cover_image = 7;
+  bool live = 8;
+  uint64 duration_seconds = 9;
+  uint64 width = 10;
+  uint64 height = 11;
+}
+
+message BilibiliCollectionInfo {
+  uint64 mid = 1;
+  uint64 season_id = 2;
+  string title = 3;
+  string cover = 4;
+}
+
+message ParseVideoPageReq {
+  map<string, string> cookies = 1;
+  uint64 aid = 2;
+  string bvid = 3;
+  bool sections = 4;
+}
+
+message VideoURL {
+  repeated string accept_description = 1;
+  repeated uint64 accept_quality = 2;
+  uint64 current_quality = 3;
+  string url = 4;
+  repeated VideoSegment segments = 5;
+}
+
+// A single video segment (Bilibili may split videos into multiple parts).
+message VideoSegment {
+  string url = 1;
+  uint64 size = 2;
+  uint64 duration_millis = 3;
+  repeated string backup_urls = 4;
+}
+
+message GetVideoURLReq {
+  map<string, string> cookies = 1;
+  uint64 aid = 2;
+  string bvid = 3;
+  uint64 cid = 4;
+  uint64 quality = 5;
+}
+
+message GetDashVideoURLReq {
+  map<string, string> cookies = 1;
+  uint64 aid = 2;
+  string bvid = 3;
+  uint64 cid = 4;
+}
+
+message GetDashVideoURLResp {
+  DashInfo dash = 1;
+  DashInfo hevc_dash = 2;
+}
+
+// DASH stream information
+message DashInfo {
+  double duration = 1;
+  double min_buffer_time = 2;
+  repeated VideoStream video_streams = 3;
+  repeated AudioStream audio_streams = 4;
+}
+
+// Video stream representation
+message VideoStream {
+  uint64 id = 1;
+  string base_url = 2;
+  string mime_type = 3;
+  string codecs = 4;
+  uint64 width = 5;
+  uint64 height = 6;
+  string frame_rate = 7;
+  uint64 bandwidth = 8;
+  uint64 start_with_sap = 9;
+  SegmentBase segment_base = 10;
+  repeated string backup_urls = 11;
+  string quality_name = 12;
+  string sar = 13;
+  uint32 codecid = 14;
+}
+
+// Audio stream representation
+message AudioStream {
+  uint64 id = 1;
+  string base_url = 2;
+  string mime_type = 3;
+  string codecs = 4;
+  uint64 bandwidth = 5;
+  uint64 start_with_sap = 6;
+  SegmentBase segment_base = 7;
+  uint32 audio_sampling_rate = 8;
+  repeated string backup_urls = 9;
+  string quality_name = 10;
+}
+
+// Segment base information
+message SegmentBase {
+  string index_range = 1;
+  string initialization_range = 2;
+}
+
+message GetSubtitlesReq {
+  map<string, string> cookies = 1;
+  uint64 aid = 2;
+  string bvid = 3;
+  uint64 cid = 4;
+}
+
+message GetSubtitlesResp { map<string, string> subtitles = 1; }
+
+message ParsePGCPageReq {
+  map<string, string> cookies = 1;
+  uint64 ssid = 2;
+  uint64 epid = 3;
+}
+
+message GetPGCURLReq {
+  map<string, string> cookies = 1;
+  uint64 epid = 2;
+  uint64 cid = 3;
+  uint64 quality = 4;
+}
+
+message GetDashPGCURLReq {
+  map<string, string> cookies = 1;
+  uint64 epid = 2;
+  uint64 cid = 3;
+}
+
+message GetDashPGCURLResp {
+  DashInfo dash = 1;
+  DashInfo hevc_dash = 2;
+}
+
+message UserInfoReq { map<string, string> cookies = 1; }
+
+message UserInfoResp {
+  bool is_login = 1;
+  uint64 user_id = 2;
+  string username = 3;
+  string face = 4;
+  bool is_vip = 5;
+}
+
+message MatchReq { string url = 1; }
+
+message MatchedVideoResource {
+  string bvid = 1;
+  uint64 aid = 2;
+  uint32 page = 3;
+}
+
+message MatchedPgcEpisodeResource { uint64 episode_id = 1; }
+message MatchedPgcSeasonResource { uint64 season_id = 1; }
+message MatchedLiveResource { uint64 room_id = 1; }
+message MatchedLiveRecommendedResource {}
+message MatchedLiveAreaResource {
+  uint64 parent_area_id = 1;
+  uint64 area_id = 2;
+}
+message MatchedUpVideosResource { uint64 mid = 1; }
+message MatchedFavoriteVideosResource { uint64 media_id = 1; }
+message MatchedCollectionVideosResource {
+  uint64 mid = 1;
+  uint64 season_id = 2;
+}
+message MatchedSeriesVideosResource {
+  uint64 mid = 1;
+  uint64 series_id = 2;
+}
+message MatchedWatchLaterResource {}
+
+message MatchResp {
+  string normalized_url = 1;
+  oneof resource {
+    MatchedVideoResource video = 2;
+    MatchedPgcEpisodeResource pgc_episode = 3;
+    MatchedPgcSeasonResource pgc_season = 4;
+    MatchedLiveResource live = 5;
+    MatchedLiveRecommendedResource live_recommended = 6;
+    MatchedLiveAreaResource live_area = 7;
+    MatchedUpVideosResource up_videos = 8;
+    MatchedFavoriteVideosResource favorite_videos = 9;
+    MatchedCollectionVideosResource collection_videos = 10;
+    MatchedSeriesVideosResource series_videos = 11;
+    MatchedWatchLaterResource watch_later = 12;
+  }
+}
+
+message GetLiveStreamsReq {
+  map<string, string> cookies = 1;
+  uint64 cid = 2;
+  bool hls = 3;
+}
+
+message LiveStreamUrl {
+  string host = 1;
+  string url = 2;
+  optional int64 expires_at = 3;
+}
+
+message LiveStream {
+  uint64 quality = 1;
+  repeated LiveStreamUrl urls = 2;
+  string quality_name = 3;
+  string protocol = 4;
+  string format = 5;
+  string codec = 6;
+}
+
+message GetLiveStreamsResp {
+  repeated LiveStream live_streams = 1;
+}
+
+message ParseLivePageReq {
+  map<string, string> cookies = 1;
+  uint64 room_id = 2;
+}
+
+message GetLiveDanmuInfoReq {
+  map<string, string> cookies = 1;
+  uint64 room_id = 2;
+}
+
+message GetLiveDanmuInfoResp {
+  message Host {
+    string host = 1;
+    uint32 port = 2;
+    uint32 wss_port = 3;
+    uint32 ws_port = 4;
+  }
+  string token = 1;
+  repeated Host host_list = 2;
+}
+
+message PopularVideoSource {}
+
+message RecommendedVideoSource {}
+
+message UpVideosSource {
+  uint64 mid = 1;
+  string keyword = 2;
+}
+
+message FavoriteVideosSource {
+  uint64 media_id = 1;
+}
+
+message CollectionVideosSource {
+  uint64 mid = 1;
+  uint64 season_id = 2;
+}
+
+message SeriesVideosSource {
+  uint64 mid = 1;
+  uint64 series_id = 2;
+}
+
+message WatchLaterVideosSource {}
+
+message PgcSeasonVideosSource {
+  uint64 season_id = 1;
+}
+
+message ListVideosReq {
+  map<string, string> cookies = 1;
+  oneof source {
+    PopularVideoSource popular = 2;
+    RecommendedVideoSource recommended = 3;
+    UpVideosSource up_videos = 4;
+    FavoriteVideosSource favorite_videos = 5;
+    CollectionVideosSource collection_videos = 6;
+    SeriesVideosSource series_videos = 7;
+    WatchLaterVideosSource watch_later = 8;
+    PgcSeasonVideosSource pgc_season = 9;
+  }
+  uint64 page = 10;
+  uint32 page_size = 11;
+}
+
+message BilibiliVideoListItem {
+  string bvid = 1;
+  uint64 aid = 2;
+  uint64 cid = 3;
+  uint64 epid = 4;
+  string title = 5;
+  string cover = 6;
+  string author = 7;
+  string description = 8;
+  uint64 duration_seconds = 9;
+  uint32 part_count = 10;
+  int64 published_at = 11;
+}
+
+message ListVideosResp {
+  repeated BilibiliVideoListItem items = 1;
+  optional uint64 total = 2;
+  bool has_more = 3;
+}
+
+message ListVideoPartsReq {
+  map<string, string> cookies = 1;
+  string bvid = 2;
+  uint64 aid = 3;
+}
+
+message BilibiliVideoPart {
+  string bvid = 1;
+  uint64 aid = 2;
+  uint64 cid = 3;
+  uint32 page = 4;
+  string title = 5;
+  string cover = 6;
+  uint64 duration_seconds = 7;
+  uint64 width = 8;
+  uint64 height = 9;
+}
+
+message ListVideoPartsResp {
+  string title = 1;
+  string author = 2;
+  repeated BilibiliVideoPart parts = 3;
+}
+
+message RecommendedLiveRoomsSource {}
+message FollowedLiveRoomsSource {}
+message AreaLiveRoomsSource {
+  uint64 parent_area_id = 1;
+  uint64 area_id = 2;
+}
+
+message ListLiveRoomsReq {
+  map<string, string> cookies = 1;
+  oneof source {
+    RecommendedLiveRoomsSource recommended = 2;
+    FollowedLiveRoomsSource followed = 3;
+    AreaLiveRoomsSource area = 4;
+  }
+  uint64 page = 5;
+  uint32 page_size = 6;
+}
+
+message BilibiliLiveRoomItem {
+  uint64 room_id = 1;
+  string title = 2;
+  string cover = 3;
+  string author = 4;
+  uint64 author_id = 5;
+  string author_avatar = 6;
+  uint64 parent_area_id = 7;
+  string parent_area_name = 8;
+  uint64 area_id = 9;
+  string area_name = 10;
+  uint64 online = 11;
+}
+
+message ListLiveRoomsResp {
+  repeated BilibiliLiveRoomItem items = 1;
+  optional uint64 total = 2;
+  bool has_more = 3;
+}
+
+message ListLiveAreasReq {}
+
+message BilibiliLiveAreaItem {
+  uint64 id = 1;
+  uint64 parent_id = 2;
+  string name = 3;
+  string parent_name = 4;
+  string picture = 5;
+  bool hot = 6;
+}
+
+message ListLiveAreasResp {
+  repeated BilibiliLiveAreaItem items = 1;
+}
+
+message ListFavoriteFoldersReq {
+  map<string, string> cookies = 1;
+}
+
+message BilibiliFavoriteFolderItem {
+  uint64 media_id = 1;
+  string title = 2;
+  uint64 media_count = 3;
+  bool private = 4;
+  bool default_folder = 5;
+}
+
+message ListFavoriteFoldersResp {
+  repeated BilibiliFavoriteFolderItem items = 1;
+}
+
+message ListFollowedPgcReq {
+  map<string, string> cookies = 1;
+  uint32 season_type = 2; // 1: anime, 2: cinema
+  uint64 page = 3;
+  uint32 page_size = 4;
+}
+
+message BilibiliFollowedPgcItem {
+  uint64 season_id = 1;
+  string title = 2;
+  string cover = 3;
+  string description = 4;
+  string latest_episode = 5;
+}
+
+message ListFollowedPgcResp {
+  repeated BilibiliFollowedPgcItem items = 1;
+  uint64 total = 2;
+  bool has_more = 3;
+}
+
+enum HistoryType {
+  HISTORY_TYPE_ALL = 0;
+  HISTORY_TYPE_ARCHIVE = 1;
+  HISTORY_TYPE_LIVE = 2;
+}
+
+message HistoryCursor {
+  uint64 max = 1;
+  int64 view_at = 2;
+  string business = 3;
+}
+
+message HistoryVideoTarget {
+  string bvid = 1;
+  uint64 aid = 2;
+  uint64 cid = 3;
+}
+
+message HistoryPgcTarget {
+  uint64 epid = 1;
+  uint64 cid = 2;
+}
+
+message HistoryLiveTarget { uint64 room_id = 1; }
+
+message BilibiliHistoryItem {
+  oneof target {
+    HistoryVideoTarget video = 1;
+    HistoryPgcTarget pgc = 2;
+    HistoryLiveTarget live = 3;
+  }
+  string title = 4;
+  string subtitle = 5;
+  string cover = 6;
+  string author = 7;
+  int64 viewed_at = 8;
+  int64 progress_seconds = 9;
+  uint64 duration_seconds = 10;
+}
+
+message ListHistoryReq {
+  map<string, string> cookies = 1;
+  HistoryType type = 2;
+  optional HistoryCursor cursor = 3;
+  uint32 page_size = 4;
+}
+
+message ListHistoryResp {
+  repeated BilibiliHistoryItem items = 1;
+  optional HistoryCursor cursor = 2;
+  bool has_more = 3;
+}
+
+enum PgcTimelineType {
+  PGC_TIMELINE_TYPE_UNSPECIFIED = 0;
+  PGC_TIMELINE_TYPE_ANIME = 1;
+  PGC_TIMELINE_TYPE_CINEMA = 3;
+  PGC_TIMELINE_TYPE_GUOCHUANG = 4;
+}
+
+message ListPgcTimelineReq {
+  map<string, string> cookies = 1;
+  PgcTimelineType type = 2;
+  uint32 before_days = 3;
+  uint32 after_days = 4;
+}
+
+message BilibiliPgcTimelineItem {
+  uint64 episode_id = 1;
+  uint64 season_id = 2;
+  uint64 cid = 3;
+  string title = 4;
+  string episode_title = 5;
+  string cover = 6;
+  string episode_cover = 7;
+  int64 publish_at = 8;
+  bool published = 9;
+  string date = 10;
+  uint32 day_of_week = 11;
+  bool delayed = 12;
+  string delay_reason = 13;
+}
+
+message ListPgcTimelineResp { repeated BilibiliPgcTimelineItem items = 1; }
+
+enum PgcSeasonType {
+  PGC_SEASON_TYPE_UNSPECIFIED = 0;
+  PGC_SEASON_TYPE_ANIME = 1;
+  PGC_SEASON_TYPE_MOVIE = 2;
+  PGC_SEASON_TYPE_DOCUMENTARY = 3;
+  PGC_SEASON_TYPE_GUOCHUANG = 4;
+  PGC_SEASON_TYPE_TV = 5;
+  PGC_SEASON_TYPE_VARIETY = 7;
+}
+
+enum PgcSeasonOrder {
+  PGC_SEASON_ORDER_UPDATED = 0;
+  PGC_SEASON_ORDER_DANMAKU = 1;
+  PGC_SEASON_ORDER_PLAY = 2;
+  PGC_SEASON_ORDER_FOLLOW = 3;
+  PGC_SEASON_ORDER_SCORE = 4;
+  PGC_SEASON_ORDER_STARTED = 5;
+  PGC_SEASON_ORDER_RELEASED = 6;
+}
+
+message ListPgcSeasonsReq {
+  map<string, string> cookies = 1;
+  PgcSeasonType type = 2;
+  uint64 page = 3;
+  uint32 page_size = 4;
+  PgcSeasonOrder order = 5;
+  bool ascending = 6;
+  optional bool finished = 7;
+  optional string area = 8;
+  optional string year = 9;
+  optional uint64 style_id = 10;
+}
+
+message BilibiliPgcSeasonItem {
+  uint64 season_id = 1;
+  uint64 media_id = 2;
+  uint64 first_episode_id = 3;
+  string title = 4;
+  string subtitle = 5;
+  string cover = 6;
+  string first_episode_cover = 7;
+  string badge = 8;
+  string progress = 9;
+  string score = 10;
+  bool finished = 11;
+  PgcSeasonType type = 12;
+}
+
+message ListPgcSeasonsResp {
+  repeated BilibiliPgcSeasonItem items = 1;
+  uint64 total = 2;
+  bool has_more = 3;
+}
+
+// Internal provider-worker request. SyncTV core resolves the Bilibili source
+// config and server-side credential cookies before calling this RPC; public
+// clients never provide cookies or the upstream Bilibili room id.
+message WatchBilibiliLiveDanmakuReq {
+  map<string, string> cookies = 1;
+  uint64 room_id = 2;
+}
+
+message BilibiliLiveDanmakuEvent {
+  string format = 1;
+  string event_type = 2;
+  string user = 3;
+  string message = 4;
+  uint64 timestamp = 5;
+  string gift_name = 6;
+  uint32 gift_count = 7;
+  uint32 online_count = 8;
+  BilibiliLiveDanmakuEventType type = 9;
+}
+
+enum BilibiliLiveDanmakuEventType {
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_UNSPECIFIED = 0;
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_CHAT = 1;
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_USER_ENTER = 2;
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_GIFT = 3;
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_HEARTBEAT = 4;
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_UNKNOWN = 5;
+}

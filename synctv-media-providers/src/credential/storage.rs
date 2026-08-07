@@ -1,0 +1,984 @@
+//! Credential Storage Trait and Implementations
+//!
+//! Defines the interface for credential persistence and provides an in-memory
+//! implementation for testing purposes.
+//!
+//! # Encryption
+//!
+//! When encryption is enabled (via `with_encryption`), sensitive credential fields
+//! are encrypted before storage and decrypted after retrieval:
+//! - Alist: `password` field
+//! - Emby: `api_key` field
+//! - Bilibili: all cookie values (including SESSDATA)
+//!
+//! The encryption uses AES-256-GCM with a 32-byte key.
+
+use super::encryption::FieldEncryption;
+use super::types::{CredentialData, ProviderType};
+use async_trait::async_trait;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+fn validate_credential_host(data: &CredentialData) -> Result<()> {
+    let host = match data {
+        CredentialData::Alist { host, .. } | CredentialData::Emby { host, .. } => host,
+        CredentialData::Bilibili { .. } => return Ok(()),
+    };
+
+    crate::validation::validate_host(host)
+        .map_err(|status| CredentialStorageError::InvalidData(status.message().to_string()))
+}
+
+/// Error type for credential storage operations
+#[derive(Debug, thiserror::Error)]
+pub enum CredentialStorageError {
+    /// Credential not found
+    #[error("Credential not found for user {user_id}, provider {provider}, server {server_id}")]
+    NotFound {
+        user_id: String,
+        provider: String,
+        server_id: String,
+    },
+
+    /// Credential already exists
+    #[error(
+        "Credential already exists for user {user_id}, provider {provider}, server {server_id}"
+    )]
+    AlreadyExists {
+        user_id: String,
+        provider: String,
+        server_id: String,
+    },
+
+    /// Invalid credential data
+    #[error("Invalid credential data: {0}")]
+    InvalidData(String),
+
+    /// Database error
+    #[error("Database error: {0}")]
+    Database(String),
+
+    /// Serialization error
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
+
+    /// Encryption error
+    #[error("Encryption error: {0}")]
+    Encryption(String),
+
+    /// Internal error
+    #[error("Internal error: {0}")]
+    Internal(String),
+}
+
+impl From<super::encryption::EncryptionError> for CredentialStorageError {
+    fn from(err: super::encryption::EncryptionError) -> Self {
+        Self::Encryption(err.to_string())
+    }
+}
+
+/// Result type for credential storage operations
+pub type Result<T> = std::result::Result<T, CredentialStorageError>;
+
+/// Stored credential record
+#[derive(Debug, Clone)]
+pub struct StoredCredential {
+    /// Unique credential ID
+    pub id: String,
+    /// User ID who owns this credential
+    pub user_id: String,
+    /// Provider type
+    pub provider: ProviderType,
+    /// Server identifier
+    pub server_id: String,
+    /// Associated provider instance name (optional)
+    pub provider_instance_name: Option<String>,
+    /// The credential data
+    pub data: CredentialData,
+    /// Optional expiration timestamp (Unix timestamp in seconds)
+    pub expires_at: Option<i64>,
+}
+
+/// Encrypt sensitive fields in credential data before storage.
+///
+/// Shared implementation used by credential storage backends.
+pub(crate) fn encrypt_credential_data(
+    encryption: Option<&FieldEncryption>,
+    data: CredentialData,
+) -> Result<CredentialData> {
+    let Some(enc) = encryption else {
+        return Ok(data);
+    };
+
+    match data {
+        CredentialData::Alist {
+            host,
+            username,
+            password,
+        } => {
+            let encrypted_password = enc.encrypt(&password)?;
+            Ok(CredentialData::Alist {
+                host,
+                username,
+                password: encrypted_password,
+            })
+        }
+        CredentialData::Emby {
+            host,
+            api_key,
+            emby_user_id,
+        } => {
+            let encrypted_api_key = enc.encrypt(&api_key)?;
+            Ok(CredentialData::Emby {
+                host,
+                api_key: encrypted_api_key,
+                emby_user_id,
+            })
+        }
+        CredentialData::Bilibili { cookies } => {
+            let mut encrypted_cookies = HashMap::new();
+            for (key, value) in cookies {
+                encrypted_cookies.insert(key, enc.encrypt(&value)?);
+            }
+            Ok(CredentialData::Bilibili {
+                cookies: encrypted_cookies,
+            })
+        }
+    }
+}
+
+/// Decrypt sensitive fields in credential data after retrieval.
+///
+/// Shared implementation used by credential storage backends.
+pub(crate) fn decrypt_credential_data(
+    encryption: Option<&FieldEncryption>,
+    data: CredentialData,
+) -> Result<CredentialData> {
+    let Some(enc) = encryption else {
+        return Ok(data);
+    };
+
+    match data {
+        CredentialData::Alist {
+            host,
+            username,
+            password,
+        } => {
+            let decrypted_password = enc.decrypt(&password)?;
+            Ok(CredentialData::Alist {
+                host,
+                username,
+                password: decrypted_password,
+            })
+        }
+        CredentialData::Emby {
+            host,
+            api_key,
+            emby_user_id,
+        } => {
+            let decrypted_api_key = enc.decrypt(&api_key)?;
+            Ok(CredentialData::Emby {
+                host,
+                api_key: decrypted_api_key,
+                emby_user_id,
+            })
+        }
+        CredentialData::Bilibili { cookies } => {
+            let mut decrypted_cookies = HashMap::new();
+            for (key, value) in cookies {
+                let decrypted_value = enc.decrypt(&value)?;
+                decrypted_cookies.insert(key, decrypted_value);
+            }
+            Ok(CredentialData::Bilibili {
+                cookies: decrypted_cookies,
+            })
+        }
+    }
+}
+
+/// Credential Storage Trait
+///
+/// Defines the interface for persisting and retrieving provider credentials.
+/// Implementations can use different backends, but this crate currently only
+/// provides an in-memory implementation.
+#[async_trait]
+pub trait CredentialStorage: Send + Sync {
+    /// Get a credential by user, provider, and server
+    async fn get(
+        &self,
+        user_id: &str,
+        provider: ProviderType,
+        server_id: &str,
+    ) -> Result<Option<StoredCredential>>;
+
+    /// Store a credential (creates new or updates existing)
+    async fn set(
+        &self,
+        user_id: &str,
+        provider_instance_name: Option<&str>,
+        data: CredentialData,
+    ) -> Result<StoredCredential>;
+
+    /// Delete a credential
+    async fn delete(&self, user_id: &str, provider: ProviderType, server_id: &str) -> Result<bool>;
+
+    /// List all credentials for a user
+    async fn list_by_user(&self, user_id: &str) -> Result<Vec<StoredCredential>>;
+
+    /// List all credentials for a user and provider type
+    async fn list_by_provider(
+        &self,
+        user_id: &str,
+        provider: ProviderType,
+    ) -> Result<Vec<StoredCredential>>;
+
+    /// Check if a credential exists
+    async fn exists(&self, user_id: &str, provider: ProviderType, server_id: &str) -> Result<bool> {
+        Ok(self.get(user_id, provider, server_id).await?.is_some())
+    }
+}
+
+/// In-Memory Credential Storage
+///
+/// Simple in-memory implementation for testing purposes.
+/// Uses a `HashMap` protected by `RwLock` for thread safety.
+///
+/// # Warning: Multi-Replica Deployments
+///
+/// **WARNING: This storage is NOT suitable for multi-replica/cluster deployments!**
+///
+/// In a multi-replica environment (e.g., Kubernetes with multiple pods), each replica
+/// maintains its own isolated in-memory storage. Credentials stored in one replica
+/// are NOT shared with others. This means:
+///
+/// - A user who logs in on Pod A will not have their credential available on Pod B
+/// - Load-balanced requests may fail to find credentials stored in a different pod
+/// - Pod restarts will lose all stored credentials
+///
+/// **For production deployments with multiple replicas, inject a shared durable
+/// storage implementation from the application layer instead of using this type.**
+///
+/// This implementation is only appropriate for:
+/// - Single-replica deployments
+/// - Local development and testing
+/// - Unit tests
+///
+/// # Encryption
+///
+/// When created with `with_encryption`, sensitive credential fields are encrypted:
+/// - Alist: `password` field
+/// - Emby: `api_key` field
+/// - Bilibili: all cookie values (including SESSDATA)
+pub struct InMemoryCredentialStorage {
+    credentials: Arc<RwLock<HashMap<String, StoredCredential>>>,
+    encryption: Option<FieldEncryption>,
+    next_id: std::sync::atomic::AtomicU64,
+}
+
+impl Default for InMemoryCredentialStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl InMemoryCredentialStorage {
+    /// Create a new in-memory credential storage without encryption
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            credentials: Arc::new(RwLock::new(HashMap::new())),
+            encryption: None,
+            next_id: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+
+    /// Create a new in-memory credential storage with encryption enabled
+    ///
+    /// # Arguments
+    /// * `key_bytes` - 32-byte encryption key (AES-256)
+    ///
+    /// # Errors
+    /// Returns an error if the key is not exactly 32 bytes.
+    pub fn with_encryption(key_bytes: &[u8]) -> Result<Self> {
+        let encryption = FieldEncryption::new(key_bytes)?;
+        Ok(Self {
+            credentials: Arc::new(RwLock::new(HashMap::new())),
+            encryption: Some(encryption),
+            next_id: std::sync::atomic::AtomicU64::new(1),
+        })
+    }
+
+    /// Generate a unique key for storing credentials
+    fn make_key(user_id: &str, provider: ProviderType, server_id: &str) -> String {
+        format!("{}:{}:{}", user_id, provider.as_str(), server_id)
+    }
+
+    /// Generate a unique ID for new credentials
+    fn generate_id(&self) -> String {
+        format!(
+            "cred_{}",
+            self.next_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    }
+
+    /// Encrypt sensitive fields in credential data before storage
+    fn encrypt_data(&self, data: CredentialData) -> Result<CredentialData> {
+        encrypt_credential_data(self.encryption.as_ref(), data)
+    }
+
+    /// Decrypt sensitive fields in credential data after retrieval
+    fn decrypt_data(&self, data: CredentialData) -> Result<CredentialData> {
+        decrypt_credential_data(self.encryption.as_ref(), data)
+    }
+
+    fn decrypt_credential(&self, mut credential: StoredCredential) -> Result<StoredCredential> {
+        credential.data = self.decrypt_data(credential.data)?;
+        Ok(credential)
+    }
+}
+
+#[async_trait]
+impl CredentialStorage for InMemoryCredentialStorage {
+    async fn get(
+        &self,
+        user_id: &str,
+        provider: ProviderType,
+        server_id: &str,
+    ) -> Result<Option<StoredCredential>> {
+        let key = Self::make_key(user_id, provider, server_id);
+        let credential = self.credentials.read().await.get(&key).cloned();
+        credential
+            .map(|credential| self.decrypt_credential(credential))
+            .transpose()
+    }
+
+    async fn set(
+        &self,
+        user_id: &str,
+        provider_instance_name: Option<&str>,
+        data: CredentialData,
+    ) -> Result<StoredCredential> {
+        validate_credential_host(&data)?;
+
+        // Encrypt sensitive fields before storage
+        let encrypted_data = self.encrypt_data(data)?;
+
+        let provider = encrypted_data.provider_type();
+        let server_id = encrypted_data.server_id_for_instance(provider_instance_name);
+        let key = Self::make_key(user_id, provider, &server_id);
+
+        let mut credentials = self.credentials.write().await;
+
+        // Preserve existing ID on upsert (matches PostgreSQL ON CONFLICT behavior)
+        let id = credentials
+            .get(&key)
+            .map_or_else(|| self.generate_id(), |existing| existing.id.clone());
+
+        let credential = StoredCredential {
+            id,
+            user_id: user_id.to_string(),
+            provider,
+            server_id: server_id.clone(),
+            provider_instance_name: provider_instance_name.map(std::string::ToString::to_string),
+            data: encrypted_data,
+            expires_at: None,
+        };
+
+        credentials.insert(key, credential.clone());
+        drop(credentials);
+
+        // Return credential with decrypted data for caller convenience
+        self.decrypt_credential(credential)
+    }
+
+    async fn delete(&self, user_id: &str, provider: ProviderType, server_id: &str) -> Result<bool> {
+        let key = Self::make_key(user_id, provider, server_id);
+        let mut credentials = self.credentials.write().await;
+        Ok(credentials.remove(&key).is_some())
+    }
+
+    async fn list_by_user(&self, user_id: &str) -> Result<Vec<StoredCredential>> {
+        let credentials = {
+            let credentials = self.credentials.read().await;
+            credentials
+                .values()
+                .filter(|credential| credential.user_id == user_id)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        credentials
+            .into_iter()
+            .map(|credential| self.decrypt_credential(credential))
+            .collect()
+    }
+
+    async fn list_by_provider(
+        &self,
+        user_id: &str,
+        provider: ProviderType,
+    ) -> Result<Vec<StoredCredential>> {
+        let credentials = {
+            let credentials = self.credentials.read().await;
+            credentials
+                .values()
+                .filter(|credential| {
+                    credential.user_id == user_id && credential.provider == provider
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        credentials
+            .into_iter()
+            .map(|credential| self.decrypt_credential(credential))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+        anyhow::anyhow!(message.into()).into()
+    }
+
+    fn bilibili_server_id() -> String {
+        CredentialData::bilibili(HashMap::new()).server_id()
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_storage_set_and_get() -> TestResult {
+        let storage = InMemoryCredentialStorage::new();
+
+        let mut cookies = HashMap::new();
+        cookies.insert("SESSDATA".to_string(), "test_session".to_string());
+
+        let cred = storage
+            .set("user123", None, CredentialData::bilibili(cookies.clone()))
+            .await?;
+
+        assert_eq!(cred.user_id, "user123");
+        assert_eq!(cred.provider, ProviderType::Bilibili);
+        assert_eq!(cred.server_id, bilibili_server_id());
+
+        // Retrieve the credential
+        let retrieved = storage
+            .get("user123", ProviderType::Bilibili, &bilibili_server_id())
+            .await?;
+
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.ok_or_else(|| test_error("credential should exist"))?;
+        assert_eq!(retrieved.id, cred.id);
+        assert_eq!(retrieved.user_id, "user123");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_storage_get_not_found() -> TestResult {
+        let storage = InMemoryCredentialStorage::new();
+
+        let result = storage
+            .get("nonexistent", ProviderType::Bilibili, &bilibili_server_id())
+            .await?;
+
+        assert!(result.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_storage_delete() -> TestResult {
+        let storage = InMemoryCredentialStorage::new();
+
+        // Create a credential
+        storage
+            .set("user123", None, CredentialData::bilibili(HashMap::new()))
+            .await?;
+
+        // Delete it
+        let deleted = storage
+            .delete("user123", ProviderType::Bilibili, &bilibili_server_id())
+            .await?;
+        assert!(deleted);
+
+        // Verify it's gone
+        let result = storage
+            .get("user123", ProviderType::Bilibili, &bilibili_server_id())
+            .await?;
+        assert!(result.is_none());
+
+        // Delete non-existent returns false
+        let deleted_again = storage
+            .delete("user123", ProviderType::Bilibili, &bilibili_server_id())
+            .await?;
+        assert!(!deleted_again);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_storage_list_by_user() -> TestResult {
+        let storage = InMemoryCredentialStorage::new();
+
+        // Create credentials for user1
+        storage
+            .set("user1", None, CredentialData::bilibili(HashMap::new()))
+            .await?;
+        storage
+            .set(
+                "user1",
+                None,
+                CredentialData::alist(
+                    "https://alist.example.com".into(),
+                    "user".into(),
+                    "pass".into(),
+                ),
+            )
+            .await?;
+
+        // Create credential for user2
+        storage
+            .set("user2", None, CredentialData::bilibili(HashMap::new()))
+            .await?;
+
+        let user1_creds = storage.list_by_user("user1").await?;
+        assert_eq!(user1_creds.len(), 2);
+
+        let user2_creds = storage.list_by_user("user2").await?;
+        assert_eq!(user2_creds.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_storage_list_by_provider() -> TestResult {
+        let storage = InMemoryCredentialStorage::new();
+
+        // Create multiple Alist credentials (different hosts)
+        storage
+            .set(
+                "user1",
+                None,
+                CredentialData::alist(
+                    "https://alist1.example.com".into(),
+                    "user".into(),
+                    "pass".into(),
+                ),
+            )
+            .await?;
+        storage
+            .set(
+                "user1",
+                None,
+                CredentialData::alist(
+                    "https://alist2.example.com".into(),
+                    "user".into(),
+                    "pass".into(),
+                ),
+            )
+            .await?;
+        storage
+            .set("user1", None, CredentialData::bilibili(HashMap::new()))
+            .await?;
+
+        // List only Alist credentials
+        let alist_creds = storage
+            .list_by_provider("user1", ProviderType::Alist)
+            .await?;
+        assert_eq!(alist_creds.len(), 2);
+
+        // List only Bilibili credentials
+        let bilibili_creds = storage
+            .list_by_provider("user1", ProviderType::Bilibili)
+            .await?;
+        assert_eq!(bilibili_creds.len(), 1);
+
+        // List Emby credentials (none)
+        let emby_creds = storage
+            .list_by_provider("user1", ProviderType::Emby)
+            .await?;
+        assert!(emby_creds.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_storage_update() -> TestResult {
+        let storage = InMemoryCredentialStorage::new();
+
+        // Create initial credential
+        let cred1 = storage
+            .set("user1", None, CredentialData::bilibili(HashMap::new()))
+            .await?;
+
+        // Update with new cookies
+        let mut new_cookies = HashMap::new();
+        new_cookies.insert("SESSDATA".to_string(), "new_session".to_string());
+
+        let cred2 = storage
+            .set("user1", None, CredentialData::bilibili(new_cookies))
+            .await?;
+
+        // Should preserve the same ID on upsert (matches PostgreSQL ON CONFLICT behavior)
+        assert_eq!(cred1.id, cred2.id);
+
+        // Should only have one credential
+        let all = storage.list_by_user("user1").await?;
+        assert_eq!(all.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_storage_exists() -> TestResult {
+        let storage = InMemoryCredentialStorage::new();
+
+        assert!(
+            !storage
+                .exists("user1", ProviderType::Bilibili, &bilibili_server_id())
+                .await?
+        );
+
+        storage
+            .set("user1", None, CredentialData::bilibili(HashMap::new()))
+            .await?;
+
+        assert!(
+            storage
+                .exists("user1", ProviderType::Bilibili, &bilibili_server_id())
+                .await?
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_storage_multiple_alist_servers() -> TestResult {
+        let storage = InMemoryCredentialStorage::new();
+
+        // User can have multiple Alist servers
+        let host1 = "https://alist1.example.com";
+        let host2 = "https://alist2.example.com";
+
+        storage
+            .set(
+                "user1",
+                Some("instance1"),
+                CredentialData::alist(host1.into(), "user".into(), "pass".into()),
+            )
+            .await?;
+
+        storage
+            .set(
+                "user1",
+                Some("instance2"),
+                CredentialData::alist(host2.into(), "user".into(), "pass".into()),
+            )
+            .await?;
+
+        // Both should exist independently
+        let all = storage
+            .list_by_provider("user1", ProviderType::Alist)
+            .await?;
+        assert_eq!(all.len(), 2);
+
+        // Verify they have different server_ids
+        let server_ids: std::collections::HashSet<_> =
+            all.iter().map(|c| c.server_id.clone()).collect();
+        assert_eq!(server_ids.len(), 2);
+        Ok(())
+    }
+
+    fn test_encryption_key() -> Vec<u8> {
+        vec![
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+            0x1c, 0x1d, 0x1e, 0x1f,
+        ]
+    }
+
+    #[tokio::test]
+    async fn test_encryption_alist_password_round_trip() -> TestResult {
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key())?;
+
+        let plain_password = "my_secret_password_123";
+
+        // Store Alist credential
+        let stored = storage
+            .set(
+                "user1",
+                Some("my_alist"),
+                CredentialData::alist(
+                    "https://alist.example.com".to_string(),
+                    "admin".to_string(),
+                    plain_password.to_string(),
+                ),
+            )
+            .await?;
+
+        let (_, _, password) = stored.data.as_alist().map_err(test_error)?;
+        assert_eq!(
+            password, plain_password,
+            "Returned password should be decrypted"
+        );
+
+        let retrieved = storage
+            .get("user1", ProviderType::Alist, &stored.server_id)
+            .await?
+            .ok_or_else(|| test_error("credential should exist"))?;
+
+        let (_, _, password) = retrieved.data.as_alist().map_err(test_error)?;
+        assert_eq!(
+            password, plain_password,
+            "Retrieved password should be decrypted"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_encryption_emby_api_key_round_trip() -> TestResult {
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key())?;
+
+        let api_key = "secret_api_key_12345";
+
+        // Store Emby credential
+        let stored = storage
+            .set(
+                "user1",
+                Some("my_emby"),
+                CredentialData::emby(
+                    "https://emby.example.com".to_string(),
+                    api_key.to_string(),
+                    "user_id".to_string(),
+                ),
+            )
+            .await?;
+
+        let (_, key, _) = stored.data.as_emby().map_err(test_error)?;
+        assert_eq!(key, api_key, "Returned api_key should be decrypted");
+
+        let retrieved = storage
+            .get("user1", ProviderType::Emby, &stored.server_id)
+            .await?
+            .ok_or_else(|| test_error("credential should exist"))?;
+
+        let (_, key, _) = retrieved.data.as_emby().map_err(test_error)?;
+        assert_eq!(key, api_key, "Retrieved api_key should be decrypted");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_encryption_bilibili_sessdata_encrypted() -> TestResult {
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key())?;
+
+        let mut cookies = HashMap::new();
+        cookies.insert("SESSDATA".to_string(), "test_session".to_string());
+        cookies.insert("bili_jct".to_string(), "test_jct_token".to_string());
+
+        // Store Bilibili credential
+        let stored = storage
+            .set("user1", None, CredentialData::bilibili(cookies.clone()))
+            .await?;
+
+        let c = stored.data.as_bilibili().map_err(test_error)?;
+        assert_eq!(
+            c.get("SESSDATA"),
+            Some(&"test_session".to_string()),
+            "Returned SESSDATA should be decrypted"
+        );
+        assert_eq!(
+            c.get("bili_jct"),
+            Some(&"test_jct_token".to_string()),
+            "Returned bili_jct should be decrypted"
+        );
+
+        let retrieved = storage
+            .get("user1", ProviderType::Bilibili, &bilibili_server_id())
+            .await?
+            .ok_or_else(|| test_error("credential should exist"))?;
+
+        let c = retrieved.data.as_bilibili().map_err(test_error)?;
+        assert_eq!(
+            c.get("SESSDATA"),
+            Some(&"test_session".to_string()),
+            "Retrieved SESSDATA should be decrypted"
+        );
+        assert_eq!(
+            c.get("bili_jct"),
+            Some(&"test_jct_token".to_string()),
+            "Retrieved bili_jct should be decrypted"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_encryption_bilibili_stored_encrypted_at_rest() -> TestResult {
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key())?;
+
+        let mut cookies = HashMap::new();
+        cookies.insert("SESSDATA".to_string(), "test_session".to_string());
+
+        storage
+            .set("user1", None, CredentialData::bilibili(cookies))
+            .await?;
+
+        let credentials = storage.credentials.read().await;
+        let stored_raw = credentials
+            .values()
+            .next()
+            .ok_or_else(|| test_error("credential should exist"))?;
+
+        let raw_cookies = stored_raw.data.as_bilibili().map_err(test_error)?;
+
+        let raw_sessdata = raw_cookies
+            .get("SESSDATA")
+            .ok_or_else(|| test_error("SESSDATA should exist"))?;
+        assert!(
+            FieldEncryption::is_encrypted(raw_sessdata),
+            "SESSDATA should be encrypted at rest, got: {raw_sessdata}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_as_alist_returns_error_on_type_mismatch() {
+        let emby_data = CredentialData::emby(
+            "https://emby.example.com".to_string(),
+            "key".to_string(),
+            "uid".to_string(),
+        );
+        let result = emby_data.as_alist();
+        assert!(result.is_err());
+        assert!(
+            result
+                .expect_err("validation should fail")
+                .contains("Expected Alist"),
+            "Error message should mention expected type"
+        );
+
+        let bilibili_data = CredentialData::bilibili(HashMap::new());
+        assert!(bilibili_data.as_alist().is_err());
+    }
+
+    #[test]
+    fn test_as_emby_returns_error_on_type_mismatch() {
+        let alist_data = CredentialData::alist(
+            "https://alist.example.com".to_string(),
+            "user".to_string(),
+            "pass".to_string(),
+        );
+        let result = alist_data.as_emby();
+        assert!(result.is_err());
+        assert!(
+            result
+                .expect_err("validation should fail")
+                .contains("Expected Emby"),
+            "Error message should mention expected type"
+        );
+
+        let bilibili_data = CredentialData::bilibili(HashMap::new());
+        assert!(bilibili_data.as_emby().is_err());
+    }
+
+    #[test]
+    fn test_as_bilibili_returns_error_on_type_mismatch() {
+        let alist_data = CredentialData::alist(
+            "https://alist.example.com".to_string(),
+            "user".to_string(),
+            "pass".to_string(),
+        );
+        let result = alist_data.as_bilibili();
+        assert!(result.is_err());
+        assert!(
+            result
+                .expect_err("validation should fail")
+                .contains("Expected Bilibili"),
+            "Error message should mention expected type"
+        );
+
+        let emby_data = CredentialData::emby(
+            "https://emby.example.com".to_string(),
+            "key".to_string(),
+            "uid".to_string(),
+        );
+        assert!(emby_data.as_bilibili().is_err());
+    }
+
+    #[test]
+    fn test_as_alist_returns_correct_fields() -> TestResult {
+        let data = CredentialData::alist(
+            "https://alist.example.com".to_string(),
+            "admin".to_string(),
+            "secret".to_string(),
+        );
+        let (host, username, password) = data.as_alist().map_err(test_error)?;
+        assert_eq!(host, "https://alist.example.com");
+        assert_eq!(username, "admin");
+        assert_eq!(password, "secret");
+        Ok(())
+    }
+
+    #[test]
+    fn test_as_emby_returns_correct_fields() -> TestResult {
+        let data = CredentialData::emby(
+            "https://emby.example.com".to_string(),
+            "my_api_key".to_string(),
+            "user_42".to_string(),
+        );
+        let (host, api_key, emby_user_id) = data.as_emby().map_err(test_error)?;
+        assert_eq!(host, "https://emby.example.com");
+        assert_eq!(api_key, "my_api_key");
+        assert_eq!(emby_user_id, "user_42");
+        Ok(())
+    }
+
+    #[test]
+    fn test_as_bilibili_returns_correct_fields() -> TestResult {
+        let mut cookies = HashMap::new();
+        cookies.insert("SESSDATA".to_string(), "abc123".to_string());
+        let data = CredentialData::bilibili(cookies);
+        let c = data.as_bilibili().map_err(test_error)?;
+        assert_eq!(c.get("SESSDATA"), Some(&"abc123".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_with_encryption_rejects_invalid_key_length() -> TestResult {
+        let Err(err) = InMemoryCredentialStorage::with_encryption(&[0u8; 16]) else {
+            return Err(test_error(
+                "invalid encryption key length must return an error",
+            ));
+        };
+        assert!(err.to_string().contains("Invalid encryption key length"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_decrypt_rejects_plaintext_when_encryption_enabled() -> TestResult {
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key())?;
+        let credential = CredentialData::alist(
+            "https://alist.example.com".to_string(),
+            "admin".to_string(),
+            "plaintext_password".to_string(),
+        );
+        let server_id = credential.server_id();
+
+        storage.credentials.write().await.insert(
+            format!("{}:{}:{}", "user1", ProviderType::Alist.as_str(), server_id),
+            StoredCredential {
+                id: "cred_plain".to_string(),
+                user_id: "user1".to_string(),
+                provider: ProviderType::Alist,
+                server_id: credential.server_id(),
+                provider_instance_name: Some("alist".to_string()),
+                data: credential,
+                expires_at: None,
+            },
+        );
+
+        let err = storage
+            .get("user1", ProviderType::Alist, &server_id)
+            .await
+            .expect_err("plaintext credentials must be rejected when encryption is enabled");
+        assert!(err.to_string().contains("not encrypted"));
+        Ok(())
+    }
+}

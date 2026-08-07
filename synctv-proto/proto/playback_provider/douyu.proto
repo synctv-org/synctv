@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package synctv.playback_provider.douyu;
+
+import "proto/buf/validate/validate.proto";
+import "proto/playback_provider/common.proto";
+
+message GetDouyuResourceRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string mode_name = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 media_index = 3;
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+  optional string range = 8;
+  bool head = 9;
+}
+
+message DouyuResourceResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetDouyuSegmentRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string target_url = 2 [(buf.validate.field).string.min_len = 1];
+  string sig = 3 [(buf.validate.field).string.min_len = 1];
+  string uid = 4 [(buf.validate.field).string.min_len = 1];
+  string rid = 5 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 6;
+  optional string range = 7;
+  bool head = 8;
+}
+
+message DouyuSegmentResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message WatchDouyuDanmakuRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string mode_name = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 media_index = 3;
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+}
+
+message DouyuDanmakuEvent {
+  string id = 1;
+  string user_id = 2;
+  string user_name = 3;
+  string text = 4;
+  optional string color = 5;
+  optional uint32 level = 6;
+  optional string badge_name = 7;
+  optional uint32 badge_level = 8;
+  optional uint64 sent_at_ms = 9;
+}
+
+service DouyuPlaybackProviderService {
+  rpc GetResource(GetDouyuResourceRequest) returns (stream DouyuResourceResponse);
+  rpc GetSegment(GetDouyuSegmentRequest) returns (stream DouyuSegmentResponse);
+  rpc WatchDanmaku(WatchDouyuDanmakuRequest) returns (stream DouyuDanmakuEvent);
+}

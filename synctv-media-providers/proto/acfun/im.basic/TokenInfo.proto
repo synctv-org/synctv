@@ -1,0 +1,13 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+message TokenInfo {
+	TokenType tokenType = 1;
+	bytes token = 2;
+
+	enum TokenType {
+		kInvalid = 0;
+		kServiceToken = 1;
+	}
+}

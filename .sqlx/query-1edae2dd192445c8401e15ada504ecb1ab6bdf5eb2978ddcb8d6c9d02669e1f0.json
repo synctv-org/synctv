@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH existing_room AS (\n                SELECT id\n                FROM rooms\n                WHERE id = $1 AND deleted_at IS NULL\n            )\n            INSERT INTO room_password_credentials (\n                room_id, enabled, changed_at, version, created_at, updated_at\n            )\n            SELECT r.id, false, $2, COALESCE(existing_rpc.version, 0) + 1, $2, $2\n            FROM existing_room r\n            LEFT JOIN room_password_credentials existing_rpc ON existing_rpc.room_id = r.id\n            ON CONFLICT (room_id) DO UPDATE\n            SET enabled = false,\n                changed_at = EXCLUDED.changed_at,\n                version = room_password_credentials.version + 1,\n                updated_at = EXCLUDED.updated_at\n            RETURNING room_id AS \"room_id!: RoomId\", enabled, changed_at, version\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "changed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "changed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1edae2dd192445c8401e15ada504ecb1ab6bdf5eb2978ddcb8d6c9d02669e1f0"
+}

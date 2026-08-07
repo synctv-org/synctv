@@ -1,0 +1,496 @@
+{{- $hlsStorage := .Values.config.livestream.hlsStorage | default dict -}}
+{{- $hlsBackend := $hlsStorage.type | default "memory" -}}
+{{- $hlsStoragePath := $hlsStorage.path | default "" -}}
+{{- $hlsFileBackend := or (eq $hlsBackend "file") (eq $hlsBackend "shared_file") -}}
+{{- if not (has $hlsBackend (list "memory" "file" "shared_file" "s3")) -}}
+{{- fail "config.livestream.hlsStorage.type must be one of: memory, file, shared_file, s3" -}}
+{{- end -}}
+{{- if and $hlsFileBackend (not $hlsStoragePath) -}}
+{{- fail "config.livestream.hlsStorage.type=file/shared_file requires config.livestream.hlsStorage.path" -}}
+{{- end -}}
+{{- if and $hlsFileBackend $hlsStoragePath (not (hasPrefix "/" $hlsStoragePath)) -}}
+{{- fail "config.livestream.hlsStorage.type=file/shared_file requires an absolute config.livestream.hlsStorage.path in Kubernetes" -}}
+{{- end -}}
+{{- if and (eq $hlsBackend "shared_file") (not .Values.persistence.hls.existingClaim) -}}
+{{- fail "config.livestream.hlsStorage.type=shared_file requires persistence.hls.existingClaim so HLS storage is actually shared across replicas" -}}
+{{- end -}}
+{{- if and (eq (include "synctv.postgresql.mode" .) "external") (not .Values.existingSecret) (not .Values.secrets.database.password) -}}
+{{- fail "postgresql.mode=external requires existingSecret with SYNCTV_DATABASE_PASSWORD or secrets.database.password" -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "synctv.fullname" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "synctv.appSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.secretRolloutChecksum }}
+        synctv.io/secret-rollout-checksum: {{ . | quote }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "synctv.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: app
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      enableServiceLinks: false
+      {{- $imagePullSecrets := .Values.imagePullSecrets | default .Values.global.imagePullSecrets }}
+      {{- with $imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "synctv.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 60 }}
+      {{- if and (eq (include "synctv.postgresql.mode" .) "kubeblocks") .Values.postgresql.kubeblocks.bootstrapAppDatabase }}
+      initContainers:
+        - name: bootstrap-postgresql-app-db
+          image: {{ include "synctv.managedImage" (list . .Values.postgresql.kubeblocks.bootstrapImage "postgres" "18.1-bookworm") | quote }}
+          imagePullPolicy: {{ .Values.postgresql.kubeblocks.bootstrapImage.pullPolicy | default "IfNotPresent" }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: PGHOST
+              value: {{ include "synctv.postgresql.host" . | quote }}
+            - name: PGPORT
+              value: {{ include "synctv.postgresql.port" . | quote }}
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.postgresql.kubeblocks.superuserSecretName" . }}
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.postgresql.kubeblocks.superuserSecretName" . }}
+                  key: password
+            - name: SYNCTV_APP_DB_USER
+              value: {{ include "synctv.postgresql.appUsername" . | quote }}
+            - name: SYNCTV_APP_DB_NAME
+              value: {{ include "synctv.postgresql.database" . | quote }}
+            - name: SYNCTV_APP_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_DATABASE_PASSWORD
+          command:
+            - sh
+            - -ec
+            - |
+              until pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d postgres; do
+                sleep 2
+              done
+
+              role_exists() {
+                psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 \
+                  --dbname=postgres \
+                  --set app_user="$SYNCTV_APP_DB_USER" \
+                  <<'SQL' | grep -qx 1
+              SELECT 1 FROM pg_roles WHERE rolname = :'app_user';
+              SQL
+              }
+
+              database_exists() {
+                psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 \
+                  --dbname=postgres \
+                  --set app_db="$SYNCTV_APP_DB_NAME" \
+                  <<'SQL' | grep -qx 1
+              SELECT 1 FROM pg_database WHERE datname = :'app_db';
+              SQL
+              }
+
+              if ! role_exists; then
+                if ! psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                  --dbname=postgres \
+                  --set app_user="$SYNCTV_APP_DB_USER" \
+                  --set app_password="$SYNCTV_APP_DB_PASSWORD" <<'SQL'
+              SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'app_user', :'app_password') \gexec
+              SQL
+                then
+                  role_exists
+                fi
+              fi
+
+              psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                --dbname=postgres \
+                --set app_user="$SYNCTV_APP_DB_USER" \
+                --set app_password="$SYNCTV_APP_DB_PASSWORD" <<'SQL'
+              ALTER ROLE :"app_user" LOGIN PASSWORD :'app_password';
+              SQL
+
+              if ! database_exists; then
+                if ! createdb --owner="$SYNCTV_APP_DB_USER" "$SYNCTV_APP_DB_NAME"; then
+                  database_exists
+                fi
+              fi
+
+              psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                --dbname=postgres \
+                --set app_user="$SYNCTV_APP_DB_USER" \
+                --set app_db="$SYNCTV_APP_DB_NAME" <<'SQL'
+              ALTER DATABASE :"app_db" OWNER TO :"app_user";
+              GRANT CONNECT ON DATABASE :"app_db" TO :"app_user";
+              SQL
+
+              psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                --dbname="$SYNCTV_APP_DB_NAME" \
+                --set app_user="$SYNCTV_APP_DB_USER" <<'SQL'
+              GRANT USAGE, CREATE ON SCHEMA public TO :"app_user";
+              ALTER SCHEMA public OWNER TO :"app_user";
+              SQL
+      {{- end }}
+      containers:
+        - name: synctv
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "synctv.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: api
+              containerPort: {{ .Values.config.server.port }}
+              protocol: TCP
+            {{- if .Values.config.health.enabled }}
+            - name: health
+              containerPort: {{ .Values.config.health.port | default 8081 }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.config.cluster.enabled }}
+            - name: cluster
+              containerPort: {{ .Values.config.cluster.port | default 50051 }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port | default 9090 }}
+              protocol: TCP
+            {{- end }}
+            - name: rtmp
+              containerPort: {{ .Values.config.livestream.rtmpPort }}
+              protocol: TCP
+            {{- if .Values.config.webrtc.enableBuiltinStun }}
+            - name: stun
+              containerPort: {{ .Values.config.webrtc.stunPort }}
+              protocol: UDP
+            {{- end }}
+          env:
+            - name: SYNCTV_CONFIG_PATH
+              value: "/config/synctv.yaml"
+            - name: SYNCTV_DATABASE_HOST
+              value: {{ include "synctv.postgresql.host" . | quote }}
+            - name: SYNCTV_DATABASE_PORT
+              value: {{ include "synctv.postgresql.port" . | quote }}
+            - name: SYNCTV_DATABASE_NAME
+              value: {{ include "synctv.postgresql.database" . | quote }}
+            - name: SYNCTV_DATABASE_USERNAME
+              value: {{ include "synctv.postgresql.appUsername" . | quote }}
+            {{- if include "synctv.database.useSecretReadUrlEnv" . }}
+            - name: SYNCTV_DATABASE_READ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_DATABASE_READ_URL
+            {{- end }}
+            {{- if include "synctv.postgresql.hasAutoReadReplica" . }}
+            - name: SYNCTV_DATABASE_READ_HOST
+              value: {{ include "synctv.postgresql.readHost" . | quote }}
+            - name: SYNCTV_DATABASE_READ_PORT
+              value: {{ include "synctv.postgresql.port" . | quote }}
+            {{- end }}
+            - name: SYNCTV_REDIS_HOST
+              value: {{ include "synctv.redis.host" . | quote }}
+            - name: SYNCTV_REDIS_PORT
+              value: {{ include "synctv.redis.port" . | quote }}
+            - name: SYNCTV_REDIS_DATABASE
+              value: {{ include "synctv.redis.database" . | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: SYNCTV_SERVER_ADVERTISE_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            {{- if eq ((.Values.config.cluster).discoveryMode | default "redis") "k8s_dns" }}
+            - name: HEADLESS_SERVICE_NAME
+              value: {{ include "synctv.headlessServiceName" . }}
+            {{- end }}
+            - name: SYNCTV_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_DATABASE_PASSWORD
+            {{- if eq (include "synctv.redis.mode" .) "kubeblocks" }}
+            - name: SYNCTV_REDIS_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.redis.kubeblocks.secretName" . }}
+                  key: username
+            - name: SYNCTV_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.redis.kubeblocks.secretName" . }}
+                  key: password
+            {{- else if eq (include "synctv.redis.mode" .) "standard" }}
+            {{- $redisUsername := include "synctv.redis.username" . | trim }}
+            {{- if $redisUsername }}
+            - name: SYNCTV_REDIS_USER
+              value: {{ $redisUsername | quote }}
+            {{- end }}
+            - name: SYNCTV_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_REDIS_PASSWORD
+            {{- else }}
+            {{- $redisUsername := include "synctv.redis.username" . | trim }}
+            {{- if $redisUsername }}
+            - name: SYNCTV_REDIS_USER
+              value: {{ $redisUsername | quote }}
+            {{- end }}
+            - name: SYNCTV_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_REDIS_PASSWORD
+                  optional: true
+            {{- end }}
+            - name: SYNCTV_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_JWT_SECRET
+            - name: SYNCTV_CLUSTER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_CLUSTER_SECRET
+            - name: SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY
+            - name: SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY
+            - name: SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY
+            - name: SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET
+            - name: SYNCTV_SECURITY_PROXY_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_SECURITY_PROXY_SIGNING_KEY
+            - name: SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY
+            - name: SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY
+            - name: SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY
+            - name: SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY
+            - name: SYNCTV_FILE_UPLOAD_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_FILE_UPLOAD_TOKEN_SECRET
+            {{- if .Values.secrets.bootstrap }}
+            {{- if .Values.config.bootstrap.createRootUser }}
+            - name: SYNCTV_BOOTSTRAP_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_BOOTSTRAP_ROOT_PASSWORD
+            {{- end }}
+            {{- end }}
+            {{- if and .Values.metrics.enabled (eq (.Values.metrics.auth.mode | default "bearer_token") "bearer_token") }}
+            - name: SYNCTV_METRICS_AUTH_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_METRICS_AUTH_BEARER_TOKEN
+            {{- end }}
+            {{- if and .Values.metrics.enabled (eq (.Values.metrics.auth.mode | default "bearer_token") "basic") }}
+            - name: SYNCTV_METRICS_AUTH_BASIC_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_METRICS_AUTH_BASIC_USERNAME
+            - name: SYNCTV_METRICS_AUTH_BASIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_METRICS_AUTH_BASIC_PASSWORD
+            {{- end }}
+            {{- if eq $hlsBackend "s3" }}
+            - name: SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID
+            - name: SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY
+            {{- end }}
+            - name: SYNCTV_MANAGEMENT_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_MANAGEMENT_AUTH_TOKEN
+                  optional: true
+            {{- with .Values.extraEnvVars }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if .Values.lifecycle }}
+          lifecycle:
+            {{- toYaml .Values.lifecycle | nindent 12 }}
+          {{- end }}
+          {{- if and .Values.config.health.enabled .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml .Values.startupProbe | nindent 12 }}
+          {{- end }}
+          {{- if and .Values.config.health.enabled .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          {{- end }}
+          {{- if and .Values.config.health.enabled .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: management-run
+              mountPath: /run/synctv
+            - name: tmp
+              mountPath: /tmp
+            - name: app-data
+              mountPath: /data
+            {{- if and $hlsFileBackend $hlsStoragePath }}
+            - name: hls-storage
+              mountPath: {{ $hlsStoragePath | quote }}
+            {{- end }}
+            {{- if and .Values.metrics.enabled .Values.metrics.tls.enabled }}
+            - name: metrics-tls
+              mountPath: /etc/synctv/metrics/tls
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "synctv.configMapName" . }}
+        - name: management-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: app-data
+          {{- if .Values.persistence.data.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.data.existingClaim | quote }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- if and $hlsFileBackend $hlsStoragePath }}
+        - name: hls-storage
+          {{- if .Values.persistence.hls.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.hls.existingClaim | quote }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
+        {{- if and .Values.metrics.enabled .Values.metrics.tls.enabled }}
+        - name: metrics-tls
+          secret:
+            secretName: {{ include "synctv.metricsTlsSecretName" . }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.affinity }}
+      affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}
+      {{- else if .Values.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "synctv.appSelectorLabels" . | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+      {{- end }}
+      {{- if and .Values.topologySpread .Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpread.maxSkew | default 1 }}
+          topologyKey: {{ .Values.topologySpread.topologyKey | default "topology.kubernetes.io/zone" }}
+          whenUnsatisfiable: {{ .Values.topologySpread.whenUnsatisfiable | default "ScheduleAnyway" }}
+          labelSelector:
+            matchLabels:
+              {{- include "synctv.appSelectorLabels" . | nindent 14 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

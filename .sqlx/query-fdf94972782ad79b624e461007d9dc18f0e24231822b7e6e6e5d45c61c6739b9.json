@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH candidates AS (\n            SELECT sequence\n            FROM room_resource_events\n            WHERE created_at < NOW() - ($1::bigint::text || ' seconds')::interval\n            ORDER BY created_at ASC, sequence ASC\n            LIMIT $2\n            FOR UPDATE SKIP LOCKED\n        )\n        DELETE FROM room_resource_events e\n        USING candidates c\n        WHERE e.sequence = c.sequence\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fdf94972782ad79b624e461007d9dc18f0e24231822b7e6e6e5d45c61c6739b9"
+}

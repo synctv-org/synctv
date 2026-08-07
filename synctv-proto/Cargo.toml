@@ -1,0 +1,52 @@
+[package]
+name = "synctv-proto"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = ["full", "tls-aws-lc", "tls-webpki-roots"]
+full = ["main", "providers", "playback-provider"]
+main = ["dep:synctv-proto-main"]
+providers = ["main", "dep:synctv-proto-providers"]
+playback-provider = ["dep:synctv-proto-playback-provider"]
+openapi = [
+    "synctv-proto-main?/openapi",
+    "synctv-proto-providers?/openapi",
+    "synctv-proto-playback-provider?/openapi",
+]
+tls-aws-lc = [
+    "synctv-proto-main?/tls-aws-lc",
+    "synctv-proto-providers?/tls-aws-lc",
+    "synctv-proto-playback-provider?/tls-aws-lc",
+]
+tls-ring = [
+    "synctv-proto-main?/tls-ring",
+    "synctv-proto-providers?/tls-ring",
+    "synctv-proto-playback-provider?/tls-ring",
+]
+tls-webpki-roots = [
+    "synctv-proto-main?/tls-webpki-roots",
+    "synctv-proto-providers?/tls-webpki-roots",
+    "synctv-proto-playback-provider?/tls-webpki-roots",
+]
+tls-native-roots = [
+    "synctv-proto-main?/tls-native-roots",
+    "synctv-proto-providers?/tls-native-roots",
+    "synctv-proto-playback-provider?/tls-native-roots",
+]
+
+[lints]
+workspace = true
+
+[dependencies]
+synctv-proto-main = { workspace = true, default-features = false, optional = true }
+synctv-proto-providers = { workspace = true, default-features = false, optional = true }
+synctv-proto-playback-provider = { workspace = true, default-features = false, optional = true }
+prost-reflect.workspace = true
+prost-protovalidate.workspace = true
+
+[dev-dependencies]
+serde_urlencoded.workspace = true
+serde_json.workspace = true

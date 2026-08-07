@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package acproto;
+
+message CommonStateSignalChatEnd {
+	string chatId = 1;
+	EndType endType = 2;
+
+	enum EndType {
+		UNKNOWN = 0;
+		CANCEL_BY_AUTHOR = 1;
+		END_BY_AUTHOR = 2;
+		END_BY_GUEST = 3;
+		GUEST_REJECT = 4;
+		GUEST_TIMEOUT = 5;
+		GUEST_HEARTBEAT_TIMEOUT = 6;
+		AUTHOR_HEARTBEAT_TIMEOUT = 7;
+		PEER_LIVE_STOPPED = 8;
+	}
+}

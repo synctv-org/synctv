@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO room_favorites (user_id, room_id)\n             SELECT rm.user_id, rm.room_id\n             FROM room_members rm\n             JOIN rooms r ON r.id = rm.room_id\n             WHERE rm.user_id = $1\n               AND rm.room_id = $2\n               AND r.deleted_at IS NULL\n             ON CONFLICT (user_id, room_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "164f004100a43af6e950847c0cf67590e406df301494a3d99556d7a3c7e936ec"
+}

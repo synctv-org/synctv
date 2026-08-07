@@ -1,0 +1,269 @@
+syntax = "proto3";
+
+package synctv.cluster;
+
+// Cluster coordination service for multi-replica deployment
+//
+// Architecture Overview:
+// - Redis is the SOLE discovery mechanism for this cluster
+// - Nodes self-register in Redis via NodeRegistry::register() on startup
+// - Heartbeats are sent directly to Redis via NodeRegistry::heartbeat()
+//
+// Endpoint Usage:
+// - GetNodes: ACTIVE - returns all known nodes from Redis registry
+//
+service ClusterService {
+    // Node discovery
+    rpc GetNodes(GetNodesRequest) returns (GetNodesResponse);
+}
+
+// Internal server-state service mounted on each API gRPC server.
+// Callers authenticate with the shared x-cluster-secret metadata header.
+service ServerStateService {
+    rpc GetServerState(GetServerStateRequest) returns (ServerStateNode);
+}
+
+// Node information
+message NodeInfo {
+    string node_id = 1;
+    string address = 2; // gRPC address (host:port)
+    int64 last_heartbeat = 3;
+    uint64 epoch = 4; // Fencing token epoch for stale-registration protection
+}
+
+message GetNodesRequest {}
+
+message GetNodesResponse {
+    repeated NodeInfo nodes = 1;
+}
+
+message GetServerStateRequest {}
+
+enum ServerStateNodeStatus {
+    SERVER_STATE_NODE_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_NODE_STATUS_HEALTHY = 1;
+    SERVER_STATE_NODE_STATUS_DEGRADED = 2;
+    SERVER_STATE_NODE_STATUS_UNHEALTHY = 3;
+}
+
+enum ServerStateDatabaseStatus {
+    SERVER_STATE_DATABASE_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_DATABASE_STATUS_HEALTHY = 1;
+    SERVER_STATE_DATABASE_STATUS_UNHEALTHY = 2;
+}
+
+enum ServerStateRedisStatus {
+    SERVER_STATE_REDIS_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_REDIS_STATUS_HEALTHY = 1;
+    SERVER_STATE_REDIS_STATUS_NOT_CONFIGURED = 2;
+    SERVER_STATE_REDIS_STATUS_UNHEALTHY = 3;
+}
+
+enum ServerStateClusterStatus {
+    SERVER_STATE_CLUSTER_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_CLUSTER_STATUS_HEALTHY = 1;
+    SERVER_STATE_CLUSTER_STATUS_UNHEALTHY = 2;
+    SERVER_STATE_CLUSTER_STATUS_DISABLED = 3;
+}
+
+enum ServerStateWsTicketStatus {
+    SERVER_STATE_WS_TICKET_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_WS_TICKET_STATUS_HEALTHY = 1;
+    SERVER_STATE_WS_TICKET_STATUS_UNHEALTHY = 2;
+}
+
+enum ServerStateEmailStatus {
+    SERVER_STATE_EMAIL_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_EMAIL_STATUS_CONFIGURED = 1;
+    SERVER_STATE_EMAIL_STATUS_NOT_CONFIGURED = 2;
+}
+
+enum ServerStateLivestreamStatus {
+    SERVER_STATE_LIVESTREAM_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_LIVESTREAM_STATUS_CONFIGURED = 1;
+    SERVER_STATE_LIVESTREAM_STATUS_NOT_CONFIGURED = 2;
+}
+
+enum ServerStateMemoryStatus {
+    SERVER_STATE_MEMORY_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_MEMORY_STATUS_HEALTHY = 1;
+    SERVER_STATE_MEMORY_STATUS_UNHEALTHY = 2;
+    SERVER_STATE_MEMORY_STATUS_UNKNOWN = 3;
+}
+
+enum ServerStateWebRtcStatus {
+    SERVER_STATE_WEB_RTC_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_WEB_RTC_STATUS_HEALTHY = 1;
+    SERVER_STATE_WEB_RTC_STATUS_DEGRADED = 2;
+    SERVER_STATE_WEB_RTC_STATUS_DISABLED = 3;
+}
+
+enum ServerStateCpuStatus {
+    SERVER_STATE_CPU_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_CPU_STATUS_HEALTHY = 1;
+    SERVER_STATE_CPU_STATUS_DEGRADED = 2;
+    SERVER_STATE_CPU_STATUS_UNHEALTHY = 3;
+    SERVER_STATE_CPU_STATUS_UNKNOWN = 4;
+}
+
+enum ServerStateSliceCacheStatus {
+    SERVER_STATE_SLICE_CACHE_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_SLICE_CACHE_STATUS_HEALTHY = 1;
+    SERVER_STATE_SLICE_CACHE_STATUS_DISABLED = 2;
+}
+
+message ServerStateDatabasePool {
+    uint32 size = 1;
+    uint32 idle_connections = 2;
+    uint32 active_connections = 3;
+}
+
+message ServerStateDatabase {
+    ServerStateDatabaseStatus status = 1;
+    string host = 2;
+    uint32 port = 3;
+    string database = 4;
+    uint32 max_connections = 5;
+    uint32 min_connections = 6;
+    uint64 connect_timeout_seconds = 7;
+    uint64 idle_timeout_seconds = 8;
+    uint64 max_lifetime_seconds = 9;
+    ServerStateDatabasePool primary_pool = 10;
+    bool read_pool_enabled = 11;
+    string read_host = 12;
+    uint32 read_port = 13;
+    ServerStateDatabasePool read_pool = 14;
+    string message = 15;
+}
+
+message ServerStateRedis {
+    ServerStateRedisStatus status = 1;
+    bool configured = 2;
+    string deployment_mode = 3;
+    int64 database = 4;
+    string key_prefix = 5;
+    uint64 connect_timeout_seconds = 6;
+    uint64 response_timeout_seconds = 7;
+    uint64 pipeline_buffer_size = 8;
+    string sentinel_master_name = 9;
+    uint32 sentinel_node_count = 10;
+    optional double ping_latency_ms = 11;
+    string message = 12;
+}
+
+message ServerStateClusterNode {
+    string node_id = 1;
+    string cluster_address = 2;
+    int64 last_heartbeat = 3;
+    uint64 epoch = 4;
+}
+
+message ServerStateCluster {
+    ServerStateClusterStatus status = 1;
+    bool enabled = 2;
+    string discovery_mode = 3;
+    bool distributed_realtime_enabled = 4;
+    bool node_id_empty = 5;
+    uint32 routable_node_count = 6;
+    repeated ServerStateClusterNode nodes = 7;
+    string message = 8;
+}
+
+message ServerStateWsTicket {
+    ServerStateWsTicketStatus status = 1;
+    bool cross_node_capable = 2;
+    string message = 3;
+}
+
+message ServerStateEmail {
+    ServerStateEmailStatus status = 1;
+    bool configured = 2;
+}
+
+message ServerStateLivestream {
+    ServerStateLivestreamStatus status = 1;
+    bool configured = 2;
+    uint64 active_publisher_count = 3;
+    uint64 active_room_count = 4;
+    uint32 rtmp_port = 5;
+    string public_rtmp_host = 6;
+    uint32 gop_cache_size = 7;
+    uint64 gop_cache_max_memory_mb = 8;
+    uint64 stream_timeout_seconds = 9;
+    string hls_storage_backend = 10;
+    string hls_storage_path = 11;
+    uint64 hls_memory_max_mb = 12;
+}
+
+message ServerStateMemory {
+    ServerStateMemoryStatus status = 1;
+    optional uint64 used_bytes = 2;
+    optional uint64 total_bytes = 3;
+    optional uint64 available_bytes = 4;
+    optional double usage_percent = 5;
+}
+
+message ServerStateWebRtc {
+    ServerStateWebRtcStatus status = 1;
+    string mode = 2;
+    bool builtin_stun_configured = 3;
+    string builtin_stun_state = 4;
+    string reason = 5;
+    string local_addr = 6;
+    string external_addr = 7;
+    string message = 8;
+}
+
+message ServerStateSliceCache {
+    ServerStateSliceCacheStatus status = 1;
+    bool engine_enabled = 2;
+    string backend = 3;
+    string file_cache_dir = 4;
+    uint64 slice_size = 5;
+    uint64 max_cache_size = 6;
+    uint64 segment_ttl_secs = 7;
+    uint64 stale_max_age_secs = 8;
+    bool stale_while_revalidate = 9;
+    uint64 eviction_interval_secs = 10;
+    double watermark_ratio = 11;
+    uint64 current_size_bytes = 12;
+    uint64 entry_count = 13;
+    uint64 metadata_entries = 14;
+    uint64 updating_entries = 15;
+    uint64 lock_count = 16;
+    double usage_ratio = 17;
+}
+
+message ServerStateCpu {
+    ServerStateCpuStatus status = 1;
+    uint32 available_parallelism = 2;
+    optional double current_load_1m = 3;
+    optional double load_ratio_1m = 4;
+    optional double load_average_1m = 5;
+    optional double load_average_5m = 6;
+    optional double load_average_15m = 7;
+}
+
+message ServerStateRealtime {
+    bool distributed_enabled = 1;
+    uint64 connection_count = 2;
+}
+
+message ServerStateNode {
+    string node_id = 1;
+    ServerStateNodeStatus status = 2;
+    int64 updated_at = 3;
+    string version = 4;
+    string api_address = 5;
+    ServerStateRealtime realtime = 6;
+    ServerStateDatabase database = 7;
+    ServerStateRedis redis = 8;
+    ServerStateCluster cluster = 9;
+    ServerStateWsTicket ws_ticket = 10;
+    ServerStateEmail email = 11;
+    ServerStateLivestream livestream = 12;
+    ServerStateMemory memory = 13;
+    ServerStateWebRtc webrtc = 14;
+    ServerStateCpu cpu = 15;
+    ServerStateSliceCache slice_cache = 16;
+}

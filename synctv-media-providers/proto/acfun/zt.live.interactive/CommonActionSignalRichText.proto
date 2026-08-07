@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package acproto;
+
+import "ZtLiveUserInfo.proto";
+import "ImageCdnNode.proto";
+
+message CommonActionSignalRichText {
+	repeated RichTextSegment segments = 1; //segment
+	int64 sendTimeMs = 2;
+
+	message ImageSegment {
+		repeated ImageCdnNode pictures = 1; //cdnNode
+		string alternativeText = 2;
+		string alternativeColor = 3;
+	}
+	message PlainSegment {
+		string text = 1;
+		string color = 2;
+	}
+	message RichTextSegment {
+		oneof segment {
+			UserInfoSegment userInfo = 1;
+			PlainSegment plain = 2;
+			ImageSegment image = 3;
+		}
+	}
+	message UserInfoSegment {
+		ZtLiveUserInfo user = 1;
+		string color = 2;
+	}
+}

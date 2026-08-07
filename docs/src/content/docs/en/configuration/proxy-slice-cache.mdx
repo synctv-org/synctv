@@ -1,0 +1,110 @@
+---
+title: Proxy Slice Cache
+description: Startup configuration, storage path, and boundaries for media proxy Range-slice caching.
+---
+
+import Diagram from '../../../../components/Diagram.astro';
+import proxySliceCacheDark from '../../../../assets/diagrams/proxy-slice-cache-dark.svg';
+import proxySliceCacheLight from '../../../../assets/diagrams/proxy-slice-cache-light.svg';
+
+`proxy_slice_cache` belongs to media proxying. It caches upstream media as HTTP Range slices to reduce repeated provider bandwidth and latency.
+
+It is not a business cache and does not live under `cache`. Business L1/L2 caches are covered in [Business Cache](../cache/).
+
+## Range Slice Flow
+
+Media clients often request byte ranges:
+
+```http
+Range: bytes=1048576-2097151
+```
+
+SyncTV can fetch fixed-size upstream slices when the provider supports Range. Repeated requests for the same slice can be served from the memory or file backend.
+
+<Diagram
+  light={proxySliceCacheLight}
+  dark={proxySliceCacheDark}
+  alt="SyncTV proxy slice cache model showing client requests entering SyncTV proxy, fixed-size slice requests to the upstream provider, memory or file cache hits when Range is supported, and direct pass-through without full-file caching when Range is unsupported."
+  caption="Proxy slice cache stores only Range-addressable media bytes. If the upstream does not support Range, SyncTV bypasses caching instead of writing a full media file."
+/>
+
+## Example
+
+```yaml
+data_dir: "/var/lib/synctv"
+
+proxy_slice_cache:
+  enabled: true
+  slice_size_bytes: 2097152
+  max_cache_size_bytes: 536870912
+  segment_ttl_seconds: 300
+  stale_max_age_seconds: 60
+  stale_while_revalidate: true
+  file_backend_enabled: true
+  file_cache_dir: "cache/proxy-slice"
+  eviction_interval_seconds: 60
+  watermark_ratio: 0.875
+```
+
+Effective file path:
+
+```text
+/var/lib/synctv/cache/proxy-slice
+```
+
+## Fields
+
+| Field | Default | Change when | Risk |
+| --- | --- | --- | --- |
+| `proxy_slice_cache.enabled` | `true` | Media Range-slice caching must be disabled entirely | Proxying still works, but repeated playback returns to upstream more often |
+| `proxy_slice_cache.slice_size_bytes` | `2097152` | Individual Range slice size should change | Too small increases metadata and upstream requests; too large reduces reuse |
+| `proxy_slice_cache.max_cache_size_bytes` | `536870912` | Total memory or file backend capacity should be capped | Too small causes frequent eviction; too large needs more memory or disk |
+| `proxy_slice_cache.segment_ttl_seconds` | `300` | Freshness window should change | Too short increases upstream requests; too long can keep older content |
+| `proxy_slice_cache.stale_max_age_seconds` | `60` | Expired slices may be served briefly as fallback | Too long delays content refresh |
+| `proxy_slice_cache.stale_while_revalidate` | `true` | Expired hits should refresh in the background instead of blocking | Disabling it increases latency for expired hits |
+| `proxy_slice_cache.file_backend_enabled` | `false` | Cache should survive process restarts and a persistent directory is mounted | Startup or writes can fail if the container has no writable volume |
+| `proxy_slice_cache.file_cache_dir` | `""` | File backend should use a specific directory | Empty value uses `data_dir/cache/proxy-slice` when the file backend is enabled |
+| `proxy_slice_cache.eviction_interval_seconds` | `60` | Background capacity cleanup frequency should change | Too short adds background overhead; too long can exceed capacity temporarily |
+| `proxy_slice_cache.watermark_ratio` | `0.875` | Target usage after eviction should change | Too high evicts frequently; too low frees more cache at once |
+
+Environment variables:
+
+```bash
+SYNCTV_PROXY_SLICE_CACHE_ENABLED=true
+SYNCTV_PROXY_SLICE_CACHE_SLICE_SIZE_BYTES=2097152
+SYNCTV_PROXY_SLICE_CACHE_MAX_CACHE_SIZE_BYTES=536870912
+SYNCTV_PROXY_SLICE_CACHE_SEGMENT_TTL_SECONDS=300
+SYNCTV_PROXY_SLICE_CACHE_STALE_MAX_AGE_SECONDS=60
+SYNCTV_PROXY_SLICE_CACHE_STALE_WHILE_REVALIDATE=true
+SYNCTV_PROXY_SLICE_CACHE_FILE_BACKEND_ENABLED=true
+SYNCTV_PROXY_SLICE_CACHE_FILE_CACHE_DIR=cache/proxy-slice
+SYNCTV_PROXY_SLICE_CACHE_EVICTION_INTERVAL_SECONDS=60
+SYNCTV_PROXY_SLICE_CACHE_WATERMARK_RATIO=0.875
+```
+
+## Production
+
+For single-node production, mount `data_dir` or `file_cache_dir` to persistent storage if the file backend is enabled, and monitor capacity plus cleanup.
+
+In Kubernetes, shared storage can make files visible across replicas, but the current index is process-local and there is no cross-process index or distributed lock. Do not treat the file backend as a strongly consistent realtime multi-replica cache.
+
+## Boundaries
+
+- Only range-capable upstream responses are cached.
+- Full-body cache is not used.
+- If an upstream does not support Range, SyncTV bypasses slice caching. If the client request itself needs full content, SyncTV may stream the full upstream response, but it does not store that response as a full-file cache.
+- Enablement is read at process startup. CLI and runtime settings do not dynamically enable or disable it.
+
+## Cache Behavior
+
+### Are non-Range client GETs cached?
+
+SyncTV can try a Range request upstream. If the upstream supports Range, slice cache can be used. If the upstream rejects or ignores Range, SyncTV bypasses.
+
+### What about suffix ranges like `bytes=-N`?
+
+If metadata is available and the total size is known, SyncTV can translate suffix ranges into concrete byte ranges and use slice cache. Without enough metadata, SyncTV does not force a HEAD probe just for suffix ranges; it lets the upstream handle the request.
+
+### Can cached bytes become stale?
+
+SyncTV uses headers such as ETag and Content-Range when available to detect consistency. If a later slice fetch detects that the object changed while streaming, the connection is interrupted instead of continuing with mixed old and new bytes.

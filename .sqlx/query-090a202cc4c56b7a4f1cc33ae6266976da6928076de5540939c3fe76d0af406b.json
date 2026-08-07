@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM auth_email_registration_tokens\n            WHERE used_at IS NULL\n              AND (LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2))\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "090a202cc4c56b7a4f1cc33ae6266976da6928076de5540939c3fe76d0af406b"
+}

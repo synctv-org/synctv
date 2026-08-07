@@ -1,0 +1,31 @@
+{{- if and .Values.metrics.enabled .Values.metrics.tls.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "synctv.metricsTlsSecretName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "synctv.metricsTlsSecretName" . }}
+  duration: {{ .Values.metrics.tls.duration | default "2160h" }}
+  renewBefore: {{ .Values.metrics.tls.renewBefore | default "720h" }}
+  subject:
+    organizations:
+      - synctv
+  dnsNames:
+    - {{ include "synctv.metricsServiceName" . }}
+    - {{ include "synctv.metricsServiceName" . }}.{{ .Release.Namespace }}
+    - {{ include "synctv.metricsServiceName" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "synctv.metricsTlsServerName" . }}
+  issuerRef:
+    {{- if .Values.metrics.tls.issuerRef.name }}
+    name: {{ .Values.metrics.tls.issuerRef.name }}
+    kind: {{ .Values.metrics.tls.issuerRef.kind | default "Issuer" }}
+    group: {{ .Values.metrics.tls.issuerRef.group | default "cert-manager.io" }}
+    {{- else }}
+    name: {{ include "synctv.metricsTlsIssuerName" . }}
+    kind: Issuer
+    group: cert-manager.io
+    {{- end }}
+{{- end }}

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE room_creation_requests\n                SET opaque_password_record = $2,\n                    opaque_password_credential_identifier = $3,\n                    opaque_password_ciphersuite = $4,\n                    opaque_password_server_setup_version = $5\n                WHERE id = $1\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Bytea",
+        "Varchar",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e7097c24fbfec22e7768c1e5e057389ba8a9cb046252c2cef849e470a7f3bbb2"
+}

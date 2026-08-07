@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package synctv.provider.cctv;
+
+import "proto/providers/cctv.proto";
+
+service CctvProviderService {
+  rpc Resolve(ResolveRequest) returns (ResolveResponse);
+}

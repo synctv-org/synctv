@@ -1,0 +1,110 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT id AS \"id!\",\n               actor_id AS \"actor_id!\",\n               actor_username AS \"actor_username!\",\n               action AS \"action!\",\n               target_type AS \"target_type!\",\n               target_id,\n               ip_address,\n               user_agent\n        FROM audit_logs\n        WHERE actor_id = 100101\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "actor_id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "actor_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "actor_username!",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "actor_username"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "action!",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "action"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "target_type!",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "target_type"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "target_id",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "target_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "ip_address",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "ip_address"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "user_agent",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "user_agent"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "591e4db4ef8a6683ba6c042b80993f8e36a2b4a8604dd3e9347f082046009cfb"
+}

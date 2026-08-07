@@ -1,0 +1,98 @@
+---
+title: 公开 ID
+description: public_ids 配置控制 API 对外展示的公开 ID 格式。
+---
+
+## 公开 ID 格式
+
+`public_ids` 控制 SyncTV 在 API、URL 和客户端可见响应中使用的公开 ID 格式。
+
+SyncTV 内部数据库可以继续使用数字 ID，但面向客户端时可以启用 sqids，让公开 ID 更短、更统一，也更少暴露自增趋势。
+
+## 完整示例
+
+```yaml
+public_ids:
+  sqids:
+    alphabet: "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    min_length: 12
+```
+
+不配置 `public_ids.sqids` 时，使用内置默认的带前缀十进制格式。
+
+## `public_ids.sqids`
+
+类型：对象或空。
+
+默认值：`null`。
+
+作用：启用 sqids 编码公开 ID。
+
+适合启用的场景：
+
+- 公网部署，不希望 URL 或 API 响应中的 ID 看起来像简单递增数字。
+- 希望房间、媒体、用户等公开标识长度更统一。
+- 需要更适合复制、展示和日志检索的公开标识。
+
+适合保持默认的场景：
+
+- 只在内网使用。
+- 不关心公开 ID 格式。
+- 希望问题排查时 ID 更直观。
+
+## `public_ids.sqids.alphabet`
+
+类型：字符串，可选。
+
+默认值：空，表示使用 sqids crate 默认 alphabet。
+
+作用：控制 sqids 可使用的字符集合。
+
+示例：
+
+```yaml
+public_ids:
+  sqids:
+    alphabet: "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+```
+
+这个示例去掉了容易混淆的字符，例如 `0`、`O`、`I`、`l`。
+
+注意事项：
+
+- alphabet 必须包含足够多的唯一字符。
+- 修改 alphabet 会改变同一个内部 ID 对应的公开 ID。
+- 全新项目可以按产品需要直接设计；上线后不要随意改，否则历史 URL、客户端收藏和外部引用可能失效。
+
+## `public_ids.sqids.min_length`
+
+类型：整数。
+
+默认值：`12`。
+
+作用：控制生成公开 ID 的最小长度。
+
+示例：
+
+```yaml
+public_ids:
+  sqids:
+    min_length: 10
+```
+
+取值建议：
+
+| 场景 | 建议 |
+| --- | --- |
+| 内网、小规模部署 | `8` 到 `10` |
+| 公网产品 | `10` 到 `14` |
+| 强调复制友好 | 不要过长 |
+
+更长不等于更安全。公开 ID 不是权限控制，权限仍然必须由认证和授权逻辑保证。
+
+## 环境变量
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_PUBLIC_IDS_SQIDS_ALPHABET` | `public_ids.sqids.alphabet` |
+| `SYNCTV_PUBLIC_IDS_SQIDS_MIN_LENGTH` | `public_ids.sqids.min_length` |

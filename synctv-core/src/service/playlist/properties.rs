@@ -1,0 +1,155 @@
+use crate::{
+    models::{Playlist, PlaylistId, RoomId, UserId},
+    service::optimistic_retry,
+    Error, Result,
+};
+
+use super::{
+    ensure_playlist_creator_can_edit, PlaylistService, RealtimeOutboxPlaylistEventFactory,
+};
+
+/// Request to set playlist properties
+#[derive(Debug, Clone)]
+pub struct SetPlaylistRequest {
+    pub playlist_id: PlaylistId,
+    pub name: Option<String>,
+    pub description: Option<String>,
+}
+
+impl PlaylistService {
+    /// Set playlist properties
+    ///
+    /// Uses optimistic locking with automatic retry on version conflicts.
+    /// Retries use exponential backoff with jitter to avoid thundering herd.
+    pub async fn set_playlist(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: SetPlaylistRequest,
+    ) -> Result<Playlist> {
+        self.set_playlist_with_outbox(room_id, user_id, request, None)
+            .await
+    }
+
+    pub async fn set_playlist_with_outbox(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: SetPlaylistRequest,
+        outbox_event_factory: Option<RealtimeOutboxPlaylistEventFactory>,
+    ) -> Result<Playlist> {
+        self.set_playlist_internal(room_id, user_id, request, false, outbox_event_factory)
+            .await
+    }
+
+    /// Management-only playlist update that bypasses room membership permission checks.
+    pub async fn admin_set_playlist(
+        &self,
+        room_id: RoomId,
+        actor_user_id: UserId,
+        request: SetPlaylistRequest,
+    ) -> Result<Playlist> {
+        self.admin_set_playlist_with_outbox(room_id, actor_user_id, request, None)
+            .await
+    }
+
+    pub async fn admin_set_playlist_with_outbox(
+        &self,
+        room_id: RoomId,
+        actor_user_id: UserId,
+        request: SetPlaylistRequest,
+        outbox_event_factory: Option<RealtimeOutboxPlaylistEventFactory>,
+    ) -> Result<Playlist> {
+        self.set_playlist_internal(room_id, actor_user_id, request, true, outbox_event_factory)
+            .await
+    }
+
+    async fn set_playlist_internal(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: SetPlaylistRequest,
+        bypass_room_permissions: bool,
+        outbox_event_factory: Option<RealtimeOutboxPlaylistEventFactory>,
+    ) -> Result<Playlist> {
+        let playlist_id = request.playlist_id;
+        let updated_playlist = optimistic_retry::retry_with_optimistic_lock(
+            optimistic_retry::DEFAULT_MAX_RETRIES,
+            optimistic_retry::DEFAULT_BACKOFF_BASE_MS,
+            "Playlist update failed after maximum retry attempts",
+            || async {
+                // Get existing playlist (re-fetch on each retry to get latest version)
+                let mut playlist = self
+                    .playlist_repo
+                    .get_by_room_and_id(&room_id, &request.playlist_id)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+
+                if !bypass_room_permissions {
+                    ensure_playlist_creator_can_edit(&playlist, &user_id)?;
+                    self.permission_service
+                        .check_permission_no_cache(
+                            &room_id,
+                            &user_id,
+                            crate::models::RoomPermission::MANAGE_OWN_MEDIA,
+                        )
+                        .await?;
+                }
+
+                // Store original version for optimistic locking
+                let expected_version = playlist.version;
+
+                // Update fields
+                if let Some(ref name) = request.name {
+                    if name.chars().count() > crate::validation::PLAYLIST_NAME_MAX {
+                        return Err(Error::InvalidInput(format!(
+                            "Playlist name cannot exceed {} characters",
+                            crate::validation::PLAYLIST_NAME_MAX
+                        )));
+                    }
+                    playlist.name = name.clone();
+                }
+                if let Some(ref description) = request.description {
+                    if description.chars().count() > crate::validation::PLAYLIST_DESCRIPTION_MAX {
+                        return Err(Error::InvalidInput(format!(
+                            "Playlist description cannot exceed {} characters",
+                            crate::validation::PLAYLIST_DESCRIPTION_MAX
+                        )));
+                    }
+                    playlist.description = description.clone();
+                }
+                // Save with optimistic locking
+                let mut tx = self.playlist_repo.pool().begin().await?;
+                match self
+                    .playlist_repo
+                    .update_with_version_with_executor(&playlist, expected_version, &mut *tx)
+                    .await
+                {
+                    Ok(updated_playlist) => {
+                        self.insert_playlist_outbox_tx(
+                            &mut tx,
+                            &updated_playlist,
+                            outbox_event_factory.as_ref(),
+                        )
+                        .await?;
+                        tx.commit().await?;
+                        Ok(updated_playlist)
+                    }
+                    Err(Error::OptimisticLockConflict) => {
+                        tx.rollback().await?;
+                        Err(Error::OptimisticLockConflict)
+                    }
+                    Err(e) => Err(e),
+                }
+            },
+        )
+        .await?;
+
+        tracing::info!(
+            room_id = %room_id,
+            playlist_id = %playlist_id,
+            "Playlist updated"
+        );
+        Ok(updated_playlist)
+    }
+}

@@ -1,0 +1,314 @@
+---
+title: Livestream Configuration
+description: RTMP, RTSP, HLS, HTTP-FLV, pull retry behavior, GOP cache, and livestream storage.
+---
+
+import Diagram from '../../../../components/Diagram.astro';
+import livestreamPipelineDark from '../../../../assets/diagrams/livestream-pipeline-dark.svg';
+import livestreamPipelineLight from '../../../../assets/diagrams/livestream-pipeline-light.svg';
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## What This Config Controls
+
+`livestream` controls RTMP publishing, external RTMP/RTSP/HTTP-FLV pulls, HLS segments, HTTP-FLV connections, livestream memory cache, and livestream file storage.
+
+If you only use on-demand media providers, most values can remain at their defaults.
+
+## Livestream Boundaries
+
+Livestreaming includes ingest, realtime packet distribution, FLV playback, HLS remuxing, HLS storage, and cross-node publisher registration. It is separate from on-demand media provider/proxy flows: on-demand media mostly resolves external URLs and Range proxying, while livestreaming handles data that is being produced now.
+
+<Diagram
+  light={livestreamPipelineLight}
+  dark={livestreamPipelineDark}
+  alt="SyncTV livestream pipeline showing RTMP ingest entering StreamHub, splitting into HTTP-FLV and HLS remuxer paths, and HLS playlist/segment routes reading from memory, file, or S3 storage."
+  caption="Livestream data enters through RTMP and StreamHub, then splits by playback protocol: HTTP-FLV streams low-latency chunks, while HLS remuxing writes playlist and segment state to the selected HLS backend."
+/>
+
+- **RTMP ingest**: Publishers connect through RTMP. During authentication, the publisher is registered on the local node or shared registry.
+- **RTSP ingest**: External sources are pulled through DESCRIBE/SETUP/PLAY and enter the same StreamHub after RTP depacketization.
+- **StreamHub**: Live packets are distributed in-process to FLV sessions, the HLS remuxer, and internal relay/pull logic.
+- **HTTP-FLV**: Best for low latency. Clients hold long-lived responses, and write timeouts protect the server from slow readers.
+- **HLS**: Best for broad player compatibility and shared storage/CDN-like deployments. It has higher latency but scales well across replicas.
+
+## Choosing a Playback Protocol
+
+| Protocol | Strength | Cost | Best fit |
+| --- | --- | --- | --- |
+| HTTP-FLV | Low latency and short server path | Many long-lived connections; slow clients need strict timeouts | Interactive livestreaming and room-synchronized viewing |
+| HLS | Broad player compatibility; playlist/segment pull model; works with shared storage | Higher latency and segment storage management | Mobile clients, generic players, multi-replica deployments, object storage |
+
+<Aside type="note">
+RTMP is the publishing entry point. Playback uses SyncTV-generated HLS or HTTP-FLV links. Both outputs follow the current live edge, and room synchronization uses live playback state.
+</Aside>
+
+## External RTSP Sources
+
+RTSP sources use an explicit protocol configuration. Each media item owns an independent pull session, so multiple media items can pull multiple cameras or streaming servers concurrently. A node accepts up to 100 external streams by default.
+
+```json
+{
+  "provider": "liveProxy",
+  "source": {
+    "protocol": "rtsp",
+    "url": "rtsp://camera.example/live",
+    "transport": "tcp",
+    "videoTrack": { "mode": "firstCompatible" },
+    "audioTrack": { "mode": "firstCompatible" }
+  }
+}
+```
+
+Available settings:
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `transport` | `tcp` / `udp` | TCP uses interleaved RTP; UDP targets controlled LAN deployments |
+| `videoTrack` | `firstCompatible` / `index` / `disabled` | Select an H.264/H.265 video track |
+| `audioTrack` | `firstCompatible` / `index` / `disabled` | Select an AAC audio track |
+
+Select SDP video track 1 and disable audio:
+
+```json
+{
+  "videoTrack": { "mode": "index", "index": 1 },
+  "audioTrack": { "mode": "disabled" }
+}
+```
+
+Basic and Digest authentication accept RTSP URL userinfo, for example `rtsp://user:password@camera.example/live`. Logs remove userinfo, query, and fragment. Production deployments should manage credential-bearing source configs through controlled configuration paths.
+
+RTSP ingest supports H.264, H.265, and AAC. SyncTV maps these codecs to AVC/HEVC/AAC FLV tags, then reuses the existing HTTP-FLV, HLS, cluster registration, cross-node relay, idle cleanup, and reconnect paths.
+
+## External RTMP Sources
+
+External RTMP sources use `mode` to select which media messages enter the local stream. RTMP carries audio and video as separate message types, so this setting filters message types instead of selecting an RTSP track index.
+
+```json
+{
+  "provider": "liveProxy",
+  "source": {
+    "protocol": "rtmp",
+    "url": "rtmp://origin.example/live/stream",
+    "mode": "default"
+  }
+}
+```
+
+`mode` accepts `default` (audio and video), `videoOnly` (video only), or `audioOnly` (audio only). External RTMP pulls filter in the pull session, while SyncTV-managed RTMP publishing filters in the authenticated server session. HTTP-FLV and HLS receive the same filtered Live StreamHub data.
+
+RTSP `videoTrack` and `audioTrack` must enable at least one track. A double-disabled configuration is rejected while adding the media; track index existence and codec compatibility remain validated when the RTSP SDP connection is established.
+
+RTSP, external RTMP, and internal RTMP publishing enter the same Live StreamHub. SyncTV generates HLS and HTTP-FLV for all three; HLS uses a short sliding window, and TS segments are evicted with that window. Arbitrary seeking and durable recording are outside the current product scope.
+
+## HLS Backend Design
+
+<Tabs syncKey="hls-backend-design">
+  <TabItem label="memory" icon="setting">
+
+`memory` is the default. Segments exist only inside the current process. It is the simplest option for single-replica, development, and low-traffic multi-replica deployments.
+
+Limitations: process restarts lose segments; in multi-replica deployments, non-publisher nodes must read playlist/segment data from the publisher node through the HLS gRPC proxy. It works, but it is not the preferred backend for high-traffic production HLS.
+
+  </TabItem>
+  <TabItem label="file" icon="seti:folder">
+
+`file` writes segments to this node's `hls_storage.path`. Single replicas can use local disk. Multi-replica deployments can use local disk with publisher-node proxying.
+
+Do not configure shared storage as `file`; if every replica can read and write the same path, use `shared_file`.
+
+  </TabItem>
+  <TabItem label="shared_file" icon="seti:folder">
+
+`shared_file` writes segments to `hls_storage.path` visible to every replica. The publisher node writes segments, and any node that receives a `.ts` request reads the file from its own shared mount.
+
+Typical choices: NFS, RWX PVCs, or CSI shared volumes. Do not configure `emptyDir`, `/tmp`, or node-local disks as `shared_file`.
+
+  </TabItem>
+  <TabItem label="s3" icon="cloud-download">
+
+`s3` stores segments in S3-compatible object storage. It gives Kubernetes and cross-node deployments an explicit shared-storage boundary.
+
+Typical choices: AWS S3, MinIO, Cloudflare R2, or compatible services. Configure endpoint, bucket, access key, and secret key.
+
+  </TabItem>
+</Tabs>
+
+## How Clustered Livestreaming Works
+
+<Steps>
+1. A publisher connects through RTMP to any SyncTV node.
+2. After authentication, that node registers `room_id/media_id -> node_id/api_address` in the publisher registry. In cluster mode, the registry uses Redis.
+3. The local StreamHub receives live packets. HTTP-FLV can subscribe directly, and the HLS remuxer keeps producing segments.
+4. HLS segments are written to the selected `memory`, `file`, `shared_file`, or `s3` backend.
+5. If a viewer request lands on a non-publisher node, that node uses the shared registry to locate the publisher owner. HTTP-FLV uses cross-node relay; HLS playlist/segment reads can be proxied to the publisher node through the HLS gRPC proxy.
+6. With `shared_file`, TS segment requests are read by the current node from the shared path. Local backends still use publisher-node HLS gRPC proxying for remote playlist/segment reads.
+</Steps>
+
+<Aside type="note">
+Multi-replica HLS uses the publisher registry to locate the publishing node. Local backends read remote playlists and segments through the HLS gRPC proxy; `shared_file` lets TS requests read from the current node's shared mount, which is better for high-traffic multi-replica deployments.
+</Aside>
+
+## RTMP
+
+`livestream.rtmp_port` default: `1935`.
+
+OBS push URLs usually look like:
+
+```text
+rtmp://your-domain:1935/live/<stream-key>
+```
+
+The RTMP provider media source config accepts the same `mode` field:
+
+```json
+{
+  "provider": "rtmp",
+  "mode": "audioOnly"
+}
+```
+
+This setting controls which media types enter StreamHub. Playback continues through SyncTV-generated HLS or HTTP-FLV URLs.
+
+Change the port if another RTMP service already uses 1935.
+
+`livestream.public_rtmp_host` default: empty.
+
+Set it in production when the address returned to streamers must be a public domain, LoadBalancer address, or node public address instead of a local bind address:
+
+```yaml
+livestream:
+  public_rtmp_host: "live.example.com"
+```
+
+If empty, SyncTV falls back only to the local bind address, which is suitable for local development or single-node LAN testing. It does not use Pod IPs or the internal `server.advertise_host` as the public RTMP address.
+
+## GOP Cache
+
+`livestream.gop_cache_size` default: `2`.
+
+GOP cache helps new viewers start playback sooner without waiting for the next keyframe.
+
+`livestream.gop_cache_max_memory_mb` default: `100`.
+
+This is a per-stream limit. Total GOP cache memory can approach this value
+multiplied by the number of active live streams.
+
+Increase it when:
+
+- Bitrate is high.
+- New viewers join frequently.
+
+Decrease it when memory is limited.
+
+## Pull Retry Settings
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `livestream.stream_timeout_seconds` | `300` | Stop idle pull streams after this duration |
+| `livestream.pull_max_retries` | `10` | Maximum pull retry attempts |
+| `livestream.pull_initial_backoff_ms` | `1000` | Initial retry backoff |
+| `livestream.pull_max_backoff_ms` | `30000` | Maximum retry backoff |
+
+Backoff grows over time to avoid hammering unstable upstream sources.
+
+## FLV Safety
+
+`livestream.max_flv_tag_size_bytes` default: `10485760`, which is 10 MiB.
+
+This prevents abnormal streams from forcing excessive memory allocation. Do not increase it unless you know the upstream emits larger valid FLV tags.
+
+## HLS
+
+`livestream.hls_storage.type` default: `memory`.
+
+Allowed values:
+
+| Value | Meaning | Use case |
+| --- | --- | --- |
+| `memory` | Keep HLS segments in process memory | Single replica, temporary livestreams, development |
+| `file` | Write HLS segments to this node's `livestream.hls_storage.path` | Single-replica file storage or small multi-replica deployments with publisher-node proxying |
+| `shared_file` | Write HLS segments to a shared `livestream.hls_storage.path` visible to every replica | Multi-replica shared filesystem; TS segments are read by the current node from the shared path |
+| `s3` | Write HLS segments to S3-compatible object storage | Multi-replica Kubernetes or cross-node storage |
+
+Canonical values are `memory`, `file`, `shared_file`, and `s3`.
+
+Cluster mode can use `memory` or `file`. Non-publisher nodes read playlist/segment data from the publisher node through the HLS gRPC proxy. This is acceptable for small deployments or validation environments; high-traffic production HLS should use either:
+
+- `shared_file` with `hls_storage.path` mounted from a filesystem all replicas can read and write. `.ts` requests are served by the current node from that shared path.
+- `s3` with `livestream.hls_storage.*` configured.
+
+`livestream.hls_storage.memory_max_mb` default: `0`, which means the built-in default is used.
+
+This applies when `hls_storage.type=memory`. The current built-in default is 512 MB.
+
+### Shared File Backend
+
+```yaml
+livestream:
+  hls_storage:
+    type: "shared_file"
+    path: "/var/lib/synctv/hls"
+```
+
+`shared_file` explicitly means the path is shared by all replicas, for example through NFS, an RWX PVC, or a CSI volume. Do not configure pod-local `emptyDir`, `/tmp`, or node-local disks as `shared_file`.
+
+In `shared_file` mode, the publisher node writes HLS segments; any node that receives a `.ts` request reads the segment from its own mounted shared path instead of fetching the TS file from the publisher node.
+
+`livestream.hls_storage.path` default: empty.
+
+This is used when `hls_storage.type=file` or `shared_file`. Relative paths are resolved under `data_dir`:
+
+```yaml
+data_dir: "/var/lib/synctv"
+livestream:
+  hls_storage:
+    type: "file"
+    path: "livestream/hls"
+```
+
+Effective path:
+
+```text
+/var/lib/synctv/livestream/hls
+```
+
+### S3-Compatible Object Storage
+
+When `hls_storage.type=s3`, SyncTV stores HLS segments in S3-compatible object storage:
+
+```yaml
+livestream:
+  hls_storage:
+    type: "s3"
+    endpoint: "https://s3.example.com"
+    bucket: "synctv-hls"
+    region: "auto"
+    base_path: "synctv/hls/"
+```
+
+Inject credentials through environment variables or secret files:
+
+```bash
+export SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID="..."
+export SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY="..."
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `livestream.hls_storage.endpoint` | `""` | S3-compatible endpoint such as AWS S3, MinIO, Cloudflare R2, or a compatible service |
+| `livestream.hls_storage.bucket` | `""` | Bucket used for HLS segments |
+| `livestream.hls_storage.access_key_id` | `""` | Access key ID; supports `access_key_id_file` |
+| `livestream.hls_storage.secret_access_key` | `""` | Secret access key; supports `secret_access_key_file` |
+| `livestream.hls_storage.region` | `null` | S3 region; leave empty or use the provider-required value for compatible services |
+| `livestream.hls_storage.base_path` | `hls/` | Object key prefix inside the bucket; normalized without a leading `/` and with a trailing `/` |
+
+## HTTP-FLV
+
+`livestream.flv_max_connection_duration_seconds` default: `86400`.
+
+This limits a single HTTP-FLV connection to 24 hours. Setting it to `0` disables the limit, but that is not recommended for production.
+
+`livestream.flv_write_timeout_seconds` default: `30`.
+
+If a client is too slow and writes remain blocked beyond this timeout, SyncTV disconnects the client to protect server resources.

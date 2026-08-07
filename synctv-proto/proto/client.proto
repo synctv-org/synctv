@@ -1,0 +1,5317 @@
+syntax = "proto3";
+
+package synctv.client;
+
+import "proto/buf/validate/validate.proto";
+import "google/protobuf/field_mask.proto";
+import "proto/common.proto";
+import "proto/passkey.proto";
+import "proto/source_config.proto";
+
+// ==================== Auth Service ====================
+// Authentication: None (public access)
+// Routes: /api/auth/*
+//
+service AuthService {
+  // Public account password registration/login supports two transports:
+  // OPAQUE challenge-response and direct password over TLS. Direct password
+  // transport is kept for constrained clients; the server converts it into the
+  // same OPAQUE credential record used by the OPAQUE transport.
+  // Email registration is a request/confirm flow that also stores an OPAQUE
+  // credential record after confirmation.
+  rpc RequestEmailLogin(RequestEmailLoginRequest) returns (RequestEmailLoginResponse);
+  rpc ConfirmEmailLogin(ConfirmEmailLoginRequest) returns (LoginResponse);
+  rpc StartLogin(StartLoginRequest) returns (StartLoginResponse);
+  rpc CreateGuestToken(CreateGuestTokenRequest) returns (CreateGuestTokenResponse);
+  rpc RegisterWithDirectPassword(RegisterWithDirectPasswordRequest) returns (RegisterResponse);
+  rpc LoginWithDirectPassword(LoginWithDirectPasswordRequest) returns (LoginResponse);
+  rpc RequestEmailRegistration(RequestEmailRegistrationRequest) returns (RequestEmailRegistrationResponse);
+  rpc ConfirmEmailRegistration(ConfirmEmailRegistrationRequest) returns (RegisterResponse);
+  rpc StartOpaqueRegistration(StartOpaqueRegistrationRequest) returns (StartOpaqueRegistrationResponse);
+  rpc FinishOpaqueRegistration(FinishOpaqueRegistrationRequest) returns (RegisterResponse);
+  rpc StartOpaqueLogin(StartOpaqueLoginRequest) returns (StartOpaqueLoginResponse);
+  rpc FinishOpaqueLogin(FinishOpaqueLoginRequest) returns (LoginResponse);
+  rpc StartPasskeyRegistration(StartPasskeyRegistrationRequest) returns (StartPasskeyRegistrationResponse);
+  rpc FinishPasskeyRegistration(FinishPasskeyRegistrationRequest) returns (RegisterResponse);
+  rpc StartPasskeyLogin(StartPasskeyLoginRequest) returns (StartPasskeyLoginResponse);
+  rpc FinishPasskeyLogin(FinishPasskeyLoginRequest) returns (LoginResponse);
+  rpc RequestMfaEmailCode(RequestMfaEmailCodeRequest) returns (RequestMfaEmailCodeResponse);
+  rpc VerifyMfaEmailCode(VerifyMfaEmailCodeRequest) returns (LoginResponse);
+  rpc StartMfaPasskey(StartMfaPasskeyRequest) returns (StartMfaPasskeyResponse);
+  rpc FinishMfaPasskey(FinishMfaPasskeyRequest) returns (LoginResponse);
+  rpc VerifyMfaTotp(VerifyMfaTotpRequest) returns (LoginResponse);
+  rpc VerifyMfaRecoveryCode(VerifyMfaRecoveryCodeRequest) returns (LoginResponse);
+  rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
+}
+
+// ==================== User Service ====================
+// Authentication: JWT Authorization header (user_id)
+// Routes: /api/user/*
+service UserService {
+  // Profile Management
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  rpc GetProfile(GetProfileRequest) returns (User);
+  rpc SetUsername(SetUsernameRequest) returns (User);
+  rpc CreateUserAvatarUploadSession(CreateUserAvatarUploadSessionRequest) returns (CreateUserAvatarUploadSessionResponse);
+  rpc UploadUserAvatarObject(UploadUserAvatarObjectRequest) returns (UploadUserAvatarObjectResponse);
+  rpc CompleteUserAvatarUploadSession(CompleteUserAvatarUploadSessionRequest) returns (CompleteUserAvatarUploadSessionResponse);
+  rpc GetUserAvatarObject(GetUserAvatarObjectRequest) returns (stream UserAvatarObjectResponse);
+  rpc UpdateUserAvatar(UpdateUserAvatarRequest) returns (User);
+  rpc ClearUserAvatar(ClearUserAvatarRequest) returns (User);
+  rpc StartSensitiveOperationVerification(StartSensitiveOperationVerificationRequest) returns (SensitiveOperationVerificationOutcome);
+  rpc StartSensitiveOperationPasskey(StartSensitiveOperationPasskeyRequest) returns (StartSensitiveOperationPasskeyResponse);
+  rpc RequestSensitiveOperationEmailCode(RequestSensitiveOperationEmailCodeRequest) returns (RequestSensitiveOperationEmailCodeResponse);
+  rpc FinishSensitiveOperationVerification(FinishSensitiveOperationVerificationRequest) returns (SensitiveOperationVerificationOutcome);
+  rpc StartEmailBind(StartEmailBindRequest) returns (StartEmailBindResponse);
+  rpc ConfirmEmailBind(ConfirmEmailBindRequest) returns (User);
+  rpc UnbindEmail(UnbindEmailRequest) returns (User);
+  rpc StartOpaquePasswordUpdate(StartOpaquePasswordUpdateRequest) returns (StartOpaquePasswordUpdateResponse);
+  rpc FinishOpaquePasswordUpdate(FinishOpaquePasswordUpdateRequest) returns (User);
+  rpc StartPasskeyBind(StartPasskeyBindRequest) returns (StartPasskeyBindResponse);
+  rpc FinishPasskeyBind(FinishPasskeyBindRequest) returns (PasskeyCredential);
+  rpc ListPasskeys(ListPasskeysRequest) returns (ListPasskeysResponse);
+  rpc DeletePasskey(DeletePasskeyRequest) returns (DeletePasskeyResponse);
+  rpc StartTotpSetup(StartTotpSetupRequest) returns (StartTotpSetupResponse);
+  rpc FinishTotpSetup(FinishTotpSetupRequest) returns (TotpRecoveryCodesResponse);
+  rpc RegenerateTotpRecoveryCodes(RegenerateTotpRecoveryCodesRequest) returns (TotpRecoveryCodesResponse);
+  rpc DeleteTotp(DeleteTotpRequest) returns (DeleteTotpResponse);
+  rpc GetUserPreferences(GetUserPreferencesRequest) returns (GetUserPreferencesResponse);
+  rpc UpdateUserPreferences(UpdateUserPreferencesRequest) returns (UpdateUserPreferencesResponse);
+  rpc SetTwoFactorEnabled(SetTwoFactorEnabledRequest) returns (GetUserPreferencesResponse);
+  rpc CloseAccount(CloseAccountRequest) returns (CloseAccountResponse);
+
+  // User-initiated room lifecycle operations outside room-scoped context
+  rpc CreateRoom(CreateRoomRequest) returns (Room);
+  rpc GetRoom(GetRoomRequest) returns (GetRoomResponse);
+  rpc JoinRoom(JoinRoomRequest) returns (JoinRoomResponse);
+  rpc StartRoomPasswordLogin(StartRoomPasswordLoginRequest) returns (StartRoomPasswordLoginResponse);
+  rpc FinishRoomPasswordLogin(FinishRoomPasswordLoginRequest) returns (JoinRoomResponse);
+  rpc GetRoomDiscovery(GetRoomDiscoveryRequest) returns (RoomDiscoveryItem);
+  rpc DiscoverRooms(DiscoverRoomsRequest) returns (DiscoverRoomsResponse);
+  rpc ListMyRooms(ListMyRoomsRequest) returns (ListMyRoomsResponse);
+  rpc FavoriteRoom(FavoriteRoomRequest) returns (FavoriteRoomResponse);
+  rpc UnfavoriteRoom(UnfavoriteRoomRequest) returns (UnfavoriteRoomResponse);
+  rpc ListFavoriteRooms(ListFavoriteRoomsRequest) returns (ListFavoriteRoomsResponse);
+}
+
+// ==================== Room Service ====================
+// Authentication: JWT Authorization header (user_id) + x-room-id metadata (room context)
+// HTTP routes: /api/rooms/* with room context supplied by path, body, or x-room-id metadata.
+service RoomService {
+  // Room Settings Management
+  rpc GetRoomSettings(GetRoomSettingsRequest) returns (GetRoomSettingsResponse);
+  rpc UpdateRoomSettings(UpdateRoomSettingsRequest) returns (Room);
+  rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (RoomSettings);
+  rpc TransferRoomOwnership(TransferRoomOwnershipRequest) returns (Room);
+  rpc LeaveRoom(LeaveRoomRequest) returns (LeaveRoomResponse);
+  rpc DeleteRoom(DeleteRoomRequest) returns (DeleteRoomResponse);
+
+  // Room Password Management
+  rpc StartRoomPasswordRegistration(StartRoomPasswordRegistrationRequest) returns (StartRoomPasswordRegistrationResponse);
+  rpc FinishRoomPasswordRegistration(FinishRoomPasswordRegistrationRequest) returns (SetRoomPasswordResponse);
+  rpc ClearRoomPassword(ClearRoomPasswordRequest) returns (SetRoomPasswordResponse);
+
+  // Member Management (room-scoped operations)
+  rpc GetRoomMembers(GetRoomMembersRequest) returns (GetRoomMembersResponse);
+  rpc ListRoomStreams(ListRoomStreamsRequest) returns (ListRoomStreamsResponse);
+  rpc GetRoomStreamInfo(GetRoomStreamInfoRequest) returns (GetRoomStreamInfoResponse);
+  rpc KickRoomStream(KickRoomStreamRequest) returns (KickRoomStreamResponse);
+  rpc AddMember(AddMemberRequest) returns (synctv.common.RoomMember);
+  rpc ListRoomJoinReviews(ListRoomJoinReviewsRequest) returns (ListRoomJoinReviewsResponse);
+  rpc ApproveRoomJoinReview(ApproveRoomJoinReviewRequest) returns (ApproveRoomJoinReviewResponse);
+  rpc RejectRoomJoinReview(RejectRoomJoinReviewRequest) returns (RoomJoinReview);
+  rpc UpdateMemberRemarkName(UpdateMemberRemarkNameRequest) returns (synctv.common.RoomMember);
+  rpc UpdateMemberDisplayTag(UpdateMemberDisplayTagRequest) returns (synctv.common.RoomMember);
+  rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (synctv.common.RoomMember);
+  rpc KickMember(KickMemberRequest) returns (KickMemberResponse);
+
+  // Real-time Messaging (room-scoped)
+  rpc CreateWebSocketTicket(CreateWebSocketTicketRequest) returns (CreateWebSocketTicketResponse);
+  rpc MessageStream(stream ClientMessage) returns (stream ServerMessage);
+  rpc WatchPlaybackState(WatchPlaybackStateRequest) returns (stream WatchPlaybackStateEvent);
+  rpc WatchPlayback(WatchPlaybackRequest) returns (stream WatchPlaybackEvent);
+  rpc WatchRoomSettings(WatchRoomSettingsRequest) returns (stream WatchRoomSettingsEvent);
+  rpc WatchPlaylistItems(WatchPlaylistItemsRequest) returns (stream WatchPlaylistItemsEvent);
+  rpc WatchRoomMemberEvents(WatchRoomMemberEventsRequest) returns (stream WatchRoomMemberEventsEvent);
+  rpc WatchChatEvents(WatchChatEventsRequest) returns (stream WatchChatEventsEvent);
+  rpc WatchChatPinEvents(WatchChatPinEventsRequest) returns (stream WatchChatPinEventsEvent);
+  rpc CreateChatAttachmentUploadSession(CreateChatAttachmentUploadSessionRequest) returns (CreateChatAttachmentUploadSessionResponse);
+  rpc UploadChatAttachmentObject(UploadChatAttachmentObjectRequest) returns (UploadChatAttachmentObjectResponse);
+  rpc CompleteChatAttachmentUploadSession(CompleteChatAttachmentUploadSessionRequest) returns (CompleteChatAttachmentUploadSessionResponse);
+  rpc GetChatAttachmentObject(GetChatAttachmentObjectRequest) returns (stream ChatAttachmentObjectResponse);
+  rpc CreateRoomCoverUploadSession(CreateRoomCoverUploadSessionRequest) returns (CreateRoomCoverUploadSessionResponse);
+  rpc UploadRoomCoverObject(UploadRoomCoverObjectRequest) returns (UploadRoomCoverObjectResponse);
+  rpc CompleteRoomCoverUploadSession(CompleteRoomCoverUploadSessionRequest) returns (CompleteRoomCoverUploadSessionResponse);
+  rpc GetRoomCoverObject(GetRoomCoverObjectRequest) returns (stream RoomCoverObjectResponse);
+  rpc UpdateRoomCover(UpdateRoomCoverRequest) returns (GetRoomResponse);
+  rpc ClearRoomCover(ClearRoomCoverRequest) returns (GetRoomResponse);
+  rpc SendChatMessage(SendChatMessageRequest) returns (ChatMessageEventResponse);
+  rpc EditChatMessage(EditChatMessageRequest) returns (ChatMessageEventResponse);
+  rpc DeleteChatMessage(DeleteChatMessageRequest) returns (ChatMessageEventResponse);
+  rpc GetChatHistory(GetChatHistoryRequest) returns (GetChatHistoryResponse);
+  rpc SearchChatMessages(SearchChatMessagesRequest) returns (SearchChatMessagesResponse);
+  rpc GetChatMessage(GetChatMessageRequest) returns (ChatMessageReceive);
+  rpc GetChatMessageContext(GetChatMessageContextRequest) returns (GetChatMessageContextResponse);
+  rpc GetChatPlaybackMessages(GetChatPlaybackMessagesRequest) returns (GetChatPlaybackMessagesResponse);
+  rpc ListPinnedChatMessages(ListPinnedChatMessagesRequest) returns (ListPinnedChatMessagesResponse);
+  rpc PinChatMessage(PinChatMessageRequest) returns (ChatPinEventResponse);
+  rpc UnpinChatMessage(UnpinChatMessageRequest) returns (ChatPinEventResponse);
+  rpc SetChatReaction(SetChatReactionRequest) returns (ChatMessageEvent);
+  rpc ListChatReactionUsers(ListChatReactionUsersRequest) returns (ListChatReactionUsersResponse);
+  rpc MarkChatRead(MarkChatReadRequest) returns (ChatReadStateResponse);
+  rpc GetChatReadState(GetChatReadStateRequest) returns (ChatReadStateResponse);
+  rpc GetChatMessageReadReceipts(GetChatMessageReadReceiptsRequest) returns (GetChatMessageReadReceiptsResponse);
+  rpc ReportContent(ReportContentRequest) returns (ReportContentResponse);
+  rpc ListRoomContentReports(ListRoomContentReportsRequest) returns (ListRoomContentReportsResponse);
+  rpc GetRoomContentReport(GetRoomContentReportRequest) returns (ContentReport);
+  rpc UpdateRoomContentReportStatus(UpdateRoomContentReportStatusRequest) returns (UpdateRoomContentReportStatusResponse);
+
+  // Room discovery taxonomy
+  rpc ListRoomCategories(ListRoomCategoriesRequest) returns (ListRoomCategoriesResponse);
+  rpc ListRoomLabels(ListRoomLabelsRequest) returns (ListRoomLabelsResponse);
+
+  // WebRTC ICE Servers Configuration
+  rpc GetIceServers(GetIceServersRequest) returns (GetIceServersResponse);
+
+  // Playlist Management (room-scoped operations)
+  rpc CreatePlaylist(CreatePlaylistRequest) returns (Playlist);
+  rpc GetPlaylist(GetPlaylistRequest) returns (GetPlaylistResponse);
+  rpc UpdatePlaylist(UpdatePlaylistRequest) returns (Playlist);
+  rpc CreatePlaylistCoverUploadSession(CreatePlaylistCoverUploadSessionRequest) returns (CreatePlaylistCoverUploadSessionResponse);
+  rpc UploadPlaylistCoverObject(UploadPlaylistCoverObjectRequest) returns (UploadPlaylistCoverObjectResponse);
+  rpc CompletePlaylistCoverUploadSession(CompletePlaylistCoverUploadSessionRequest) returns (CompletePlaylistCoverUploadSessionResponse);
+  rpc GetPlaylistCoverObject(GetPlaylistCoverObjectRequest) returns (stream PlaylistCoverObjectResponse);
+  rpc UpdatePlaylistCover(UpdatePlaylistCoverRequest) returns (Playlist);
+  rpc ClearPlaylistCover(ClearPlaylistCoverRequest) returns (Playlist);
+  rpc MovePlaylist(MovePlaylistRequest) returns (Playlist);
+  rpc DeletePlaylist(DeletePlaylistRequest) returns (DeletePlaylistResponse);
+  rpc ListPlaylists(ListPlaylistsRequest) returns (ListPlaylistsResponse);
+
+  // Media Management (room-scoped operations)
+  rpc AddMedia(AddMediaRequest) returns (Media);
+  rpc GetMedia(GetMediaRequest) returns (Media);
+  rpc CreateMediaCoverUploadSession(CreateMediaCoverUploadSessionRequest) returns (CreateMediaCoverUploadSessionResponse);
+  rpc UploadMediaCoverObject(UploadMediaCoverObjectRequest) returns (UploadMediaCoverObjectResponse);
+  rpc CompleteMediaCoverUploadSession(CompleteMediaCoverUploadSessionRequest) returns (CompleteMediaCoverUploadSessionResponse);
+  rpc GetMediaCoverObject(GetMediaCoverObjectRequest) returns (stream MediaCoverObjectResponse);
+  rpc UpdateMediaCover(UpdateMediaCoverRequest) returns (Media);
+  rpc ClearMediaCover(ClearMediaCoverRequest) returns (Media);
+  rpc CreateMediaThumbnailUploadSession(CreateMediaThumbnailUploadSessionRequest) returns (CreateMediaThumbnailUploadSessionResponse);
+  rpc UploadMediaThumbnailObject(UploadMediaThumbnailObjectRequest) returns (UploadMediaThumbnailObjectResponse);
+  rpc CompleteMediaThumbnailUploadSession(CompleteMediaThumbnailUploadSessionRequest) returns (CompleteMediaThumbnailUploadSessionResponse);
+  rpc GetMediaThumbnailObject(GetMediaThumbnailObjectRequest) returns (stream MediaThumbnailObjectResponse);
+  rpc UpdateMediaThumbnail(UpdateMediaThumbnailRequest) returns (Media);
+  rpc ClearMediaThumbnail(ClearMediaThumbnailRequest) returns (Media);
+  rpc DeleteMedia(DeleteMediaRequest) returns (DeleteMediaResponse);
+  rpc DeleteEntries(DeleteEntriesRequest) returns (DeleteEntriesResponse);
+  rpc EditMedia(EditMediaRequest) returns (Media);
+  rpc ListPlaylistItems(ListPlaylistItemsRequest) returns (ListPlaylistItemsResponse); // List dynamic playlist items
+  rpc MoveMedia(MoveMediaRequest) returns (MoveMediaResponse);
+  rpc ClearPlaylist(ClearPlaylistRequest) returns (ClearPlaylistResponse);
+
+  // Batch Operations (room-scoped)
+  rpc AddMediaBatch(AddMediaBatchRequest) returns (AddMediaBatchResponse);
+
+  // Playback Control (room-scoped request/response operations)
+  // Real-time playback commands (play/pause/seek/speed) are sent as
+  // ClientMessage frames over the room realtime stream, either WebSocket or
+  // gRPC MessageStream.
+  rpc StartPlayback(StartPlaybackRequest) returns (PlaybackState); // Start playing a media or a dynamic-playlist item
+  rpc StopPlayback(StopPlaybackRequest) returns (PlaybackState); // Stop current playback
+  rpc PlayNext(PlayNextRequest) returns (PlaybackState);
+  rpc PlayPrevious(PlayPreviousRequest) returns (PlaybackState);
+  rpc ListPlaybackHistory(ListPlaybackHistoryRequest) returns (ListPlaybackHistoryResponse);
+  rpc PlayHistoryEntry(PlayHistoryEntryRequest) returns (PlaybackState);
+  rpc GetPlayback(GetPlaybackRequest) returns (GetPlaybackResponse); // Get current playback state and info
+  rpc UpdatePlaybackState(UpdatePlaybackStateRequest) returns (PlaybackState); // Patch current playback state
+}
+
+// ==================== Public Service ====================
+// Authentication: None (public access)
+// HTTP routes: public room discovery uses /api/rooms/*, public settings uses /api/public/settings,
+// server identity uses /api/public/server-info, server time uses /api/public/time.
+service PublicService {
+  rpc GetRoomDiscovery(GetRoomDiscoveryRequest) returns (RoomDiscoveryItem);
+  rpc DiscoverRooms(DiscoverRoomsRequest) returns (DiscoverRoomsResponse);
+  rpc GetPublicSettings(GetPublicSettingsRequest) returns (GetPublicSettingsResponse);
+  rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse);
+  rpc GetServerTime(GetServerTimeRequest) returns (GetServerTimeResponse);
+}
+
+// ==================== Email Service ====================
+// Authentication: None for sending codes, JWT for confirmation
+// Routes: /api/email/*
+service EmailService {
+  // Password reset
+  rpc RequestPasswordReset(RequestPasswordResetRequest) returns (RequestPasswordResetResponse);
+  rpc StartOpaquePasswordReset(StartOpaquePasswordResetRequest) returns (StartOpaquePasswordResetResponse);
+  rpc FinishOpaquePasswordReset(FinishOpaquePasswordResetRequest) returns (ConfirmPasswordResetResponse);
+}
+
+// ==================== Notification Service ====================
+// Authentication: JWT Authorization header (user_id)
+// Routes: /api/notifications/*
+service NotificationService {
+  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse);
+  rpc GetNotification(GetNotificationRequest) returns (NotificationProto);
+  rpc MarkAsRead(MarkAsReadRequest) returns (MarkAsReadResponse);
+  rpc MarkAllAsRead(MarkAllAsReadRequest) returns (MarkAllAsReadResponse);
+  rpc DeleteNotification(DeleteNotificationRequest) returns (DeleteNotificationResponse);
+  rpc DeleteAllRead(DeleteAllReadRequest) returns (DeleteAllReadResponse);
+}
+
+// Common Types
+
+// Full user profile - only returned to the authenticated user themselves (e.g., GetProfile, Register, Login).
+// SECURITY: Contains PII (email). Never return this message for other users.
+message User {
+  string id = 1;
+  string username = 2;
+  string email = 3; // PII - only visible to the user themselves or admins
+  synctv.common.UserRole role = 4; // Global RBAC role
+  synctv.common.UserStatus status = 5; // Account status
+  int64 created_at = 6;
+  bool is_banned = 7;
+  string avatar_url = 8;
+  UserAvatar avatar = 9;
+  FileObjectAccess avatar_access = 10;
+}
+
+// Public user view - safe to return in any context (room member lists, chat, etc.).
+// Does not contain email or other PII.
+message UserPublicView {
+  string id = 1;
+  string username = 2;
+  synctv.common.UserRole role = 3; // Global RBAC role
+  int64 created_at = 4;
+  string avatar_url = 5;
+  UserAvatar avatar = 6;
+  FileObjectAccess avatar_access = 7;
+}
+
+enum PlayMode {
+  PLAY_MODE_UNSPECIFIED = 0;
+  PLAY_MODE_SEQUENTIAL = 1;
+  PLAY_MODE_REPEAT_ONE = 2;
+  PLAY_MODE_REPEAT_ALL = 3;
+  PLAY_MODE_SHUFFLE = 4;
+}
+
+message AutoPlaySettings {
+  bool enabled = 1;
+  PlayMode mode = 2;
+  uint32 delay = 3;
+}
+
+message AutoPlaySettingsPatch {
+  optional bool enabled = 1;
+  optional PlayMode mode = 2 [(buf.validate.field).enum.defined_only = true];
+  optional uint32 delay = 3;
+}
+
+message RoomSettings {
+  bool allow_guest_join = 1;
+  uint64 max_members = 2;
+  bool require_approval = 3;
+  bool allow_auto_join = 4;
+  bool chat_enabled = 5;
+  AutoPlaySettings auto_play = 6;
+  uint64 admin_added_permissions = 7;
+  uint64 admin_removed_permissions = 8;
+  uint64 member_added_permissions = 9;
+  uint64 member_removed_permissions = 10;
+  uint64 guest_added_permissions = 11;
+  uint64 guest_removed_permissions = 12;
+  bool voice_chat_enabled = 13;
+  bool p2p_media_enabled = 14;
+}
+
+message AlistTarget {
+  string relative_path = 1;
+}
+
+message EmbyItemTarget { string item_id = 1; }
+message EmbyPersonTarget { string person_id = 1; }
+message EmbyPersonItemTarget {
+  string person_id = 1;
+  string item_id = 2;
+}
+message EmbyTarget {
+  oneof target {
+    EmbyItemTarget item = 1;
+    EmbyPersonTarget person = 2;
+    EmbyPersonItemTarget person_item = 3;
+  }
+}
+
+message CloudreveTarget {
+  string relative_path = 1;
+}
+
+message FnosFileTarget {
+  string relative_path = 1;
+}
+
+message FnosMediaItemTarget {
+  string item_guid = 1;
+  optional string media_guid = 2;
+}
+
+message FnosTarget {
+  oneof target {
+    FnosFileTarget file = 1;
+    FnosMediaItemTarget media_item = 2;
+  }
+}
+
+enum TwitchTargetKind {
+  TWITCH_TARGET_KIND_UNSPECIFIED = 0;
+  TWITCH_TARGET_KIND_VIDEO = 1;
+  TWITCH_TARGET_KIND_CLIP = 2;
+  TWITCH_TARGET_KIND_LIVE = 3;
+}
+
+message TwitchTarget {
+  TwitchTargetKind kind = 1;
+  string id = 2;
+}
+
+message QnapTarget {
+  string relative_path = 1;
+}
+
+message SynologyFileTarget {
+  string relative_path = 1;
+}
+
+message SynologyLibraryItemTarget {
+  synctv.source_config.SynologyLibraryItemKind kind = 1;
+  int64 item_id = 2;
+  int64 file_id = 3;
+  optional int64 parent_id = 4;
+}
+
+message SynologyTvShowTarget {
+  int64 library_id = 1;
+  int64 tv_show_id = 2;
+}
+
+message SynologyTarget {
+  oneof target {
+    SynologyFileTarget file = 1;
+    SynologyLibraryItemTarget library_item = 2;
+    SynologyTvShowTarget tv_show = 3;
+  }
+}
+
+message NextcloudTarget {
+  string path = 1;
+  uint64 file_id = 2;
+}
+
+message SeafileTarget {
+  string repository_id = 1;
+  string path = 2;
+  string object_id = 3;
+  bool has_thumbnail = 4;
+}
+
+message TrueNasTarget { string path = 1; }
+
+message YoutubeTarget { string video_id = 1; }
+message DouyinTarget { string aweme_id = 1; }
+message TikTokTarget { string video_id = 1; }
+
+message BilibiliVideoTarget {
+  string bvid = 1;
+  uint64 aid = 2;
+}
+
+message BilibiliVideoPartTarget {
+  string bvid = 1;
+  uint64 aid = 2;
+  uint64 cid = 3;
+  uint32 page = 4;
+}
+
+message BilibiliPgcEpisodeTarget {
+  uint64 epid = 1;
+  uint64 cid = 2;
+}
+
+message BilibiliLiveTarget { uint64 room_id = 1; }
+
+message BilibiliTarget {
+  oneof target {
+    BilibiliVideoTarget video = 1;
+    BilibiliVideoPartTarget video_part = 2;
+    BilibiliPgcEpisodeTarget pgc_episode = 3;
+    BilibiliLiveTarget live = 4;
+  }
+}
+
+message ProviderTarget {
+  oneof target {
+    AlistTarget alist = 1;
+    EmbyTarget emby = 2;
+    CloudreveTarget cloudreve = 3;
+    TwitchTarget twitch = 4;
+    FnosTarget fnos = 5;
+    QnapTarget qnap = 6;
+    SynologyTarget synology = 7;
+    NextcloudTarget nextcloud = 8;
+    SeafileTarget seafile = 9;
+    TrueNasTarget truenas = 10;
+    DouyinTarget douyin = 11;
+    YoutubeTarget youtube = 12;
+    TikTokTarget tiktok = 13;
+    BilibiliTarget bilibili = 14;
+  }
+}
+
+message FileMetadata {
+  optional int32 width = 1;
+  optional int32 height = 2;
+  optional int32 duration_seconds = 3;
+  optional int32 bitrate_bps = 4;
+  optional string blurhash = 5;
+}
+
+message ResourceMetadata {
+  optional string source = 1;
+  // Provider-owned metadata. The oneof keeps each provider's fields typed.
+  optional PlaybackMetadata provider = 2;
+}
+
+message ChatPresentationMetadata {
+  optional string display_position = 1;
+  optional string display_color = 2;
+}
+
+message ChatPlaybackMetadata {
+  string media_id = 1;
+  string playlist_id = 2;
+  ProviderTarget target = 3;
+  optional double position_seconds = 4;
+  string media_name = 5;
+  string playlist_name = 6;
+}
+
+message ChatUserMetadata {
+  ChatPresentationMetadata presentation = 1;
+  ChatPlaybackMetadata playback = 2;
+}
+
+message ChatMemberJoinedMetadata {
+  string user_id = 1;
+  string username = 2;
+  string actor_user_id = 3;
+  string actor_username = 4;
+  common.RoomMemberRole role = 5;
+}
+
+enum PlaybackChangeReason {
+  PLAYBACK_CHANGE_REASON_UNSPECIFIED = 0;
+  PLAYBACK_CHANGE_REASON_SELECTED = 1;
+  PLAYBACK_CHANGE_REASON_NEXT = 2;
+  PLAYBACK_CHANGE_REASON_PREVIOUS = 3;
+  PLAYBACK_CHANGE_REASON_HISTORY_ENTRY = 4;
+  PLAYBACK_CHANGE_REASON_AUTO_ADVANCE = 5;
+}
+
+message ChatPlaybackChangedMetadata {
+  ChatPlaybackMetadata from = 1;
+  ChatPlaybackMetadata to = 2;
+  PlaybackChangeReason reason = 3;
+  string actor_user_id = 4;
+}
+
+message ChatMetadata {
+  oneof metadata {
+    ChatUserMetadata user = 1;
+    ChatMemberJoinedMetadata member_joined = 2;
+    ChatPlaybackChangedMetadata playback_changed = 3;
+  }
+}
+
+message ContentReportMetadata {
+  optional string client_reason = 1;
+}
+
+message NotificationData {
+  optional string room_id = 1;
+  optional string room_name = 2;
+  optional string user_id = 3;
+  optional string username = 4;
+  optional string message_id = 5;
+  optional string action_url = 6;
+}
+
+message Room {
+  string id = 1;
+  string name = 2;
+  string created_by = 3;
+  synctv.common.RoomStatus status = 4; // Room lifecycle status
+  RoomSettings settings = 5;
+  int64 created_at = 6;
+  int32 member_count = 7;
+  string description = 8; // Room description
+  int64 updated_at = 9; // Last updated timestamp
+  bool is_banned = 10; // Ban flag set by global admin only
+  ResourceAvailability availability = 11; // Availability derived from creator state
+  int64 version = 12; // Resource version from database
+  ResourceCover cover = 13;
+  synctv.common.RoomPresenceStats presence = 14;
+  UserPublicView creator = 15;
+  RoomCategory category = 16;
+  repeated RoomLabel labels = 17;
+}
+
+message RoomCategory {
+  string id = 1;
+  string key = 2;
+  string name = 3;
+  string description = 4;
+  int32 sort_order = 5;
+  bool is_enabled = 6;
+}
+
+message RoomLabel {
+  string id = 1;
+  string key = 2;
+  string name = 3;
+  string description = 4;
+  string color = 5;
+  string category_id = 6 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^roomcat_[A-Za-z0-9]+$"
+  }];
+  int32 sort_order = 7;
+  bool is_enabled = 8;
+}
+
+message Media {
+  string id = 1;
+  string room_id = 2;
+  synctv.source_config.SourceProvider source_provider = 4; // Source provider type, e.g. direct_url, bilibili, alist
+  string name = 5; // Media display name
+  ResourceMetadata metadata = 6;
+  double position = 7; // Order position in playlist
+  int64 added_at = 8;
+  string creator_id = 9; // Public ID of the user who added the media
+  string provider_instance_name = 10; // e.g., "bilibili_main", "alist_company"
+  synctv.source_config.MediaSourceConfig source_config = 11; // Only returned to the media creator
+  ResourceAvailability availability = 12; // Availability derived from creator state
+  int64 version = 13; // Resource version from database
+  MediaCover cover = 14;
+  string description = 15;
+  MediaThumbnail thumbnail = 16;
+}
+
+message Playlist {
+  string id = 1;
+  string room_id = 2;
+  string name = 3;
+  string parent_id = 4; // Parent playlist ID for nested playlists (null for root)
+  double position = 5; // Order position among sibling playlists
+  bool is_dynamic = 6; // True if this is a dynamic playlist (provider-based)
+  int32 item_count = 7; // Number of items in this playlist
+  int64 created_at = 8;
+  int64 updated_at = 9;
+  ResourceAvailability availability = 10; // Availability derived from creator state
+  int64 version = 11; // Resource version from database
+  synctv.source_config.PlaylistSourceConfig source_config = 12; // Only returned to the playlist creator
+  synctv.source_config.SourceProvider source_provider = 13; // Source provider for dynamic playlists
+  string provider_instance_name = 14; // Provider instance for dynamic playlists
+  string description = 15;
+  ResourceCover cover = 16;
+  string creator_id = 17;
+  ResourceMetadata metadata = 18;
+}
+
+message ResourceCover {
+  string url = 1;
+  FileMetadata metadata = 2;
+  repeated FileObjectVariant variants = 3;
+  FileObjectAccess object_access = 4;
+}
+
+enum ResourceAvailability {
+  RESOURCE_AVAILABILITY_UNSPECIFIED = 0;
+  RESOURCE_AVAILABILITY_AVAILABLE = 1;
+  RESOURCE_AVAILABILITY_CREATOR_INACTIVE = 2;
+}
+
+enum ResourceAvailabilityFilter {
+  RESOURCE_AVAILABILITY_FILTER_ALL = 0;
+  RESOURCE_AVAILABILITY_FILTER_AVAILABLE = 1;
+  RESOURCE_AVAILABILITY_FILTER_UNAVAILABLE = 2;
+}
+
+message PlaybackState {
+  string room_id = 1;
+  string playing_media_id = 2;
+  double position = 3; // playback position in seconds
+  double speed = 4;
+  bool is_playing = 5;
+  int64 updated_at = 6;
+  int64 version = 7; // For optimistic locking
+  string playing_playlist_id = 8; // Currently playing playlist
+  ProviderTarget target = 9; // Provider-facing playback target payload; omitted for static media or cleared state.
+  string target_hash = 10; // SHA-256 hex of target, used by clients when reporting progress or seeking
+  int64 generated_at_millis = 11; // Unix milliseconds when position was generated by the server.
+  string history_cursor_id = 12; // Selected playback-history entry; empty when the cursor is unset.
+  string client_operation_id = 13; // Optional originating operation id for client-side acknowledgement.
+}
+
+message RegisterResponse {
+  User user = 1;
+  string access_token = 2;
+  string refresh_token = 3;
+  RegistrationStatus status = 4;
+  PendingRegistrationReview pending_review = 5;
+}
+
+enum RegistrationStatus {
+  REGISTRATION_STATUS_UNSPECIFIED = 0;
+  REGISTRATION_STATUS_REGISTERED = 1;
+  REGISTRATION_STATUS_PENDING_REVIEW = 2;
+}
+
+message PendingRegistrationReview {
+  string review_request_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  string username = 2 [(buf.validate.field).string = {
+    min_len: 3
+    max_len: 50
+  }];
+  optional string email = 3 [(buf.validate.field).string = {
+    max_len: 254
+    email: true
+  }];
+}
+
+// Start a real OPAQUE account registration. The server receives only the
+// OPAQUE registration request, never the plaintext password.
+message StartOpaqueRegistrationRequest {
+  string username = 1 [(buf.validate.field).string = {
+    min_len: 3
+    max_len: 50
+    pattern: "^[\\p{L}\\p{N}_-]+$"
+  }];
+  optional string email = 2 [(buf.validate.field).string = {
+    max_len: 254
+    email: true
+  }];
+  bytes registration_request = 3 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 4096
+  }];
+}
+
+message StartOpaqueRegistrationResponse {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  bytes registration_response = 2;
+}
+
+message FinishOpaqueRegistrationRequest {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  bytes registration_upload = 2 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 4096
+  }];
+}
+
+message RegisterWithDirectPasswordRequest {
+  // Register with direct password transport over TLS.
+  // The server converts the submitted password into an OPAQUE credential record.
+  string username = 1 [(buf.validate.field).string = {
+    min_len: 3
+    max_len: 50
+    pattern: "^[\\p{L}\\p{N}_-]+$"
+  }];
+  optional string email = 2 [(buf.validate.field).string = {
+    max_len: 254
+    email: true
+  }];
+  string password = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 1024
+  }];
+}
+
+message LoginWithDirectPasswordRequest {
+  // Login with direct password transport over TLS.
+  // Verification uses the stored OPAQUE credential record.
+  string login_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  string password = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 1024
+  }];
+}
+
+message RequestEmailRegistrationRequest {
+  // Start email-verified registration. Confirmation supplies the password and
+  // creates the same OPAQUE credential record as password registration.
+  string username = 1 [(buf.validate.field).string = {
+    min_len: 3
+    max_len: 50
+    pattern: "^[\\p{L}\\p{N}_-]+$"
+  }];
+  string email = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 254
+    email: true
+  }];
+}
+
+message RequestEmailRegistrationResponse {
+  string message = 1;
+}
+
+message ConfirmEmailRegistrationRequest {
+  string email_token = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
+  string password = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 1024
+  }];
+}
+
+// Confirm a passwordless email login token.
+message ConfirmEmailLoginRequest {
+  string login_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  string email_token = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
+}
+
+enum LoginMethod {
+  LOGIN_METHOD_UNSPECIFIED = 0;
+  LOGIN_METHOD_PASSWORD = 1;
+  LOGIN_METHOD_PASSKEY = 2;
+  LOGIN_METHOD_EMAIL_CODE = 3;
+}
+
+// Identify the account and create a short-lived server-side authentication
+// context. The returned methods describe the primary credentials currently
+// usable by this account and server.
+message StartLoginRequest {
+  oneof identifier {
+    option (buf.validate.oneof).required = true;
+    string username = 1 [(buf.validate.field).string = {max_len: 50}];
+    string email = 2 [(buf.validate.field).string = {max_len: 254}];
+  }
+}
+
+message StartLoginResponse {
+  string login_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  repeated LoginMethod available_methods = 2;
+  int64 expires_at = 3;
+}
+
+message LoginResponse {
+  User user = 1;
+  string access_token = 2;
+  string refresh_token = 3;
+  MfaChallenge mfa = 4;
+}
+
+enum MfaMethod {
+  MFA_METHOD_UNSPECIFIED = 0;
+  MFA_METHOD_PASSWORD = 1;
+  MFA_METHOD_WEBAUTHN = 2;
+  MFA_METHOD_EMAIL = 3;
+  MFA_METHOD_TOTP = 4;
+  MFA_METHOD_RECOVERY_CODE = 5;
+}
+
+message MfaChallenge {
+  bool required = 1;
+  string session_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  repeated MfaMethod available_methods = 3;
+  string masked_email = 4;
+  int64 expires_at = 5;
+}
+
+enum SensitiveOperationVerificationMethod {
+  SENSITIVE_OPERATION_VERIFICATION_METHOD_UNSPECIFIED = 0;
+  SENSITIVE_OPERATION_VERIFICATION_METHOD_PASSWORD = 1;
+  SENSITIVE_OPERATION_VERIFICATION_METHOD_WEBAUTHN = 2;
+  SENSITIVE_OPERATION_VERIFICATION_METHOD_EMAIL = 3;
+  SENSITIVE_OPERATION_VERIFICATION_METHOD_TOTP = 4;
+  SENSITIVE_OPERATION_VERIFICATION_METHOD_RECOVERY_CODE = 5;
+}
+
+message SensitiveOperationVerificationChallenge {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  repeated SensitiveOperationVerificationMethod required_methods = 2;
+  repeated SensitiveOperationVerificationMethod completed_methods = 3;
+  repeated SensitiveOperationVerificationMethod available_methods = 4;
+  string masked_email = 5;
+  int64 expires_at = 6;
+  int32 required_count = 7;
+}
+
+message StartSensitiveOperationVerificationRequest {}
+
+message SensitiveOperationVerificationOutcome {
+  oneof outcome {
+    SensitiveOperationVerificationChallenge challenge = 1;
+    string verification_id = 2 [(buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+    }];
+  }
+}
+
+message StartSensitiveOperationPasskeyRequest {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message StartSensitiveOperationPasskeyResponse {
+  string passkey_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  PasskeyRequestChallenge options = 2 [(buf.validate.field).required = true];
+}
+
+message RequestSensitiveOperationEmailCodeRequest {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message RequestSensitiveOperationEmailCodeResponse {
+  string message = 1;
+  string masked_email = 2;
+}
+
+message FinishSensitiveOperationVerificationRequest {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  SensitiveOperationVerificationMethod method = 2 [(buf.validate.field).enum.defined_only = true];
+  string password = 3 [(buf.validate.field).string = {max_len: 1024}];
+  string email_token = 4 [(buf.validate.field).string = {max_len: 255}];
+  string passkey_session_id = 5 [(buf.validate.field).string = {max_len: 128}];
+  PasskeyAuthenticationCredential passkey_credential = 6;
+  string totp_code = 7 [(buf.validate.field).string = {max_len: 6}];
+  string recovery_code = 8 [(buf.validate.field).string = {max_len: 32}];
+}
+
+// Start an OPAQUE password login. Public clients should prefer this flow because
+// the server receives an OPAQUE credential request instead of the plaintext
+// password. StartLogin binds this request to the selected account.
+message StartOpaqueLoginRequest {
+  string login_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  bytes credential_request = 2 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 4096
+  }];
+}
+
+message StartOpaqueLoginResponse {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  bytes credential_response = 2;
+}
+
+message FinishOpaqueLoginRequest {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  bytes credential_finalization = 2 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 4096
+  }];
+}
+
+// Start a passkey login. A login session binds the challenge to the selected
+// account. Omitting it starts account-independent discoverable authentication.
+message StartPasskeyLoginRequest {
+  optional string login_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message StartPasskeyLoginResponse {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  PasskeyRequestChallenge options = 2 [(buf.validate.field).required = true];
+}
+
+message FinishPasskeyLoginRequest {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  PasskeyAuthenticationCredential credential = 2 [(buf.validate.field).required = true];
+}
+
+message StartPasskeyRegistrationRequest {
+  string username = 1 [(buf.validate.field).string = {
+    min_len: 3
+    max_len: 50
+    pattern: "^[\\p{L}\\p{N}_-]+$"
+  }];
+  string email = 2 [
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
+    (buf.validate.field).string = {
+      max_len: 254
+      email: true
+    }
+  ];
+  string name = 3 [(buf.validate.field).string = {max_len: 100}];
+}
+
+message FinishPasskeyRegistrationRequest {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  PasskeyRegistrationCredential credential = 2 [(buf.validate.field).required = true];
+}
+
+message StartPasskeyBindRequest {
+  string name = 1 [(buf.validate.field).string = {max_len: 100}];
+}
+
+message StartPasskeyRegistrationResponse {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  PasskeyCreationChallenge options = 2 [(buf.validate.field).required = true];
+}
+
+message StartPasskeyBindResponse {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  PasskeyCreationChallenge options = 2 [(buf.validate.field).required = true];
+}
+
+message FinishPasskeyBindRequest {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  PasskeyRegistrationCredential credential = 2 [(buf.validate.field).required = true];
+  string verification_id = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message PasskeyCredential {
+  string credential_id = 1;
+  string name = 2;
+  int64 sign_count = 3;
+  int64 created_at = 4;
+  int64 updated_at = 5;
+  int64 last_used_at = 6;
+}
+
+message ListPasskeysRequest {}
+
+message ListPasskeysResponse {
+  repeated PasskeyCredential credentials = 1;
+}
+
+message DeletePasskeyRequest {
+  string credential_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 2048
+  }];
+  string verification_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message DeletePasskeyResponse {
+  bool deleted = 1;
+}
+
+message StartTotpSetupRequest {
+  string verification_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message StartTotpSetupResponse {
+  string setup_id = 1;
+  string secret = 2;
+  string otpauth_uri = 3;
+  int64 expires_at = 4;
+}
+
+message FinishTotpSetupRequest {
+  string setup_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  string code = 2 [(buf.validate.field).string = {
+    len: 6
+    pattern: "^[0-9]{6}$"
+  }];
+}
+
+message TotpRecoveryCodesResponse {
+  repeated string recovery_codes = 1;
+}
+
+message RegenerateTotpRecoveryCodesRequest {
+  string verification_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message DeleteTotpRequest {
+  string verification_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message DeleteTotpResponse {
+  bool deleted = 1;
+}
+
+message UserAuthFactors {
+  bool password = 1;
+  bool webauthn = 2;
+  bool email = 3;
+  int32 eligible_count = 4;
+  bool totp = 5;
+  uint32 totp_recovery_codes_remaining = 6;
+}
+
+message UserPreferences {
+  bool two_factor_enabled = 1;
+  UserNotificationPreferences notifications = 3;
+  // Low-priority extension payload; core preferences use typed fields.
+  RoomSettings settings = 15;
+}
+
+message UserNotificationPreferences {
+  bool room_invitation_in_app = 1;
+  bool room_event_in_app = 2;
+  bool system_announcement_in_app = 3;
+  bool room_invitation_email = 4;
+  bool room_event_email = 5;
+  bool system_announcement_email = 6;
+}
+
+message GetUserPreferencesRequest {}
+
+message GetUserPreferencesResponse {
+  UserPreferences preferences = 1;
+  UserAuthFactors auth_factors = 2;
+}
+
+message UpdateUserPreferencesRequest {
+  UserNotificationPreferences notifications = 3;
+}
+
+message UpdateUserPreferencesResponse {
+  UserPreferences preferences = 1;
+  UserAuthFactors auth_factors = 2;
+}
+
+message SetTwoFactorEnabledRequest {
+  bool enabled = 1;
+  string verification_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message RequestEmailLoginRequest {
+  string login_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message RequestEmailLoginResponse {
+  string message = 1;
+}
+
+message RequestMfaEmailCodeRequest {
+  string mfa_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message RequestMfaEmailCodeResponse {
+  string message = 1;
+  string masked_email = 2;
+}
+
+message VerifyMfaEmailCodeRequest {
+  string mfa_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  string email_token = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
+}
+
+message StartMfaPasskeyRequest {
+  string mfa_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message StartMfaPasskeyResponse {
+  string passkey_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  PasskeyRequestChallenge options = 2 [(buf.validate.field).required = true];
+}
+
+message FinishMfaPasskeyRequest {
+  string mfa_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  string passkey_session_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  PasskeyAuthenticationCredential credential = 3 [(buf.validate.field).required = true];
+}
+
+message VerifyMfaTotpRequest {
+  string mfa_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  string code = 2 [(buf.validate.field).string = {
+    len: 6
+    pattern: "^[0-9]{6}$"
+  }];
+}
+
+message VerifyMfaRecoveryCodeRequest {
+  string mfa_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  string recovery_code = 2 [(buf.validate.field).string = {
+    min_len: 12
+    max_len: 32
+  }];
+}
+
+message RefreshTokenRequest {
+  string refresh_token = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 4096
+  }];
+}
+
+message RefreshTokenResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+}
+
+message GetProfileRequest {}
+
+message CloseAccountRequest {}
+
+message CloseAccountResponse {
+  bool success = 1;
+}
+
+// Start changing the current user's password credential via OPAQUE. This is an
+// authenticated endpoint; successful finish stores the updated account
+// credential as OPAQUE material.
+enum OpaquePasswordUpdateVerificationMethod {
+  OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_UNSPECIFIED = 0;
+  OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_CURRENT_OPAQUE_PASSWORD = 1;
+  OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_EMAIL_TOKEN = 2;
+  OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_PASSKEY = 3;
+}
+
+message StartOpaquePasswordUpdateRequest {
+  bytes credential_request = 1 [(buf.validate.field).bytes = {max_len: 4096}];
+  bytes registration_request = 2 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 4096
+  }];
+  OpaquePasswordUpdateVerificationMethod verification_method = 4;
+  string email_token = 6 [(buf.validate.field).string = {max_len: 128}];
+}
+
+message StartOpaquePasswordUpdateResponse {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  bytes credential_response = 2;
+  bytes registration_response = 3;
+  string passkey_session_id = 4;
+  PasskeyRequestChallenge passkey_options = 5;
+}
+
+message FinishOpaquePasswordUpdateRequest {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  bytes credential_finalization = 2 [(buf.validate.field).bytes = {max_len: 4096}];
+  bytes registration_upload = 3 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 4096
+  }];
+  string passkey_session_id = 5 [(buf.validate.field).string = {max_len: 128}];
+  PasskeyAuthenticationCredential passkey_credential = 6;
+}
+
+message CreateWebSocketTicketRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+}
+
+message CreateWebSocketTicketResponse {
+  string ticket = 1;
+  string room_id = 2;
+  uint64 expires_in_secs = 3;
+  string usage = 4;
+}
+
+message CreateGuestTokenRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+}
+
+message CreateGuestTokenResponse {
+  string token = 1;
+  string room_id = 2;
+  string guest_id = 3;
+  string display_name = 4;
+  int64 expires_at = 5;
+  uint64 expires_in_secs = 6;
+  string usage = 7;
+}
+
+message WebSocketConnectRequest {
+  string ticket = 1 [(buf.validate.field).cel = {
+    id: "websocket_connect_request.ticket.optional_format"
+    message: "ticket must be empty or a URL-safe token up to 43 characters"
+    expression: "this == '' || (size(this) <= 43 && this.matches('^[A-Za-z0-9_-]+$'))"
+  }];
+}
+
+// Room Management Messages
+message CreateRoomRequest {
+  string name = 1 [
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 100
+    },
+    (buf.validate.field).cel = {
+      id: "create_room.name.no_angle_brackets"
+      message: "name must not contain HTML-like tags"
+      expression: "!this.contains('<') && !this.contains('>')"
+    }
+  ];
+  RoomSettings settings = 2;
+  string description = 3 [
+    (buf.validate.field).string = {max_len: 500},
+    (buf.validate.field).cel = {
+      id: "create_room.description.no_angle_brackets"
+      message: "description must not contain HTML-like tags"
+      expression: "!this.contains('<') && !this.contains('>')"
+    }
+  ];
+  string password = 4 [(buf.validate.field).string = {max_len: 128}];
+  string category_id = 5 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^roomcat_[A-Za-z0-9]+$"
+  }];
+  repeated string label_ids = 6 [
+    (buf.validate.field).repeated.max_items = 10,
+    (buf.validate.field).repeated.items.string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^roomlbl_[A-Za-z0-9]+$"
+    }
+  ];
+}
+
+// Note: UserService room-scoped resource request; room_id is carried in payload.
+message GetRoomRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+}
+
+message GetRoomResponse {
+  Room room = 1;
+  PlaybackState playback_state = 2;
+  bool favorited = 3;
+}
+
+message JoinRoomRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  string password = 2 [(buf.validate.field).string = {max_len: 128}];
+  string remark_name = 3 [(buf.validate.field).string = {max_len: 64}];
+  string display_tag = 4 [(buf.validate.field).string = {max_len: 16}];
+}
+
+message JoinRoomResponse {
+  Room room = 1;
+  PlaybackState playback_state = 2;
+  repeated synctv.common.RoomMember members = 3;
+  synctv.common.MemberStatus membership_status = 4;
+  bool requires_approval = 5;
+}
+
+message LeaveRoomRequest {}
+
+message LeaveRoomResponse {
+  bool success = 1;
+}
+
+message DiscoverRoomsRequest {
+  option (buf.validate.message).cel = {
+    id: "discover_rooms.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "discover_rooms.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+
+  int32 page = 1;
+  int32 page_size = 2;
+  string search = 3 [(buf.validate.field).string = {max_len: 100}]; // Optional search by name/description
+  string category_id = 4 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^roomcat_[A-Za-z0-9]+$"
+  }];
+  repeated string label_ids = 5 [
+    (buf.validate.field).repeated.max_items = 10,
+    (buf.validate.field).repeated.items.string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^roomlbl_[A-Za-z0-9]+$"
+    }
+  ];
+}
+
+message DiscoverRoomsResponse {
+  repeated RoomDiscoveryItem featured_rooms = 1;
+  repeated RoomDiscoveryItem rooms = 2;
+  int32 total = 3;
+}
+
+enum RoomDiscoveryAccess {
+  ROOM_DISCOVERY_ACCESS_UNSPECIFIED = 0;
+  ROOM_DISCOVERY_ACCESS_ENTER = 1;
+  ROOM_DISCOVERY_ACCESS_JOIN = 2;
+  ROOM_DISCOVERY_ACCESS_PASSWORD = 3;
+  ROOM_DISCOVERY_ACCESS_REQUEST_APPROVAL = 4;
+  ROOM_DISCOVERY_ACCESS_PENDING_APPROVAL = 5;
+  ROOM_DISCOVERY_ACCESS_SIGN_IN = 6;
+  ROOM_DISCOVERY_ACCESS_INVITATION = 7;
+  ROOM_DISCOVERY_ACCESS_FULL = 8;
+  ROOM_DISCOVERY_ACCESS_UNAVAILABLE = 9;
+  ROOM_DISCOVERY_ACCESS_COOLDOWN = 10;
+  ROOM_DISCOVERY_ACCESS_GUEST = 11;
+}
+
+message RoomDiscoveryItem {
+  Room room = 1;
+  bool joined = 2;
+  bool favorited = 3;
+  bool can_join = 4;
+  RoomDiscoveryAccess access = 5;
+}
+
+message ListRoomCategoriesRequest {
+  bool include_disabled = 1;
+}
+
+message ListRoomCategoriesResponse {
+  repeated RoomCategory categories = 1;
+}
+
+message ListRoomLabelsRequest {
+  bool include_disabled = 1;
+  string category_id = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^roomcat_[A-Za-z0-9]+$"
+  }];
+}
+
+message ListRoomLabelsResponse {
+  repeated RoomLabel labels = 1;
+}
+
+message DeleteRoomRequest {}
+
+message DeleteRoomResponse {
+  bool success = 1;
+}
+
+message RoomSettingsPatch {
+  optional bool allow_guest_join = 1;
+  optional uint64 max_members = 2;
+  optional bool require_approval = 3;
+  optional bool allow_auto_join = 4;
+  optional bool chat_enabled = 5;
+  AutoPlaySettingsPatch auto_play = 6;
+  optional uint64 admin_added_permissions = 7;
+  optional uint64 admin_removed_permissions = 8;
+  optional uint64 member_added_permissions = 9;
+  optional uint64 member_removed_permissions = 10;
+  optional uint64 guest_added_permissions = 11;
+  optional uint64 guest_removed_permissions = 12;
+  optional bool voice_chat_enabled = 13;
+  optional bool p2p_media_enabled = 14;
+}
+
+message UpdateRoomSettingsRequest {
+  RoomSettingsPatch settings = 1 [(buf.validate.field).required = true];
+  google.protobuf.FieldMask update_mask = 2 [(buf.validate.field).required = true];
+}
+
+
+// Get room settings
+message GetRoomSettingsRequest {}
+
+message GetRoomSettingsResponse {
+  RoomSettings settings = 1;
+  int64 version = 2;
+}
+
+enum SortDirection {
+  SORT_DIRECTION_UNSPECIFIED = 0;
+  SORT_DIRECTION_ASC = 1;
+  SORT_DIRECTION_DESC = 2;
+}
+
+enum RoomStreamListSortBy {
+  ROOM_STREAM_LIST_SORT_BY_UNSPECIFIED = 0;
+  ROOM_STREAM_LIST_SORT_BY_MEDIA_ID = 1;
+}
+
+enum RoomMemberListSortBy {
+  ROOM_MEMBER_LIST_SORT_BY_UNSPECIFIED = 0;
+  ROOM_MEMBER_LIST_SORT_BY_JOINED_AT = 1;
+  ROOM_MEMBER_LIST_SORT_BY_USERNAME = 2;
+  ROOM_MEMBER_LIST_SORT_BY_ROLE = 3;
+}
+
+enum PlaylistListSortBy {
+  PLAYLIST_LIST_SORT_BY_UNSPECIFIED = 0;
+  PLAYLIST_LIST_SORT_BY_POSITION = 1;
+  PLAYLIST_LIST_SORT_BY_NAME = 2;
+  PLAYLIST_LIST_SORT_BY_CREATED_AT = 3;
+  PLAYLIST_LIST_SORT_BY_UPDATED_AT = 4;
+}
+
+enum MediaListSortBy {
+  MEDIA_LIST_SORT_BY_UNSPECIFIED = 0;
+  MEDIA_LIST_SORT_BY_POSITION = 1;
+  MEDIA_LIST_SORT_BY_NAME = 2;
+  MEDIA_LIST_SORT_BY_ADDED_AT = 3;
+  MEDIA_LIST_SORT_BY_UPDATED_AT = 4;
+  MEDIA_LIST_SORT_BY_SOURCE_PROVIDER = 5;
+  MEDIA_LIST_SORT_BY_PROVIDER_INSTANCE_NAME = 6;
+}
+
+enum MyRoomListSortBy {
+  MY_ROOM_LIST_SORT_BY_UNSPECIFIED = 0;
+  MY_ROOM_LIST_SORT_BY_FREQUENT = 1;
+  MY_ROOM_LIST_SORT_BY_LAST_VISITED_AT = 2;
+  MY_ROOM_LIST_SORT_BY_JOINED_AT = 3;
+  MY_ROOM_LIST_SORT_BY_CREATED_AT = 4;
+  MY_ROOM_LIST_SORT_BY_UPDATED_AT = 5;
+  MY_ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT = 6;
+  MY_ROOM_LIST_SORT_BY_NAME = 7;
+}
+
+enum MyRoomRelation {
+  MY_ROOM_RELATION_UNSPECIFIED = 0;
+  MY_ROOM_RELATION_ALL = 1;
+  MY_ROOM_RELATION_CREATED = 2;
+  MY_ROOM_RELATION_PARTICIPATING = 3;
+}
+
+// Reset room settings to default
+message ResetRoomSettingsRequest {}
+
+message TransferRoomOwnershipRequest {
+  string new_owner_user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }]; // Target active member user ID
+}
+
+// Room Password Messages
+message StartRoomPasswordRegistrationRequest {
+  bytes registration_request = 1 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 4096
+  }];
+}
+
+message StartRoomPasswordRegistrationResponse {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  bytes registration_response = 2;
+}
+
+message FinishRoomPasswordRegistrationRequest {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  bytes registration_upload = 2 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 4096
+  }];
+}
+
+message ClearRoomPasswordRequest {}
+
+message SetRoomPasswordResponse {
+  bool success = 1;
+}
+
+message StartRoomPasswordLoginRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  bytes credential_request = 2 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 4096
+  }];
+}
+
+message StartRoomPasswordLoginResponse {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  bytes credential_response = 2;
+}
+
+message FinishRoomPasswordLoginRequest {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  bytes credential_finalization = 2 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 4096
+  }];
+}
+
+enum NotificationListSortBy {
+  NOTIFICATION_LIST_SORT_BY_UNSPECIFIED = 0;
+  NOTIFICATION_LIST_SORT_BY_CREATED_AT = 1;
+  NOTIFICATION_LIST_SORT_BY_UPDATED_AT = 2;
+  NOTIFICATION_LIST_SORT_BY_TITLE = 3;
+}
+
+// Room Members Messages
+// Note: room_id extracted from x-room-id metadata
+message GetRoomMembersRequest {
+  option (buf.validate.message).cel = {
+    id: "get_room_members.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "get_room_members.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+
+  int32 page = 1;
+  int32 page_size = 2;
+  string search = 3 [(buf.validate.field).string = {max_len: 100}];
+  optional synctv.common.RoomMemberRole role = 4 [(buf.validate.field).enum.defined_only = true];
+  RoomMemberListSortBy sort_by = 6 [(buf.validate.field).enum.defined_only = true];
+  SortDirection sort_direction = 7 [(buf.validate.field).enum.defined_only = true];
+}
+
+message GetRoomMembersResponse {
+  repeated synctv.common.RoomMember members = 1;
+  int32 total = 2;
+  string version = 3; // Snapshot version for this member list result
+  synctv.common.RoomPresenceStats presence = 4;
+}
+
+// Room live streams
+// Note: room_id extracted from x-room-id metadata
+message ListRoomStreamsRequest {
+  option (buf.validate.message).cel = {
+    id: "list_room_streams.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "list_room_streams.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+
+  int32 page = 1;
+  int32 page_size = 2;
+  string search = 3 [(buf.validate.field).string = {max_len: 100}];
+  RoomStreamListSortBy sort_by = 4 [(buf.validate.field).enum.defined_only = true];
+  SortDirection sort_direction = 5 [(buf.validate.field).enum.defined_only = true];
+}
+
+message StreamEntry {
+  string media_id = 1;
+  bool active = 2;
+}
+
+message ListRoomStreamsResponse {
+  repeated StreamEntry streams = 1;
+  int32 total = 2;
+}
+
+message GetRoomStreamInfoRequest {
+  string media_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^med_[A-Za-z0-9]+$"
+  }];
+}
+
+message RoomStreamPublisherInfo {
+  string user_id = 1;
+  int64 started_at = 2;
+}
+
+message GetRoomStreamInfoResponse {
+  bool active = 1;
+  RoomStreamPublisherInfo publisher = 2;
+}
+
+message KickRoomStreamRequest {
+  string media_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^med_[A-Za-z0-9]+$"
+  }];
+  string reason = 2;
+}
+
+message KickRoomStreamResponse {}
+
+message AddMemberRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  synctv.common.RoomMemberRole role = 2; // Defaults to MEMBER when unspecified
+  bool notify = 3; // Best-effort invitation/announcement to the target user
+  string remark_name = 4 [(buf.validate.field).string = {max_len: 64}];
+  string display_tag = 5 [(buf.validate.field).string = {max_len: 16}];
+}
+
+message RoomJoinReview {
+  string id = 1;
+  string room_id = 2;
+  string user_id = 3;
+  string username = 4;
+  synctv.common.RoomMemberRole requested_role = 5;
+  synctv.common.ReviewStatus status = 6;
+  int64 requested_at = 7;
+  int64 reviewed_at = 8;
+  optional string reviewed_by = 9;
+  optional string rejection_reason = 10;
+}
+
+message ListRoomJoinReviewsRequest {
+  option (buf.validate.message).cel = {
+    id: "client.list_room_join_reviews.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "client.list_room_join_reviews.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+  int32 page = 1;
+  int32 page_size = 2;
+  synctv.common.ReviewStatus status = 3 [(buf.validate.field).enum.defined_only = true];
+  string user_id = 4 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^usr_[A-Za-z0-9]+$"
+  }];
+}
+
+message ListRoomJoinReviewsResponse {
+  repeated RoomJoinReview reviews = 1;
+  int32 total = 2;
+}
+
+message ApproveRoomJoinReviewRequest {
+  string request_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^rev_[A-Za-z0-9]+$"
+  }];
+}
+
+message ApproveRoomJoinReviewResponse {
+  RoomJoinReview review = 1;
+  synctv.common.RoomMember member = 2;
+}
+
+message RejectRoomJoinReviewRequest {
+  string request_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^rev_[A-Za-z0-9]+$"
+  }];
+  string reason = 2 [(buf.validate.field).string.max_len = 500];
+}
+
+message UpdateMemberRemarkNameRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  string remark_name = 2 [(buf.validate.field).string = {max_len: 64}];
+}
+
+message UpdateMemberDisplayTagRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  string display_tag = 2 [(buf.validate.field).string = {max_len: 16}];
+}
+
+message UpdateMemberPermissionsRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }]; // Target user
+  synctv.common.RoomMemberRole role = 2; // New role (optional)
+
+  // Allow/Deny permission pattern fields
+  // Only set the fields you want to update
+  // For member role: use added_permissions/removed_permissions
+  // For admin role: use admin_added_permissions/admin_removed_permissions
+  uint64 added_permissions = 3;
+  uint64 removed_permissions = 4;
+  uint64 admin_added_permissions = 5;
+  uint64 admin_removed_permissions = 6;
+}
+
+message KickMemberRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }]; // Target user to kick
+  int64 kick_cooldown_seconds = 2 [(buf.validate.field).int64 = {
+    gte: 1
+    lte: 2592000
+  }];
+}
+
+message KickMemberResponse {
+  bool success = 1;
+}
+
+// Playlist Management Messages
+// Note: room_id extracted from x-room-id metadata
+
+message CreatePlaylistRequest {
+  option (buf.validate.message).cel = {
+    id: "playlist.dynamic.requires_fields"
+    message: "dynamic playlists require non-empty source_config"
+    expression: "this.source_provider == 0 || has(this.source_config)"
+  };
+  option (buf.validate.message).cel = {
+    id: "playlist.static.rejects_dynamic_fields"
+    message: "source_provider is required when source_config or provider_instance_name is set"
+    expression: "this.source_provider != 0 || (!has(this.source_config) && this.provider_instance_name == '')"
+  };
+  option (buf.validate.message).cel = {
+    id: "playlist.parent_id.format"
+    message: "parent_id must be a public identifier when provided"
+    expression: "this.parent_id == '' || (size(this.parent_id) <= 64 && this.parent_id.matches('^pl_[A-Za-z0-9]+$'))"
+  };
+  string name = 1 [(buf.validate.field).string = {max_len: 255}];
+  string parent_id = 2; // Optional parent playlist ID for nested playlists
+  synctv.source_config.SourceProvider source_provider = 3 [(buf.validate.field).enum.defined_only = true]; // Optional provider type for dynamic playlists
+  synctv.source_config.PlaylistSourceConfig source_config = 4; // Provider-specific config for dynamic playlists
+  string provider_instance_name = 5 [
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
+    (buf.validate.field).string = {
+      pattern: "^[A-Za-z0-9_-]+$"
+      max_len: 64
+    }
+  ]; // Optional provider instance name. Empty means use the default provider instance for source_provider
+  string description = 6 [(buf.validate.field).string = {max_len: 5000}];
+}
+
+message UpdatePlaylistRequest {
+  string playlist_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^pl_[A-Za-z0-9]+$"
+  }];
+  string name = 2 [
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
+    (buf.validate.field).string = {max_len: 255}
+  ]; // Optional new name
+  string description = 3 [(buf.validate.field).string = {max_len: 5000}];
+}
+
+message MovePlaylistRequest {
+  string playlist_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^pl_[A-Za-z0-9]+$"
+  }];
+  oneof anchor {
+    option (buf.validate.oneof).required = true;
+    string before_playlist_id = 2 [(buf.validate.field).string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^pl_[A-Za-z0-9]+$"
+    }];
+    string after_playlist_id = 3 [(buf.validate.field).string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^pl_[A-Za-z0-9]+$"
+    }];
+  }
+}
+
+message DeletePlaylistRequest {
+  string playlist_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^pl_[A-Za-z0-9]+$"
+  }];
+  bool force = 2;
+}
+
+message DeletePlaylistQuery {
+  bool force = 1;
+}
+
+message DeletePlaylistResponse {
+  bool success = 1;
+}
+
+// Get single playlist info
+message GetPlaylistRequest {
+  string playlist_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^pl_[A-Za-z0-9]+$"
+  }];
+}
+
+message GetPlaylistResponse {
+  Playlist playlist = 1;
+  int32 child_playlist_count = 2; // Number of child playlists
+  int32 media_count = 3; // Number of media items (files)
+}
+
+// List playlists in a room or under a parent.
+message ListPlaylistsRequest {
+  option (buf.validate.message).cel = {
+    id: "list_playlists.parent_id.format"
+    message: "parent_id must be a public identifier when provided"
+    expression: "this.parent_id == '' || (size(this.parent_id) <= 64 && this.parent_id.matches('^pl_[A-Za-z0-9]+$'))"
+  };
+  string parent_id = 1; // Optional parent ID to get children of specific playlist
+  option (buf.validate.message).cel = {
+    id: "list_playlists.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "list_playlists.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+
+  int32 page = 2;
+  int32 page_size = 3;
+  string search = 4 [(buf.validate.field).string = {max_len: 100}];
+  synctv.source_config.SourceProvider source_provider = 5 [(buf.validate.field).enum.defined_only = true];
+  string provider_instance_name = 6 [
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
+    (buf.validate.field).string = {
+      pattern: "^[A-Za-z0-9_-]+$"
+      max_len: 64
+    }
+  ];
+  optional bool dynamic_only = 7;
+  PlaylistListSortBy sort_by = 8 [(buf.validate.field).enum.defined_only = true];
+  SortDirection sort_direction = 9 [(buf.validate.field).enum.defined_only = true];
+  ResourceAvailabilityFilter availability = 10 [(buf.validate.field).enum.defined_only = true];
+}
+
+message ListPlaylistsResponse {
+  repeated Playlist playlists = 1;
+  int32 total = 2; // Total number of playlists matching filter
+}
+
+// HTTP API: Start playback of either:
+// 1. A concrete media item (`media_id`), optionally with its static playlist context
+//    (`media_id` + `playlist_id`)
+// 2. A dynamic playlist item (`playlist_id` + `target`)
+message StartPlaybackRequest {
+  option (buf.validate.message).cel = {
+    id: "start_playback.dynamic_target"
+    message: "target requires playlist_id without media_id"
+    expression: "!has(this.target) || (this.playlist_id != '' && this.media_id == '')"
+  };
+  option (buf.validate.message).cel = {
+    id: "start_playback.clear_target"
+    message: "target must be omitted when clearing playback"
+    expression: "(this.media_id != '' || this.playlist_id != '') || !has(this.target)"
+  };
+  option (buf.validate.message).cel = {
+    id: "start_playback.playlist_source"
+    message: "playlist_id without media_id requires target"
+    expression: "this.playlist_id == '' || this.media_id != '' || has(this.target)"
+  };
+  string media_id = 1; // Static media ID. May include its static playlist_id as navigation context.
+  string playlist_id = 2; // Static context with media_id, or dynamic playlist ID with target.
+  ProviderTarget target = 3; // Provider-facing playback target payload. Omit for static media playback.
+  optional string client_operation_id = 4 [(buf.validate.field).string = {uuid: true}];
+}
+
+// HTTP API: Stop current playback
+message StopPlaybackRequest {
+  optional string client_operation_id = 1 [(buf.validate.field).string = {uuid: true}];
+}
+
+message PlayNextRequest {
+  optional string client_operation_id = 1 [(buf.validate.field).string = {uuid: true}];
+}
+message PlayPreviousRequest {
+  optional string client_operation_id = 1 [(buf.validate.field).string = {uuid: true}];
+}
+
+message PlaybackHistoryEntry {
+  string id = 1;
+  string media_id = 2;
+  string playlist_id = 3;
+  ProviderTarget target = 4;
+  double position_seconds = 5;
+  string selected_by_user_id = 6;
+  int64 created_at = 7;
+  int64 updated_at = 8;
+  string media_name = 9;
+  string playlist_name = 10;
+  synctv.source_config.SourceProvider source_provider = 11;
+  string provider_instance_name = 12;
+}
+
+message ListPlaybackHistoryRequest {
+  optional string before_entry_id = 1 [(buf.validate.field).string = {min_len: 4 max_len: 64 pattern: "^ph_[A-Za-z0-9]+$"}];
+  int32 limit = 2 [(buf.validate.field).int32 = {gte: 0 lte: 100}];
+}
+
+message ListPlaybackHistoryResponse {
+  repeated PlaybackHistoryEntry entries = 1;
+  string history_cursor_id = 2;
+  string next_before_entry_id = 3;
+}
+
+message PlayHistoryEntryRequest {
+  string entry_id = 1 [(buf.validate.field).string = {min_len: 4 max_len: 64 pattern: "^ph_[A-Za-z0-9]+$"}];
+  optional string client_operation_id = 2 [(buf.validate.field).string = {uuid: true}];
+}
+
+// Realtime API: update the current playback source. Empty media_id, playlist_id, and target clears playback.
+message UpdatePlaybackRequest {
+  option (buf.validate.message).cel = {
+    id: "update_playback.single_target"
+    message: "media_id and playlist_id cannot both be set"
+    expression: "!(this.media_id != '' && this.playlist_id != '')"
+  };
+  option (buf.validate.message).cel = {
+    id: "update_playback.clear_target"
+    message: "target must be omitted when clearing playback"
+    expression: "(this.media_id != '' || this.playlist_id != '') || !has(this.target)"
+  };
+  option (buf.validate.message).cel = {
+    id: "update_playback.static_target"
+    message: "target must be omitted when switching to a static media item"
+    expression: "this.media_id == '' || !has(this.target)"
+  };
+  option (buf.validate.message).cel = {
+    id: "update_playback.playlist_target"
+    message: "target is required when switching to a dynamic playlist item"
+    expression: "this.playlist_id == '' || has(this.target)"
+  };
+  string media_id = 1; // Static media ID. Mutually exclusive with playlist_id.
+  string playlist_id = 2; // Dynamic playlist ID. Requires target. Mutually exclusive with media_id.
+  ProviderTarget target = 3; // Provider-facing playback target payload. Omit for static media playback.
+  optional string client_operation_id = 4 [(buf.validate.field).string = {uuid: true}];
+}
+
+// Media Management Messages
+// Note: room_id extracted from x-room-id metadata
+
+message AddMediaRequest {
+  optional string playlist_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^pl_[A-Za-z0-9]+$"
+  }]; // Target playlist ID. Omit for room-root media
+  string provider_instance_name = 2 [
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
+    (buf.validate.field).string = {
+      pattern: "^[A-Za-z0-9_-]+$"
+      max_len: 64
+    }
+  ]; // Optional provider instance name; empty means use the default provider instance for the source_config provider
+  synctv.source_config.MediaSourceConfig source_config = 3 [(buf.validate.field).required = true];
+  string name = 4 [(buf.validate.field).string.max_len = 500]; // Optional media display name. Validation: max 500 chars, no HTML tags
+  string description = 5 [(buf.validate.field).string.max_len = 5000];
+}
+
+message GetMediaRequest {
+  string media_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^med_[A-Za-z0-9]+$"
+  }];
+}
+
+message DeleteMediaRequest {
+  string media_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^med_[A-Za-z0-9]+$"
+  }];
+  bool force = 2;
+}
+
+message DeleteMediaQuery {
+  bool force = 1;
+}
+
+message DeleteMediaResponse {
+  bool success = 1;
+}
+
+message DeleteEntriesRequest {
+  option (buf.validate.message).cel = {
+    id: "delete_entries.non_empty"
+    message: "delete request cannot be empty"
+    expression: "size(this.playlist_ids) + size(this.media_ids) > 0"
+  };
+  option (buf.validate.message).cel = {
+    id: "delete_entries.max_targets"
+    message: "delete batch size exceeds maximum of 100"
+    expression: "size(this.playlist_ids) + size(this.media_ids) <= 100"
+  };
+  repeated string playlist_ids = 1 [(buf.validate.field).repeated = {
+    items: {
+      string: {
+        min_len: 1
+        max_len: 64
+        pattern: "^pl_[A-Za-z0-9]+$"
+      }
+    }
+  }];
+  repeated string media_ids = 2 [(buf.validate.field).repeated = {
+    items: {
+      string: {
+        min_len: 1
+        max_len: 64
+        pattern: "^med_[A-Za-z0-9]+$"
+      }
+    }
+  }];
+  bool force = 3;
+}
+
+message DeleteEntriesResponse {
+  int32 deleted_playlists = 1;
+  int32 deleted_media = 2;
+}
+
+message ListPlaylistItemsRequest {
+  string playlist_id = 1; // Empty means room root; otherwise the playlist being browsed
+  ProviderTarget target = 2; // Provider-facing browse target payload (omitted for room root or dynamic root)
+  oneof pagination {
+    PagePagination page = 3;
+    CursorPagination cursor = 4;
+  }
+  uint32 page_size = 5 [(buf.validate.field).uint32.lte = 100];
+  string search = 6 [(buf.validate.field).string = {max_len: 100}];
+  synctv.source_config.SourceProvider source_provider = 7 [(buf.validate.field).enum.defined_only = true];
+  string provider_instance_name = 8 [
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
+    (buf.validate.field).string = {
+      pattern: "^[A-Za-z0-9_-]+$"
+      max_len: 64
+    }
+  ];
+  MediaListSortBy sort_by = 9 [(buf.validate.field).enum.defined_only = true];
+  SortDirection sort_direction = 10 [(buf.validate.field).enum.defined_only = true];
+  ResourceAvailabilityFilter availability = 11 [(buf.validate.field).enum.defined_only = true];
+  bool refresh = 12; // For provider playlists, force an upstream cache refresh when supported.
+  synctv.source_config.PlaylistSourceConfig preview_source_config = 13; // Transient provider source used for pre-create preview.
+}
+
+message PagePagination {
+  uint32 page = 1 [(buf.validate.field).uint32.gte = 1];
+}
+
+message CursorPagination {
+  string cursor = 1;
+}
+
+message ListPlaylistItemsResponse {
+  repeated Playlist playlists = 1; // Child playlists, listed first
+  repeated Media media = 2; // Media items, listed after playlists
+  optional uint64 total = 3; // Total number of items when the provider reports one.
+  uint64 playlist_count = 4; // Number of playlists
+  uint64 file_count = 5; // Number of media items
+
+  // For dynamic playlists only
+  repeated PlaylistItem dynamic_items = 6; // Remote provider items for dynamic playlist browsing.
+  repeated PlaylistBrowsePathNode current_path = 7; // Breadcrumb path for the current browse location
+  string version = 8; // Snapshot version for this browse result
+  oneof pagination {
+    PagePagination page = 9;
+    CursorPagination cursor = 10; // Cursor for the next page; empty at the end.
+  }
+}
+
+enum ItemType {
+  ITEM_TYPE_UNSPECIFIED = 0;
+  ITEM_TYPE_PLAYLIST = 1; // Playlist entry.
+  ITEM_TYPE_MEDIA = 2; // File (video/audio/live stream)
+}
+
+message PlaylistItem {
+  string name = 1; // Item name
+  ItemType item_type = 2; // Item type (PLAYLIST or MEDIA)
+  ProviderTarget target = 3; // Provider-facing target payload for this item
+  optional uint64 size = 4; // File size in bytes (for files)
+  optional string thumbnail = 5; // Thumbnail URL
+  optional int64 modified_at = 6; // Modified time (Unix timestamp)
+  string description = 7;
+  oneof source_config {
+    synctv.source_config.MediaSourceConfig media_source_config = 8;
+    synctv.source_config.PlaylistSourceConfig playlist_source_config = 9;
+  }
+  ResourceMetadata metadata = 10;
+}
+
+message PlaylistBrowsePathNode {
+  string playlist_id = 1; // Present for persisted playlist nodes; empty for provider-only dynamic segments
+  string name = 2; // Display name for the current path segment
+  ProviderTarget target = 3; // Provider-facing target payload for this segment; omitted for static playlist nodes
+}
+
+message MoveMediaRequest {
+  option (buf.validate.message).cel = {
+    id: "move_media.anchor"
+    message: "At most one of before_media_id or after_media_id may be set"
+    expression: "(this.before_media_id == '' ? 0 : 1) + (this.after_media_id == '' ? 0 : 1) <= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "move_media.scope_selection"
+    message: "media_ids cannot be provided when all_from_scope is true"
+    expression: "!this.all_from_scope || size(this.media_ids) == 0"
+  };
+  option (buf.validate.message).cel = {
+    id: "move_media.source_scope"
+    message: "source_playlist_id is only valid when all_from_scope is true"
+    expression: "this.all_from_scope || this.source_playlist_id == ''"
+  };
+  option (buf.validate.message).cel = {
+    id: "move_media.explicit_selection"
+    message: "At least one media_id is required when all_from_scope is false"
+    expression: "this.all_from_scope || size(this.media_ids) >= 1"
+  };
+
+  repeated string media_ids = 1 [(buf.validate.field).repeated = {
+    max_items: 100
+    items: {
+      string: {
+        min_len: 1
+        max_len: 64
+        pattern: "^med_[A-Za-z0-9]+$"
+      }
+    }
+  }];
+  optional string source_playlist_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^pl_[A-Za-z0-9]+$"
+  }]; // Used only when all_from_scope=true. Omit for room root.
+  optional string target_playlist_id = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^pl_[A-Za-z0-9]+$"
+  }]; // Omit for room root. When anchor is set, this must match the anchor scope.
+  bool all_from_scope = 4; // Move every media item from the source scope instead of explicit media_ids.
+  optional string before_media_id = 5 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^med_[A-Za-z0-9]+$"
+  }];
+  optional string after_media_id = 6 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^med_[A-Za-z0-9]+$"
+  }];
+}
+
+message MoveMediaResponse {
+  int32 moved_count = 1;
+  repeated Media media = 2;
+}
+
+// Edit Media
+message EditMediaRequest {
+  string media_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^med_[A-Za-z0-9]+$"
+  }];
+  string name = 2 [(buf.validate.field).string.max_len = 500];
+  string description = 3 [(buf.validate.field).string.max_len = 5000];
+}
+
+// Clear Playlist
+message ClearPlaylistRequest {
+  string playlist_id = 1 [
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^pl_[A-Za-z0-9]+$"
+    }
+  ]; // Empty means room root. When set, clear the playlist contents but keep the playlist itself.
+}
+message ClearPlaylistResponse {
+  bool success = 1;
+  int32 deleted_count = 2;
+  int32 deleted_playlists = 3;
+}
+
+// Batch Media Operations
+message AddMediaBatchRequest {
+  repeated AddMediaRequest items = 1 [(buf.validate.field).repeated.max_items = 100]; // Validation: max 100 items
+}
+message AddMediaBatchResponse {
+  repeated Media results = 1;
+}
+
+// Playback Control Messages
+// Note: room_id extracted from x-room-id metadata
+// Client -> Server: Real-time playback control commands sent over the room
+// realtime stream, either WebSocket or gRPC MessageStream.
+// Server broadcasts playback state changes to observers via ResourceEvent(playback_state).
+
+enum PlaybackUpdateType {
+  PLAYBACK_UPDATE_TYPE_UNSPECIFIED = 0;
+  PLAYBACK_UPDATE_TYPE_PLAY = 1;
+  PLAYBACK_UPDATE_TYPE_PAUSE = 2;
+  PLAYBACK_UPDATE_TYPE_SEEK = 3;
+  PLAYBACK_UPDATE_TYPE_SPEED = 4;
+}
+
+message UpdatePlaybackStateRequest {
+  option (buf.validate.message).cel = {
+    id: "update_playback_state.type_required"
+    message: "playback state update type is required"
+    expression: "this.type != 0"
+  };
+  PlaybackUpdateType type = 1 [(buf.validate.field).enum.defined_only = true];
+  optional bool playing = 2;
+  optional double position = 3;
+  optional double speed = 4;
+  optional int64 version = 5;
+  // Optional source guard. When any expected_* field is supplied, all expected_* fields are required.
+  // Empty string means the current source has no media id.
+  optional string expected_media_id = 6;
+  // Empty string means the current source has no playlist id.
+  optional string expected_playlist_id = 7;
+  // SHA-256 hex of PlaybackState.target.
+  optional string expected_target_hash = 8;
+  optional string client_operation_id = 9 [(buf.validate.field).string = {uuid: true}];
+  optional int64 client_time_millis = 10 [(buf.validate.field).int64.gt = 0];
+}
+
+enum PlaybackStreamPreference {
+  PLAYBACK_STREAM_PREFERENCE_UNSPECIFIED = 0;
+  PLAYBACK_STREAM_PREFERENCE_AUTO = 1;
+  PLAYBACK_STREAM_PREFERENCE_DIRECT_PLAY = 2;
+  PLAYBACK_STREAM_PREFERENCE_TRANSCODE = 3;
+}
+
+enum PlaybackSubtitlePreference {
+  PLAYBACK_SUBTITLE_PREFERENCE_UNSPECIFIED = 0;
+  PLAYBACK_SUBTITLE_PREFERENCE_EXTERNAL = 1;
+  PLAYBACK_SUBTITLE_PREFERENCE_EMBEDDED_OR_EXTERNAL = 2;
+  PLAYBACK_SUBTITLE_PREFERENCE_NONE = 3;
+}
+
+enum PlaybackVideoCodec {
+  PLAYBACK_VIDEO_CODEC_UNSPECIFIED = 0;
+  PLAYBACK_VIDEO_CODEC_H264 = 1;
+  PLAYBACK_VIDEO_CODEC_HEVC = 2;
+  PLAYBACK_VIDEO_CODEC_VP9 = 3;
+  PLAYBACK_VIDEO_CODEC_AV1 = 4;
+}
+
+enum PlaybackContainer {
+  PLAYBACK_CONTAINER_UNSPECIFIED = 0;
+  PLAYBACK_CONTAINER_MP4 = 1;
+  PLAYBACK_CONTAINER_MKV = 2;
+  PLAYBACK_CONTAINER_WEBM = 3;
+}
+
+enum PlaybackAudioCapability {
+  PLAYBACK_AUDIO_CAPABILITY_UNSPECIFIED = 0;
+  PLAYBACK_AUDIO_CAPABILITY_STEREO = 1;
+  PLAYBACK_AUDIO_CAPABILITY_SURROUND = 2;
+  PLAYBACK_AUDIO_CAPABILITY_LOSSLESS_SURROUND = 3;
+}
+
+message PlaybackClientProfile {
+  PlaybackStreamPreference stream_preference = 1 [(buf.validate.field).enum.defined_only = true];
+  optional int64 max_streaming_bitrate = 2 [(buf.validate.field).int64.gt = 0];
+  optional int32 max_audio_channels = 3 [(buf.validate.field).int32.gt = 0];
+  repeated PlaybackVideoCodec supported_video_codecs = 4 [(buf.validate.field).repeated.items.enum.defined_only = true];
+  repeated PlaybackContainer supported_containers = 5 [(buf.validate.field).repeated.items.enum.defined_only = true];
+  PlaybackAudioCapability audio_capability = 6 [(buf.validate.field).enum.defined_only = true];
+  PlaybackSubtitlePreference subtitle_preference = 7 [(buf.validate.field).enum.defined_only = true];
+}
+
+message GetPlaybackRequest {
+  PlaybackClientProfile playback_client_profile = 1;
+}
+
+message GetPlaybackResponse {
+  // Playback state (current time, speed, is_playing, etc.)
+  PlaybackState playback_state = 1;
+  // Player-ready playback information for the current source.
+  Playback playback = 2;
+}
+
+// ==================== Playback Information Structures ====================
+
+// Player-ready playback information for the current source.
+message Playback {
+  string media_id = 1; // Media ID
+  string playlist_id = 2; // Playlist ID
+  string room_id = 3; // Room ID
+  string name = 4; // Media name
+  double playlist_position = 5; // Order position in playlist
+  synctv.source_config.SourceProvider provider = 6; // Provider that generated this playback
+  string provider_instance_name = 7; // Provider instance selected for this playback
+
+  // Multiple playback modes (e.g., "direct", "proxied", "cdn1", "cdn2")
+  // Provider can define arbitrary mode names
+  map<string, PlaybackInfo> playback_infos = 8;
+
+  // Default mode name (must be a key in playback_infos)
+  string default_mode = 9;
+
+  // Media-level metadata.
+  optional PlaybackMetadata metadata = 10;
+  // Earliest media expiration across playback media resources, if any.
+  optional int64 expires_at = 11;
+  // Backend-owned source duration in seconds, when available.
+  optional double duration_seconds = 12;
+  // Behavioral kind of the current playback source.
+  synctv.source_config.PlaybackKind playback_kind = 13 [(buf.validate.field).enum.defined_only = true];
+  // Provider-facing playback target for dynamic playlist playback.
+  ProviderTarget target = 14;
+}
+
+message PlaybackMetadata {
+  oneof metadata {
+    AlistPlaybackMetadata alist = 1;
+    BilibiliPlaybackMetadata bilibili = 2;
+    EmbyPlaybackMetadata emby = 3;
+    DirectUrlPlaybackMetadata direct_url = 4;
+    LiveProxyPlaybackMetadata live_proxy = 5;
+    LivePlaybackMetadata live = 6;
+    TwitchPlaybackMetadata twitch = 7;
+    YoutubePlaybackMetadata youtube = 8;
+    DouyinPlaybackMetadata douyin = 9;
+    TikTokPlaybackMetadata tiktok = 10;
+    HuyaPlaybackMetadata huya = 11;
+    DouyuPlaybackMetadata douyu = 12;
+    AcFunPlaybackMetadata ac_fun = 13;
+    CctvPlaybackMetadata cctv = 14;
+    FnosPlaybackMetadata fnos = 15;
+    QnapPlaybackMetadata qnap = 16;
+    SynologyPlaybackMetadata synology = 17;
+    NextcloudPlaybackMetadata nextcloud = 18;
+    SeafilePlaybackMetadata seafile = 19;
+    TrueNasPlaybackMetadata truenas = 20;
+  }
+}
+
+message AlistPlaybackMetadata {
+  optional string name = 1;
+  optional uint64 size = 2;
+  optional string provider = 3;
+  optional int32 external_subtitle_count = 4;
+  optional string video_preview_error = 5;
+  repeated AlistTranscodingTaskMetadata transcoding_tasks = 6;
+  optional AlistVideoPreviewMetadata video_preview = 7;
+  optional uint64 width = 8;
+  optional uint64 height = 9;
+}
+
+message AlistTranscodingTaskMetadata {
+  string mode_name = 1;
+  string template_id = 2;
+  string template_name = 3;
+  uint64 template_width = 4;
+  uint64 template_height = 5;
+  string stage = 6;
+  string status = 7;
+}
+
+message AlistVideoPreviewMetadata {
+  optional string drive_id = 1;
+  optional string file_id = 2;
+  optional string provider = 3;
+  optional string category = 4;
+  uint64 transcoding_count = 5;
+  uint64 subtitle_count = 6;
+}
+
+enum BilibiliPlaybackKind {
+  BILIBILI_PLAYBACK_KIND_UNSPECIFIED = 0;
+  BILIBILI_PLAYBACK_KIND_VIDEO = 1;
+  BILIBILI_PLAYBACK_KIND_PGC = 2;
+  BILIBILI_PLAYBACK_KIND_LIVE = 3;
+}
+
+message BilibiliPlaybackMetadata {
+  BilibiliPlaybackKind kind = 1;
+  optional string bvid = 2;
+  optional uint64 aid = 3;
+  optional uint64 epid = 4;
+  optional uint64 cid = 5;
+  optional double min_buffer_time = 6;
+  optional string fallback_format = 7;
+  optional uint64 quality = 8;
+  optional uint64 room_id = 9;
+  optional int64 live_started_at = 10;
+  bool is_live = 11;
+  optional bool is_currently_live = 12;
+}
+
+enum EmbyPlaybackKind {
+  EMBY_PLAYBACK_KIND_UNSPECIFIED = 0;
+  EMBY_PLAYBACK_KIND_MOVIE = 1;
+  EMBY_PLAYBACK_KIND_EPISODE = 2;
+  EMBY_PLAYBACK_KIND_VIDEO = 3;
+  EMBY_PLAYBACK_KIND_AUDIO = 4;
+  EMBY_PLAYBACK_KIND_MUSIC_ALBUM = 5;
+}
+
+message EmbyPlaybackMetadata {
+  EmbyPlaybackKind kind = 1;
+  optional string series_name = 2;
+  optional string season_name = 3;
+  optional string play_session_id = 4;
+}
+
+message DirectUrlPlaybackMetadata {
+  optional string format = 1;
+  optional string filename = 2;
+}
+
+message LiveProxyPlaybackMetadata {
+  string media_id = 1;
+  string room_id = 2;
+  optional string source_host = 3;
+}
+
+enum LiveStreamAvailability {
+  LIVE_STREAM_AVAILABILITY_UNSPECIFIED = 0;
+  LIVE_STREAM_AVAILABILITY_OFFLINE = 1;
+  LIVE_STREAM_AVAILABILITY_LIVE = 2;
+}
+
+message LivePlaybackMetadata {
+  string media_id = 1;
+  string room_id = 2;
+  LiveStreamAvailability availability = 3;
+  string stream_generation_id = 4;
+}
+
+message TwitchPlaybackMetadata {
+  string resource_id = 1;
+  string title = 2;
+  string author = 3;
+  optional string category = 4;
+  optional string thumbnail_url = 5;
+  optional string description = 6;
+  optional uint64 view_count = 7;
+  optional string published_at = 8;
+  repeated TwitchChapterMetadata chapters = 9;
+  optional string storyboard_url = 10;
+  bool is_live = 11;
+  optional bool is_currently_live = 12;
+}
+
+message TwitchChapterMetadata {
+  string title = 1;
+  uint64 start_seconds = 2;
+  uint64 end_seconds = 3;
+}
+
+message YoutubePlaybackMetadata {
+  string video_id = 1;
+  string channel_id = 2;
+  string channel_name = 3;
+  string description = 4;
+  optional uint64 view_count = 5;
+  optional string publish_date = 6;
+  optional string upload_date = 7;
+  optional string category = 8;
+  bool is_live = 9;
+  optional string live_start = 10;
+  optional string live_end = 11;
+  optional string storyboard_spec = 12;
+  uint32 automatic_caption_count = 13;
+  uint32 manual_caption_count = 14;
+  repeated string translation_languages = 15;
+  optional bool is_currently_live = 16;
+}
+
+enum DouyinPlaybackKind {
+  DOUYIN_PLAYBACK_KIND_UNSPECIFIED = 0;
+  DOUYIN_PLAYBACK_KIND_VIDEO = 1;
+  DOUYIN_PLAYBACK_KIND_LIVE = 2;
+}
+
+message DouyinPlaybackMetadata {
+  string id = 1;
+  DouyinPlaybackKind kind = 2;
+  string author_id = 3;
+  string author_sec_uid = 4;
+  string author_name = 5;
+  string description = 6;
+  optional uint64 view_count = 7;
+  optional uint64 like_count = 8;
+  optional uint64 comment_count = 9;
+  optional uint64 share_count = 10;
+  optional uint64 collect_count = 11;
+  optional int64 created_at = 12;
+  optional string music_title = 13;
+  optional string music_author = 14;
+  bool is_live = 15;
+  optional string room_id = 16;
+  optional bool is_currently_live = 17;
+}
+
+enum TikTokPlaybackKind {
+  TIK_TOK_PLAYBACK_KIND_UNSPECIFIED = 0;
+  TIK_TOK_PLAYBACK_KIND_VIDEO = 1;
+  TIK_TOK_PLAYBACK_KIND_LIVE = 2;
+}
+
+message TikTokPlaybackMetadata {
+  string id = 1;
+  TikTokPlaybackKind kind = 2;
+  string author_id = 3;
+  string author_sec_uid = 4;
+  string author_unique_id = 5;
+  string author_name = 6;
+  string description = 7;
+  optional uint64 view_count = 8;
+  optional uint64 like_count = 9;
+  optional uint64 comment_count = 10;
+  optional uint64 share_count = 11;
+  optional uint64 collect_count = 12;
+  optional uint64 concurrent_viewers = 13;
+  optional int64 created_at = 14;
+  optional string music_title = 15;
+  optional string music_author = 16;
+  uint32 subtitle_count = 17;
+  bool is_live = 18;
+  optional string room_id = 19;
+  optional bool is_currently_live = 20;
+}
+
+message HuyaPlaybackMetadata {
+  string resource_id = 1;
+  string title = 2;
+  string author = 3;
+  optional string author_id = 4;
+  optional string category = 5;
+  optional string thumbnail_url = 6;
+  optional string avatar_url = 7;
+  optional string description = 8;
+  optional uint64 view_count = 9;
+  optional uint64 comment_count = 10;
+  optional uint64 like_count = 11;
+  optional int64 published_at = 12;
+  bool is_live = 13;
+  optional bool is_currently_live = 14;
+}
+
+message DouyuPlaybackMetadata {
+  string room_id = 1;
+  string title = 2;
+  string author = 3;
+  optional string category = 4;
+  optional string thumbnail_url = 5;
+  optional string avatar_url = 6;
+  bool is_replay = 7;
+  bool is_vip = 8;
+  optional uint64 viewer_count = 9;
+  optional string started_at = 10;
+  bool is_live = 11;
+  optional bool is_currently_live = 12;
+}
+
+message AcFunPlaybackMetadata {
+  string resource_id = 1;
+  string title = 2;
+  string author = 3;
+  optional string author_id = 4;
+  optional string category = 5;
+  optional string thumbnail_url = 6;
+  optional string avatar_url = 7;
+  optional string description = 8;
+  repeated string tags = 9;
+  optional uint64 view_count = 10;
+  optional uint64 like_count = 11;
+  optional uint64 comment_count = 12;
+  optional int64 published_at = 13;
+  optional int64 started_at = 14;
+  bool is_live = 15;
+  optional bool is_currently_live = 16;
+}
+
+message CctvChapterMetadata {
+  string id = 1;
+  string title = 2;
+  uint64 start_ms = 3;
+  uint64 end_ms = 4;
+}
+
+message CctvPlaybackMetadata {
+  string video_id = 1;
+  string title = 2;
+  optional string description = 3;
+  optional string uploader = 4;
+  optional string producer = 5;
+  optional string channel = 6;
+  optional string column = 7;
+  repeated string tags = 8;
+  optional string thumbnail_url = 9;
+  optional int64 published_at = 10;
+  repeated CctvChapterMetadata chapters = 11;
+  bool protected = 12;
+}
+
+message FnosFilePlaybackMetadata {
+  string name = 1;
+  string path = 2;
+  optional uint64 size = 3;
+  optional int64 modified_at = 4;
+}
+
+message QnapPlaybackMetadata {
+  string name = 1;
+  string path = 2;
+  uint64 size = 3;
+  uint64 modified_at = 4;
+  uint64 file_type = 5;
+  bool realtime_transcode = 6;
+  bool hardware_transcode = 7;
+  bool multimedia_codec = 8;
+  repeated uint32 pre_transcoded_heights = 9;
+  repeated uint32 realtime_heights = 10;
+}
+
+message SynologyAudioTrackMetadata {
+  int64 id = 1;
+  string language = 2;
+  string codec = 3;
+  uint32 channels = 4;
+  uint64 bitrate = 5;
+  bool is_default = 6;
+}
+
+message SynologySubtitleMetadata {
+  string id = 1;
+  string language = 2;
+  string title = 3;
+  string format = 4;
+  bool embedded = 5;
+}
+
+message SynologyPlaybackMetadata {
+  string title = 1;
+  string summary = 2;
+  string tagline = 3;
+  string certificate = 4;
+  int32 rating = 5;
+  repeated string actors = 6;
+  repeated string directors = 7;
+  repeated string writers = 8;
+  repeated string genres = 9;
+  int64 item_id = 10;
+  int64 file_id = 11;
+  synctv.source_config.SynologyLibraryItemKind kind = 12;
+  string path = 13;
+  uint64 size = 14;
+  uint64 duration_seconds = 15;
+  uint64 progress_seconds = 16;
+  uint32 width = 17;
+  uint32 height = 18;
+  string video_codec = 19;
+  string audio_codec = 20;
+  string container = 21;
+  uint64 video_bitrate = 22;
+  uint64 audio_bitrate = 23;
+  uint64 frame_rate_numerator = 24;
+  uint64 frame_rate_denominator = 25;
+  uint32 audio_channels = 26;
+  uint32 audio_frequency_hz = 27;
+  optional string poster_url = 28;
+  optional string backdrop_url = 29;
+  bool watched = 30;
+  double watched_ratio = 31;
+  bool parental_controlled = 32;
+  int64 create_time = 33;
+  int64 last_watched = 34;
+  repeated SynologyAudioTrackMetadata audio_tracks = 35;
+  repeated SynologySubtitleMetadata subtitles = 36;
+}
+
+message NextcloudPlaybackMetadata {
+  uint64 file_id = 1;
+  string name = 2;
+  string path = 3;
+  uint64 size = 4;
+  optional string modified_at = 5;
+  optional string content_type = 6;
+  optional string etag = 7;
+  optional string permissions = 8;
+  optional string owner_id = 9;
+  optional string owner_display_name = 10;
+  bool favorite = 11;
+  bool has_preview = 12;
+  optional string blurhash = 13;
+  optional uint32 width = 14;
+  optional uint32 height = 15;
+  optional uint64 duration_millis = 16;
+}
+
+message SeafilePlaybackMetadata {
+  string repository_id = 1;
+  string object_id = 2;
+  string name = 3;
+  string path = 4;
+  uint64 size = 5;
+  string modified_at = 6;
+  bool is_locked = 7;
+  bool can_preview = 8;
+  bool can_edit = 9;
+  bool has_thumbnail = 10;
+}
+
+message TrueNasPlaybackMetadata {
+  string realpath = 1;
+  uint64 size = 2;
+  uint64 allocation_size = 3;
+  uint32 mode = 4;
+  uint64 mount_id = 5;
+  uint32 uid = 6;
+  uint32 gid = 7;
+  double atime = 8;
+  double mtime = 9;
+  double ctime = 10;
+  double btime = 11;
+  uint64 dev = 12;
+  uint64 inode = 13;
+  uint64 nlink = 14;
+  bool acl = 15;
+  bool is_mountpoint = 16;
+  bool is_ctldir = 17;
+  repeated string attributes = 18;
+  optional string user = 19;
+  optional string group = 20;
+}
+
+message FnosAudioTrackMetadata {
+  optional string guid = 1;
+  optional string title = 2;
+  optional string language = 3;
+  optional string codec = 4;
+  uint32 channels = 5;
+  uint64 bitrate = 6;
+  bool is_default = 7;
+}
+
+message FnosSubtitleTrackMetadata {
+  optional string guid = 1;
+  optional string title = 2;
+  optional string language = 3;
+  optional string codec = 4;
+  optional string format = 5;
+  bool external = 6;
+  bool is_default = 7;
+  bool forced = 8;
+}
+
+message FnosMediaPlaybackMetadata {
+  string item_guid = 1;
+  string media_guid = 2;
+  string title = 3;
+  optional string overview = 4;
+  optional string poster_url = 5;
+  optional string backdrop_url = 6;
+  optional uint32 width = 7;
+  optional uint32 height = 8;
+  optional string video_codec = 9;
+  optional string video_profile = 10;
+  optional uint32 bit_depth = 11;
+  optional int32 dolby_vision_profile = 12;
+  optional string frame_rate = 13;
+  optional uint32 season_number = 14;
+  optional uint32 episode_number = 15;
+  uint64 progress_seconds = 16;
+  uint64 duration_seconds = 17;
+  bool watched = 18;
+  repeated FnosAudioTrackMetadata audio_tracks = 19;
+  repeated FnosSubtitleTrackMetadata subtitle_tracks = 20;
+}
+
+message FnosPlaybackMetadata {
+  oneof kind {
+    FnosFilePlaybackMetadata file = 1;
+    FnosMediaPlaybackMetadata media = 2;
+  }
+}
+
+// Playback information for a single mode
+message PlaybackInfo {
+  // Thumbnail URL for this playback mode.
+  optional string thumbnail = 7;
+
+  // List of playback media resources (different qualities, codecs, or provider-backed resources)
+  repeated PlaybackMedia medias = 1;
+
+  // Default media index
+  optional int32 default_media_index = 2;
+
+  // Subtitle list
+  repeated PlaybackSubtitle subtitles = 3;
+
+  // Default subtitle index (optional)
+  optional int32 default_subtitle_index = 4;
+
+  // Danmaku list
+  repeated PlaybackDanmaku danmakus = 5;
+
+  // Default danmaku index (optional)
+  optional int32 default_danmaku_index = 6;
+}
+
+// Playback media resource (represents a quality/codec option)
+message PlaybackMedia {
+  // Display name (e.g., "1080P", "HEVC 4K", "720P")
+  string name = 1;
+
+  // Complete URL
+  string url = 2;
+
+  // Request headers (if needed)
+  map<string, string> headers = 3;
+
+  // Media format (e.g., "mp4", "dash", "hls", "flv")
+  string format = 6;
+
+  // Expiration time (Unix timestamp, optional)
+  optional int64 expire_at = 4;
+
+  // Media-level metadata (resolution, codec, bitrate, fps, etc.)
+  optional PlaybackMediaMetadata metadata = 5;
+
+  // Provider-approved byte-stable identity with a room/user-bound capability.
+  // Omitted when this representation must use its origin directly.
+  optional P2pResourceDelivery p2p_delivery = 7;
+}
+
+// Provider-approved identity and API-issued capability for a byte-stable resource.
+message P2pResourceDelivery {
+  string swarm_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  string swarm_ticket = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+  }];
+}
+
+// Media-level metadata
+message PlaybackMediaMetadata {
+  // Resolution (e.g., "1920x1080", "1280x720")
+  optional string resolution = 1;
+
+  // Bitrate in bps
+  optional int64 bitrate = 2;
+
+  // Video codec (e.g., "avc", "hevc", "av1")
+  optional string codec = 3;
+
+  // Frame rate
+  optional int32 fps = 4;
+
+}
+
+// Subtitle information
+message PlaybackSubtitle {
+  // Display name (e.g., "Chinese (Simplified)", "English")
+  string name = 1;
+
+  // Language code (e.g., "zh-CN", "en-US")
+  string language = 2;
+
+  // Subtitle file URL
+  string url = 3;
+
+  // Request headers (if needed)
+  map<string, string> headers = 4;
+
+  // Format (e.g., "json", "srt", "vtt")
+  string format = 5;
+
+  // Hard Unix timestamp deadline for the current subtitle URL.
+  optional int64 expire_at = 6;
+
+  // Omitted when the subtitle cannot be shared as one immutable document.
+  optional P2pResourceDelivery p2p_delivery = 7;
+}
+
+// Danmaku (bullet comments) information.
+message PlaybackDanmaku {
+  // Display name (e.g., "Bilibili Danmaku", "Local Danmaku")
+  string name = 1;
+
+  // Danmaku API URL or file URL
+  string url = 2;
+
+  // Format type (e.g., "bilibili", "ass", "xml")
+  optional string format = 3;
+
+  // Request headers (if needed)
+  map<string, string> headers = 4;
+
+  // Hard Unix timestamp deadline for the current danmaku URL.
+  optional int64 expire_at = 5;
+
+  // Omitted for real-time danmaku streams and mutable resources.
+  optional P2pResourceDelivery p2p_delivery = 6;
+}
+
+// Real-time Messaging
+message ClientMessage {
+  oneof message {
+    ChatMessageSend chat = 1;
+    HeartbeatMessage heartbeat = 2;
+    // Playback state update command (real-time).
+    UpdatePlaybackStateRequest playback_state_update = 3;
+    // Playback source update command (real-time). Empty target clears playback.
+    UpdatePlaybackRequest playback_update = 4;
+    ObserveResource observe_resource = 5;
+    UnobserveResource unobserve_resource = 6;
+    WebRTCCommand webrtc = 7;
+  }
+}
+
+enum ResourceDeliveryMode {
+  RESOURCE_DELIVERY_MODE_UNSPECIFIED = 0;
+  RESOURCE_DELIVERY_MODE_NOTIFY_ONLY = 1;
+  RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT = 2;
+}
+
+message ObserveResource {
+  string observe_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  ResourceDeliveryMode delivery_mode = 3 [(buf.validate.field).enum.defined_only = true];
+  oneof resource {
+    ObservePlaybackState playback_state = 4;
+    ObservePlayback playback = 5;
+    ObserveRoomSettings room_settings = 6;
+    ObservePlaylistItems playlist_items = 7;
+    ObserveRoomMemberEvents room_member_events = 8;
+    ObserveChatEvents chat_events = 9;
+    ObserveOnlineCount online_count = 10;
+    ObserveOnlineEvent online_event = 11;
+    ObserveSelfRoomMember self_room_member = 12;
+    ObserveChatPinEvents chat_pin_events = 13;
+    ObservePlaybackHistory playback_history = 14;
+  }
+}
+
+message UnobserveResource {
+  string observe_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message ObservePlaybackState {
+  // Current room playback control state: playing media, playlist, target, position and speed.
+  // Client's latest known playback-state event sequence.
+  // When it differs from the server's latest sequence, the server sends the current state snapshot
+  // with the latest cursor and then continues with live changes.
+  optional int64 event_sequence = 1;
+}
+
+message ObservePlaybackHistory {
+  ListPlaybackHistoryRequest request = 1;
+  optional int64 after_event_sequence = 2;
+}
+
+message ObservePlayback {
+  // Player-ready aggregate for the current playback source.
+  PlaybackClientProfile playback_client_profile = 4;
+}
+
+message ObserveRoomSettings {
+  // Unset starts from the current snapshot and live changes.
+  optional int64 after_event_sequence = 1;
+}
+
+message ObservePlaylistItems {
+  ListPlaylistItemsRequest request = 1;
+  // Unset starts from the current snapshot and live changes.
+  optional int64 after_event_sequence = 2;
+}
+
+message ObserveRoomMemberEvents {
+  // Replays durable member events with a per-room resource sequence greater than this value.
+  // Unset starts from live member events; use GetRoomMembers for the current member list.
+  optional int64 after_event_sequence = 1;
+}
+
+message ObserveSelfRoomMember {
+  // Current signed-in user's room member and effective permission snapshot.
+  // Changes when the user's role, permission overrides, or room-level permission defaults change.
+  optional int64 after_event_sequence = 1;
+}
+
+message ObserveOnlineCount {
+  // Empty filters return the whole-room online user count.
+  // Use role filters or user_ids to reduce the aggregation scope for member list views.
+  repeated common.RoomMemberRole roles = 1 [(buf.validate.field).repeated = {
+    max_items: 4
+    items: { enum: { defined_only: true } }
+  }];
+  repeated string user_ids = 2 [(buf.validate.field).repeated = {
+    max_items: 500
+    items: { string: { min_len: 1 max_len: 64 } }
+  }];
+}
+
+message ObserveOnlineEvent {
+  // Live-only stream for member online/offline events.
+  // Use filters to reduce high-frequency updates for large rooms.
+  repeated common.RoomMemberRole roles = 1 [(buf.validate.field).repeated = {
+    max_items: 4
+    items: { enum: { defined_only: true } }
+  }];
+  repeated OnlineEventKind kinds = 2 [(buf.validate.field).repeated = {
+    max_items: 2
+    items: { enum: { defined_only: true } }
+  }];
+  repeated string user_ids = 3 [(buf.validate.field).repeated = {
+    max_items: 500
+    items: { string: { min_len: 1 max_len: 64 } }
+  }];
+}
+
+message ObserveChatEvents {
+  // Replays events with a durable per-room chat event sequence greater than this value.
+  // Unset starts from live chat events; 0 replays retained chat events from the empty watermark.
+  // Use GetChatHistory for message backfill.
+  optional int64 after_event_sequence = 1;
+  // Empty uses the default user-visible set: USER.
+  // System message types, such as SYSTEM_MEMBER_JOINED and SYSTEM_PLAYBACK_CHANGED,
+  // are included explicitly.
+  repeated ChatMessageType include_message_types = 2 [(buf.validate.field).repeated.items.enum.defined_only = true];
+}
+
+message ObserveChatPinEvents {
+  // Replays durable per-room pin resource events greater than this value.
+  // Use ListPinnedChatMessages for the current full pinned-message snapshot.
+  optional int64 after_event_sequence = 1;
+}
+
+message WatchPlaybackStateRequest {
+  ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
+  ObservePlaybackState playback_state = 2;
+}
+
+message WatchPlaybackRequest {
+  ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
+  ObservePlayback playback = 2;
+}
+
+message WatchRoomSettingsRequest {
+  ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
+  ObserveRoomSettings room_settings = 2;
+}
+
+message WatchPlaylistItemsRequest {
+  ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
+  ObservePlaylistItems playlist_items = 2;
+}
+
+message WatchRoomMemberEventsRequest {
+  ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
+  ObserveRoomMemberEvents room_member_events = 2;
+}
+
+message WatchChatEventsRequest {
+  ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
+  ObserveChatEvents chat_events = 2;
+}
+
+message WatchChatPinEventsRequest {
+  ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
+  ObserveChatPinEvents chat_pin_events = 2;
+}
+
+message WatchPlaybackStateEvent {
+  oneof event {
+    ResourceObserved observed = 1;
+    ResourceEvent resource_event = 2;
+    ResourceObserveError error = 3;
+  }
+}
+
+message WatchPlaybackEvent {
+  oneof event {
+    ResourceObserved observed = 1;
+    ResourceEvent resource_event = 2;
+    ResourceObserveError error = 3;
+  }
+}
+
+message WatchRoomSettingsEvent {
+  oneof event {
+    ResourceObserved observed = 1;
+    ResourceEvent resource_event = 2;
+    ResourceObserveError error = 3;
+  }
+}
+
+message WatchPlaylistItemsEvent {
+  oneof event {
+    ResourceObserved observed = 1;
+    ResourceEvent resource_event = 2;
+    ResourceObserveError error = 3;
+  }
+}
+
+message WatchRoomMemberEventsEvent {
+  oneof event {
+    ResourceObserved observed = 1;
+    ResourceEvent resource_event = 2;
+    ResourceObserveError error = 3;
+  }
+}
+
+message WatchChatEventsEvent {
+  oneof event {
+    ResourceObserved observed = 1;
+    ResourceEvent resource_event = 2;
+    ResourceObserveError error = 3;
+  }
+}
+
+message WatchChatPinEventsEvent {
+  oneof event {
+    ResourceObserved observed = 1;
+    ResourceEvent resource_event = 2;
+    ResourceObserveError error = 3;
+  }
+}
+
+message ServerMessage {
+  oneof message {
+    HeartbeatAck heartbeat_ack = 6;
+    ErrorMessage error = 7;
+    // User notification push (replaces NOTIFICATION_PUSH error code abuse)
+    UserNotification notification = 24;
+    ResourceObserved resource_observed = 29;
+    ResourceEvent resource_event = 30;
+    ResourceObserveError resource_observe_error = 31;
+  }
+}
+
+message ResourceObserved {
+  string observe_id = 1;
+  bool changed = 3;
+  EventCursor event_cursor = 4;
+}
+
+message ResourceEventOnly {}
+
+message ResourceEvent {
+  string observe_id = 1;
+  oneof payload {
+    ResourceEventOnly changed_only = 3;
+    PlaybackState playback_state = 4;
+    Playback playback = 5;
+    GetRoomSettingsResponse room_settings = 6;
+    ListPlaylistItemsResponse playlist_items = 7;
+    RoomMemberEvent room_member_event = 8;
+    ChatMessageEvent chat_event = 9;
+    OnlineCount online_count = 10;
+    OnlineEvent online_event = 12;
+    WebRTCEvent webrtc_event = 13;
+    synctv.common.RoomMember self_room_member = 14;
+    ChatPinEvent chat_pin_event = 15;
+    ListPlaybackHistoryResponse playback_history = 16;
+  }
+  EventCursor event_cursor = 11;
+}
+
+message ResourceObserveError {
+  string observe_id = 1;
+  ErrorMessage error = 2;
+}
+
+// Note: room_id extracted from x-room-id metadata in MessageStream context.
+message ChatMessageSend {
+  string content = 1; // Validation: required, max 5000 chars, HTML tags stripped
+  string display_position = 2; // Optional chat presentation placement, e.g. "scroll", "top", "bottom".
+  string display_color = 3; // Optional chat presentation color, e.g. "#FFFFFF".
+  string client_message_id = 4; // Client-generated idempotency key for normal chat messages.
+  repeated ChatAttachmentReference attachments = 5;
+  string reply_to_message_id = 6;
+  ChatMetadata metadata = 7;
+  repeated ChatMentionInput mentions = 8;
+}
+
+message ChatMentionInput {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  int32 start = 2 [(buf.validate.field).int32.gte = 0];
+  int32 length = 3 [(buf.validate.field).int32.gt = 0];
+}
+
+message ChatMention {
+  string user_id = 1;
+  string username = 2;
+  int32 start = 3;
+  int32 length = 4;
+}
+
+message ChatMessageReceive {
+  string id = 1;
+  string room_id = 2;
+  string user_id = 3;
+  optional string username = 4;
+  string content = 5;
+  int64 timestamp = 6; // Unix timestamp (seconds)
+  string display_position = 7; // Optional chat presentation placement.
+  string display_color = 8; // Optional chat presentation color.
+  string client_message_id = 9;
+  ChatMessageStatus status = 10;
+  int64 version = 11;
+  int64 edited_at = 12;
+  int64 deleted_at = 13;
+  string reply_to_message_id = 14;
+  repeated ChatAttachment attachments = 15;
+  string deleted_by_user_id = 16;
+  string delete_reason = 17;
+  string playback_media_id = 18;
+  string playback_playlist_id = 19;
+  ProviderTarget playback_target = 20;
+  string playback_target_hash = 21;
+  optional double playback_position_seconds = 22;
+  repeated ChatReactionSummary reactions = 23;
+  int32 reaction_count = 24;
+  ChatMetadata metadata = 25;
+  repeated ChatMention mentions = 26;
+  optional ChatMessagePin pin = 27;
+  ChatMessageType message_type = 28;
+}
+
+message ChatMessagePin {
+  string pinned_by_user_id = 1;
+  string pinned_by_username = 2;
+  string note = 3;
+  int64 pinned_at = 4;
+}
+
+message ChatReactionSummary {
+  string key = 1;
+  int64 count = 2;
+  bool reacted_by_me = 3;
+}
+
+message ChatReactionUser {
+  string user_id = 1;
+  string username = 2;
+  int64 reacted_at = 3;
+}
+
+enum ChatMessageStatus {
+  CHAT_MESSAGE_STATUS_UNSPECIFIED = 0;
+  CHAT_MESSAGE_STATUS_ACTIVE = 1;
+  CHAT_MESSAGE_STATUS_EDITED = 2;
+  CHAT_MESSAGE_STATUS_DELETED = 3;
+}
+
+enum ChatMessageType {
+  CHAT_MESSAGE_TYPE_UNSPECIFIED = 0;
+  CHAT_MESSAGE_TYPE_USER = 1;
+  CHAT_MESSAGE_TYPE_SYSTEM_MEMBER_JOINED = 1001;
+  CHAT_MESSAGE_TYPE_SYSTEM_PLAYBACK_CHANGED = 1002;
+}
+
+enum ChatMessageEventKind {
+  CHAT_MESSAGE_EVENT_KIND_UNSPECIFIED = 0;
+  CHAT_MESSAGE_EVENT_KIND_CREATED = 1;
+  CHAT_MESSAGE_EVENT_KIND_EDITED = 2;
+  CHAT_MESSAGE_EVENT_KIND_DELETED = 3;
+  CHAT_MESSAGE_EVENT_KIND_REACTIONS_CHANGED = 4;
+}
+
+enum ChatPinEventKind {
+  CHAT_PIN_EVENT_KIND_UNSPECIFIED = 0;
+  CHAT_PIN_EVENT_KIND_PINNED = 1;
+  CHAT_PIN_EVENT_KIND_UNPINNED = 2;
+  CHAT_PIN_EVENT_KIND_MESSAGE_UPDATED = 3;
+  CHAT_PIN_EVENT_KIND_MESSAGE_DELETED = 4;
+}
+
+enum RoomMemberEventKind {
+  ROOM_MEMBER_EVENT_KIND_UNSPECIFIED = 0;
+  ROOM_MEMBER_EVENT_KIND_JOINED = 1;
+  ROOM_MEMBER_EVENT_KIND_LEFT = 2;
+  ROOM_MEMBER_EVENT_KIND_PERMISSION_CHANGED = 3;
+  ROOM_MEMBER_EVENT_KIND_KICKED = 4;
+}
+
+enum ChatAttachmentKind {
+  CHAT_ATTACHMENT_KIND_UNSPECIFIED = 0;
+  CHAT_ATTACHMENT_KIND_FILE = 1;
+  CHAT_ATTACHMENT_KIND_IMAGE = 2;
+  CHAT_ATTACHMENT_KIND_AUDIO = 3;
+}
+
+enum ChatAttachmentReferenceKind {
+  CHAT_ATTACHMENT_REFERENCE_KIND_UNSPECIFIED = 0;
+  CHAT_ATTACHMENT_REFERENCE_KIND_UPLOAD = 1;
+  CHAT_ATTACHMENT_REFERENCE_KIND_REUSE = 2;
+}
+
+enum FileObjectAccessKind {
+  FILE_OBJECT_ACCESS_KIND_UNSPECIFIED = 0;
+  FILE_OBJECT_ACCESS_KIND_CHAT_ATTACHMENT = 1;
+  FILE_OBJECT_ACCESS_KIND_USER_AVATAR = 2;
+  FILE_OBJECT_ACCESS_KIND_MEDIA_COVER = 3;
+  FILE_OBJECT_ACCESS_KIND_ROOM_COVER = 4;
+  FILE_OBJECT_ACCESS_KIND_PLAYLIST_COVER = 5;
+  FILE_OBJECT_ACCESS_KIND_GENERIC = 6;
+  FILE_OBJECT_ACCESS_KIND_MEDIA_THUMBNAIL = 7;
+}
+
+message FileObjectAccess {
+  FileObjectAccessKind object_kind = 1;
+  string encoded_object_key = 2;
+  string read_token = 3;
+}
+
+message ChatAttachment {
+  string id = 1;
+  string url = 2;
+  string mime_type = 3;
+  int64 size_bytes = 4;
+  int32 width = 5;
+  int32 height = 6;
+  FileMetadata metadata = 7;
+  string filename = 8;
+  ChatAttachmentKind kind = 9;
+  string reuse_token = 10;
+  optional int64 reuse_expires_at = 11;
+  repeated FileObjectVariant variants = 12;
+  FileObjectAccess object_access = 13;
+}
+
+message FileObjectVariant {
+  string key = 1;
+  string label = 2;
+  string url = 3;
+  string mime_type = 4;
+  int64 size_bytes = 5;
+  int32 width = 6;
+  int32 height = 7;
+  bool is_original = 8;
+  bool lossy = 9;
+  optional int32 quality = 10;
+  FileMetadata metadata = 11;
+  FileObjectAccess object_access = 12;
+}
+
+message ChatAttachmentReference {
+  string id = 1;
+  ChatAttachmentReferenceKind kind = 2;
+}
+
+message CreateChatAttachmentUploadSessionRequest {
+  string client_attachment_id = 1;
+  string mime_type = 2;
+  int64 size_bytes = 3;
+  int32 width = 4;
+  int32 height = 5;
+  repeated FileUploadManifestPart parts = 6;
+  FileMetadata metadata = 7;
+  string filename = 8;
+  int32 duration_seconds = 9;
+  int32 bitrate_bps = 10;
+}
+
+message FileUploadManifestPart {
+  int32 part_number = 1;
+  int64 offset_bytes = 2;
+  int64 size_bytes = 3;
+  string checksum_sha256 = 4;
+}
+
+message FileUploadPlanPart {
+  int32 part_number = 1;
+  int64 offset_bytes = 2;
+  int64 size_bytes = 3;
+}
+
+message FileUploadPlan {
+  string checksum_algorithm = 1;
+  int64 part_size_bytes = 2;
+  repeated FileUploadPlanPart parts = 3;
+}
+
+message FileUploadPartUrl {
+  int32 part_number = 1;
+  int64 offset_bytes = 2;
+  int64 size_bytes = 3;
+  string upload_url = 4;
+  string upload_method = 5;
+  map<string, string> upload_headers = 6;
+  optional int64 expires_at = 7;
+}
+
+message CompleteFileUploadPart {
+  int32 part_number = 1;
+  string etag = 2;
+  int64 size_bytes = 3;
+  string checksum_sha256 = 4;
+}
+
+message FileUploadReference {
+  string id = 1;
+}
+
+message ChatAttachmentUploadSession {
+  ChatAttachmentReference attachment_reference = 1;
+  bool upload_required = 2;
+  optional string upload_url = 3;
+  optional string upload_method = 4;
+  map<string, string> upload_headers = 5;
+  optional int64 expires_at = 6;
+  int64 max_size_bytes = 7;
+  bool ownership_proof_required = 8;
+  optional string ownership_proof_nonce = 9;
+  repeated ChatAttachmentOwnershipProofRange ownership_proof_ranges = 10;
+  bool resumable = 12;
+  int64 part_size_bytes = 13;
+  int64 uploaded_size_bytes = 14;
+  repeated int32 uploaded_parts = 15;
+  optional string upload_id = 16;
+  repeated FileUploadPartUrl part_urls = 17;
+  string upload_token = 18;
+  string encoded_object_key = 19;
+  FileObjectAccess upload_object_access = 20;
+}
+
+message ChatAttachmentOwnershipProofRange {
+  int64 offset = 1;
+  int32 length = 2;
+}
+
+message CreateChatAttachmentUploadSessionResponse {
+  oneof result {
+    FileUploadPlan plan = 1;
+    ChatAttachmentUploadSession session = 2;
+  }
+}
+
+message FileUploadRange {
+  int64 start = 1;
+  int64 end_inclusive = 2;
+  int64 total_size = 3;
+}
+
+message FileByteRange {
+  uint64 start = 1;
+  uint64 end_inclusive = 2;
+}
+
+message FileRangeRequest {
+  oneof range {
+    FileByteRange exact = 1;
+    uint64 from_start = 2;
+    uint64 suffix_length = 3;
+  }
+}
+
+message UploadChatAttachmentObjectRequest {
+  string room_id = 1;
+  string encoded_object_key = 2;
+  string token = 3;
+  optional string content_type = 4;
+  bytes data = 5;
+  optional FileUploadRange content_range = 6;
+}
+
+message GetChatAttachmentObjectRequest {
+  string room_id = 1;
+  string encoded_object_key = 2;
+  string token = 3;
+  optional FileRangeRequest range = 4;
+}
+
+message ChatAttachmentObjectResponse {
+  string room_id = 1;
+  string mime_type = 2;
+  string content_manifest_sha256 = 3;
+  bytes data = 4;
+  optional FileByteRange content_range = 5;
+  int64 total_size_bytes = 6;
+}
+
+message UploadChatAttachmentObjectResponse {
+  ChatAttachmentObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message CompleteChatAttachmentUploadSessionRequest {
+  string room_id = 1;
+  string encoded_object_key = 2;
+  string token = 3;
+  optional string upload_id = 4;
+  repeated CompleteFileUploadPart parts = 5;
+  string file_id = 6;
+  string ownership_proof = 7;
+}
+
+message CompleteChatAttachmentUploadSessionResponse {
+  ChatAttachmentObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message UserAvatar {
+  string id = 1;
+  string url = 2;
+  string mime_type = 3;
+  int64 size_bytes = 4;
+  int32 width = 5;
+  int32 height = 6;
+  FileMetadata metadata = 7;
+  repeated FileObjectVariant variants = 8;
+  FileObjectAccess object_access = 9;
+}
+
+message CreateUserAvatarUploadSessionRequest {
+  string client_avatar_id = 1;
+  string mime_type = 2;
+  int64 size_bytes = 3;
+  int32 width = 4;
+  int32 height = 5;
+  repeated FileUploadManifestPart parts = 6;
+  FileMetadata metadata = 7;
+  int32 duration_seconds = 8;
+  int32 bitrate_bps = 9;
+}
+
+message UserAvatarUploadSession {
+  FileUploadReference avatar_reference = 1;
+  bool upload_required = 2;
+  optional string upload_url = 3;
+  optional string upload_method = 4;
+  map<string, string> upload_headers = 5;
+  optional int64 expires_at = 6;
+  int64 max_size_bytes = 7;
+  bool ownership_proof_required = 8;
+  optional string ownership_proof_nonce = 9;
+  repeated UserAvatarOwnershipProofRange ownership_proof_ranges = 10;
+  bool resumable = 12;
+  int64 part_size_bytes = 13;
+  int64 uploaded_size_bytes = 14;
+  repeated int32 uploaded_parts = 15;
+  optional string upload_id = 16;
+  repeated FileUploadPartUrl part_urls = 17;
+  string upload_token = 18;
+  string encoded_object_key = 19;
+  FileObjectAccess upload_object_access = 20;
+}
+
+message UserAvatarOwnershipProofRange {
+  int64 offset = 1;
+  int32 length = 2;
+}
+
+message CreateUserAvatarUploadSessionResponse {
+  oneof result {
+    FileUploadPlan plan = 1;
+    UserAvatarUploadSession session = 2;
+  }
+}
+
+message UploadUserAvatarObjectRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional string content_type = 3;
+  bytes data = 4;
+  optional FileUploadRange content_range = 5;
+}
+
+message GetUserAvatarObjectRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional FileRangeRequest range = 3;
+}
+
+message UserAvatarObjectResponse {
+  string mime_type = 1;
+  string content_manifest_sha256 = 2;
+  bytes data = 3;
+  optional FileByteRange content_range = 4;
+  int64 total_size_bytes = 5;
+}
+
+message UploadUserAvatarObjectResponse {
+  UserAvatarObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message CompleteUserAvatarUploadSessionRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional string upload_id = 3;
+  repeated CompleteFileUploadPart parts = 4;
+  string file_id = 5;
+  string ownership_proof = 6;
+}
+
+message CompleteUserAvatarUploadSessionResponse {
+  UserAvatarObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message UpdateUserAvatarRequest {
+  FileUploadReference avatar_reference = 1;
+}
+
+message ClearUserAvatarRequest {}
+
+message FileCover {
+  string id = 1;
+  string url = 2;
+  string mime_type = 3;
+  int64 size_bytes = 4;
+  int32 width = 5;
+  int32 height = 6;
+  FileMetadata metadata = 7;
+  repeated FileObjectVariant variants = 8;
+  FileObjectAccess object_access = 9;
+}
+
+message MediaCover {
+  string id = 1;
+  string url = 2;
+  string mime_type = 3;
+  int64 size_bytes = 4;
+  int32 width = 5;
+  int32 height = 6;
+  FileMetadata metadata = 7;
+  repeated FileObjectVariant variants = 8;
+  FileObjectAccess object_access = 9;
+}
+
+message MediaThumbnail {
+  string id = 1;
+  string url = 2;
+  string mime_type = 3;
+  int64 size_bytes = 4;
+  int32 width = 5;
+  int32 height = 6;
+  FileMetadata metadata = 7;
+  repeated FileObjectVariant variants = 8;
+  FileObjectAccess object_access = 9;
+}
+
+message CreateMediaCoverUploadSessionRequest {
+  string room_id = 1;
+  string media_id = 2 [(buf.validate.field).string.min_len = 1];
+  string client_cover_id = 3;
+  string mime_type = 4;
+  int64 size_bytes = 5;
+  int32 width = 6;
+  int32 height = 7;
+  repeated FileUploadManifestPart parts = 8;
+  FileMetadata metadata = 9;
+  int32 duration_seconds = 10;
+  int32 bitrate_bps = 11;
+}
+
+message MediaCoverUploadSession {
+  FileUploadReference cover_reference = 1;
+  bool upload_required = 2;
+  optional string upload_url = 3;
+  optional string upload_method = 4;
+  map<string, string> upload_headers = 5;
+  optional int64 expires_at = 6;
+  int64 max_size_bytes = 7;
+  bool ownership_proof_required = 8;
+  optional string ownership_proof_nonce = 9;
+  repeated MediaCoverOwnershipProofRange ownership_proof_ranges = 10;
+  bool resumable = 12;
+  int64 part_size_bytes = 13;
+  int64 uploaded_size_bytes = 14;
+  repeated int32 uploaded_parts = 15;
+  optional string upload_id = 16;
+  repeated FileUploadPartUrl part_urls = 17;
+  string upload_token = 18;
+  string encoded_object_key = 19;
+  FileObjectAccess upload_object_access = 20;
+}
+
+message MediaCoverOwnershipProofRange {
+  int64 offset = 1;
+  int32 length = 2;
+}
+
+message CreateMediaCoverUploadSessionResponse {
+  oneof result {
+    FileUploadPlan plan = 1;
+    MediaCoverUploadSession session = 2;
+  }
+}
+
+message UploadMediaCoverObjectRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional string content_type = 3;
+  bytes data = 4;
+  optional FileUploadRange content_range = 5;
+}
+
+message GetMediaCoverObjectRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional FileRangeRequest range = 3;
+}
+
+message MediaCoverObjectResponse {
+  string mime_type = 1;
+  string content_manifest_sha256 = 2;
+  bytes data = 3;
+  optional FileByteRange content_range = 4;
+  int64 total_size_bytes = 5;
+}
+
+message UploadMediaCoverObjectResponse {
+  MediaCoverObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message CompleteMediaCoverUploadSessionRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional string upload_id = 3;
+  repeated CompleteFileUploadPart parts = 4;
+  string file_id = 5;
+  string ownership_proof = 6;
+}
+
+message CompleteMediaCoverUploadSessionResponse {
+  MediaCoverObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message UpdateMediaCoverRequest {
+  string room_id = 1;
+  string media_id = 2 [(buf.validate.field).string.min_len = 1];
+  FileUploadReference cover_reference = 3;
+}
+
+message ClearMediaCoverRequest {
+  string room_id = 1;
+  string media_id = 2 [(buf.validate.field).string.min_len = 1];
+}
+
+message CreateMediaThumbnailUploadSessionRequest {
+  string room_id = 1;
+  string media_id = 2 [(buf.validate.field).string.min_len = 1];
+  string client_thumbnail_id = 3;
+  string mime_type = 4;
+  int64 size_bytes = 5;
+  int32 width = 6;
+  int32 height = 7;
+  repeated FileUploadManifestPart parts = 8;
+  FileMetadata metadata = 9;
+  int32 duration_seconds = 10;
+  int32 bitrate_bps = 11;
+}
+
+message MediaThumbnailUploadSession {
+  FileUploadReference thumbnail_reference = 1;
+  bool upload_required = 2;
+  optional string upload_url = 3;
+  optional string upload_method = 4;
+  map<string, string> upload_headers = 5;
+  optional int64 expires_at = 6;
+  int64 max_size_bytes = 7;
+  bool ownership_proof_required = 8;
+  optional string ownership_proof_nonce = 9;
+  repeated MediaCoverOwnershipProofRange ownership_proof_ranges = 10;
+  bool resumable = 12;
+  int64 part_size_bytes = 13;
+  int64 uploaded_size_bytes = 14;
+  repeated int32 uploaded_parts = 15;
+  optional string upload_id = 16;
+  repeated FileUploadPartUrl part_urls = 17;
+  string upload_token = 18;
+  string encoded_object_key = 19;
+  FileObjectAccess upload_object_access = 20;
+}
+
+message CreateMediaThumbnailUploadSessionResponse {
+  oneof result {
+    FileUploadPlan plan = 1;
+    MediaThumbnailUploadSession session = 2;
+  }
+}
+
+message UploadMediaThumbnailObjectRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional string content_type = 3;
+  bytes data = 4;
+  optional FileUploadRange content_range = 5;
+}
+
+message GetMediaThumbnailObjectRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional FileRangeRequest range = 3;
+}
+
+message MediaThumbnailObjectResponse {
+  string mime_type = 1;
+  string content_manifest_sha256 = 2;
+  bytes data = 3;
+  optional FileByteRange content_range = 4;
+  int64 total_size_bytes = 5;
+}
+
+message UploadMediaThumbnailObjectResponse {
+  MediaThumbnailObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message CompleteMediaThumbnailUploadSessionRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional string upload_id = 3;
+  repeated CompleteFileUploadPart parts = 4;
+  string file_id = 5;
+  string ownership_proof = 6;
+}
+
+message CompleteMediaThumbnailUploadSessionResponse {
+  MediaThumbnailObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message UpdateMediaThumbnailRequest {
+  string room_id = 1;
+  string media_id = 2 [(buf.validate.field).string.min_len = 1];
+  FileUploadReference thumbnail_reference = 3;
+}
+
+message ClearMediaThumbnailRequest {
+  string room_id = 1;
+  string media_id = 2 [(buf.validate.field).string.min_len = 1];
+}
+
+message CreateRoomCoverUploadSessionRequest {
+  string room_id = 1;
+  string client_cover_id = 2;
+  string mime_type = 3;
+  int64 size_bytes = 4;
+  int32 width = 5;
+  int32 height = 6;
+  repeated FileUploadManifestPart parts = 7;
+  FileMetadata metadata = 8;
+  int32 duration_seconds = 9;
+  int32 bitrate_bps = 10;
+}
+
+message RoomCoverUploadSession {
+  FileUploadReference cover_reference = 1;
+  bool upload_required = 2;
+  optional string upload_url = 3;
+  optional string upload_method = 4;
+  map<string, string> upload_headers = 5;
+  optional int64 expires_at = 6;
+  int64 max_size_bytes = 7;
+  bool ownership_proof_required = 8;
+  optional string ownership_proof_nonce = 9;
+  repeated FileOwnershipProofRange ownership_proof_ranges = 10;
+  bool resumable = 12;
+  int64 part_size_bytes = 13;
+  int64 uploaded_size_bytes = 14;
+  repeated int32 uploaded_parts = 15;
+  optional string upload_id = 16;
+  repeated FileUploadPartUrl part_urls = 17;
+  string upload_token = 18;
+  string encoded_object_key = 19;
+  FileObjectAccess upload_object_access = 20;
+}
+
+message CreateRoomCoverUploadSessionResponse {
+  oneof result {
+    FileUploadPlan plan = 1;
+    RoomCoverUploadSession session = 2;
+  }
+}
+
+message UploadRoomCoverObjectRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional string content_type = 3;
+  bytes data = 4;
+  optional FileUploadRange content_range = 5;
+}
+
+message GetRoomCoverObjectRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional FileRangeRequest range = 3;
+}
+
+message RoomCoverObjectResponse {
+  string mime_type = 1;
+  string content_manifest_sha256 = 2;
+  bytes data = 3;
+  optional FileByteRange content_range = 4;
+  int64 total_size_bytes = 5;
+}
+
+message UploadRoomCoverObjectResponse {
+  RoomCoverObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message CompleteRoomCoverUploadSessionRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional string upload_id = 3;
+  repeated CompleteFileUploadPart parts = 4;
+  string file_id = 5;
+  string ownership_proof = 6;
+}
+
+message CompleteRoomCoverUploadSessionResponse {
+  RoomCoverObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message UpdateRoomCoverRequest {
+  string room_id = 1;
+  FileUploadReference cover_reference = 2;
+}
+
+message ClearRoomCoverRequest {
+  string room_id = 1;
+}
+
+message CreatePlaylistCoverUploadSessionRequest {
+  string room_id = 1;
+  string playlist_id = 2 [(buf.validate.field).string.min_len = 1];
+  string client_cover_id = 3;
+  string mime_type = 4;
+  int64 size_bytes = 5;
+  int32 width = 6;
+  int32 height = 7;
+  repeated FileUploadManifestPart parts = 8;
+  FileMetadata metadata = 9;
+  int32 duration_seconds = 10;
+  int32 bitrate_bps = 11;
+}
+
+message PlaylistCoverUploadSession {
+  FileUploadReference cover_reference = 1;
+  bool upload_required = 2;
+  optional string upload_url = 3;
+  optional string upload_method = 4;
+  map<string, string> upload_headers = 5;
+  optional int64 expires_at = 6;
+  int64 max_size_bytes = 7;
+  bool ownership_proof_required = 8;
+  optional string ownership_proof_nonce = 9;
+  repeated FileOwnershipProofRange ownership_proof_ranges = 10;
+  bool resumable = 12;
+  int64 part_size_bytes = 13;
+  int64 uploaded_size_bytes = 14;
+  repeated int32 uploaded_parts = 15;
+  optional string upload_id = 16;
+  repeated FileUploadPartUrl part_urls = 17;
+  string upload_token = 18;
+  string encoded_object_key = 19;
+  FileObjectAccess upload_object_access = 20;
+}
+
+message CreatePlaylistCoverUploadSessionResponse {
+  oneof result {
+    FileUploadPlan plan = 1;
+    PlaylistCoverUploadSession session = 2;
+  }
+}
+
+message UploadPlaylistCoverObjectRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional string content_type = 3;
+  bytes data = 4;
+  optional FileUploadRange content_range = 5;
+}
+
+message GetPlaylistCoverObjectRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional FileRangeRequest range = 3;
+}
+
+message PlaylistCoverObjectResponse {
+  string mime_type = 1;
+  string content_manifest_sha256 = 2;
+  bytes data = 3;
+  optional FileByteRange content_range = 4;
+  int64 total_size_bytes = 5;
+}
+
+message UploadPlaylistCoverObjectResponse {
+  PlaylistCoverObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message CompletePlaylistCoverUploadSessionRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional string upload_id = 3;
+  repeated CompleteFileUploadPart parts = 4;
+  string file_id = 5;
+  string ownership_proof = 6;
+}
+
+message CompletePlaylistCoverUploadSessionResponse {
+  PlaylistCoverObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message UpdatePlaylistCoverRequest {
+  string room_id = 1;
+  string playlist_id = 2 [(buf.validate.field).string.min_len = 1];
+  FileUploadReference cover_reference = 3;
+}
+
+message ClearPlaylistCoverRequest {
+  string room_id = 1;
+  string playlist_id = 2 [(buf.validate.field).string.min_len = 1];
+}
+
+message FileOwnershipProofRange {
+  int64 offset = 1;
+  int32 length = 2;
+}
+
+message ChatMessageEvent {
+  string event_id = 1;
+  string room_id = 2;
+  ChatMessageEventKind kind = 3;
+  ChatMessageReceive message = 4;
+  int64 occurred_at = 5;
+  int64 sequence = 6;
+}
+
+message ChatPinEvent {
+  string event_id = 1;
+  string room_id = 2;
+  ChatPinEventKind kind = 3;
+  ChatMessageReceive message = 4;
+  ChatMessagePin pin = 5;
+  int64 occurred_at = 6;
+  int64 sequence = 7;
+}
+
+message RoomMemberEvent {
+  string event_id = 1;
+  string room_id = 2;
+  RoomMemberEventKind kind = 3;
+  synctv.common.RoomMember member = 4;
+  string user_id = 5;
+  string guest_id = 6;
+  string username = 7;
+  string actor_user_id = 8;
+  string reason = 9;
+  int64 occurred_at = 10;
+  int64 sequence = 11;
+  string remark_name = 12;
+  string display_tag = 13;
+}
+
+message HeartbeatMessage {
+  int64 timestamp = 1; // Unix timestamp (milliseconds)
+}
+
+message HeartbeatAck {
+  int64 timestamp = 1; // Unix timestamp (milliseconds)
+}
+
+message OnlineCount {
+  int32 count = 1;
+}
+
+enum OnlineEventKind {
+  ONLINE_EVENT_KIND_UNSPECIFIED = 0;
+  ONLINE_EVENT_KIND_JOINED = 1;
+  ONLINE_EVENT_KIND_LEFT = 2;
+}
+
+message OnlineEvent {
+  string event_id = 1;
+  string room_id = 2;
+  string user_id = 3;
+  string username = 4;
+  common.RoomMemberRole role = 5 [(buf.validate.field).enum.defined_only = true];
+  OnlineEventKind kind = 6 [(buf.validate.field).enum.defined_only = true];
+  int64 occurred_at = 7;
+}
+
+message ErrorMessage {
+  string message = 1;
+  int32 code = 2; // Application-level error code for programmatic handling
+  string detail = 3; // Optional detailed/debug info (may be empty in production)
+  string client_operation_id = 4; // Optional operation associated with this error.
+}
+
+// User Notification
+// Push notification delivered to user's WebSocket connection.
+//
+// Clients handle this ServerMessage variant separately from errors.
+//
+// The notification is pushed in real-time when a database-backed notification is
+// created via UserNotificationService. The notification_id allows clients to
+// deduplicate notifications if they receive them multiple times (e.g., during
+// reconnection).
+//
+message UserNotification {
+  string notification_id = 1; // Unique notification ID (UUID string) for client-side deduplication
+  NotificationType notification_type = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  string title = 3; // Notification title for display
+  string content = 4; // Notification content for display
+  NotificationData data = 5;
+  int64 timestamp = 6; // Unix timestamp (seconds) when notification was created
+}
+
+// Chat History
+// Note: room_id extracted from x-room-id metadata
+message SendChatMessageRequest {
+  string content = 1;
+  string client_message_id = 2;
+  repeated ChatAttachmentReference attachments = 3;
+  string reply_to_message_id = 4;
+  ChatMetadata metadata = 5;
+  string display_position = 6;
+  string display_color = 7;
+  repeated ChatMentionInput mentions = 8;
+}
+
+message EditChatMessageRequest {
+  string message_id = 1;
+  string content = 2;
+  int64 expected_version = 3;
+  ChatMetadata metadata = 4;
+  string client_operation_id = 5; // Client-generated idempotency key for edit operations.
+}
+
+message DeleteChatMessageRequest {
+  string message_id = 1;
+  int64 expected_version = 2;
+  string reason = 3;
+  string client_operation_id = 4; // Client-generated idempotency key for delete operations.
+}
+
+message ChatPinnedMessage {
+  ChatMessageReceive message = 1;
+  string pinned_by_user_id = 2;
+  string pinned_by_username = 3;
+  string note = 4;
+  int64 pinned_at = 5;
+}
+
+message ListPinnedChatMessagesRequest {
+  option (buf.validate.message).cel = {
+    id: "list_pinned_chat_messages.limit"
+    message: "limit must be 0 (use default) or between 1 and 100"
+    expression: "this.limit == 0 || (this.limit >= 1 && this.limit <= 100)"
+  };
+  int32 limit = 1;
+}
+
+message ListPinnedChatMessagesResponse {
+  repeated ChatPinnedMessage messages = 1;
+}
+
+message PinChatMessageRequest {
+  string message_id = 1;
+  string note = 2 [(buf.validate.field).string.max_len = 500];
+  string client_operation_id = 3;
+}
+
+message UnpinChatMessageRequest {
+  string message_id = 1;
+  string client_operation_id = 2;
+}
+
+message SetChatReactionRequest {
+  string message_id = 1;
+  string reaction_key = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+  bool enabled = 3;
+}
+
+message ReportRoomTarget {
+  string room_id = 1;
+}
+
+message ReportUserTarget {
+  string user_id = 1;
+}
+
+message ReportRoomMemberTarget {
+  string room_id = 1;
+  string user_id = 2;
+}
+
+message ReportChatMessageTarget {
+  string room_id = 1;
+  string message_id = 2;
+}
+
+message ReportContentRequest {
+  oneof target {
+    ReportRoomTarget room = 1;
+    ReportUserTarget user = 2;
+    ReportRoomMemberTarget room_member = 3;
+    ReportChatMessageTarget chat_message = 4;
+  }
+  string reason_code = 5 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+  string reason = 6 [(buf.validate.field).string.max_len = 2000];
+  ContentReportMetadata metadata = 7;
+}
+
+message ReportContentResponse {
+  string report_id = 1;
+  int64 created_at = 2;
+}
+
+message ListRoomContentReportsRequest {
+  option (buf.validate.message).cel = {
+    id: "room.list_content_reports.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "room.list_content_reports.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+  int32 page = 1;
+  int32 page_size = 2;
+  ContentReportStatus status = 3 [(buf.validate.field).enum.defined_only = true];
+  ContentReportTargetType target_type = 4 [(buf.validate.field).enum.defined_only = true];
+  string target_member_user_id = 5 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^usr_[A-Za-z0-9]+$"
+  }];
+  int64 target_chat_message_id = 6 [(buf.validate.field).int64.gte = 0];
+  string search = 7 [(buf.validate.field).string.max_len = 120];
+}
+
+message ListRoomContentReportsResponse {
+  repeated ContentReport reports = 1;
+  int32 total = 2;
+}
+
+message GetRoomContentReportRequest {
+  string report_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^report_[A-Za-z0-9]+$"
+  }];
+}
+
+message UpdateRoomContentReportStatusRequest {
+  string report_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^report_[A-Za-z0-9]+$"
+  }];
+  ContentReportStatus status = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  string resolution_note = 3 [(buf.validate.field).string.max_len = 2000];
+}
+
+message UpdateRoomContentReportStatusResponse {
+  ContentReport report = 1;
+  bool success = 2;
+}
+
+enum ContentReportTargetType {
+  CONTENT_REPORT_TARGET_TYPE_UNSPECIFIED = 0;
+  CONTENT_REPORT_TARGET_TYPE_ROOM = 1;
+  CONTENT_REPORT_TARGET_TYPE_USER = 2;
+  CONTENT_REPORT_TARGET_TYPE_ROOM_MEMBER = 3;
+  CONTENT_REPORT_TARGET_TYPE_CHAT_MESSAGE = 4;
+}
+
+enum ContentReportStatus {
+  CONTENT_REPORT_STATUS_UNSPECIFIED = 0;
+  CONTENT_REPORT_STATUS_OPEN = 1;
+  CONTENT_REPORT_STATUS_REVIEWING = 2;
+  CONTENT_REPORT_STATUS_RESOLVED = 3;
+  CONTENT_REPORT_STATUS_DISMISSED = 4;
+}
+
+message ContentReport {
+  string id = 1;
+  string reporter_user_id = 2;
+  string reporter_username = 3;
+  string room_id = 4;
+  string room_name = 5;
+  ContentReportTargetType target_type = 6;
+  string target_room_id = 7;
+  string target_room_name = 8;
+  string target_user_id = 9;
+  string target_username = 10;
+  string target_member_room_id = 11;
+  string target_member_room_name = 12;
+  string target_member_user_id = 13;
+  string target_member_username = 14;
+  int64 target_chat_message_id = 15;
+  int64 target_chat_message_created_at = 16;
+  string target_chat_message_preview = 17;
+  string reason_code = 18;
+  string reason = 19;
+  ContentReportMetadata metadata = 20;
+  ContentReportStatus status = 21;
+  string reviewed_by = 22;
+  string reviewed_by_username = 23;
+  int64 reviewed_at = 24;
+  string resolution_note = 25;
+  int64 created_at = 26;
+  int64 updated_at = 27;
+}
+
+message ListChatReactionUsersRequest {
+  option (buf.validate.message).cel = {
+    id: "list_chat_reaction_users.limit"
+    message: "limit must be 0 (use default) or between 1 and 100"
+    expression: "this.limit == 0 || (this.limit >= 1 && this.limit <= 100)"
+  };
+
+  string message_id = 1;
+  string reaction_key = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+  int32 limit = 3;
+  string cursor = 4;
+}
+
+message ListChatReactionUsersResponse {
+  repeated ChatReactionUser users = 1;
+  string next_cursor = 2;
+  int64 total = 3;
+}
+
+message ChatMessageEventResponse {
+  ChatMessageEvent event = 1;
+}
+
+message ChatPinEventResponse {
+  ChatPinEvent event = 1;
+}
+
+message GetChatHistoryRequest {
+  option (buf.validate.message).cel = {
+    id: "get_chat_history.limit"
+    message: "limit must be 0 (use default) or between 1 and 100"
+    expression: "this.limit == 0 || (this.limit >= 1 && this.limit <= 100)"
+  };
+  int32 limit = 1; // Max page size (clamped to 100 server-side). Default: 50.
+  string cursor = 2; // Opaque keyset cursor returned by the server as "<rfc3339_created_at>|<message_id>".
+  // Empty uses the default user-visible set: USER.
+  // Include system message types explicitly when they should appear in history and cursors.
+  repeated ChatMessageType include_message_types = 3 [(buf.validate.field).repeated.items.enum.defined_only = true];
+}
+
+message GetChatHistoryResponse {
+  repeated ChatMessageReceive messages = 1;
+  string next_cursor = 2; // Pass this as cursor in the next request. Empty when no more messages.
+  EventCursor event_cursor = 3; // Chat event watermark captured before the page read; observe chat events after this cursor to avoid gaps.
+}
+
+message SearchChatMessagesRequest {
+  option (buf.validate.message).cel = {
+    id: "search_chat_messages.query"
+    message: "query must be between 2 and 120 characters"
+    expression: "size(this.query) >= 2 && size(this.query) <= 120"
+  };
+  option (buf.validate.message).cel = {
+    id: "search_chat_messages.limit"
+    message: "limit must be 0 (use default) or between 1 and 100"
+    expression: "this.limit == 0 || (this.limit >= 1 && this.limit <= 100)"
+  };
+  string query = 1 [(buf.validate.field).string.max_len = 120];
+  string cursor = 2; // Opaque keyset cursor returned by the server as "<rfc3339_created_at>|<message_id>".
+  int32 limit = 3; // Max page size (clamped to 100 server-side). Default: 50.
+  bool include_deleted = 4;
+  string user_id = 5 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^usr_[A-Za-z0-9]+$"
+  }];
+}
+
+message SearchChatMessagesResponse {
+  repeated ChatMessageReceive messages = 1;
+  string next_cursor = 2;
+  EventCursor event_cursor = 3;
+}
+
+message EventCursor {
+  optional string event_id = 1;
+  int64 sequence = 2;
+}
+
+message GetChatMessageRequest {
+  string message_id = 1;
+  bool include_deleted = 2;
+}
+
+message GetChatMessageContextRequest {
+  string message_id = 1;
+  int32 before_limit = 2;
+  int32 after_limit = 3;
+  bool include_deleted = 4;
+}
+
+message GetChatMessageContextResponse {
+  repeated ChatMessageReceive before = 1; // Chronological messages before anchor.
+  ChatMessageReceive message = 2;
+  repeated ChatMessageReceive after = 3; // Chronological messages after anchor.
+}
+
+message GetChatPlaybackMessagesRequest {
+  string playback_media_id = 1;
+  string playback_playlist_id = 2;
+  ProviderTarget playback_target = 3;
+  double position_seconds = 4;
+  double before_seconds = 5;
+  double after_seconds = 6;
+  int32 limit = 7;
+  bool include_deleted = 8;
+  repeated ChatMessageType include_message_types = 9 [(buf.validate.field).repeated.items.enum.defined_only = true];
+}
+
+message GetChatPlaybackMessagesResponse {
+  repeated ChatMessageReceive messages = 1;
+}
+
+message ChatReadState {
+  string room_id = 1;
+  string user_id = 2;
+  string last_read_message_id = 3;
+  string last_read_event_id = 4;
+  int64 last_read_event_sequence = 5;
+  int64 updated_at = 6;
+}
+
+message MarkChatReadRequest {
+  string message_id = 1;
+}
+
+message GetChatReadStateRequest {}
+
+message ChatReadStateResponse {
+  ChatReadState state = 1;
+  int64 unread_count = 2;
+}
+
+message ChatMessageReadReceiptUser {
+  UserPublicView user = 1;
+  int64 read_at = 2;
+}
+
+message ChatMessageUnreadMember {
+  UserPublicView user = 1;
+}
+
+message GetChatMessageReadReceiptsRequest {
+  string message_id = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message GetChatMessageReadReceiptsResponse {
+  repeated ChatMessageReadReceiptUser readers = 1;
+  repeated ChatMessageUnreadMember unread_members = 2;
+  int64 reader_total = 3;
+  int64 unread_total = 4;
+}
+
+// User Profile Management
+message LogoutRequest {}
+
+message LogoutResponse {
+  bool success = 1;
+  // Non-empty when logout succeeded but token invalidation may be delayed
+  string message = 2;
+}
+
+message SetUsernameRequest {
+  string new_username = 1 [(buf.validate.field).string = {
+    min_len: 3
+    max_len: 32
+    pattern: "^[\\p{L}\\p{N}_-]+$"
+  }];
+}
+
+message StartEmailBindRequest {
+  string email = 1 [(buf.validate.field).string = {
+    min_len: 3
+    max_len: 254
+    email: true
+  }];
+}
+
+message StartEmailBindResponse {
+  string masked_email = 1;
+}
+
+message ConfirmEmailBindRequest {
+  string email = 1 [(buf.validate.field).string = {
+    min_len: 3
+    max_len: 254
+    email: true
+  }];
+  string token = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
+  string verification_id = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message UnbindEmailRequest {
+  string verification_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message ListMyRoomsRequest {
+  option (buf.validate.message).cel = {
+    id: "list_my_rooms.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "list_my_rooms.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+
+  int32 page = 1;
+  int32 page_size = 2;
+  string search = 3 [(buf.validate.field).string = {max_len: 100}];
+  synctv.common.RoomStatus status = 4 [(buf.validate.field).enum.defined_only = true];
+  optional bool is_banned = 5;
+  MyRoomRelation relation = 6 [(buf.validate.field).enum.defined_only = true];
+  MyRoomListSortBy sort_by = 7 [(buf.validate.field).enum.defined_only = true];
+  SortDirection sort_direction = 8 [(buf.validate.field).enum.defined_only = true];
+}
+
+message ListMyRoomsResponse {
+  repeated MyRoom rooms = 1;
+  int32 total = 2;
+}
+
+message MyRoom {
+  Room room = 1;
+  uint64 permissions = 2; // User's permissions in this room
+  synctv.common.RoomMemberRole role = 3; // Room member role
+  MyRoomRelation relation = 4;
+  bool favorited = 5;
+}
+
+message FavoriteRoomRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+}
+
+message FavoriteRoomResponse {
+  Room room = 1;
+}
+
+message UnfavoriteRoomRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+}
+
+message UnfavoriteRoomResponse {
+  Room room = 1;
+}
+
+message ListFavoriteRoomsRequest {
+  option (buf.validate.message).cel = {
+    id: "list_favorite_rooms.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "list_favorite_rooms.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+
+  int32 page = 1;
+  int32 page_size = 2;
+  string search = 3 [(buf.validate.field).string = {max_len: 100}];
+}
+
+message ListFavoriteRoomsResponse {
+  repeated Room rooms = 1;
+  int32 total = 2;
+}
+
+// Room Discovery
+message GetRoomDiscoveryRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+}
+
+message RoomMemberTargetPathRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  string user_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+}
+
+message RoomJoinReviewPathRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  string request_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^rev_[A-Za-z0-9]+$"
+  }];
+}
+
+message RoomPathRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+}
+
+message RoomMediaTargetPathRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  string media_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^med_[A-Za-z0-9]+$"
+  }];
+}
+
+message RoomPlaylistTargetPathRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  string playlist_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^pl_[A-Za-z0-9]+$"
+  }];
+}
+
+// ==================== Public Settings ====================
+
+message GetPublicSettingsRequest {}
+
+message GetPublicSettingsResponse {
+  string server_name = 1;
+  bool room_creation_enabled = 2;
+  int64 max_rooms_per_user = 3;
+  int64 default_max_members = 4;
+
+  // Room settings
+  bool room_creation_approval_required = 5;
+  string room_password_policy = 6;
+
+  // User settings
+  bool enable_password_signup = 7;
+  bool password_signup_need_review = 8;
+  bool enable_email_signup = 9;
+  bool enable_guest = 10;
+  bool email_signup_need_review = 11;
+  bool enable_email = 12;
+  bool enable_webauthn = 13;
+  string webauthn_rp_id = 14;
+  bool enable_webauthn_signup = 15;
+  bool webauthn_signup_need_review = 16;
+  uint64 max_pinned_chat_messages_per_room = 17;
+
+  // RTMP settings
+  bool ts_disguised_as_png = 18;
+  optional string custom_publish_host = 19;
+
+  // Email settings
+  bool email_whitelist_enabled = 20;
+  repeated string email_whitelist_domains = 21;
+}
+
+// ==================== Public Server Info ====================
+
+message GetServerInfoRequest {}
+
+message GetServerInfoResponse {
+  // Stable logical server identity. The server automatically initializes it
+  // in runtime settings storage; clients only read it.
+  string server_id = 1;
+  string server_name = 2;
+}
+
+// ==================== Public Server Time ====================
+
+message GetServerTimeRequest {
+  // Unix nanoseconds recorded by the client immediately before sending the
+  // request. Optional for simple clock reads; set it for offset calculation.
+  int64 client_sent_at_nanos = 1;
+}
+
+message GetServerTimeResponse {
+  // Echo of GetServerTimeRequest.client_sent_at_nanos.
+  int64 client_sent_at_nanos = 1;
+  // Unix nanoseconds recorded by the server when handling the request.
+  int64 server_received_at_nanos = 2;
+  // Unix nanoseconds recorded by the server immediately before sending the response.
+  int64 server_sent_at_nanos = 3;
+}
+
+// ==================== Password Reset ====================
+
+message RequestPasswordResetRequest {
+  string email = 1;
+}
+
+message RequestPasswordResetResponse {
+  string message = 1;
+}
+
+// Start resetting a password with an email reset token. The reset token is
+// consumed here and exchanged for a short-lived OPAQUE registration session.
+// The server receives only the OPAQUE registration request for the new password.
+message StartOpaquePasswordResetRequest {
+  string email = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 254
+  }];
+  string token = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
+  bytes registration_request = 3 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 4096
+  }];
+}
+
+message StartOpaquePasswordResetResponse {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  bytes registration_response = 2;
+}
+
+message FinishOpaquePasswordResetRequest {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  bytes registration_upload = 2 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 4096
+  }];
+}
+
+message ConfirmPasswordResetResponse {
+  string message = 1;
+  string user_id = 2;
+}
+
+// ==================== Additional Server Messages ====================
+
+// ==================== Playlist Events ====================
+
+// ==================== WebRTC Signaling Messages ====================
+
+message WebRTCVoiceOfferCommand {
+  string to = 1; // Target: "public_actor_id:conn_id".
+  string data = 2; // SDP offer JSON, opaque to the server.
+}
+
+message WebRTCVoiceAnswerCommand {
+  string to = 1;
+  string data = 2; // SDP answer JSON, opaque to the server.
+}
+
+message WebRTCVoiceIceCandidateCommand {
+  string to = 1;
+  string data = 2; // ICE candidate JSON, opaque to the server.
+}
+
+message WebRTCVoiceOffer {
+  string from = 1; // Sender: "public_actor_id:conn_id".
+  string data = 2;
+}
+
+message WebRTCVoiceAnswer {
+  string from = 1;
+  string data = 2;
+}
+
+message WebRTCVoiceIceCandidate {
+  string from = 1;
+  string data = 2;
+}
+
+message WebRTCVoiceJoinCommand {
+  optional string client_operation_id = 1;
+}
+
+message WebRTCVoiceLeaveCommand {}
+
+message WebRTCVoicePeerJoined {
+  string user_id = 1;
+  string conn_id = 2;
+  string username = 3;
+}
+
+message WebRTCVoicePeerLeft {
+  string user_id = 1;
+  string conn_id = 2;
+}
+
+message WebRTCMediaOfferCommand {
+  string to = 1;
+  string data = 2;
+  string swarm_id = 3;
+}
+
+message WebRTCMediaAnswerCommand {
+  string to = 1;
+  string data = 2;
+  string swarm_id = 3;
+}
+
+message WebRTCMediaIceCandidateCommand {
+  string to = 1;
+  string data = 2;
+  string swarm_id = 3;
+}
+
+message WebRTCMediaOffer {
+  string from = 1;
+  string data = 2;
+  string swarm_id = 3;
+}
+
+message WebRTCMediaAnswer {
+  string from = 1;
+  string data = 2;
+  string swarm_id = 3;
+}
+
+message WebRTCMediaIceCandidate {
+  string from = 1;
+  string data = 2;
+  string swarm_id = 3;
+}
+
+message WebRTCMediaSwarmJoin {
+  string swarm_id = 1;
+  string swarm_ticket = 2;
+}
+
+message WebRTCMediaSwarmLeave {
+  string swarm_id = 1;
+}
+
+message WebRTCMediaPeerLeft {
+  string swarm_id = 1;
+  string user_id = 2;
+  string conn_id = 3;
+}
+
+message WebRTCMediaSwarmPeer {
+  string user_id = 1; // Public actor ID.
+  string conn_id = 2;
+}
+
+message WebRTCMediaSwarmPeers {
+  string swarm_id = 1;
+  repeated WebRTCMediaSwarmPeer peers = 2;
+  string swarm_ticket = 3;
+}
+
+message WebRTCCommand {
+  oneof command {
+    WebRTCVoiceOfferCommand voice_offer = 1;
+    WebRTCVoiceAnswerCommand voice_answer = 2;
+    WebRTCVoiceIceCandidateCommand voice_ice_candidate = 3;
+    WebRTCVoiceJoinCommand voice_join = 4;
+    WebRTCVoiceLeaveCommand voice_leave = 5;
+    WebRTCMediaOfferCommand media_offer = 6;
+    WebRTCMediaAnswerCommand media_answer = 7;
+    WebRTCMediaIceCandidateCommand media_ice_candidate = 8;
+    WebRTCMediaSwarmJoin media_swarm_join = 9;
+    WebRTCMediaSwarmLeave media_swarm_leave = 10;
+  }
+}
+
+message WebRTCEvent {
+  oneof event {
+    WebRTCVoiceOffer voice_offer = 1;
+    WebRTCVoiceAnswer voice_answer = 2;
+    WebRTCVoiceIceCandidate voice_ice_candidate = 3;
+    WebRTCVoicePeerJoined voice_peer_joined = 4;
+    WebRTCVoicePeerLeft voice_peer_left = 5;
+    WebRTCMediaOffer media_offer = 6;
+    WebRTCMediaAnswer media_answer = 7;
+    WebRTCMediaIceCandidate media_ice_candidate = 8;
+    WebRTCMediaSwarmPeers media_swarm_peers = 9;
+    WebRTCMediaPeerLeft media_peer_left = 10;
+  }
+}
+
+message IceServer {
+  repeated string urls = 1; // ["stun:stun.example.com:3478", "stun:stun-backup.example.com:3478"]
+  optional string username = 2;
+  optional string credential = 3;
+}
+
+// Request/Response for GetIceServers RPC
+message GetIceServersRequest {}
+
+message GetIceServersResponse {
+  repeated IceServer servers = 1;
+  optional WebRTCStatus webrtc = 2;
+}
+
+message MemoryHealth {
+  double usage_percent = 1;
+  string status = 2;
+}
+
+message WebRTCStatus {
+  string mode = 1;
+  string builtin_stun_state = 2;
+  bool builtin_stun_configured = 3;
+  string reason = 4;
+  optional string local_addr = 5;
+  optional string external_addr = 6;
+  optional string message = 7;
+}
+
+message HealthDetails {
+  string database = 1;
+  string redis = 2;
+  optional string cluster = 3;
+  optional string ws_ticket = 4;
+  optional string email = 5;
+  optional string livestream = 6;
+  optional MemoryHealth memory = 7;
+  optional string message = 8;
+  optional WebRTCStatus webrtc = 9;
+}
+
+message HealthResponse {
+  string status = 1;
+  optional HealthDetails details = 2;
+}
+
+// ==================== Notification Messages ====================
+
+enum NotificationType {
+  NOTIFICATION_TYPE_UNSPECIFIED = 0;
+  NOTIFICATION_TYPE_ROOM_INVITATION = 1;
+  NOTIFICATION_TYPE_SYSTEM_ANNOUNCEMENT = 2;
+  NOTIFICATION_TYPE_ROOM_EVENT = 3;
+  NOTIFICATION_TYPE_PASSWORD_RESET = 4;
+  NOTIFICATION_TYPE_EMAIL_BIND = 5;
+}
+
+message NotificationProto {
+  string id = 1;
+  string user_id = 2;
+  NotificationType notification_type = 3;
+  string title = 4;
+  string content = 5;
+  NotificationData data = 6;
+  bool is_read = 7;
+  int64 created_at = 8;
+  int64 updated_at = 9;
+}
+
+message ListNotificationsRequest {
+  option (buf.validate.message).cel = {
+    id: "list_notifications.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "list_notifications.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+
+  int32 page = 1;
+  int32 page_size = 2;
+  optional bool is_read = 3; // Filter by read status
+  optional NotificationType notification_type = 4 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  string search = 5 [(buf.validate.field).string = {max_len: 100}]; // Search by title or content
+  NotificationListSortBy sort_by = 6 [(buf.validate.field).enum.defined_only = true];
+  SortDirection sort_direction = 7 [(buf.validate.field).enum.defined_only = true];
+}
+
+message ListNotificationsResponse {
+  repeated NotificationProto notifications = 1;
+  int32 total = 2;
+  int32 unread_count = 3;
+}
+
+message GetNotificationRequest {
+  int64 notification_id = 1 [(buf.validate.field).int64.gte = 1];
+}
+
+message MarkAsReadRequest {
+  repeated int64 notification_ids = 1 [(buf.validate.field).repeated = {
+    items: {
+      int64: {gte: 1}
+    }
+  }];
+}
+
+message MarkAsReadResponse {}
+
+message MarkAllAsReadRequest {
+  optional int64 before = 1; // Mark all as read before this timestamp
+}
+
+message MarkAllAsReadResponse {}
+
+message DeleteNotificationRequest {
+  int64 notification_id = 1 [(buf.validate.field).int64.gte = 1];
+}
+
+message DeleteNotificationResponse {}
+
+message DeleteAllReadRequest {}
+
+message DeleteAllReadResponse {}

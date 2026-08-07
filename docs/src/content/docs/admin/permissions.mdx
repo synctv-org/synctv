@@ -1,0 +1,183 @@
+---
+title: 角色、权限与用户偏好
+description: SyncTV 的全局用户角色、房间角色、权限名称、房间设置、成员权限覆盖和用户偏好语义。
+---
+
+import Diagram from '../../../components/Diagram.astro';
+import permissionEvaluationDark from '../../../assets/diagrams/permission-evaluation-zh-dark.svg';
+import permissionEvaluationLight from '../../../assets/diagrams/permission-evaluation-zh-light.svg';
+
+## 两层角色模型
+
+SyncTV 有两层角色，不能混为一谈。
+
+| 层级 | 角色 | 作用范围 |
+| --- | --- | --- |
+| 全局用户角色 | `root`、`admin`、`user` | 平台管理、用户管理、房间管理、系统设置 |
+| 房间角色 | `creator`、`admin`、`member`、`guest` | 单个房间内的播放、成员、媒体、聊天和设置权限 |
+
+全局 `admin` 不自动等于某个房间的 `admin`。房间 `admin` 也不等于平台管理员。
+
+## 全局用户角色
+
+| 角色 | 能力边界 |
+| --- | --- |
+| `root` | 超级管理员，可以管理 root/admin/user、全局设置和所有房间 |
+| `admin` | 平台管理员，可以管理普通用户和房间，但不能越权管理 root 或同级管理员的敏感设置 |
+| `user` | 普通用户，按房间和业务权限使用功能 |
+
+用户状态是从封禁记录派生的有效状态：
+
+| 状态 | 影响 |
+| --- | --- |
+| `active` | 可以登录、创建房间、加入房间 |
+| `banned` | 不能登录、创建房间或加入房间 |
+
+## 房间角色
+
+| 房间角色 | 默认语义 |
+| --- | --- |
+| `creator` | 房间创建者，拥有全部房间权限，不能通过房间设置削弱 |
+| `admin` | 房间管理员，默认拥有成员管理、播放控制、媒体管理、房间设置等权限 |
+| `member` | 普通成员，默认可以聊天、使用 WebRTC、创建/编辑自己的媒体资源、按所有权删除自己的媒体资源、查看媒体资源和成员信息 |
+| `guest` | 游客，不是房间成员，默认没有播放列表、媒体、聊天或管理权限；房间只能额外开放成员列表、聊天历史或 WebRTC 等 guest 安全能力 |
+
+房间角色提供基础权限，房间设置和成员权限覆盖会在基础权限上继续做加减。
+
+### 游客权限边界
+
+游客可以进入已开启游客访问的公开房间，但不会变成房间成员。游客权限使用独立上限，不从 member 继承。
+
+| 能力 | 默认 | 可通过 guest 权限开放 | 说明 |
+| --- | --- | --- | --- |
+| 基础房间实时状态 | 是 | 不需要配置 | 连接后用于显示房间存在、设置和播放状态 |
+| 成员列表 | 否 | `view_members` | 只读 |
+| 聊天历史 | 否 | `view_chat_history` | 只读 |
+| 语音聊天 | 否 | `use_voice_chat` | 允许参与房间语音会话 |
+| P2P 媒体分发 | 否 | `use_p2p_media` | 允许与同房间、同媒体 swarm 的客户端交换媒体分片 |
+| 媒体资源 | 否 | 否 | 游客不能读取、浏览或管理媒体资源 |
+| 聊天发送 | 否 | 否 | `send_chat_messages` 只适用于登录成员 |
+| 播放控制、成员管理、房间设置 | 否 | 否 | 必须是登录成员并具有对应权限 |
+
+## 权限计算顺序
+
+有效权限按三层计算：
+
+<Diagram
+  light={permissionEvaluationLight}
+  dark={permissionEvaluationDark}
+  alt="房间有效权限计算模型图，展示房间角色基础权限、房间设置 added 和 removed 权限、成员个人 added 和 removed 权限，以及 creator 始终拥有全部权限的特例。"
+  caption="有效权限从房间角色基础权限开始，依次叠加房间设置和成员个人覆盖；同一权限同时 add 和 remove 时，remove 生效。"
+/>
+
+规则：
+
+- `creator` 始终拥有全部房间权限。
+- add 先增加权限，remove 再移除权限；同一个权限同时 add 和 remove 时，remove 生效。
+- `memberAddedPermissions` 不能超过 admin 级别上限。
+- `guestAddedPermissions` 使用独立 guest 上限，不能授予媒体资源、聊天写入或管理权限。
+- `DELETE_ROOM` 不属于房间内可委派权限，房间删除应由创建者或平台管理面处理。
+
+## 主要权限名称
+
+运行时设置和管理界面使用稳定的 snake_case 权限名称。
+
+| 权限名称 | 含义 |
+| --- | --- |
+| `send_chat_messages` | 发送聊天消息 |
+| `manage_own_media` | 创建媒体或播放列表，并修改自己创建的内容 |
+| `delete_media` | 删除其他用户创建或没有记录创建者的媒体与播放列表 |
+| `reorder_media` | 调整媒体与播放列表顺序 |
+| `clear_media` | 清空房间媒体队列 |
+| `manage_live_streams` | 管理直播，并创建推流 key |
+| `control_playback_state` | 播放、暂停、调整进度和播放速度 |
+| `navigate_playback` | 选择播放内容、播放上一条或下一条，以及播放历史记录 |
+| `review_join_requests` | 审批加入房间请求 |
+| `remove_members` | 移除成员，并设置临时重新加入冷却时间 |
+| `manage_member_permissions` | 修改成员权限 |
+| `add_members` | 主动添加成员 |
+| `manage_room_settings` | 修改房间设置 |
+| `delete_chat_messages` | 删除其他房间成员发送的聊天消息 |
+| `delete_room` | 删除房间，不可作为普通房间内委派权限 |
+| `browse_library` | 浏览媒体库 |
+| `view_members` | 查看成员列表 |
+| `view_chat_history` | 查看聊天历史 |
+| `use_voice_chat` | 使用房间语音聊天 |
+| `use_p2p_media` | 使用房间内 P2P 媒体分发 |
+
+## 房间设置
+
+删除自己创建的媒体资源是所有权业务规则，不对应单独的权限位。成员即使没有 `manage_own_media`，仍然可以删除自己创建的媒体资源；但创建媒体资源、修改自己创建的媒体资源都需要 `manage_own_media`。
+
+房间设置控制加入策略、显示能力和默认权限。
+
+| 设置 | 默认值 | 说明 |
+| --- | --- | --- |
+| `password` | 空 | 创建房间时设置初始密码；后续通过房间密码接口修改 |
+| `allowGuestJoin` | `false` | 是否允许游客加入 |
+| `maxMembers` | `100` | 房间最大成员数，上限 `10000` |
+| `requireApproval` | `false` | 加入房间是否需要审核 |
+| `allowAutoJoin` | `true` | 是否允许符合条件的用户自动加入 |
+| `chatEnabled` | `true` | 是否启用聊天 |
+| `voiceChatEnabled` | `true` | 是否开放房间语音通话 |
+| `p2pMediaEnabled` | `true` | 是否开放房间内 P2P 媒体分发 |
+| `autoPlay` | `{}` | 自动播放策略，例如 `{"enabled":true,"mode":1,"delay":5}` |
+| `adminAddedPermissions` / `adminRemovedPermissions` | 空权限集合 | 房间 admin 默认权限增减 |
+| `memberAddedPermissions` / `memberRemovedPermissions` | 空权限集合 | 房间 member 默认权限增减 |
+| `guestAddedPermissions` / `guestRemovedPermissions` | 空权限集合 | 房间 guest 默认权限增减 |
+
+语音和媒体 P2P 同时受房间能力开关与成员权限控制。例如，成员需要 `use_voice_chat` 权限且 `voiceChatEnabled=true` 才能加入语音。房间管理员关闭能力后，服务端通过房间设置实时事件清理当前语音席位和媒体 swarm，并拒绝后续 join 与信令；客户端收到同一设置快照后关闭本地连接并隐藏对应入口。关闭已建立的媒体 DataChannel 依赖客户端执行该实时事件，严格的服务端媒体撤销需要使用 SFU 中继架构。
+
+示例：
+
+```bash
+synctv room settings get <ROOM_ID>
+synctv room settings update <ROOM_ID> --set requireApproval=true --set autoPlay.mode=shuffle
+```
+
+## 成员权限覆盖
+
+成员级覆盖用于处理例外，例如临时禁言、给某个成员播放控制、撤销某个管理员的封禁能力。
+
+语义：
+
+- 成员基础权限来自房间角色。
+- `added_permissions` 增加该成员的普通权限。
+- `removed_permissions` 移除该成员的普通权限。
+- 管理员还可以有 `adminAddedPermissions` 和 `adminRemovedPermissions`。
+- 对 `creator` 的权限削弱不生效。
+
+管理规则：
+
+- 优先用角色解决长期权限，用成员覆盖解决例外。
+- 成员覆盖越多，排障越难；定期清理不再需要的覆盖。
+- 对管理员撤权时，优先考虑是否应该直接调整角色，而不是堆叠大量 deny 位。
+
+## 用户偏好
+
+用户偏好是数据库中的用户级设置，不是 YAML 配置。
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `two_factor_enabled` | `false` | 是否开启用户级 2FA |
+| `notifications.room_invitation_in_app` | `true` | 房间邀请站内通知 |
+| `notifications.room_event_in_app` | `true` | 房间事件站内通知 |
+| `notifications.system_announcement_in_app` | `true` | 系统公告站内通知 |
+| `notifications.room_invitation_email` | `false` | 房间邀请邮件通知 |
+| `notifications.room_event_email` | `false` | 房间事件邮件通知 |
+| `notifications.system_announcement_email` | `true` | 系统公告邮件通知 |
+
+Provider instance 绑定不是用户偏好；用户通过某个 instance 登录 provider 时，绑定会存储在对应 provider credential 上。数据库表还有一个 `settings` JSONB 扩展载荷，只用于低优先级实验性偏好。稳定的产品偏好应该优先设计成明确字段，不能把 secret、token、Cookie、密码或 Provider 凭据放进去。
+
+2FA 约束：
+
+- 开启 2FA 必须有至少两种本地验证方式：password、webauthn/passkey、verified email。
+- OAuth2 不计入本地 2FA 因素，但 2FA 用户可以使用 OAuth2 登录。
+- 删除验证方式时，如果用户开启了 2FA，删除后仍必须保留至少两种可用本地方式。
+
+## 管理策略
+
+- **使用权限名称**： 权限配置应使用稳定的权限名称集合，便于审查、复制和回滚。
+- **区分全局和房间**： 平台 admin 和房间 admin 是两套概念，排查权限问题时先确认操作发生在哪一层。
+- **偏好不是启动配置**： 用户偏好可以通过 API/CLI 修改，不应该写进 YAML 或 Helm values。
+- **变更后验证路径**： 修改加入规则、权限或 2FA 后，用真实登录、加入房间和播放操作验证。

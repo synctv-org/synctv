@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH candidates AS (\n            SELECT sequence\n            FROM chat_message_events\n            WHERE created_at < NOW() - ($1::bigint::text || ' seconds')::interval\n            ORDER BY created_at ASC, sequence ASC\n            LIMIT $2\n            FOR UPDATE SKIP LOCKED\n        )\n        DELETE FROM chat_message_events e\n        USING candidates c\n        WHERE e.sequence = c.sequence\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "981d434ebed9f7d48f70929397949e16ffb5c1da0b69463d4b8111da27e51911"
+}

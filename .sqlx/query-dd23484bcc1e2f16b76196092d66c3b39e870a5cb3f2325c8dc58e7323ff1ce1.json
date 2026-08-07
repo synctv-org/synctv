@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE auth_webauthn_credentials\n            SET passkey = $2,\n                sign_count = $3,\n                last_used_at = NOW()\n            WHERE credential_id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Jsonb",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dd23484bcc1e2f16b76196092d66c3b39e870a5cb3f2325c8dc58e7323ff1ce1"
+}

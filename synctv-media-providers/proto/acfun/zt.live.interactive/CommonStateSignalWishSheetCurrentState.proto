@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package acproto;
+
+message CommonStateSignalWishSheetCurrentState {
+    string a = 1;
+    repeated WishCurrentState b = 2;
+
+    message WishCurrentState {
+        string c = 1;
+        int64 d = 2;
+        int64 e = 3;
+        int64 f = 4;
+        string g = 5;
+        string h = 6;
+    }
+}

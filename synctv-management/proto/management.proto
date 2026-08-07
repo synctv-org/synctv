@@ -1,0 +1,1729 @@
+syntax = "proto3";
+
+package synctv.management;
+
+import "proto/admin.proto";
+import "proto/client.proto";
+import "proto/common.proto";
+import "proto/providers/alist.proto";
+import "proto/providers/acfun.proto";
+import "proto/providers/bilibili.proto";
+import "proto/providers/cctv.proto";
+import "proto/providers/cloudreve.proto";
+import "proto/providers/common.proto";
+import "proto/providers/douyin.proto";
+import "proto/providers/douyu.proto";
+import "proto/providers/tiktok.proto";
+import "proto/providers/twitch.proto";
+import "proto/providers/emby.proto";
+import "proto/providers/fnos.proto";
+import "proto/providers/huya.proto";
+import "proto/providers/nextcloud.proto";
+import "proto/providers/qnap.proto";
+import "proto/providers/rtmp.proto";
+import "proto/providers/seafile.proto";
+import "proto/providers/synology.proto";
+import "proto/providers/truenas.proto";
+import "proto/providers/youtube.proto";
+import "proto/source_config.proto";
+
+service ManagementService {
+    // =========================
+    // Management commands
+    // =========================
+    rpc ListUsers(ListUsersRequest) returns (synctv.admin.ListUsersResponse);
+    rpc GetUser(GetUserRequest) returns (synctv.admin.AdminUser);
+    rpc GetUserPreferences(GetUserPreferencesRequest) returns (synctv.admin.GetUserPreferencesResponse);
+    rpc UpdateUserPreferences(UpdateUserPreferencesRequest) returns (synctv.admin.UpdateUserPreferencesResponse);
+    rpc AddAdmin(AddAdminRequest) returns (synctv.admin.AdminUser);
+    rpc RemoveAdmin(RemoveAdminRequest) returns (synctv.admin.RemoveAdminResponse);
+    rpc ListAdmins(ListAdminsRequest) returns (synctv.admin.ListAdminsResponse);
+    rpc CreateUser(CreateUserRequest) returns (synctv.admin.AdminUser);
+    rpc DeleteUser(DeleteUserRequest) returns (synctv.admin.DeleteUserResponse);
+    rpc BanUser(BanUserRequest) returns (synctv.admin.AdminUser);
+    rpc UnbanUser(UnbanUserRequest) returns (synctv.admin.AdminUser);
+    rpc UpdateUserRole(UpdateUserRoleRequest) returns (synctv.admin.AdminUser);
+    rpc SetUserPassword(SetUserPasswordRequest) returns (synctv.admin.SetUserPasswordResponse);
+    rpc UpdateUserUsername(UpdateUserUsernameRequest) returns (synctv.admin.AdminUser);
+    rpc GetUserRooms(GetUserRoomsRequest) returns (synctv.admin.GetUserRoomsResponse);
+    rpc BatchBanUsers(BatchBanUsersRequest) returns (synctv.admin.BatchBanUsersResponse);
+    rpc BatchDeleteUsers(BatchDeleteUsersRequest) returns (synctv.admin.BatchDeleteUsersResponse);
+
+    rpc CreateRoom(CreateRoomRequest) returns (synctv.client.Room);
+    rpc ListRooms(ListRoomsRequest) returns (synctv.admin.ListRoomsResponse);
+    rpc GetRoom(GetRoomRequest) returns (synctv.admin.Room);
+    rpc ListRoomCategories(synctv.admin.ListRoomCategoriesRequest) returns (synctv.admin.ListRoomCategoriesResponse);
+    rpc UpsertRoomCategory(synctv.admin.UpsertRoomCategoryRequest) returns (synctv.client.RoomCategory);
+    rpc DeleteRoomCategory(synctv.admin.DeleteRoomCategoryRequest) returns (synctv.admin.DeleteRoomCategoryResponse);
+    rpc ListRoomLabels(synctv.admin.ListRoomLabelsRequest) returns (synctv.admin.ListRoomLabelsResponse);
+    rpc UpsertRoomLabel(synctv.admin.UpsertRoomLabelRequest) returns (synctv.client.RoomLabel);
+    rpc DeleteRoomLabel(synctv.admin.DeleteRoomLabelRequest) returns (synctv.admin.DeleteRoomLabelResponse);
+    rpc UpdateRoomTaxonomy(synctv.admin.UpdateRoomTaxonomyRequest) returns (synctv.admin.Room);
+    rpc GetRoomMembers(GetRoomMembersRequest) returns (synctv.admin.GetRoomMembersResponse);
+    rpc SearchChatMessages(SearchChatMessagesRequest) returns (synctv.client.SearchChatMessagesResponse);
+    rpc AddMember(AddMemberRequest) returns (synctv.common.RoomMember);
+    rpc UpdateMemberRemarkName(UpdateMemberRemarkNameRequest) returns (synctv.common.RoomMember);
+    rpc UpdateMemberDisplayTag(UpdateMemberDisplayTagRequest) returns (synctv.common.RoomMember);
+    rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (synctv.common.RoomMember);
+    rpc KickMember(KickMemberRequest) returns (synctv.client.KickMemberResponse);
+    rpc GetRoomSettings(GetRoomSettingsRequest) returns (synctv.admin.GetRoomSettingsResponse);
+    rpc UpdateRoomSettings(synctv.admin.UpdateRoomSettingsRequest) returns (synctv.admin.Room);
+    rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (synctv.admin.Room);
+    rpc TransferRoomOwnership(TransferRoomOwnershipRequest) returns (synctv.client.Room);
+    rpc FavoriteRoom(FavoriteRoomRequest) returns (synctv.client.FavoriteRoomResponse);
+    rpc UnfavoriteRoom(UnfavoriteRoomRequest) returns (synctv.client.UnfavoriteRoomResponse);
+    rpc ListFavoriteRooms(ListFavoriteRoomsRequest) returns (synctv.client.ListFavoriteRoomsResponse);
+    rpc UpdateRoomPassword(UpdateRoomPasswordRequest) returns (synctv.admin.UpdateRoomPasswordResponse);
+    rpc BanRoom(BanRoomRequest) returns (synctv.admin.Room);
+    rpc UnbanRoom(UnbanRoomRequest) returns (synctv.admin.Room);
+    rpc DeleteRoom(DeleteRoomRequest) returns (synctv.admin.DeleteRoomResponse);
+    rpc BatchBanRooms(BatchBanRoomsRequest) returns (synctv.admin.BatchBanRoomsResponse);
+    rpc BatchDeleteRooms(BatchDeleteRoomsRequest) returns (synctv.admin.BatchDeleteRoomsResponse);
+    rpc StartPlayback(StartPlaybackRequest) returns (synctv.client.PlaybackState);
+    rpc StopPlayback(StopPlaybackRequest) returns (synctv.client.PlaybackState);
+    rpc GetPlayback(GetPlaybackRequest) returns (synctv.client.GetPlaybackResponse);
+    rpc UpdatePlaybackState(UpdatePlaybackStateRequest) returns (synctv.client.PlaybackState);
+    rpc CreatePublishKey(CreatePublishKeyRequest) returns (synctv.provider.rtmp.CreatePublishKeyResponse);
+    rpc GetStreamInfo(GetStreamInfoRequest) returns (synctv.provider.rtmp.GetStreamInfoResponse);
+    rpc ListRoomStreams(ListRoomStreamsRequest) returns (synctv.client.ListRoomStreamsResponse);
+    rpc KickRoomStream(KickRoomStreamRequest) returns (synctv.client.KickRoomStreamResponse);
+    rpc AlistLogin(AlistLoginRequest) returns (synctv.provider.alist.LoginResponse);
+    rpc AlistList(AlistListRequest) returns (synctv.provider.alist.ListResponse);
+    rpc AlistSearch(AlistSearchRequest) returns (synctv.provider.alist.SearchResponse);
+    rpc AlistGetMe(AlistGetMeRequest) returns (synctv.provider.alist.GetMeResponse);
+    rpc AlistLogout(AlistLogoutRequest) returns (synctv.provider.alist.LogoutResponse);
+    rpc AlistGetBinds(AlistGetBindsRequest) returns (synctv.provider.alist.GetBindsResponse);
+    rpc EmbyLogin(EmbyLoginRequest) returns (synctv.provider.emby.LoginResponse);
+    rpc EmbyList(EmbyListRequest) returns (synctv.provider.emby.ListResponse);
+    rpc EmbyGetMe(EmbyGetMeRequest) returns (synctv.provider.emby.GetMeResponse);
+    rpc EmbyLogout(EmbyLogoutRequest) returns (synctv.provider.emby.LogoutResponse);
+    rpc EmbyGetBinds(EmbyGetBindsRequest) returns (synctv.provider.emby.GetBindsResponse);
+    rpc DouyinBind(DouyinBindRequest) returns (synctv.provider.douyin.BindResponse);
+    rpc DouyinGetBinds(DouyinGetBindsRequest) returns (synctv.provider.douyin.GetBindsResponse);
+    rpc DouyinUnbind(DouyinUnbindRequest) returns (synctv.provider.douyin.UnbindResponse);
+    rpc DouyinResolve(DouyinResolveRequest) returns (synctv.provider.douyin.ResolveResponse);
+    rpc DouyinListUserPosts(DouyinListUserPostsRequest) returns (synctv.provider.douyin.ListUserPostsResponse);
+    rpc TikTokBind(TikTokBindRequest) returns (synctv.provider.tiktok.BindResponse);
+    rpc TikTokGetBinds(TikTokGetBindsRequest) returns (synctv.provider.tiktok.GetBindsResponse);
+    rpc TikTokUnbind(TikTokUnbindRequest) returns (synctv.provider.tiktok.UnbindResponse);
+    rpc TikTokResolve(TikTokResolveRequest) returns (synctv.provider.tiktok.ResolveResponse);
+    rpc TikTokGetUser(TikTokGetUserRequest) returns (synctv.provider.tiktok.GetUserResponse);
+    rpc TikTokListUserPosts(TikTokListUserPostsRequest) returns (synctv.provider.tiktok.ListUserPostsResponse);
+    rpc TwitchBind(TwitchBindRequest) returns (synctv.provider.twitch.BindResponse);
+    rpc TwitchGetBinds(TwitchGetBindsRequest) returns (synctv.provider.twitch.GetBindsResponse);
+    rpc TwitchUnbind(TwitchUnbindRequest) returns (synctv.provider.twitch.UnbindResponse);
+    rpc TwitchResolve(TwitchResolveRequest) returns (synctv.provider.twitch.ResolveResponse);
+    rpc TwitchListChannelItems(TwitchListChannelItemsRequest) returns (synctv.provider.twitch.ListChannelItemsResponse);
+    rpc BilibiliParse(BilibiliParseRequest) returns (synctv.provider.bilibili.ParseResponse);
+    rpc BilibiliLoginQr(BilibiliLoginQrRequest) returns (synctv.provider.bilibili.QRCodeResponse);
+    rpc BilibiliCheckQr(BilibiliCheckQrRequest) returns (synctv.provider.bilibili.QRStatusResponse);
+    rpc BilibiliStartSmsLogin(BilibiliStartSmsLoginRequest) returns (synctv.provider.bilibili.StartSMSLoginResponse);
+    rpc BilibiliSendSms(BilibiliSendSmsRequest) returns (synctv.provider.bilibili.SendSMSResponse);
+    rpc BilibiliLoginSms(BilibiliLoginSmsRequest) returns (synctv.provider.bilibili.LoginSMSResponse);
+    rpc BilibiliGetUserInfo(BilibiliGetUserInfoRequest) returns (synctv.provider.bilibili.UserInfoResponse);
+    rpc BilibiliLogout(BilibiliLogoutRequest) returns (synctv.provider.bilibili.LogoutResponse);
+    rpc BilibiliGetBinds(BilibiliGetBindsRequest) returns (synctv.provider.bilibili.GetBindsResponse);
+    rpc AcfunResolve(AcfunResolveRequest) returns (synctv.provider.acfun.ResolveResponse);
+    rpc CctvResolve(CctvResolveRequest) returns (synctv.provider.cctv.ResolveResponse);
+    rpc DouyuResolve(DouyuResolveRequest) returns (synctv.provider.douyu.ResolveResponse);
+    rpc HuyaResolve(HuyaResolveRequest) returns (synctv.provider.huya.ResolveResponse);
+    rpc YoutubeBind(YoutubeBindRequest) returns (synctv.provider.youtube.BindResponse);
+    rpc YoutubeGetBinds(YoutubeGetBindsRequest) returns (synctv.provider.youtube.GetBindsResponse);
+    rpc YoutubeUnbind(YoutubeUnbindRequest) returns (synctv.provider.youtube.UnbindResponse);
+    rpc YoutubeResolve(YoutubeResolveRequest) returns (synctv.provider.youtube.ResolveResponse);
+    rpc CloudreveLogin(CloudreveLoginRequest) returns (synctv.provider.cloudreve.LoginResponse);
+    rpc CloudreveList(CloudreveListRequest) returns (synctv.provider.cloudreve.ListResponse);
+    rpc CloudreveSearch(CloudreveSearchRequest) returns (synctv.provider.cloudreve.SearchResponse);
+    rpc CloudreveGetMe(CloudreveGetMeRequest) returns (synctv.provider.cloudreve.GetMeResponse);
+    rpc CloudreveLogout(CloudreveLogoutRequest) returns (synctv.provider.cloudreve.LogoutResponse);
+    rpc CloudreveGetBinds(CloudreveGetBindsRequest) returns (synctv.provider.cloudreve.GetBindsResponse);
+    rpc FnosLogin(FnosLoginRequest) returns (synctv.provider.fnos.LoginResponse);
+    rpc FnosList(FnosListRequest) returns (synctv.provider.fnos.ListResponse);
+    rpc FnosListMediaLibraries(FnosListMediaLibrariesRequest) returns (synctv.provider.fnos.ListMediaLibrariesResponse);
+    rpc FnosListMediaItems(FnosListMediaItemsRequest) returns (synctv.provider.fnos.ListMediaItemsResponse);
+    rpc FnosSetFavorite(FnosSetFavoriteRequest) returns (synctv.provider.fnos.SetFavoriteResponse);
+    rpc FnosSetWatched(FnosSetWatchedRequest) returns (synctv.provider.fnos.SetWatchedResponse);
+    rpc FnosGetServerInfo(FnosGetServerInfoRequest) returns (synctv.provider.fnos.GetServerInfoResponse);
+    rpc FnosLogout(FnosLogoutRequest) returns (synctv.provider.fnos.LogoutResponse);
+    rpc FnosGetBinds(FnosGetBindsRequest) returns (synctv.provider.fnos.GetBindsResponse);
+    rpc NextcloudLogin(NextcloudLoginRequest) returns (synctv.provider.nextcloud.LoginResponse);
+    rpc NextcloudStartLoginFlow(NextcloudStartLoginFlowRequest) returns (synctv.provider.nextcloud.StartLoginFlowResponse);
+    rpc NextcloudPollLoginFlow(NextcloudPollLoginFlowRequest) returns (synctv.provider.nextcloud.LoginResponse);
+    rpc NextcloudList(NextcloudListRequest) returns (synctv.provider.nextcloud.ListResponse);
+    rpc NextcloudListFavorites(NextcloudListFavoritesRequest) returns (synctv.provider.nextcloud.ListResponse);
+    rpc NextcloudLogout(NextcloudLogoutRequest) returns (synctv.provider.nextcloud.LogoutResponse);
+    rpc NextcloudGetBinds(NextcloudGetBindsRequest) returns (synctv.provider.nextcloud.GetBindsResponse);
+    rpc QnapLogin(QnapLoginRequest) returns (synctv.provider.qnap.LoginResponse);
+    rpc QnapList(QnapListRequest) returns (synctv.provider.qnap.ListResponse);
+    rpc QnapGetCapabilities(QnapGetCapabilitiesRequest) returns (synctv.provider.qnap.GetCapabilitiesResponse);
+    rpc QnapLogout(QnapLogoutRequest) returns (synctv.provider.qnap.LogoutResponse);
+    rpc QnapGetBinds(QnapGetBindsRequest) returns (synctv.provider.qnap.GetBindsResponse);
+    rpc SeafileLogin(SeafileLoginRequest) returns (synctv.provider.seafile.LoginResponse);
+    rpc SeafileUnlockLibrary(SeafileUnlockLibraryRequest) returns (synctv.provider.seafile.UnlockLibraryResponse);
+    rpc SeafileListRepositories(SeafileListRepositoriesRequest) returns (synctv.provider.seafile.ListResponse);
+    rpc SeafileList(SeafileListRequest) returns (synctv.provider.seafile.ListResponse);
+    rpc SeafileListStarred(SeafileListStarredRequest) returns (synctv.provider.seafile.ListResponse);
+    rpc SeafileLogout(SeafileLogoutRequest) returns (synctv.provider.seafile.LogoutResponse);
+    rpc SeafileGetBinds(SeafileGetBindsRequest) returns (synctv.provider.seafile.GetBindsResponse);
+    rpc SynologyLogin(SynologyLoginRequest) returns (synctv.provider.synology.LoginResponse);
+    rpc SynologyListFiles(SynologyListFilesRequest) returns (synctv.provider.synology.ListFilesResponse);
+    rpc SynologyListLibraries(SynologyListLibrariesRequest) returns (synctv.provider.synology.ListLibrariesResponse);
+    rpc SynologyListMovies(SynologyListMoviesRequest) returns (synctv.provider.synology.ListVideoItemsResponse);
+    rpc SynologyListTvShows(SynologyListTvShowsRequest) returns (synctv.provider.synology.ListVideoItemsResponse);
+    rpc SynologyListEpisodes(SynologyListEpisodesRequest) returns (synctv.provider.synology.ListVideoItemsResponse);
+    rpc SynologyListHomeVideos(SynologyListHomeVideosRequest) returns (synctv.provider.synology.ListVideoItemsResponse);
+    rpc SynologyListTvRecordings(SynologyListTvRecordingsRequest) returns (synctv.provider.synology.ListVideoItemsResponse);
+    rpc SynologyLogout(SynologyLogoutRequest) returns (synctv.provider.synology.LogoutResponse);
+    rpc SynologyGetBinds(SynologyGetBindsRequest) returns (synctv.provider.synology.GetBindsResponse);
+    rpc TruenasLogin(TruenasLoginRequest) returns (synctv.provider.truenas.LoginResponse);
+    rpc TruenasList(TruenasListRequest) returns (synctv.provider.truenas.ListResponse);
+    rpc TruenasLogout(TruenasLogoutRequest) returns (synctv.provider.truenas.LogoutResponse);
+    rpc TruenasGetBinds(TruenasGetBindsRequest) returns (synctv.provider.truenas.GetBindsResponse);
+    rpc BilibiliListLiveAreas(BilibiliListLiveAreasRequest) returns (synctv.provider.bilibili.ListLiveAreasResponse);
+    rpc BilibiliListFavoriteFolders(BilibiliListFavoriteFoldersRequest) returns (synctv.provider.bilibili.ListFavoriteFoldersResponse);
+    rpc BilibiliListFollowedPgc(BilibiliListFollowedPgcRequest) returns (synctv.provider.bilibili.ListFollowedPgcResponse);
+    rpc BilibiliListHistory(BilibiliListHistoryRequest) returns (synctv.provider.bilibili.ListHistoryResponse);
+    rpc BilibiliListPgcTimeline(BilibiliListPgcTimelineRequest) returns (synctv.provider.bilibili.ListPgcTimelineResponse);
+    rpc BilibiliListPgcSeasons(BilibiliListPgcSeasonsRequest) returns (synctv.provider.bilibili.ListPgcSeasonsResponse);
+    rpc TwitchListFollowedLive(TwitchListFollowedLiveRequest) returns (synctv.provider.twitch.ListFollowedLiveResponse);
+    rpc TwitchListCategoryStreams(TwitchListCategoryStreamsRequest) returns (synctv.provider.twitch.ListCategoryStreamsResponse);
+    rpc TwitchListTopCategories(TwitchListTopCategoriesRequest) returns (synctv.provider.twitch.ListTopCategoriesResponse);
+    rpc TwitchSearchLiveChannels(TwitchSearchLiveChannelsRequest) returns (synctv.provider.twitch.SearchLiveChannelsResponse);
+    rpc TwitchListSchedule(TwitchListScheduleRequest) returns (synctv.provider.twitch.ListScheduleResponse);
+
+    rpc ListPlaylists(ListPlaylistsRequest) returns (synctv.client.ListPlaylistsResponse);
+    rpc GetPlaylist(GetPlaylistRequest) returns (synctv.client.GetPlaylistResponse);
+    rpc CreatePlaylist(CreatePlaylistRequest) returns (synctv.client.Playlist);
+    rpc CreateAlistPlaylist(CreateAlistPlaylistRequest) returns (synctv.client.Playlist);
+    rpc CreateEmbyPlaylist(CreateEmbyPlaylistRequest) returns (synctv.client.Playlist);
+    rpc UpdatePlaylist(UpdatePlaylistRequest) returns (synctv.client.Playlist);
+    rpc MovePlaylist(MovePlaylistRequest) returns (synctv.client.Playlist);
+    rpc DeletePlaylist(DeletePlaylistRequest) returns (synctv.client.DeletePlaylistResponse);
+
+    rpc ListMedia(ListMediaRequest) returns (synctv.client.ListPlaylistItemsResponse);
+    rpc AddMedia(AddMediaRequest) returns (synctv.client.Media);
+    rpc AddDirectUrlMedia(AddDirectUrlMediaRequest) returns (synctv.client.Media);
+    rpc AddAlistMedia(AddAlistMediaRequest) returns (synctv.client.Media);
+    rpc AddEmbyMedia(AddEmbyMediaRequest) returns (synctv.client.Media);
+    rpc AddBilibiliVideoMedia(AddBilibiliVideoMediaRequest) returns (synctv.client.Media);
+    rpc AddBilibiliPgcMedia(AddBilibiliPgcMediaRequest) returns (synctv.client.Media);
+    rpc AddBilibiliLiveMedia(AddBilibiliLiveMediaRequest) returns (synctv.client.Media);
+    rpc EditMedia(EditMediaRequest) returns (synctv.client.Media);
+    rpc MoveMedia(MoveMediaRequest) returns (synctv.client.MoveMediaResponse);
+    rpc DeleteMedia(DeleteMediaRequest) returns (synctv.client.DeleteMediaResponse);
+
+    rpc ListAvailableProviderInstances(synctv.provider.common.ListAvailableProviderInstancesRequest) returns (synctv.provider.common.ProviderInstancesResponse);
+    rpc ListProviderBackends(synctv.provider.common.ListProviderBackendsRequest) returns (synctv.provider.common.ProviderBackendsResponse);
+    rpc ListProviderInstances(synctv.provider.common.ListProviderInstancesRequest) returns (synctv.provider.common.ListProviderInstancesResponse);
+    rpc AddProviderInstance(synctv.provider.common.AddProviderInstanceRequest) returns (synctv.provider.common.AddProviderInstanceResponse);
+    rpc UpdateProviderInstance(synctv.provider.common.UpdateProviderInstanceRequest) returns (synctv.provider.common.UpdateProviderInstanceResponse);
+    rpc DeleteProviderInstance(synctv.provider.common.DeleteProviderInstanceRequest) returns (synctv.provider.common.DeleteProviderInstanceResponse);
+    rpc ReconnectProviderInstance(synctv.provider.common.ReconnectProviderInstanceRequest) returns (synctv.provider.common.ReconnectProviderInstanceResponse);
+    rpc EnableProviderInstance(synctv.provider.common.EnableProviderInstanceRequest) returns (synctv.provider.common.EnableProviderInstanceResponse);
+    rpc DisableProviderInstance(synctv.provider.common.DisableProviderInstanceRequest) returns (synctv.provider.common.DisableProviderInstanceResponse);
+
+    rpc GetSettings(GetSettingsRequest) returns (synctv.admin.RuntimeSettings);
+    rpc UpdateSettings(synctv.admin.UpdateSettingsRequest) returns (synctv.admin.RuntimeSettings);
+    rpc ExportSettings(synctv.admin.ExportSettingsRequest) returns (synctv.admin.RuntimeSettingsSnapshot);
+    rpc ImportSettings(synctv.admin.ImportSettingsRequest) returns (synctv.admin.ImportSettingsResponse);
+    rpc SendTestEmail(SendTestEmailRequest) returns (synctv.admin.SendTestEmailResponse);
+    rpc GetServiceState(GetServiceStateRequest) returns (synctv.admin.GetServiceStateResponse);
+    rpc GetServerState(GetServerStateRequest) returns (GetServerStateResponse);
+    rpc ListActiveStreams(ListActiveStreamsRequest) returns (synctv.admin.ListActiveStreamsResponse);
+    rpc KickStream(KickStreamRequest) returns (synctv.admin.KickStreamResponse);
+    rpc GetSliceCacheStats(GetSliceCacheStatsRequest) returns (synctv.admin.GetSliceCacheStatsResponse);
+    rpc PurgeSliceCache(PurgeSliceCacheRequest) returns (synctv.admin.PurgeSliceCacheResponse);
+    rpc EvictExpiredSliceCache(EvictExpiredSliceCacheRequest) returns (synctv.admin.EvictExpiredSliceCacheResponse);
+    rpc ListUserRegistrationReviews(ListUserRegistrationReviewsRequest) returns (synctv.admin.ListUserRegistrationReviewsResponse);
+    rpc ApproveUserRegistrationReview(ApproveUserRegistrationReviewRequest) returns (synctv.admin.ApproveUserRegistrationReviewResponse);
+    rpc RejectUserRegistrationReview(RejectUserRegistrationReviewRequest) returns (synctv.admin.UserRegistrationReview);
+    rpc ListRoomCreationReviews(ListRoomCreationReviewsRequest) returns (synctv.admin.ListRoomCreationReviewsResponse);
+    rpc ApproveRoomCreationReview(ApproveRoomCreationReviewRequest) returns (synctv.admin.ApproveRoomCreationReviewResponse);
+    rpc RejectRoomCreationReview(RejectRoomCreationReviewRequest) returns (synctv.admin.RoomCreationReview);
+    rpc ListRoomJoinReviews(ListRoomJoinReviewsRequest) returns (synctv.admin.ListRoomJoinReviewsResponse);
+    rpc ApproveRoomJoinReview(ApproveRoomJoinReviewRequest) returns (synctv.admin.ApproveRoomJoinReviewResponse);
+    rpc RejectRoomJoinReview(RejectRoomJoinReviewRequest) returns (synctv.admin.RoomJoinReview);
+    rpc ListBanRecords(ListBanRecordsRequest) returns (synctv.admin.ListBanRecordsResponse);
+
+    // =========================
+    // Lifecycle
+    // =========================
+    rpc StopServer(StopServerRequest) returns (stream StopServerEvent);
+}
+
+message AcfunResolveRequest {
+    UserRef actor = 1;
+    synctv.provider.acfun.ResolveRequest request = 2;
+}
+
+message CctvResolveRequest {
+    UserRef actor = 1;
+    synctv.provider.cctv.ResolveRequest request = 2;
+}
+
+message DouyuResolveRequest {
+    UserRef actor = 1;
+    synctv.provider.douyu.ResolveRequest request = 2;
+}
+
+message HuyaResolveRequest {
+    UserRef actor = 1;
+    synctv.provider.huya.ResolveRequest request = 2;
+}
+
+message YoutubeBindRequest {
+    UserRef actor = 1;
+    synctv.provider.youtube.BindRequest request = 2;
+}
+
+message YoutubeGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.youtube.GetBindsRequest request = 2;
+}
+
+message YoutubeUnbindRequest {
+    UserRef actor = 1;
+    synctv.provider.youtube.UnbindRequest request = 2;
+}
+
+message YoutubeResolveRequest {
+    UserRef actor = 1;
+    synctv.provider.youtube.ResolveRequest request = 2;
+}
+
+message CloudreveLoginRequest {
+    UserRef actor = 1;
+    synctv.provider.cloudreve.LoginRequest request = 2;
+}
+
+message CloudreveListRequest {
+    UserRef actor = 1;
+    synctv.provider.cloudreve.ListRequest request = 2;
+}
+
+message CloudreveSearchRequest {
+    UserRef actor = 1;
+    synctv.provider.cloudreve.SearchRequest request = 2;
+}
+
+message CloudreveGetMeRequest {
+    UserRef actor = 1;
+    synctv.provider.cloudreve.GetMeRequest request = 2;
+}
+
+message CloudreveLogoutRequest {
+    UserRef actor = 1;
+    synctv.provider.cloudreve.LogoutRequest request = 2;
+}
+
+message CloudreveGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.cloudreve.GetBindsRequest request = 2;
+}
+
+message FnosLoginRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.LoginRequest request = 2;
+}
+
+message FnosListRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.ListRequest request = 2;
+}
+
+message FnosListMediaLibrariesRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.ListMediaLibrariesRequest request = 2;
+}
+
+message FnosListMediaItemsRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.ListMediaItemsRequest request = 2;
+}
+
+message FnosSetFavoriteRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.SetFavoriteRequest request = 2;
+}
+
+message FnosSetWatchedRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.SetWatchedRequest request = 2;
+}
+
+message FnosGetServerInfoRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.GetServerInfoRequest request = 2;
+}
+
+message FnosLogoutRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.LogoutRequest request = 2;
+}
+
+message FnosGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.fnos.GetBindsRequest request = 2;
+}
+
+message NextcloudLoginRequest {
+    UserRef actor = 1;
+    synctv.provider.nextcloud.LoginRequest request = 2;
+}
+
+message NextcloudStartLoginFlowRequest {
+    UserRef actor = 1;
+    synctv.provider.nextcloud.StartLoginFlowRequest request = 2;
+}
+
+message NextcloudPollLoginFlowRequest {
+    UserRef actor = 1;
+    synctv.provider.nextcloud.PollLoginFlowRequest request = 2;
+}
+
+message NextcloudListRequest {
+    UserRef actor = 1;
+    synctv.provider.nextcloud.ListRequest request = 2;
+}
+
+message NextcloudListFavoritesRequest {
+    UserRef actor = 1;
+    synctv.provider.nextcloud.ListFavoritesRequest request = 2;
+}
+
+message NextcloudLogoutRequest {
+    UserRef actor = 1;
+    synctv.provider.nextcloud.LogoutRequest request = 2;
+}
+
+message NextcloudGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.nextcloud.GetBindsRequest request = 2;
+}
+
+message QnapLoginRequest {
+    UserRef actor = 1;
+    synctv.provider.qnap.LoginRequest request = 2;
+}
+
+message QnapListRequest {
+    UserRef actor = 1;
+    synctv.provider.qnap.ListRequest request = 2;
+}
+
+message QnapGetCapabilitiesRequest {
+    UserRef actor = 1;
+    synctv.provider.qnap.GetCapabilitiesRequest request = 2;
+}
+
+message QnapLogoutRequest {
+    UserRef actor = 1;
+    synctv.provider.qnap.LogoutRequest request = 2;
+}
+
+message QnapGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.qnap.GetBindsRequest request = 2;
+}
+
+message SeafileLoginRequest {
+    UserRef actor = 1;
+    synctv.provider.seafile.LoginRequest request = 2;
+}
+
+message SeafileUnlockLibraryRequest {
+    UserRef actor = 1;
+    synctv.provider.seafile.UnlockLibraryRequest request = 2;
+}
+
+message SeafileListRepositoriesRequest {
+    UserRef actor = 1;
+    synctv.provider.seafile.ListRepositoriesRequest request = 2;
+}
+
+message SeafileListRequest {
+    UserRef actor = 1;
+    synctv.provider.seafile.ListRequest request = 2;
+}
+
+message SeafileListStarredRequest {
+    UserRef actor = 1;
+    synctv.provider.seafile.ListStarredRequest request = 2;
+}
+
+message SeafileLogoutRequest {
+    UserRef actor = 1;
+    synctv.provider.seafile.LogoutRequest request = 2;
+}
+
+message SeafileGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.seafile.GetBindsRequest request = 2;
+}
+
+message SynologyLoginRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.LoginRequest request = 2;
+}
+
+message SynologyListFilesRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.ListFilesRequest request = 2;
+}
+
+message SynologyListLibrariesRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.ListLibrariesRequest request = 2;
+}
+
+message SynologyListMoviesRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.ListMoviesRequest request = 2;
+}
+
+message SynologyListTvShowsRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.ListTvShowsRequest request = 2;
+}
+
+message SynologyListEpisodesRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.ListEpisodesRequest request = 2;
+}
+
+message SynologyListHomeVideosRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.ListHomeVideosRequest request = 2;
+}
+
+message SynologyListTvRecordingsRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.ListTvRecordingsRequest request = 2;
+}
+
+message SynologyLogoutRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.LogoutRequest request = 2;
+}
+
+message SynologyGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.synology.GetBindsRequest request = 2;
+}
+
+message TruenasLoginRequest {
+    UserRef actor = 1;
+    synctv.provider.truenas.LoginRequest request = 2;
+}
+
+message TruenasListRequest {
+    UserRef actor = 1;
+    synctv.provider.truenas.ListRequest request = 2;
+}
+
+message TruenasLogoutRequest {
+    UserRef actor = 1;
+    synctv.provider.truenas.LogoutRequest request = 2;
+}
+
+message TruenasGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.truenas.GetBindsRequest request = 2;
+}
+
+message BilibiliListLiveAreasRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.ListLiveAreasRequest request = 2;
+}
+
+message BilibiliListFavoriteFoldersRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.ListFavoriteFoldersRequest request = 2;
+}
+
+message BilibiliListFollowedPgcRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.ListFollowedPgcRequest request = 2;
+}
+
+message BilibiliListHistoryRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.ListHistoryRequest request = 2;
+}
+
+message BilibiliListPgcTimelineRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.ListPgcTimelineRequest request = 2;
+}
+
+message BilibiliListPgcSeasonsRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.ListPgcSeasonsRequest request = 2;
+}
+
+message TwitchListFollowedLiveRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.ListFollowedLiveRequest request = 2;
+}
+
+message TwitchListCategoryStreamsRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.ListCategoryStreamsRequest request = 2;
+}
+
+message TwitchListTopCategoriesRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.ListTopCategoriesRequest request = 2;
+}
+
+message TwitchSearchLiveChannelsRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.SearchLiveChannelsRequest request = 2;
+}
+
+message TwitchListScheduleRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.ListScheduleRequest request = 2;
+}
+
+enum ShutdownMode {
+    SHUTDOWN_MODE_UNSPECIFIED = 0;
+    SHUTDOWN_MODE_GRACEFUL = 1;
+    SHUTDOWN_MODE_FORCE = 2;
+}
+
+enum StopServerStage {
+    STOP_SERVER_STAGE_UNSPECIFIED = 0;
+    STOP_SERVER_STAGE_READY = 1;
+    STOP_SERVER_STAGE_SHUTDOWN_REQUESTED = 2;
+    STOP_SERVER_STAGE_RUNTIME_DRAINING = 3;
+    STOP_SERVER_STAGE_CONNECTION_DRAINING = 4;
+    STOP_SERVER_STAGE_COMPONENTS_SHUTTING_DOWN = 5;
+    STOP_SERVER_STAGE_FINALIZING = 6;
+    STOP_SERVER_STAGE_COMPLETED = 7;
+    STOP_SERVER_STAGE_FAILED = 8;
+}
+
+enum SortDirection {
+    SORT_DIRECTION_UNSPECIFIED = 0;
+    SORT_DIRECTION_ASC = 1;
+    SORT_DIRECTION_DESC = 2;
+}
+
+enum UserListSortBy {
+    USER_LIST_SORT_BY_UNSPECIFIED = 0;
+    USER_LIST_SORT_BY_CREATED_AT = 1;
+    USER_LIST_SORT_BY_UPDATED_AT = 2;
+    USER_LIST_SORT_BY_USERNAME = 3;
+    USER_LIST_SORT_BY_EMAIL = 4;
+    USER_LIST_SORT_BY_STATUS = 5;
+    USER_LIST_SORT_BY_ROLE = 6;
+}
+
+enum RoomListSortBy {
+    ROOM_LIST_SORT_BY_UNSPECIFIED = 0;
+    ROOM_LIST_SORT_BY_CREATED_AT = 1;
+    ROOM_LIST_SORT_BY_UPDATED_AT = 2;
+    ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT = 3;
+    ROOM_LIST_SORT_BY_NAME = 4;
+}
+
+enum RoomMemberListSortBy {
+    ROOM_MEMBER_LIST_SORT_BY_UNSPECIFIED = 0;
+    ROOM_MEMBER_LIST_SORT_BY_JOINED_AT = 1;
+    ROOM_MEMBER_LIST_SORT_BY_USERNAME = 2;
+    ROOM_MEMBER_LIST_SORT_BY_ROLE = 3;
+}
+
+enum PlaylistListSortBy {
+    PLAYLIST_LIST_SORT_BY_UNSPECIFIED = 0;
+    PLAYLIST_LIST_SORT_BY_POSITION = 1;
+    PLAYLIST_LIST_SORT_BY_NAME = 2;
+    PLAYLIST_LIST_SORT_BY_CREATED_AT = 3;
+    PLAYLIST_LIST_SORT_BY_UPDATED_AT = 4;
+}
+
+enum MediaListSortBy {
+    MEDIA_LIST_SORT_BY_UNSPECIFIED = 0;
+    MEDIA_LIST_SORT_BY_POSITION = 1;
+    MEDIA_LIST_SORT_BY_NAME = 2;
+    MEDIA_LIST_SORT_BY_ADDED_AT = 3;
+    MEDIA_LIST_SORT_BY_UPDATED_AT = 4;
+    MEDIA_LIST_SORT_BY_SOURCE_PROVIDER = 5;
+    MEDIA_LIST_SORT_BY_PROVIDER_INSTANCE_NAME = 6;
+}
+
+enum RelatedRoomListSortBy {
+    RELATED_ROOM_LIST_SORT_BY_UNSPECIFIED = 0;
+    RELATED_ROOM_LIST_SORT_BY_JOINED_AT = 1;
+    RELATED_ROOM_LIST_SORT_BY_CREATED_AT = 2;
+    RELATED_ROOM_LIST_SORT_BY_UPDATED_AT = 3;
+    RELATED_ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT = 4;
+    RELATED_ROOM_LIST_SORT_BY_NAME = 5;
+}
+
+enum ActiveStreamListSortBy {
+    ACTIVE_STREAM_LIST_SORT_BY_UNSPECIFIED = 0;
+    ACTIVE_STREAM_LIST_SORT_BY_STARTED_AT = 1;
+    ACTIVE_STREAM_LIST_SORT_BY_ROOM_ID = 2;
+    ACTIVE_STREAM_LIST_SORT_BY_MEDIA_ID = 3;
+    ACTIVE_STREAM_LIST_SORT_BY_USER_ID = 4;
+    ACTIVE_STREAM_LIST_SORT_BY_NODE_ID = 5;
+}
+
+enum RoomStreamListSortBy {
+    ROOM_STREAM_LIST_SORT_BY_UNSPECIFIED = 0;
+    ROOM_STREAM_LIST_SORT_BY_MEDIA_ID = 1;
+}
+
+message ListUsersRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    synctv.common.UserStatus status = 3;
+    synctv.common.UserRole role = 4;
+    string search = 5;
+    UserListSortBy sort_by = 6;
+    SortDirection sort_direction = 7;
+    optional bool is_banned = 8;
+}
+
+message UserRef {
+    oneof value {
+        string user_id = 1;
+        string username = 2;
+        string email = 3;
+    }
+}
+
+message GetUserRequest {
+    string user_id = 1;
+    string username = 2;
+}
+
+message GetUserPreferencesRequest {
+    string user_id = 1;
+    string username = 2;
+}
+
+message UpdateUserPreferencesRequest {
+    string user_id = 1;
+    string username = 2;
+    optional bool two_factor_enabled = 3;
+    synctv.client.UserNotificationPreferences notifications = 4;
+}
+
+message AddAdminRequest {
+    string user_id = 1;
+    string username = 2;
+}
+
+message RemoveAdminRequest {
+    string user_id = 1;
+    string username = 2;
+}
+
+message ListAdminsRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    string search = 3;
+    UserListSortBy sort_by = 4;
+    SortDirection sort_direction = 5;
+}
+
+message CreateUserRequest {
+    string username = 1;
+    string email = 2;
+    synctv.common.UserRole role = 3;
+    synctv.common.UserStatus status = 4;
+    string password = 5;
+}
+
+message DeleteUserRequest {
+    string user_id = 1;
+    string username = 2;
+}
+
+message BanUserRequest {
+    string user_id = 1;
+    string username = 2;
+    string reason = 3;
+}
+
+message UnbanUserRequest {
+    string user_id = 1;
+    string username = 2;
+}
+
+message UpdateUserRoleRequest {
+    string user_id = 1;
+    string username = 2;
+    synctv.common.UserRole role = 3;
+}
+
+message SetUserPasswordRequest {
+    string user_id = 1;
+    string username = 2;
+    string password = 3;
+    string reason = 4;
+}
+
+message UpdateUserUsernameRequest {
+    string user_id = 1;
+    string username = 2;
+    string new_username = 3;
+}
+
+message GetUserRoomsRequest {
+    string user_id = 1;
+    string username = 2;
+    int32 page = 3;
+    int32 page_size = 4;
+    synctv.common.RoomStatus status = 5;
+    string search = 6;
+    optional bool is_banned = 7;
+    RoomListSortBy sort_by = 8;
+    SortDirection sort_direction = 9;
+}
+
+message BatchBanUsersRequest {
+    repeated UserRef users = 1;
+    string reason = 2;
+}
+
+message BatchDeleteUsersRequest {
+    repeated UserRef users = 1;
+}
+
+message ListUserRegistrationReviewsRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    synctv.common.ReviewStatus status = 3;
+    string search = 4;
+}
+
+message ApproveUserRegistrationReviewRequest {
+    string request_id = 1;
+}
+
+message RejectUserRegistrationReviewRequest {
+    string request_id = 1;
+    string reason = 2;
+}
+
+message ListRoomCreationReviewsRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    synctv.common.ReviewStatus status = 3;
+    string requested_by = 4;
+    string search = 5;
+}
+
+message ApproveRoomCreationReviewRequest {
+    string request_id = 1;
+}
+
+message RejectRoomCreationReviewRequest {
+    string request_id = 1;
+    string reason = 2;
+}
+
+message ListRoomJoinReviewsRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    synctv.common.ReviewStatus status = 3;
+    string room_id = 4;
+    string user_id = 5;
+}
+
+message ApproveRoomJoinReviewRequest {
+    string request_id = 1;
+}
+
+message RejectRoomJoinReviewRequest {
+    string request_id = 1;
+    string reason = 2;
+}
+
+message ListBanRecordsRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    synctv.admin.BanTargetType target_type = 3;
+    optional bool active = 4;
+    string user_id = 5;
+    string room_id = 6;
+}
+
+message CreateRoomRequest {
+    UserRef actor = 1;
+    string name = 2;
+    string password = 3;
+    string description = 4;
+    synctv.client.RoomSettings settings = 5;
+    string category_id = 6;
+    repeated string label_ids = 7;
+}
+
+message ListRoomsRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    synctv.common.RoomStatus status = 3;
+    string search = 4;
+    UserRef creator = 5;
+    optional bool is_banned = 6;
+    RoomListSortBy sort_by = 7;
+    SortDirection sort_direction = 8;
+    string category_id = 9;
+    repeated string label_ids = 10;
+}
+
+message GetRoomRequest {
+    string room_id = 1;
+}
+
+message GetRoomMembersRequest {
+    string room_id = 1;
+    int32 page = 2;
+    int32 page_size = 3;
+    string search = 4;
+    synctv.common.RoomMemberRole role = 5;
+    RoomMemberListSortBy sort_by = 7;
+    SortDirection sort_direction = 8;
+}
+
+message SearchChatMessagesRequest {
+    string room_id = 1;
+    UserRef actor = 2;
+    string query = 3;
+    string cursor = 4;
+    int32 limit = 5;
+    bool include_deleted = 6;
+    string user_id = 7;
+    string username = 8;
+}
+
+message TransferRoomOwnershipRequest {
+    string room_id = 1;
+    UserRef actor = 2;
+    UserRef new_owner = 3;
+}
+
+message FavoriteRoomRequest {
+    UserRef actor = 1;
+    synctv.client.FavoriteRoomRequest request = 2;
+}
+
+message UnfavoriteRoomRequest {
+    UserRef actor = 1;
+    synctv.client.UnfavoriteRoomRequest request = 2;
+}
+
+message ListFavoriteRoomsRequest {
+    UserRef actor = 1;
+    synctv.client.ListFavoriteRoomsRequest request = 2;
+}
+
+message AddMemberRequest {
+    string room_id = 1;
+    string user_id = 2;
+    string username = 3;
+    synctv.common.RoomMemberRole role = 4;
+    bool notify = 5;
+    string remark_name = 6;
+    string display_tag = 7;
+}
+
+message UpdateMemberRemarkNameRequest {
+    string room_id = 1;
+    string user_id = 2;
+    string username = 3;
+    string remark_name = 4;
+}
+
+message UpdateMemberDisplayTagRequest {
+    string room_id = 1;
+    string user_id = 2;
+    string username = 3;
+    string display_tag = 4;
+}
+
+message UpdateMemberPermissionsRequest {
+    string room_id = 1;
+    string user_id = 2;
+    string username = 3;
+    synctv.common.RoomMemberRole role = 4;
+    uint64 added_permissions = 5;
+    uint64 removed_permissions = 6;
+    uint64 admin_added_permissions = 7;
+    uint64 admin_removed_permissions = 8;
+}
+
+message KickMemberRequest {
+    string room_id = 1;
+    string user_id = 2;
+    string username = 3;
+    int64 kick_cooldown_seconds = 4;
+}
+
+message GetRoomSettingsRequest {
+    string room_id = 1;
+}
+
+message ResetRoomSettingsRequest {
+    string room_id = 1;
+}
+
+message UpdateRoomPasswordRequest {
+    string room_id = 1;
+    optional string new_password = 2;
+    bool clear = 3;
+}
+
+message BanRoomRequest {
+    string room_id = 1;
+    string reason = 2;
+}
+
+message UnbanRoomRequest {
+    string room_id = 1;
+}
+
+message DeleteRoomRequest {
+    string room_id = 1;
+}
+
+message BatchBanRoomsRequest {
+    repeated string room_ids = 1;
+    string reason = 2;
+}
+
+message BatchDeleteRoomsRequest {
+    repeated string room_ids = 1;
+}
+
+message StartPlaybackRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string media_id = 3;
+    string playlist_id = 4;
+    synctv.client.ProviderTarget target = 5;
+}
+
+message StopPlaybackRequest {
+    string room_id = 1;
+}
+
+message GetPlaybackRequest {
+    string room_id = 1;
+    synctv.client.PlaybackClientProfile playback_client_profile = 2;
+}
+
+message UpdatePlaybackStateRequest {
+    string room_id = 1;
+    synctv.client.PlaybackUpdateType type = 2;
+    optional bool playing = 3;
+    optional double position = 4;
+    optional double speed = 5;
+    optional int64 version = 6;
+    optional string expected_media_id = 7;
+    optional string expected_playlist_id = 8;
+    optional string expected_target_hash = 9;
+}
+
+message CreatePublishKeyRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string media_id = 3;
+}
+
+message GetStreamInfoRequest {
+    string room_id = 1;
+    string media_id = 2;
+}
+
+message ListRoomStreamsRequest {
+    string room_id = 1;
+    int32 page = 2;
+    int32 page_size = 3;
+    string search = 4;
+    RoomStreamListSortBy sort_by = 5;
+    SortDirection sort_direction = 6;
+}
+
+message KickRoomStreamRequest {
+    string room_id = 1;
+    string media_id = 2;
+    string reason = 3;
+}
+
+message ListPlaylistsRequest {
+    string room_id = 1;
+    string parent_id = 2;
+    int32 page = 3;
+    int32 page_size = 4;
+    string search = 5;
+    synctv.source_config.SourceProvider source_provider = 6;
+    string provider_instance_name = 7;
+    optional bool dynamic_only = 8;
+    PlaylistListSortBy sort_by = 9;
+    SortDirection sort_direction = 10;
+    synctv.client.ResourceAvailabilityFilter availability = 11;
+}
+
+message GetPlaylistRequest {
+    string room_id = 1;
+    string playlist_id = 2;
+}
+
+message CreatePlaylistRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string name = 3;
+    string parent_id = 4;
+    synctv.source_config.SourceProvider source_provider = 5;
+    synctv.source_config.PlaylistSourceConfig source_config = 6;
+    string provider_instance_name = 7;
+}
+
+message CreateAlistPlaylistRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string name = 3;
+    string parent_id = 4;
+    string server_id = 5;
+    string path = 6;
+    string password = 7;
+    string provider_instance_name = 8;
+}
+
+message CreateEmbyPlaylistRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string name = 3;
+    string parent_id = 4;
+    string server_id = 5;
+    string item_id = 6;
+    string provider_instance_name = 7;
+}
+
+message UpdatePlaylistRequest {
+    string room_id = 1;
+    string playlist_id = 2;
+    optional string name = 3;
+}
+
+message MovePlaylistRequest {
+    string room_id = 1;
+    string playlist_id = 2;
+    oneof anchor {
+        string before_playlist_id = 3;
+        string after_playlist_id = 4;
+    }
+}
+
+message DeletePlaylistRequest {
+    string room_id = 1;
+    string playlist_id = 2;
+    bool force = 3;
+}
+
+message ListMediaRequest {
+    string room_id = 1;
+    string playlist_id = 2;
+    synctv.client.ProviderTarget target = 3;
+    oneof pagination {
+        synctv.client.PagePagination page = 4;
+        synctv.client.CursorPagination cursor = 5;
+    }
+    uint32 page_size = 6;
+    string search = 7;
+    synctv.source_config.SourceProvider source_provider = 8;
+    string provider_instance_name = 9;
+    MediaListSortBy sort_by = 10;
+    SortDirection sort_direction = 11;
+    bool refresh = 12;
+    synctv.client.ResourceAvailabilityFilter availability = 13;
+}
+
+message AddMediaRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string playlist_id = 3;
+    synctv.source_config.SourceProvider source_provider = 4;
+    string provider_instance_name = 5;
+    synctv.source_config.MediaSourceConfig source_config = 6;
+    string name = 7;
+}
+
+message AddDirectUrlMediaRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    synctv.source_config.DirectUrlMediaSourceConfig source_config = 3;
+    string playlist_id = 4;
+    string name = 5;
+}
+
+message AddAlistMediaRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string playlist_id = 3;
+    string server_id = 4;
+    string path = 5;
+    string password = 6;
+    string provider_instance_name = 7;
+    string name = 8;
+}
+
+message AddEmbyMediaRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string playlist_id = 3;
+    string server_id = 4;
+    string item_id = 5;
+    string provider_instance_name = 6;
+    string name = 7;
+}
+
+message AddBilibiliVideoMediaRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string playlist_id = 3;
+    string bvid = 4;
+    optional uint64 aid = 5;
+    uint64 cid = 6;
+    bool shared = 7;
+    string provider_instance_name = 8;
+    string name = 9;
+}
+
+message AddBilibiliPgcMediaRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string playlist_id = 3;
+    uint64 epid = 4;
+    uint64 cid = 5;
+    bool shared = 6;
+    string provider_instance_name = 7;
+    string name = 8;
+}
+
+message AddBilibiliLiveMediaRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string playlist_id = 3;
+    uint64 room_live_id = 4;
+    bool shared = 5;
+    string provider_instance_name = 6;
+    string name = 7;
+}
+
+message EditMediaRequest {
+    string room_id = 1;
+    string media_id = 2;
+    string name = 3;
+}
+
+message MoveMediaRequest {
+    string room_id = 1;
+    repeated string media_ids = 2;
+    optional string source_playlist_id = 3;
+    optional string target_playlist_id = 4;
+    bool all_from_scope = 5;
+    oneof anchor {
+        string before_media_id = 6;
+        string after_media_id = 7;
+    }
+}
+
+message DeleteMediaRequest {
+    string room_id = 1;
+    string media_id = 2;
+    bool force = 3;
+}
+
+message AlistLoginRequest {
+    UserRef actor = 1;
+    synctv.provider.alist.LoginRequest request = 2;
+}
+
+message AlistListRequest {
+    UserRef actor = 1;
+    synctv.provider.alist.ListRequest request = 2;
+}
+
+message AlistSearchRequest {
+    UserRef actor = 1;
+    synctv.provider.alist.SearchRequest request = 2;
+}
+
+message AlistGetMeRequest {
+    UserRef actor = 1;
+    synctv.provider.alist.GetMeRequest request = 2;
+}
+
+message AlistLogoutRequest {
+    UserRef actor = 1;
+    synctv.provider.alist.LogoutRequest request = 2;
+}
+
+message AlistGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.alist.GetBindsRequest request = 2;
+}
+
+message EmbyLoginRequest {
+    UserRef actor = 1;
+    synctv.provider.emby.LoginRequest request = 2;
+}
+
+message EmbyListRequest {
+    UserRef actor = 1;
+    synctv.provider.emby.ListRequest request = 2;
+}
+
+message EmbyGetMeRequest {
+    UserRef actor = 1;
+    synctv.provider.emby.GetMeRequest request = 2;
+}
+
+message EmbyLogoutRequest {
+    UserRef actor = 1;
+    synctv.provider.emby.LogoutRequest request = 2;
+}
+
+message EmbyGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.emby.GetBindsRequest request = 2;
+}
+
+message DouyinBindRequest {
+    UserRef actor = 1;
+    synctv.provider.douyin.BindRequest request = 2;
+}
+
+message DouyinGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.douyin.GetBindsRequest request = 2;
+}
+
+message DouyinUnbindRequest {
+    UserRef actor = 1;
+    synctv.provider.douyin.UnbindRequest request = 2;
+}
+
+message DouyinResolveRequest {
+    UserRef actor = 1;
+    synctv.provider.douyin.ResolveRequest request = 2;
+}
+
+message DouyinListUserPostsRequest {
+    UserRef actor = 1;
+    synctv.provider.douyin.ListUserPostsRequest request = 2;
+}
+
+message TikTokBindRequest {
+    UserRef actor = 1;
+    synctv.provider.tiktok.BindRequest request = 2;
+}
+
+message TikTokGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.tiktok.GetBindsRequest request = 2;
+}
+
+message TikTokUnbindRequest {
+    UserRef actor = 1;
+    synctv.provider.tiktok.UnbindRequest request = 2;
+}
+
+message TikTokResolveRequest {
+    UserRef actor = 1;
+    synctv.provider.tiktok.ResolveRequest request = 2;
+}
+
+message TikTokGetUserRequest {
+    UserRef actor = 1;
+    synctv.provider.tiktok.GetUserRequest request = 2;
+}
+
+message TikTokListUserPostsRequest {
+    UserRef actor = 1;
+    synctv.provider.tiktok.ListUserPostsRequest request = 2;
+}
+
+message TwitchBindRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.BindRequest request = 2;
+}
+
+message TwitchGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.GetBindsRequest request = 2;
+}
+
+message TwitchUnbindRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.UnbindRequest request = 2;
+}
+
+message TwitchResolveRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.ResolveRequest request = 2;
+}
+
+message TwitchListChannelItemsRequest {
+    UserRef actor = 1;
+    synctv.provider.twitch.ListChannelItemsRequest request = 2;
+}
+
+message BilibiliParseRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.ParseRequest request = 2;
+}
+
+message BilibiliLoginQrRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.LoginQRRequest request = 2;
+}
+
+message BilibiliCheckQrRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.CheckQRRequest request = 2;
+}
+
+message BilibiliStartSmsLoginRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.StartSMSLoginRequest request = 2;
+}
+
+message BilibiliSendSmsRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.SendSMSRequest request = 2;
+}
+
+message BilibiliLoginSmsRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.LoginSMSRequest request = 2;
+}
+
+message BilibiliGetUserInfoRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.UserInfoRequest request = 2;
+}
+
+message BilibiliLogoutRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.LogoutRequest request = 2;
+}
+
+message BilibiliGetBindsRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.GetBindsRequest request = 2;
+}
+
+message GetSettingsRequest {}
+
+message SendTestEmailRequest {
+    string to = 1;
+}
+
+message GetServiceStateRequest {}
+
+message GetServerStateRequest {
+    string node_id = 1;
+    bool all_nodes = 2;
+}
+
+enum ServerStateNodeStatus {
+    SERVER_STATE_NODE_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_NODE_STATUS_HEALTHY = 1;
+    SERVER_STATE_NODE_STATUS_DEGRADED = 2;
+    SERVER_STATE_NODE_STATUS_UNHEALTHY = 3;
+}
+
+enum ServerStateDatabaseStatus {
+    SERVER_STATE_DATABASE_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_DATABASE_STATUS_HEALTHY = 1;
+    SERVER_STATE_DATABASE_STATUS_UNHEALTHY = 2;
+}
+
+enum ServerStateRedisStatus {
+    SERVER_STATE_REDIS_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_REDIS_STATUS_HEALTHY = 1;
+    SERVER_STATE_REDIS_STATUS_NOT_CONFIGURED = 2;
+    SERVER_STATE_REDIS_STATUS_UNHEALTHY = 3;
+}
+
+enum ServerStateClusterStatus {
+    SERVER_STATE_CLUSTER_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_CLUSTER_STATUS_HEALTHY = 1;
+    SERVER_STATE_CLUSTER_STATUS_UNHEALTHY = 2;
+    SERVER_STATE_CLUSTER_STATUS_DISABLED = 3;
+}
+
+enum ServerStateWsTicketStatus {
+    SERVER_STATE_WS_TICKET_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_WS_TICKET_STATUS_HEALTHY = 1;
+    SERVER_STATE_WS_TICKET_STATUS_UNHEALTHY = 2;
+}
+
+enum ServerStateEmailStatus {
+    SERVER_STATE_EMAIL_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_EMAIL_STATUS_CONFIGURED = 1;
+    SERVER_STATE_EMAIL_STATUS_NOT_CONFIGURED = 2;
+}
+
+enum ServerStateLivestreamStatus {
+    SERVER_STATE_LIVESTREAM_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_LIVESTREAM_STATUS_CONFIGURED = 1;
+    SERVER_STATE_LIVESTREAM_STATUS_NOT_CONFIGURED = 2;
+}
+
+enum ServerStateMemoryStatus {
+    SERVER_STATE_MEMORY_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_MEMORY_STATUS_HEALTHY = 1;
+    SERVER_STATE_MEMORY_STATUS_UNHEALTHY = 2;
+    SERVER_STATE_MEMORY_STATUS_UNKNOWN = 3;
+}
+
+enum ServerStateWebRtcStatus {
+    SERVER_STATE_WEB_RTC_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_WEB_RTC_STATUS_HEALTHY = 1;
+    SERVER_STATE_WEB_RTC_STATUS_DEGRADED = 2;
+    SERVER_STATE_WEB_RTC_STATUS_DISABLED = 3;
+}
+
+enum ServerStateCpuStatus {
+    SERVER_STATE_CPU_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_CPU_STATUS_HEALTHY = 1;
+    SERVER_STATE_CPU_STATUS_DEGRADED = 2;
+    SERVER_STATE_CPU_STATUS_UNHEALTHY = 3;
+    SERVER_STATE_CPU_STATUS_UNKNOWN = 4;
+}
+
+enum ServerStateSliceCacheStatus {
+    SERVER_STATE_SLICE_CACHE_STATUS_UNSPECIFIED = 0;
+    SERVER_STATE_SLICE_CACHE_STATUS_HEALTHY = 1;
+    SERVER_STATE_SLICE_CACHE_STATUS_DISABLED = 2;
+}
+
+message ServerStateSummary {
+    ServerStateNodeStatus status = 1;
+    int64 healthy_nodes = 2;
+    int64 degraded_nodes = 3;
+    int64 unhealthy_nodes = 4;
+    int64 failed_nodes = 5;
+}
+
+message ServerStateDatabasePool {
+    uint32 size = 1;
+    uint32 idle_connections = 2;
+    uint32 active_connections = 3;
+}
+
+message ServerStateDatabase {
+    ServerStateDatabaseStatus status = 1;
+    string host = 2;
+    uint32 port = 3;
+    string database = 4;
+    uint32 max_connections = 5;
+    uint32 min_connections = 6;
+    uint64 connect_timeout_seconds = 7;
+    uint64 idle_timeout_seconds = 8;
+    uint64 max_lifetime_seconds = 9;
+    ServerStateDatabasePool primary_pool = 10;
+    bool read_pool_enabled = 11;
+    string read_host = 12;
+    uint32 read_port = 13;
+    ServerStateDatabasePool read_pool = 14;
+    string message = 15;
+}
+
+message ServerStateRedis {
+    ServerStateRedisStatus status = 1;
+    bool configured = 2;
+    string deployment_mode = 3;
+    int64 database = 4;
+    string key_prefix = 5;
+    uint64 connect_timeout_seconds = 6;
+    uint64 response_timeout_seconds = 7;
+    uint64 pipeline_buffer_size = 8;
+    string sentinel_master_name = 9;
+    uint32 sentinel_node_count = 10;
+    optional double ping_latency_ms = 11;
+    string message = 12;
+}
+
+message ServerStateClusterNode {
+    string node_id = 1;
+    string cluster_address = 2;
+    int64 last_heartbeat = 3;
+    uint64 epoch = 4;
+}
+
+message ServerStateCluster {
+    ServerStateClusterStatus status = 1;
+    bool enabled = 2;
+    string discovery_mode = 3;
+    bool distributed_realtime_enabled = 4;
+    bool node_id_empty = 5;
+    uint32 routable_node_count = 6;
+    repeated ServerStateClusterNode nodes = 7;
+    string message = 8;
+}
+
+message ServerStateWsTicket {
+    ServerStateWsTicketStatus status = 1;
+    bool cross_node_capable = 2;
+    string message = 3;
+}
+
+message ServerStateEmail {
+    ServerStateEmailStatus status = 1;
+    bool configured = 2;
+}
+
+message ServerStateLivestream {
+    ServerStateLivestreamStatus status = 1;
+    bool configured = 2;
+    uint64 active_publisher_count = 3;
+    uint64 active_room_count = 4;
+    uint32 rtmp_port = 5;
+    string public_rtmp_host = 6;
+    uint32 gop_cache_size = 7;
+    uint64 gop_cache_max_memory_mb = 8;
+    uint64 stream_timeout_seconds = 9;
+    string hls_storage_backend = 10;
+    string hls_storage_path = 11;
+    uint64 hls_memory_max_mb = 12;
+}
+
+message ServerStateMemory {
+    ServerStateMemoryStatus status = 1;
+    optional uint64 used_bytes = 2;
+    optional uint64 total_bytes = 3;
+    optional uint64 available_bytes = 4;
+    optional double usage_percent = 5;
+}
+
+message ServerStateWebRtc {
+    ServerStateWebRtcStatus status = 1;
+    string mode = 2;
+    bool builtin_stun_configured = 3;
+    string builtin_stun_state = 4;
+    string reason = 5;
+    string local_addr = 6;
+    string external_addr = 7;
+    string message = 8;
+}
+
+message ServerStateSliceCache {
+    ServerStateSliceCacheStatus status = 1;
+    bool engine_enabled = 2;
+    string backend = 3;
+    string file_cache_dir = 4;
+    uint64 slice_size = 5;
+    uint64 max_cache_size = 6;
+    uint64 segment_ttl_secs = 7;
+    uint64 stale_max_age_secs = 8;
+    bool stale_while_revalidate = 9;
+    uint64 eviction_interval_secs = 10;
+    double watermark_ratio = 11;
+    uint64 current_size_bytes = 12;
+    uint64 entry_count = 13;
+    uint64 metadata_entries = 14;
+    uint64 updating_entries = 15;
+    uint64 lock_count = 16;
+    double usage_ratio = 17;
+}
+
+message ServerStateCpu {
+    ServerStateCpuStatus status = 1;
+    uint32 available_parallelism = 2;
+    optional double current_load_1m = 3;
+    optional double load_ratio_1m = 4;
+    optional double load_average_1m = 5;
+    optional double load_average_5m = 6;
+    optional double load_average_15m = 7;
+}
+
+message ServerStateRealtime {
+    bool distributed_enabled = 1;
+    uint64 connection_count = 2;
+}
+
+message ServerStateNode {
+    string node_id = 1;
+    ServerStateNodeStatus status = 2;
+    int64 updated_at = 3;
+    string version = 4;
+    string api_address = 5;
+    ServerStateRealtime realtime = 6;
+    ServerStateDatabase database = 7;
+    ServerStateRedis redis = 8;
+    ServerStateCluster cluster = 9;
+    ServerStateWsTicket ws_ticket = 10;
+    ServerStateEmail email = 11;
+    ServerStateLivestream livestream = 12;
+    ServerStateMemory memory = 13;
+    ServerStateWebRtc webrtc = 14;
+    ServerStateCpu cpu = 15;
+    ServerStateSliceCache slice_cache = 16;
+}
+
+message ServerStateNodeFailure {
+    string node_id = 1;
+    string error = 2;
+}
+
+message GetServerStateResponse {
+    string scope = 1;
+    ServerStateSummary summary = 2;
+    repeated ServerStateNode nodes = 3;
+    repeated ServerStateNodeFailure failures = 4;
+}
+
+message GetSliceCacheStatsRequest {
+    string node_id = 1;
+    bool all_nodes = 2;
+}
+
+message PurgeSliceCacheRequest {
+    string node_id = 1;
+    bool all_nodes = 2;
+}
+
+message EvictExpiredSliceCacheRequest {
+    string node_id = 1;
+    bool all_nodes = 2;
+}
+
+message ListActiveStreamsRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    string room_id = 3;
+    string user_id = 4;
+    string username = 5;
+    string node_id = 6;
+    string search = 7;
+    ActiveStreamListSortBy sort_by = 8;
+    SortDirection sort_direction = 9;
+}
+
+message KickStreamRequest {
+    string room_id = 1;
+    string media_id = 2;
+    string reason = 3;
+}
+
+message StopServerRequest {
+    ShutdownMode mode = 1;
+}
+
+message StopServerEvent {
+    uint64 sequence = 1;
+    StopServerStage stage = 2;
+    ShutdownMode mode = 3;
+    string message = 4;
+    bool terminal = 5;
+    int64 unix_millis = 6;
+}

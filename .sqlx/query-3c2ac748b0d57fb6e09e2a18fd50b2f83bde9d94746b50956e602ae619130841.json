@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT room_id AS \"room_id: RoomId\", settings AS \"settings!: RoomSettings\", version\n            FROM room_settings\n            WHERE room_id = ANY($1)\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_settings",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "settings!: RoomSettings",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "room_settings",
+            "name": "settings"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_settings",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3c2ac748b0d57fb6e09e2a18fd50b2f83bde9d94746b50956e602ae619130841"
+}

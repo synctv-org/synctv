@@ -1,0 +1,24 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+message AcFunUserInfo {
+	int64 userId = 1;
+	string name = 2;
+}
+
+message AcfunActionSignalThrowBanana {
+	AcFunUserInfo visitor = 1;
+	int32 count = 2;
+	int64 sendTimeMs = 3;
+}
+
+message AcfunStateSignalDisplayInfo {
+	string bananaCount = 1;
+}
+
+message AcfunActionSignalJoinClub {
+	AcFunUserInfo fansInfo = 1;
+	AcFunUserInfo uperInfo = 2;
+	int64 joinTimeMs = 3;
+}

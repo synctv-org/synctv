@@ -1,0 +1,85 @@
+---
+title: 限流与连接限制
+description: HTTP/gRPC 请求限流、聊天限流、WebSocket 限制和 streaming 保护。
+---
+
+限流保护登录、API、聊天、WebSocket 建连和流媒体路径。多副本部署依赖 Redis 共享限流状态。
+
+## `connection_limits`
+
+| 字段 | 默认值 | 用途 |
+| --- | --- | --- |
+| `connection_limits.max_per_user` | `20` | 每用户最大并发连接 |
+| `connection_limits.max_per_room` | `2000` | 每房间最大并发连接 |
+| `connection_limits.max_total` | `100000` | 全局最大并发连接 |
+| `connection_limits.idle_timeout_seconds` | `300` | 空闲连接断开时间 |
+| `connection_limits.max_duration_seconds` | `86400` | 单连接最大生命周期 |
+| `connection_limits.ws_message_rate_limit_per_second` | `50` | 单 WebSocket 连接消息速率 |
+
+调整这些值时同时检查 CPU、内存、文件描述符、反向代理限制和 Kubernetes 资源限制。
+
+## `messaging_rate_limits`
+
+```yaml
+messaging_rate_limits:
+  chat_per_second: 10
+  window_seconds: 1
+```
+
+| 字段 | 用途 |
+| --- | --- |
+| `chat_per_second` | 每窗口聊天消息上限 |
+| `window_seconds` | 统计窗口，单位秒 |
+
+## 请求限流
+
+```yaml
+request_rate_limits:
+  auth_max_requests: 5
+  auth_window_seconds: 60
+  write_max_requests: 120
+  write_window_seconds: 60
+  read_max_requests: 600
+  read_window_seconds: 60
+  media_max_requests: 120
+  media_window_seconds: 60
+  admin_max_requests: 180
+  admin_window_seconds: 60
+  streaming_max_requests: 1200
+  streaming_window_seconds: 60
+  websocket_max_requests: 60
+  websocket_window_seconds: 60
+```
+
+每组字段都由两部分组成：
+
+- `*_max_requests`：一个窗口内允许的请求数。
+- `*_window_seconds`：窗口长度，单位秒。
+
+| 类别 | 用途 |
+| --- | --- |
+| `auth` | 登录、注册、刷新 token 等认证接口 |
+| `write` | 创建、修改、删除 |
+| `read` | 列表、详情、状态查询 |
+| `media` | 添加、删除、解析和批量媒体操作 |
+| `admin` | 管理接口 |
+| `streaming` | HLS、FLV、媒体代理等 streaming HTTP 路径 |
+| `websocket` | WebSocket 建连尝试 |
+
+公网部署保持 `auth` 严格。HLS 播放会产生 playlist 和 segment 请求，所以 `streaming` 默认更高。
+
+## 传输说明
+
+HTTP 和 gRPC 请求使用同一套分类额度。
+
+## Redis 和多副本
+
+没有 Redis 时，限流状态保存在当前进程内存中。多副本必须使用 Redis，否则每个副本独立计数。
+
+例：3 个副本，每个副本允许每分钟 5 次登录尝试。如果请求分散到所有副本，实际可能变成每分钟 15 次。
+
+| 部署形态 | 要求 |
+| --- | --- |
+| 本地测试 | Redis 可选 |
+| 生产单机 | 配置 Redis |
+| 多副本 | 必须配置 Redis |

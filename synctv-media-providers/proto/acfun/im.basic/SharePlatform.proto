@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package acproto;
+
+enum SharePlatform {
+    kSharePlatformInvalid = 0;
+    kSharePlatformWechat = 1;
+    kSharePlatformWechatMoments = 2;
+    kSharePlatformQQ = 3;
+    kSharePlatformQzone = 4;
+    kSharePlatformWeibo = 5;
+    kSharePlatformKuaishou = 6;
+    kSharePlatformFacebook = 7;
+    kSharePlatformTwitter = 8;
+    kSharePlatformGoogle = 9;
+    kSharePlatformKakao = 10;
+    kSharePlatformZalo = 11;
+}

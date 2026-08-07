@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT metadata ? 'actorUsername' AS \"has_actor_username!\"\n            FROM chat_messages\n            WHERE room_id = $1 AND message_type = $2\n            ORDER BY created_at DESC, id DESC\n            LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "has_actor_username!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c979dfb9ebc0ddbb62455e27a34f9afe410ed63f06c623af62b5dfa5d96a39c9"
+}

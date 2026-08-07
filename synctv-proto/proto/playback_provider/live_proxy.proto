@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package synctv.playback_provider.live_proxy;
+
+import "proto/buf/validate/validate.proto";
+import "proto/playback_provider/common.proto";
+
+message GetLiveProxyFlvStreamRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string sig = 2 [(buf.validate.field).string.min_len = 1];
+  string uid = 3 [(buf.validate.field).string.min_len = 1];
+  string rid = 4 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 5;
+  bool head = 6;
+}
+
+message LiveProxyFlvStreamResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetLiveProxyHlsMasterRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string sig = 2 [(buf.validate.field).string.min_len = 1];
+  string uid = 3 [(buf.validate.field).string.min_len = 1];
+  string rid = 4 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 5;
+}
+
+message LiveProxyHlsMasterResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetLiveProxyHlsPlaylistRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string generation_id = 2 [(buf.validate.field).string.min_len = 1];
+  string sig = 3 [(buf.validate.field).string.min_len = 1];
+  string uid = 4 [(buf.validate.field).string.min_len = 1];
+  string rid = 5 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 6;
+}
+
+message LiveProxyHlsPlaylistResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetLiveProxyHlsSegmentRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string generation_id = 2 [(buf.validate.field).string.min_len = 1];
+  string segment_name = 3 [(buf.validate.field).string.min_len = 1];
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+  optional string range = 8;
+  bool head = 9;
+}
+
+message LiveProxyHlsSegmentResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+service LiveProxyPlaybackProviderService {
+  rpc GetFlvStream(GetLiveProxyFlvStreamRequest) returns (stream LiveProxyFlvStreamResponse);
+  rpc GetHlsMaster(GetLiveProxyHlsMasterRequest) returns (stream LiveProxyHlsMasterResponse);
+  rpc GetHlsPlaylist(GetLiveProxyHlsPlaylistRequest) returns (stream LiveProxyHlsPlaylistResponse);
+  rpc GetHlsSegment(GetLiveProxyHlsSegmentRequest) returns (stream LiveProxyHlsSegmentResponse);
+}

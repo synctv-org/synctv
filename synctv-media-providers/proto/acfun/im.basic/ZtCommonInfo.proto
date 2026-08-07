@@ -1,0 +1,22 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+message ZtCommonInfo {
+	string kpn = 1;
+	string kpf = 2;
+	string subBiz = 3;
+	int64 uid = 4;
+	string did = 5;
+	int64 clientIp = 6;
+	string appVer = 7;
+	string ver = 8;
+	string lat = 9;
+	string lon = 10;
+	string mod = 11;
+	string net = 12;
+	string sys = 13;
+	string c = 14;
+	string language = 15;
+	string countryCode = 16;
+}

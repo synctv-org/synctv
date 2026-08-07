@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id AS \"id: RoomCategoryId\"\n            FROM room_categories\n            WHERE key = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: RoomCategoryId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_categories",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9bd776773d8ee6c829213755809ce2426028cf5a9ba451dd9f4f7e2c84e99932"
+}

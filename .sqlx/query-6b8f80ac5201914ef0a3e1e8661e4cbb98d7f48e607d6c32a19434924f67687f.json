@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO auth_oauth2_identities (\n                provider_type, provider_instance_name, provider_issuer,\n                provider_user_id, user_id, username, avatar_url\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7)\n            ON CONFLICT (provider_instance_name, provider_user_id)\n            DO UPDATE SET\n                provider_type = EXCLUDED.provider_type,\n                provider_issuer = EXCLUDED.provider_issuer,\n                username = EXCLUDED.username,\n                avatar_url = EXCLUDED.avatar_url,\n                updated_at = CURRENT_TIMESTAMP\n            WHERE auth_oauth2_identities.user_id = EXCLUDED.user_id\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "Varchar",
+        "Text",
+        "Varchar",
+        "Int8",
+        "Varchar",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6b8f80ac5201914ef0a3e1e8661e4cbb98d7f48e607d6c32a19434924f67687f"
+}

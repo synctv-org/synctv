@@ -1,0 +1,59 @@
+---
+title: Known Limitations
+description: Current release limits for deployment, media, clustering, authentication, and API stability.
+---
+
+These limits apply to the current release.
+
+## Deployment Boundaries
+
+| Topic | Current boundary |
+| --- | --- |
+| Single-node | Supported and recommended for initial production |
+| Multi-replica | Supported, but requires shared PostgreSQL, Redis, and consistent secrets |
+| PostgreSQL | Required durable business data store |
+| Redis | Optional for simple single-node, recommended in production, required for multi-replica |
+| Automatic migrations | Embedded SQLx migrations run at service startup |
+| management gRPC | Operations control plane, not for normal clients or public exposure |
+
+## Media and Proxy Boundaries
+
+| Topic | Current boundary |
+| --- | --- |
+| proxy slice cache | Caches only Range slices; no full-body cache |
+| multi-replica slice cache | File backend has no cross-process shared index or distributed lock |
+| header forwarding | Proxy only uses Provider-provided headers |
+| direct playback | Requires the client to access the URL and set required headers |
+| upstream availability | SyncTV cannot guarantee third-party Provider, CDN, or media stability |
+| Bilibili | Upstream policy, cookies, Referer, User-Agent, and Range behavior can change |
+
+## Realtime and Cluster Boundaries
+
+| Topic | Current boundary |
+| --- | --- |
+| WebSocket observations | Not preserved across disconnect; reconnect must rebuild them |
+| Observation count | Per-connection limit applies; merge or unobserve views |
+| Transaction consistency | Database-backed changes fan out after commit; some runtime state is best-effort |
+| Cluster catch-up | Covers short disconnect windows, not long offline sync |
+| Rolling update | Long connections need drain time; not all connections move instantly |
+
+## Security and Account Boundaries
+
+| Topic | Current boundary |
+| --- | --- |
+| 2FA | Local 2FA uses password, passkey, verified email; OAuth2 is not a local factor |
+| JWT revocation | Strong revocation depends on Redis token blacklist and token lifetime |
+| OPAQUE secret | Long-term binding to password records; not for routine rotation |
+| Provider encryption | Depends on credential encryption key; losing it affects decryption |
+| OpenAPI UI | Only exposed when built with the `openapi` feature |
+
+## API Stability
+
+SyncTV is still in an early release stage. Its protobuf, HTTP fields, and Realtime messages may change between versions. Read the release notes before upgrading the server and clients, and include every dependent client in upgrade validation.
+
+## System Responsibilities
+
+- **Media storage**: External object storage, network drives, or media libraries retain media; SyncTV aggregates and proxies it.
+- **Content delivery**: A CDN handles large-scale distribution; proxy and slice cache optimize controlled forwarding and Range requests.
+- **Transcoding**: The Provider or upstream media system supplies transcoding.
+- **Management access**: management gRPC and metrics are accessed through a Unix socket, private network, VPN, or controlled cluster entry point.

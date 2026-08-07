@@ -1,0 +1,159 @@
+---
+title: Metrics 监控
+description: Prometheus metrics listener、TLS、静态鉴权和 Kubernetes TokenReview 鉴权。
+---
+
+`metrics` 配置控制 Prometheus 兼容的 `/metrics` 端点。它不是客户端业务 API，供 Prometheus、VictoriaMetrics、Grafana Agent、OpenTelemetry Collector 等系统抓取。
+
+默认关闭：
+
+```yaml
+metrics:
+  enabled: false
+```
+
+生产环境可以开启，但不要直接暴露公网。Linux 构建会把进程级指标和业务指标放在同一个 registry 中暴露。
+
+## 常用示例
+
+Bearer token：
+
+```yaml
+metrics:
+  enabled: true
+  host: "0.0.0.0"
+  port: 9090
+  auth:
+    mode: "bearer_token"
+    bearer_token_file: "/run/secrets/metrics_token"
+```
+
+Basic auth：
+
+```yaml
+metrics:
+  enabled: true
+  auth:
+    mode: "basic"
+    basic_username: "prometheus"
+    basic_password_file: "/run/secrets/metrics_basic_password"
+```
+
+Kubernetes TokenReview 和 SubjectAccessReview：
+
+```yaml
+metrics:
+  enabled: true
+  auth:
+    mode: "kubernetes"
+    kubernetes:
+      audience: "synctv-metrics"
+      authentication_cache_ttl_seconds: 60
+      authorization_cache_ttl_seconds: 60
+```
+
+`kubernetes` 模式要求二进制启用 `k8s` feature。Helm 可以渲染 RBAC、ServiceAccount token 和抓取资源，不能改变镜像 feature set。
+
+## Listener 字段
+
+| 字段 | 默认值 | 用途 |
+| --- | --- | --- |
+| `metrics.enabled` | `false` | 启动独立 metrics listener |
+| `metrics.host` | `0.0.0.0` | 监听地址 |
+| `metrics.port` | `9090` | 监听端口 |
+
+常见 host：
+
+| 值 | 含义 |
+| --- | --- |
+| `0.0.0.0` | 监听所有 IPv4 网卡，常见于容器 |
+| `127.0.0.1` | 只允许本机访问，适合本地 agent |
+| `::` | 监听所有 IPv6 网卡 |
+
+metrics 端口和主服务 `server.port` 分离。
+
+## TLS
+
+`metrics.tls.enabled` 默认值：`false`。
+
+Kubernetes 集群内抓取通常关闭 TLS，依赖 NetworkPolicy、service account 鉴权和集群网络。跨网络抓取时启用 TLS，或在反向代理处终止 TLS。
+
+```yaml
+metrics:
+  tls:
+    enabled: true
+    cert_path: "/etc/synctv/metrics/tls.crt"
+    key_path: "/etc/synctv/metrics/tls.key"
+```
+
+`metrics.tls.cert_path` 和 `metrics.tls.key_path` 是输入文件路径；相对路径不通过 `data_dir` 重新定位。
+
+## 鉴权模式
+
+| 模式 | 含义 | 场景 |
+| --- | --- | --- |
+| `bearer_token` | 静态 bearer token | Compose、单机、简单 Prometheus |
+| `basic` | HTTP Basic Auth | 传统抓取系统 |
+| `kubernetes` | TokenReview 和 SubjectAccessReview | Kubernetes 原生部署 |
+
+### Bearer Token
+
+抓取方发送：
+
+```http
+Authorization: Bearer <token>
+```
+
+使用文件注入：
+
+```yaml
+metrics:
+  auth:
+    bearer_token_file: "/run/secrets/metrics_token"
+```
+
+生成：
+
+```bash
+openssl rand -base64 32
+```
+
+### Basic Auth
+
+```yaml
+metrics:
+  auth:
+    mode: "basic"
+    basic_username: "prometheus"
+    basic_password_file: "/run/secrets/metrics_basic_password"
+```
+
+### Kubernetes 鉴权
+
+`metrics.auth.kubernetes.audience` 会传给 TokenReview。Prometheus 支持 projected service account token audience 时，使用稳定值，例如 `synctv-metrics`。
+
+`authentication_cache_ttl_seconds` 和 `authorization_cache_ttl_seconds` 默认 `60`。调高会降低 API Server 压力，但权限变更生效更慢。
+
+## Helm
+
+Prometheus Operator：
+
+```yaml
+metrics:
+  enabled: true
+  auth:
+    mode: bearer_token
+  serviceMonitor:
+    enabled: true
+```
+
+VictoriaMetrics：
+
+```yaml
+metrics:
+  enabled: true
+  vmServiceScrape:
+    enabled: true
+```
+
+Helm 中 HTTP/RTMP、gRPC、metrics 使用独立 Service。metrics 抓取应指向专用 metrics Service，不抓公网 API/RTMP Service 或 gRPC Service。

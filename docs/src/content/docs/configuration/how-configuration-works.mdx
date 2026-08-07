@@ -1,0 +1,163 @@
+---
+title: 配置文件如何工作
+description: SyncTV 配置优先级、环境变量、secret 文件和 data_dir 路径解析。
+---
+
+## 配置来源优先级
+
+SyncTV 会把多个来源合并成最终配置。优先级从低到高是：
+
+1. **内置默认值**：代码里的默认配置。
+2. **配置文件**：例如 `synctv.yaml`、`/config/synctv.yaml`。
+3. **环境变量**：例如 `SYNCTV_SERVER_PORT=8080`。
+4. **CLI 参数**：少数启动参数，例如 `--config`、`--data-dir`。
+
+如果同一个配置项在多个地方出现，优先级更高的会覆盖前面的值。
+
+## 配置文件搜索路径
+
+没有显式传 `--config` 时，SyncTV 会按平台查找常见位置：
+
+- 当前目录：`./synctv.yaml`
+- Linux：`$XDG_CONFIG_HOME/synctv/synctv.yaml` 或 `~/.config/synctv/synctv.yaml`
+- Linux 系统配置：`/etc/synctv/synctv.yaml`
+- macOS：`~/.synctv/synctv.yaml`
+- 容器：`/config/synctv.yaml`
+
+你也可以显式指定：
+
+```bash
+synctv serve --config /path/to/synctv.yaml
+```
+
+## 环境变量命名规则
+
+环境变量使用 `SYNCTV_` 前缀，并把配置路径转换成大写下划线。
+
+| 配置文件字段 | 环境变量 |
+| --- | --- |
+| `server.host` | `SYNCTV_SERVER_HOST` |
+| `server.port` | `SYNCTV_SERVER_PORT` |
+| `database.url` | `SYNCTV_DATABASE_URL` |
+| `redis.password` | `SYNCTV_REDIS_PASSWORD` |
+| `jwt.secret` | `SYNCTV_JWT_SECRET` |
+| `security.opaque_server_setup_secret` | `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` |
+| `security.credential_encryption_key` | `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` |
+| `security.totp_encryption_key` | `SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY` |
+| `security.email_outbox_encryption_key` | `SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY` |
+| `security.proxy_signing_key` | `SYNCTV_SECURITY_PROXY_SIGNING_KEY` |
+| `security.media_swarm_signing_key` | `SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY` |
+| `security.provider_session_encryption_key` | `SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY` |
+| `security.login_discovery_key` | `SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY` |
+| `security.webauthn_enumeration_key` | `SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY` |
+| `file_storage.upload_token_secret` | `SYNCTV_FILE_UPLOAD_TOKEN_SECRET` |
+| `proxy_slice_cache.enabled` | `SYNCTV_PROXY_SLICE_CACHE_ENABLED` |
+
+布尔值可以使用：
+
+- `true` / `false`
+- `1` / `0`
+- `yes` / `no`
+
+列表字段通常可以用 JSON 或逗号分隔字符串。推荐复杂列表使用 JSON，因为歧义最少：
+
+```bash
+export SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
+```
+
+## secret 文件
+
+敏感字段支持从文件读取。文件方式适合 Docker Secret、Kubernetes Secret、Vault Agent、External Secrets 等场景。
+
+配置文件里可以写：
+
+```yaml
+jwt:
+  secret_file: "/run/secrets/jwt_secret"
+```
+
+也可以用环境变量：
+
+```bash
+export SYNCTV_JWT_SECRET_FILE=/run/secrets/jwt_secret
+```
+
+常见支持文件读取的字段包括：
+
+- `cluster.secret`
+- `security.credential_encryption_key`
+- `security.totp_encryption_key`
+- `security.email_outbox_encryption_key`
+- `security.opaque_server_setup_secret`
+- `security.proxy_signing_key`
+- `security.media_swarm_signing_key`
+- `security.provider_session_encryption_key`
+- `security.login_discovery_key`
+- `security.webauthn_enumeration_key`
+- `file_storage.upload_token_secret`
+- `management.auth_token`
+- `database.url`
+- `database.password`
+- `redis.url`
+- `redis.password`
+- `jwt.secret`
+- `metrics.auth.bearer_token`
+- `metrics.auth.basic_password`
+- `bootstrap.root_password`
+- `livestream.hls_storage.access_key_id`
+- `livestream.hls_storage.secret_access_key`
+- Media provider 的 `token`、`api_key`、`password` 等 secret-like 字段
+
+## `data_dir` 是什么？
+
+`data_dir` 是 SyncTV 自己写入运行时文件的根目录。它不等于配置文件目录，也不等于数据库目录。
+
+会受 `data_dir` 影响的路径：
+
+- `management.unix_socket_path`
+- `logging.output.path`
+- `<component>.logging.output.path`，其中 `<component>` 为 `server`、`health`、`metrics`、`management`、`cluster`、`livestream` 或 `webrtc`
+- `livestream.hls_storage.path`
+- `proxy_slice_cache.file_cache_dir`
+
+不会受 `data_dir` 影响的路径：
+
+- `*_file` secret 文件路径
+- `metrics.tls.cert_path`
+- `metrics.tls.key_path`
+
+这意味着：
+
+```yaml
+data_dir: "/var/lib/synctv"
+
+proxy_slice_cache:
+  file_cache_dir: "cache/proxy-slice"
+```
+
+实际 slice cache 目录会是：
+
+```text
+/var/lib/synctv/cache/proxy-slice
+```
+
+但：
+
+```yaml
+jwt:
+  secret_file: "./secrets/jwt"
+```
+
+这个路径仍然相对配置文件所在目录，而不是 `data_dir`。
+
+## 如何判断配置是否正确？
+
+运行：
+
+```bash
+synctv config --config synctv.yaml validate
+synctv config --config synctv.yaml validate --strict
+```
+
+这个命令不会启动完整服务，但会尽量检查配置是否安全、完整、合理。部署前建议总是执行一次。
+`config validate` 默认会把未知配置项和不支持的 `SYNCTV_` 环境变量作为 warning 输出；加 `--strict` 后会直接校验失败。`synctv serve` 启动服务时始终使用严格加载，生产启动不会静默忽略拼错的配置。

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE file_cleanup_jobs\n            SET attempt_count = attempt_count + 1,\n                last_error = $2,\n                next_attempt_at = CURRENT_TIMESTAMP + ($3::BIGINT * INTERVAL '1 second'),\n                locked_at = NULL,\n                locked_by = NULL,\n                updated_at = CURRENT_TIMESTAMP\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6206c9146e8fcca6fa99b14f78f262f81ba72f10f6f4cb61f057677ec9178e47"
+}

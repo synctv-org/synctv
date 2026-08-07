@@ -1,0 +1,555 @@
+---
+title: CLI 参考
+description: synctv 命令行工具的本地配置、服务控制、管理命令和常见用法。
+---
+
+import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## CLI 用来做什么？
+
+`synctv` 二进制既可以启动服务，也可以作为管理 CLI 使用。
+
+它支持三类操作：
+
+- 本地操作：读取配置、校验配置、执行数据库迁移、启动服务。
+- 管理操作：通过 management gRPC 端点管理用户、房间、Provider、系统状态等。
+- 辅助操作：生成 shell completions、查看版本。
+
+查看总帮助：
+
+```bash
+synctv --help
+```
+
+查看某个命令帮助：
+
+<Tabs>
+  <TabItem label="总览" icon="list-format">
+
+```bash
+synctv --help
+```
+
+  </TabItem>
+  <TabItem label="用户" icon="setting">
+
+```bash
+synctv user --help
+```
+
+  </TabItem>
+  <TabItem label="房间播放" icon="youtube">
+
+```bash
+synctv room playback --help
+```
+
+  </TabItem>
+  <TabItem label="Provider" icon="seti:config">
+
+```bash
+synctv provider alist --help
+```
+
+  </TabItem>
+</Tabs>
+
+<Aside type="tip">
+CLI 文档按命令族解释常见用法；具体参数以 `synctv <command> --help` 为准，因为 clap help 是二进制的实时来源。
+</Aside>
+
+管理动作的业务语义见 [管理](../../admin/)，房间角色、权限名称、房间设置和用户偏好见 [角色、权限与用户偏好](../../admin/permissions/)。
+
+## 全局参数
+
+这些参数可以放在多数子命令前后。
+
+### `--config <PATH>`
+
+显式指定配置文件路径。
+
+```bash
+synctv --config /etc/synctv/synctv.yaml config validate
+```
+
+优先级高于默认搜索路径和 `SYNCTV_CONFIG_PATH`。
+
+### `--data-dir <PATH>`
+
+覆盖运行时数据目录。
+
+```bash
+synctv --data-dir /var/lib/synctv serve
+```
+
+影响管理 socket、HLS 存储、slice cache、文件日志等运行时输出路径，但不影响 `*_file` secret 文件路径。
+
+### `--no-dotenv`
+
+不加载 `.env`。
+
+```bash
+synctv --no-dotenv config validate
+```
+
+适合部署自动化、生产脚本，以及完全由环境变量和配置文件控制的运行环境。
+
+### `-v` / `--verbose`
+
+输出更详细的配置加载诊断。
+
+```bash
+synctv -v config validate
+```
+
+### `--endpoint <ENDPOINT>`
+
+指定 management 端点。
+
+Unix socket 示例：
+
+```bash
+synctv --endpoint unix:///var/lib/synctv/synctv.sock system stats
+```
+
+TCP 示例：
+
+```bash
+synctv --endpoint http://127.0.0.1:50052 system stats
+```
+
+也可以使用环境变量：
+
+```bash
+SYNCTV_MANAGEMENT_ENDPOINT=http://127.0.0.1:50052
+```
+
+### `--auth-token` 和 `--auth-token-file`
+
+TCP management 端点需要 bearer token。
+
+```bash
+synctv --endpoint http://127.0.0.1:50052 --auth-token "$TOKEN" system stats
+```
+
+推荐从文件读取：
+
+```bash
+synctv --endpoint http://127.0.0.1:50052 --auth-token-file /run/secrets/management_token system stats
+```
+
+也可以使用：
+
+```bash
+SYNCTV_MANAGEMENT_AUTH_TOKEN=...
+SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE=/run/secrets/management_token
+```
+
+## 输出格式
+
+远程管理命令通常支持：
+
+- `--output human`
+- `--output json`
+- `--output yaml`
+
+示例：
+
+```bash
+synctv user list --output json
+```
+
+配置展示支持：
+
+- `--output yaml`
+- `--output json`
+- `--output toml`
+
+示例：
+
+```bash
+synctv config show --output json
+```
+
+## 服务命令
+
+### `serve`
+
+启动 SyncTV 服务。
+
+```bash
+synctv serve
+synctv serve --config synctv.yaml
+```
+
+只校验并演练启动流程：
+
+```bash
+synctv serve --dry-run
+```
+
+### `stop`
+
+通过 management 端点停止运行中的服务。
+
+```bash
+synctv stop
+synctv stop --force
+```
+
+`--force` 会请求更快关闭，减少 drain 等待时间。
+
+## 配置命令
+
+### `config validate`
+
+校验最终配置。
+
+```bash
+synctv config validate
+synctv --config /etc/synctv/synctv.yaml config validate
+synctv --config /etc/synctv/synctv.yaml config validate --strict
+```
+
+`--strict` 会拒绝不支持的配置文件键和不支持的 `SYNCTV_` 环境变量，而不是只 warning 后忽略。
+
+### `config show`
+
+输出合并后的配置，secret 会被隐藏。
+
+```bash
+synctv config show
+synctv config show --output json
+```
+
+## 数据库命令
+
+### `db migrate`
+
+显式运行 embedded SQLx migrations 但不启动服务。服务启动阶段也会自动执行同一套 migrations，因此这个命令主要用于部署预检、预发布环境和排障。
+
+```bash
+synctv db migrate
+```
+
+### `db status`
+
+检查数据库连接和迁移状态。
+
+```bash
+synctv db status
+synctv db status --output yaml
+```
+
+## 用户管理
+
+用户命令用于管理用户生命周期、角色、密码、偏好和批量操作。
+
+常见命令：
+
+```bash
+synctv user list
+synctv user get alice
+synctv user create alice --email alice@example.com
+synctv user delete alice
+synctv user ban alice --reason "abuse"
+synctv user unban alice
+synctv user set-role alice admin
+synctv user require-password-reset alice --reason "support reset"
+synctv user set-username alice --username alice2
+synctv user rooms alice
+```
+
+用户偏好：
+
+```bash
+synctv user preferences get alice
+synctv user preferences set alice --two-factor-enabled true
+```
+
+管理员角色：
+
+```bash
+synctv user admin grant alice
+synctv user admin revoke alice
+synctv user admin list
+```
+
+批量操作：
+
+```bash
+synctv user batch ban alice bob --reason "spam"
+synctv user batch delete alice bob
+```
+
+注意：涉及 root/admin 的操作会遵守角色层级，普通 admin 不能越权修改 root 或其他高权限用户的敏感设置。
+
+## 房间管理
+
+房间命令覆盖房间创建、查询、成员、设置、播放和直播状态。
+
+常见命令：
+
+```bash
+synctv room create "电影房" --username alice
+synctv room list
+synctv room get <ROOM_ID>
+synctv room set-password <ROOM_ID> --password "room-pass"
+synctv room transfer-owner <ROOM_ID> --username alice bob
+synctv room ban <ROOM_ID> --reason "policy"
+synctv room unban <ROOM_ID>
+synctv room delete <ROOM_ID>
+```
+
+房间设置：
+
+```bash
+synctv room settings get <ROOM_ID>
+synctv room settings update <ROOM_ID> --set requireApproval=true --set autoPlay.mode=shuffle
+synctv room settings update <ROOM_ID> --unset autoPlay.mode
+synctv room settings reset <ROOM_ID>
+```
+
+成员管理：
+
+```bash
+synctv room member list <ROOM_ID>
+synctv room member add <ROOM_ID> alice
+synctv room member set-permissions <ROOM_ID> alice --role admin
+synctv room member kick <ROOM_ID> alice --kick-cooldown-seconds 300
+```
+
+播放控制：
+
+```bash
+synctv room playback get <ROOM_ID>
+synctv room playback start <ROOM_ID> --media-id <MEDIA_ID>
+synctv room playback play <ROOM_ID>
+synctv room playback pause <ROOM_ID>
+synctv room playback seek <ROOM_ID> --position 60
+synctv room playback speed <ROOM_ID> --speed 1.25
+synctv room playback stop <ROOM_ID>
+```
+
+直播流：
+
+```bash
+synctv room stream list <ROOM_ID>
+```
+
+## 审核与封禁
+
+审核命令：
+
+```bash
+synctv review user-registration list
+synctv review user-registration approve <REVIEW_ID>
+synctv review user-registration reject <REVIEW_ID> --reason "reason"
+
+synctv review room-creation list
+synctv review room-creation approve <REVIEW_ID>
+synctv review room-creation reject <REVIEW_ID> --reason "reason"
+
+synctv review room-join list
+synctv review room-join approve <REVIEW_ID>
+synctv review room-join reject <REVIEW_ID> --reason "reason"
+```
+
+封禁记录：
+
+```bash
+synctv ban list
+```
+
+## 播放列表与媒体
+
+播放列表：
+
+```bash
+synctv playlist list <ROOM_ID>
+synctv playlist get <ROOM_ID> <PLAYLIST_ID>
+synctv playlist create <ROOM_ID> --username alice "周末片单"
+synctv playlist update <ROOM_ID> <PLAYLIST_ID> --name "新标题"
+synctv playlist move <ROOM_ID> <PLAYLIST_ID> --after-playlist-id <OTHER_PLAYLIST_ID>
+synctv playlist delete <ROOM_ID> <PLAYLIST_ID>
+```
+
+媒体：
+
+```bash
+synctv media list <ROOM_ID>
+synctv media add-url <ROOM_ID> --username alice "https://example.com/video.mp4" --name "视频"
+synctv media add <ROOM_ID> --username alice --source-provider direct-url --source-config-json '{"medias":[{"url":"https://example.com/video.mp4"}]}' --name "视频"
+synctv media update <ROOM_ID> <MEDIA_ID> --name "新名称"
+synctv media move <ROOM_ID> <MEDIA_ID> --after-media-id <OTHER_MEDIA_ID>
+synctv media delete <ROOM_ID> <MEDIA_ID>
+```
+
+Provider 相关添加：
+
+```bash
+synctv playlist provider alist <ROOM_ID> ...
+synctv playlist provider emby <ROOM_ID> ...
+synctv media provider alist <ROOM_ID> ...
+synctv media provider emby <ROOM_ID> ...
+synctv media provider bilibili video <ROOM_ID> ...
+synctv media provider bilibili pgc <ROOM_ID> ...
+synctv media provider bilibili live <ROOM_ID> ...
+```
+
+具体参数以 `--help` 输出为准。
+
+参数约定：房间 ID、资源地址等命令主目标使用位置参数；筛选条件、可选的关联 ID、Provider instance 绑定和连接设置使用明确的 `--kebab-case` 选项。
+
+## Provider 管理
+
+Provider 实例管理：
+
+```bash
+synctv provider-instance available
+synctv provider backends alist
+synctv provider-instance list
+synctv provider-instance create <NAME> <ENDPOINT> --provider alist
+synctv provider-instance update <NAME> --instance-endpoint <ENDPOINT>
+synctv provider-instance enable <NAME>
+synctv provider-instance disable <NAME>
+synctv provider-instance reconnect <NAME>
+synctv provider-instance delete <NAME>
+```
+
+Alist 服务操作：
+
+```bash
+synctv provider alist login --username alice --server-endpoint https://alist.example --account-username alice --password 'pass' --instance-name alist-main
+synctv provider alist list --username alice --server-id <SERVER_ID> --path / --instance-name alist-main
+synctv provider alist search --username alice --server-id <SERVER_ID> --parent / --keywords movie --instance-name alist-main
+synctv provider alist me --username alice --server-id <SERVER_ID> --instance-name alist-main
+synctv provider alist binds --username alice
+synctv provider alist logout --username alice --server-id <SERVER_ID>
+```
+
+Emby 服务操作：
+
+```bash
+synctv provider emby login --username alice --server-endpoint https://emby.example --account-username alice --password 'pass' --instance-name emby-main
+synctv provider emby list --username alice --server-id <SERVER_ID> --path / --instance-name emby-main
+synctv provider emby me --username alice --server-id <SERVER_ID> --instance-name emby-main
+synctv provider emby binds --username alice
+synctv provider emby logout --username alice --server-id <SERVER_ID>
+```
+
+Bilibili 服务操作：
+
+```bash
+synctv provider bilibili parse "https://www.bilibili.com/video/..." --username alice
+synctv provider bilibili login-qr --username alice --instance-name bilibili-main
+synctv provider bilibili check-qr --username alice --key <KEY> --instance-name bilibili-main
+synctv provider bilibili start-sms-login --username alice --instance-name bilibili-main
+synctv provider bilibili send-sms --username alice --phone 13800000000 --session-token <SESSION_TOKEN> --validate <VALIDATE>
+synctv provider bilibili login-sms --username alice --session-token <UPDATED_SESSION_TOKEN> --code 123456
+synctv provider bilibili me --username alice --instance-name bilibili-main
+synctv provider bilibili binds --username alice
+synctv provider bilibili logout --username alice
+```
+
+RTMP：
+
+```bash
+synctv provider rtmp create-publish-key --room-id <ROOM_ID> <MEDIA_ID> --username alice
+synctv provider rtmp get-stream-info --room-id <ROOM_ID> <MEDIA_ID>
+```
+
+Provider 服务操作：
+
+```bash
+synctv provider acfun resolve <RESOURCE> --username alice
+synctv provider cctv resolve <RESOURCE> --username alice
+synctv provider douyu resolve <RESOURCE> --username alice
+synctv provider huya resolve <RESOURCE> --username alice
+synctv provider youtube resolve <RESOURCE> --username alice
+synctv provider youtube unbind --server-id <SERVER_ID> --username alice
+synctv provider cloudreve login --username alice --server-endpoint https://cloudreve.example --account-email alice@example.com --password <PASSWORD>
+synctv provider fnos login --username alice --server-endpoint https://fnos.example --account-username nas-alice --password <PASSWORD>
+synctv provider nextcloud login --username alice --server-endpoint https://nextcloud.example --account-username cloud-alice --app-password <APP_PASSWORD>
+synctv provider qnap login --username alice --server-endpoint https://qnap.example --account-username nas-alice --password <PASSWORD>
+synctv provider seafile login --username alice --server-endpoint https://seafile.example --account-username files-alice --password <PASSWORD>
+synctv provider synology login --username alice --server-endpoint https://synology.example --account-username nas-alice --password <PASSWORD>
+synctv provider cloudreve me --server-id <SERVER_ID> --username alice
+synctv provider cloudreve logout --server-id <SERVER_ID> --username alice
+synctv provider nextcloud logout --server-id <SERVER_ID> --username alice
+synctv provider qnap capabilities --server-id <SERVER_ID> --username alice
+synctv provider seafile logout --server-id <SERVER_ID> --username alice
+synctv provider synology logout --server-id <SERVER_ID> --username alice
+synctv provider truenas logout --server-id <SERVER_ID> --username alice
+synctv provider cloudreve list --username alice --server-id <SERVER_ID> --path /
+synctv provider synology movies --username alice --server-id <SERVER_ID> --library-id 1
+```
+
+`--username`、`--user-id` 与 `--email` 用于选择 SyncTV 操作者。登录命令通过 `--server-endpoint` 指定 Provider 账号服务器，并使用 `--account-username` 或 `--account-email` 指定 Provider 账号。
+
+## Runtime settings
+
+运行时设置通过 management 端点修改，不等同于 YAML 启动配置。
+
+```bash
+synctv settings list
+synctv settings get email
+synctv settings update --set email.whitelistEnabled=true --set 'email.whitelistDomains=["example.com"]'
+synctv settings update --unset email.smtpProxy
+synctv settings export --file runtime-settings.json
+synctv settings import runtime-settings.json --dry-run
+synctv settings import runtime-settings.json
+synctv settings test-email admin@example.com
+```
+
+`--set PATH=VALUE` 与 `--unset PATH` 可以重复使用，CLI 自动生成 FieldMask。`--request-json` 接受标准 `UpdateSettingsRequest` ProtoJSON，并与 set/unset 模式互斥。
+
+`settings export` 生成带 `formatVersion` 的完整 JSON 快照，内容包含 OAuth client secret、SMTP 密码和代理密码。文件以原子方式写入；Unix 文件权限为 `0600`，覆盖已有文件需要 `--force`。省略 `--file` 时快照写入标准输出。
+
+`settings import` 从文件读取快照，使用 `-` 可读取标准输入。服务端先校验快照版本、完整凭据和全部业务规则，再以单个事务完整替换 runtime settings。`--dry-run` 返回计划变更的分组且保持数据库原值，适合恢复前校验。
+
+导出和导入接口要求 root 权限。management CLI 会使用本地 root 操作者身份，并继续要求有效的 management token。
+
+完整 key、默认值和校验规则见 [Runtime settings 参考](../runtime-settings/)。
+
+SMTP 主机、端口、账号、密码、SOCKS5 代理和发件人通过 `email` runtime settings 管理。`settings test-email` 使用当前热更新配置发送测试邮件；普通设置读取结果会隐藏 SMTP 密码和代理密码，导出快照保留完整凭据用于恢复。
+
+安全建议：不要把 management TCP 端点暴露公网。远程执行时使用强 token，并优先通过内网或 VPN 访问。
+
+## 系统与 slice cache
+
+系统状态：
+
+```bash
+synctv system stats
+synctv system stream list
+synctv system stream kick <STREAM_ID>
+```
+
+slice cache 运维：
+
+```bash
+synctv slice-cache stats
+synctv slice-cache evict-expired
+synctv slice-cache purge
+```
+
+注意：slice cache 是否启用由启动配置 `proxy_slice_cache.enabled` 决定，不支持通过 CLI 动态启停。CLI 只提供统计、清理和过期驱逐。
+
+## Shell completions
+
+生成 shell completion：
+
+```bash
+synctv completion bash > synctv.bash
+synctv completion zsh > _synctv
+synctv completion fish > synctv.fish
+```
+
+具体安装路径取决于你的 shell 和系统发行版。
+
+## 版本
+
+```bash
+synctv version
+```

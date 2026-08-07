@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package synctv.provider.qnap;
+
+import "proto/buf/validate/validate.proto";
+
+message LoginRequest {
+  string endpoint = 1 [(buf.validate.field).string.min_len = 1];
+  string username = 2 [(buf.validate.field).string.min_len = 1];
+  string password = 3 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 4;
+}
+
+message LoginResponse {
+  string server_id = 1;
+  string server_name = 2;
+  optional string version = 3;
+  bool support_rtt = 4;
+}
+
+message ListRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string path = 2;
+  uint64 page = 3 [(buf.validate.field).uint64.gte = 1];
+  uint32 page_size = 4 [(buf.validate.field).uint32 = {gte: 1, lte: 200}];
+  optional string search = 5;
+  string instance_name = 6;
+}
+
+message FileItem {
+  string name = 1;
+  string path = 2;
+  bool is_dir = 3;
+  uint64 size = 4;
+  uint64 modified_at = 5;
+  uint64 file_type = 6;
+  repeated uint32 pre_transcoded_heights = 7;
+}
+
+message ListResponse {
+  repeated FileItem content = 1;
+  uint64 total = 2;
+  uint64 page = 3;
+  bool has_more = 4;
+  bool realtime_transcode = 5;
+}
+
+message GetCapabilitiesRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 2;
+}
+
+message GetCapabilitiesResponse {
+  bool support_rtt = 1;
+  bool hardware_transcode = 2;
+  bool qtranscode = 3;
+  bool multimedia_codec = 4;
+  bool hd_station_support = 5;
+}
+
+message LogoutRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message LogoutResponse {
+  bool success = 1;
+}
+
+message GetBindsRequest {
+  string instance_name = 1;
+}
+
+message BindInfo {
+  string id = 1;
+  string server_id = 2;
+  string endpoint = 3;
+  string username = 4;
+  string server_name = 5;
+  optional string version = 6;
+  bool support_rtt = 7;
+  int64 created_at = 8;
+  string provider_instance_name = 9;
+}
+
+message GetBindsResponse {
+  repeated BindInfo binds = 1;
+}

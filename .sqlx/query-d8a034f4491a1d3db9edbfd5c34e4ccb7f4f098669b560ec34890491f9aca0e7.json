@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO auth_email_identities (user_id, email, created_at, updated_at)\n        VALUES ($1, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)\n        ON CONFLICT (user_id)\n        DO UPDATE SET email = EXCLUDED.email, updated_at = EXCLUDED.updated_at\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d8a034f4491a1d3db9edbfd5c34e4ccb7f4f098669b560ec34890491f9aca0e7"
+}

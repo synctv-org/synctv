@@ -1,0 +1,24 @@
+<script is:inline>
+  (() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    if (document.documentElement.lang !== 'zh-CN') return;
+    if (window.localStorage.getItem('synctv-docs-locale-selected') === '1') return;
+
+    const languages = navigator.languages && navigator.languages.length
+      ? navigator.languages
+      : [navigator.language];
+    const wantsEnglish = languages.some((language) => {
+      const value = String(language || '').toLowerCase();
+      return value === 'en' || value.startsWith('en-');
+    });
+    const wantsChinese = languages.some((language) => {
+      const value = String(language || '').toLowerCase();
+      return value.startsWith('zh');
+    });
+
+    if (wantsEnglish && !wantsChinese) {
+      const current = window.location.href.endsWith('/') ? window.location.href : window.location.href + '/';
+      window.location.replace(new URL('en/', current).toString());
+    }
+  })();
+</script>

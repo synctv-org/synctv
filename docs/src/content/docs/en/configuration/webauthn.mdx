@@ -1,0 +1,196 @@
+---
+title: WebAuthn and Passkeys
+description: Passkey login, WebAuthn RP ID, origins, secure domains, and cluster dependencies.
+---
+
+## Supported Authentication Methods
+
+WebAuthn is the standard behind passkeys, security keys, and platform biometric unlock flows. SyncTV uses the configuration section name `webauthn`; product UI may call the feature passkeys.
+
+## Production Requirements
+
+Before enabling WebAuthn in production:
+
+- Use HTTPS.
+- Use a stable domain.
+- Configure `rp_id` and `rp_origin` correctly.
+- Use Redis in multi-replica deployments so challenge state is shared.
+
+## `webauthn.enabled`
+
+Default:
+
+```yaml
+webauthn:
+  enabled: false
+```
+
+When enabled, passkey registration and login endpoints become available.
+
+Passkey login uses WebAuthn discoverable credentials with conditional UI. The login start request does not include a username or email; the browser or operating system passkey UI lets the user pick a credential for the configured RP ID, then the server resolves the account from the returned credential ID. Clients should present this as passkey login and require a browser/authenticator combination that supports discoverable credentials.
+
+## `webauthn.rp_id`
+
+Relying Party ID. This is the site identity seen by authenticators.
+
+Usually this is the main domain without scheme, port, or path:
+
+```yaml
+webauthn:
+  rp_id: "example.com"
+```
+
+If the frontend is `https://app.example.com`, valid choices may include `example.com` or `app.example.com` depending on your product domain model.
+
+Do not use:
+
+- `https://example.com`
+- `example.com/login`
+- `localhost:8080`
+
+## `webauthn.rp_origin`
+
+The exact frontend origin users access:
+
+```yaml
+webauthn:
+  rp_origin: "https://app.example.com"
+```
+
+Origins include scheme, host, and optional port only. They do not include paths, query strings, or fragments.
+
+## `webauthn.rp_name`
+
+Display name shown by the authenticator or operating system passkey UI.
+
+Default:
+
+```yaml
+webauthn:
+  rp_name: "SyncTV"
+```
+
+## `webauthn.allowed_origins`
+
+Additional allowed origins:
+
+```yaml
+webauthn:
+  rp_origin: "https://app.example.com"
+  allowed_origins:
+    - "https://admin.example.com"
+```
+
+Keep this list minimal.
+
+## Native App Associations
+
+Apple platforms use `webauthn.apple_app_ids` to declare native apps that may use this RP ID. Each value is an Apple application identifier in `TeamID.BundleID` form:
+
+```yaml
+webauthn:
+  apple_app_ids:
+    - "ABCDE12345.org.synctv.app"
+```
+
+The server exposes these values as `webcredentials.apps` and App Link identities at `/.well-known/apple-app-site-association`. App Link paths are derived from `oauth2.allowedRedirectUrls` entries whose HTTPS host matches the request domain. Add both `webcredentials:example.com` and `applinks:example.com` to the app's Associated Domains entitlement when OAuth2 login is enabled.
+
+Android uses the app package and SHA-256 fingerprints of its signing certificates:
+
+```yaml
+webauthn:
+  android_apps:
+    - package_name: "org.synctv.app"
+      sha256_cert_fingerprints:
+        - "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+```
+
+The server publishes `delegate_permission/common.get_login_creds` and `delegate_permission/common.handle_all_urls` statements at `/.well-known/assetlinks.json`. Multiple fingerprints support signing-certificate rotation.
+
+The matching environment variables accept JSON:
+
+```text
+SYNCTV_WEBAUTHN_APPLE_APP_IDS=["ABCDE12345.org.synctv.app"]
+SYNCTV_WEBAUTHN_ANDROID_APPS=[{"package_name":"org.synctv.app","sha256_cert_fingerprints":["AA:BB:..."]}]
+```
+
+### Official App and Self-Hosted Servers
+
+The official Android app can dynamically support any self-hosted SyncTV domain. Every officially signed GitHub Release includes `SyncTV-<version>-android-passkey-server-config.yaml`, containing the public package name and release-certificate SHA-256 fingerprint. Merge its `android_apps` value into the server's `webauthn` configuration and set `rp_id` and `rp_origin` to the server's own domain:
+
+```yaml
+webauthn:
+  enabled: true
+  rp_id: "tv.example.com"
+  rp_origin: "https://tv.example.com"
+  android_apps:
+    - package_name: "org.synctv.app"
+      sha256_cert_fingerprints:
+        - "<SHA-256 fingerprint from the official Release configuration file>"
+```
+
+Package names and certificate fingerprints are public identity material. Android uses them to verify that the domain authorizes the installed app. Keep the keystore, signing private key, and passwords secret. Each signing identity requires the fingerprint of its installed artifact.
+
+The signing key determines the certificate fingerprint. For a self-built app, read the SHA-256 fingerprint from the installed artifact and add it to the server configuration. Keep the same signing key across app upgrades to preserve authorization. Temporary test artifacts may use different certificates, so configure the fingerprint of each installed artifact.
+
+One server can authorize both the official app and a fork. Apps with the same package name share one `android_apps` entry containing multiple fingerprints:
+
+```yaml
+webauthn:
+  android_apps:
+    - package_name: "org.synctv.app"
+      sha256_cert_fingerprints:
+        - "<official app certificate SHA-256>"
+        - "<fork app certificate SHA-256>"
+```
+
+Add a separate `android_apps` entry for an app with a custom package name. Apps with their own signing keys and certificate fingerprints can connect to the same self-hosted server.
+
+GitHub APKs use the certificate published in the Release configuration file. A future Google Play distribution may use a separate Google Play App Signing certificate; add the App signing certificate SHA-256 from Play Console to `sha256_cert_fingerprints` as well.
+
+Apple fixes the allowed RP IDs in the signed app's Associated Domains entitlement. The official prebuilt iOS and macOS apps can use native passkeys only with domains included in `SYNCTV_PASSKEY_RP_IDS` at build time, so a self-hosted server on an arbitrary independent domain cannot dynamically join the official Apple app. Self-hosted deployments can use one of these paths:
+
+- Build and sign the app with an Apple Developer Team, add the server RP ID to `SYNCTV_PASSKEY_RP_IDS`, and add `<TeamID>.org.synctv.app` to the server's `apple_app_ids`.
+- Use a system-browser WebAuthn flow, where the browser manages the passkey for the self-hosted domain; the current official app exposes native passkeys only, so this path requires a future browser authentication flow.
+- Use an RP domain already covered by the official Apple app entitlement.
+
+Each self-hosted server controls Android authorization, allowing the official prebuilt app to add domains at runtime. Native Apple authorization is constrained by both the build signature and the server AASA document, so the domain set is determined at build time.
+
+## `webauthn.allow_subdomains`
+
+Default: `false`.
+
+Allows subdomains of configured domains. Most deployments should keep this disabled.
+
+## `webauthn.allow_any_port`
+
+Default: `false`.
+
+Ignores origin port during validation. Use only for local development where frontend dev server ports change.
+
+Do not enable it in production.
+
+## `webauthn.timeout_seconds`
+
+Default: `300`.
+
+How long passkey registration or login challenges remain valid.
+
+## Relationship With 2FA
+
+Passkeys can be one local verification method. To enable user-level 2FA, a user must have at least two local verification methods, commonly:
+
+- password + email
+- password + webauthn
+- email + webauthn
+
+OAuth2 does not participate in local 2FA.
+
+## Redis Dependency
+
+WebAuthn challenges are single-use. In multi-replica deployments, challenge state must be shared across Pods.
+
+Guidance:
+
+- Single-node: Redis optional.
+- Multi-replica or `cluster.enabled=true`: Redis required.

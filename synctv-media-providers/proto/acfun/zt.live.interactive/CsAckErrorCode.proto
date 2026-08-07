@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package acproto;
+
+enum CsAckErrorCode {
+	SUCCESS_CS_ACK = 0;
+	LIVE_CLOSED = 1;
+	TICKET_ILLEGAL = 2;
+	ATTACH_ILLEGAL =3;
+	USER_NOT_IN_ROOM = 4;
+	SERVER_ERROR = 5;
+	REQUEST_PARAM_INVALID = 6;
+	ROOM_NOT_EXIST_IN_STATE_MANAGER = 7;
+	NEW_LIVE_OPENED = 8;
+}

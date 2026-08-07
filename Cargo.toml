@@ -1,0 +1,407 @@
+cargo-features = ["trim-paths"]
+
+[workspace]
+members = [
+    # SyncTV crates
+    "synctv-proto",
+    "synctv-proto-build",
+    "synctv-proto-main",
+    "synctv-proto-providers",
+    "synctv-proto-playback-provider",
+    "synctv-core",
+    "synctv-core/testing",
+    "synctv-adapter",
+    "synctv-proxy",
+    "synctv-api",
+    "synctv-api-common",
+    "synctv-api-http",
+    "synctv-api-grpc",
+    "synctv-livestream",
+    "synctv-cluster",
+    "synctv-realtime",
+    "synctv-media-providers",
+    "synctv-management",
+    "synctv",
+    # Shared utilities
+    "synctv-common",
+    # xiu consolidated crate
+    "synctv-xiu",
+]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+authors = ["SyncTV Contributors"]
+license = "MIT"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+style = { level = "deny", priority = -1 }
+complexity = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+todo = "deny"
+unwrap_used = "deny"
+doc_markdown = "allow"
+struct_excessive_bools = "allow"
+case_sensitive_file_extension_comparisons = "allow"
+missing_fields_in_debug = "allow"
+trivially_copy_pass_by_ref = "allow"
+default_trait_access = "allow"
+match_wildcard_for_single_variants = "allow"
+explicit_deref_methods = "allow"
+double_must_use = "allow"
+field_reassign_with_default = "allow"
+float_cmp = "allow"
+large_enum_variant = "allow"
+struct_field_names = "allow"
+too_many_lines = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+wildcard_imports = "allow"
+redundant_pub_crate = "allow"
+similar_names = "allow"
+multiple_crate_versions = "allow"
+cargo_common_metadata = "allow"
+redundant_feature_names = "allow"
+needless_for_each = "allow"
+unnecessary_wraps = "allow"
+
+[workspace.dependencies]
+# Async Runtime
+tokio = { version = "=1.53.1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "io-util",
+    "process",
+    "time",
+    "sync",
+    "signal",
+    "fs",
+] }
+tokio-util = { version = "=0.7.19", features = ["codec", "io-util", "rt"] }
+tokio-stream = "=0.1.19"
+
+# gRPC & Protobuf
+tonic = { version = "=0.14.6", default-features = false, features = [
+    "transport",
+    "codegen",
+    "server",
+    "router",
+    "channel",
+    "gzip",
+] }
+tonic-web = "=0.14.6"
+tonic-reflection = "=0.14.6"
+tonic-health = "=0.14.6"
+tonic-types = "=0.14.6"
+tonic-build = "=0.14.6"
+tonic-prost = "=0.14.6"
+tonic-prost-build = "=0.14.6"
+prost = "=0.14.4"
+prost-types = "=0.14.4"
+prost-reflect = "=0.16.5"
+prost-reflect-build = "=0.16.1"
+prost-protovalidate = "=0.6.0"
+pbjson = "=0.9.0"
+pbjson-build = "=0.9.0"
+pbjson-types = "=0.9.0"
+
+# HTTP Framework
+axum = { version = "=0.8.9", features = ["ws", "http2"] }
+tower = { version = "=0.5.3", features = [
+    "util",
+] }
+tower-http = { version = "=0.7.0", features = [
+    "trace",
+    "on-early-drop",
+    "cors",
+    "compression-br",
+    "compression-gzip",
+    "compression-zstd",
+] }
+hyper = { version = "=1.11.0", default-features = false, features = [
+    "http1",
+    "http2",
+    "server",
+] }
+reqwest = { version = "=0.13.4", default-features = false, features = [
+    "json",
+    "cookies",
+    "query",
+    "form",
+    "http2",
+    "charset",
+    "system-proxy",
+    "stream",
+    "gzip",
+    "brotli",
+    "zstd",
+    "hickory-dns",
+] }
+
+# Database
+sqlx = { version = "=0.9.0", default-features = false, features = [
+    "runtime-tokio",
+    "postgres",
+    "migrate",
+    "uuid",
+    "chrono",
+    "json",
+    "macros",
+] }
+
+# Redis
+redis = { version = "=1.5.0", default-features = false, features = [
+    "tokio-comp",
+    "connection-manager",
+    "streams",
+    "sentinel",
+    "script",
+] }
+
+# Security
+opaque-ke = { version = "=4.1.0-pre.2", features = ["argon2"] }
+jsonwebtoken = { version = "=11.0.0", features = ["rust_crypto"] }
+oauth2 = { version = "=5.0.0", default-features = false }
+webauthn-rs = { version = "=0.6.1-dev", features = ["conditional-ui", "danger-allow-state-serialisation"] }
+webauthn-rs-proto = "=0.6.1-dev"
+aes-gcm = "=0.11.0"
+aes = "=0.9.2"
+cbc = { version = "=0.2.1", features = ["alloc", "block-padding"] }
+ammonia = "=4.1.4"
+http-acl = "=0.11.0"
+http-acl-reqwest = "=0.11.0"
+hkdf = "=0.13.0"
+sha1 = "=0.11.0"
+sha2 = "=0.11.0"
+sm3 = "=0.5.0"
+md-5 = "=0.11.0"
+hmac = "=0.13.0"
+rsa = "=0.9.10"
+subtle = "=2.6.1"
+
+# Serialization
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+quick-xml = "=0.41.0"
+serde_yaml = "=0.9.34"
+serde_ignored = "=0.1.14"
+toml = "=1.1.4"
+serde_urlencoded = "=0.7.1"
+serde_html_form = "=0.4.1"
+serde_path_to_error = "=0.1.20"
+indexmap = "=2.14.0"
+bincode = { version = "=2.0.1", features = ["serde"] }
+
+# Caching
+moka = { version = "=0.12.15", features = ["future", "sync"] }
+dashmap = "=7.0.0-rc2"
+lru = "=0.18.2"
+
+# IDs & Crypto
+nanoid = "=0.5.0"
+uuid = { version = "=1.24.0", features = ["v4", "v5", "serde"] }
+sqids = "=0.4.2"
+rand = "=0.10.2"
+rand_08 = { package = "rand", version = "=0.8.6" }
+rand_chacha_08 = { package = "rand_chacha", version = "=0.3.1" }
+base64 = "=0.23.0"
+humantime = "=2.4.0"
+hex = "=0.4.3"
+chrono-tz = "=0.10.4"
+sha2_010 = { package = "sha2", version = "=0.10.9" }
+iana-time-zone = "=0.1.65"
+
+# Streaming (consolidated xiu crate)
+synctv-xiu = { path = "synctv-xiu", default-features = false }
+retina = "=0.4.19"
+rust_h265 = "=0.1.0"
+rusty_aac = { version = "=0.1.1", default-features = false }
+rusty_h264 = { version = "=0.7.0", default-features = false }
+ffmpeg-next = { version = "=8.1.0", default-features = false, features = ["build", "format"] }
+
+# Object Storage
+opendal = { version = "=0.58.1", default-features = false, features = [
+    "executors-tokio",
+    "services-s3",
+    "layers-retry",
+    "layers-timeout",
+    "layers-concurrent-limit",
+] }
+opendal-http-transport-reqwest = { version = "=0.58.1", default-features = false, features = ["rustls-no-provider"] }
+
+# Logging & Tracing
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = [
+    "json",
+] }
+tracing-appender = "=0.2.5"
+dotenvy = "=0.15.7"
+
+# Configuration
+config = { version = "=0.15.25", default-features = false, features = ["yaml", "json", "toml"] }
+clap = { version = "=4.6.5", features = ["wrap_help", "derive"] }
+clap_complete = "=4.6.8"
+
+# Utilities
+anyhow = "=1.0.104"
+thiserror = "=2.0.19"
+bytes = { version = "=1.12.1", features = ["serde"] }
+parking_lot = "=0.12.5"
+async-trait = "=0.1.91"
+futures = "=0.3.33"
+futures-util = "=0.3.33"
+hostname = "=0.4.2"
+url = "=2.5.8"
+percent-encoding = "=2.3.2"
+urlencoding = "=2.1.3"
+regex = "=1.13.1"
+oxc_allocator = "=0.143.0"
+oxc_ast = "=0.143.0"
+oxc_parser = "=0.143.0"
+oxc_span = "=0.143.0"
+boa_engine = { version = "=0.21.1", default-features = false }
+paste = "=1.0.15"
+byteorder = "=1.5.0"
+http = "=1.5.0"
+zxcvbn = { version = "=3.1.1", default-features = false }
+
+# Monitoring
+prometheus = { version = "=0.14.0", features = ["process"] }
+
+# Time
+chrono = { version = "=0.4.45", features = ["serde"] }
+html-escape = "=0.2.15"
+rsntp = "=4.1.2"
+
+# Kubernetes (in-cluster client for leader election & service discovery)
+kube = { version = "=4.2.0", default-features = false, features = ["client", "gzip"] }
+k8s-openapi = { version = "=0.28.0", features = ["latest"] }
+
+# TLS
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["tls12", "brotli", "zlib"] }
+rustls = { version = "=0.23.43", default-features = false, features = ["std", "tls12", "brotli", "zlib"] }
+rustls-pemfile = "=2.2.0"
+hyper-util = { version = "=0.1.20", default-features = false, features = ["tokio"] }
+
+# Networking
+ipnet = "=2.12.1"
+tokio-socks = "=0.5.3"
+webpki-roots = "=1.0.9"
+
+# Email
+lettre = { version = "=0.11.23", default-features = false, features = [
+    "tokio1-rustls",
+    "rustls-no-provider",
+    "webpki-roots",
+    "builder",
+    "smtp-transport",
+    "pool",
+    "hostname",
+    "tokio1",
+] }
+handlebars = { version = "=6.4.3", features = ["no_logging"] }
+
+# Compression
+flate2 = { version = "=1.1.9", default-features = false, features = ["zlib-rs"] }
+brotli = "=8.0.4"
+lz4_flex = { version = "=0.14.0", default-features = false, features = [
+    "alloc",
+    "safe-encode",
+    "safe-decode",
+] }
+zstd = { version = "=0.13.3", default-features = false }
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+symphonia = { version = "=0.6.0", default-features = false, features = ["opt-simd", "all-formats", "aac", "flac", "mp3", "vorbis"] }
+
+# Resilience
+governor = "=0.10.4"
+nonzero_ext = "=0.3.0"
+backon = "=1.6.0"
+failsafe = { version = "=1.3.0", default-features = false }
+
+# Data Structures
+async_singleflight = "=0.6.2"
+rayon = "=1.12.0"
+
+# HTTP Body
+http-body-util = "=0.1.4"
+utoipa = { version = "=5.5.0", default-features = false, features = [
+    "macros",
+    "axum_extras",
+    "preserve_order",
+    "preserve_path_order",
+] }
+utoipa-swagger-ui = { version = "=9.0.2", default-features = false, features = [
+    "axum",
+    "vendored",
+] }
+
+# Testing
+mockall = "=0.15.0"
+wiremock = "=0.6.5"
+tempfile = "=3.27.0"
+testcontainers = { version = "=0.27.3", default-features = false }
+testcontainers-modules = { version = "=0.15.0", default-features = false, features = [
+    "postgres",
+    "redis",
+    "rustfs",
+] }
+tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["connect"] }
+
+# Benchmarking
+criterion = { version = "=0.8.2", features = ["html_reports", "async_tokio"] }
+
+# Allocators
+tikv-jemallocator = { version = "=0.7.0", features = ["override_allocator_on_supported_platforms"] }
+mimalloc = { version = "=0.1.52", features = ["v2", "override", "no_thp", "local_dynamic_tls"] }
+
+# Internal workspace crates
+synctv-proto = { path = "synctv-proto", default-features = false }
+synctv-proto-build = { path = "synctv-proto-build" }
+synctv-proto-main = { path = "synctv-proto-main", default-features = false }
+synctv-proto-providers = { path = "synctv-proto-providers", default-features = false }
+synctv-proto-playback-provider = { path = "synctv-proto-playback-provider", default-features = false }
+synctv-core = { path = "synctv-core", default-features = false }
+synctv-core-testing = { path = "synctv-core/testing", default-features = false }
+synctv-adapter = { path = "synctv-adapter", default-features = false }
+synctv-api = { path = "synctv-api", default-features = false }
+synctv-api-common = { path = "synctv-api-common", default-features = false }
+synctv-api-http = { path = "synctv-api-http", default-features = false }
+synctv-api-grpc = { path = "synctv-api-grpc", default-features = false }
+synctv-cluster = { path = "synctv-cluster", default-features = false }
+synctv-realtime = { path = "synctv-realtime", default-features = false }
+synctv-media-providers = { path = "synctv-media-providers", default-features = false }
+synctv-management = { path = "synctv-management", default-features = false }
+synctv-proxy = { path = "synctv-proxy", default-features = false }
+synctv-livestream = { path = "synctv-livestream", default-features = false }
+synctv-common = { path = "synctv-common", default-features = false }
+
+# Redis 1.4.1 expands combine 4.6.7's `opaque!` macro and triggers Rust's
+# `semicolon_in_expressions_from_macros` future-incompatibility report. Redis
+# #2217/#2218 only suppress the lint; combine #372/#373 removes the offending
+# semicolon. Remove this patch after crates.io publishes that combine fix.
+# https://github.com/Marwes/combine/pull/373
+[patch.crates-io]
+combine = { git = "https://github.com/Marwes/combine.git", rev = "140f091afbb0e68c44b758ea96de6bc321b5e99d" }
+
+[profile.dev]
+debug = 0
+strip = "symbols"
+
+[profile.release]
+opt-level = 2
+debug = 0
+lto = "thin"
+panic = "unwind"
+strip = "symbols"
+trim-paths = "all"
+debug-assertions = false
+overflow-checks = false

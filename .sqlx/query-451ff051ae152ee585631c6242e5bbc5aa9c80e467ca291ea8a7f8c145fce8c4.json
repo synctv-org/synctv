@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE auth_totp_credentials\n            SET last_used_step = $2\n            WHERE user_id = $1 AND confirmed_at IS NOT NULL\n              AND (last_used_step IS NULL OR last_used_step < $2)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "451ff051ae152ee585631c6242e5bbc5aa9c80e467ca291ea8a7f8c145fce8c4"
+}

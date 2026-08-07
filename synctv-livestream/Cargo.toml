@@ -1,0 +1,124 @@
+[package]
+name = "synctv-livestream"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = ["tls-aws-lc", "tls-webpki-roots"]
+tls-aws-lc = [
+    "synctv-core/tls-aws-lc",
+    "synctv-cluster/tls-aws-lc",
+    "synctv-media-providers/tls-aws-lc",
+    "synctv-common/tls-aws-lc",
+    "synctv-xiu/tls-aws-lc",
+    "tonic/tls-aws-lc",
+    "reqwest/rustls",
+]
+tls-ring = [
+    "synctv-core/tls-ring",
+    "synctv-cluster/tls-ring",
+    "synctv-media-providers/tls-ring",
+    "synctv-common/tls-ring",
+    "synctv-xiu/tls-ring",
+    "tonic/tls-ring",
+    "reqwest/rustls-no-provider",
+]
+tls-webpki-roots = [
+    "synctv-core/tls-webpki-roots",
+    "synctv-cluster/tls-webpki-roots",
+    "synctv-media-providers/tls-webpki-roots",
+    "synctv-common/tls-webpki-roots",
+    "synctv-xiu/tls-webpki-roots",
+    "tonic/tls-webpki-roots",
+    "redis/tokio-rustls-comp",
+    "redis/tls-rustls-webpki-roots",
+]
+tls-native-roots = [
+    "synctv-core/tls-native-roots",
+    "synctv-cluster/tls-native-roots",
+    "synctv-media-providers/tls-native-roots",
+    "synctv-common/tls-native-roots",
+    "synctv-xiu/tls-native-roots",
+    "tonic/tls-native-roots",
+    "redis/tokio-rustls-comp",
+]
+
+[dependencies]
+# Internal
+synctv-core = { workspace = true, default-features = false }
+synctv-cluster = { workspace = true, default-features = false }
+synctv-media-providers = { workspace = true, default-features = false }
+synctv-common = { workspace = true, default-features = false }
+
+# Async
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+
+# HTTP Framework
+axum.workspace = true
+
+# gRPC
+tonic.workspace = true
+tonic-prost.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+tokio-stream.workspace = true
+
+# Streaming
+synctv-xiu = { workspace = true, default-features = false, features = ["s3"] }
+
+# Redis
+redis.workspace = true
+
+# Caching
+moka.workspace = true
+dashmap.workspace = true
+
+# HTTP Client (for HTTP-FLV pulling)
+reqwest.workspace = true
+
+
+# Utilities
+anyhow.workspace = true
+thiserror.workspace = true
+bytes.workspace = true
+parking_lot.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hostname.workspace = true
+uuid.workspace = true
+url.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Crypto
+subtle.workspace = true
+rand.workspace = true
+
+# JWT
+jsonwebtoken.workspace = true
+
+# URL encoding
+percent-encoding.workspace = true
+
+clap.workspace = true
+
+[lints]
+workspace = true
+
+[build-dependencies]
+tonic-prost-build.workspace = true
+
+[dev-dependencies]
+synctv-core-testing = { workspace = true, features = ["streaming"] }
+tokio = { workspace = true, features = ["test-util"] }
+wiremock.workspace = true
+tempfile.workspace = true
+serde_urlencoded.workspace = true

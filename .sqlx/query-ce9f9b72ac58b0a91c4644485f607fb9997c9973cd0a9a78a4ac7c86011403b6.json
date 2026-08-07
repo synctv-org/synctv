@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                (\n                    SELECT id\n                    FROM user_registration_requests\n                    WHERE reviewed_at IS NULL\n                      AND status = $4\n                      AND oauth2_provider_instance_name = $5\n                      AND oauth2_provider_user_id = $6\n                    ORDER BY requested_at DESC, id DESC\n                    LIMIT 1\n                ) AS \"oauth2_request_id: UserId\",\n                EXISTS (\n                    SELECT 1\n                    FROM user_registration_requests\n                    WHERE reviewed_at IS NULL\n                      AND status = $4\n                      AND LOWER(username) = LOWER($1)\n                      AND (\n                          signup_method != $3\n                          OR oauth2_provider_instance_name IS DISTINCT FROM $5\n                          OR oauth2_provider_user_id IS DISTINCT FROM $6\n                      )\n                ) AS \"username_exists!\",\n                EXISTS (\n                    SELECT 1\n                    FROM user_registration_requests\n                    WHERE reviewed_at IS NULL\n                      AND status = $4\n                      AND $2::TEXT IS NOT NULL\n                      AND LOWER(email) = LOWER($2)\n                      AND (\n                          signup_method != $3\n                          OR oauth2_provider_instance_name IS DISTINCT FROM $5\n                          OR oauth2_provider_user_id IS DISTINCT FROM $6\n                      )\n                ) AS \"email_exists!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "oauth2_request_id: UserId",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "username_exists!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "email_exists!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int2",
+        "Int2",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "ce9f9b72ac58b0a91c4644485f607fb9997c9973cd0a9a78a4ac7c86011403b6"
+}

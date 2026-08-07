@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT username AS \"username!\"\n        FROM user_registration_requests\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "username!",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "username"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7d280385a9057cd761603cad930b8ae9fb0ceadd795446c0ed2e89960d662ec6"
+}

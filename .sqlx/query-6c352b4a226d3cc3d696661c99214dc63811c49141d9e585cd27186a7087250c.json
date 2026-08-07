@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(SELECT 1 FROM file_upload_sessions WHERE storage_backend = $1 AND upload_session_key = $2) AS \"existing_session!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "existing_session!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6c352b4a226d3cc3d696661c99214dc63811c49141d9e585cd27186a7087250c"
+}

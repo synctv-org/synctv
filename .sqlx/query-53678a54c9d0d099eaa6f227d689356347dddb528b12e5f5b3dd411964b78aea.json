@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        EXPLAIN (FORMAT JSON)\n        DELETE FROM chat_messages\n        WHERE created_at > NOW() - INTERVAL '90 days'\n          AND (id, created_at) IN (\n            SELECT id, created_at FROM (\n                SELECT id, created_at, room_id,\n                       ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC) as rn\n                FROM chat_messages\n                WHERE room_id IN (\n                    SELECT DISTINCT room_id\n                    FROM chat_messages\n                    WHERE created_at >= NOW() - make_interval(mins => 60)\n                )\n                  AND created_at > NOW() - INTERVAL '90 days'\n            ) ranked_messages\n            WHERE rn > 100\n        )\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "QUERY PLAN",
+        "type_info": "Json",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "53678a54c9d0d099eaa6f227d689356347dddb528b12e5f5b3dd411964b78aea"
+}

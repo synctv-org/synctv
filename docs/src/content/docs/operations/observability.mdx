@@ -1,0 +1,154 @@
+---
+title: 观测与运行手册
+description: SyncTV 的健康检查、metrics、日志、关键监控项和事故排查信息收集。
+---
+
+import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## 观测范围
+
+生产监控需要覆盖请求处理、外部依赖、认证、实时连接和媒体链路：
+
+- HTTP/gRPC/API 能处理请求。
+- PostgreSQL 和 Redis 可用。
+- 登录、2FA、OAuth2、WebAuthn、邮箱验证码可用。
+- WebSocket 和房间实时同步可用。
+- Provider、proxy、slice cache 和直播路径没有持续错误。
+- 集群节点注册、事件发布和 catch-up 正常。
+
+## 健康检查
+
+主服务健康检查：
+
+```bash
+curl -fsS http://localhost:8081/health/ready
+```
+
+探针要求：
+
+- readiness probe 使用 ready 语义，不要只检查 TCP 端口。
+- liveness probe 不要过于激进，避免依赖短暂抖动导致反复重启。
+- 滚动更新时 readiness 应在 shutdown 开始后尽快失败，让流量停止进入旧 Pod。
+
+## Metrics
+
+开启 metrics：
+
+```yaml
+metrics:
+  enabled: true
+  host: "0.0.0.0"
+  port: 9090
+  auth:
+    mode: "bearer_token"
+    bearer_token_file: "/run/secrets/metrics_token"
+```
+
+抓取测试：
+
+```bash
+curl -fsS \
+  -H "Authorization: Bearer $METRICS_TOKEN" \
+  http://localhost:9090/metrics
+```
+
+生产要求：
+
+- 不要把 metrics 直接暴露公网。
+- Kubernetes 中优先使用 ServiceMonitor、VMServiceScrape 或受控抓取。
+- 如果使用 Kubernetes auth，确保抓取方 service account 有对应权限。
+
+## 日志
+
+服务级日志默认使用 text：
+
+```yaml
+server:
+  logging:
+    level: "info"
+    format: "text"
+    output: stdout
+    color: auto
+```
+
+排障时可以临时调高：
+
+```yaml
+server:
+  logging:
+    level: "debug"
+    format: "text"
+    output: stdout
+    color: auto
+```
+
+注意：
+
+- `trace` 级别可能输出大量日志，不适合长期开启。
+- 文件日志路径如果是相对路径，会按配置规则解析，不要误放到只读目录。
+- secret 在配置展示中会打码，但不要把包含真实 secret 的环境变量或 values 文件贴到公共 issue。
+
+## 关键监控项
+
+- **依赖健康**： PostgreSQL 连接、连接池耗尽、Redis 连接、Redis 延迟和 Redis key 前缀是否混用。
+- **认证安全**： 登录失败率、MFA 失败率、邮箱验证码发送失败、OAuth2 state 错误和 brute-force 锁定。
+- **实时连接**： WebSocket 连接数、每用户/房间连接限制、消息限流和断开重连峰值。
+- **媒体路径**： Provider 错误率、上游超时、proxy bypass、slice cache 命中率、Range 异常和直播拉流重试。
+- **日志管线**：`logging_dropped_lines_total{component=...}` 应保持为零；数值增长表示对应组件的 non-blocking 队列达到容量上限。
+
+## 告警起点
+
+| 告警 | 可能原因 | 第一检查点 |
+| --- | --- | --- |
+| readiness 持续失败 | DB/Redis 不可用、migration 问题、配置错误 | `synctv db status`、服务日志 |
+| 登录失败率突增 | 密码爆破、OAuth2 回调错误、JWT secret 错误轮换 | 限流日志、OAuth2 配置、secret 变更 |
+| 邮件发送失败 | SMTP 凭据错误、TLS 错误、发送频率限制 | `synctv settings test-email`、SMTP 日志 |
+| WebSocket 大量断开 | Ingress 超时、Pod 滚动更新、连接限制过低 | Ingress timeout、shutdown drain、连接限制 |
+| Provider 错误突增 | 上游不可用、header 不一致、凭据过期 | Provider 配置、代理 header、上游响应 |
+| Redis 错误 | Redis 重启、网络抖动、Sentinel 配置错误 | Redis 日志、`redis.deployment_mode`、连接串 |
+| `logging_dropped_lines_total` 增长 | 日志输出端变慢，或组件产生日志的速度持续高于输出速度 | 组件日志级别、磁盘或采集器延迟、组件输出配置 |
+
+## 事故信息收集
+
+排查生产问题时，先收集可共享信息，不要直接贴 secret。
+
+<Steps>
+1. 记录版本、部署方式、是否启用集群。
+2. 保存 `synctv config show --output yaml` 的打码输出。
+3. 保存最近的服务日志和重启事件。
+4. 保存 `/health/ready` 和 `/metrics` 的可用性结果。
+5. 保存 `synctv db status` 输出。
+6. 对 Kubernetes，保存 `kubectl describe pod`、`kubectl get ingress,svc,pod` 和 rollout 状态。
+7. 对媒体问题，记录 Provider 类型、直连/代理模式、是否 Range 请求、上游 HTTP 状态码。
+</Steps>
+
+## Kubernetes 快速检查
+
+<Tabs syncKey="k8s-observability">
+  <TabItem label="Pod" icon="cloud-download">
+
+```bash
+kubectl -n synctv get pod -o wide
+kubectl -n synctv describe pod <pod>
+kubectl -n synctv logs <pod> --tail=200
+```
+
+  </TabItem>
+  <TabItem label="Service/Ingress" icon="cloud-download">
+
+```bash
+kubectl -n synctv get svc,ingress
+kubectl -n synctv describe ingress synctv
+kubectl -n synctv describe ingress synctv-grpc
+```
+
+  </TabItem>
+  <TabItem label="Rollout" icon="rocket">
+
+```bash
+kubectl -n synctv rollout status deploy/synctv
+kubectl -n synctv rollout history deploy/synctv
+```
+
+  </TabItem>
+</Tabs>

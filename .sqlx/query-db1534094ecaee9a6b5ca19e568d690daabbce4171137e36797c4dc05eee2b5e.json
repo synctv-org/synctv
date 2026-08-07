@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE user_registration_requests\n            SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3\n            WHERE id = $1 AND reviewed_at IS NULL AND status = $4\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "db1534094ecaee9a6b5ca19e568d690daabbce4171137e36797c4dc05eee2b5e"
+}

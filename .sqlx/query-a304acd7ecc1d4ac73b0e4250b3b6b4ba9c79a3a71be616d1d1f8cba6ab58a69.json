@@ -1,0 +1,151 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE room_members\n             SET removed_permissions = removed_permissions | $3,\n                 version = version + 1\n             WHERE room_id = $1 AND user_id = $2 AND role = $4\n             RETURNING room_id as \"room_id: RoomId\",\n                       user_id as \"user_id: UserId\",\n                       role as \"role: RoomRole\",\n                       added_permissions,\n                       removed_permissions,\n                       admin_added_permissions,\n                       admin_removed_permissions,\n                       remark_name,\n                       display_tag,\n                       joined_at,\n                       version",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "role: RoomRole",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "role"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "added_permissions",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "added_permissions"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "removed_permissions",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "removed_permissions"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "admin_added_permissions",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "admin_added_permissions"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "admin_removed_permissions",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "admin_removed_permissions"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "remark_name",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "remark_name"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "display_tag",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "display_tag"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "joined_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "joined_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a304acd7ecc1d4ac73b0e4250b3b6b4ba9c79a3a71be616d1d1f8cba6ab58a69"
+}

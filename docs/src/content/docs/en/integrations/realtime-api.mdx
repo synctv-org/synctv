@@ -1,0 +1,216 @@
+---
+title: Realtime Protocol
+description: SyncTV room WebSocket realtime protocol, connection authentication, base messages, reconnects, and errors.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+The Realtime API is the room-scoped long-lived connection protocol. It carries chat, playback commands, playback progress, WebRTC signaling, and subscriptions to cacheable room resources.
+
+Use HTTP/OpenAPI or gRPC for one-shot reads and writes. Use Realtime when a client needs low-latency push, less polling, or continuously synchronized room state.
+
+## Connection and Authentication
+
+WebSocket URL:
+
+```text
+wss://<host>/ws/rooms/<roomId>
+```
+
+Authentication options:
+
+| Method | Clients | Notes |
+| --- | --- | --- |
+| `Authorization: Bearer <accessToken>` | Native clients, CLI, server-side SDKs | Signed-in users |
+| `Authorization: Bearer <guest_token>` | Native clients, CLI, server-side SDKs | Guests; first call `POST /api/auth/guest-token` |
+| `?ticket=<ticket>` | Browsers and clients that cannot set headers | First call `POST /api/tickets` to create a short-lived, one-time, room-bound ticket |
+
+WebSocket only handles binary protobuf frames. Clients send `synctv.client.ClientMessage`, and the server returns `synctv.client.ServerMessage`. Text frames, ping, pong, and other non-business frames are not processed as business messages.
+
+```js
+const roomId = 'room_1';
+const ticket = ticketResponse.ticket;
+const ws = new WebSocket(`wss://app.example.com/ws/rooms/${roomId}?ticket=${ticket}`);
+ws.binaryType = 'arraybuffer';
+
+ws.onmessage = async (event) => {
+  const bytes =
+    event.data instanceof Blob
+      ? new Uint8Array(await event.data.arrayBuffer())
+      : new Uint8Array(event.data);
+  const message = ServerMessage.decode(bytes);
+  handleServerMessage(message);
+};
+
+function sendClientMessage(message) {
+  ws.send(ClientMessage.encode(message).finish());
+}
+```
+
+<Aside type="caution">
+Do not put refresh tokens in WebSocket URLs. Browser clients should use WebSocket tickets. Do not reuse a ticket after success or failure.
+</Aside>
+
+## Guest Connections
+
+A guest is not a signed-in user. The server does not create a user row, member row, or login session for a guest. Guest identity is represented only by a room-bound guest token, and public guest IDs use the `gst_` prefix.
+
+A guest can enter only when all of these are true:
+
+- Global `user.enable_guest` is enabled.
+- Room `allowGuestJoin` is enabled.
+- The room has no password and is not closed or banned.
+- The guest token still matches the room guest version. Disabling guests, adding a password, or revoking guest access invalidates older tokens.
+
+Guests receive only basic realtime room state by default. They cannot read or manage media resources or send chat. A room may grant guest-safe capabilities through `guestAddedPermissions`, such as member list, chat history, or WebRTC signaling; this ceiling is independent from member permissions. Even with extra room permissions, guests cannot use account, media-resource management, member administration, room administration, Provider credential, or management-plane APIs.
+
+```bash
+curl -sS "$BASE_URL/api/auth/guest-token" \
+  -H "Content-Type: application/json" \
+  -d '{"roomId":"room_1"}'
+```
+
+Native WebSocket clients use the returned `token`:
+
+```http
+Authorization: Bearer <guest_token>
+```
+
+For gRPC `MessageStream`, send the same token:
+
+```text
+x-room-id: room_1
+authorization: Bearer <guest_token>
+```
+
+## When to Use Realtime
+
+| Scenario | Why Realtime |
+| --- | --- |
+| Synchronized playback | Play, pause, seek, and media changes need low-latency propagation |
+| Chat | Chat message events are delivered after explicit subscription |
+| Playback | Expired URLs, Provider credential changes, and media switches need refreshes |
+| Room members | Joins, leaves, and permission changes need UI sync |
+| WebRTC signaling | offer, answer, and ICE candidates need room-scoped forwarding; targets use `public_actor_id:conn_id`, where signed-in users are `usr_*` and guests are `gst_*` |
+
+Before sending signaling messages, WebRTC clients call `GET /api/rooms/<roomId>/webrtc/ice-servers` to fetch ICE servers. That endpoint uses the same room actor permission model as Realtime: signed-in members and guests both authenticate with `Authorization: Bearer <token>` and need `use_voice_chat` or `use_p2p_media`. Each signaling command is also checked against its session-specific business permission.
+
+## Message Scope
+
+Common client messages:
+
+| `ClientMessage` field | Purpose |
+| --- | --- |
+| `chat` | Send chat |
+| `heartbeat` | Client heartbeat |
+| `playback_progress` | Report current playback position and play/pause state |
+| `playback_update` | Send a playback state update command |
+| `webrtc_offer` / `webrtc_answer` / `webrtc_ice_candidate` | Forward WebRTC signaling |
+| `webrtc_join` / `webrtc_leave` | Join or leave a voice WebRTC session |
+| `media_swarm_join` | Join one media swarm with `PlaybackMedia.p2p_delivery.swarm_ticket` |
+| `media_swarm_leave` | Leave a media swarm already joined by the current connection using `swarm_id` |
+| `observeResource` | Subscribe to a realtime resource |
+| `unobserveResource` | Unsubscribe from a realtime resource |
+
+Common server messages:
+
+| `ServerMessage` field | Purpose |
+| --- | --- |
+| `chat` | Chat message received |
+| `heartbeatAck` | Heartbeat acknowledgement |
+| `error` | General business error |
+| `playbackState` / `playingChanged` | Playback state or playback target changed |
+| `roomSettings` | Room settings changed |
+| `mediaAdded` / `mediaUpdated` / `mediaRemoved` | Media changed |
+| `playlistCreated` / `playlistUpdated` / `playlistDeleted` | Playlist changed |
+| `permissionChanged` / `userJoined` / `userLeft` / `roomMembers` | Member or permission changed |
+| `chatEvent` or `resourceChanged.chatEvent` | Chat message event after explicit subscription |
+| `resourceChanged.webrtcEvent.mediaSwarmPeers` | Bounded peer candidates for the current swarm |
+| `resourceObserved` / `resourceChanged` / `resourceObserveError` | Resource observation result |
+
+Use `synctv-proto/proto/client.proto` as the source of truth for complete fields. End-to-end examples are in [API Examples](../api-examples/).
+
+## Media Swarm Signaling
+
+P2P media and voice chat use independent WebRTC sessions. They share ICE configuration and the Realtime connection while maintaining separate peer discovery, PeerConnections, DataChannels, and lifecycles.
+
+The client reads `swarm_id` and `swarm_ticket` from the current `PlaybackMedia.p2p_delivery`, then sends `media_swarm_join`. The server verifies that the ticket binds the room, actor, swarm, and expiration, then returns up to 16 candidate peers from the same room and swarm on the current connection. Clients repeat the announcement every 30 seconds. The server and clients expire silent memberships after 90 seconds, while an explicit leave removes membership immediately.
+
+Media offers, answers, and ICE candidates use these fields:
+
+| Field | Value |
+| --- | --- |
+| `to` | Target `public_actor_id:conn_id` |
+| `data` | Opaque SDP or ICE candidate JSON |
+| `swarm_id` | Swarm ID for the current single resource |
+
+The server verifies the ticket when joining. Subsequent media signaling verifies that both the sender and target connection have joined the same swarm in the same room before forwarding opaque SDP or ICE data. Voice and Media use separate protobuf command/event types: Voice messages contain only `to`/`from` and `data`, while Media messages additionally contain `swarm_id`. Clients maintain peer piece inventories, availability queries, transfer ranking, and caches. The server tracker stores short-lived swarm memberships and returns bounded candidate sets; media-resource lists and piece inventories remain client-owned.
+
+## Message Dispatch
+
+All Realtime API business messages live in the `ClientMessage.message` and `ServerMessage.message` `oneof` fields. Dispatch by `oneof` type, not text fields or log strings.
+
+```ts
+function handleServerMessage(message) {
+  if (message.chatEvent) {
+    appendChatEvent(message.chatEvent);
+    return;
+  }
+
+  if (message.chat) {
+    appendChat(message.chat);
+    return;
+  }
+
+  if (message.playbackState) {
+    updatePlayback(message.playbackState);
+    return;
+  }
+
+  if (message.resourceChanged) {
+    if (message.resourceChanged.chatEvent) {
+      appendChatEvent(message.resourceChanged.chatEvent);
+      return;
+    }
+
+    handleResourceChanged(message.resourceChanged);
+    return;
+  }
+
+  if (message.error) {
+    handleRealtimeError(message.error);
+  }
+}
+```
+
+After connecting, subscribe to the resources needed by the current view. See [Subscribe to Realtime Resources](../realtime-subscriptions/).
+
+Chat message events use their own cursor: in bidirectional streams, send `observeResource.chatEvents.afterEventSequence` to replay events after a known event; HTTP SSE `GET /api/rooms/<roomId>/watch/chat-events` accepts the `afterEventSequence` query parameter and reads the browser's `Last-Event-ID` header on reconnect. The server sets the SSE `id:` field, so clients can persist that value for recovery.
+
+## Reconnect Flow
+
+Observations are not retained across WebSocket connections. After disconnect, clients should:
+
+<Steps>
+1. Request a new WebSocket ticket, or reconnect with a valid access token.
+2. Re-send `observeResource` for currently visible views.
+3. Include the locally saved `version` so the server can decide whether to send a snapshot.
+4. For `playback`, also include cached `mediaId`, `playlistId`, `target`, and `playbackClientProfile`.
+5. Keep the local cache when `resourceObserved.changed=false`; replace it when `resourceChanged` arrives.
+</Steps>
+
+If the connection has been down for a long time, fetch critical resources through HTTP/gRPC first, then restore observations. This avoids showing stale UI for too long.
+
+## Observation Errors
+
+Resource observation errors are returned as `ServerMessage.resourceObserveError`:
+
+| Scenario | Client action |
+| --- | --- |
+| Empty `observeId` or longer than 128 characters | Fix client code. Do not retry the same request |
+| Missing `resource` | Fix client code |
+| More than 64 observations on one connection | Unobserve unused resources or merge list views |
+| Snapshot service unavailable or load failed | Show a temporary error and retry with backoff |
+| Permission, missing resource, or invalid input error | Re-fetch room state and navigate back when needed |
+
+If sending fails or the server closes the connection, do not assume observations remain active. Rebuild all observations after reconnecting.

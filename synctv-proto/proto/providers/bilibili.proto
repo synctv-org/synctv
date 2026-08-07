@@ -1,0 +1,322 @@
+// Bilibili Provider Client API
+//
+// This is the client-facing gRPC API for Bilibili provider
+//
+// SECURITY: This service transmits Bilibili session cookies during login only.
+// After login, credentials are stored server-side as the user's single global
+// Bilibili binding.
+// Deployments MUST use TLS for all connections to this service.
+
+syntax = "proto3";
+
+package synctv.provider.bilibili;
+
+import "proto/buf/validate/validate.proto";
+import "proto/source_config.proto";
+
+// Parse video URL request
+message ParseRequest {
+  string url = 1 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 2; // Optional provider instance name
+}
+
+// Typed candidates that can be submitted directly to the existing add media or
+// create playlist APIs. Exactly one source config is present.
+message ParseResponse {
+  string normalized_url = 1;
+  repeated ParseCandidate candidates = 2;
+}
+
+message ParseCandidate {
+  string title = 1;
+  string description = 2;
+  string cover = 3;
+  repeated string actors = 4;
+  optional uint64 duration_seconds = 5;
+  optional uint32 part_number = 6;
+  optional uint64 width = 7;
+  optional uint64 height = 8;
+  oneof source_config {
+    synctv.source_config.MediaSourceConfig media = 9;
+    synctv.source_config.PlaylistSourceConfig playlist = 10;
+  }
+}
+
+// List the live-area hierarchy used to build a live-area playlist source.
+message ListLiveAreasRequest {
+  string instance_name = 1; // Optional provider instance name
+}
+
+message LiveArea {
+  uint64 id = 1;
+  uint64 parent_id = 2;
+  string name = 3;
+  string parent_name = 4;
+  string picture = 5;
+  bool hot = 6;
+}
+
+message ListLiveAreasResponse {
+  repeated LiveArea areas = 1;
+}
+
+message ListFavoriteFoldersRequest {
+  string instance_name = 1; // Optional provider instance name
+}
+
+message FavoriteFolder {
+  uint64 media_id = 1;
+  string title = 2;
+  uint64 media_count = 3;
+  bool private = 4;
+  bool default_folder = 5;
+  synctv.source_config.PlaylistSourceConfig source_config = 6;
+}
+
+message ListFavoriteFoldersResponse {
+  repeated FavoriteFolder folders = 1;
+}
+
+enum PgcFollowType {
+  PGC_FOLLOW_TYPE_UNSPECIFIED = 0;
+  PGC_FOLLOW_TYPE_ANIME = 1;
+  PGC_FOLLOW_TYPE_CINEMA = 2;
+}
+
+message ListFollowedPgcRequest {
+  string instance_name = 1; // Optional provider instance name
+  PgcFollowType type = 2 [(buf.validate.field).enum.defined_only = true];
+  uint64 page = 3 [(buf.validate.field).uint64.gte = 1];
+  uint32 page_size = 4 [(buf.validate.field).uint32 = {gte: 1, lte: 30}];
+}
+
+message FollowedPgcSeason {
+  uint64 season_id = 1;
+  string title = 2;
+  string cover = 3;
+  string description = 4;
+  string latest_episode = 5;
+  synctv.source_config.PlaylistSourceConfig source_config = 6;
+}
+
+message ListFollowedPgcResponse {
+  repeated FollowedPgcSeason seasons = 1;
+  uint64 total = 2;
+  bool has_more = 3;
+}
+
+message ListHistoryRequest {
+  synctv.source_config.BilibiliHistoryType type = 1;
+  optional string cursor = 2;
+  uint32 page_size = 3 [(buf.validate.field).uint32.lte = 30];
+  string instance_name = 4;
+}
+
+message HistoryItem {
+  string title = 1;
+  string subtitle = 2;
+  string cover = 3;
+  string author = 4;
+  int64 viewed_at = 5;
+  int64 progress_seconds = 6;
+  uint64 duration_seconds = 7;
+  synctv.source_config.MediaSourceConfig source_config = 8;
+}
+
+message ListHistoryResponse {
+  repeated HistoryItem items = 1;
+  optional string cursor = 2;
+  bool has_more = 3;
+  synctv.source_config.PlaylistSourceConfig source_config = 4;
+}
+
+message ListPgcTimelineRequest {
+  synctv.source_config.BilibiliPgcTimelineType type = 1;
+  uint32 before_days = 2 [(buf.validate.field).uint32.lte = 7];
+  uint32 after_days = 3 [(buf.validate.field).uint32.lte = 7];
+  string instance_name = 4;
+}
+
+message PgcTimelineItem {
+  uint64 episode_id = 1;
+  uint64 season_id = 2;
+  string title = 3;
+  string episode_title = 4;
+  string cover = 5;
+  string episode_cover = 6;
+  int64 publish_at = 7;
+  bool published = 8;
+  string date = 9;
+  uint32 day_of_week = 10;
+  bool delayed = 11;
+  string delay_reason = 12;
+  optional synctv.source_config.MediaSourceConfig source_config = 13;
+}
+
+message ListPgcTimelineResponse {
+  repeated PgcTimelineItem items = 1;
+  synctv.source_config.PlaylistSourceConfig source_config = 2;
+}
+
+enum PgcSeasonType {
+  PGC_SEASON_TYPE_UNSPECIFIED = 0;
+  PGC_SEASON_TYPE_ANIME = 1;
+  PGC_SEASON_TYPE_MOVIE = 2;
+  PGC_SEASON_TYPE_DOCUMENTARY = 3;
+  PGC_SEASON_TYPE_GUOCHUANG = 4;
+  PGC_SEASON_TYPE_TV = 5;
+  PGC_SEASON_TYPE_VARIETY = 7;
+}
+
+enum PgcSeasonOrder {
+  PGC_SEASON_ORDER_UPDATED = 0;
+  PGC_SEASON_ORDER_DANMAKU = 1;
+  PGC_SEASON_ORDER_PLAY = 2;
+  PGC_SEASON_ORDER_FOLLOW = 3;
+  PGC_SEASON_ORDER_SCORE = 4;
+  PGC_SEASON_ORDER_STARTED = 5;
+  PGC_SEASON_ORDER_RELEASED = 6;
+}
+
+message ListPgcSeasonsRequest {
+  PgcSeasonType type = 1;
+  uint64 page = 2 [(buf.validate.field).uint64.gte = 1];
+  uint32 page_size = 3 [(buf.validate.field).uint32.lte = 50];
+  PgcSeasonOrder order = 4;
+  bool ascending = 5;
+  optional bool finished = 6;
+  optional string area = 7;
+  optional string year = 8;
+  optional uint64 style_id = 9;
+  string instance_name = 10;
+}
+
+message PgcSeason {
+  uint64 season_id = 1;
+  uint64 media_id = 2;
+  uint64 first_episode_id = 3;
+  string title = 4;
+  string subtitle = 5;
+  string cover = 6;
+  string first_episode_cover = 7;
+  string badge = 8;
+  string progress = 9;
+  string score = 10;
+  bool finished = 11;
+  PgcSeasonType type = 12;
+  synctv.source_config.PlaylistSourceConfig source_config = 13;
+}
+
+message ListPgcSeasonsResponse {
+  repeated PgcSeason seasons = 1;
+  uint64 total = 2;
+  bool has_more = 3;
+}
+
+// QR code login request
+message LoginQRRequest {
+  string instance_name = 1; // Optional provider instance name
+}
+
+// QR code response
+message QRCodeResponse {
+  string url = 1;
+  string key = 2;
+}
+
+// Check QR status request
+message CheckQRRequest {
+  string key = 1 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 2; // Optional provider instance name
+}
+
+// QR login status enum
+// Wire values mirror synctv-media-providers QRCodeStatus.
+enum QRLoginStatus {
+  QR_LOGIN_STATUS_UNSPECIFIED = 0;
+  QR_LOGIN_STATUS_EXPIRED = 1;
+  QR_LOGIN_STATUS_NOT_SCANNED = 2;
+  QR_LOGIN_STATUS_SCANNED = 3;
+  QR_LOGIN_STATUS_SUCCESS = 4;
+}
+
+// QR status response
+message QRStatusResponse {
+  QRLoginStatus status = 1;
+}
+
+// Start SMS login request
+message StartSMSLoginRequest {
+  string instance_name = 1; // Optional provider instance name
+}
+
+// Start SMS login response
+message StartSMSLoginResponse {
+  string session_token = 1; // Signed SMS login session token.
+  string gt = 2;
+  string challenge = 3;
+  int64 expires_at = 4; // Unix epoch timestamp
+}
+
+// Send SMS request
+message SendSMSRequest {
+  string session_token = 1; // Signed session token returned by StartSMSLoginResponse.
+  string phone = 2;
+  string validate = 3; // Geetest validate result produced by the frontend captcha widget
+}
+
+// Send SMS response
+message SendSMSResponse {
+  string session_token = 1; // Updated signed session token for LoginSMSRequest.
+  int64 expires_at = 2; // Unix epoch timestamp
+}
+
+// Login with SMS request
+message LoginSMSRequest {
+  string session_token = 1; // Signed session token returned by SendSMSResponse.
+  string code = 2;
+}
+
+// Login with SMS response
+message LoginSMSResponse {}
+
+// User info request
+message UserInfoRequest {
+  string instance_name = 1; // Optional provider instance name
+}
+
+// User info response
+message UserInfoResponse {
+  bool is_login = 1;
+  uint64 user_id = 2;
+  string username = 3;
+  string face = 4;
+  bool is_vip = 5;
+}
+
+// Logout request
+message LogoutRequest {
+}
+
+// Logout response
+message LogoutResponse {
+  string message = 1;
+}
+
+// Get binds request
+message GetBindsRequest {
+  string instance_name = 1; // Optional provider instance name
+}
+
+// Get binds response
+message GetBindsResponse {
+  repeated BindInfo binds = 1;
+}
+
+// Saved credential information
+message BindInfo {
+  string id = 1;
+  string server_id = 2;
+  int64 created_at = 3; // Unix epoch timestamp
+  string provider_instance_name = 4; // Empty when the credential is not instance-scoped
+}

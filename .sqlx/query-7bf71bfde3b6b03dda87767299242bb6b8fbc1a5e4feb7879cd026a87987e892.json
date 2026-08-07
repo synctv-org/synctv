@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                operation_kind,\n                request_hash,\n                event_id AS \"event_id?: String\"\n            FROM chat_message_operation_idempotency\n            WHERE room_id = $1 AND user_id = $2 AND client_operation_id = $3\n            FOR UPDATE\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "operation_kind",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "chat_message_operation_idempotency",
+            "name": "operation_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "request_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_operation_idempotency",
+            "name": "request_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "event_id?: String",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_operation_idempotency",
+            "name": "event_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "7bf71bfde3b6b03dda87767299242bb6b8fbc1a5e4feb7879cd026a87987e892"
+}

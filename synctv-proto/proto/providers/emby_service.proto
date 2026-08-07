@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package synctv.provider.emby;
+
+import "proto/providers/emby.proto";
+
+// Emby-compatible Provider Service
+//
+// Client-facing API for Emby media server access
+service EmbyProviderService {
+  // Login to Emby server (validate API key and persist credential)
+  rpc Login(LoginRequest) returns (LoginResponse);
+
+  // List library items (uses stored credential via server_id)
+  rpc List(ListRequest) returns (ListResponse);
+
+  // Get current user info (uses stored credential via server_id)
+  rpc GetMe(GetMeRequest) returns (GetMeResponse);
+
+  // Logout from an Emby-compatible server (delete stored credential)
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+
+  // Get saved credentials (binds)
+  rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+}

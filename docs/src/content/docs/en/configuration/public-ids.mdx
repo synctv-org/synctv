@@ -1,0 +1,98 @@
+---
+title: Public IDs
+description: public_ids controls API-facing public ID format.
+---
+
+## Public ID Format
+
+`public_ids` controls the ID format exposed through APIs, URLs, and client-visible responses.
+
+SyncTV can keep numeric IDs internally while exposing sqids to clients. This makes public IDs shorter, more uniform, and less obviously incremental.
+
+## Complete Example
+
+```yaml
+public_ids:
+  sqids:
+    alphabet: "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    min_length: 12
+```
+
+If `public_ids.sqids` is not configured, SyncTV uses the built-in prefixed decimal format.
+
+## `public_ids.sqids`
+
+Type: object or null.
+
+Default: `null`.
+
+Purpose: enables sqids encoding for public IDs.
+
+Enable it when:
+
+- The service is public-facing and IDs should not look like simple incremental numbers.
+- Room, media, and user identifiers should have more uniform length.
+- Public identifiers should be easier to copy, display, and search in logs.
+
+Keep the default when:
+
+- The service is internal-only.
+- Public ID format does not matter.
+- Direct IDs make troubleshooting easier.
+
+## `public_ids.sqids.alphabet`
+
+Type: optional string.
+
+Default: empty, which means the sqids crate default alphabet is used.
+
+Purpose: controls the characters available to sqids.
+
+Example:
+
+```yaml
+public_ids:
+  sqids:
+    alphabet: "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+```
+
+This example removes visually ambiguous characters such as `0`, `O`, `I`, and `l`.
+
+Notes:
+
+- The alphabet must contain enough unique characters.
+- Changing the alphabet changes the public ID generated for the same internal ID.
+- For a new project, choose the product format early. After launch, changing it can break historical URLs, bookmarks, and external references.
+
+## `public_ids.sqids.min_length`
+
+Type: integer.
+
+Default: `12`.
+
+Purpose: controls the minimum generated public ID length.
+
+Example:
+
+```yaml
+public_ids:
+  sqids:
+    min_length: 10
+```
+
+Recommended values:
+
+| Scenario | Recommendation |
+| --- | --- |
+| Internal or small deployment | `8` to `10` |
+| Public product | `10` to `14` |
+| Copy-friendly IDs | Avoid excessive length |
+
+Longer does not mean safer. Public IDs are not authorization. Access control must still be enforced by authentication and authorization logic.
+
+## Environment Variables
+
+| Environment variable | Configuration field |
+| --- | --- |
+| `SYNCTV_PUBLIC_IDS_SQIDS_ALPHABET` | `public_ids.sqids.alphabet` |
+| `SYNCTV_PUBLIC_IDS_SQIDS_MIN_LENGTH` | `public_ids.sqids.min_length` |

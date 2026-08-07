@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO auth_token_blacklist (jti, expires_at, family_revoked_at) VALUES ($1, $2, $3) ON CONFLICT (jti) DO UPDATE\n             SET expires_at = EXCLUDED.expires_at,\n                 family_revoked_at = EXCLUDED.family_revoked_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2e62dd8b4ecccdf962de213827a622eea73b877ff69e896589b11b0c77c3cf99"
+}

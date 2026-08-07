@@ -1,0 +1,1766 @@
+syntax = "proto3";
+
+package synctv.admin;
+
+import "proto/buf/validate/validate.proto";
+import "proto/client.proto";
+import "proto/common.proto";
+import "proto/oauth2.proto";
+import "google/protobuf/field_mask.proto";
+
+// Admin API for SyncTV - Requires admin or root permissions
+//
+// SECURITY: User password operations revoke or initialize credentials through
+// the OPAQUE password reset flow. Admin APIs never receive user replacement
+// passwords.
+service AdminService {
+  // =========================
+  // System Settings Management
+  // =========================
+  rpc GetSettings(GetSettingsRequest) returns (RuntimeSettings);
+  rpc UpdateSettings(UpdateSettingsRequest) returns (RuntimeSettings);
+  // Root-only because the snapshot contains OAuth and SMTP credentials.
+  rpc ExportSettings(ExportSettingsRequest) returns (RuntimeSettingsSnapshot);
+  // Root-only because the import replaces all runtime settings.
+  rpc ImportSettings(ImportSettingsRequest) returns (ImportSettingsResponse);
+  rpc SendTestEmail(SendTestEmailRequest) returns (SendTestEmailResponse);
+
+  // =========================
+  // User Management
+  // =========================
+  rpc CreateUser(CreateUserRequest) returns (AdminUser);
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+  rpc GetUser(GetUserRequest) returns (AdminUser);
+  rpc GetUserPreferences(GetUserPreferencesRequest) returns (GetUserPreferencesResponse);
+  rpc UpdateUserPreferences(UpdateUserPreferencesRequest) returns (UpdateUserPreferencesResponse);
+  rpc SetUserPassword(SetUserPasswordRequest) returns (SetUserPasswordResponse);
+  rpc UpdateUserUsername(UpdateUserUsernameRequest) returns (AdminUser);
+  rpc UpdateUserRole(UpdateUserRoleRequest) returns (AdminUser);
+  rpc BanUser(BanUserRequest) returns (AdminUser);
+  rpc UnbanUser(UnbanUserRequest) returns (AdminUser);
+  rpc GetUserRooms(GetUserRoomsRequest) returns (GetUserRoomsResponse);
+
+  // =========================
+  // Batch Operations
+  // =========================
+  rpc BatchBanUsers(BatchBanUsersRequest) returns (BatchBanUsersResponse);
+  rpc BatchDeleteUsers(BatchDeleteUsersRequest) returns (BatchDeleteUsersResponse);
+  rpc BatchBanRooms(BatchBanRoomsRequest) returns (BatchBanRoomsResponse);
+  rpc BatchDeleteRooms(BatchDeleteRoomsRequest) returns (BatchDeleteRoomsResponse);
+
+  // =========================
+  // Room Management
+  // =========================
+  rpc ListRooms(ListRoomsRequest) returns (ListRoomsResponse);
+  rpc GetRoom(GetRoomRequest) returns (Room);
+  rpc GetRoomSettings(GetRoomSettingsRequest) returns (GetRoomSettingsResponse);
+  rpc UpdateRoomSettings(UpdateRoomSettingsRequest) returns (Room);
+  rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (Room);
+  rpc UpdateRoomPassword(UpdateRoomPasswordRequest) returns (UpdateRoomPasswordResponse);
+  rpc DeleteRoom(DeleteRoomRequest) returns (DeleteRoomResponse);
+  rpc BanRoom(BanRoomRequest) returns (Room);
+  rpc UnbanRoom(UnbanRoomRequest) returns (Room);
+  rpc GetRoomMembers(GetRoomMembersRequest) returns (GetRoomMembersResponse);
+  rpc AddMember(AddMemberRequest) returns (synctv.common.RoomMember);
+  rpc UpdateMemberRemarkName(UpdateMemberRemarkNameRequest) returns (synctv.common.RoomMember);
+  rpc UpdateMemberDisplayTag(UpdateMemberDisplayTagRequest) returns (synctv.common.RoomMember);
+  rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (synctv.common.RoomMember);
+  rpc KickMember(KickMemberRequest) returns (KickMemberResponse);
+  rpc ListRoomCategories(ListRoomCategoriesRequest) returns (ListRoomCategoriesResponse);
+  rpc UpsertRoomCategory(UpsertRoomCategoryRequest) returns (synctv.client.RoomCategory);
+  rpc DeleteRoomCategory(DeleteRoomCategoryRequest) returns (DeleteRoomCategoryResponse);
+  rpc ListRoomLabels(ListRoomLabelsRequest) returns (ListRoomLabelsResponse);
+  rpc UpsertRoomLabel(UpsertRoomLabelRequest) returns (synctv.client.RoomLabel);
+  rpc DeleteRoomLabel(DeleteRoomLabelRequest) returns (DeleteRoomLabelResponse);
+  rpc UpdateRoomTaxonomy(UpdateRoomTaxonomyRequest) returns (Room);
+
+  // =========================
+  // Admin Management (Root Only)
+  // =========================
+  rpc AddAdmin(AddAdminRequest) returns (AdminUser);
+  rpc RemoveAdmin(RemoveAdminRequest) returns (RemoveAdminResponse);
+  rpc ListAdmins(ListAdminsRequest) returns (ListAdminsResponse);
+
+  // =========================
+  // Service State
+  // =========================
+  rpc GetServiceState(GetServiceStateRequest) returns (GetServiceStateResponse);
+
+  // =========================
+  // Slice Cache Management
+  // =========================
+  rpc GetSliceCacheStats(GetSliceCacheStatsRequest) returns (GetSliceCacheStatsResponse);
+  rpc PurgeSliceCache(PurgeSliceCacheRequest) returns (PurgeSliceCacheResponse);
+  rpc EvictExpiredSliceCache(EvictExpiredSliceCacheRequest) returns (EvictExpiredSliceCacheResponse);
+
+  // =========================
+  // Livestream Management
+  // =========================
+  rpc ListActiveStreams(ListActiveStreamsRequest) returns (ListActiveStreamsResponse);
+  rpc KickStream(KickStreamRequest) returns (KickStreamResponse);
+
+  // =========================
+  // Review Workflow
+  // =========================
+  rpc ListUserRegistrationReviews(ListUserRegistrationReviewsRequest) returns (ListUserRegistrationReviewsResponse);
+  rpc ApproveUserRegistrationReview(ApproveUserRegistrationReviewRequest) returns (ApproveUserRegistrationReviewResponse);
+  rpc RejectUserRegistrationReview(RejectUserRegistrationReviewRequest) returns (UserRegistrationReview);
+  rpc ListRoomCreationReviews(ListRoomCreationReviewsRequest) returns (ListRoomCreationReviewsResponse);
+  rpc ApproveRoomCreationReview(ApproveRoomCreationReviewRequest) returns (ApproveRoomCreationReviewResponse);
+  rpc RejectRoomCreationReview(RejectRoomCreationReviewRequest) returns (RoomCreationReview);
+  rpc ListRoomJoinReviews(ListRoomJoinReviewsRequest) returns (ListRoomJoinReviewsResponse);
+  rpc ApproveRoomJoinReview(ApproveRoomJoinReviewRequest) returns (ApproveRoomJoinReviewResponse);
+  rpc RejectRoomJoinReview(RejectRoomJoinReviewRequest) returns (RoomJoinReview);
+
+  // =========================
+  // Moderation Bans
+  // =========================
+  rpc ListBanRecords(ListBanRecordsRequest) returns (ListBanRecordsResponse);
+
+  // =========================
+  // Moderation Reports
+  // =========================
+  rpc ListContentReports(ListContentReportsRequest) returns (ListContentReportsResponse);
+  rpc GetContentReport(GetContentReportRequest) returns (ContentReport);
+  rpc UpdateContentReportStatus(UpdateContentReportStatusRequest) returns (UpdateContentReportStatusResponse);
+}
+
+// =========================
+// Common Types
+// =========================
+
+message AdminUser {
+  string id = 1;
+  string username = 2;
+  string email = 3;
+  synctv.common.UserRole role = 4; // RBAC role
+  synctv.common.UserStatus status = 5; // Account status
+  int64 created_at = 6;
+  int64 updated_at = 7;
+  bool is_banned = 8;
+  int64 banned_at = 9;
+  string banned_by = 10;
+  string banned_reason = 11;
+  string avatar_url = 12;
+  synctv.common.UserPresenceStats presence = 13;
+}
+
+message Room {
+  string id = 1;
+  string name = 2;
+  string creator_id = 3;
+  string creator_username = 4;
+  synctv.common.RoomStatus status = 5; // Room lifecycle status
+  synctv.client.RoomSettings settings = 6;
+  int32 member_count = 7;
+  int64 created_at = 8;
+  int64 updated_at = 9;
+  string description = 10; // Room description
+  bool is_banned = 11; // Ban flag set by global admin only
+  synctv.common.UserStatus creator_status = 12;
+  int64 version = 13; // Resource version from database
+  synctv.common.RoomPresenceStats presence = 14;
+  string creator_avatar_url = 15;
+  synctv.client.ResourceCover cover = 16;
+  synctv.client.RoomCategory category = 17;
+  repeated synctv.client.RoomLabel labels = 18;
+}
+
+message RuntimeSettings {
+  RoomDefaultsSettings room_defaults = 1 [(buf.validate.field).required = true];
+  PermissionSettings permissions = 2 [(buf.validate.field).required = true];
+  RoomCreationSettings room_creation = 3 [(buf.validate.field).required = true];
+  UserSettings user = 4 [(buf.validate.field).required = true];
+  OAuth2Settings oauth2 = 5 [(buf.validate.field).required = true];
+  RtmpSettings rtmp = 6 [(buf.validate.field).required = true];
+  EmailSettings email = 7 [(buf.validate.field).required = true];
+  WebRTCSettings webrtc = 8 [(buf.validate.field).required = true];
+  ChatSettings chat = 9 [(buf.validate.field).required = true];
+  CorsSettings cors = 10 [(buf.validate.field).required = true];
+  ServerSettings server = 11 [(buf.validate.field).required = true];
+  PlaybackHistorySettings playback_history = 12 [(buf.validate.field).required = true];
+}
+
+// Portable, versioned backup document for all database-backed runtime settings.
+// The document contains credentials and must be handled as a secret.
+message RuntimeSettingsSnapshot {
+  uint32 format_version = 1 [(buf.validate.field).uint32.const = 1];
+  RuntimeSettings settings = 2 [(buf.validate.field).required = true];
+}
+
+message ExportSettingsRequest {}
+
+message ImportSettingsRequest {
+  RuntimeSettingsSnapshot snapshot = 1 [(buf.validate.field).required = true];
+  bool dry_run = 2;
+}
+
+message ImportSettingsResponse {
+  bool applied = 1;
+  repeated string changed_sections = 2;
+}
+
+message ServerSettings {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message RoomDefaultsSettings {
+  int64 default_max_members = 1;
+  uint64 default_max_chat_messages = 2;
+}
+
+message PermissionSettings {
+  uint64 admin_default_permissions = 1;
+  uint64 member_default_permissions = 2;
+  uint64 guest_default_permissions = 3;
+}
+
+enum RoomPasswordPolicy {
+  ROOM_PASSWORD_POLICY_UNSPECIFIED = 0;
+  ROOM_PASSWORD_POLICY_OPTIONAL = 1;
+  ROOM_PASSWORD_POLICY_REQUIRED = 2;
+  ROOM_PASSWORD_POLICY_FORBIDDEN = 3;
+}
+
+message RoomCreationSettings {
+  bool enabled = 1;
+  bool approval_required = 2;
+  RoomPasswordPolicy password_policy = 3 [(buf.validate.field).enum.defined_only = true];
+  int64 max_rooms_per_user = 4;
+}
+
+message UserSettings {
+  bool enable_password_signup = 1;
+  bool password_signup_need_review = 2;
+  bool enable_email_signup = 3;
+  bool email_signup_need_review = 4;
+  bool enable_webauthn_signup = 5;
+  bool webauthn_signup_need_review = 6;
+  bool enable_guest = 7;
+}
+
+message OAuth2Settings {
+  repeated OAuth2ProviderSettings providers = 1;
+  repeated string allowed_redirect_urls = 2;
+}
+
+message OAuth2ProviderSettings {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]+$"
+  }];
+  bool enable_signup = 2;
+  bool signup_need_review = 3;
+
+  oneof config {
+    option (buf.validate.oneof).required = true;
+    OAuth2GithubProviderConfig github = 4;
+    OAuth2GoogleProviderConfig google = 5;
+    OAuth2LogtoProviderConfig logto = 6;
+    OAuth2OidcProviderConfig oidc = 7;
+    OAuth2CasdoorProviderConfig casdoor = 8;
+    OAuth2AppleProviderConfig apple = 9;
+  }
+}
+
+message OAuth2GithubProviderConfig {
+  string client_id = 1;
+  optional string client_secret = 2;
+  string redirect_url = 3;
+}
+
+message OAuth2GoogleProviderConfig {
+  string client_id = 1;
+  optional string client_secret = 2;
+  string redirect_url = 3;
+}
+
+message OAuth2LogtoProviderConfig {
+  string client_id = 1;
+  optional string client_secret = 2;
+  string redirect_url = 3;
+  string endpoint = 4;
+}
+
+message OAuth2OidcProviderConfig {
+  string client_id = 1;
+  optional string client_secret = 2;
+  string redirect_url = 3;
+  string issuer = 4;
+  optional string auth_url = 5;
+  optional string token_url = 6;
+  optional string userinfo_url = 7;
+  optional string jwks_url = 8;
+  repeated string scopes = 9;
+}
+
+message OAuth2AppleProviderConfig {
+  string client_id = 1;
+  optional string client_secret = 2;
+  string redirect_url = 3;
+}
+
+message OAuth2CasdoorProviderConfig {
+  string client_id = 1;
+  optional string client_secret = 2;
+  string redirect_url = 3;
+  string issuer = 4;
+  optional string auth_url = 5;
+  optional string token_url = 6;
+  optional string userinfo_url = 7;
+  optional string jwks_url = 8;
+}
+
+message RtmpSettings {
+  optional string custom_publish_host = 1;
+  bool ts_disguised_as_png = 2;
+}
+
+message EmailSettings {
+  bool enabled = 1;
+  optional string smtp_host = 2;
+  uint32 smtp_port = 3;
+  SmtpCredentials smtp_credentials = 4;
+  SmtpProxy smtp_proxy = 5;
+  bool use_tls = 6;
+  optional string from_email = 7;
+  string from_name = 8;
+  bool whitelist_enabled = 9;
+  repeated string whitelist_domains = 10;
+}
+
+message SmtpCredentials {
+  string username = 1;
+  optional string password = 2;
+}
+
+message SmtpProxy {
+  string url = 1;
+  SmtpCredentials credentials = 2;
+}
+
+message WebRTCSettings {
+  repeated synctv.client.IceServer external_ice_servers = 1;
+  uint32 max_voice_participants_per_room = 2;
+}
+
+message ChatSettings {
+  uint64 max_messages_per_room = 1;
+  uint64 max_pinned_messages_per_room = 2;
+  int64 message_retention_days = 3;
+}
+
+message PlaybackHistorySettings {
+  uint32 retention_days = 1;
+  int64 max_entries_per_room = 2;
+}
+
+message CorsSettings {
+  repeated string allowed_origins = 1;
+}
+
+message UpdateSettingsRequest {
+  RuntimeSettingsPatch settings = 1 [(buf.validate.field).required = true];
+  google.protobuf.FieldMask update_mask = 2 [(buf.validate.field).required = true];
+}
+
+message RuntimeSettingsPatch {
+  RoomDefaultsSettingsPatch room_defaults = 1;
+  PermissionSettingsPatch permissions = 2;
+  RoomCreationSettingsPatch room_creation = 3;
+  UserSettingsPatch user = 4;
+  OAuth2SettingsPatch oauth2 = 5;
+  RtmpSettingsPatch rtmp = 6;
+  EmailSettingsPatch email = 7;
+  WebRTCSettingsPatch webrtc = 8;
+  ChatSettingsPatch chat = 9;
+  CorsSettingsPatch cors = 10;
+  ServerSettingsPatch server = 11;
+  PlaybackHistorySettingsPatch playback_history = 12;
+}
+
+message ServerSettingsPatch {
+  optional string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message RoomDefaultsSettingsPatch {
+  optional int64 default_max_members = 1;
+  optional uint64 default_max_chat_messages = 2;
+}
+
+message PermissionSettingsPatch {
+  optional uint64 admin_default_permissions = 1;
+  optional uint64 member_default_permissions = 2;
+  optional uint64 guest_default_permissions = 3;
+}
+
+message RoomCreationSettingsPatch {
+  optional bool enabled = 1;
+  optional bool approval_required = 2;
+  optional RoomPasswordPolicy password_policy = 3 [(buf.validate.field).enum.defined_only = true];
+  optional int64 max_rooms_per_user = 4;
+}
+
+message UserSettingsPatch {
+  optional bool enable_password_signup = 1;
+  optional bool password_signup_need_review = 2;
+  optional bool enable_email_signup = 3;
+  optional bool email_signup_need_review = 4;
+  optional bool enable_webauthn_signup = 5;
+  optional bool webauthn_signup_need_review = 6;
+  optional bool enable_guest = 7;
+}
+
+message OAuth2SettingsPatch {
+  repeated OAuth2ProviderSettings providers = 1;
+  repeated string allowed_redirect_urls = 2;
+}
+
+message RtmpSettingsPatch {
+  optional string custom_publish_host = 1;
+  optional bool ts_disguised_as_png = 2;
+}
+
+message EmailSettingsPatch {
+  optional bool enabled = 1;
+  optional string smtp_host = 2;
+  optional uint32 smtp_port = 3;
+  SmtpCredentials smtp_credentials = 4;
+  SmtpProxy smtp_proxy = 5;
+  optional bool use_tls = 6;
+  optional string from_email = 7;
+  optional string from_name = 8;
+  optional bool whitelist_enabled = 9;
+  repeated string whitelist_domains = 10;
+}
+
+message WebRTCSettingsPatch {
+  repeated synctv.client.IceServer external_ice_servers = 1;
+  optional uint32 max_voice_participants_per_room = 2;
+}
+
+message ChatSettingsPatch {
+  optional uint64 max_messages_per_room = 1;
+  optional uint64 max_pinned_messages_per_room = 2;
+  optional int64 message_retention_days = 3;
+}
+
+message PlaybackHistorySettingsPatch {
+  optional uint32 retention_days = 1;
+  optional int64 max_entries_per_room = 2;
+}
+
+message CorsSettingsPatch {
+  repeated string allowed_origins = 1;
+}
+
+enum BanTargetType {
+  BAN_TARGET_TYPE_UNSPECIFIED = 0;
+  BAN_TARGET_TYPE_USER = 1;
+  BAN_TARGET_TYPE_ROOM = 2;
+}
+
+enum ContentReportTargetType {
+  CONTENT_REPORT_TARGET_TYPE_UNSPECIFIED = 0;
+  CONTENT_REPORT_TARGET_TYPE_ROOM = 1;
+  CONTENT_REPORT_TARGET_TYPE_USER = 2;
+  CONTENT_REPORT_TARGET_TYPE_ROOM_MEMBER = 3;
+  CONTENT_REPORT_TARGET_TYPE_CHAT_MESSAGE = 4;
+}
+
+enum ContentReportStatus {
+  CONTENT_REPORT_STATUS_UNSPECIFIED = 0;
+  CONTENT_REPORT_STATUS_OPEN = 1;
+  CONTENT_REPORT_STATUS_REVIEWING = 2;
+  CONTENT_REPORT_STATUS_RESOLVED = 3;
+  CONTENT_REPORT_STATUS_DISMISSED = 4;
+}
+
+enum ContentReportScope {
+  CONTENT_REPORT_SCOPE_UNSPECIFIED = 0;
+  CONTENT_REPORT_SCOPE_ANY_RELATED = 1;
+  CONTENT_REPORT_SCOPE_ROOM_CONTEXT = 2;
+  CONTENT_REPORT_SCOPE_TARGET_ROOM = 3;
+  CONTENT_REPORT_SCOPE_TARGET_USER = 4;
+  CONTENT_REPORT_SCOPE_TARGET_MEMBER = 5;
+  CONTENT_REPORT_SCOPE_TARGET_CHAT_MESSAGE = 6;
+}
+
+message UserRegistrationReview {
+  string id = 1;
+  string username = 2;
+  string email = 3;
+  int32 signup_method = 4;
+  synctv.common.ReviewStatus status = 5;
+  int64 requested_at = 6;
+  int64 reviewed_at = 7;
+  optional string reviewed_by = 8;
+  optional string rejection_reason = 9;
+  optional synctv.client.OAuth2ProviderType oauth2_provider = 10;
+  optional string oauth2_provider_user_id = 11;
+  optional string oauth2_provider_username = 12;
+  optional string oauth2_avatar_url = 13;
+  optional string oauth2_provider_instance_name = 14;
+  optional string oauth2_provider_issuer = 15;
+  optional string webauthn_credential_id = 16;
+  optional string webauthn_credential_name = 17;
+}
+
+message RoomCreationReview {
+  string id = 1;
+  string requested_by = 2;
+  string requested_by_username = 3;
+  string name = 4;
+  string description = 5;
+  synctv.common.ReviewStatus status = 6;
+  int64 requested_at = 7;
+  int64 reviewed_at = 8;
+  optional string reviewed_by = 9;
+  optional string rejection_reason = 10;
+  synctv.client.RoomCategory category = 11;
+  repeated synctv.client.RoomLabel labels = 12;
+}
+
+message RoomJoinReview {
+  string id = 1;
+  string room_id = 2;
+  string room_name = 3;
+  string user_id = 4;
+  string username = 5;
+  synctv.common.RoomMemberRole requested_role = 6;
+  synctv.common.ReviewStatus status = 7;
+  int64 requested_at = 8;
+  int64 reviewed_at = 9;
+  optional string reviewed_by = 10;
+  optional string rejection_reason = 11;
+}
+
+message BanRecord {
+  string id = 1;
+  BanTargetType target_type = 2;
+  string user_id = 3;
+  string username = 4;
+  string room_id = 5;
+  string room_name = 6;
+  string banned_by = 7;
+  string banned_by_username = 8;
+  string reason = 9;
+  int64 starts_at = 10;
+  int64 ends_at = 11;
+  int64 revoked_at = 12;
+  string revoked_by = 13;
+  bool is_active = 14;
+}
+
+message ContentReport {
+  string id = 1;
+  string reporter_user_id = 2;
+  string reporter_username = 3;
+  string room_id = 4;
+  string room_name = 5;
+  ContentReportTargetType target_type = 6;
+  string target_room_id = 7;
+  string target_room_name = 8;
+  string target_user_id = 9;
+  string target_username = 10;
+  string target_member_room_id = 11;
+  string target_member_room_name = 12;
+  string target_member_user_id = 13;
+  string target_member_username = 14;
+  int64 target_chat_message_id = 15;
+  int64 target_chat_message_created_at = 16;
+  string target_chat_message_preview = 17;
+  string reason_code = 18;
+  string reason = 19;
+  synctv.client.ContentReportMetadata metadata = 20;
+  ContentReportStatus status = 21;
+  string reviewed_by = 22;
+  string reviewed_by_username = 23;
+  int64 reviewed_at = 24;
+  string resolution_note = 25;
+  int64 created_at = 26;
+  int64 updated_at = 27;
+}
+
+// =========================
+// Settings Management
+// =========================
+
+message GetSettingsRequest {}
+
+message SendTestEmailRequest {
+  string to = 1;
+}
+
+message SendTestEmailResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// =========================
+// User Management
+// =========================
+
+message CreateUserRequest {
+  string username = 1 [(buf.validate.field).string = {
+    min_len: 3
+    max_len: 50
+    pattern: "^[\\p{L}\\p{N}_-]+$"
+  }];
+  string email = 2 [
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
+    (buf.validate.field).string = {
+      max_len: 254
+      email: true
+    }
+  ];
+  synctv.common.UserRole role = 3 [(buf.validate.field).enum.defined_only = true];
+  synctv.common.UserStatus status = 4 [(buf.validate.field).enum.defined_only = true];
+  string password = 5 [
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
+    (buf.validate.field).string = {
+      min_len: 8
+      max_len: 128
+    }
+  ];
+}
+
+message DeleteUserRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+}
+
+message DeleteUserResponse {
+  bool success = 1;
+}
+
+message ListUsersRequest {
+  option (buf.validate.message).cel = {
+    id: "admin.list_users.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "admin.list_users.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+  int32 page = 1;
+  int32 page_size = 2;
+  synctv.common.UserStatus status = 3 [(buf.validate.field).enum.defined_only = true];
+  synctv.common.UserRole role = 4 [(buf.validate.field).enum.defined_only = true];
+  string search = 5 [(buf.validate.field).string = {max_len: 100}]; // Search by username or email
+  UserListSortBy sort_by = 6 [(buf.validate.field).enum.defined_only = true];
+  SortDirection sort_direction = 7 [(buf.validate.field).enum.defined_only = true];
+  optional bool is_banned = 8;
+}
+
+message ListUsersResponse {
+  repeated AdminUser users = 1;
+  int32 total = 2;
+}
+
+message GetUserRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+}
+
+message UserPathRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+}
+
+message GetUserPreferencesRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+}
+
+message GetUserPreferencesResponse {
+  AdminUser user = 1;
+  synctv.client.UserPreferences preferences = 2;
+  synctv.client.UserAuthFactors auth_factors = 3;
+}
+
+message UpdateUserPreferencesRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  optional bool two_factor_enabled = 2;
+  synctv.client.UserNotificationPreferences notifications = 4;
+}
+
+message UpdateUserPreferencesResponse {
+  AdminUser user = 1;
+  synctv.client.UserPreferences preferences = 2;
+  synctv.client.UserAuthFactors auth_factors = 3;
+}
+
+message SetUserPasswordRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  string password = 2 [(buf.validate.field).string = {min_len: 8, max_len: 1024}];
+  string reason = 3 [(buf.validate.field).string.max_len = 500];
+}
+
+message SetUserPasswordResponse {
+  bool success = 1;
+  AdminUser user = 2;
+}
+
+message UpdateUserUsernameRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  string new_username = 2 [(buf.validate.field).string = {
+    min_len: 3
+    max_len: 50
+    pattern: "^[\\p{L}\\p{N}_-]+$"
+  }];
+}
+
+message UpdateUserRoleRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  synctv.common.UserRole role = 2 [(buf.validate.field).enum.defined_only = true]; // New role
+}
+
+message BanUserRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  string reason = 2; // Optional
+}
+
+message UnbanUserRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+}
+
+message GetUserRoomsRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  option (buf.validate.message).cel = {
+    id: "admin.get_user_rooms.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "admin.get_user_rooms.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+  int32 page = 2;
+  int32 page_size = 3;
+  synctv.common.RoomStatus status = 4 [(buf.validate.field).enum.defined_only = true];
+  string search = 5 [(buf.validate.field).string = {max_len: 100}];
+  optional bool is_banned = 6;
+  RoomListSortBy sort_by = 7 [(buf.validate.field).enum.defined_only = true];
+  SortDirection sort_direction = 8 [(buf.validate.field).enum.defined_only = true];
+}
+
+message GetUserRoomsResponse {
+  repeated Room rooms = 1;
+  int32 total = 2; // Total number of rooms for this user
+}
+
+enum SortDirection {
+  SORT_DIRECTION_UNSPECIFIED = 0;
+  SORT_DIRECTION_ASC = 1;
+  SORT_DIRECTION_DESC = 2;
+}
+
+enum UserListSortBy {
+  USER_LIST_SORT_BY_UNSPECIFIED = 0;
+  USER_LIST_SORT_BY_CREATED_AT = 1;
+  USER_LIST_SORT_BY_UPDATED_AT = 2;
+  USER_LIST_SORT_BY_USERNAME = 3;
+  USER_LIST_SORT_BY_EMAIL = 4;
+  USER_LIST_SORT_BY_STATUS = 5;
+  USER_LIST_SORT_BY_ROLE = 6;
+}
+
+enum RoomListSortBy {
+  ROOM_LIST_SORT_BY_UNSPECIFIED = 0;
+  ROOM_LIST_SORT_BY_CREATED_AT = 1;
+  ROOM_LIST_SORT_BY_UPDATED_AT = 2;
+  ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT = 3;
+  ROOM_LIST_SORT_BY_NAME = 4;
+}
+
+enum RoomMemberListSortBy {
+  ROOM_MEMBER_LIST_SORT_BY_UNSPECIFIED = 0;
+  ROOM_MEMBER_LIST_SORT_BY_JOINED_AT = 1;
+  ROOM_MEMBER_LIST_SORT_BY_USERNAME = 2;
+  ROOM_MEMBER_LIST_SORT_BY_ROLE = 3;
+}
+
+enum ActiveStreamListSortBy {
+  ACTIVE_STREAM_LIST_SORT_BY_UNSPECIFIED = 0;
+  ACTIVE_STREAM_LIST_SORT_BY_STARTED_AT = 1;
+  ACTIVE_STREAM_LIST_SORT_BY_ROOM_ID = 2;
+  ACTIVE_STREAM_LIST_SORT_BY_MEDIA_ID = 3;
+  ACTIVE_STREAM_LIST_SORT_BY_USER_ID = 4;
+  ACTIVE_STREAM_LIST_SORT_BY_NODE_ID = 5;
+}
+
+message ListUserRegistrationReviewsRequest {
+  option (buf.validate.message).cel = {
+    id: "admin.list_user_registration_reviews.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "admin.list_user_registration_reviews.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+  int32 page = 1;
+  int32 page_size = 2;
+  synctv.common.ReviewStatus status = 3 [(buf.validate.field).enum.defined_only = true];
+  string search = 4 [(buf.validate.field).string.max_len = 100];
+}
+
+message ListUserRegistrationReviewsResponse {
+  repeated UserRegistrationReview reviews = 1;
+  int32 total = 2;
+}
+
+message ApproveUserRegistrationReviewRequest {
+  string request_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+}
+
+message ApproveUserRegistrationReviewResponse {
+  UserRegistrationReview review = 1;
+  AdminUser user = 2;
+}
+
+message RejectUserRegistrationReviewRequest {
+  string request_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  string reason = 2 [(buf.validate.field).string.max_len = 500];
+}
+
+message ListRoomCreationReviewsRequest {
+  option (buf.validate.message).cel = {
+    id: "admin.list_room_creation_reviews.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "admin.list_room_creation_reviews.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+  int32 page = 1;
+  int32 page_size = 2;
+  synctv.common.ReviewStatus status = 3 [(buf.validate.field).enum.defined_only = true];
+  string requested_by = 4 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^usr_[A-Za-z0-9]+$"
+  }];
+  string search = 5 [(buf.validate.field).string.max_len = 100];
+}
+
+message ListRoomCreationReviewsResponse {
+  repeated RoomCreationReview reviews = 1;
+  int32 total = 2;
+}
+
+message ApproveRoomCreationReviewRequest {
+  string request_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+}
+
+message ApproveRoomCreationReviewResponse {
+  RoomCreationReview review = 1;
+  Room room = 2;
+}
+
+message RejectRoomCreationReviewRequest {
+  string request_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  string reason = 2 [(buf.validate.field).string.max_len = 500];
+}
+
+message ListRoomJoinReviewsRequest {
+  option (buf.validate.message).cel = {
+    id: "admin.list_room_join_reviews.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "admin.list_room_join_reviews.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+  int32 page = 1;
+  int32 page_size = 2;
+  synctv.common.ReviewStatus status = 3 [(buf.validate.field).enum.defined_only = true];
+  string room_id = 4 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^room_[A-Za-z0-9]+$"
+  }];
+  string user_id = 5 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^usr_[A-Za-z0-9]+$"
+  }];
+}
+
+message ListRoomJoinReviewsResponse {
+  repeated RoomJoinReview reviews = 1;
+  int32 total = 2;
+}
+
+message ApproveRoomJoinReviewRequest {
+  string request_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^rev_[A-Za-z0-9]+$"
+  }];
+}
+
+message ApproveRoomJoinReviewResponse {
+  RoomJoinReview review = 1;
+  synctv.common.RoomMember member = 2;
+}
+
+message RejectRoomJoinReviewRequest {
+  string request_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^rev_[A-Za-z0-9]+$"
+  }];
+  string reason = 2 [(buf.validate.field).string.max_len = 500];
+}
+
+// =========================
+// Room Management
+// =========================
+
+message ListRoomsRequest {
+  option (buf.validate.message).cel = {
+    id: "admin.list_rooms.creator_id"
+    message: "creator_id must be empty or a public identifier"
+    expression: "this.creator_id == '' || (size(this.creator_id) <= 64 && this.creator_id.matches('^usr_[A-Za-z0-9]+$'))"
+  };
+  option (buf.validate.message).cel = {
+    id: "admin.list_rooms.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "admin.list_rooms.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+  int32 page = 1;
+  int32 page_size = 2;
+  synctv.common.RoomStatus status = 3 [(buf.validate.field).enum.defined_only = true];
+  string search = 4 [(buf.validate.field).string = {max_len: 100}]; // Search by name
+  string creator_id = 5; // Optional filter by creator
+  optional bool is_banned = 6; // Optional filter by ban status (true = banned only, false = not banned, absent = all)
+  RoomListSortBy sort_by = 7 [(buf.validate.field).enum.defined_only = true];
+  SortDirection sort_direction = 8 [(buf.validate.field).enum.defined_only = true];
+  string category_id = 9 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^roomcat_[A-Za-z0-9]+$"
+  }];
+  repeated string label_ids = 10 [
+    (buf.validate.field).repeated.max_items = 10,
+    (buf.validate.field).repeated.items.string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^roomlbl_[A-Za-z0-9]+$"
+    }
+  ];
+}
+
+message ListRoomsResponse {
+  repeated Room rooms = 1;
+  int32 total = 2;
+}
+
+message ListRoomCategoriesRequest {
+  bool include_disabled = 1;
+}
+
+message ListRoomCategoriesResponse {
+  repeated synctv.client.RoomCategory categories = 1;
+}
+
+message UpsertRoomCategoryRequest {
+  string key = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+  string name = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 80
+  }];
+  string description = 3 [(buf.validate.field).string = {max_len: 300}];
+  int32 sort_order = 4;
+  optional bool is_enabled = 5;
+}
+
+message DeleteRoomCategoryRequest {
+  string category_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^roomcat_[A-Za-z0-9]+$"
+  }];
+}
+
+message DeleteRoomCategoryResponse {
+  bool success = 1;
+}
+
+message ListRoomLabelsRequest {
+  bool include_disabled = 1;
+  string category_id = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^roomcat_[A-Za-z0-9]+$"
+  }];
+}
+
+message ListRoomLabelsResponse {
+  repeated synctv.client.RoomLabel labels = 1;
+}
+
+message UpsertRoomLabelRequest {
+  string key = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+  string name = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 80
+  }];
+  string description = 3 [(buf.validate.field).string = {max_len: 300}];
+  string color = 4 [(buf.validate.field).string = {max_len: 7}];
+  string category_id = 5 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^roomcat_[A-Za-z0-9]+$"
+  }];
+  int32 sort_order = 6;
+  optional bool is_enabled = 7;
+}
+
+message DeleteRoomLabelRequest {
+  string label_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^roomlbl_[A-Za-z0-9]+$"
+  }];
+}
+
+message DeleteRoomLabelResponse {
+  bool success = 1;
+}
+
+message UpdateRoomTaxonomyRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  optional string category_id = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^roomcat_[A-Za-z0-9]+$"
+  }];
+  repeated string label_ids = 3 [
+    (buf.validate.field).repeated.max_items = 10,
+    (buf.validate.field).repeated.items.string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^roomlbl_[A-Za-z0-9]+$"
+    }
+  ];
+  bool clear_category = 4;
+}
+
+message GetRoomRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+}
+
+message RoomPathRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+}
+
+message GetRoomSettingsRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+}
+
+message GetRoomSettingsResponse {
+  synctv.client.RoomSettings settings = 1;
+  int64 version = 2;
+}
+
+message UpdateRoomSettingsRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  synctv.client.RoomSettingsPatch settings = 2 [(buf.validate.field).required = true];
+  google.protobuf.FieldMask update_mask = 3 [(buf.validate.field).required = true];
+}
+
+message ResetRoomSettingsRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+}
+
+message UpdateRoomPasswordRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  string new_password = 2; // Empty to remove password. SECURITY: Plaintext - requires TLS.
+}
+
+message UpdateRoomPasswordResponse {
+  bool success = 1;
+}
+
+message DeleteRoomRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+}
+
+message DeleteRoomResponse {
+  bool success = 1;
+}
+
+message BanRoomRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  string reason = 2; // Optional
+}
+
+message UnbanRoomRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+}
+
+message GetRoomMembersRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  option (buf.validate.message).cel = {
+    id: "admin.get_room_members.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "admin.get_room_members.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+  int32 page = 2;
+  int32 page_size = 3;
+  string search = 4 [(buf.validate.field).string = {max_len: 100}];
+  synctv.common.RoomMemberRole role = 5 [(buf.validate.field).enum.defined_only = true];
+  RoomMemberListSortBy sort_by = 7 [(buf.validate.field).enum.defined_only = true];
+  SortDirection sort_direction = 8 [(buf.validate.field).enum.defined_only = true];
+}
+
+message GetRoomMembersResponse {
+  repeated synctv.common.RoomMember members = 1;
+  int32 total = 2;
+  synctv.common.RoomPresenceStats presence = 3;
+}
+
+message AddMemberRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  string user_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  synctv.common.RoomMemberRole role = 3;
+  bool notify = 4;
+  string remark_name = 5 [(buf.validate.field).string = {max_len: 64}];
+  string display_tag = 6 [(buf.validate.field).string = {max_len: 16}];
+}
+
+message UpdateMemberRemarkNameRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  string user_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  string remark_name = 3 [(buf.validate.field).string = {max_len: 64}];
+}
+
+message UpdateMemberDisplayTagRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  string user_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  string display_tag = 3 [(buf.validate.field).string = {max_len: 16}];
+}
+
+message UpdateMemberPermissionsRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  string user_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  synctv.common.RoomMemberRole role = 3;
+  uint64 added_permissions = 4;
+  uint64 removed_permissions = 5;
+  uint64 admin_added_permissions = 6;
+  uint64 admin_removed_permissions = 7;
+}
+
+message KickMemberRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  string user_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  int64 kick_cooldown_seconds = 3 [(buf.validate.field).int64 = {
+    gte: 1
+    lte: 2592000
+  }];
+}
+
+message KickMemberResponse {
+  bool success = 1;
+}
+
+// =========================
+// Admin Management (Root Only)
+// =========================
+
+message AddAdminRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+}
+
+message RemoveAdminRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+}
+
+message RemoveAdminResponse {
+  bool success = 1;
+}
+
+message ListAdminsRequest {
+  option (buf.validate.message).cel = {
+    id: "admin.list_admins.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "admin.list_admins.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+  int32 page = 1;
+  int32 page_size = 2;
+  string search = 3 [(buf.validate.field).string = {max_len: 100}];
+  UserListSortBy sort_by = 4 [(buf.validate.field).enum.defined_only = true];
+  SortDirection sort_direction = 5 [(buf.validate.field).enum.defined_only = true];
+}
+
+message ListAdminsResponse {
+  repeated AdminUser admins = 1;
+  int32 total = 2;
+}
+
+// =========================
+// Service State
+// =========================
+
+message GetServiceStateRequest {}
+
+message GetServiceStateResponse {
+  int64 total_users = 1;
+  int64 active_users = 2;
+  int64 banned_users = 3;
+  int64 total_rooms = 4;
+  int64 active_rooms = 5;
+  int64 banned_rooms = 6;
+  int64 total_media = 7;
+  int64 provider_instances = 8; // Total media provider instances
+  ServiceAdditionalState additional_state = 9;
+  synctv.common.PresenceOverview presence = 10;
+}
+
+message ServiceAdditionalState {
+  int64 active_streams = 1;
+  int64 open_reports = 2;
+}
+
+// =========================
+// Livestream Management
+// =========================
+
+message ListActiveStreamsRequest {
+  option (buf.validate.message).cel = {
+    id: "admin.list_active_streams.room_id"
+    message: "room_id must be empty or a public identifier"
+    expression: "this.room_id == '' || (size(this.room_id) <= 64 && this.room_id.matches('^room_[A-Za-z0-9]+$'))"
+  };
+  option (buf.validate.message).cel = {
+    id: "admin.list_active_streams.user_id"
+    message: "user_id must be empty or a public identifier"
+    expression: "this.user_id == '' || (size(this.user_id) <= 64 && this.user_id.matches('^usr_[A-Za-z0-9]+$'))"
+  };
+  option (buf.validate.message).cel = {
+    id: "admin.list_active_streams.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "admin.list_active_streams.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+  int32 page = 1;
+  int32 page_size = 2;
+  string room_id = 3; // optional filter by room_creation
+  string user_id = 4;
+  string node_id = 5;
+  string search = 6 [(buf.validate.field).string = {max_len: 100}];
+  ActiveStreamListSortBy sort_by = 7 [(buf.validate.field).enum.defined_only = true];
+  SortDirection sort_direction = 8 [(buf.validate.field).enum.defined_only = true];
+}
+
+message ActiveStreamInfo {
+  string room_id = 1;
+  string media_id = 2;
+  string user_id = 3;
+  string node_id = 4;
+  int64 started_at = 5; // Unix epoch timestamp
+}
+
+message ListActiveStreamsResponse {
+  repeated ActiveStreamInfo streams = 1;
+  int32 total = 2;
+}
+
+message KickStreamRequest {
+  string room_id = 1 [(buf.validate.field).string = {pattern: "^room_[A-Za-z0-9]+$"}];
+  string media_id = 2 [(buf.validate.field).string = {pattern: "^med_[A-Za-z0-9]+$"}];
+  string reason = 3;
+}
+
+message KickStreamResponse {}
+
+// =========================
+// Slice Cache Management
+// =========================
+
+message GetSliceCacheStatsRequest {
+  option (buf.validate.message).cel = {
+    id: "admin.get_slice_cache_stats.target"
+    message: "node_id and all_nodes are mutually exclusive"
+    expression: "!(this.all_nodes && this.node_id != '')"
+  };
+  string node_id = 1 [(buf.validate.field).string = {max_len: 128}];
+  bool all_nodes = 2;
+}
+
+message PurgeSliceCacheRequest {
+  option (buf.validate.message).cel = {
+    id: "admin.purge_slice_cache.target"
+    message: "node_id and all_nodes are mutually exclusive"
+    expression: "!(this.all_nodes && this.node_id != '')"
+  };
+  string node_id = 1 [(buf.validate.field).string = {max_len: 128}];
+  bool all_nodes = 2;
+}
+
+message EvictExpiredSliceCacheRequest {
+  option (buf.validate.message).cel = {
+    id: "admin.evict_expired_slice_cache.target"
+    message: "node_id and all_nodes are mutually exclusive"
+    expression: "!(this.all_nodes && this.node_id != '')"
+  };
+  string node_id = 1 [(buf.validate.field).string = {max_len: 128}];
+  bool all_nodes = 2;
+}
+
+message SliceCacheConfigInfo {
+  bool engine_enabled = 1;
+  string backend = 2;
+  string file_cache_dir = 3;
+  uint64 slice_size = 4;
+  uint64 max_cache_size = 5;
+  uint64 segment_ttl_secs = 6;
+  uint64 stale_max_age_secs = 7;
+  bool stale_while_revalidate = 8;
+  uint64 eviction_interval_secs = 9;
+  double watermark_ratio = 10;
+}
+
+message SliceCacheStatsNode {
+  string node_id = 1;
+  SliceCacheConfigInfo config = 2;
+  uint64 current_size_bytes = 3;
+  uint64 entry_count = 4;
+  uint64 metadata_entries = 5;
+  uint64 updating_entries = 6;
+  uint64 lock_count = 7;
+  double usage_ratio = 8;
+}
+
+message SliceCacheNodeFailure {
+  string node_id = 1;
+  string error = 2;
+}
+
+message GetSliceCacheStatsResponse {
+  repeated SliceCacheStatsNode nodes = 1;
+  repeated SliceCacheNodeFailure failures = 2;
+}
+
+message PurgeSliceCacheNodeResult {
+  string node_id = 1;
+  bool success = 2;
+  uint64 removed_entries = 3;
+  uint64 freed_bytes = 4;
+  SliceCacheStatsNode stats = 5;
+}
+
+message PurgeSliceCacheResponse {
+  bool success = 1;
+  uint64 removed_entries = 2;
+  uint64 freed_bytes = 3;
+  SliceCacheStatsNode stats = 4;
+  repeated PurgeSliceCacheNodeResult nodes = 5;
+  repeated SliceCacheNodeFailure failures = 6;
+}
+
+message EvictExpiredSliceCacheNodeResult {
+  string node_id = 1;
+  bool success = 2;
+  uint64 removed_expired_entries = 3;
+  SliceCacheStatsNode stats = 4;
+}
+
+message EvictExpiredSliceCacheResponse {
+  bool success = 1;
+  uint64 removed_expired_entries = 2;
+  SliceCacheStatsNode stats = 3;
+  repeated EvictExpiredSliceCacheNodeResult nodes = 4;
+  repeated SliceCacheNodeFailure failures = 5;
+}
+
+// =========================
+// Batch Operations
+// =========================
+
+// Batch result for a single item
+message BatchResultItem {
+  string id = 1; // User ID or Room ID
+  bool success = 2; // Whether the operation succeeded
+  string error = 3; // Error message if success is false
+}
+
+// Batch ban users request
+message BatchBanUsersRequest {
+  repeated string user_ids = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 100
+    items: {
+      string: {
+        min_len: 1
+        max_len: 64
+        pattern: "^usr_[A-Za-z0-9]+$"
+      }
+    }
+  }];
+  string reason = 2 [(buf.validate.field).string.max_len = 500]; // Optional reason for the ban
+}
+
+// Batch ban users response
+message BatchBanUsersResponse {
+  repeated BatchResultItem results = 1; // Per-user results
+  int32 succeeded = 2; // Count of successful operations
+  int32 failed = 3; // Count of failed operations
+}
+
+// Batch delete users request
+message BatchDeleteUsersRequest {
+  repeated string user_ids = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 100
+    items: {
+      string: {
+        min_len: 1
+        max_len: 64
+        pattern: "^usr_[A-Za-z0-9]+$"
+      }
+    }
+  }];
+}
+
+// Batch delete users response
+message BatchDeleteUsersResponse {
+  repeated BatchResultItem results = 1; // Per-user results
+  int32 succeeded = 2; // Count of successful operations
+  int32 failed = 3; // Count of failed operations
+}
+
+// Batch ban rooms request
+message BatchBanRoomsRequest {
+  repeated string room_ids = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 100
+    items: {
+      string: {
+        min_len: 1
+        max_len: 64
+        pattern: "^room_[A-Za-z0-9]+$"
+      }
+    }
+  }];
+  string reason = 2 [(buf.validate.field).string.max_len = 500]; // Optional reason for the ban
+}
+
+// Batch ban rooms response
+message BatchBanRoomsResponse {
+  repeated BatchResultItem results = 1; // Per-room_creation results
+  int32 succeeded = 2; // Count of successful operations
+  int32 failed = 3; // Count of failed operations
+}
+
+message ListBanRecordsRequest {
+  option (buf.validate.message).cel = {
+    id: "admin.list_ban_records.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "admin.list_ban_records.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+  int32 page = 1;
+  int32 page_size = 2;
+  BanTargetType target_type = 3 [(buf.validate.field).enum.defined_only = true];
+  optional bool active = 4;
+  string user_id = 5 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^usr_[A-Za-z0-9]+$"
+  }];
+  string room_id = 6 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^room_[A-Za-z0-9]+$"
+  }];
+}
+
+message ListBanRecordsResponse {
+  repeated BanRecord bans = 1;
+  int32 total = 2;
+}
+
+message ListContentReportsRequest {
+  option (buf.validate.message).cel = {
+    id: "admin.list_content_reports.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "admin.list_content_reports.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+  int32 page = 1;
+  int32 page_size = 2;
+  ContentReportStatus status = 3 [(buf.validate.field).enum.defined_only = true];
+  ContentReportTargetType target_type = 4 [(buf.validate.field).enum.defined_only = true];
+  string reporter_user_id = 5 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^usr_[A-Za-z0-9]+$"
+  }];
+  string room_id = 6 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^room_[A-Za-z0-9]+$"
+  }];
+  string search = 7 [(buf.validate.field).string.max_len = 120];
+  string target_user_id = 8 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^usr_[A-Za-z0-9]+$"
+  }];
+  string target_member_user_id = 9 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^usr_[A-Za-z0-9]+$"
+  }];
+  int64 target_chat_message_id = 10 [(buf.validate.field).int64.gte = 0];
+  string target_room_id = 11 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^room_[A-Za-z0-9]+$"
+  }];
+  string target_member_room_id = 12 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^room_[A-Za-z0-9]+$"
+  }];
+  ContentReportScope scope = 13 [(buf.validate.field).enum.defined_only = true];
+}
+
+message ListContentReportsResponse {
+  repeated ContentReport reports = 1;
+  int32 total = 2;
+}
+
+message GetContentReportRequest {
+  string report_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^report_[A-Za-z0-9]+$"
+  }];
+}
+
+message UpdateContentReportStatusRequest {
+  string report_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^report_[A-Za-z0-9]+$"
+  }];
+  ContentReportStatus status = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  string resolution_note = 3 [(buf.validate.field).string.max_len = 2000];
+}
+
+message UpdateContentReportStatusResponse {
+  ContentReport report = 1;
+  bool success = 2;
+}
+
+// Batch delete rooms request
+message BatchDeleteRoomsRequest {
+  repeated string room_ids = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 100
+    items: {
+      string: {
+        min_len: 1
+        max_len: 64
+        pattern: "^room_[A-Za-z0-9]+$"
+      }
+    }
+  }];
+}
+
+// Batch delete rooms response
+message BatchDeleteRoomsResponse {
+  repeated BatchResultItem results = 1; // Per-room_creation results
+  int32 succeeded = 2; // Count of successful operations
+  int32 failed = 3; // Count of failed operations
+}

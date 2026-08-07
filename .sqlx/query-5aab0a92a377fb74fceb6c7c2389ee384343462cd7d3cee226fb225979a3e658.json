@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM provider_playback_sessions\n               WHERE id = $1 AND cleanup_fence = $2\n                 AND state IN (2, 3) AND cleanup_lease_until IS NOT NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5aab0a92a377fb74fceb6c7c2389ee384343462cd7d3cee226fb225979a3e658"
+}

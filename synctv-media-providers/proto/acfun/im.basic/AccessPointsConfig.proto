@@ -1,0 +1,12 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+import "AccessPoint.proto";
+
+message AccessPointsConfig {
+	repeated AccessPoint optimalAps = 1;
+	repeated AccessPoint backupAps = 2;
+	repeated uint32 availablePorts = 3;
+	AccessPoint foreceLastConnectedAp = 4;
+}

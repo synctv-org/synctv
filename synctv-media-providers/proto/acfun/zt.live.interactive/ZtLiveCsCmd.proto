@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package acproto;
+
+message ZtLiveCsCmd {
+	string cmdType = 1;
+	bytes payload = 2;
+	string ticket = 3;
+	string liveId = 4;
+}
+
+message ZtLiveCsCmdAck {
+	string cmdAckType = 1;
+	int64 errorCode = 2;
+	string errorMsg = 3;
+	bytes payload =4;
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM room_favorites\n             WHERE user_id = $1 AND room_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "88eb7a9a874d28f9627dda7b5d131f896f2c1c14a928a065339dce8d0ee47d89"
+}

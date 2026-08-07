@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package synctv.provider.douyin;
+
+import "proto/providers/douyin.proto";
+
+service DouyinProviderService {
+  rpc Bind(BindRequest) returns (BindResponse);
+  rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+  rpc Unbind(UnbindRequest) returns (UnbindResponse);
+  rpc Resolve(ResolveRequest) returns (ResolveResponse);
+  rpc ListUserPosts(ListUserPostsRequest) returns (ListUserPostsResponse);
+}

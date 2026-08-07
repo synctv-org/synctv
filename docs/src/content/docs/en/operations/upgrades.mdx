@@ -1,0 +1,172 @@
+---
+title: Upgrades and Migrations
+description: SyncTV version upgrades, database migrations, configuration changes, Helm/Compose releases, and rollback caveats.
+---
+
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## Upgrade Model
+
+Treat three things separately:
+
+- **Binary or image version**: controls code behavior and APIs.
+- **Database migrations**: control schema and may be irreversible.
+- **Configuration and deployment templates**: control network surfaces, secrets, dependencies, cache, cluster, and observability.
+
+<Aside type="caution">
+An image rollback is not always a system rollback. If a migration changed the database schema, verify that the old version can still read it.
+</Aside>
+
+## Upgrade Preflight
+
+<Steps>
+1. Read release notes or change logs for the target version.
+2. Back up PostgreSQL and production secrets.
+3. If the secret management model changes, first use [Security Hardening and Rotation](../security-hardening-and-rotation/) to decide whether direct rotation is safe.
+4. Restore production-like data into a test environment, start the target version, and verify automatic migrations and business reads/writes.
+5. Run `synctv config validate --strict`.
+6. Save `synctv config show --output yaml` as the current effective config snapshot.
+7. Compare against the [Configuration Index](../../reference/configuration-index/) and [Full Configuration Example](../../configuration/full-example/).
+8. For Helm, run `helm lint` and `helm template`.
+9. For Compose, run `make compose-config`.
+</Steps>
+
+## Database Migration
+
+SyncTV runs embedded SQLx migrations automatically during service startup. Migration state is stored in `_sqlx_migrations`, and SQLx uses database-side locking so the same migration set is not executed concurrently by multiple replicas. Multi-replica startup does not require a Job to manually serialize migrations, and administrators do not need to decide whether an upgrade needs migrations.
+
+`synctv db migrate` remains available as an explicit operations command for upgrade preflight, test environments, and troubleshooting. It runs the same embedded migrations that service startup runs automatically.
+
+Check status:
+
+```bash
+synctv db status
+```
+
+Optional preflight:
+
+```bash
+synctv db migrate
+```
+
+Compose example:
+
+```bash
+docker compose run --rm synctv synctv db migrate
+```
+
+Run `synctv db migrate` separately to surface dirty migrations, checksum drift, or database privilege issues before the new version receives traffic. Service startup also applies pending migrations automatically.
+
+## Docker Compose Upgrade
+
+Run these commands from the production Compose file directory. If you do not have a deployment directory yet, first get `docker-compose.yml`, env examples, and the init script from [Docker Compose Deployment](../../install/docker-compose/#get-production-compose-files).
+
+<Steps>
+1. Pull the new image.
+2. Back up database and secrets.
+3. Run `make compose-config`.
+4. Optionally run `synctv db migrate` as a release preflight.
+5. Restart the service. Startup applies pending migrations automatically.
+6. Check `/health/ready`, login, WebSocket, providers, and metrics.
+</Steps>
+
+Common commands:
+
+```bash
+make compose-pull
+make compose-up
+make compose-logs SERVICE=synctv
+```
+
+## Helm Upgrade
+
+<Tabs syncKey="helm-upgrade">
+  <TabItem label="Render Check" icon="cloud-download">
+
+```bash
+helm lint ./helm/synctv
+helm template synctv ./helm/synctv -f values.production.yaml
+```
+
+Check that HTTP Service and gRPC Service are separate; HTTP Ingress and gRPC Ingress are separate; the gRPC Ingress sets `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"`; and secrets, volumes, env, ServiceMonitor, or VMServiceScrape match expectations.
+
+  </TabItem>
+  <TabItem label="Release" icon="rocket">
+
+```bash
+helm upgrade --install synctv ./helm/synctv \
+  -n synctv \
+  -f values.production.yaml
+```
+
+After release:
+
+```bash
+kubectl -n synctv rollout status deploy/synctv
+kubectl -n synctv logs deploy/synctv --tail=200
+kubectl -n synctv get ingress,svc,pod
+```
+
+  </TabItem>
+</Tabs>
+
+## Rolling Updates and Long Connections
+
+SyncTV has WebSocket, HTTP-FLV, HLS, gRPC streams, and streaming proxy requests. Rolling updates need enough drain time.
+
+Release rules:
+
+- Align `server.shutdown_drain_timeout_seconds` with Kubernetes `terminationGracePeriodSeconds`.
+- Make readiness fail quickly once shutdown starts.
+- Do not set `terminationGracePeriodSeconds` shorter than the drain timeout.
+- For livestream or heavy WebSocket deployments, release during low-traffic windows.
+
+## Configuration Change Strategy
+
+Do not copy the full default template blindly. First save the effective configuration:
+
+```bash
+synctv --config /etc/synctv/synctv.yaml config show --output yaml > effective-before.yaml
+```
+
+Then modify only values you intentionally own:
+
+- Secrets and secret file paths.
+- Database, Redis, SMTP, OAuth2, WebAuthn.
+- Ports, domains, CORS, trusted proxies.
+- Cluster, shared HLS storage, file-backed slice cache.
+- Metrics, log format, and rate limits.
+
+## Rollback
+
+Before rolling back, classify the situation:
+
+| Situation | Guidance |
+| --- | --- |
+| Only config or image changed and the target version has no new migrations | Roll back through the deployment system |
+| The new version started and ran automatic migrations, but the old version supports the new schema | Roll back image and watch logs closely |
+| The new version ran an irreversible migration | Prefer forward fix; if rollback is required, restore database backup |
+| Secret was rotated incorrectly | Restore the old secret and restart service |
+
+After rollback:
+
+```bash
+synctv db status
+synctv config validate --strict
+curl -fsS http://localhost:8081/health/ready
+```
+
+## Post-Release Validation
+
+Confirm at least:
+
+- New pods or containers are ready.
+- `/health/ready` succeeds.
+- Root/admin users can log in.
+- 2FA-enabled users can complete MFA.
+- OAuth2, WebAuthn, and email codes work if enabled.
+- Room WebSocket sync works.
+- Provider direct and proxy paths work.
+- Metrics are scraped.
+- Logs do not show sustained migration, Redis, database, or provider errors.
+- If capacity or connection behavior changed, revisit database connections, Redis, WebSocket, and proxy bandwidth with [Capacity Planning](../capacity-planning/).

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(\n            SELECT 1\n            FROM users\n            WHERE deleted_at IS NULL\n              AND (role = $1 OR role = $2)\n            LIMIT 1\n        )",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "87f5f8187c1475d4dd1e51ac2ad4a5e326d59bdd38237b462dcd707b71486afa"
+}

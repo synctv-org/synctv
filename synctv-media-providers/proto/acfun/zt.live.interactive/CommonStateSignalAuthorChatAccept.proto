@@ -1,0 +1,8 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+message CommonStateSignalAuthorChatAccept {
+	string authorChatId = 1;
+	string aryaSignalInfo = 2;
+}

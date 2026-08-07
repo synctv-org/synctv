@@ -1,0 +1,20 @@
+{{- if include "synctv.postgresql.hasAutoReadReplica" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "synctv.postgresql.kubeblocks.readServiceName" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql-read
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: {{ include "synctv.postgresql.kubeblocks.clusterName" . | quote }}
+    apps.kubeblocks.io/component-name: "postgresql"
+    kubeblocks.io/role: "secondary"
+  ports:
+    - name: postgresql
+      protocol: TCP
+      port: 5432
+      targetPort: 5432
+{{- end }}

@@ -1,0 +1,137 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT storage_backend, upload_session_key, part_index, part_number,\n                   offset_bytes, size_bytes, checksum_sha256, etag,\n                   created_at, updated_at\n            FROM file_upload_session_parts\n            WHERE storage_backend = $1 AND upload_session_key = $2\n            ORDER BY offset_bytes ASC, part_index ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "storage_backend",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_upload_session_parts",
+            "name": "storage_backend"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "upload_session_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_upload_session_parts",
+            "name": "upload_session_key"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "part_index",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "file_upload_session_parts",
+            "name": "part_index"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "part_number",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "file_upload_session_parts",
+            "name": "part_number"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "offset_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "file_upload_session_parts",
+            "name": "offset_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "file_upload_session_parts",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "checksum_sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_upload_session_parts",
+            "name": "checksum_sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "etag",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_upload_session_parts",
+            "name": "etag"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_upload_session_parts",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_upload_session_parts",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "2dbf1bb619a8c306d6ec7aa419088e0d8d1a004163cc0aaace35e9aa67a4b32e"
+}

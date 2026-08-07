@@ -1,0 +1,113 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT m.room_id AS \"room_id!: RoomId\",\n                   m.message_id AS \"message_id!\",\n                   m.message_created_at AS \"message_created_at!\",\n                   m.mentioned_user_id AS \"mentioned_user_id!: UserId\",\n                   u.username AS \"username?\",\n                   m.start_char AS \"start!\",\n                   m.length_chars AS \"length!\",\n                   m.created_at AS \"created_at!\"\n            FROM chat_message_mentions m\n            LEFT JOIN users u ON u.id = m.mentioned_user_id\n            WHERE (m.message_id, m.message_created_at) IN (\n                SELECT * FROM UNNEST($1::BIGINT[], $2::TIMESTAMPTZ[])\n            )\n            ORDER BY m.message_created_at ASC, m.message_id ASC, m.start_char ASC, m.mentioned_user_id ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_mentions",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "message_id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_mentions",
+            "name": "message_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "message_created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_message_mentions",
+            "name": "message_created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "mentioned_user_id!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_mentions",
+            "name": "mentioned_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "username?",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "start!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "chat_message_mentions",
+            "name": "start_char"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "length!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "chat_message_mentions",
+            "name": "length_chars"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_message_mentions",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "TimestamptzArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3ab18e9aa4de4b2836cd8e68441bc85b8dd17d0dd61551364f856f769c08195c"
+}

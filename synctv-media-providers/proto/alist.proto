@@ -1,0 +1,169 @@
+syntax = "proto3";
+
+package synctv.media.alist;
+
+service Alist {
+  rpc Login(LoginReq) returns (LoginResp);
+  rpc Me(MeReq) returns (MeResp);
+  rpc FsGet(FsGetReq) returns (FsGetResp);
+  rpc FsList(FsListReq) returns (FsListResp);
+  rpc FsOther(FsOtherReq) returns (FsOtherResp);
+  rpc FsSearch(FsSearchReq) returns (FsSearchResp);
+}
+
+message LoginReq {
+  string host = 1;
+  string username = 2;
+  oneof credential {
+    string password = 3;
+    string hashed_password = 4;
+  }
+  string otp_code = 5;
+}
+
+message LoginResp { string token = 1; }
+
+message FsGetReq {
+  string host = 1;
+  string token = 2;
+  string path = 3;
+  string password = 4;
+
+  map<string, string> headers = 5;
+}
+
+message FsGetResp {
+  message FsGetRelated {
+    string name = 1;
+    uint64 size = 2;
+    bool is_dir = 3;
+    uint64 modified = 4;
+    uint64 created = 5;
+    string sign = 6;
+    string thumb = 7;
+    uint64 type = 8;
+    string hashinfo = 9;
+    string raw_url = 10;
+    string provider = 11;
+  }
+  string name = 1;
+  uint64 size = 2;
+  bool is_dir = 3;
+  uint64 modified = 4;
+  uint64 created = 5;
+  string sign = 6;
+  string thumb = 7;
+  uint64 type = 8;
+  string hashinfo = 9;
+  string raw_url = 10;
+  string readme = 11;
+  string provider = 12;
+  repeated FsGetRelated related = 13;
+}
+
+message FsListReq {
+  string host = 1;
+  string token = 2;
+  string path = 3;
+  string password = 4;
+  uint64 page = 5;
+  uint64 per_page = 6;
+  bool refresh = 7;
+}
+
+message FsListResp {
+  message FsListContent {
+    string name = 1;
+    uint64 size = 2;
+    bool is_dir = 3;
+    uint64 modified = 4;
+    string sign = 6;
+    string thumb = 7;
+    uint64 type = 8;
+  }
+  repeated FsListContent content = 1;
+  uint64 total = 2;
+  string readme = 3;
+  bool write = 4;
+  string provider = 5;
+}
+
+message FsOtherReq {
+  string host = 1;
+  string token = 2;
+  string path = 3;
+  string method = 4;
+  string password = 5;
+}
+
+message FsOtherResp {
+  message VideoPreviewPlayInfo {
+    string category = 1;
+    message LiveTranscodingSubtitleTaskList {
+      string language = 1;
+      string status = 2;
+      string url = 3;
+    }
+    repeated LiveTranscodingSubtitleTaskList live_transcoding_subtitle_task_list =
+        2;
+    message LiveTranscodingTaskList {
+      string stage = 1;
+      string status = 2;
+      uint64 template_height = 3;
+      string template_id = 4;
+      string template_name = 5;
+      uint64 template_width = 6;
+      string url = 7;
+    }
+    repeated LiveTranscodingTaskList live_transcoding_task_list = 3;
+    message Meta {
+      double duration = 1;
+      uint64 height = 2;
+      uint64 width = 3;
+    }
+    Meta meta = 4;
+  }
+  string drive_id = 1;
+  string file_id = 2;
+  VideoPreviewPlayInfo video_preview_play_info = 3;
+  string provider = 4;
+}
+
+message MeReq {
+  string host = 1;
+  string token = 2;
+}
+
+message MeResp {
+  uint64 id = 1;
+  string username = 2;
+  string base_path = 4;
+  uint64 role = 5;
+  bool disabled = 6;
+  uint64 permission = 7;
+  string sso_id = 8;
+  bool otp = 9;
+}
+
+message FsSearchReq {
+  string host = 1;
+  string token = 2;
+  string parent = 3;
+  string keywords = 4;
+  uint64 scope = 5;
+  uint64 page = 6;
+  uint64 per_page = 7;
+  string password = 8;
+}
+
+message FsSearchResp {
+  message FsSearchContent {
+    string parent = 1;
+    string name = 2;
+    bool is_dir = 3;
+    uint64 size = 4;
+    uint64 type = 5;
+  }
+  repeated FsSearchContent content = 1;
+  uint64 total = 2;
+}

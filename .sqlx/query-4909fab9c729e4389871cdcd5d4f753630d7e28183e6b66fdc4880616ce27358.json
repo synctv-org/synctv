@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH _lock AS (\n                SELECT pg_advisory_xact_lock(hashtextextended($5, 0))\n            )\n            INSERT INTO user_bans (user_id, banned_by, reason, starts_at)\n            SELECT u.id, $2, $3, $4\n            FROM users u, _lock\n            WHERE u.id = $1 AND u.deleted_at IS NULL\n              AND NOT EXISTS (\n                  SELECT 1 FROM user_bans ub\n                  WHERE ub.user_id = u.id\n                    AND ub.revoked_at IS NULL\n                    AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)\n                  )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4909fab9c729e4389871cdcd5d4f753630d7e28183e6b66fdc4880616ce27358"
+}

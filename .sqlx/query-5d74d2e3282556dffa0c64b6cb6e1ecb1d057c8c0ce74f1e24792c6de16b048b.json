@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH retained AS (\n            SELECT id, created_at\n            FROM chat_messages\n            WHERE room_id = $1\n              AND created_at > NOW() - make_interval(days => $2)\n            ORDER BY created_at DESC, id DESC\n            LIMIT $3\n        )\n        SELECT m.id, m.created_at\n        FROM chat_messages m\n        WHERE m.room_id = $1\n          AND m.created_at > NOW() - make_interval(days => $2)\n          AND NOT EXISTS (\n              SELECT 1\n              FROM retained r\n              WHERE r.id = m.id\n                AND r.created_at = m.created_at\n          )\n        ORDER BY m.created_at ASC, m.id ASC\n        LIMIT $4\n        FOR UPDATE OF m SKIP LOCKED\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "5d74d2e3282556dffa0c64b6cb6e1ecb1d057c8c0ce74f1e24792c6de16b048b"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM room_playback_progress progress\n            WHERE progress.updated_at < CURRENT_TIMESTAMP - make_interval(days => $1)\n              AND NOT EXISTS (\n                  SELECT 1\n                  FROM room_playback_state state\n                  WHERE state.current_progress_id = progress.id\n              )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bdc89205255e9d921a2789a21f7cac2e7662c87500cdb7be51c85ad881110244"
+}

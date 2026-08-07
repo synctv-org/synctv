@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE user_bans ub\n            SET revoked_at = $2\n            FROM users u\n            WHERE ub.user_id = u.id\n              AND u.id = $1\n              AND u.deleted_at IS NULL\n              AND ub.revoked_at IS NULL\n              AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5f9b7919a9a9a4de05426752ca6cffcff0159fb218c4685f51ee0c0d51564999"
+}

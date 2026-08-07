@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SET client_min_messages = 'notice'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "00e79f572961009e534d7913c0512ce52d8f8bc7b55e4da88aa56b98575d5c3a"
+}

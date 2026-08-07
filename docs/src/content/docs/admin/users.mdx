@@ -1,0 +1,45 @@
+---
+title: 用户管理
+description: 管理 SyncTV 用户、全局角色、封禁状态、账号安全状态和敏感操作边界。
+---
+
+用户有全局角色、有效状态和安全偏好。平台管理员处理用户问题时，先判断问题是账号状态、认证方式、全局角色还是房间内权限。
+
+## 用户状态
+
+| 概念 | 值 | 影响 |
+| --- | --- | --- |
+| 全局角色 | `root`、`admin`、`user` | 控制平台级管理能力 |
+| 有效状态 | `active`、`banned` | 影响登录、建房和加入房间 |
+| 用户偏好 | 2FA、通知、Provider 默认实例 | 用户级设置，不等同于 YAML 配置 |
+| 认证方式 | password、OPAQUE、passkey、email、OAuth2 | 决定用户能否登录和恢复访问 |
+
+## 角色边界
+
+- `root` 可以管理所有用户和管理员。
+- `admin` 可以管理普通用户，但不能管理 root 或同级管理员的敏感设置。
+- `user` 只能按业务权限使用房间和媒体功能。
+
+## 常见操作
+
+```bash
+synctv user list
+synctv user get alice
+synctv user create alice --email alice@example.com
+synctv user ban alice --reason "abuse"
+synctv user unban alice
+synctv user set-role alice admin
+synctv user preferences get alice
+```
+
+## 操作规则
+
+| 场景 | 推荐处理 |
+| --- | --- |
+| 用户违规 | 优先 `ban`，保留原因，避免直接删除造成审计断点 |
+| 找回账号 | 先确认身份和绑定方式，再调整密码、邮箱或 2FA |
+| 提升管理员 | 使用 root 操作，并记录授权原因 |
+| 修改 2FA 偏好 | 确认用户至少有两种本地验证方式 |
+| 删除账号 | 先评估房间、媒体、审核、通知和审计数据影响 |
+
+账号认证、2FA、OAuth2、WebAuthn 和 token 边界见 [认证与安全](../authentication-security/)。

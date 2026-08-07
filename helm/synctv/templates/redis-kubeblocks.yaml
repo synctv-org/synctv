@@ -1,0 +1,52 @@
+{{- if eq (include "synctv.redis.mode" .) "kubeblocks" }}
+apiVersion: apps.kubeblocks.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "synctv.redis.kubeblocks.clusterName" . }}
+spec:
+  terminationPolicy: {{ .Values.redis.kubeblocks.terminationPolicy | default "Retain" }}
+  clusterDef: {{ .Values.redis.kubeblocks.clusterDef | default "redis" }}
+  topology: {{ .Values.redis.kubeblocks.topology | default "replication" }}
+  componentSpecs:
+    - name: redis
+      componentDef: {{ .Values.redis.kubeblocks.redisComponentDef | default "redis" | quote }}
+      {{- if .Values.redis.kubeblocks.serviceVersion }}
+      serviceVersion: {{ .Values.redis.kubeblocks.serviceVersion | quote }}
+      {{- end }}
+      disableExporter: {{ .Values.redis.kubeblocks.disableExporter }}
+      replicas: {{ .Values.redis.kubeblocks.replicas | default 2 }}
+      podUpdatePolicy: PreferInPlace
+      resources:
+        {{- toYaml (.Values.redis.kubeblocks.resources | default (dict "requests" (dict "cpu" "500m" "memory" "512Mi") "limits" (dict "cpu" "500m" "memory" "512Mi"))) | nindent 8 }}
+      volumeClaimTemplates:
+        - name: data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            {{- with (.Values.redis.kubeblocks.storage.storageClass | default .Values.global.storageClass) }}
+            storageClassName: {{ . | quote }}
+            {{- end }}
+            resources:
+              requests:
+                storage: {{ .Values.redis.kubeblocks.storage.size | default "20Gi" }}
+    - name: redis-sentinel
+      componentDef: {{ .Values.redis.kubeblocks.sentinelComponentDef | default "redis-sentinel" | quote }}
+      {{- if .Values.redis.kubeblocks.serviceVersion }}
+      serviceVersion: {{ .Values.redis.kubeblocks.serviceVersion | quote }}
+      {{- end }}
+      replicas: {{ .Values.redis.kubeblocks.sentinel.replicas | default 3 }}
+      podUpdatePolicy: PreferInPlace
+      resources:
+        {{- toYaml (.Values.redis.kubeblocks.sentinel.resources | default (dict "requests" (dict "cpu" "500m" "memory" "512Mi") "limits" (dict "cpu" "500m" "memory" "512Mi"))) | nindent 8 }}
+      volumeClaimTemplates:
+        - name: data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            {{- with (.Values.redis.kubeblocks.sentinel.storageClass | default .Values.global.storageClass) }}
+            storageClassName: {{ . | quote }}
+            {{- end }}
+            resources:
+              requests:
+                storage: {{ .Values.redis.kubeblocks.sentinel.storageSize | default "20Gi" }}
+{{- end }}

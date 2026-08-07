@@ -1,0 +1,64 @@
+name: Helm CI
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - ".github/workflows/helm-ci.yml"
+      - ".github/workflows/helm.yml"
+      - "Cargo.toml"
+      - "docker-compose.yml"
+      - "docs/src/lib/project.ts"
+      - "helm/**"
+      - "docs/src/content/docs/**/install/helm.mdx"
+      - "scripts/validate-helm.sh"
+      - "scripts/test-helm-secret-bootstrap.sh"
+  pull_request:
+    branches: ['**']
+    paths:
+      - ".github/workflows/helm-ci.yml"
+      - ".github/workflows/helm.yml"
+      - "Cargo.toml"
+      - "docker-compose.yml"
+      - "docs/src/lib/project.ts"
+      - "helm/**"
+      - "docs/src/content/docs/**/install/helm.mdx"
+      - "scripts/validate-helm.sh"
+      - "scripts/test-helm-secret-bootstrap.sh"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  validate:
+    name: Validate Chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
+
+      - name: Validate chart
+        run: make validate-helm
+
+      - name: Create Kind cluster
+        uses: helm/kind-action@v1
+
+      - name: Test Secret bootstrap upgrade
+        run: scripts/test-helm-secret-bootstrap.sh

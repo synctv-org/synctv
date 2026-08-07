@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM chat_messages\n            WHERE room_id = $1\n              AND created_at > NOW() - INTERVAL '90 days'\n              AND (id, created_at) IN (\n                SELECT id, created_at FROM (\n                    SELECT id, created_at,\n                           ROW_NUMBER() OVER (ORDER BY created_at DESC, id DESC) as rn\n                    FROM chat_messages\n                    WHERE room_id = $1\n                      AND created_at > NOW() - INTERVAL '90 days'\n                ) ranked\n                WHERE rn > $2\n            )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8549ff5b95b99d0c709e6d1b2ad2f84c5e9ed3d467b2e355db7b3e8e0bf80672"
+}

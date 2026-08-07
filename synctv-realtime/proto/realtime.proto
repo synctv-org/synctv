@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package synctv.realtime;
+
+service RealtimePresenceService {
+  rpc GetUserOnlineStatus(GetUserOnlineStatusRequest) returns (GetUserOnlineStatusResponse);
+  rpc GetRoomConnections(GetRoomConnectionsRequest) returns (GetRoomConnectionsResponse);
+}
+
+message GetUserOnlineStatusRequest {
+  repeated int64 user_ids = 1;
+}
+
+message GetUserOnlineStatusResponse {
+  repeated UserOnlineStatus statuses = 1;
+}
+
+message UserOnlineStatus {
+  int64 user_id = 1;
+  bool is_online = 2;
+  repeated int64 room_ids = 3;
+  string node_id = 4;
+}
+
+message GetRoomConnectionsRequest {
+  int64 room_id = 1;
+}
+
+message GetRoomConnectionsResponse {
+  repeated RoomConnection connections = 1;
+}
+
+message RoomConnection {
+  int64 user_id = 1;
+  string node_id = 2;
+  int64 connected_at = 3;
+  int64 last_activity = 4;
+}

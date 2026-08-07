@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package synctv.provider.cloudreve;
+
+import "proto/providers/cloudreve.proto";
+
+service CloudreveProviderService {
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc List(ListRequest) returns (ListResponse);
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc GetMe(GetMeRequest) returns (GetMeResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+}

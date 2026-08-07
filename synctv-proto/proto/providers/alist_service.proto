@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package synctv.provider.alist;
+
+import "proto/providers/alist.proto";
+
+// Alist Provider Service
+//
+// Client-facing API for Alist network storage access
+service AlistProviderService {
+  // Login to Alist server (persist credential)
+  rpc Login(LoginRequest) returns (LoginResponse);
+
+  // List directory contents (uses stored credential via server_id)
+  rpc List(ListRequest) returns (ListResponse);
+
+  // Search files and directories (uses stored credential via server_id)
+  rpc Search(SearchRequest) returns (SearchResponse);
+
+  // Get current user info (uses stored credential via server_id)
+  rpc GetMe(GetMeRequest) returns (GetMeResponse);
+
+  // Logout from Alist (delete stored credential)
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+
+  // Get saved credentials (binds)
+  rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+}

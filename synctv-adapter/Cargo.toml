@@ -1,0 +1,21 @@
+[package]
+name = "synctv-adapter"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axum.workspace = true
+http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+synctv-common = { workspace = true, default-features = false }
+synctv-core = { workspace = true, default-features = false }
+synctv-proto = { workspace = true, default-features = false, features = ["main"] }
+sqids.workspace = true
+thiserror.workspace = true
+tonic.workspace = true

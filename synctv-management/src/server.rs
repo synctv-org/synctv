@@ -1,0 +1,584 @@
+use std::path::Path;
+use std::sync::Arc;
+
+use anyhow::Context;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
+use tonic::codec::CompressionEncoding;
+use tonic::transport::Server;
+#[cfg(unix)]
+use tracing::warn;
+use tracing::{debug, info};
+
+use synctv_adapter::PublicIdCodec;
+use synctv_core::service::{ChatService, OnlinePresenceService, RoomService, UserService};
+
+use crate::admin_runtime::AdminRuntime;
+use crate::lifecycle::ManagementLifecycleController;
+use crate::proto::management_service_server::ManagementServiceServer;
+use crate::provider_runtime::{
+    AcfunRuntime, AlistRuntime, BilibiliRuntime, CctvRuntime, CloudreveRuntime, DouyinRuntime,
+    DouyuRuntime, EmbyRuntime, FnosRuntime, HuyaRuntime, NextcloudRuntime, ProviderCommonRuntime,
+    QnapRuntime, SeafileRuntime, SynologyRuntime, TikTokRuntime, TruenasRuntime, TwitchRuntime,
+    YoutubeRuntime,
+};
+use crate::service::{ManagementServiceDependencies, ManagementServiceImpl};
+use crate::FILE_DESCRIPTOR_SET;
+use synctv_realtime::fanout::{
+    MembershipEventFanoutService, RealtimeFanoutService, RoomCacheFanoutService,
+};
+
+pub struct ManagementServerConfig {
+    pub settings: Arc<ManagementRuntimeSettings>,
+    pub user_service: Arc<UserService>,
+    pub admin_api: Arc<dyn AdminRuntime>,
+    pub public_id_codec: Arc<PublicIdCodec>,
+    pub provider_common_api: Arc<dyn ProviderCommonRuntime>,
+    pub acfun_api: Arc<dyn AcfunRuntime>,
+    pub cctv_api: Arc<dyn CctvRuntime>,
+    pub cloudreve_api: Arc<dyn CloudreveRuntime>,
+    pub douyu_api: Arc<dyn DouyuRuntime>,
+    pub fnos_api: Arc<dyn FnosRuntime>,
+    pub huya_api: Arc<dyn HuyaRuntime>,
+    pub nextcloud_api: Arc<dyn NextcloudRuntime>,
+    pub qnap_api: Arc<dyn QnapRuntime>,
+    pub seafile_api: Arc<dyn SeafileRuntime>,
+    pub synology_api: Arc<dyn SynologyRuntime>,
+    pub truenas_api: Arc<dyn TruenasRuntime>,
+    pub youtube_api: Arc<dyn YoutubeRuntime>,
+    pub chat_service: Option<Arc<ChatService>>,
+    pub clock: Arc<dyn synctv_core::Clock>,
+    pub room_service: Arc<RoomService>,
+    pub presence_service: Arc<OnlinePresenceService>,
+    pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    pub membership_event_fanout: Arc<dyn MembershipEventFanoutService>,
+    pub room_cache_fanout: Arc<dyn RoomCacheFanoutService>,
+    pub alist_api: Arc<dyn AlistRuntime>,
+    pub bilibili_api: Arc<dyn BilibiliRuntime>,
+    pub emby_api: Arc<dyn EmbyRuntime>,
+    pub douyin_api: Arc<dyn DouyinRuntime>,
+    pub tiktok_api: Arc<dyn TikTokRuntime>,
+    pub twitch_api: Arc<dyn TwitchRuntime>,
+    pub slice_cache_runtime: Arc<synctv_core::service::SliceCacheManagementService>,
+    pub server_state_runtime: Arc<synctv_core::service::ServerStateService>,
+    pub lifecycle_controller: Arc<ManagementLifecycleController>,
+    pub shutdown_rx: watch::Receiver<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagementTransport {
+    Tcp,
+    Unix,
+}
+
+#[derive(Debug, Clone)]
+pub struct ManagementRuntimeSettings {
+    pub transport: ManagementTransport,
+    pub port: u16,
+    pub unix_socket_path: String,
+    pub auth_token: String,
+    pub enable_reflection: bool,
+    pub grpc_max_message_size_bytes: usize,
+    pub grpc_compression_enabled: bool,
+    pub trusted_proxies: Vec<String>,
+}
+
+impl Default for ManagementRuntimeSettings {
+    fn default() -> Self {
+        Self {
+            transport: ManagementTransport::Tcp,
+            port: 50052,
+            unix_socket_path: String::new(),
+            auth_token: String::new(),
+            enable_reflection: false,
+            grpc_max_message_size_bytes: 16 * 1024 * 1024,
+            grpc_compression_enabled: true,
+            trusted_proxies: Vec::new(),
+        }
+    }
+}
+
+impl ManagementRuntimeSettings {
+    #[must_use]
+    pub fn management_bind_target(&self) -> String {
+        match self.transport {
+            ManagementTransport::Tcp => format!("127.0.0.1:{}", self.port),
+            ManagementTransport::Unix => self.unix_socket_path.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_trusted_proxy(&self, ip: &std::net::IpAddr) -> bool {
+        self.trusted_proxies.iter().any(|proxy| {
+            proxy
+                .parse::<ipnet::IpNet>()
+                .is_ok_and(|network| network.contains(ip))
+                || proxy
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|proxy_ip| proxy_ip == *ip)
+        })
+    }
+}
+
+fn display_path(path: &Path) -> String {
+    path.display().to_string()
+}
+
+fn absolute_display_path(path: &Path) -> String {
+    display_path(path)
+}
+
+pub async fn spawn_management_server(
+    config: ManagementServerConfig,
+) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+    match config.settings.transport {
+        ManagementTransport::Tcp => spawn_management_tcp_server(config).await,
+        ManagementTransport::Unix => {
+            #[cfg(unix)]
+            {
+                spawn_management_unix_server(config)
+            }
+
+            #[cfg(not(unix))]
+            {
+                spawn_management_unix_server(&config)
+            }
+        }
+    }
+}
+
+async fn spawn_management_tcp_server(
+    config: ManagementServerConfig,
+) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+    let bind_target = config.settings.management_bind_target();
+    let listener = tokio::net::TcpListener::bind(&bind_target)
+        .await
+        .with_context(|| format!("failed to bind management TCP address {bind_target}"))?;
+    info!("Management gRPC server listening on {}", bind_target);
+
+    let handle = tokio::spawn(async move {
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+        serve_management(config, incoming, None).await
+    });
+
+    Ok(handle)
+}
+
+#[cfg(unix)]
+fn spawn_management_unix_server(
+    config: ManagementServerConfig,
+) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+    let socket_path = config.settings.unix_socket_path.clone();
+    prepare_management_unix_socket(&socket_path)?;
+    let socket_display_path = Path::new(&socket_path).display();
+    let listener = tokio::net::UnixListener::bind(&socket_path)
+        .with_context(|| format!("failed to bind management unix socket {socket_display_path}"))?;
+    restrict_management_unix_socket_permissions(Path::new(&socket_path))?;
+    info!(
+        "Management gRPC server listening on unix://{}",
+        absolute_display_path(Path::new(&socket_path))
+    );
+
+    let handle = tokio::spawn(async move {
+        let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
+        let result = serve_management(config, incoming, Some(socket_path.clone())).await;
+        cleanup_management_unix_socket(&socket_path);
+        result
+    });
+
+    Ok(handle)
+}
+
+#[cfg(not(unix))]
+fn spawn_management_unix_server(
+    _: &ManagementServerConfig,
+) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+    Err(anyhow::anyhow!(
+        "management.transport=unix is not supported on this platform"
+    ))
+}
+
+async fn serve_management<I, IO>(
+    config: ManagementServerConfig,
+    incoming: I,
+    unix_socket_path: Option<String>,
+) -> anyhow::Result<()>
+where
+    I: futures::Stream<Item = Result<IO, std::io::Error>> + Send + 'static,
+    IO: tonic::transport::server::Connected + AsyncReadWrite + Unpin + Send + 'static,
+{
+    let management_service =
+        ManagementServiceServer::new(ManagementServiceImpl::new(ManagementServiceDependencies {
+            settings: Arc::clone(&config.settings),
+            user_service: config.user_service,
+            admin_api: config.admin_api,
+            public_id_codec: config.public_id_codec,
+            provider_common_api: config.provider_common_api,
+            acfun_api: config.acfun_api,
+            cctv_api: config.cctv_api,
+            cloudreve_api: config.cloudreve_api,
+            douyu_api: config.douyu_api,
+            fnos_api: config.fnos_api,
+            huya_api: config.huya_api,
+            nextcloud_api: config.nextcloud_api,
+            qnap_api: config.qnap_api,
+            seafile_api: config.seafile_api,
+            synology_api: config.synology_api,
+            truenas_api: config.truenas_api,
+            youtube_api: config.youtube_api,
+            chat_service: config.chat_service,
+            clock: config.clock,
+            room_service: config.room_service,
+            presence_service: config.presence_service,
+            realtime_fanout: config.realtime_fanout,
+            membership_event_fanout: config.membership_event_fanout,
+            room_cache_fanout: config.room_cache_fanout,
+            alist_api: config.alist_api,
+            bilibili_api: config.bilibili_api,
+            emby_api: config.emby_api,
+            douyin_api: config.douyin_api,
+            tiktok_api: config.tiktok_api,
+            twitch_api: config.twitch_api,
+            slice_cache_runtime: config.slice_cache_runtime,
+            server_state_runtime: config.server_state_runtime,
+            lifecycle_controller: config.lifecycle_controller,
+            management_auth_token: config.settings.auth_token.clone(),
+        }));
+    let management_message_size = config
+        .settings
+        .grpc_max_message_size_bytes
+        .max(synctv_core::service::MAX_RUNTIME_SETTINGS_IMPORT_REQUEST_BYTES);
+    let management_service = management_service
+        .max_decoding_message_size(management_message_size)
+        .max_encoding_message_size(management_message_size);
+    let management_service = if config.settings.grpc_compression_enabled {
+        management_service
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Gzip)
+    } else {
+        management_service
+    };
+
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
+    health_reporter
+        .set_service_status("", tonic_health::ServingStatus::Serving)
+        .await;
+    health_reporter
+        .set_serving::<ManagementServiceServer<ManagementServiceImpl>>()
+        .await;
+
+    let reflection_service = if config.settings.enable_reflection {
+        Some(
+            tonic_reflection::server::Builder::configure()
+                .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
+                .build_v1()
+                .context("failed to build management gRPC reflection service")?,
+        )
+    } else {
+        None
+    };
+
+    let mut shutdown_rx = config.shutdown_rx;
+    let graceful = async move {
+        match shutdown_rx.changed().await {
+            Ok(()) => {}
+            Err(_) => {
+                debug!("management shutdown signal sender dropped; stopping gRPC server");
+            }
+        }
+    };
+
+    let mut server = Server::builder();
+    let result = if let Some(reflection_service) = reflection_service {
+        server
+            .add_service(health_service)
+            .add_service(reflection_service)
+            .add_service(management_service)
+            .serve_with_incoming_shutdown(incoming, graceful)
+            .await
+    } else {
+        server
+            .add_service(health_service)
+            .add_service(management_service)
+            .serve_with_incoming_shutdown(incoming, graceful)
+            .await
+    };
+
+    result.map_err(|error| anyhow::anyhow!("management gRPC server error: {error}"))?;
+
+    if let Some(socket_path) = unix_socket_path {
+        info!(
+            "Management gRPC server on unix://{} shut down gracefully",
+            absolute_display_path(Path::new(&socket_path))
+        );
+    } else {
+        info!("Management gRPC server shut down gracefully");
+    }
+
+    Ok(())
+}
+
+trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static {}
+
+impl<T> AsyncReadWrite for T where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static
+{
+}
+
+#[cfg(unix)]
+fn prepare_management_unix_socket(path: &str) -> anyhow::Result<()> {
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+
+    let socket_path = Path::new(path);
+    let parent = socket_path.parent().ok_or_else(|| {
+        anyhow::anyhow!("management unix socket path '{path}' must have a parent directory")
+    })?;
+    let parent_preexisting = match std::fs::metadata(parent) {
+        Ok(metadata) => {
+            if !metadata.is_dir() {
+                return Err(anyhow::anyhow!(
+                    "management unix socket parent path {} already exists and is not a directory",
+                    absolute_display_path(parent)
+                ));
+            }
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(anyhow::anyhow!(
+                "failed to inspect management unix socket parent directory {}: {error}",
+                absolute_display_path(parent)
+            ));
+        }
+    };
+
+    if !parent_preexisting {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create management unix socket parent directory {}",
+                absolute_display_path(parent)
+            )
+        })?;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).with_context(
+            || {
+                format!(
+                    "failed to restrict management unix socket parent directory permissions {}",
+                    absolute_display_path(parent)
+                )
+            },
+        )?;
+    }
+
+    match std::fs::symlink_metadata(socket_path) {
+        Ok(metadata) if metadata.file_type().is_socket() => {
+            std::fs::remove_file(socket_path).with_context(|| {
+                format!(
+                    "failed to remove stale management unix socket {}",
+                    absolute_display_path(socket_path)
+                )
+            })?;
+        }
+        Ok(_) => {
+            return Err(anyhow::anyhow!(
+                "management unix socket path {} already exists and is not a socket",
+                absolute_display_path(socket_path)
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(anyhow::anyhow!(
+                "failed to inspect management unix socket path {}: {error}",
+                absolute_display_path(socket_path)
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn restrict_management_unix_socket_permissions(path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).with_context(|| {
+        format!(
+            "failed to restrict management unix socket permissions {}",
+            absolute_display_path(path)
+        )
+    })
+}
+
+#[cfg(unix)]
+fn cleanup_management_unix_socket(path: &str) {
+    if let Err(error) = std::fs::remove_file(path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            warn!(
+                "Failed to remove management unix socket {}: {error}",
+                absolute_display_path(Path::new(path))
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    use super::{prepare_management_unix_socket, restrict_management_unix_socket_permissions};
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tonic::transport::Server;
+    use tonic_health::pb::health_client::HealthClient;
+    use tonic_health::pb::HealthCheckRequest;
+
+    #[cfg(unix)]
+    struct TempDirGuard {
+        path: std::path::PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl TempDirGuard {
+        fn new(label: &str) -> std::io::Result<Self> {
+            let base_dir = std::path::Path::new("/tmp");
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(std::io::Error::other)?
+                .as_nanos();
+            let path = base_dir.join(format!(
+                "stv-m-{label}-{}-{}",
+                std::process::id(),
+                timestamp
+            ));
+            std::fs::create_dir_all(&path)?;
+            Ok(Self { path })
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            if let Err(error) = std::fs::remove_dir_all(&self.path) {
+                tracing::warn!(
+                    path = %self.path.display(),
+                    %error,
+                    "failed to remove temporary management test directory"
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_management_unix_socket_restricts_parent_directory_permissions(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = TempDirGuard::new("parent-perms")?;
+        let runtime_dir = temp_dir.path().join("management-runtime");
+        let socket_path = runtime_dir.join("synctv.sock");
+
+        prepare_management_unix_socket(&socket_path.to_string_lossy())?;
+
+        let metadata = std::fs::metadata(&runtime_dir)?;
+        let mode = metadata.permissions().mode() & 0o777;
+
+        assert_eq!(
+            mode, 0o700,
+            "management runtime directory must be owner-only, got {mode:o}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_management_unix_socket_preserves_existing_parent_directory_permissions(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = TempDirGuard::new("existing-parent-perms")?;
+        let runtime_dir = temp_dir.path().join("preexisting-runtime");
+        std::fs::create_dir_all(&runtime_dir)?;
+        std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o755))?;
+        let socket_path = runtime_dir.join("synctv.sock");
+
+        prepare_management_unix_socket(&socket_path.to_string_lossy())?;
+
+        let metadata = std::fs::metadata(&runtime_dir)?;
+        let mode = metadata.permissions().mode() & 0o777;
+
+        assert_eq!(
+            mode, 0o755,
+            "prepare must not rewrite permissions for an existing parent directory, got {mode:o}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn management_unix_socket_is_owner_only_after_bind() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = TempDirGuard::new("socket-perms")?;
+        let socket_path = temp_dir.path().join("management.sock");
+
+        prepare_management_unix_socket(&socket_path.to_string_lossy())?;
+
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
+        restrict_management_unix_socket_permissions(&socket_path)?;
+        let metadata = std::fs::metadata(&socket_path)?;
+        let mode = metadata.permissions().mode() & 0o777;
+
+        drop(listener);
+        std::fs::remove_file(&socket_path)?;
+
+        assert_eq!(
+            mode, 0o600,
+            "management unix socket must be owner-only, got {mode:o}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn management_health_service_remains_accessible_without_management_auth(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+
+        let (reporter, health_service) = tonic_health::server::health_reporter();
+        reporter
+            .set_service_status("", tonic_health::ServingStatus::Serving)
+            .await;
+
+        let serve_handle = tokio::spawn(async move {
+            Server::builder()
+                .add_service(health_service)
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                .await
+        });
+
+        let endpoint = format!("http://{addr}");
+        let channel = tonic::transport::Endpoint::from_shared(endpoint)?
+            .connect()
+            .await?;
+
+        let mut unauthenticated_client = HealthClient::new(channel);
+        let response = unauthenticated_client
+            .check(HealthCheckRequest {
+                service: String::new(),
+            })
+            .await?
+            .into_inner();
+        assert_eq!(
+            response.status,
+            tonic_health::pb::health_check_response::ServingStatus::Serving as i32
+        );
+
+        serve_handle.abort();
+        match serve_handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return Err(error.into()),
+            Err(error) if error.is_cancelled() => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+}

@@ -1,0 +1,59 @@
+---
+title: 已知限制
+description: 当前版本在部署、媒体、集群、认证和 API 稳定性方面的限制。
+---
+
+以下限制适用于当前版本。
+
+## 部署边界
+
+| 主题 | 当前边界 |
+| --- | --- |
+| 单机运行 | 支持，是推荐入门生产形态 |
+| 多副本 | 支持，但必须共享 PostgreSQL、Redis 和一致 secret |
+| PostgreSQL | 必须持久化，是核心数据源 |
+| Redis | 单机可选，生产推荐，多副本必需 |
+| 自动迁移 | 服务启动自动执行 embedded SQLx migrations |
+| management gRPC | 运维控制面，不应面向普通客户端或公网 |
+
+## 媒体和代理边界
+
+| 主题 | 当前边界 |
+| --- | --- |
+| proxy slice cache | 只缓存 Range slice，不做 full-body cache |
+| 多副本 slice cache | 文件后端没有跨进程共享索引或分布式锁 |
+| header 转发 | proxy 只使用 Provider 明确给出的 header，不自动转发客户端原始 header |
+| 直连播放 | 要求客户端能访问 URL 并设置必要 header |
+| 上游可用性 | SyncTV 不能保证第三方 Provider、CDN 或媒体源长期稳定 |
+| Bilibili | 上游策略、Cookie、Referer、User-Agent 和 Range 变化可能影响播放 |
+
+## 实时和集群边界
+
+| 主题 | 当前边界 |
+| --- | --- |
+| WebSocket 观察 | 连接断开后订阅不保留，重连需重建 |
+| 资源观察数量 | 每连接有上限，过多视图应合并或取消 |
+| 事务一致性 | 数据库事务后会 fanout 事件；部分成员状态和运行时事件是 best-effort |
+| 集群 catch-up | 只覆盖配置窗口内的短暂断开，不能替代长期离线同步 |
+| 滚动更新 | 长连接需要 drain 时间，不能瞬时无感迁移所有连接 |
+
+## 安全和账号边界
+
+| 主题 | 当前边界 |
+| --- | --- |
+| 2FA | 本地 2FA 依赖 password、passkey、verified email；OAuth2 不作为本地因素 |
+| JWT 吊销 | 强吊销依赖 Redis token blacklist 和 token 有效期 |
+| OPAQUE secret | 与密码记录长期相关，不适合常规轮换 |
+| Provider 凭据加密 | 依赖 credential encryption key；key 丢失会影响解密 |
+| OpenAPI UI | 只有启用 `openapi` feature 的构建才暴露 |
+
+## API 稳定性
+
+SyncTV 仍处于早期版本阶段，自有 protobuf、HTTP 字段和 Realtime 消息可能随版本调整。升级服务端和客户端前应阅读对应版本的 release notes，并将依赖这些接口的客户端纳入升级验证。
+
+## 系统职责
+
+- **媒体存储**：外部对象存储、网盘或媒体库保存媒体；SyncTV 负责聚合和代理。
+- **内容分发**：CDN 承担大规模分发；proxy 和 slice cache 优化受控转发与 Range 请求。
+- **转码**：Provider 或上游媒体系统提供转码能力。
+- **管理入口**：management gRPC 和 metrics 通过 Unix socket、私网、VPN 或受控集群入口访问。

@@ -1,0 +1,260 @@
+---
+title: Runtime Settings Reference
+description: Hot-reload database settings, semantics, defaults, validation, scope, and CLI examples.
+---
+
+import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## Storage and Hot Reload
+
+Runtime settings are hot-reload settings stored in PostgreSQL. They are mainly for changing product policy while the service is running. They are different from YAML/env/CLI startup configuration:
+
+| Type | Storage | Hot reload | Suitable for |
+| --- | --- | --- | --- |
+| Startup configuration | YAML, env, secret files, CLI flags | No; usually requires restart | Ports, database, Redis, secrets, TLS, data_dir, cache enablement |
+| Runtime settings | PostgreSQL `settings` table | Yes; replicas sync through LISTEN/NOTIFY | Registration, room creation, permission defaults, RTMP, CORS, chat retention |
+
+<Aside type="caution">
+Do not put startup secrets, database URLs, Redis URLs, listener ports, or slice-cache enablement into runtime settings. Those belong to startup configuration.
+</Aside>
+
+## CLI Usage
+
+```bash
+synctv settings list
+synctv settings get user
+synctv settings update --set user.enablePasswordSignup=true
+```
+
+Both `--set PATH=VALUE` and `--unset PATH` are repeatable. Plain strings can be unquoted; arrays and objects use JSON:
+
+```bash
+synctv settings update \
+  --set email.whitelistEnabled=true \
+  --set 'email.whitelistDomains=["example.com"]'
+synctv settings update --unset email.smtpProxy
+```
+
+The CLI builds the protobuf `FieldMask` automatically. Paths use lowerCamel leaf fields; `--unset` clears optional configuration. `--request-json` accepts a complete `UpdateSettingsRequest` ProtoJSON document for generated configuration and automated batch requests.
+
+Check the current binary with `synctv settings --help`.
+
+## Sync and Consistency
+
+Runtime settings are written to PostgreSQL and propagated to other replicas through PostgreSQL LISTEN/NOTIFY.
+
+Semantics:
+
+- Each setting key has a registered typed provider.
+- Writes are type-checked and value-validated before persistence.
+- Cross-key invariants use transactional validation, for example room policy is validated in a single transaction.
+- If a replica misses notifications, it refreshes from a full snapshot.
+
+## Keys
+
+### Server
+
+| Key | Type | Default | Validation | Meaning |
+| --- | --- | --- | --- | --- |
+| `server.name` | string | `"SyncTV"` | 1..=128 characters, no surrounding whitespace or control characters | Public server display name |
+| `server.allowRoomCreation` | bool | `true` | bool | Whether users can create rooms |
+| `server.maxRoomsPerUser` | i64 | `10` | `1..=1000` | Maximum rooms per user |
+| `server.maxMembersPerRoom` | i64 | `100` | `1..=10000` | Maximum members per room |
+| `server.maxChatMessages` | u64 | `500` | `<=10000`; `0` means unlimited | Service-level public chat message cap policy; cleanup uses `chat.maxMessagesPerRoom` |
+
+### Permissions
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `permissions.adminDefaultPermissions` | Permission-name array | Built-in admin permission set | Global default permissions for room admin |
+| `permissions.memberDefaultPermissions` | Permission-name array | Built-in member permission set | Global default permissions for room member |
+| `permissions.guestDefaultPermissions` | Permission-name array | `[]` | Global default permissions for room guest; only `view_members`, `view_chat_history`, `use_voice_chat`, and `use_p2p_media` are accepted |
+
+These settings are stored as JSON arrays of stable permission names, for example:
+
+```json
+["send_chat_messages", "manage_own_media", "browse_library", "view_members"]
+```
+
+`permissions.guestDefaultPermissions` has a dedicated guest ceiling. It rejects `browse_library`, `send_chat_messages`, media-resource, playback-control, and administration permissions. Valid example:
+
+```json
+["view_members", "view_chat_history", "use_voice_chat", "use_p2p_media"]
+```
+
+See [Roles, Permissions, and Preferences](../../admin/permissions/) for permission names, role defaults, and room override rules.
+
+### Room
+
+| Key | Type | Default | Validation | Meaning |
+| --- | --- | --- | --- | --- |
+| `room.disableCreateRoom` | bool | `false` | bool | Disable room creation |
+| `room.createRoomNeedReview` | bool | `false` | bool | Require review for room creation |
+| `room.passwordPolicy` | enum string | `optional` | `optional`, `required`, `forbidden` | Room password policy |
+
+### User
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `user.enablePasswordSignup` | bool | `false` | Allow local password signup, including OPAQUE registration and direct password transport registration |
+| `user.passwordSignupNeedReview` | bool | `false` | Require review for password signup |
+| `user.enableEmailSignup` | bool | `false` | Allow email registration where confirmation sets local password credentials |
+| `user.emailSignupNeedReview` | bool | `false` | Require review for email signup |
+| `user.enableWebauthnSignup` | bool | `false` | Allow WebAuthn/passkey as the initial account registration method; authenticated passkey binding is not signup |
+| `user.webauthnSignupNeedReview` | bool | `false` | Require review for WebAuthn signup; the review queue stores the pending passkey and approval creates the account with its WebAuthn credential |
+| `user.enableGuest` | bool | `true` | Allow guest capability |
+
+All registration modes are disabled by default. Production deployments should enable only the intended entry points and configure review independently for each mode.
+
+### OAuth2
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `oauth2.providers` | JSON array | `[]` | OAuth2/OIDC provider instance registry. Each element is an `OAuth2ProviderSettings` ProtoJSON object |
+| `oauth2.allowedRedirectUrls` | JSON string array | `[]` | Allowlist of HTTPS callbacks requested by clients; loopback callbacks are handled separately |
+
+`oauth2.providers` is the OAuth2 configuration entry point. `instanceName` may contain only ASCII letters, digits, `_`, and `-`, and must be at most 64 bytes. Each element uses one provider oneof field such as `github` or `oidc`:
+
+Configure the shared callback allowlist as a runtime setting. Store builds commonly use one fixed App Link callback:
+
+```bash
+synctv settings update --set 'oauth2.allowedRedirectUrls=["https://syncs.tv/oauth2/callback"]'
+```
+
+Apple Services IDs accept registered HTTPS Return URLs. An Apple provider client callback must exactly match that provider's `redirectUrl`; macOS and iOS clients should receive this HTTPS callback through `ASWebAuthenticationSession`.
+
+```json
+[
+  {
+    "instanceName": "github",
+    "enableSignup": true,
+    "signupNeedReview": false,
+    "github": {
+      "clientId": "github-client-id",
+      "clientSecret": "github-client-secret",
+      "redirectUrl": "https://app.example.com/oauth2/callback"
+    }
+  },
+  {
+    "instanceName": "corp_oidc",
+    "enableSignup": false,
+    "signupNeedReview": false,
+    "oidc": {
+      "clientId": "synctv",
+      "clientSecret": "oidc-client-secret",
+      "issuer": "https://idp.example.com",
+      "redirectUrl": "https://app.example.com/oauth2/callback"
+    }
+  }
+]
+```
+
+A missing provider instance means that login entry point is unavailable. Missing or false `enableSignup` blocks first-time OAuth2 account creation while existing linked OAuth2 logins continue to work. `signupNeedReview=true` stores first-time OAuth2 signup in the user registration review queue; approval creates the local account and OAuth2 binding.
+
+User-level 2FA and notification preferences are user preferences. Provider instance bindings are stored on provider credentials created during provider login. See [Roles, Permissions, and Preferences](../../admin/permissions/).
+
+### RTMP
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `rtmp.customPublishHost` | string/null | `null` | Optional custom publish host returned to stream publishers |
+| `rtmp.tsDisguisedAsPng` | bool | `false` | Disguise TS segments as PNG paths or responses |
+
+Set it with `{"settings":{"rtmp":{"customPublishHost":"rtmp://live.example.com"}},"updateMask":"rtmp.customPublishHost"}`. Clear it with `{"settings":{"rtmp":{}},"updateMask":"rtmp.customPublishHost"}`.
+
+### Email
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `email.enabled` | bool | `false` | Enable email delivery |
+| `email.smtpHost` | string/null | `null` | SMTP server host |
+| `email.smtpPort` | u16 | `587` | SMTP server port |
+| `email.smtpCredentials` | object/null | `null` | Optional SMTP credentials `{username, password}` |
+| `email.smtpProxy` | object/null | `null` | Optional SOCKS5 proxy `{url, credentials?}` |
+| `email.useTls` | bool | `true` | Use SMTP TLS |
+| `email.fromEmail` | string/null | `null` | Sender email address |
+| `email.fromName` | string | `"SyncTV"` | Sender display name |
+| `email.whitelistEnabled` | bool | `false` | Enable email allowlist |
+| `email.whitelistDomains` | string[] | `[]` | Email allowlist domains or addresses |
+
+When `email.whitelistEnabled=true` but `email.whitelistDomains` is empty, no email domain is rejected. Matching is enforced only when the allowlist has entries.
+
+The SOCKS5 proxy URL contains only the scheme, host, and port. Proxy credentials live in `smtpProxy.credentials`. With a proxy configured, the SOCKS5 server resolves the SMTP target hostname. Updating any SMTP or proxy field invalidates cached connections, and the next message uses the updated configuration.
+
+Optional configuration is updated through its FieldMask path, for example `{"settings":{"email":{"smtpProxy":{"url":"socks5://proxy.example.com:1080"}}},"updateMask":"email.smtpProxy"}`. Clear the proxy with `{"settings":{"email":{}},"updateMask":"email.smtpProxy"}`. The same semantics apply to `email.smtpHost`, `email.fromEmail`, and `email.smtpCredentials`. Management reads omit passwords. Updating credentials with an unchanged username and no password preserves the current password.
+
+### WebRTC
+
+| Key | Type | Default | Validation | Meaning |
+| --- | --- | --- | --- | --- |
+| `webrtc.externalIceServers` | JSON/string structure | `[]` | Valid ICE server array | External ICE servers returned to native clients |
+| `webrtc.maxVoiceParticipantsPerRoom` | u32 | `8` | `2..=32` | Maximum simultaneous voice Mesh participants per room |
+
+The external list is empty by default. When built-in STUN is enabled and has a client-reachable advertised address, the server adds it to the ICE servers returned to clients. Built-in STUN listener configuration is startup configuration. See [WebRTC Configuration](../../configuration/webrtc/).
+
+The voice limit is read dynamically for every join. Lowering it blocks subsequent joins while preserving existing calls; leaving or disconnecting releases a slot immediately. Multi-replica deployments coordinate room slots atomically through Redis.
+
+### Chat
+
+| Key | Type | Default | Validation | Meaning |
+| --- | --- | --- | --- | --- |
+| `chat.maxMessagesPerRoom` | u64 | `500` | `<=100000`; `0` means unlimited | Maximum retained chat messages per room |
+| `chat.maxPinnedMessagesPerRoom` | u64 | `20` | `<=1000` | Maximum retained pinned chat messages per room |
+| `chat.messageRetentionDays` | i64 days | `90` | `1..=3650` | Maximum chat message retention age |
+
+### CORS
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `cors.allowedOrigins` | JSON/string structure | `[]` | Runtime CORS allowed origins for proxy-related paths |
+
+Main service startup CORS is `server.cors_allowed_origins`. Runtime CORS is for policy that can change while the service runs.
+
+## Examples
+
+<Tabs syncKey="runtime-settings-examples">
+  <TabItem label="Enable password signup" icon="setting">
+
+```bash
+synctv settings update --set user.enablePasswordSignup=true
+```
+
+  </TabItem>
+  <TabItem label="Review password signup" icon="approve-check-circle">
+
+```bash
+synctv settings update --set user.passwordSignupNeedReview=true
+```
+
+  </TabItem>
+  <TabItem label="Limit room count" icon="document">
+
+```bash
+synctv settings update --set roomCreation.maxRoomsPerUser=20
+```
+
+  </TabItem>
+  <TabItem label="Chat retention" icon="warning">
+
+```bash
+synctv settings update \
+  --set chat.maxMessagesPerRoom=1000 \
+  --set chat.messageRetentionDays=180
+```
+
+  </TabItem>
+  <TabItem label="Configure OAuth2" icon="document">
+
+```bash
+synctv settings update --set 'oauth2.providers=[{"name":"github","enableSignup":true,"signupNeedReview":false,"github":{"clientId":"github-client-id","clientSecret":"github-client-secret","redirectUrl":"https://app.example.com/oauth2/callback"}}]'
+```
+
+  </TabItem>
+</Tabs>
+
+## Before Changing Values
+
+- **Confirm Hot-Reload Scope**: Ports, secrets, database, Redis, TLS, and cache enablement are startup configuration, not runtime settings.
+- **Read Current Value**: Run `synctv settings get <key>` before changing a value and keep it for rollback.
+- **Watch Replicas**: Multi-replica sync depends on PostgreSQL notifications; observe all replicas after changes.
+- **Record Reason**: Keep reasons for registration, room creation, RTMP, and permission-default policy changes.

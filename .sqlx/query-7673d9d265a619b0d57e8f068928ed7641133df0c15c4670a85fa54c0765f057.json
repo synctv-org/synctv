@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*) AS \"count!\"\n            FROM content_reports cr\n            LEFT JOIN users reporter ON reporter.id = cr.reporter_user_id\n            LEFT JOIN rooms room_ctx ON room_ctx.id = cr.room_id\n            LEFT JOIN rooms target_room ON target_room.id = cr.target_room_id\n            LEFT JOIN users target_user ON target_user.id = cr.target_user_id\n            LEFT JOIN users target_member_user ON target_member_user.id = cr.target_member_user_id\n            LEFT JOIN chat_messages chat\n              ON chat.room_id = cr.room_id\n             AND chat.id = cr.target_chat_message_id\n             AND chat.created_at = cr.target_chat_message_created_at\n            WHERE ($1::smallint IS NULL OR cr.status = $1)\n              AND ($2::smallint IS NULL OR cr.target_type = $2)\n              AND ($3::bigint IS NULL OR cr.reporter_user_id = $3)\n              AND ($10::boolean OR cr.target_type = ANY($11::smallint[]))\n              AND (\n                $4::bigint IS NULL\n                OR ($12::boolean AND (cr.room_id = $4 OR cr.target_room_id = $4 OR cr.target_member_room_id = $4))\n                OR ($13::boolean AND cr.target_room_id = $4)\n                OR ($14::boolean AND cr.target_member_room_id = $4)\n                OR ($15::boolean AND cr.room_id = $4)\n              )\n              AND ($5::bigint IS NULL OR cr.target_room_id = $5)\n              AND ($6::bigint IS NULL OR cr.target_user_id = $6)\n              AND ($7::bigint IS NULL OR cr.target_member_room_id = $7)\n              AND ($8::bigint IS NULL OR cr.target_member_user_id = $8)\n              AND ($9::bigint IS NULL OR cr.target_chat_message_id = $9)\n              AND (\n                $16::text IS NULL\n                OR cr.reason_code ILIKE $16 ESCAPE '\\'\n                OR cr.reason ILIKE $16 ESCAPE '\\'\n                OR COALESCE(reporter.username, '') ILIKE $16 ESCAPE '\\'\n                OR COALESCE(room_ctx.name, '') ILIKE $16 ESCAPE '\\'\n                OR COALESCE(target_room.name, '') ILIKE $16 ESCAPE '\\'\n                OR COALESCE(target_user.username, '') ILIKE $16 ESCAPE '\\'\n                OR COALESCE(target_member_user.username, '') ILIKE $16 ESCAPE '\\'\n                OR COALESCE(chat.content, '') ILIKE $16 ESCAPE '\\'\n                OR cr.id::text ILIKE $16 ESCAPE '\\'\n                OR cr.target_chat_message_id::text ILIKE $16 ESCAPE '\\'\n              )\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "Int2",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Bool",
+        "Int2Array",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "7673d9d265a619b0d57e8f068928ed7641133df0c15c4670a85fa54c0765f057"
+}

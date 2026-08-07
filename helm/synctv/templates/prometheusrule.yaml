@@ -1,0 +1,84 @@
+{{- if and .Values.metrics.enabled .Values.alerting.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "synctv.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+spec:
+  groups:
+    - name: synctv
+      interval: {{ .Values.alerting.evaluationInterval | default "30s" }}
+      rules:
+        - alert: SyncTVHighHTTP5xxRate
+          expr: |
+            sum(rate(http_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total[5m]))
+            > 0.01
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High HTTP 5xx error rate ({{ "{{ $value | humanizePercentage }}" }})"
+            description: "SyncTV is returning >1% HTTP 5xx errors for 5 minutes"
+        - alert: SyncTVHighLatency
+          expr: |
+            histogram_quantile(0.99,
+              rate(http_request_duration_seconds_bucket[5m])
+            ) > 5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High p99 latency ({{ "{{ $value }}" }}s)"
+            description: "SyncTV p99 response time >5s for 5 minutes"
+        - alert: SyncTVDatabasePoolExhausted
+          expr: db_pool_utilization_ratio > 0.9
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Database connection pool almost full ({{ "{{ $value | humanizePercentage }}" }})"
+            description: "PostgreSQL connection pool >90% utilized for 2 minutes"
+        - alert: SyncTVWebSocketSurge
+          expr: |
+            rate(websocket_connections_active[5m]) > 100
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "WebSocket connection surge detected"
+            description: "WebSocket connections increasing >100/sec for 2 minutes"
+        - alert: SyncTVStreamErrors
+          expr: |
+            sum(rate(stream_errors_total[5m])) > 1
+          for: 3m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Stream errors detected ({{ "{{ $value }}" }}/sec)"
+            description: "Stream error rate >1/sec for 3 minutes"
+        - alert: SyncTVRealtimeEventDrops
+          expr: |
+            rate(synctv_realtime_events_dropped_total[5m]) > 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Realtime events being dropped"
+            description: "Realtime fanout path is dropping events"
+        - alert: SyncTVCacheHitRateDrop
+          expr: |
+            sum(rate(cache_hits_total[5m]))
+            /
+            (sum(rate(cache_hits_total[5m])) + sum(rate(cache_misses_total[5m])))
+            < 0.5
+          for: 10m
+          labels:
+            severity: info
+          annotations:
+            summary: "Low cache hit rate ({{ "{{ $value | humanizePercentage }}" }})"
+            description: "Cache hit rate <50% for 10 minutes"
+{{- end }}

@@ -1,0 +1,45 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT m.id AS \"id!: MediaId\",\n               fr.storage_backend AS \"storage_backend!\",\n               fr.object_key AS \"object_key!\",\n               'media_cover' AS \"reference_kind!\"\n          FROM media m\n          JOIN file_references fr\n            ON fr.id = m.cover_file_reference_id\n           AND fr.released_at IS NULL\n         WHERE m.room_id = $1\n           AND m.id = ANY($2)\n        UNION ALL\n        SELECT m.id AS \"id!: MediaId\",\n               fr.storage_backend AS \"storage_backend!\",\n               fr.object_key AS \"object_key!\",\n               'media_thumbnail' AS \"reference_kind!\"\n          FROM media m\n          JOIN file_references fr\n            ON fr.id = m.thumbnail_file_reference_id\n           AND fr.released_at IS NULL\n         WHERE m.room_id = $1\n           AND m.id = ANY($2)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: MediaId",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "storage_backend!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "object_key!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "reference_kind!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "984e30275f876e3a96541bc3b92809df3e7f90790c8a2eb694c0edbf41d219d2"
+}

@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT pg_total_relation_size(format('%I.%I', schemaname, tablename))::BIGINT AS \"size_bytes!\"\n             FROM pg_tables\n             WHERE schemaname = 'public'\n               AND tablename LIKE 'notifications_%'\n               AND tablename ~ '^notifications_[0-9]{4}_[0-9]{2}$'\n             ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "size_bytes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "994faf68227885e98b15881aa878e75beb942dcf9f9a5ecd8ea51ddf4b2e4294"
+}

@@ -1,0 +1,832 @@
+# SyncTV Configuration Example
+#
+# Copy this file to synctv.yaml and modify as needed
+#
+# Configuration priority: defaults < config file < environment variables
+#
+# Secret-like settings also support sibling *_file keys in this config file.
+# Relative *_file paths are resolved relative to the config file location.
+#
+# Environment variables use SYNCTV_ prefix with single underscore separator:
+#   SYNCTV_SERVER_HOST=0.0.0.0
+#   SYNCTV_DATABASE_URL=postgresql://...
+#   SYNCTV_DATABASE_URL_FILE=/run/secrets/database_url
+#
+# Secret-like settings support two file-based forms:
+#   1. Config file sibling keys: jwt.secret_file, management.auth_token_file, ...
+#   2. Env file variables: SYNCTV_JWT_SECRET_FILE, SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE, ...
+
+# Process-wide logging for shared infrastructure, background workers, database,
+# Redis, configuration/bootstrap code, and third-party library targets.
+# Environment variables: SYNCTV_LOGGING_LEVEL, SYNCTV_LOGGING_FORMAT,
+# SYNCTV_LOGGING_COLOR, SYNCTV_LOGGING_OUTPUT, SYNCTV_LOGGING_OUTPUT_PATH,
+# SYNCTV_LOGGING_OUTPUT_ROTATION_STRATEGY, SYNCTV_LOGGING_OUTPUT_ROTATION_MAX_FILES.
+# Service logging blocks use the corresponding SYNCTV_<SERVICE>_LOGGING_* prefix.
+logging:
+  level: "info"
+  format: "text"
+  output: "stdout"
+  color: "auto"
+  # File output:
+  # output:
+  #   type: "file"
+  #   path: "logs/global.log"
+  #   rotation:
+  #     strategy: "daily"
+  #     max_files: 30
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  # Destination for requests to the API root path (/).
+  project_url: "https://github.com/synctv-org/synctv"
+  enable_reflection: false
+  # Maximum gRPC message size in bytes (both incoming and outgoing).
+  # Prevents OOM attacks from oversized messages. Default: 16MB (16777216 bytes).
+  # Minimum: 1MB (1048576 bytes), Maximum: 1GB (1073741824 bytes).
+  # Environment variable: SYNCTV_SERVER_GRPC_MAX_MESSAGE_SIZE_BYTES
+  # grpc_max_message_size_bytes: 16777216
+  # Enable gzip negotiation for gRPC request/response bodies.
+  # Environment variable: SYNCTV_SERVER_GRPC_COMPRESSION_ENABLED
+  grpc_compression_enabled: true
+  # Trusted proxy IP addresses/CIDRs for X-Forwarded-For validation.
+  # If empty, X-Forwarded-For headers are NOT trusted (socket address is used).
+  # Example: ["10.0.0.0/8", "192.168.0.0/16"]
+  trusted_proxies: []
+  # CORS allowed origins for cross-origin requests from web frontends.
+  #
+  # You MUST set this to your frontend URL(s) or cross-origin
+  # requests (fetch, WebSocket upgrades from browsers) will be rejected.
+  #
+  # Examples:
+  #   cors_allowed_origins: ["https://app.example.com"]
+  #   cors_allowed_origins: ["https://app.example.com", "https://admin.example.com"]
+  #
+  # Environment variable:
+  #   SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
+  #
+  # WARNING: An empty list in production means ALL cross-origin requests are denied.
+  cors_allowed_origins: []
+  # Advertise host for cluster node registration (address other nodes use to reach this instance).
+  # Falls back to POD_IP env var, then system hostname if empty.
+  # In Kubernetes, set via SYNCTV_SERVER_ADVERTISE_HOST or downward API (status.podIP).
+  advertise_host: ""
+  # Maximum time in seconds to wait for active connections to drain during shutdown.
+  # Defaults to 30 seconds. Increase for deployments with many long-lived connections.
+  shutdown_drain_timeout_seconds: 30
+  logging:
+    level: "info"
+    format: "text"
+    output: "stdout"
+    color: "auto"
+    # File output uses this shape for every component:
+    # output:
+    #   type: "file"
+    #   path: "logs/server.log"
+    #   rotation:
+    #     strategy: "daily"
+    #     max_files: 30
+
+time:
+  # Default IANA timezone used for human-readable time output and local datetime parsing.
+  # Resolution priority:
+  #   1. time.timezone
+  #   2. SYNCTV_TIME_TIMEZONE
+  #   3. TZ
+  #   4. system timezone
+  #   5. UTC
+  #
+  # Examples: "Asia/Shanghai", "UTC", "America/New_York"
+  # Leave empty to use env/system detection.
+  timezone: ""
+  # Application-level clock synchronization. This calibrates SyncTV's in-process
+  # UTC clock with NTP/SNTP servers and does not change the host OS clock.
+  #
+  # Keep host-level NTP/chrony enabled for PostgreSQL, Redis, TLS, JWT, logs, and
+  # other processes. Enable this when clients need SyncTV's own playback/chat
+  # timestamps to use an explicitly calibrated application clock.
+  #
+  # Environment variables:
+  #   SYNCTV_TIME_CLOCK_SYNC_ENABLED=true
+  #   SYNCTV_TIME_CLOCK_SYNC_PROVIDER_TYPE=sntp
+  #   SYNCTV_TIME_CLOCK_SYNC_PROVIDER_SERVERS='["time.cloudflare.com:123","pool.ntp.org:123"]'
+  #   SYNCTV_TIME_CLOCK_SYNC_PROVIDER_INTERVAL_SECONDS=300
+  #   SYNCTV_TIME_CLOCK_SYNC_PROVIDER_TIMEOUT_MILLIS=1000
+  clock_sync:
+    enabled: false
+    provider:
+      type: "sntp"
+      servers:
+        - "time.cloudflare.com:123"
+        - "pool.ntp.org:123"
+      interval_seconds: 300
+      timeout_millis: 1000
+
+# Public IDs are prefixed decimal IDs by default, for example usr_1 and room_1.
+# Set sqids to enable prefixed sqids instead, for example usr_<sqid>.
+# Environment variables:
+#   SYNCTV_PUBLIC_IDS_SQIDS_ALPHABET
+#   SYNCTV_PUBLIC_IDS_SQIDS_MIN_LENGTH
+public_ids: {}
+# public_ids:
+#   sqids:
+#     alphabet: null
+#     min_length: 12
+
+security:
+  # AES-256-GCM key used to encrypt sensitive provider credentials.
+  # Prefer file-based secrets so keys are not stored inline in config files.
+  # Generate with: openssl rand -hex 32
+  # Environment variables:
+  #   SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY
+  #   SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY_FILE
+  # credential_encryption_key_file: "/run/secrets/credential_encryption_key"
+  credential_encryption_key: ""
+  # Dedicated AES-256-GCM key for TOTP secrets.
+  # totp_encryption_key_file: "/run/secrets/totp_encryption_key"
+  totp_encryption_key: ""
+  # AES-256-GCM key used only for durable email outbox payloads.
+  # Generate with: openssl rand -hex 32
+  # Environment variables:
+  #   SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY
+  #   SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY_FILE
+  # email_outbox_encryption_key_file: "/run/secrets/email_outbox_encryption_key"
+  email_outbox_encryption_key: ""
+  # Stable secret used to derive the OPAQUE server setup for password authentication.
+  # Keep this independent from jwt.secret so JWT rotation does not invalidate OPAQUE password records.
+  # Generate with: openssl rand -base64 48
+  # Environment variables:
+  #   SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET
+  #   SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET_FILE
+  # opaque_server_setup_secret_file: "/run/secrets/opaque_server_setup_secret"
+  opaque_server_setup_secret: ""
+  # Independent random keys for separate authentication and signing domains.
+  # Generate every value separately with: openssl rand -base64 48
+  proxy_signing_key: ""
+  media_swarm_signing_key: ""
+  provider_session_encryption_key: ""
+  login_discovery_key: ""
+  webauthn_enumeration_key: ""
+  # Global SSRF policy for server-side outbound requests.
+  # Disabled by default for self-hosted private media providers. Enable it for public deployments.
+  # Prefer allowed_hosts / allowed_ip_ranges for known internal media endpoints.
+  # Set allow_private_network_targets=true only in a trusted private deployment.
+  # Environment variables:
+  #   SYNCTV_SECURITY_SSRF_ENABLED
+  #   SYNCTV_SECURITY_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS
+  #   SYNCTV_SECURITY_SSRF_ALLOWED_HOSTS
+  #   SYNCTV_SECURITY_SSRF_ALLOWED_IP_RANGES
+  ssrf:
+    enabled: false
+    allow_private_network_targets: false
+    allowed_hosts: []
+    allowed_ip_ranges: []
+
+health:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8081
+  logging:
+    level: "info"
+    format: "text"
+    output: "stdout"
+    color: "auto"
+
+metrics:
+  # Dedicated metrics listener. When enabled, /metrics is not served on the API port.
+  enabled: false
+  host: "0.0.0.0"
+  port: 9090
+  # tls:
+  #   enabled: true
+  #   # Static input files: relative cert/key paths stay relative to this config file.
+  #   # They are NOT rebased through data_dir.
+  #   cert_path: "./tls/metrics.crt"
+  #   key_path: "./tls/metrics.key"
+  auth:
+    # Authentication mode for /metrics: bearer_token, basic, kubernetes
+    mode: "bearer_token"
+    bearer_token: ""
+    # Environment variable: SYNCTV_METRICS_AUTH_BEARER_TOKEN_FILE
+    # bearer_token_file: "/run/secrets/metrics_bearer_token"
+    # basic_username: "metrics"
+    # basic_password: ""
+    # Environment variable: SYNCTV_METRICS_AUTH_BASIC_PASSWORD_FILE
+    # basic_password_file: "/run/secrets/metrics_basic_password"
+  logging:
+    level: "warn"
+    format: "text"
+    output: "stdout"
+    color: "auto"
+
+management:
+  # Local-only management daemon transport used by the `synctv` CLI for remote lifecycle commands.
+  # Unix-like platforms default to a Unix domain socket for daemon-style local access.
+  # Switch transport to "tcp" when the CLI must connect over a TCP loopback endpoint.
+  # TCP transport REQUIRES auth_token; startup fails if it is empty.
+  # Unix transport also supports auth_token, but defaults to empty and may rely on
+  # owner-only socket permissions instead.
+  # Runtime-owned local paths use the top-level `data_dir` root shown below.
+  # Leave unix_socket_path unset to use the platform default under data_dir/run/.
+  # Environment variables:
+  #   SYNCTV_DATA_DIR=/var/lib/synctv
+  #   SYNCTV_MANAGEMENT_ENABLED=true
+  #   SYNCTV_MANAGEMENT_TRANSPORT=unix
+  #   SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH=/path/to/synctv.sock
+  #   SYNCTV_MANAGEMENT_PORT=50052
+  #   SYNCTV_MANAGEMENT_AUTH_TOKEN=replace-with-a-random-secret
+  #   SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE=/run/secrets/management_auth_token
+  enabled: true
+  transport: "unix"
+  port: 50052
+  # Relative unix_socket_path values are resolved from data_dir.
+  # unix_socket_path: "/absolute/path/to/synctv.sock"
+  # auth_token: "replace-with-a-random-secret"
+  # auth_token_file is a static config input. Relative paths stay relative to this config file.
+  # auth_token_file: "/run/secrets/management_auth_token"
+  # Reflection can be configured independently from the public API gRPC listener.
+  enable_reflection: false
+  logging:
+    level: "info"
+    format: "text"
+    output: "stdout"
+    color: "auto"
+
+# `data_dir` is the shared root for runtime-owned local files.
+# It affects relative:
+#   - management.unix_socket_path
+#   - logging.output.path
+#   - <component>.logging.output.path for server, health, metrics, management,
+#     cluster, livestream, and webrtc
+#   - livestream.hls_storage.path
+#   - proxy_slice_cache.file_cache_dir
+# It does NOT affect:
+#   - *_file secret paths (they stay relative to this config file)
+#   - metrics.tls.cert_path / metrics.tls.key_path
+# CLI `--data-dir` and env `SYNCTV_DATA_DIR` override this value.
+# data_dir: "/var/lib/synctv"
+
+database:
+  # Environment variables:
+  #   SYNCTV_DATABASE_URL
+  #   SYNCTV_DATABASE_URL_FILE
+  # Split configuration is also supported:
+  #   SYNCTV_DATABASE_HOST / PORT / USERNAME / PASSWORD / PASSWORD_FILE / NAME
+  url: "postgresql://synctv:synctv@localhost:5432/synctv"
+  # Optional read-only replica URL for explicitly allowlisted eventually-consistent reads.
+  # Strong reads, writes, transactions, cache rebuilds, and migrations always use `url`.
+  # read_url: "postgresql://synctv:synctv@localhost:5432/synctv"
+  # read_url_file: "/run/secrets/database_read_url"
+  # Or reuse the primary username/password/database and override only the read endpoint.
+  # read_host: "postgres-read.local"
+  # read_port: 5432
+  # url_file: "/run/secrets/database_url"
+  # host: "localhost"
+  # port: 5432
+  # username: "synctv"
+  # password_file: "/run/secrets/database_password"
+  # name: "synctv"
+  max_connections: 20
+  min_connections: 5
+  connect_timeout_seconds: 10
+  idle_timeout_seconds: 600
+  # Maximum lifetime of a connection in seconds before it is closed and replaced.
+  # Defaults to 1800 (30 minutes).
+  max_lifetime_seconds: 1800
+
+# ============================================================================
+# Redis Configuration
+# ============================================================================
+#
+# Redis is OPTIONAL in standalone mode (cluster.enabled=false) and MANDATORY
+# in cluster mode (cluster.enabled=true).
+#
+# When Redis is not configured (url is empty), all features still work using
+# in-memory fallbacks:
+#   - Token blacklist → in-memory cache (lost on restart)
+#   - Rate limiting → in-memory counters (lost on restart)
+#   - Brute-force protection → in-memory tracking (lost on restart)
+#   - Username/user/room caches → in-memory only
+#   - OAuth2 state → in-memory store
+#   - Livestream registry → in-memory publisher tracking
+#   - Migration locking → PostgreSQL advisory locks
+#   - Leader election → single node is always the leader
+#
+# When Redis IS configured in standalone mode, it enhances features with
+# persistence across restarts and shared state.
+#
+# Redis provides critical infrastructure for:
+#   - Token blacklist (JWT revocation across replicas)
+#   - Rate limiting
+#   - Username cache
+#   - Cache invalidation (Redis Streams with per-node consumer groups)
+#   - Cluster coordination (pub/sub for room events, kicks, etc.)
+#
+# Deployment Modes:
+#   - standalone: Single Redis instance (default, OK for development)
+#   - sentinel: Redis Sentinel for high availability
+#
+# IMPORTANT: Standalone Redis is a single point of failure (SPOF). For production
+# deployments, use sentinel mode with 3+ sentinel nodes monitoring a master-replica setup.
+
+redis:
+  # Leave empty to run without Redis in standalone mode.
+  # Environment variables:
+  #   SYNCTV_REDIS_URL
+  #   SYNCTV_REDIS_URL_FILE
+  # Split configuration also supports:
+  #   SYNCTV_REDIS_HOST / PORT / USERNAME / PASSWORD / PASSWORD_FILE / DATABASE
+  url: "redis://localhost:6379"
+  # url_file: "/run/secrets/redis_url"
+  # host: "localhost"
+  # port: 6379
+  # username: ""
+  # password_file: "/run/secrets/redis_password"
+  # database: 0
+  connect_timeout_seconds: 5
+  # Maximum time to wait for a Redis command response.
+  # Environment variable: SYNCTV_REDIS_RESPONSE_TIMEOUT_SECONDS
+  response_timeout_seconds: 5
+  # Redis connection manager pipeline buffer for bursty short commands.
+  # Environment variable: SYNCTV_REDIS_PIPELINE_BUFFER_SIZE
+  pipeline_buffer_size: 512
+  key_prefix: "synctv:"
+
+  # Deployment mode: standalone or sentinel
+  deployment_mode: "standalone"
+  # --- Sentinel Mode Configuration (for high availability) ---
+  # When deployment_mode is "sentinel", these fields are required:
+  # sentinel_master_name: "mymaster"
+  # sentinel_addresses:
+  #   - "redis://sentinel1:26379"
+  #   - "redis://sentinel2:26379"
+  #   - "redis://sentinel3:26379"
+
+jwt:
+  # REQUIRED in production. Generate with: openssl rand -base64 32
+  # Minimum 32 characters with high entropy (at least 16 unique characters).
+  # Environment variables:
+  #   SYNCTV_JWT_SECRET
+  #   SYNCTV_JWT_SECRET_FILE
+  secret: ""
+  # secret_file is a static config input. Relative paths stay relative to this config file,
+  # not data_dir.
+  # secret_file: "/run/secrets/jwt_secret"
+  access_token_duration_hours: 1
+  refresh_token_duration_days: 30
+  # Duration for guest (anonymous) access tokens
+  guest_token_duration_hours: 4
+  # Clock skew leeway for token validation (seconds)
+  clock_skew_leeway_secs: 60
+
+cache:
+  # Business L1/L2 cache capacities and TTLs.
+  l1_capacity: 5000
+  l1_ttl_seconds: 300
+  l2_ttl_seconds: 300
+  username_cache_capacity: 10000
+  username_cache_ttl_seconds: 3600
+
+proxy_slice_cache:
+  # Enable range-based proxy slice caching at process startup.
+  # This is not dynamically toggled at runtime.
+  enabled: true
+  # Enable persisted proxy slice files on local/shared storage.
+  file_backend_enabled: false
+  # Relative file_cache_dir values are resolved from data_dir.
+  # Leave empty to use the built-in default under data_dir/cache/proxy-slice when enabled.
+  # file_cache_dir: "cache/proxy-slice"
+
+livestream:
+  rtmp_port: 1935
+  # Public host returned in RTMP publish URLs. Set this in production to a
+  # client-reachable domain, LoadBalancer address, or node public IP.
+  # If empty, SyncTV uses only the local bind host fallback for local/single-node use.
+  # public_rtmp_host: "live.example.com"
+  logging:
+    level: "info"
+    format: "text"
+    output: "stdout"
+    color: "auto"
+  gop_cache_size: 2
+  stream_timeout_seconds: 300
+  # How often to check for idle streams (seconds)
+  cleanup_check_interval_seconds: 60
+  # Max retries for pull stream connections
+  pull_max_retries: 10
+  # Initial backoff for pull retries (milliseconds)
+  pull_initial_backoff_ms: 1000
+  # Max backoff for pull retries (milliseconds)
+  pull_max_backoff_ms: 30000
+  # Max FLV tag size to accept in bytes (prevents OOM). Default: 10MB
+  max_flv_tag_size_bytes: 10485760
+  # Maximum memory (in megabytes) for the GOP cache per stream.
+  # When exceeded, the oldest GOP is evicted even if gop_cache_size hasn't
+  # been reached. Default: 100 MB. Set to 0 to use the built-in default (500 MB).
+  gop_cache_max_memory_mb: 100
+  # HLS segment storage. type: memory, file, shared_file, or s3.
+  # Use shared_file only when path is mounted from storage visible to every replica.
+  hls_storage:
+    type: "memory"
+    # memory_max_mb limits in-memory HLS segment storage. 0 uses the built-in default.
+    memory_max_mb: 0
+    # For type=file or shared_file:
+    # path: "livestream/hls"
+    # For type=s3:
+    # endpoint: "https://s3.example.com"
+    # access_key_id_file: "/run/secrets/hls_storage_access_key_id"
+    # secret_access_key_file: "/run/secrets/hls_storage_secret_access_key"
+    # bucket: "synctv-hls"
+    # region: null
+    # base_path: "hls/"
+  # Maximum HTTP-FLV connection duration and slow-client write timeout.
+  flv_max_connection_duration_seconds: 86400
+  flv_write_timeout_seconds: 30
+
+file_storage:
+  # Named backend selected by product features when they do not override it.
+  # The built-in "disabled" backend always exists and rejects uploads.
+  default_backend: "disabled"
+  # Product-level backend choices. Empty values inherit default_backend.
+  chat_attachments_backend: ""
+  user_avatars_backend: ""
+  media_covers_backend: ""
+  room_covers_backend: ""
+  playlist_covers_backend: ""
+  # Dedicated signing secret for upload/read tokens. This value is required.
+  # Environment variables:
+  #   SYNCTV_FILE_UPLOAD_TOKEN_SECRET
+  #   SYNCTV_FILE_UPLOAD_TOKEN_SECRET_FILE
+  upload_token_secret: ""
+  # Uploaded objects with no active product reference are cleaned after this
+  # grace period. Set to 0 to disable orphan cleanup.
+  unreferenced_object_retention_seconds: 86400
+  # upload_token_secret_file: "/run/secrets/file_upload_token_secret"
+  # Registry of storage backends keyed by stable storage name.
+  backends: {}
+
+# Example: store files in PostgreSQL.
+# file_storage:
+#   default_backend: "database"
+#   chat_attachments_backend: "database"
+#   user_avatars_backend: "database"
+#   media_covers_backend: "database"
+#   room_covers_backend: "database"
+#   playlist_covers_backend: "database"
+#   upload_token_secret_file: "/run/secrets/file_upload_token_secret"
+#   backends:
+#     database:
+#       type: "database"
+#       # Compression for bytes stored in file_blobs: none, lz4, or zstd.
+#       compression: "zstd"
+
+# Example: store files in multiple S3-compatible backends.
+# file_storage:
+#   default_backend: "s3_public"
+#   chat_attachments_backend: "s3_public"
+#   user_avatars_backend: "s3_private"
+#   media_covers_backend: "s3_public"
+#   room_covers_backend: "s3_public"
+#   playlist_covers_backend: "s3_public"
+#   upload_token_secret_file: "/run/secrets/file_upload_token_secret"
+#   backends:
+#     s3_public:
+#       type: "s3"
+#       endpoint: "https://s3.example.com"
+#       access_key_id_file: "/run/secrets/file_storage_s3_access_key_id"
+#       secret_access_key_file: "/run/secrets/file_storage_s3_secret_access_key"
+#       bucket: "synctv-files"
+#       region: "auto"
+#       base_path: "files/"
+#       public_base_url: "https://cdn.example.com/files"
+#       upload_expires_seconds: 900
+#     s3_private:
+#       type: "s3"
+#       endpoint: "https://s3.example.com"
+#       access_key_id_file: "/run/secrets/file_storage_s3_access_key_id"
+#       secret_access_key_file: "/run/secrets/file_storage_s3_secret_access_key"
+#       bucket: "synctv-private-files"
+#       region: "auto"
+#       base_path: "private-files/"
+#       public_base_url: null
+#       upload_expires_seconds: 900
+
+# ============================================================================
+# Password Complexity Requirements
+# ============================================================================
+#
+# Controls password strength validation for user account passwords.
+# These settings do NOT apply to room passwords (which have simpler requirements).
+
+password_complexity:
+  # Minimum password length
+  min_length: 8
+  # Require at least one uppercase letter
+  require_uppercase: true
+  # Require at least one lowercase letter
+  require_lowercase: true
+  # Require at least one digit
+  require_digit: true
+  # Require at least one special character (e.g., !@#$%^&*)
+  require_special: false
+  # Maximum consecutive repeated characters allowed (prevents "aaaaaa").
+  # Set to 0 to disable this check.
+  max_repeated_chars: 3
+  # Optional zxcvbn entropy estimator. Disabled by default; enable only when
+  # you want dictionary/pattern-based password strength scoring.
+  zxcvbn_enabled: false
+  # Minimum zxcvbn score when enabled. Valid range: 0-4. zxcvbn recommends
+  # treating scores below 3 as weak.
+  zxcvbn_min_score: 3
+
+# ============================================================================
+# Connection Limits
+# ============================================================================
+#
+# Controls concurrent WebSocket/streaming connection limits.
+
+connection_limits:
+  # Maximum concurrent connections per user
+  max_per_user: 20
+  # Maximum concurrent connections per room
+  max_per_room: 2000
+  # Maximum total concurrent connections
+  max_total: 100000
+  # Idle timeout in seconds (disconnect if no activity)
+  idle_timeout_seconds: 300
+  # Maximum connection duration in seconds (24 hours)
+  max_duration_seconds: 86400
+  # Global per-connection WebSocket message rate limit (messages per second).
+  # Prevents abuse from flooding the server with rapid messages.
+  ws_message_rate_limit_per_second: 50
+
+# ============================================================================
+# Messaging Rate Limits
+# ============================================================================
+#
+# Domain-level chat limits enforced by the shared messaging logic.
+
+messaging_rate_limits:
+  # Maximum chat messages per sliding window.
+  chat_per_second: 10
+  # Sliding-window size in seconds.
+  window_seconds: 1
+
+# ============================================================================
+# Request API Rate Limits
+# ============================================================================
+
+request_rate_limits:
+  auth_max_requests: 5
+  auth_window_seconds: 60
+  write_max_requests: 30
+  write_window_seconds: 60
+  read_max_requests: 100
+  read_window_seconds: 60
+  media_max_requests: 20
+  media_window_seconds: 60
+  admin_max_requests: 30
+  admin_window_seconds: 60
+  streaming_max_requests: 200
+  streaming_window_seconds: 60
+  websocket_max_requests: 10
+  websocket_window_seconds: 60
+  scopes:
+    room_members:
+      max_requests: 90
+      window_seconds: 15
+      strategy: fixed_window
+
+# ============================================================================
+# Bootstrap Configuration
+# ============================================================================
+#
+# Initial setup options for first startup.
+# IMPORTANT: Change root_password in production!
+
+bootstrap:
+  # Whether to create root user on first startup
+  create_root_user: true
+  root_username: "root"
+  # REQUIRED for production: set a strong password (>= 12 chars, must contain
+  # uppercase, lowercase, and digits). Do NOT use any default value in production.
+  # Set via SYNCTV_BOOTSTRAP_ROOT_PASSWORD env var.
+  # Or file-based env: SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE
+  # root_password: ""
+  # root_password_file: "/run/secrets/bootstrap_root_password"
+
+  # ============================================================================
+  # Cluster Configuration
+  # ============================================================================
+  #
+  # Controls multi-node cluster mode and internal channel buffer sizes.
+  #
+  # When enabled=true, Redis is MANDATORY and cluster.secret must be set.
+  # When enabled=false (default), this is a standalone single-node deployment
+  # and Redis is optional.
+
+cluster:
+  # Enable cluster mode for multi-node deployments.
+  # When true, Redis is required and cluster.secret must be set.
+  # When false (default), runs as a standalone single-node instance.
+  # Environment variable: SYNCTV_CLUSTER_ENABLED
+  enabled: false
+  # Dedicated internal gRPC listener. Keep this private to cluster peers.
+  host: "0.0.0.0"
+  port: 50051
+  # Optional address advertised to peers. Empty host and port 0 fall back to
+  # server.advertise_host and cluster.port.
+  advertise_host: ""
+  advertise_port: 0
+  logging:
+    level: "warn"
+    format: "text"
+    output: "stdout"
+    color: "auto"
+  # Shared secret for authenticating cluster gRPC calls between nodes.
+  # REQUIRED when cluster.enabled is true — startup fails if this is empty in cluster mode.
+  # This prevents unauthorized inter-node gRPC calls in multi-replica deployments.
+  # Not required in standalone mode even when Redis is configured.
+  # Generate a secret with: openssl rand -hex 32
+  # Environment variable: SYNCTV_CLUSTER_SECRET
+  # Environment file variable: SYNCTV_CLUSTER_SECRET_FILE
+  # File-based secret: cluster.secret_file: "/run/secrets/cluster_secret"
+  secret: ""
+  # Capacity for high-priority critical event channel (KickPublisher, KickUser, etc.)
+  # Critical events are never dropped; senders block when full.
+  critical_channel_capacity: 10000
+  # Capacity for normal-priority Redis publish channel.
+  # Normal events are dropped with a warning when full.
+  publish_channel_capacity: 100000
+  # Discovery mode: "redis" (default), "static", or "k8s_dns" (requires
+  # HEADLESS_SERVICE_NAME and POD_NAMESPACE env vars).
+  #
+  # IMPORTANT: "k8s_dns" mode still requires Redis for health monitoring, load
+  # balancing, and cluster pub/sub. DNS only supplements peer discovery by detecting
+  # new pods faster. Without Redis, k8s_dns provides DNS resolution only -- no
+  # NodeRegistry, HealthMonitor, or LoadBalancer will be created.
+  discovery_mode: "redis"
+
+  # --- Static Discovery Configuration ---
+  # When discovery_mode is "static", list peers explicitly.
+  # Each peer is a dedicated cluster gRPC address.
+  # If a peer omits its port, SyncTV probes it on cluster.port.
+  #
+  # peers:
+  #   - "node2.example.com:50051"
+  #   - "node3.example.com"
+
+  # Leader election mode for singleton operations.
+  # - "redis": Use Redis-based distributed locks (default, works everywhere)
+  # - "k8s_lease": Use Kubernetes coordination.k8s.io/v1 Lease resource
+  #   (requires POD_NAME and POD_NAMESPACE env vars, RBAC permissions)
+  leader_election_mode: "redis"
+
+  # How far back (in seconds) to replay Redis Stream events when a new node
+  # first connects to the cluster.  Replaying recent history prevents events
+  # published just before this node subscribed from being silently missed.
+  # Increase in clusters with high event rates; decrease to shorten startup
+  # replay time.  Default: 300 (5 minutes).
+  catchup_window_secs: 300
+  # Maximum number of entries per Redis Stream (approximate, uses MAXLEN ~).
+  # Controls how many events are retained in each per-room stream for catch-up
+  # after reconnection. In high-throughput scenarios, increase this to avoid
+  # trimming events that disconnected nodes still need to catch up on.
+  # Default: 100000
+  # Environment variable: SYNCTV_CLUSTER_STREAM_MAX_LENGTH
+  stream_max_length: 100000
+
+# ============================================================================
+# Media Providers Configuration
+# ============================================================================
+#
+# Configures local built-in media provider adapters in this SyncTV process.
+# Remote provider instances are configured through the management API/CLI.
+
+media_providers:
+  alist:
+    # Timeout for Alist upstream HTTP requests.
+    request_timeout_seconds: 30
+    # Connection timeout for Alist upstream HTTP requests.
+    connect_timeout_seconds: 10
+  bilibili:
+    # Timeout for Bilibili upstream HTTP requests.
+    request_timeout_seconds: 30
+    # Connection timeout for Bilibili upstream HTTP requests.
+    connect_timeout_seconds: 10
+  emby:
+    # Timeout for Emby/Jellyfin upstream HTTP requests.
+    request_timeout_seconds: 30
+    # Connection timeout for Emby/Jellyfin upstream HTTP requests.
+    connect_timeout_seconds: 10
+
+# OAuth2/OIDC providers are runtime settings, not static startup config.
+# Configure them with the management API or CLI:
+#   synctv settings update oauth2 --set providers='{"github":{"type":"github","enableSignup":false,"signupNeedReview":false,"clientId":"...","clientSecret":"...","redirectUrl":"https://app.example.com/oauth2/callback"}}'
+
+webauthn:
+  # Enables passkey/security-key registration and login endpoints:
+  #   POST /api/user/passkeys/registration/start
+  #   POST /api/user/passkeys/registration/finish
+  #   POST /api/auth/passkeys/login/start
+  #   POST /api/auth/passkeys/login/finish
+  # Passkey login start is username-less and returns conditional UI options.
+  # Clients should require browsers/authenticators that support discoverable credentials.
+  #
+  # Production requirements:
+  #   - Use HTTPS origins except for local development.
+  #   - rp_id must be the registrable domain of rp_origin, for example
+  #     rp_id: "example.com" with rp_origin: "https://app.example.com".
+  #   - In cluster mode, Redis must be configured because challenges are
+  #     single-use and must be shared across replicas.
+  #
+  # Environment variables:
+  #   SYNCTV_WEBAUTHN_ENABLED
+  #   SYNCTV_WEBAUTHN_RP_ID
+  #   SYNCTV_WEBAUTHN_RP_ORIGIN
+  #   SYNCTV_WEBAUTHN_RP_NAME
+  #   SYNCTV_WEBAUTHN_ALLOWED_ORIGINS
+  #   SYNCTV_WEBAUTHN_APPLE_APP_IDS
+  #   SYNCTV_WEBAUTHN_ANDROID_APPS
+  #   SYNCTV_WEBAUTHN_ALLOW_SUBDOMAINS
+  #   SYNCTV_WEBAUTHN_ALLOW_ANY_PORT
+  #   SYNCTV_WEBAUTHN_TIMEOUT_SECONDS
+  enabled: false
+  rp_id: ""
+  rp_origin: ""
+  rp_name: "SyncTV"
+  allowed_origins: []
+  # Apple application identifiers served from
+  # /.well-known/apple-app-site-association for native passkeys and OAuth2 app links.
+  apple_app_ids: []
+  # Android app identities served from /.well-known/assetlinks.json for passkeys and OAuth2 app links.
+  android_apps: []
+  # android_apps:
+  #   - package_name: "org.synctv.app"
+  #     sha256_cert_fingerprints:
+  #       - "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+  allow_subdomains: false
+  allow_any_port: false
+  timeout_seconds: 300
+
+# ============================================================================
+# WebRTC Configuration
+# ============================================================================
+#
+# WebRTC supports 2 operation modes:
+#   - signaling_only: Pure signaling relay without ICE bootstrap
+#   - peer_to_peer:   P2P with built-in STUN plus optional external ICE servers
+
+webrtc:
+  mode: "peer_to_peer"
+
+  # --- Built-in STUN Server ---
+  enable_builtin_stun: true
+  stun_port: 3478
+  stun_host: "0.0.0.0"
+  # External address for STUN reflexive candidates. In K8s/NAT, set this to
+  # a client-reachable public IP:port or DNS name:port, such as a LoadBalancer
+  # IP, node public IP, or stun.example.com:3478. Do not use a Pod IP or
+  # ClusterIP Service IP; those are rejected as non-routable for public STUN.
+  # If empty, SyncTV tries advertise_host, STUN_EXTERNAL_IP, and cloud metadata;
+  # the built-in STUN server is skipped when no public address is found.
+  # stun_external_addr: ""
+  # Filter private/internal ICE candidates before sending them to clients.
+  filter_private_ice_candidates: false
+  logging:
+    level: "info"
+    format: "text"
+    output: "stdout"
+    color: "auto"
+  # --- External ICE Servers ---
+  # Configured dynamically via the settings API (no restart required):
+  #   "webrtc.external_ice_servers" - JSON array of ICE server objects, e.g.:
+  #       [{"urls":["stun:stun.example.com:3478"]},{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]
+
+  # ============================================================================
+  # Dynamic ICE Servers Configuration
+  # ============================================================================
+  #
+  # External ICE servers are managed via the settings API at runtime.
+  #
+  # Setting key: "webrtc.external_ice_servers"
+  # Value: JSON array of ICE server objects
+  #   Default: [] (the built-in STUN server is used)
+  #
+  # Changes take effect immediately without restarting the server.
+
+# ============================================================================
+# Buffer Size Tuning
+# ============================================================================
+#
+# Controls internal channel buffer sizes. Larger values provide more resilience
+# during traffic spikes but use more memory. Defaults match the current
+# built-in runtime values.
+
+buffer_sizes:
+  # Per-connection WebSocket outbound message queue.
+  # When full, new messages are dropped (backpressure for slow clients).
+  websocket_outbound: 256
+  # Audit log event buffer. Events are batched and flushed to the database.
+  # When full, new audit events are dropped with a warning.
+  audit_buffer: 10000

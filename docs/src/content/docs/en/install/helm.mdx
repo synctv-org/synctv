@@ -1,0 +1,435 @@
+---
+title: Helm Deployment
+description: Kubernetes Helm chart configuration, HTTP/gRPC Services, Ingress, secrets, metrics, and KubeBlocks.
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import {
+  helmChartName,
+  helmChartVersion,
+  helmOciChartReference,
+  helmOciNamespace,
+} from '../../../../lib/project';
+
+Helm fits platforms that already run Kubernetes, Ingress, and centralized secret management. Servers, NAS devices, and virtual machines use [Docker Compose](../docker-compose/); compare the infrastructure requirements in [Choose a Deployment](../choose-path/).
+
+## Before You Begin
+
+Prepare PostgreSQL, Redis, long-lived secrets, Ingress, and persistent storage. Multi-replica deployments also need a shared Redis instance, cluster secret, and HLS storage model.
+
+<Aside type="caution">
+Before production, verify long-lived secrets, PostgreSQL backups, Redis, Ingress behavior, metrics authentication, and the HLS storage model.
+</Aside>
+
+## Deployment Decisions
+
+| Item | Recommended choice | Check |
+| --- | --- | --- |
+| PostgreSQL | Managed database, platform database Operator, or chart standard mode | Persistence and a tested restore procedure |
+| Redis | Production configuration; required for multiple replicas | Every replica uses the same Redis instance and a unique key prefix |
+| Secrets | Existing Secret or controlled secret management | OPAQUE and credential keys remain stable across releases |
+| HTTP/gRPC Ingress | Separate HTTP and gRPC Ingresses | gRPC Ingress needs its own backend protocol |
+| HLS storage | Publisher-node proxy for small scale, RWX/S3 for high traffic | All replicas share the same storage view |
+| metrics | Private scraping with authentication | `/metrics` stays on a controlled network |
+
+Minimal production values skeleton:
+
+```yaml
+config:
+  bootstrap:
+    createRootUser: true
+  cluster:
+    enabled: false
+
+existingSecret: "synctv-production-secret"
+
+ingress:
+  enabled: true
+  hosts:
+    - host: synctv.example.com
+```
+
+## Installed Resources
+
+The default installation can create:
+
+- SyncTV Deployment.
+- HTTP/API Service.
+- gRPC Service.
+- PostgreSQL.
+- Redis.
+- ConfigMap.
+- Secret.
+- Ingress.
+- ServiceAccount, Role, and RoleBinding.
+- Optional metrics, ServiceMonitor, VMServiceScrape, PrometheusRule, NetworkPolicy, HPA, and PDB.
+
+## Install
+
+OCI registry install:
+
+<Code code={`helm install ${helmChartName} ${helmOciChartReference} \\
+  --version ${helmChartVersion} \\
+  --namespace synctv \
+  --create-namespace`} lang="bash" />
+
+The complete installable Chart reference is <code>{helmOciChartReference}</code>. Its publishing namespace is <code>{helmOciNamespace}</code>. Production deployments should use a values file:
+
+<Code code={`helm install ${helmChartName} ${helmOciChartReference} \\
+  --version ${helmChartVersion} \\
+  --namespace synctv \\
+  --create-namespace \\
+  --values my-values.yaml`} lang="bash" />
+
+## HTTP and gRPC Services
+
+The SyncTV process serves HTTP REST and gRPC on the same container port. The Helm chart exposes them through separate Services:
+
+| Service | Purpose | Port name |
+| --- | --- | --- |
+| `synctv` | HTTP/REST API entry | `api` |
+| `synctv-rtmp` | RTMP publish entry when `rtmpService.enabled=true` | `rtmp` |
+| `synctv-stun` | Built-in UDP STUN when `stunService.enabled=true` and `config.webrtc.enableBuiltinStun=true` | `stun` |
+| `synctv-metrics` | Dedicated metrics endpoint when `metrics.enabled=true` | `metrics` |
+| `synctv-grpc` | Dedicated gRPC entry | `grpc` |
+
+Why split them:
+
+- Ingress controllers usually need protocol-specific gRPC backend settings.
+- Kubernetes Service/Ingress semantics differ even if the container port is the same.
+- Metrics selectors can target the dedicated metrics Service without accidentally scraping public API/RTMP or gRPC Services.
+
+`config.server.grpcCompressionEnabled` defaults to `true` and allows gRPC peers to negotiate gzip compression. Keep it enabled for cross-node calls, Ingress forwarding, and larger batch responses. Disable it only when gRPC traffic is local and CPU is tighter than bandwidth.
+
+`config.fileStorage.backends.<name>.compression` controls PostgreSQL `file_blob_parts` compression for database file-storage backends. It defaults to `zstd`; `compressionMinSizeBytes` defaults to `4096`, and `compressionMinSavingsPercent` defaults to `10`, so low-value compression stores raw bytes. Database file storage uses permanent segments and serves HTTP Range from those segments. S3 file storage uses native multipart direct uploads for resumable GB-scale objects.
+
+For S3 file-storage credentials, mount a Kubernetes Secret and set Helm camelCase values `accessKeyIdFile` / `secretAccessKeyFile`. The generated SyncTV YAML stores snake_case `access_key_id_file` / `secret_access_key_file` paths and reads the secret files at startup.
+
+```yaml
+config:
+  fileStorage:
+    defaultBackend: s3_public
+    backends:
+      s3_public:
+        type: s3
+        endpoint: https://s3.example.com
+        bucket: synctv-files
+        region: auto
+        basePath: files/
+        publicBaseUrl: https://cdn.example.com/files
+        accessKeyIdFile: /run/secrets/file-storage-s3/access_key_id
+        secretAccessKeyFile: /run/secrets/file-storage-s3/secret_access_key
+
+extraVolumes:
+  - name: file-storage-s3
+    secret:
+      secretName: synctv-file-storage-s3
+extraVolumeMounts:
+  - name: file-storage-s3
+    mountPath: /run/secrets/file-storage-s3
+    readOnly: true
+```
+
+`stunService.enabled` defaults to `false`. Enable it only when you expose the built-in STUN listener through a client-reachable `LoadBalancer` or `NodePort`, and set `config.webrtc.stunExternalAddr` to that public address. A `ClusterIP` STUN Service is only reachable inside the cluster and should not be advertised to public WebRTC clients.
+
+## Ingress
+
+HTTP Ingress:
+
+```yaml
+ingress:
+  enabled: true
+  hosts:
+    - host: synctv.example.com
+```
+
+gRPC Ingress is configured separately:
+
+```yaml
+ingress:
+  grpc:
+    enabled: true
+    hosts:
+      - host: grpc.synctv.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    annotations:
+      nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+```
+
+`ingress.grpc.annotations` is independent from HTTP Ingress annotations.
+
+## Secrets
+
+The default installation creates `<release>-synctv-secrets` through a `pre-install` / `pre-upgrade` bootstrap Job. The Job generates random values only when the Secret is absent and preserves it on upgrades. Randomness stays inside the cluster, so `helm template` and GitOps diffs remain deterministic. Uninstalling the release preserves this Secret; delete it only after discarding PostgreSQL and all encrypted data.
+
+Production clusters commonly supply the Secret through External Secrets, Sealed Secrets, or a platform Secret Manager:
+
+```yaml
+existingSecret: "my-external-synctv-secret"
+```
+
+Native passkey associations are configured directly through chart values:
+
+```yaml
+config:
+  webauthn:
+    enabled: true
+    rpId: synctv.example.com
+    rpOrigin: https://synctv.example.com
+    appleAppIds:
+      - ABCDE12345.org.synctv.app
+    androidApps:
+      - packageName: org.synctv.app
+        sha256CertFingerprints:
+          - "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+```
+
+Always include:
+
+- `SYNCTV_DATABASE_PASSWORD` for PostgreSQL standard mode, external mode, and the KubeBlocks application role.
+- `SYNCTV_JWT_SECRET`
+- `SYNCTV_CLUSTER_SECRET`
+- `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY`
+- `SYNCTV_SECURITY_TOTP_ENCRYPTION_KEY`
+- `SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY`
+- `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET`
+- `SYNCTV_SECURITY_PROXY_SIGNING_KEY`
+- `SYNCTV_SECURITY_MEDIA_SWARM_SIGNING_KEY`
+- `SYNCTV_SECURITY_PROVIDER_SESSION_ENCRYPTION_KEY`
+- `SYNCTV_SECURITY_LOGIN_DISCOVERY_KEY`
+- `SYNCTV_SECURITY_WEBAUTHN_ENUMERATION_KEY`
+- `SYNCTV_FILE_UPLOAD_TOKEN_SECRET`
+
+Add these keys for enabled features:
+
+- `SYNCTV_REDIS_PASSWORD`: required in Redis standard mode, supplied according to external Redis authentication, and omitted in KubeBlocks mode.
+- `SYNCTV_DATABASE_READ_URL` when `config.database.useSecretReadUrl=true`.
+- `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` when `config.bootstrap.createRootUser=true`
+- `SYNCTV_MANAGEMENT_AUTH_TOKEN` when management uses TCP
+- `SYNCTV_METRICS_AUTH_BEARER_TOKEN` when `metrics.enabled=true` and `metrics.auth.mode=bearer_token`
+- `SYNCTV_METRICS_AUTH_BASIC_USERNAME` and `SYNCTV_METRICS_AUTH_BASIC_PASSWORD` when `metrics.enabled=true` and `metrics.auth.mode=basic`
+- `SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID` and `SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY` when `config.livestream.hlsStorage.type=s3`
+
+Secrets are injected as environment variables, and running Pods retain the values read at startup. Change the checksum together with an external Secret update:
+
+```yaml
+existingSecret: "my-external-synctv-secret"
+secretRolloutChecksum: "2026-07-28-rotation-1"
+```
+
+Clusters running Reloader can watch the Secret through a Pod annotation:
+
+```yaml
+podAnnotations:
+  secret.reloader.stakater.com/reload: "my-external-synctv-secret"
+```
+
+GitOps controllers must execute Helm hooks to use the default bootstrap Job. Platforms that disable hooks should use `existingSecret`.
+
+## Security
+
+Server-side outbound requests use the global SSRF policy in `config.security.ssrf`.
+SSRF protection is disabled by default so self-hosted deployments can use
+private media sources. Public deployments should enable SSRF protection and
+prefer explicit allowlists for trusted internal media endpoints:
+
+```yaml
+config:
+  security:
+    ssrf:
+      enabled: true
+      allowPrivateNetworkTargets: false
+      allowedHosts:
+        - nas.example.internal
+      allowedIpRanges:
+        - 10.0.8.0/24
+```
+
+Set `allowPrivateNetworkTargets=true` only for private deployments where all
+users and provider endpoints are trusted.
+
+## PostgreSQL and Redis Modes
+
+`standard` mode creates chart-managed StatefulSet and Service resources:
+
+```yaml
+postgresql:
+  mode: standard
+
+redis:
+  mode: standard
+```
+
+`kubeblocks` mode creates KubeBlocks Cluster resources if KubeBlocks is installed:
+
+```yaml
+postgresql:
+  mode: kubeblocks
+
+redis:
+  mode: kubeblocks
+```
+
+In KubeBlocks mode, database credentials come from KubeBlocks-generated Secrets.
+
+For PostgreSQL, SyncTV uses the KubeBlocks `postgres` system account only during an init container bootstrap. The init container creates or updates `postgresql.kubeblocks.appUsername` and `postgresql.kubeblocks.database`, then the SyncTV container connects with that application role. The application role password is stored in the chart Secret as `SYNCTV_DATABASE_PASSWORD`; if you set `existingSecret`, include that key.
+
+Note: the KubeBlocks Redis Sentinel component is part of the database operator topology. It does not automatically configure SyncTV as a `redis.deployment_mode=sentinel` client. The chart still injects a stable Redis Service endpoint into SyncTV, and SyncTV cluster mode must not be combined with SyncTV Sentinel mode.
+
+`external` mode connects SyncTV to PostgreSQL or Redis managed by a cloud provider, platform team, or another operator. The chart does not render the corresponding StatefulSet, Service, or KubeBlocks Cluster.
+
+```yaml
+postgresql:
+  mode: external
+  external:
+    host: "postgres.example.internal"
+    port: 5432
+    username: "synctv"
+    database: "synctv"
+
+redis:
+  mode: external
+  external:
+    host: "redis.example.internal"
+    port: 6379
+    username: ""
+    database: 0
+```
+
+External PostgreSQL requires `SYNCTV_DATABASE_PASSWORD` through `existingSecret` or `secrets.database.password`. External Redis password injection is optional; provide `SYNCTV_REDIS_PASSWORD` only when the external Redis requires authentication.
+
+When `networkPolicy.enabled=true`, external PostgreSQL/Redis and outbound HTTP/HTTPS egress use `ipBlock` CIDRs instead of chart-managed Pod labels. These rules are fail-closed by default: external PostgreSQL or Redis mode requires `networkPolicy.externalPostgresqlCIDRs` / `networkPolicy.externalRedisCIDRs`, or `networkPolicy.allowAnyExternalDatabaseEgress=true`; outbound OAuth, media-provider HTTP, HLS S3, and S3-compatible object storage endpoints require `networkPolicy.externalHttpCIDRs` or `networkPolicy.allowAnyExternalHttpEgress=true`.
+
+Application Services, the PDB, and the app NetworkPolicy select only pods with `app.kubernetes.io/component=app`. Chart-managed PostgreSQL and Redis keep their own component labels and receive dependency-specific ingress policies when NetworkPolicy ingress isolation is enabled, so enabling NetworkPolicy does not route API traffic to dependency pods or isolate the dependencies from SyncTV itself.
+
+Redis connection-manager values:
+
+```yaml
+config:
+  redis:
+    connectTimeoutSeconds: 5
+    responseTimeoutSeconds: 5
+    pipelineBufferSize: 512
+```
+
+`responseTimeoutSeconds` bounds how long Redis commands wait for responses. `pipelineBufferSize` controls the connection manager's internal pipeline buffer. Raise it only for high-concurrency, short-command bursts; most deployments should keep the default.
+
+## `config.dataDir`
+
+Default:
+
+```yaml
+config:
+  dataDir: "/data"
+```
+
+The Deployment mounts `/data`. The default is `emptyDir`, which is appropriate for runtime temporary files. If runtime files must persist, set `persistence.data.existingClaim`.
+
+## HLS With Multiple Replicas
+
+The chart does not enable cluster mode by default. Multi-replica HLS can start with publisher-node HLS proxying; high-traffic production deployments should use `shared_file` or S3. In `shared_file`, TS segments are read by the current node from the shared path.
+
+Local backend example:
+
+```yaml
+config:
+  cluster:
+    enabled: true
+  livestream:
+    hlsStorage:
+      type: "memory"
+```
+
+This does not require an HLS PVC, but playlist/segment requests on non-publisher Pods proxy back to the publisher Pod over gRPC.
+
+Shared filesystem example:
+
+```yaml
+config:
+  cluster:
+    enabled: true
+  livestream:
+    hlsStorage:
+      type: "shared_file"
+      path: "/var/lib/synctv/hls"
+
+persistence:
+  hls:
+    existingClaim: "synctv-hls-rwx"
+```
+
+Helm rejects these combinations during rendering:
+
+- `hlsStorage.type` is not `memory`, `file`, `shared_file`, or `s3`.
+- `hlsStorage.type=file/shared_file` with an empty `hlsStorage.path`.
+- `hlsStorage.type=file/shared_file` in Kubernetes with a non-absolute `hlsStorage.path`.
+- `hlsStorage.type=shared_file` without `persistence.hls.existingClaim`, so `emptyDir` cannot be mistaken for shared storage.
+
+S3 example:
+
+```yaml
+config:
+  cluster:
+    enabled: true
+  livestream:
+    hlsStorage:
+      type: "s3"
+      endpoint: "https://s3.example.com"
+      bucket: "synctv-hls"
+      basePath: "synctv/hls/"
+
+secrets:
+  livestream:
+    hlsStorage:
+      accessKeyId: "..."
+      secretAccessKey: "..."
+```
+
+Whenever `config.cluster.enabled=true`, application startup validation also requires Redis, a stable `SYNCTV_CLUSTER_SECRET` shared by every replica, and a usable `SYNCTV_SERVER_ADVERTISE_HOST` for node-to-node communication. Helm defaults inject Redis connection details, generate the cluster secret, and use the Pod IP as the advertise host; preserve those conditions when trimming values or using external Secrets. If livestream HLS uses a local backend, Pod-to-Pod gRPC reachability is also required because remote segment reads depend on publisher-node proxying.
+
+When `config.cluster.discoveryMode=k8s_dns`, the chart automatically renders a headless Service and injects `HEADLESS_SERVICE_NAME` plus `POD_NAMESPACE`. When `config.cluster.leaderElectionMode=k8s_lease`, the chart injects `POD_NAME` and `POD_NAMESPACE`. Both modes require an image built with the `k8s` feature.
+
+## Metrics
+
+Enable metrics:
+
+```yaml
+metrics:
+  enabled: true
+  auth:
+    mode: bearer_token
+```
+
+Prometheus Operator:
+
+```yaml
+metrics:
+  serviceMonitor:
+    enabled: true
+```
+
+VictoriaMetrics:
+
+```yaml
+metrics:
+  vmServiceScrape:
+    enabled: true
+```
+
+The metrics selector targets the dedicated metrics Service and avoids both the public API/RTMP Service and the gRPC Service.
+
+If `metrics.auth.mode=kubernetes` is used, the SyncTV binary in the image must be compiled with the `k8s` feature. Helm renders RBAC, service account token settings, and scrape resources, but cannot change image compile-time features.
+
+## Render Validation
+
+Temporary checks:
+
+```bash
+helm lint ./helm/synctv
+helm template synctv ./helm/synctv
+helm template synctv ./helm/synctv --set ingress.grpc.enabled=true
+```
+
+Successful rendering only proves the manifests are syntactically valid. You still need runtime config validation and startup logs.

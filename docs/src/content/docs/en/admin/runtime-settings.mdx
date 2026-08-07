@@ -1,0 +1,44 @@
+---
+title: Runtime Settings
+description: Manage database-backed runtime settings and distinguish them from startup configuration.
+---
+
+Runtime settings are hot-updated product policy stored in PostgreSQL. Use them for registration, room creation, RTMP, CORS, chat retention, and similar behavior. Do not use them for startup secrets, listener ports, database connections, Redis connections, or cache enablement.
+
+## Basic Commands
+
+```bash
+synctv settings list
+synctv settings get user
+synctv settings update --set user.enablePasswordSignup=true
+```
+
+## Backup and Restore
+
+Use `synctv settings export --file runtime-settings.json` to create a complete, versioned snapshot. The snapshot contains OAuth and SMTP credentials and should be managed as a secret. Run `synctv settings import runtime-settings.json --dry-run` to validate the version, fields, and business rules, then apply it atomically with `synctv settings import runtime-settings.json`.
+
+Regular `settings list/get` commands and management API reads omit OAuth client secrets and SMTP passwords. An update that omits an existing OAuth secret preserves it when the provider type and client ID remain unchanged. New providers, provider type changes, and client ID changes require a secret. Snapshot files are limited to 8 MiB.
+
+HTTP clients use `POST /api/admin/settings/export` and `POST /api/admin/settings/import`; gRPC clients use `AdminService.ExportSettings` and `AdminService.ImportSettings`. All four entry points require root authorization. HTTP export responses include `Cache-Control: no-store`.
+
+Permission defaults are runtime settings too. Guests use a dedicated ceiling, so media-resource, chat-write, and administration permissions are rejected:
+
+```bash
+synctv settings update --set permissions.guestDefaultPermissions=40
+```
+
+## Where a Change Belongs
+
+| Change | Location |
+| --- | --- |
+| Registration switches, room creation policy, RTMP, CORS, chat retention | Runtime settings |
+| JWT, OPAQUE, encryption keys, and signing keys | Startup configuration and secret management |
+| PostgreSQL, Redis, listener ports, TLS, data_dir | Startup configuration |
+| User 2FA, notifications, default Provider | User preferences |
+| Provider URL, token, cookie | Provider instance management |
+
+## Multi-Replica Behavior
+
+After runtime settings are written to PostgreSQL, LISTEN/NOTIFY tells other replicas to load and atomically publish the complete configuration generation. If a replica does not update, inspect database connectivity, notification listeners, and version skew.
+
+Fields, defaults, and validation rules are in [Runtime Settings Reference](../../reference/runtime-settings/).

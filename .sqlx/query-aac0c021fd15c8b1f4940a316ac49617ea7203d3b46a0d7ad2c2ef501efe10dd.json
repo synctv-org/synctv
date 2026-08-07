@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "TRUNCATE TABLE media_provider_instances RESTART IDENTITY CASCADE",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "aac0c021fd15c8b1f4940a316ac49617ea7203d3b46a0d7ad2c2ef501efe10dd"
+}

@@ -1,0 +1,66 @@
+[package]
+name = "synctv-proxy"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = ["tls-aws-lc", "tls-webpki-roots"]
+tls-aws-lc = [
+    "synctv-common/tls-aws-lc",
+    "reqwest/rustls",
+]
+tls-ring = [
+    "synctv-common/tls-ring",
+    "reqwest/rustls-no-provider",
+]
+tls-webpki-roots = [
+    "synctv-common/tls-webpki-roots",
+]
+tls-native-roots = [
+    "synctv-common/tls-native-roots",
+]
+
+[lints]
+workspace = true
+
+[dependencies]
+axum.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+futures.workspace = true
+url.workspace = true
+percent-encoding.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true
+synctv-common = { workspace = true, default-features = false }
+moka.workspace = true
+dashmap.workspace = true
+sha2.workspace = true
+hex.workspace = true
+bytes.workspace = true
+async-trait.workspace = true
+bincode.workspace = true
+serde.workspace = true
+quick-xml.workspace = true
+tempfile.workspace = true
+tokio-util.workspace = true
+rand.workspace = true
+rayon.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+prost.workspace = true
+subtle.workspace = true
+
+[build-dependencies]
+tonic-prost-build.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+reqwest.workspace = true
+http-body-util.workspace = true
+axum.workspace = true
+tower.workspace = true

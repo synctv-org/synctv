@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO chat_message_reactions (\n                    room_id, message_id, message_created_at, user_id, reaction_key\n                )\n                VALUES ($1, $2, $3, $4, $5)\n                ON CONFLICT (room_id, message_id, message_created_at, user_id, reaction_key)\n                DO UPDATE SET updated_at = NOW()\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Timestamptz",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dc6810da05b403ea6da55924ee4a7f2abd81fafea6184b165d2001a4e24516a6"
+}

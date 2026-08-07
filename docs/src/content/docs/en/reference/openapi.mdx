@@ -1,0 +1,66 @@
+---
+title: OpenAPI
+description: Access, export, and protect SyncTV's built-in OpenAPI JSON and Swagger UI.
+---
+
+The official SyncTV container image provides OpenAPI JSON and Swagger UI for browsing endpoints, exporting the schema, and generating clients. Self-built binaries need the OpenAPI capability included; check the artifact's build options if these paths return `404`.
+
+## Swagger UI
+
+After startup:
+
+```text
+http://localhost:8080/swagger-ui/
+```
+
+If `server.port` is changed, replace `8080`.
+
+Production example:
+
+```text
+https://api.example.com/swagger-ui/
+```
+
+## OpenAPI JSON
+
+JSON document:
+
+```text
+http://localhost:8080/api-docs/openapi.json
+```
+
+Export:
+
+```bash
+curl -fsSL http://localhost:8080/api-docs/openapi.json -o openapi.json
+```
+
+Authenticated business APIs use Bearer Token security in the OpenAPI document. Public APIs are marked accordingly.
+
+## Generate Clients
+
+TypeScript types:
+
+```bash
+npx openapi-typescript http://localhost:8080/api-docs/openapi.json -o synctv-api.d.ts
+```
+
+OpenAPI Generator:
+
+```bash
+openapi-generator-cli generate \
+  -i http://localhost:8080/api-docs/openapi.json \
+  -g typescript-fetch \
+  -o ./generated/synctv-client
+```
+
+Other compatible tools include orval and Kiota.
+
+## Access Control
+
+Before exposing Swagger UI in production:
+
+- Confirm that the installed artifact includes OpenAPI.
+- Allow `/swagger-ui/` through the reverse proxy.
+- Allow `/api-docs/openapi.json` through the reverse proxy.
+- Restrict access at Ingress, Nginx, gateway, or firewall level if only internal developers should access it.

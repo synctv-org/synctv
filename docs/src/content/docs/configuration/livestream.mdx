@@ -1,0 +1,369 @@
+---
+title: 直播与 HLS/FLV
+description: RTMP、RTSP、HLS、HTTP-FLV、拉流重试、GOP 缓存和直播存储配置。
+---
+
+import Diagram from '../../../components/Diagram.astro';
+import livestreamPipelineDark from '../../../assets/diagrams/livestream-pipeline-zh-dark.svg';
+import livestreamPipelineLight from '../../../assets/diagrams/livestream-pipeline-zh-light.svg';
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## 直播配置控制什么？
+
+`livestream` 控制 RTMP 推流、RTMP/RTSP/HTTP-FLV 外部拉流、HLS 分片、HTTP-FLV 连接、直播内存缓存和直播文件存储。
+
+如果你只使用点播媒体 Provider，这一页大部分配置可以保持默认。
+
+## 直播子系统的边界
+
+直播能力包含推流入口、实时包分发、FLV 播放、HLS remux、HLS 存储、跨节点 publisher registry。它和点播 Provider/proxy 是两个不同路径：点播主要处理外部媒体 URL 和 Range proxy，直播主要处理正在产生的数据流。
+
+<Diagram
+  light={livestreamPipelineLight}
+  dark={livestreamPipelineDark}
+  alt="SyncTV 直播流水线图，展示 RTMP 推流进入 StreamHub，分发到 HTTP-FLV 与 HLS remuxer，HLS 写入 memory/file/S3 存储后由 playlist 和 segment 路由读取。"
+  caption="直播数据先进入 RTMP/StreamHub，再按播放协议分流：HTTP-FLV 直接面向低延迟播放，HLS remuxer 生成 playlist/segment 并写入选择的 HLS backend。"
+/>
+
+- **RTMP ingest**： 推流端通过 RTMP 连接进入，认证阶段会把 publisher 注册到本节点或共享 registry。
+- **RTSP ingest**： 外部 RTSP 源通过 DESCRIBE/SETUP/PLAY 拉取，经过 RTP 解包后进入同一个 StreamHub。
+- **StreamHub**： 直播包在进程内分发给 FLV session、HLS remuxer 和内部拉流/代理逻辑。
+- **HTTP-FLV**： 适合低延迟观看。客户端保持长连接，服务端持续写 FLV chunk，并通过写超时保护慢客户端。
+- **HLS**： 适合通用播放器和 CDN/对象存储形态。延迟更高，但对客户端兼容性和多副本扩展更友好。
+
+## 播放协议怎么选？
+
+| 协议 | 优点 | 代价 | 适合场景 |
+| --- | --- | --- | --- |
+| HTTP-FLV | 延迟低、链路短、服务端直接推 chunk | 长连接多，弱网慢客户端需要严格超时 | 互动直播、房间内同步观看 |
+| HLS | 播放器兼容性强，天然按 playlist/segment 拉取，可配共享存储 | 延迟高于 FLV，需要管理分片存储 | 移动端、通用播放器、多副本、对象存储 |
+
+<Aside type="note">
+RTMP 是推流入口，播放端使用 SyncTV 生成的 HLS 或 HTTP-FLV 链接。两种输出都跟随当前直播边缘，房间同步以实时播放状态为准。
+</Aside>
+
+## RTSP 外部源
+
+RTSP 外部源使用显式协议配置。每个媒体条目对应一个独立拉流会话，多个媒体条目可以并行拉取多个摄像头或流媒体服务器；每个节点默认最多运行 100 个外部流。
+
+```json
+{
+  "provider": "liveProxy",
+  "source": {
+    "protocol": "rtsp",
+    "url": "rtsp://camera.example/live",
+    "transport": "tcp",
+    "videoTrack": { "mode": "firstCompatible" },
+    "audioTrack": { "mode": "firstCompatible" }
+  }
+}
+```
+
+可用设置：
+
+| 字段 | 值 | 含义 |
+| --- | --- | --- |
+| `transport` | `tcp` / `udp` | TCP 使用 interleaved RTP；UDP 适合可控局域网 |
+| `videoTrack` | `firstCompatible` / `index` / `disabled` | 选择 H.264/H.265 视频轨道 |
+| `audioTrack` | `firstCompatible` / `index` / `disabled` | 选择 AAC 音频轨道 |
+
+指定 SDP 中第 2 个视频轨道并关闭音频：
+
+```json
+{
+  "videoTrack": { "mode": "index", "index": 1 },
+  "audioTrack": { "mode": "disabled" }
+}
+```
+
+Basic 和 Digest 认证可使用 RTSP URL userinfo，例如 `rtsp://user:password@camera.example/live`。日志会移除 userinfo、query 和 fragment；部署侧应通过受控配置入口管理包含凭据的 source config。
+
+RTSP 输入支持 H.264、H.265 和 AAC。SyncTV 将它们转换为 AVC/HEVC/AAC FLV tag，HTTP-FLV 与 HLS 沿用现有直播交付、集群注册、跨节点 relay、空闲清理和断线重试链路。
+
+## 外部 RTMP 源
+
+外部 RTMP 源通过 `mode` 控制转发的媒体类型。RTMP 消息本身按音频和视频分类，mode 负责过滤消息类型，不涉及 RTSP 的轨道编号选择。
+
+```json
+{
+  "provider": "liveProxy",
+  "source": {
+    "protocol": "rtmp",
+    "url": "rtmp://origin.example/live/stream",
+    "mode": "default"
+  }
+}
+```
+
+`mode` 可取 `default`（音频和视频）、`videoOnly`（只转发视频）或 `audioOnly`（只转发音频）。外部 RTMP 拉流在拉流会话中过滤，SyncTV 管理的 RTMP 推流在认证后的 server session 中过滤，HTTP-FLV 和 HLS 会得到同一份筛选后的 Live StreamHub 数据。
+
+RTSP 的 `videoTrack` 与 `audioTrack` 至少需要启用一项。双 disabled 配置会在添加媒体时被拒绝；具体轨道编号与编码兼容性在 RTSP SDP 建立连接时继续校验。
+
+RTSP、外部 RTMP 与内部 RTMP 推流都进入同一个 Live StreamHub。SyncTV 为它们生成 HLS 和 HTTP-FLV；HLS playlist 使用短滑动窗口，TS 分片随窗口淘汰，任意时间跳转与持久录制属于当前产品范围之外。
+
+## HLS backend 的架构选择
+
+<Tabs syncKey="hls-backend-design">
+  <TabItem label="memory" icon="setting">
+
+`memory` 是默认值，分片只存在当前进程内。它最简单，适合单副本、开发环境和低流量多副本。
+
+限制：进程重启会丢分片；多副本下非 publisher 节点需要通过 HLS gRPC proxy 到 publisher 节点读取 playlist/segment。它可以工作，但不适合作为高并发生产 HLS 的首选。
+
+  </TabItem>
+  <TabItem label="file" icon="seti:folder">
+
+`file` 把分片写入当前节点的 `hls_storage.path`。单副本可以用本地磁盘；多副本可以使用本地磁盘并依赖 publisher-node proxy。
+
+不要把共享文件系统配置成 `file`；如果所有副本都能读写同一路径，使用 `shared_file`。
+
+  </TabItem>
+  <TabItem label="shared_file" icon="seti:folder">
+
+`shared_file` 把分片写入所有副本可见的 `hls_storage.path`。Publisher 节点写入分片，任意节点收到 `.ts` 请求时从当前节点挂载的共享路径读取。
+
+典型选择：NFS、RWX PVC、CSI 共享卷。不要把 `emptyDir`、`/tmp` 或节点本地盘配置成 `shared_file`。
+
+  </TabItem>
+  <TabItem label="s3" icon="cloud-download">
+
+`s3` 使用 S3 兼容对象存储保存分片。它是 Kubernetes 多副本和跨节点部署中更明确的共享边界。
+
+典型选择：AWS S3、MinIO、Cloudflare R2 或兼容服务。需要配置 endpoint、bucket、access key 和 secret key。
+
+  </TabItem>
+</Tabs>
+
+## 集群直播如何工作？
+
+<Steps>
+1. Publisher 通过 RTMP 连接到任意一个 SyncTV 节点。
+2. 认证通过后，节点把 `room_id/media_id -> node_id/api_address` 注册到 publisher registry。集群模式下 registry 使用 Redis。
+3. 本节点 StreamHub 开始接收直播包；HTTP-FLV 可以直接从本节点订阅，HLS remuxer 持续生成分片。
+4. HLS 分片写入 `memory`、`file`、`shared_file` 或 `s3` backend。
+5. 观众请求如果落到非 publisher 节点，该节点通过共享 registry 找到 publisher owner。HTTP-FLV 走跨节点拉流/relay；HLS playlist/segment 可以通过 HLS gRPC proxy 从 publisher 节点读取。
+6. `shared_file` 的 TS 分片请求由当前节点从共享路径读取；本地 backend 仍使用 publisher-node HLS gRPC proxy 读取远端 playlist/segment。
+</Steps>
+
+<Aside type="note">
+多副本 HLS 依赖 publisher registry 定位推流节点。本地 backend 通过 HLS gRPC proxy 读取远端 playlist/segment；`shared_file` 可以让 TS 请求从当前节点读取共享路径，适合高流量多副本场景。
+</Aside>
+
+## `livestream.rtmp_port`
+
+默认值：`1935`。
+
+作用：RTMP 推流端口。
+
+OBS 推流地址通常类似：
+
+```text
+rtmp://your-domain:1935/live/<stream-key>
+```
+
+RTMP provider 的媒体 source config 也支持相同的 `mode` 字段：
+
+```json
+{
+  "provider": "rtmp",
+  "mode": "audioOnly"
+}
+```
+
+该配置决定进入 StreamHub 的音视频类型，播放端继续使用 SyncTV 生成的 HLS 或 HTTP-FLV 地址。
+
+如果服务器已经有其他 RTMP 服务占用 1935，可以改成别的端口。
+
+## `livestream.public_rtmp_host`
+
+默认值为空。
+
+作用：返回给推流客户端的公开 RTMP 主机名。
+
+生产环境通常需要显式设置，尤其是：
+
+- 集群内部 `server.advertise_host` 是 Pod IP。
+- 真实用户需要通过公网域名或 LoadBalancer 推流。
+
+示例：
+
+```yaml
+livestream:
+  public_rtmp_host: "live.example.com"
+```
+
+如果为空，SyncTV 只会回退到本机绑定地址，适合本地开发或单机内网测试；不会使用 Pod IP 或集群内部 `server.advertise_host` 作为公开推流地址。
+
+## `livestream.gop_cache_size`
+
+默认值：`2`。
+
+GOP 是视频编码中的一组帧。GOP 缓存可以让新连接的观众更快开始播放，不必等下一个关键帧。
+
+普通部署保持默认即可。
+
+## `livestream.gop_cache_max_memory_mb`
+
+默认值：`100`。
+
+作用：限制单个直播流的 GOP 缓存内存。总 GOP 缓存占用可能接近该值乘以活跃直播流数量。
+
+调大场景：
+
+- 视频码率高。
+- 新观众经常加入，想提升起播体验。
+
+调小场景：
+
+- 服务器内存有限。
+
+## `livestream.stream_timeout_seconds`
+
+默认值：`300`。
+
+作用：拉流空闲多久后自动停止。
+
+如果你有长时间无人观看但希望保持拉流的场景，可以调大。否则保持默认能节省上游和本机资源。
+
+## 拉流重试配置
+
+### `pull_max_retries`
+
+默认值：`10`。
+
+拉流失败最多重试多少次。
+
+### `pull_initial_backoff_ms`
+
+默认值：`1000`。
+
+第一次失败后等待多久再重试。
+
+### `pull_max_backoff_ms`
+
+默认值：`30000`。
+
+重试等待时间最多增长到多少。
+
+上游直播源短暂断线时，SyncTV 会自动重试。等待时间会逐步变长，避免持续高频请求上游。
+
+## `livestream.max_flv_tag_size_bytes`
+
+默认值：`10485760`，也就是 10 MB。
+
+作用：限制单个 FLV tag 最大大小，防止异常流导致内存占用过高。
+
+不建议随意调大。除非你明确知道上游会产生更大的合法 tag。
+
+## HLS 配置
+
+### `livestream.hls_storage.type`
+
+默认值：`memory`。
+
+可选值：
+
+| 值 | 作用 | 适用场景 |
+| --- | --- | --- |
+| `memory` | HLS 分片保存在当前进程内存里 | 单副本、临时直播、开发环境 |
+| `file` | HLS 分片写入当前节点的 `livestream.hls_storage.path` | 单副本文件存储，或小规模多副本 publisher-node proxy |
+| `shared_file` | HLS 分片写入所有副本共享的 `livestream.hls_storage.path` | 多副本共享文件系统，TS 分片由当前节点从共享路径读取 |
+| `s3` | HLS 分片写入 S3 兼容对象存储 | 多副本、Kubernetes、跨节点共享 |
+
+规范值是 `memory`、`file`、`shared_file`、`s3`。
+
+集群模式可以使用 `memory` 或 `file`。非 publisher 节点会通过 HLS gRPC proxy 到 publisher 节点读取 playlist/segment。这个模式适合小规模部署或验证环境；生产高并发 HLS 推荐使用：
+
+- `shared_file`，并且 `hls_storage.path` 是所有副本可读写的共享文件系统。`.ts` 请求会由当前节点直接从共享路径读取。
+- `s3`，并配置 `livestream.hls_storage.*`。
+
+### `livestream.hls_storage.memory_max_mb`
+
+默认值：`0`，表示使用内置默认。
+
+作用：限制 `hls_storage.type=memory` 时的 HLS 分片内存占用。`0` 使用内置默认，当前内置默认是 512 MB。
+
+### 共享文件 backend
+
+```yaml
+livestream:
+  hls_storage:
+    type: "shared_file"
+    path: "/var/lib/synctv/hls"
+```
+
+`shared_file` 明确表示这个路径是 NFS、RWX PVC、CSI volume 等所有副本可见的共享文件系统。不要把 Pod 本地 `emptyDir`、`/tmp` 或本机磁盘配置成 `shared_file`。
+
+在 `shared_file` 模式下，publisher 节点负责写入 HLS 分片；任意节点收到 `.ts` 请求时，会从当前节点挂载的共享路径读取分片，不再回源到 publisher 节点获取 TS 文件。
+
+### `livestream.hls_storage.path`
+
+默认值为空。
+
+作用：`hls_storage.type=file` 或 `shared_file` 时的 HLS 分片存储路径。相对路径会相对 `data_dir`。
+
+示例：
+
+```yaml
+data_dir: "/var/lib/synctv"
+livestream:
+  hls_storage:
+    type: "file"
+    path: "livestream/hls"
+```
+
+实际路径：
+
+```text
+/var/lib/synctv/livestream/hls
+```
+
+### `livestream.hls_storage.*` for S3
+
+当 `hls_storage.type=s3` 时，SyncTV 使用 S3 兼容对象存储保存 HLS 分片。
+
+```yaml
+livestream:
+  hls_storage:
+    type: "s3"
+    endpoint: "https://s3.example.com"
+    bucket: "synctv-hls"
+    region: "auto"
+    base_path: "synctv/hls/"
+```
+
+secret 建议使用环境变量或 secret 文件注入：
+
+```bash
+export SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID="..."
+export SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY="..."
+```
+
+字段说明：
+
+| 字段 | 默认值 | 作用 |
+| --- | --- | --- |
+| `livestream.hls_storage.endpoint` | `""` | S3-compatible endpoint，例如 AWS S3、MinIO、Cloudflare R2 或兼容服务的 endpoint |
+| `livestream.hls_storage.bucket` | `""` | 存储 HLS 分片的 bucket |
+| `livestream.hls_storage.access_key_id` | `""` | Access key ID，支持 `access_key_id_file` |
+| `livestream.hls_storage.secret_access_key` | `""` | Secret access key，支持 `secret_access_key_file` |
+| `livestream.hls_storage.region` | `null` | S3 region；某些兼容服务可留空或使用服务商要求的值 |
+| `livestream.hls_storage.base_path` | `hls/` | bucket 内对象前缀；会规范化为不以 `/` 开头、以 `/` 结尾 |
+
+## HTTP-FLV 配置
+
+### `livestream.flv_max_connection_duration_seconds`
+
+默认值：`86400`，也就是 24 小时。
+
+作用：单个 HTTP-FLV 连接最长保持多久。
+
+设置为 `0` 可以关闭限制，但不推荐。长时间连接如果永不限制，异常客户端可能长期占用资源。
+
+### `livestream.flv_write_timeout_seconds`
+
+默认值：`30`。
+
+作用：向客户端写数据时最多等待多久。
+
+如果客户端网络很慢，写入一直阻塞，SyncTV 会在超时后断开连接，避免慢客户端拖垮服务。

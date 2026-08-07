@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*)\n            FROM room_join_requests rjr\n            LEFT JOIN rooms r ON r.id = rjr.room_id\n            LEFT JOIN users u ON u.id = rjr.user_id\n            WHERE rjr.status = $1\n              AND ($2::bigint IS NULL OR rjr.room_id = $2)\n              AND ($3::bigint IS NULL OR rjr.user_id = $3)\n              AND ($4 = '' OR COALESCE(r.name, '') ILIKE $4 ESCAPE '\\' OR COALESCE(u.username, '') ILIKE $4 ESCAPE '\\')\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "Int8",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "64a9bda3402297faf39d9ee3fae7e13e388aeb6f579d305bdca3e3733e291abc"
+}

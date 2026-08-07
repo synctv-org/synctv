@@ -1,0 +1,77 @@
+---
+title: gRPC API
+description: 使用 reflection 或 protobuf 定义访问和调试 SyncTV gRPC API。
+---
+
+import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## gRPC 入口
+
+SyncTV 的公开 gRPC 和 HTTP REST 共用 `server.port`，默认是 `8080`。
+
+默认配置中 `server.enable_reflection=false`。在测试或可信内网环境中可以临时启用 reflection，再用 `grpcurl` 探索服务。公网实例使用 protobuf 文件调用接口。
+
+<Aside type="caution">
+gRPC reflection 会暴露服务和消息结构。它适合开发、内网调试和预发布环境，不建议在公网生产环境长期开启。
+</Aside>
+
+## 使用 `grpcurl`
+
+<Tabs>
+  <TabItem label="Reflection" icon="magnifier">
+
+在部署配置中启用 reflection，然后重启 SyncTV：
+
+```bash
+SYNCTV_SERVER_ENABLE_REFLECTION=true
+```
+
+列出服务：
+
+```bash
+grpcurl -plaintext localhost:8080 list
+grpcurl -plaintext localhost:8080 list synctv.client.AuthService
+```
+
+公开客户端服务包括 `synctv.client.AuthService`、`UserService`、`RoomService`、`PublicService`、`EmailService`、`NotificationService`、`OAuth2Service`、`ProviderCommonService`、`AlistProviderService`、`BilibiliProviderService`、`EmbyProviderService` 和 `RtmpProviderService`。管理员 gRPC 服务是 `synctv.admin.AdminService`。management gRPC 是独立端点，服务名是 `synctv.management.ManagementService`，不在 `server.port` 上。
+
+  </TabItem>
+  <TabItem label="Protobuf 文件" icon="document">
+
+不依赖 reflection，直接使用仓库内 proto：
+
+```bash
+grpcurl -plaintext \
+  -import-path synctv-proto \
+  -proto proto/client.proto \
+  localhost:8080 \
+  synctv.client.AuthService/Login
+```
+
+  </TabItem>
+</Tabs>
+
+`-plaintext` 只适合本地开发或可信内网。生产环境应在反向代理或客户端连接层使用 TLS。
+
+## 注册示例
+
+```bash
+grpcurl -plaintext -d '{
+  "username": "alice",
+  "email": "alice@example.com",
+  "password": "SecurePassword123"
+}' localhost:8080 synctv.client.AuthService/Register
+```
+
+## 登录示例
+
+```bash
+grpcurl -plaintext -d '{
+  "username": "alice",
+  "password": "SecurePassword123"
+}' localhost:8080 synctv.client.AuthService/Login
+```
+
+## 和 OpenAPI 的关系
+
+OpenAPI 只描述 HTTP API。gRPC 调试使用 reflection 或 protobuf 文件。HTTP API 的 Swagger UI 和 OpenAPI JSON 获取方式见 [OpenAPI 文档入口](../openapi/)。

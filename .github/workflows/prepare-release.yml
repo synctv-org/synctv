@@ -1,0 +1,57 @@
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, for example 0.2.0"
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  prepare:
+    name: Open Release PR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Normalize release version
+        id: version
+        shell: bash
+        run: |
+          version="${{ inputs.version }}"
+          version="${version#v}"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Synchronize release version
+        run: make set-release-version VERSION="${{ steps.version.outputs.value }}"
+
+      - name: Create release preparation PR
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "release: prepare v${{ steps.version.outputs.value }}"
+          branch: "automation/release-v${{ steps.version.outputs.value }}"
+          delete-branch: true
+          title: "release: prepare v${{ steps.version.outputs.value }}"
+          body: |
+            Prepares release v${{ steps.version.outputs.value }}.
+
+            This updates:
+            - Cargo workspace version and Cargo.lock
+            - Helm chart version and appVersion
+            - Docker Compose and docs default app image version

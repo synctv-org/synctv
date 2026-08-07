@@ -1,0 +1,115 @@
+[package]
+name = "synctv-cluster"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = ["tls-aws-lc", "tls-webpki-roots"]
+# Enables integration-test hooks that mutate internal discovery state.
+test-support = []
+k8s = ["kube", "k8s-openapi"]
+tls-aws-lc = [
+    "synctv-core/tls-aws-lc",
+    "synctv-common/tls-aws-lc",
+    "tonic/tls-aws-lc",
+    "kube?/aws-lc-rs",
+]
+tls-ring = [
+    "synctv-core/tls-ring",
+    "synctv-common/tls-ring",
+    "tonic/tls-ring",
+    "kube?/ring",
+]
+tls-webpki-roots = [
+    "synctv-core/tls-webpki-roots",
+    "synctv-common/tls-webpki-roots",
+    "tonic/tls-webpki-roots",
+    "redis/tokio-rustls-comp",
+    "redis/tls-rustls-webpki-roots",
+    "kube?/rustls-tls",
+    "kube?/webpki-roots",
+]
+tls-native-roots = [
+    "synctv-core/tls-native-roots",
+    "synctv-common/tls-native-roots",
+    "tonic/tls-native-roots",
+    "redis/tokio-rustls-comp",
+    "kube?/rustls-tls",
+]
+
+[dependencies]
+# Internal
+synctv-core = { workspace = true, default-features = false }
+synctv-common = { workspace = true, default-features = false }
+
+# Async
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+
+# gRPC
+tonic.workspace = true
+tonic-prost.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+
+# Redis
+redis.workspace = true
+
+# Kubernetes (in-cluster leader election & service discovery)
+# Optional: only needed for k8s_dns discovery and k8s_lease leader election
+kube = { workspace = true, optional = true }
+k8s-openapi = { workspace = true, optional = true }
+
+# Caching
+dashmap.workspace = true
+moka.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Time
+chrono.workspace = true
+
+# Utilities
+anyhow.workspace = true
+http.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+
+# Security
+subtle.workspace = true
+
+# Resilience
+failsafe.workspace = true
+
+# Logging
+tracing.workspace = true
+
+[lints]
+workspace = true
+
+[build-dependencies]
+tonic-prost-build.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+mockall.workspace = true
+synctv-core-testing.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[[test]]
+name = "cluster_mode_transitions_tests"
+path = "tests/cluster_mode_transitions_tests.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "heartbeat_backoff_tests"
+path = "tests/heartbeat_backoff_tests.rs"
+required-features = ["test-support"]

@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT pg_total_relation_size(c.oid)::BIGINT AS \"size_bytes!\"\n             FROM pg_class c\n             JOIN pg_namespace n ON n.oid = c.relnamespace\n             WHERE n.nspname = 'public'\n               AND c.relkind = 'r'\n               AND c.relname ~ '^audit_logs_[0-9]{4}_[0-9]{2}$'\n             ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "size_bytes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b089ca7ce9f783e489d867ffd79e72c6c1aeeb7884b1ab41934995522fb46843"
+}

@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*)::BIGINT\n            FROM file_cleanup_jobs\n            WHERE completed_at IS NULL\n              AND next_attempt_at <= CURRENT_TIMESTAMP\n              AND (\n                  locked_at IS NULL\n                  OR locked_at < CURRENT_TIMESTAMP - INTERVAL '15 minutes'\n              )\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "253b255e64d4871a9a1e8de6e8b2d47d5f85d9d95015cc85c481425d4c90017c"
+}

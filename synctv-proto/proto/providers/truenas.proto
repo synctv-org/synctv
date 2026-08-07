@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package synctv.provider.truenas;
+
+import "proto/buf/validate/validate.proto";
+
+message LoginRequest {
+  string endpoint = 1 [(buf.validate.field).string.min_len = 1];
+  string api_key = 2 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 3;
+}
+message LoginResponse {
+  string server_id = 1;
+  string hostname = 2;
+  string version = 3;
+  string system_product = 4;
+}
+message ListRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string path = 2;
+  uint64 page = 3 [(buf.validate.field).uint64.gte = 1];
+  uint32 page_size = 4 [(buf.validate.field).uint32 = {gte: 1, lte: 200}];
+  optional string search = 5;
+  string instance_name = 6;
+}
+message FileItem {
+  string name = 1;
+  string path = 2;
+  string realpath = 3;
+  bool is_dir = 4;
+  uint64 size = 5;
+  uint64 allocation_size = 6;
+  uint32 mode = 7;
+  uint32 uid = 8;
+  uint32 gid = 9;
+  uint64 mount_id = 10;
+  bool acl = 11;
+  bool is_mountpoint = 12;
+  bool is_ctldir = 13;
+  repeated string attributes = 14;
+  repeated string xattrs = 15;
+  repeated string zfs_attributes = 16;
+}
+message ListResponse {
+  repeated FileItem content = 1;
+  uint64 total = 2;
+  uint64 page = 3;
+  bool has_more = 4;
+}
+message LogoutRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+}
+message LogoutResponse { bool success = 1; }
+message GetBindsRequest { string instance_name = 1; }
+message BindInfo {
+  string id = 1;
+  string server_id = 2;
+  string endpoint = 3;
+  string hostname = 4;
+  string version = 5;
+  string system_product = 6;
+  int64 created_at = 7;
+  string provider_instance_name = 8;
+}
+message GetBindsResponse { repeated BindInfo binds = 1; }

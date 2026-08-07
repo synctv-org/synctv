@@ -1,0 +1,197 @@
+syntax = "proto3";
+
+package synctv.provider.synology;
+
+import "proto/buf/validate/validate.proto";
+
+message LoginRequest {
+  string endpoint = 1 [(buf.validate.field).string.min_len = 1];
+  string username = 2 [(buf.validate.field).string.min_len = 1];
+  string password = 3 [(buf.validate.field).string.min_len = 1];
+  optional string otp_code = 4;
+  optional string device_name = 5;
+  string instance_name = 6;
+}
+
+message LoginResponse {
+  string server_id = 1;
+  bool video_station_available = 2;
+}
+
+message ListFilesRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string path = 2;
+  uint64 page = 3 [(buf.validate.field).uint64.gte = 1];
+  uint32 page_size = 4 [(buf.validate.field).uint32 = {gte: 1, lte: 200}];
+  optional string search = 5;
+  string instance_name = 6;
+}
+
+message FileItem {
+  string name = 1;
+  string path = 2;
+  bool is_dir = 3;
+  uint64 size = 4;
+  uint64 modified_at = 5;
+  uint64 created_at = 6;
+  string file_type = 7;
+}
+
+message ListFilesResponse {
+  repeated FileItem items = 1;
+  uint64 total = 2;
+  uint64 page = 3;
+  bool has_more = 4;
+}
+
+message ListLibrariesRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 2;
+}
+
+message VideoLibrary {
+  int64 id = 1;
+  string title = 2;
+  string library_type = 3;
+  bool is_public = 4;
+  bool visible = 5;
+}
+
+message ListLibrariesResponse {
+  repeated VideoLibrary libraries = 1;
+}
+
+message ListMoviesRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  int64 library_id = 2 [(buf.validate.field).int64.gte = 0];
+  uint64 page = 3 [(buf.validate.field).uint64.gte = 1];
+  uint32 page_size = 4 [(buf.validate.field).uint32 = {gte: 1, lte: 200}];
+  optional string search = 5;
+  string instance_name = 6;
+}
+
+message ListTvShowsRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  int64 library_id = 2 [(buf.validate.field).int64.gte = 0];
+  uint64 page = 3 [(buf.validate.field).uint64.gte = 1];
+  uint32 page_size = 4 [(buf.validate.field).uint32 = {gte: 1, lte: 200}];
+  optional string search = 5;
+  string instance_name = 6;
+}
+
+message ListEpisodesRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  int64 library_id = 2 [(buf.validate.field).int64.gte = 0];
+  int64 tv_show_id = 3 [(buf.validate.field).int64.gt = 0];
+  uint64 page = 4 [(buf.validate.field).uint64.gte = 1];
+  uint32 page_size = 5 [(buf.validate.field).uint32 = {gte: 1, lte: 200}];
+  optional string search = 6;
+  string instance_name = 7;
+}
+
+message ListHomeVideosRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  int64 library_id = 2 [(buf.validate.field).int64.gte = 0];
+  uint64 page = 3 [(buf.validate.field).uint64.gte = 1];
+  uint32 page_size = 4 [(buf.validate.field).uint32 = {gte: 1, lte: 200}];
+  optional string search = 5;
+  string instance_name = 6;
+}
+
+message ListTvRecordingsRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  int64 library_id = 2 [(buf.validate.field).int64.gte = 0];
+  uint64 page = 3 [(buf.validate.field).uint64.gte = 1];
+  uint32 page_size = 4 [(buf.validate.field).uint32 = {gte: 1, lte: 200}];
+  optional string search = 5;
+  string instance_name = 6;
+}
+
+message VideoFile {
+  int64 id = 1;
+  string path = 2;
+  uint64 size = 3;
+  uint64 duration_seconds = 4;
+  uint64 progress_seconds = 5;
+  uint32 width = 6;
+  uint32 height = 7;
+  string video_codec = 8;
+  string audio_codec = 9;
+  string container = 10;
+  uint64 video_bitrate = 11;
+  uint64 audio_bitrate = 12;
+  uint64 frame_rate_numerator = 13;
+  uint64 frame_rate_denominator = 14;
+  uint32 audio_channels = 15;
+  uint32 audio_frequency_hz = 16;
+  bool conversion_produced = 17;
+}
+
+enum SynologyVideoEntryKind {
+  SYNOLOGY_VIDEO_ENTRY_KIND_UNSPECIFIED = 0;
+  SYNOLOGY_VIDEO_ENTRY_KIND_MOVIE = 1;
+  SYNOLOGY_VIDEO_ENTRY_KIND_TV_SHOW = 2;
+  SYNOLOGY_VIDEO_ENTRY_KIND_EPISODE = 3;
+  SYNOLOGY_VIDEO_ENTRY_KIND_HOME_VIDEO = 4;
+  SYNOLOGY_VIDEO_ENTRY_KIND_TV_RECORDING = 5;
+}
+
+message VideoItem {
+  int64 id = 1;
+  int64 library_id = 2;
+  SynologyVideoEntryKind kind = 3;
+  string title = 4;
+  string sort_title = 5;
+  string tagline = 6;
+  string summary = 7;
+  string certificate = 8;
+  int32 rating = 9;
+  repeated string actors = 10;
+  repeated string directors = 11;
+  repeated string writers = 12;
+  repeated string genres = 13;
+  optional string original_available = 14;
+  int64 create_time = 15;
+  int64 last_watched = 16;
+  double watched_ratio = 17;
+  bool parental_controlled = 18;
+  optional uint32 season = 19;
+  optional uint32 episode = 20;
+  optional int64 tv_show_id = 21;
+  optional string poster_mtime = 22;
+  optional string backdrop_mtime = 23;
+  repeated VideoFile files = 24;
+}
+
+message ListVideoItemsResponse {
+  repeated VideoItem items = 1;
+  uint64 total = 2;
+  uint64 page = 3;
+  bool has_more = 4;
+}
+
+message LogoutRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message LogoutResponse {
+  bool success = 1;
+}
+
+message GetBindsRequest {
+  string instance_name = 1;
+}
+
+message BindInfo {
+  string id = 1;
+  string server_id = 2;
+  string endpoint = 3;
+  string username = 4;
+  bool video_station_available = 5;
+  int64 created_at = 6;
+  string provider_instance_name = 7;
+}
+
+message GetBindsResponse {
+  repeated BindInfo binds = 1;
+}

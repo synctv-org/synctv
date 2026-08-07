@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE _sqlx_migrations SET checksum = decode('00', 'hex') WHERE version = (SELECT MIN(version) FROM _sqlx_migrations WHERE success = true)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "5b190c999194334964c1c899b305d0d723cdff2bb8a8324d7c7eee18bbb8084e"
+}

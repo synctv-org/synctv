@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO user_registration_requests (\n                username, signup_method, status, requested_at,\n                oauth2_provider_type, oauth2_provider_instance_name, oauth2_provider_issuer,\n                oauth2_provider_user_id, oauth2_provider_username, oauth2_avatar_url\n            )\n            VALUES ($1, $2, $3, CURRENT_TIMESTAMP, $4, $5, $6, $7, $8, $9)\n            RETURNING id AS \"id: UserId\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Int2",
+        "Int2",
+        "Int2",
+        "Varchar",
+        "Text",
+        "Varchar",
+        "Varchar",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9f81a067ccee7b7470ef0d164c47a23847a8532b7ee5f5b2646476f7dc922f46"
+}

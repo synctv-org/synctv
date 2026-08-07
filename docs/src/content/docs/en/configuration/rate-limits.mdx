@@ -1,0 +1,88 @@
+---
+title: Rate Limits and Connection Limits
+description: HTTP/gRPC request limits, chat limits, WebSocket limits, and streaming protection.
+---
+
+Rate limits protect login, API, chat, WebSocket connection attempts, and streaming paths. Multi-replica deployments depend on Redis for shared rate-limit state.
+
+## `connection_limits`
+
+These fields control long-lived and WebSocket-style connections.
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `connection_limits.max_per_user` | `20` | Maximum concurrent connections per user |
+| `connection_limits.max_per_room` | `2000` | Maximum concurrent connections per room |
+| `connection_limits.max_total` | `100000` | Maximum concurrent connections globally |
+| `connection_limits.idle_timeout_seconds` | `300` | Disconnect idle connections |
+| `connection_limits.max_duration_seconds` | `86400` | Maximum connection lifetime |
+| `connection_limits.ws_message_rate_limit_per_second` | `50` | Per-connection WebSocket message rate |
+
+When sizing these values, consider CPU, memory, file descriptor limits, reverse proxy limits, and Kubernetes resource limits.
+
+## `messaging_rate_limits`
+
+Business-layer chat limits:
+
+```yaml
+messaging_rate_limits:
+  chat_per_second: 10
+  window_seconds: 1
+```
+
+## Request Rate Limits
+
+Request limits are shared across HTTP and gRPC transports:
+
+```yaml
+request_rate_limits:
+  auth_max_requests: 5
+  auth_window_seconds: 60
+  write_max_requests: 120
+  write_window_seconds: 60
+  read_max_requests: 600
+  read_window_seconds: 60
+  media_max_requests: 120
+  media_window_seconds: 60
+  admin_max_requests: 180
+  admin_window_seconds: 60
+  streaming_max_requests: 1200
+  streaming_window_seconds: 60
+  websocket_max_requests: 60
+  websocket_window_seconds: 60
+```
+
+Each group uses:
+
+- `*_max_requests`: maximum allowed requests in one window.
+- `*_window_seconds`: window length in seconds.
+
+Categories:
+
+| Category | Purpose |
+| --- | --- |
+| `auth` | Login, registration, refresh, and other auth endpoints |
+| `write` | Create, update, delete operations |
+| `read` | List, detail, and status queries |
+| `media` | Add, remove, parse, and batch media operations |
+| `admin` | Administrative endpoints |
+| `streaming` | HLS, FLV, media proxy, and similar streaming HTTP paths |
+| `websocket` | WebSocket connection attempts |
+
+Auth limits should remain strict on public deployments. Streaming limits are higher because HLS playback can generate many playlist and segment requests.
+
+## Transport Notes
+
+HTTP and gRPC requests use the same category budgets.
+
+## Redis And Multi-Replica Behavior
+
+Without Redis, rate limit state is stored in process memory.
+
+For multi-replica deployments, Redis is required for meaningful global limits. Otherwise each replica counts separately. With three replicas and an auth limit of 5 per minute, a client could effectively get 15 attempts per minute if requests are distributed across all replicas.
+
+| Deployment shape | Requirement |
+| --- | --- |
+| Local testing | Redis optional |
+| Production single-node | Configure Redis |
+| Multi-replica | Redis required |

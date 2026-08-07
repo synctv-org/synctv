@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package synctv.provider.douyu;
+
+import "proto/buf/validate/validate.proto";
+import "proto/source_config.proto";
+
+enum StreamFormat {
+  STREAM_FORMAT_UNSPECIFIED = 0;
+  STREAM_FORMAT_FLV = 1;
+  STREAM_FORMAT_HLS = 2;
+}
+
+enum Codec {
+  CODEC_UNSPECIFIED = 0;
+  CODEC_AVC = 1;
+  CODEC_HEVC = 2;
+  CODEC_AAC = 3;
+}
+
+message ResolveRequest {
+  string resource = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message Metadata {
+  string room_id = 1;
+  string title = 2;
+  string author = 3;
+  optional string category = 4;
+  optional string thumbnail_url = 5;
+  optional string avatar_url = 6;
+  bool is_live = 7;
+  bool is_replay = 8;
+  bool is_vip = 9;
+  optional uint64 viewer_count = 10;
+  optional string started_at = 11;
+}
+
+message Quality {
+  string name = 1;
+  string cdn = 2;
+  string cdn_name = 3;
+  int64 rate = 4;
+  optional uint64 bitrate = 5;
+  Codec codec = 6;
+  StreamFormat format = 7;
+}
+
+message ResolveResponse {
+  Metadata metadata = 1;
+  repeated Quality qualities = 2;
+  synctv.source_config.DouyuMediaSourceConfig source_config = 3;
+}

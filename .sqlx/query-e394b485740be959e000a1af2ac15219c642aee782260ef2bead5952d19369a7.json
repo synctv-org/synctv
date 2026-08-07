@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT storage_backend, object_key, reference_kind, reference_id\n            FROM file_references\n            WHERE released_at IS NULL\n              AND expires_at IS NOT NULL\n              AND expires_at <= $2\n            ORDER BY expires_at ASC, id ASC\n            LIMIT $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "storage_backend",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_references",
+            "name": "storage_backend"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "object_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_references",
+            "name": "object_key"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "reference_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_references",
+            "name": "reference_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "reference_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_references",
+            "name": "reference_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e394b485740be959e000a1af2ac15219c642aee782260ef2bead5952d19369a7"
+}

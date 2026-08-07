@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE playback_source_metadata\n               SET duration_seconds = $5,\n                   duration_status = $6,\n                   duration_source = $7,\n                   duration_error = NULL,\n                   next_retry_at = NULL,\n                   version = version + 1\n             WHERE room_id = $1\n               AND media_id IS NOT DISTINCT FROM $2\n               AND playlist_id IS NOT DISTINCT FROM $3\n               AND target_hash = $4\n               AND version = $8\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Text",
+        "Float8",
+        "Int2",
+        "Int2",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "329aad0bd1b53bdcb9dc253b095084a53c57583acf01e6fd819cd991374a6f95"
+}

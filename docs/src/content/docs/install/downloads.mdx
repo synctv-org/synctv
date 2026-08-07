@@ -1,0 +1,35 @@
+---
+title: 客户端下载
+description: 获取 SyncTV Android、iOS、macOS、Windows 和 Linux 客户端。
+---
+
+SyncTV Server 负责自托管服务，客户端负责连接你选择的服务器。客户端不会绑定固定的 SyncTV Server 地址，安装后在应用中填写服务器地址即可使用。
+
+## 官方下载
+
+所有桌面端和 Android 公共构建都发布在 [SyncTV App GitHub Releases](https://github.com/synctv-org/synctv-app/releases/latest)。打开最新版本后，在 **Assets** 中选择与你的平台匹配的文件。
+
+| 平台 | 推荐文件 | 适用场景 |
+| --- | --- | --- |
+| Android | Universal APK | 手机、平板和大多数 Android 设备 |
+| iOS / iPadOS | App Store 版本 | 通过 Apple 官方分发和自动更新 |
+| macOS | Universal DMG | Apple silicon 和 Intel Mac |
+| Windows | x64 EXE installer | Windows 10/11 的标准安装 |
+| Linux | x64 或 arm64 DEB | Debian、Ubuntu 及兼容发行版 |
+
+GitHub Release 还提供 macOS ZIP、Windows portable ZIP、Linux TAR.GZ、Android 分架构 APK、iOS IPA 和每个版本的 SHA-256 校验文件。商店分发版本由 Apple App Store 和 Google Play 管理，商店页面的可用性、更新节奏和签名状态以对应商店为准。
+
+## 安装前检查
+
+- 从 GitHub 下载后，优先选择带 `signed` 的构建，并确认文件名中的平台和架构。
+- 使用 `SHA256SUMS.txt` 校验下载文件完整性；校验值来自同一 Release。
+- iOS IPA 面向开发、测试和企业分发场景。普通用户使用 App Store 版本。
+- Linux DEB 适用于 Debian 系列发行版；其他发行版使用 TAR.GZ 并按发行版规范创建桌面快捷方式。
+
+## 连接自托管服务器
+
+1. 部署 [Docker Compose](./docker-compose/) 或 [Helm](./helm/) 版本的 SyncTV Server。
+2. 确认服务器的 HTTPS 地址和 WebSocket 入口可从客户端网络访问。
+3. 启动客户端，添加服务器地址并完成登录。
+
+服务器升级与客户端版本保持独立。服务端的 Release notes 会在套件发布时同步对应客户端版本和下载入口。

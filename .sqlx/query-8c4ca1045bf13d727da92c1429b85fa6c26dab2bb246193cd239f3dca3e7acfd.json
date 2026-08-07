@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT opaque_record, opaque_credential_identifier, opaque_ciphersuite,\n               opaque_server_setup_version\n        FROM auth_password_credentials\n        WHERE user_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "opaque_record",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "auth_password_credentials",
+            "name": "opaque_record"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "opaque_credential_identifier",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "auth_password_credentials",
+            "name": "opaque_credential_identifier"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "opaque_ciphersuite",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "auth_password_credentials",
+            "name": "opaque_ciphersuite"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "opaque_server_setup_version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "auth_password_credentials",
+            "name": "opaque_server_setup_version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "8c4ca1045bf13d727da92c1429b85fa6c26dab2bb246193cd239f3dca3e7acfd"
+}

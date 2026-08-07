@@ -1,0 +1,108 @@
+syntax = "proto3";
+
+package synctv.provider.seafile;
+
+import "proto/buf/validate/validate.proto";
+
+message LoginRequest {
+  string endpoint = 1 [(buf.validate.field).string.min_len = 1];
+  string username = 2 [(buf.validate.field).string.min_len = 1];
+  string password = 3 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 4;
+}
+
+message LoginResponse {
+  string server_id = 1;
+  string email = 2;
+  string display_name = 3;
+  string version = 4;
+  repeated string features = 5;
+  int64 quota_total = 6;
+  int64 quota_usage = 7;
+}
+
+message UnlockLibraryRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string repository_id = 2 [(buf.validate.field).string.min_len = 1];
+  string password = 3 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 4;
+}
+
+message UnlockLibraryResponse {
+  bool success = 1;
+}
+
+message ListRepositoriesRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  uint64 page = 2 [(buf.validate.field).uint64.gte = 1];
+  uint32 page_size = 3 [(buf.validate.field).uint32 = {gte: 1, lte: 200}];
+  string instance_name = 4;
+}
+
+message ListRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string repository_id = 2 [(buf.validate.field).string.min_len = 1];
+  string path = 3;
+  uint64 page = 4 [(buf.validate.field).uint64.gte = 1];
+  uint32 page_size = 5 [(buf.validate.field).uint32 = {gte: 1, lte: 200}];
+  optional string search = 6;
+  string instance_name = 7;
+}
+
+message ListStarredRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  uint64 page = 2 [(buf.validate.field).uint64.gte = 1];
+  uint32 page_size = 3 [(buf.validate.field).uint32 = {gte: 1, lte: 200}];
+  string instance_name = 4;
+}
+
+message FileItem {
+  string repository_id = 1;
+  string repository_name = 2;
+  string path = 3;
+  string name = 4;
+  string object_id = 5;
+  bool is_dir = 6;
+  uint64 size = 7;
+  string modified_at = 8;
+  string permission = 9;
+  string modifier_name = 10;
+  bool starred = 11;
+  bool has_thumbnail = 12;
+  bool repository_encrypted = 13;
+  bool password_required = 14;
+}
+
+message ListResponse {
+  repeated FileItem content = 1;
+  uint64 total = 2;
+  uint64 page = 3;
+  bool has_more = 4;
+}
+
+message LogoutRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message LogoutResponse {
+  bool success = 1;
+}
+
+message GetBindsRequest {
+  string instance_name = 1;
+}
+
+message BindInfo {
+  string id = 1;
+  string server_id = 2;
+  string endpoint = 3;
+  string username = 4;
+  string version = 5;
+  repeated string features = 6;
+  int64 created_at = 7;
+  string provider_instance_name = 8;
+}
+
+message GetBindsResponse {
+  repeated BindInfo binds = 1;
+}

@@ -1,0 +1,15 @@
+flowchart LR
+  Client[Client player]
+  Proxy[SyncTV proxy]
+  Provider[External media provider]
+  Cache[(slice cache<br/>memory / file)]
+  Bypass[Direct pass-through<br/>no full-file cache]
+
+  Client -->|Range request or plain GET| Proxy
+  Proxy -->|fixed-size slice requests| Provider
+  Provider -->|Range supported| Proxy
+  Proxy -->|write / hit slices| Cache
+  Cache -->|serve cached bytes| Proxy
+  Proxy --> Client
+  Provider -. Range unsupported .-> Bypass
+  Bypass -. stream .-> Client

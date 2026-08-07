@@ -1,0 +1,30 @@
+---
+title: Administer SyncTV
+description: Manage users, rooms, permissions, Providers, and runtime settings.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Administration commands call management gRPC through `synctv admin`. Confirm the management endpoint and authentication method before applying changes.
+
+<Aside type="caution">
+Expose management gRPC, metrics, and internal debugging endpoints only through Unix sockets, private networks, VPNs, bastions, or Kubernetes exec. TCP management must set `management.auth_token`.
+</Aside>
+
+## Accounts and Access
+
+- [Users](./users/): create users, ban accounts, assign global roles, and inspect account security state.
+- [Roles and Permissions](./permissions/): global roles, room roles, permission evaluation, and member overrides.
+- [Authentication and Security](./authentication-security/): sign-in methods, 2FA, tokens, and authentication boundaries.
+
+## Rooms and Content
+
+- [Rooms and Members](./rooms-members/): room lifecycle, members, playback controls, and livestream entries.
+- [Reviews and Moderation](./reviews-moderation/): registration, room creation, join reviews, and bans.
+- [Providers](./providers/): create, enable, disable, update, reconnect, and delete Provider instances.
+
+## Service Policy
+
+- [Runtime Settings](./runtime-settings/): hot-update registration, RTMP, CORS, chat, and room policies.
+
+The [CLI Reference](../reference/cli/) lists every flag. [Maintenance Tasks](../operations/maintenance/) and [Deployment and Runtime Boundaries](../operations/deployment-boundaries/) are part of the operations documentation.

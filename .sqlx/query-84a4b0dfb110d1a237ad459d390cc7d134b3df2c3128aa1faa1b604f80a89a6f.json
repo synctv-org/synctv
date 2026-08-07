@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*) AS \"count!\"\n            FROM chat_message_pins p\n            JOIN chat_messages m\n              ON m.room_id = p.room_id\n             AND m.id = p.message_id\n             AND m.created_at = p.message_created_at\n            WHERE p.room_id = $1\n              AND m.status <> $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "84a4b0dfb110d1a237ad459d390cc7d134b3df2c3128aa1faa1b604f80a89a6f"
+}

@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE chat_message_idempotency\n                SET message_id = $4, message_created_at = $5, event_id = $6\n                WHERE room_id = $1 AND user_id = $2 AND client_message_id = $3\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text",
+        "Int8",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "63816732316653dc5e165676b406b9c5fa32a8583ba425b96d33a5e89a4a02c6"
+}

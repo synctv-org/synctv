@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)\n        DELETE FROM chat_messages\n        WHERE created_at <= NOW() - INTERVAL '90 days'\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "QUERY PLAN",
+        "type_info": "Json",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "052c0dc97f5118a4ef119a1ef6be80e2dd45811f67bdca9277edaf20fb510028"
+}

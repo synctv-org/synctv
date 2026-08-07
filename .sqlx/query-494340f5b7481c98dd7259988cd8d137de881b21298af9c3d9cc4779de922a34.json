@@ -1,0 +1,155 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n                rm.room_id AS \"room_id: RoomId\",\n                rm.user_id AS \"user_id: UserId\",\n                rm.role AS \"role: RoomRole\",\n                rm.added_permissions, rm.removed_permissions,\n                rm.admin_added_permissions, rm.admin_removed_permissions,\n                rm.remark_name,\n                      rm.display_tag,\n                      rm.joined_at,\n                u.username,\n                TRUE AS \"is_active!\"\n             FROM room_members rm\n             JOIN users u ON rm.user_id = u.id\n             WHERE rm.room_id = $1 AND u.deleted_at IS NULL\n             ORDER BY rm.joined_at ASC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "role: RoomRole",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "role"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "added_permissions",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "added_permissions"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "removed_permissions",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "removed_permissions"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "admin_added_permissions",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "admin_added_permissions"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "admin_removed_permissions",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "admin_removed_permissions"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "remark_name",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "remark_name"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "display_tag",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "display_tag"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "joined_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "joined_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "username",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "is_active!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "494340f5b7481c98dd7259988cd8d137de881b21298af9c3d9cc4779de922a34"
+}

@@ -1,0 +1,182 @@
+syntax = "proto3";
+
+package synctv.provider.fnos;
+
+import "proto/buf/validate/validate.proto";
+
+message LoginRequest {
+  string endpoint = 1 [(buf.validate.field).string.min_len = 1];
+  optional string webdav_endpoint = 2;
+  optional string media_endpoint = 3;
+  string username = 4 [(buf.validate.field).string.min_len = 1];
+  string password = 5 [(buf.validate.field).string.min_len = 1];
+  optional string twofa_code = 6 [(buf.validate.field).string = {len: 6, pattern: "^[0-9]{6}$"}];
+  bool trust_device = 7;
+  string instance_name = 8;
+}
+
+message LoginResponse {
+  oneof result {
+    Authenticated authenticated = 1;
+    TwoFactorRequired two_factor_required = 2;
+  }
+}
+
+message Authenticated {
+  string server_id = 1;
+  string host_name = 2;
+  optional string version = 3;
+  bool media_available = 4;
+}
+
+message TwoFactorRequired {
+  bool setup_required = 1;
+}
+
+message ListRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string path = 2;
+  uint32 page = 3 [(buf.validate.field).uint32.gte = 1];
+  uint32 page_size = 4 [(buf.validate.field).uint32 = {gte: 1, lte: 200}];
+  optional string search = 5;
+  string instance_name = 6;
+}
+
+message ListResponse {
+  repeated FileItem content = 1;
+  uint64 total = 2;
+  uint32 page = 3;
+  bool has_more = 4;
+}
+
+message ListMediaLibrariesRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 2;
+}
+
+message ListMediaLibrariesResponse {
+  repeated MediaLibrary libraries = 1;
+}
+
+message MediaLibrary {
+  string guid = 1;
+  string title = 2;
+  optional string poster = 3;
+  repeated string posters = 4;
+  optional string category = 5;
+  int32 view_type = 6;
+  int32 poster_type = 7;
+}
+
+enum MediaCollection {
+  MEDIA_COLLECTION_UNSPECIFIED = 0;
+  MEDIA_COLLECTION_LIBRARY = 1;
+  MEDIA_COLLECTION_FAVORITES = 2;
+  MEDIA_COLLECTION_HISTORY = 3;
+}
+
+message ListMediaItemsRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  MediaCollection collection = 2 [(buf.validate.field).enum = {in: [1, 2, 3]}];
+  optional string ancestor_guid = 3;
+  uint32 page = 4 [(buf.validate.field).uint32.gte = 1];
+  uint32 page_size = 5 [(buf.validate.field).uint32 = {gte: 1, lte: 200}];
+  repeated string media_types = 6;
+  optional string search = 7;
+  string instance_name = 8;
+}
+
+message ListMediaItemsResponse {
+  repeated MediaItem items = 1;
+  uint64 total = 2;
+  uint32 page = 3;
+  bool has_more = 4;
+}
+
+message MediaItem {
+  string guid = 1;
+  string title = 2;
+  string item_type = 3;
+  optional string poster = 4;
+  optional string media_guid = 5;
+  optional string parent_guid = 6;
+  optional string overview = 7;
+  uint64 duration_seconds = 8;
+  uint64 progress_seconds = 9;
+  bool watched = 10;
+  uint32 season_number = 11;
+  uint32 episode_number = 12;
+  bool is_folder = 13;
+  bool is_playable = 14;
+  bool favorite = 15;
+}
+
+message SetFavoriteRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string item_guid = 2 [(buf.validate.field).string.min_len = 1];
+  bool favorite = 3;
+  string instance_name = 4;
+}
+
+message SetFavoriteResponse {
+  bool success = 1;
+}
+
+message SetWatchedRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string item_guid = 2 [(buf.validate.field).string.min_len = 1];
+  bool watched = 3;
+  string instance_name = 4;
+}
+
+message SetWatchedResponse {
+  bool success = 1;
+}
+
+message FileItem {
+  string name = 1;
+  string path = 2;
+  optional uint64 size = 3;
+  optional int64 modified_at = 4;
+  optional int64 created_at = 5;
+  bool is_dir = 6;
+  optional uint64 storage_id = 7;
+}
+
+message GetServerInfoRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 2;
+}
+
+message GetServerInfoResponse {
+  string host_name = 1;
+  optional string version = 2;
+}
+
+message LogoutRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message LogoutResponse {
+  bool success = 1;
+}
+
+message GetBindsRequest {
+  string instance_name = 1;
+}
+
+message GetBindsResponse {
+  repeated BindInfo binds = 1;
+}
+
+message BindInfo {
+  string id = 1;
+  string server_id = 2;
+  string endpoint = 3;
+  optional string webdav_endpoint = 4;
+  optional string media_endpoint = 5;
+  string username = 6;
+  int64 created_at = 7;
+  string provider_instance_name = 8;
+  bool media_available = 9;
+}

@@ -1,0 +1,57 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH existing_user AS (\n                SELECT id\n                FROM users\n                WHERE id = $1 AND deleted_at IS NULL\n            )\n            INSERT INTO auth_password_credentials (\n                user_id, opaque_record, opaque_credential_identifier, opaque_ciphersuite,\n                opaque_server_setup_version, changed_at, version,\n                created_at, updated_at\n            )\n            SELECT u.id, $2, $3, $4, $5, $6, COALESCE(existing_apc.version, 0) + 1, $6, $6\n            FROM existing_user u\n            LEFT JOIN auth_password_credentials existing_apc ON existing_apc.user_id = u.id\n            ON CONFLICT (user_id) DO UPDATE\n            SET opaque_record = EXCLUDED.opaque_record,\n                opaque_credential_identifier = EXCLUDED.opaque_credential_identifier,\n                opaque_ciphersuite = EXCLUDED.opaque_ciphersuite,\n                opaque_server_setup_version = EXCLUDED.opaque_server_setup_version,\n                changed_at = EXCLUDED.changed_at,\n                version = auth_password_credentials.version + 1,\n                updated_at = EXCLUDED.updated_at\n            RETURNING user_id AS \"user_id!: UserId\",\n                      changed_at AS \"changed_at!\",\n                      version AS \"version!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "auth_password_credentials",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "changed_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "auth_password_credentials",
+            "name": "changed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "version!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "auth_password_credentials",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Bytea",
+        "Varchar",
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "895dfe41fe663fd75bdb5b38362fed73d324822dc420020b8f697ac4669946a7"
+}

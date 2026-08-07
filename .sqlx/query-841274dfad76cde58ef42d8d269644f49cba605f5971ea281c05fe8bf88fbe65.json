@@ -1,0 +1,67 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT event_id AS \"event_id!\",\n                   sequence AS \"sequence!\",\n                   payload AS \"event_payload?: sqlx::types::Json<RoomResourceEventPayload>\",\n                   occurred_at AS \"occurred_at!\"\n            FROM room_resource_events\n            WHERE room_id = $1\n              AND resource_type = $2\n              AND event_type = $3\n              AND resource_id = $4\n            ORDER BY sequence DESC\n            LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_id!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_resource_events",
+            "name": "event_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "sequence!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_resource_events",
+            "name": "sequence"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "event_payload?: sqlx::types::Json<RoomResourceEventPayload>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "room_resource_events",
+            "name": "payload"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "occurred_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_resource_events",
+            "name": "occurred_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "841274dfad76cde58ef42d8d269644f49cba605f5971ea281c05fe8bf88fbe65"
+}

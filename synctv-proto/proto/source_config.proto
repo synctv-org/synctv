@@ -1,0 +1,719 @@
+syntax = "proto3";
+
+package synctv.source_config;
+
+import "proto/buf/validate/validate.proto";
+
+enum SourceProvider {
+  SOURCE_PROVIDER_UNSPECIFIED = 0;
+  SOURCE_PROVIDER_DIRECT_URL = 1;
+  SOURCE_PROVIDER_BILIBILI = 2;
+  SOURCE_PROVIDER_ALIST = 3;
+  SOURCE_PROVIDER_EMBY = 4;
+  SOURCE_PROVIDER_RTMP = 5;
+  SOURCE_PROVIDER_LIVE_PROXY = 6;
+  SOURCE_PROVIDER_CLOUDREVE = 7;
+  SOURCE_PROVIDER_TWITCH = 8;
+  SOURCE_PROVIDER_HUYA = 9;
+  SOURCE_PROVIDER_DOUYU = 10;
+  SOURCE_PROVIDER_DOUYIN = 11;
+  SOURCE_PROVIDER_ACFUN = 12;
+  SOURCE_PROVIDER_CCTV = 13;
+  SOURCE_PROVIDER_FNOS = 14;
+  SOURCE_PROVIDER_QNAP = 15;
+  SOURCE_PROVIDER_SYNOLOGY = 16;
+  SOURCE_PROVIDER_NEXTCLOUD = 17;
+  SOURCE_PROVIDER_SEAFILE = 18;
+  SOURCE_PROVIDER_TRUENAS = 19;
+  SOURCE_PROVIDER_YOUTUBE = 20;
+  SOURCE_PROVIDER_TIKTOK = 21;
+}
+
+enum PlaybackKind {
+  PLAYBACK_KIND_UNSPECIFIED = 0;
+  PLAYBACK_KIND_REGULAR = 1;
+  PLAYBACK_KIND_LIVE = 2;
+}
+
+message DirectUrlMediaResourceConfig {
+  string name = 1;
+  string url = 2;
+  map<string, string> headers = 3;
+  string format = 4;
+  optional int64 expires_at = 5;
+}
+
+message DirectUrlSubtitleSourceConfig {
+  string name = 1;
+  string language = 2;
+  string url = 3;
+  map<string, string> headers = 4;
+  string format = 5;
+  optional int64 expires_at = 6;
+}
+
+message DirectUrlDanmakuSourceConfig {
+  string name = 1;
+  string url = 2;
+  map<string, string> headers = 3;
+  optional string format = 4;
+  optional int64 expires_at = 5;
+}
+
+message DirectUrlMediaSourceConfig {
+  repeated DirectUrlMediaResourceConfig medias = 1;
+  optional uint32 default_media_index = 2;
+  repeated DirectUrlSubtitleSourceConfig subtitles = 3;
+  optional uint32 default_subtitle_index = 4;
+  repeated DirectUrlDanmakuSourceConfig danmakus = 5;
+  optional uint32 default_danmaku_index = 6;
+  optional PlaybackKind playback_kind = 7 [(buf.validate.field).enum.defined_only = true];
+  optional double duration_seconds = 8;
+  optional bool prefer_proxy = 9;
+  optional bool proxy_only = 10;
+}
+
+message AlistMediaSourceConfig {
+  string server_id = 1;
+  string path = 2;
+  optional string password = 3;
+}
+
+message AlistPlaylistSourceConfig {
+  string server_id = 1;
+  string path = 2;
+  optional string password = 3;
+}
+
+message CloudreveMediaSourceConfig {
+  string server_id = 1;
+  string path = 2;
+}
+
+message CloudrevePlaylistSourceConfig {
+  string server_id = 1;
+  string path = 2;
+}
+
+message EmbyMediaSourceConfig {
+  string server_id = 1;
+  string item_id = 2;
+}
+
+message EmbyPlaylistSourceConfig {
+  string server_id = 1;
+  oneof source {
+    EmbyFolderPlaylistSource folder = 2;
+    EmbyFavoriteItemsPlaylistSource favorite_items = 3;
+    EmbyFavoritePeoplePlaylistSource favorite_people = 4;
+    EmbyPersonItemsPlaylistSource person_items = 5;
+    EmbyContinueWatchingPlaylistSource continue_watching = 6;
+    EmbyNextUpPlaylistSource next_up = 7;
+    EmbyRecentlyAddedPlaylistSource recently_added = 8;
+    EmbyPlaylistsPlaylistSource playlists = 9;
+    EmbyCollectionsPlaylistSource collections = 10;
+    EmbyGenresPlaylistSource genres = 11;
+    EmbyGenreItemsPlaylistSource genre_items = 12;
+  }
+}
+
+message EmbyFolderPlaylistSource { string item_id = 1; }
+message EmbyFavoriteItemsPlaylistSource { repeated string item_types = 1; }
+message EmbyFavoritePeoplePlaylistSource {}
+message EmbyPersonItemsPlaylistSource {
+  string person_id = 1;
+  repeated string item_types = 2;
+}
+message EmbyContinueWatchingPlaylistSource {}
+message EmbyNextUpPlaylistSource {}
+message EmbyRecentlyAddedPlaylistSource { repeated string item_types = 1; }
+message EmbyPlaylistsPlaylistSource {}
+message EmbyCollectionsPlaylistSource {}
+message EmbyGenresPlaylistSource { repeated string item_types = 1; }
+message EmbyGenreItemsPlaylistSource {
+  string genre_id = 1;
+  repeated string item_types = 2;
+}
+
+message RtmpMediaSourceConfig {
+  RtmpStreamMode mode = 1;
+}
+
+enum RtmpStreamMode {
+  RTMP_STREAM_MODE_UNSPECIFIED = 0;
+  RTMP_STREAM_MODE_DEFAULT = 1;
+  RTMP_STREAM_MODE_VIDEO_ONLY = 2;
+  RTMP_STREAM_MODE_AUDIO_ONLY = 3;
+}
+
+enum RtspTransport {
+  RTSP_TRANSPORT_UNSPECIFIED = 0;
+  RTSP_TRANSPORT_TCP = 1;
+  RTSP_TRANSPORT_UDP = 2;
+}
+
+message RtspTrackSelection {
+  oneof mode {
+    bool first_compatible = 1;
+    uint32 index = 2;
+    bool disabled = 3;
+  }
+}
+
+message RtmpPullSourceConfig {
+  string url = 1;
+  RtmpStreamMode mode = 2;
+}
+
+message RtspPullSourceConfig {
+  string url = 1;
+  RtspTransport transport = 2;
+  RtspTrackSelection video_track = 3;
+  RtspTrackSelection audio_track = 4;
+}
+
+message HttpFlvPullSourceConfig {
+  string url = 1;
+}
+
+message LiveProxyMediaSourceConfig {
+  oneof source {
+    RtmpPullSourceConfig rtmp = 1;
+    RtspPullSourceConfig rtsp = 2;
+    HttpFlvPullSourceConfig http_flv = 3;
+  }
+}
+
+message BilibiliVideoSourceConfig {
+  string bvid = 1;
+  optional uint64 aid = 2;
+  uint64 cid = 3;
+  bool shared = 4;
+}
+
+message BilibiliPgcSourceConfig {
+  uint64 epid = 1;
+  uint64 cid = 2;
+  bool shared = 3;
+}
+
+message BilibiliLiveSourceConfig {
+  uint64 room_id = 1;
+  bool shared = 2;
+}
+
+message BilibiliMediaSourceConfig {
+  oneof source {
+    BilibiliVideoSourceConfig video = 1;
+    BilibiliPgcSourceConfig pgc = 2;
+    BilibiliLiveSourceConfig live = 3;
+  }
+}
+
+message BilibiliPopularPlaylistSource {}
+message BilibiliRecommendedPlaylistSource {}
+message BilibiliVideoPartsPlaylistSource {
+  string bvid = 1;
+  optional uint64 aid = 2;
+}
+message BilibiliUpVideosPlaylistSource {
+  uint64 mid = 1;
+  string keyword = 2;
+}
+message BilibiliFavoriteVideosPlaylistSource { uint64 media_id = 1; }
+message BilibiliCollectionVideosPlaylistSource {
+  uint64 mid = 1;
+  uint64 season_id = 2;
+}
+message BilibiliSeriesVideosPlaylistSource {
+  uint64 mid = 1;
+  uint64 series_id = 2;
+}
+message BilibiliWatchLaterPlaylistSource {}
+message BilibiliPgcSeasonPlaylistSource { uint64 season_id = 1; }
+message BilibiliLiveRecommendedPlaylistSource {}
+message BilibiliLiveFollowedPlaylistSource {}
+message BilibiliLiveAreaPlaylistSource {
+  uint64 parent_area_id = 1;
+  uint64 area_id = 2;
+}
+
+enum BilibiliHistoryType {
+  BILIBILI_HISTORY_TYPE_ALL = 0;
+  BILIBILI_HISTORY_TYPE_ARCHIVE = 1;
+  BILIBILI_HISTORY_TYPE_LIVE = 2;
+}
+
+message BilibiliHistoryPlaylistSource { BilibiliHistoryType type = 1; }
+
+enum BilibiliPgcTimelineType {
+  BILIBILI_PGC_TIMELINE_TYPE_UNSPECIFIED = 0;
+  BILIBILI_PGC_TIMELINE_TYPE_ANIME = 1;
+  BILIBILI_PGC_TIMELINE_TYPE_CINEMA = 3;
+  BILIBILI_PGC_TIMELINE_TYPE_GUOCHUANG = 4;
+}
+
+message BilibiliPgcTimelinePlaylistSource {
+  BilibiliPgcTimelineType type = 1;
+  uint32 before_days = 2 [(buf.validate.field).uint32.lte = 7];
+  uint32 after_days = 3 [(buf.validate.field).uint32.lte = 7];
+}
+
+message BilibiliPlaylistSourceConfig {
+  oneof source {
+    BilibiliVideoPartsPlaylistSource video_parts = 1;
+    BilibiliPopularPlaylistSource popular = 2;
+    BilibiliRecommendedPlaylistSource recommended = 3;
+    BilibiliUpVideosPlaylistSource up_videos = 4;
+    BilibiliFavoriteVideosPlaylistSource favorite_videos = 5;
+    BilibiliCollectionVideosPlaylistSource collection_videos = 6;
+    BilibiliSeriesVideosPlaylistSource series_videos = 7;
+    BilibiliWatchLaterPlaylistSource watch_later = 8;
+    BilibiliPgcSeasonPlaylistSource pgc_season = 9;
+    BilibiliLiveRecommendedPlaylistSource live_recommended = 10;
+    BilibiliLiveFollowedPlaylistSource live_followed = 11;
+    BilibiliLiveAreaPlaylistSource live_area = 12;
+    BilibiliHistoryPlaylistSource history = 13;
+    BilibiliPgcTimelinePlaylistSource pgc_timeline = 14;
+  }
+  bool shared = 15;
+}
+
+message TwitchLiveSourceConfig {
+  string channel = 1;
+  bool shared = 2;
+}
+
+message TwitchVideoSourceConfig {
+  string video_id = 1;
+  bool shared = 2;
+}
+
+message TwitchClipSourceConfig {
+  string slug = 1;
+  bool shared = 2;
+}
+
+message TwitchMediaSourceConfig {
+  oneof source {
+    TwitchLiveSourceConfig live = 1;
+    TwitchVideoSourceConfig video = 2;
+    TwitchClipSourceConfig clip = 3;
+  }
+}
+
+enum TwitchPlaylistContent {
+  TWITCH_PLAYLIST_CONTENT_UNSPECIFIED = 0;
+  TWITCH_PLAYLIST_CONTENT_VIDEOS = 1;
+  TWITCH_PLAYLIST_CONTENT_HIGHLIGHTS = 2;
+  TWITCH_PLAYLIST_CONTENT_UPLOADS = 3;
+  TWITCH_PLAYLIST_CONTENT_CLIPS = 4;
+}
+
+message TwitchPlaylistSourceConfig {
+  message Channel {
+    string channel = 1 [(buf.validate.field).string = {
+      min_len: 3,
+      max_len: 25
+    }];
+    TwitchPlaylistContent content = 2 [(buf.validate.field).enum = {
+      defined_only: true,
+      not_in: [0]
+    }];
+  }
+  message FollowedLive {}
+  message CategoryLive {
+    string category_id = 1 [(buf.validate.field).string.min_len = 1];
+    string category_name = 2;
+  }
+  message SearchLive {
+    string query = 1 [(buf.validate.field).string.min_len = 1];
+  }
+
+  bool shared = 1;
+  oneof source {
+    Channel channel = 2;
+    FollowedLive followed_live = 3;
+    CategoryLive category_live = 4;
+    SearchLive search_live = 5;
+  }
+}
+
+message YoutubeMediaSourceConfig {
+  string video_id = 1 [(buf.validate.field).string.len = 11];
+  bool shared = 2;
+}
+
+enum YoutubeChannelContent {
+  YOUTUBE_CHANNEL_CONTENT_UNSPECIFIED = 0;
+  YOUTUBE_CHANNEL_CONTENT_VIDEOS = 1;
+  YOUTUBE_CHANNEL_CONTENT_SHORTS = 2;
+  YOUTUBE_CHANNEL_CONTENT_LIVE = 3;
+}
+
+message YoutubePlaylistSourceConfig {
+  message Playlist {
+    string playlist_id = 1 [(buf.validate.field).string.min_len = 1];
+  }
+  message Channel {
+    string channel_id = 1 [(buf.validate.field).string.min_len = 1];
+    YoutubeChannelContent content = 2 [(buf.validate.field).enum.defined_only = true];
+  }
+  message Search {
+    string query = 1 [(buf.validate.field).string.min_len = 1];
+  }
+  message Subscriptions {}
+  message LikedVideos {}
+  message WatchLater {}
+
+  bool shared = 1;
+  oneof source {
+    Playlist playlist = 2;
+    Channel channel = 3;
+    Search search = 4;
+    Subscriptions subscriptions = 5;
+    LikedVideos liked_videos = 6;
+    WatchLater watch_later = 7;
+  }
+}
+
+message HuyaLiveSourceConfig {
+  string room_id = 1;
+}
+
+message HuyaVideoSourceConfig {
+  string video_id = 1;
+}
+
+message HuyaMediaSourceConfig {
+  oneof source {
+    HuyaLiveSourceConfig live = 1;
+    HuyaVideoSourceConfig video = 2;
+  }
+}
+
+message DouyuMediaSourceConfig {
+  string room = 1;
+}
+
+message DouyinVideoSourceConfig {
+  string aweme_id = 1 [(buf.validate.field).string = {
+    min_len: 1,
+    max_len: 32
+  }];
+  bool shared = 2;
+}
+
+message DouyinLiveSourceConfig {
+  string web_rid = 1 [(buf.validate.field).string = {
+    min_len: 1,
+    max_len: 128
+  }];
+  bool shared = 2;
+}
+
+message DouyinMediaSourceConfig {
+  oneof source {
+    DouyinVideoSourceConfig video = 1;
+    DouyinLiveSourceConfig live = 2;
+  }
+}
+
+message DouyinPlaylistSourceConfig {
+  string sec_uid = 1 [(buf.validate.field).string = {
+    min_len: 1,
+    max_len: 256
+  }];
+  bool shared = 2;
+}
+
+message AcFunVideoSourceConfig {
+  string video_id = 1;
+}
+
+message AcFunBangumiSourceConfig {
+  string bangumi_id = 1;
+  optional string episode_query = 2;
+}
+
+message AcFunLiveSourceConfig {
+  string author_id = 1;
+}
+
+message AcFunMediaSourceConfig {
+  oneof source {
+    AcFunVideoSourceConfig video = 1;
+    AcFunBangumiSourceConfig bangumi = 2;
+    AcFunLiveSourceConfig live = 3;
+  }
+}
+
+message CctvMediaSourceConfig {
+  string resource = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message FnosFileSourceConfig {
+  string path = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message FnosLibraryItemSourceConfig {
+  string item_guid = 1 [(buf.validate.field).string.min_len = 1];
+  optional string media_guid = 2;
+}
+
+message FnosMediaSourceConfig {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  oneof source {
+    FnosFileSourceConfig file = 2;
+    FnosLibraryItemSourceConfig library_item = 3;
+  }
+}
+
+message FnosFilesPlaylistSourceConfig {
+  string path = 1;
+}
+
+message FnosMediaLibraryPlaylistSourceConfig {
+  optional string ancestor_guid = 1;
+  repeated string media_types = 2;
+}
+
+message FnosFavoritesPlaylistSourceConfig {
+  repeated string media_types = 1;
+}
+
+message FnosHistoryPlaylistSourceConfig {}
+
+message FnosPlaylistSourceConfig {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  oneof source {
+    FnosFilesPlaylistSourceConfig files = 2;
+    FnosMediaLibraryPlaylistSourceConfig media_library = 3;
+    FnosFavoritesPlaylistSourceConfig favorites = 4;
+    FnosHistoryPlaylistSourceConfig history = 5;
+  }
+}
+
+message QnapMediaSourceConfig {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string path = 2 [(buf.validate.field).string.min_len = 1];
+}
+
+message QnapPlaylistSourceConfig {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string path = 2;
+}
+
+enum SynologyLibraryItemKind {
+  SYNOLOGY_LIBRARY_ITEM_KIND_UNSPECIFIED = 0;
+  SYNOLOGY_LIBRARY_ITEM_KIND_MOVIE = 1;
+  SYNOLOGY_LIBRARY_ITEM_KIND_EPISODE = 2;
+  SYNOLOGY_LIBRARY_ITEM_KIND_HOME_VIDEO = 3;
+  SYNOLOGY_LIBRARY_ITEM_KIND_TV_RECORDING = 4;
+}
+
+message SynologyFileSourceConfig {
+  string path = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message SynologyLibraryItemSourceConfig {
+  SynologyLibraryItemKind kind = 1 [(buf.validate.field).enum = {
+    defined_only: true,
+    not_in: [0]
+  }];
+  int64 item_id = 2 [(buf.validate.field).int64.gt = 0];
+  int64 file_id = 3 [(buf.validate.field).int64.gt = 0];
+}
+
+message SynologyMediaSourceConfig {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  oneof source {
+    SynologyFileSourceConfig file = 2;
+    SynologyLibraryItemSourceConfig library_item = 3;
+  }
+}
+
+message SynologyFilesPlaylistSourceConfig {
+  string path = 1;
+}
+
+message SynologyMoviesPlaylistSourceConfig {
+  int64 library_id = 1 [(buf.validate.field).int64.gte = 0];
+}
+
+message SynologyTvShowsPlaylistSourceConfig {
+  int64 library_id = 1 [(buf.validate.field).int64.gte = 0];
+}
+
+message SynologyEpisodesPlaylistSourceConfig {
+  int64 library_id = 1 [(buf.validate.field).int64.gte = 0];
+  int64 tv_show_id = 2 [(buf.validate.field).int64.gt = 0];
+}
+
+message SynologyHomeVideosPlaylistSourceConfig {
+  int64 library_id = 1 [(buf.validate.field).int64.gte = 0];
+}
+
+message SynologyTvRecordingsPlaylistSourceConfig {
+  int64 library_id = 1 [(buf.validate.field).int64.gte = 0];
+}
+
+message SynologyPlaylistSourceConfig {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  oneof source {
+    SynologyFilesPlaylistSourceConfig files = 2;
+    SynologyMoviesPlaylistSourceConfig movies = 3;
+    SynologyTvShowsPlaylistSourceConfig tv_shows = 4;
+    SynologyEpisodesPlaylistSourceConfig episodes = 5;
+    SynologyHomeVideosPlaylistSourceConfig home_videos = 6;
+    SynologyTvRecordingsPlaylistSourceConfig tv_recordings = 7;
+  }
+}
+
+message NextcloudMediaSourceConfig {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string path = 2 [(buf.validate.field).string.min_len = 1];
+  uint64 file_id = 3 [(buf.validate.field).uint64.gt = 0];
+}
+
+message NextcloudFolderPlaylistSourceConfig {
+  string path = 1;
+}
+
+message NextcloudFavoritesPlaylistSourceConfig {}
+
+message NextcloudSearchPlaylistSourceConfig {
+  string path = 1;
+  string query = 2 [(buf.validate.field).string.min_len = 3];
+}
+
+message NextcloudPlaylistSourceConfig {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  oneof source {
+    NextcloudFolderPlaylistSourceConfig folder = 2;
+    NextcloudFavoritesPlaylistSourceConfig favorites = 3;
+    NextcloudSearchPlaylistSourceConfig search = 4;
+  }
+}
+
+message SeafileMediaSourceConfig {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string repository_id = 2 [(buf.validate.field).string.min_len = 1];
+  string path = 3 [(buf.validate.field).string.min_len = 1];
+  string object_id = 4;
+  bool has_thumbnail = 5;
+}
+
+message SeafileFolderPlaylistSourceConfig {
+  string repository_id = 1 [(buf.validate.field).string.min_len = 1];
+  string path = 2;
+}
+
+message SeafileStarredPlaylistSourceConfig {}
+
+message SeafileSearchPlaylistSourceConfig {
+  string repository_id = 1 [(buf.validate.field).string.min_len = 1];
+  string query = 2 [(buf.validate.field).string.min_len = 1];
+}
+
+message SeafilePlaylistSourceConfig {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  oneof source {
+    SeafileFolderPlaylistSourceConfig folder = 2;
+    SeafileStarredPlaylistSourceConfig starred = 3;
+    SeafileSearchPlaylistSourceConfig search = 4;
+  }
+}
+
+message TrueNasMediaSourceConfig {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string path = 2 [(buf.validate.field).string.min_len = 1];
+}
+message TrueNasFolderPlaylistSourceConfig { string path = 1; }
+message TrueNasSearchPlaylistSourceConfig {
+  string path = 1;
+  string query = 2 [(buf.validate.field).string.min_len = 1];
+}
+message TrueNasPlaylistSourceConfig {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  oneof source {
+    TrueNasFolderPlaylistSourceConfig folder = 2;
+    TrueNasSearchPlaylistSourceConfig search = 3;
+  }
+}
+
+message TikTokVideoSourceConfig {
+  string video_id = 1 [(buf.validate.field).string = {
+    min_len: 1,
+    max_len: 32
+  }];
+  bool shared = 2;
+}
+
+message TikTokLiveSourceConfig {
+  string unique_id = 1 [(buf.validate.field).string = {
+    min_len: 1,
+    max_len: 64
+  }];
+  bool shared = 2;
+}
+
+message TikTokMediaSourceConfig {
+  oneof source {
+    TikTokVideoSourceConfig video = 1;
+    TikTokLiveSourceConfig live = 2;
+  }
+}
+
+message TikTokPlaylistSourceConfig {
+  string sec_uid = 1 [(buf.validate.field).string = {
+    min_len: 1,
+    max_len: 256
+  }];
+  bool shared = 2;
+}
+
+message MediaSourceConfig {
+  oneof provider {
+    DirectUrlMediaSourceConfig direct_url = 1;
+    BilibiliMediaSourceConfig bilibili = 2;
+    AlistMediaSourceConfig alist = 3;
+    EmbyMediaSourceConfig emby = 4;
+    RtmpMediaSourceConfig rtmp = 5;
+    LiveProxyMediaSourceConfig live_proxy = 6;
+    CloudreveMediaSourceConfig cloudreve = 7;
+    TwitchMediaSourceConfig twitch = 8;
+    HuyaMediaSourceConfig huya = 9;
+    DouyuMediaSourceConfig douyu = 10;
+    DouyinMediaSourceConfig douyin = 11;
+    AcFunMediaSourceConfig ac_fun = 12;
+    CctvMediaSourceConfig cctv = 13;
+    FnosMediaSourceConfig fnos = 14;
+    QnapMediaSourceConfig qnap = 15;
+    SynologyMediaSourceConfig synology = 16;
+    NextcloudMediaSourceConfig nextcloud = 17;
+    SeafileMediaSourceConfig seafile = 18;
+    TrueNasMediaSourceConfig truenas = 19;
+    YoutubeMediaSourceConfig youtube = 20;
+    TikTokMediaSourceConfig tiktok = 21;
+  }
+}
+
+message PlaylistSourceConfig {
+  oneof provider {
+    BilibiliPlaylistSourceConfig bilibili = 2;
+    AlistPlaylistSourceConfig alist = 3;
+    EmbyPlaylistSourceConfig emby = 4;
+    CloudrevePlaylistSourceConfig cloudreve = 7;
+    TwitchPlaylistSourceConfig twitch = 8;
+    DouyinPlaylistSourceConfig douyin = 11;
+    FnosPlaylistSourceConfig fnos = 14;
+    QnapPlaylistSourceConfig qnap = 15;
+    SynologyPlaylistSourceConfig synology = 16;
+    NextcloudPlaylistSourceConfig nextcloud = 17;
+    SeafilePlaylistSourceConfig seafile = 18;
+    TrueNasPlaylistSourceConfig truenas = 19;
+    YoutubePlaylistSourceConfig youtube = 20;
+    TikTokPlaylistSourceConfig tiktok = 21;
+  }
+}

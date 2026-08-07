@@ -1,0 +1,14 @@
+flowchart TB
+  Role[Room role base permissions<br/>creator / admin / member / guest]
+  RoomAdd[Room settings<br/>added_permissions]
+  RoomRemove[Room settings<br/>removed_permissions]
+  MemberAdd[Member override<br/>added_permissions]
+  MemberRemove[Member override<br/>removed_permissions]
+  Effective[Final effective permissions]
+  Creator[creator special case<br/>always has all room permissions]
+
+  Role --> RoomAdd --> RoomRemove --> MemberAdd --> MemberRemove --> Effective
+  Creator -. cannot be weakened .-> Effective
+
+  RoomRemove -. if a bit is both added and removed<br/>remove wins .-> Effective
+  MemberRemove -. last override layer .-> Effective

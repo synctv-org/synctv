@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT m.id AS \"id: MediaId\", m.room_id AS \"room_id: RoomId\"\n             FROM media m\n             JOIN rooms r ON r.id = m.room_id\n             WHERE m.creator_id = $1\n               AND r.deleted_at IS NULL\n             ORDER BY m.room_id, m.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: MediaId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "room_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "437d4d6cec9245f3fccbc1380e90cbdf1e803d5beb8469c9df2d05e9cf5d3189"
+}

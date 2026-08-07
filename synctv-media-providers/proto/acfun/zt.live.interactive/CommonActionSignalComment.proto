@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package acproto;
+
+import "ZtLiveUserInfo.proto";
+
+message CommonActionSignalComment {
+	string content = 1;
+	int64 sendTimeMs = 2;
+	ZtLiveUserInfo userInfo = 3;
+}

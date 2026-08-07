@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO auth_totp_credentials (\n                user_id, encrypted_secret, setup_id, setup_expires_at,\n                confirmed_at, last_used_step, recovery_code_hashes\n            ) VALUES ($1, $2, $3, $4, NULL, NULL, '{}')\n            ON CONFLICT (user_id) DO UPDATE SET\n                encrypted_secret = EXCLUDED.encrypted_secret,\n                setup_id = EXCLUDED.setup_id,\n                setup_expires_at = EXCLUDED.setup_expires_at,\n                confirmed_at = NULL,\n                last_used_step = NULL,\n                recovery_code_hashes = '{}'\n            WHERE auth_totp_credentials.confirmed_at IS NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Jsonb",
+        "Varchar",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4c167ac28ff32d3b8c2b40de289a8deeb3d48bb60faba5857551d7078ccad5d0"
+}

@@ -1,0 +1,196 @@
+syntax = "proto3";
+
+package synctv.provider.common;
+
+import "proto/buf/validate/validate.proto";
+import "proto/source_config.proto";
+
+message ProviderInstanceQuery {
+  string instance_name = 1 [(buf.validate.field).cel = {
+    id: "provider_instance_query.instance_name"
+    message: "instance_name must be empty or 1-64 characters of letters, numbers, underscores, or hyphens"
+    expression: "this == '' || (size(this) <= 64 && this.matches('^[A-Za-z0-9_-]+$'))"
+  }];
+}
+
+enum ProviderInstanceStatus {
+  PROVIDER_INSTANCE_STATUS_UNSPECIFIED = 0;
+  PROVIDER_INSTANCE_STATUS_CONNECTED = 1;
+  PROVIDER_INSTANCE_STATUS_DISCONNECTED = 2;
+  PROVIDER_INSTANCE_STATUS_ERROR = 3;
+}
+
+enum ProviderInstanceListSortBy {
+  PROVIDER_INSTANCE_LIST_SORT_BY_UNSPECIFIED = 0;
+  PROVIDER_INSTANCE_LIST_SORT_BY_NAME = 1;
+  PROVIDER_INSTANCE_LIST_SORT_BY_ENDPOINT = 2;
+  PROVIDER_INSTANCE_LIST_SORT_BY_CREATED_AT = 3;
+  PROVIDER_INSTANCE_LIST_SORT_BY_UPDATED_AT = 4;
+}
+
+enum SortDirection {
+  SORT_DIRECTION_UNSPECIFIED = 0;
+  SORT_DIRECTION_ASC = 1;
+  SORT_DIRECTION_DESC = 2;
+}
+
+message ProviderInstance {
+  string name = 1;
+  string endpoint = 2;
+  string comment = 3;
+  uint32 timeout_seconds = 4;
+  bool tls = 5;
+  bool insecure_tls = 6;
+  repeated synctv.source_config.SourceProvider providers = 7 [(buf.validate.field).repeated = {
+    min_items: 1
+    unique: true
+    items: { enum: { defined_only: true not_in: [0] } }
+  }];
+  bool enabled = 8;
+  ProviderInstanceStatus status = 9;
+  int64 created_at = 10;
+  int64 updated_at = 11;
+}
+
+message ListAvailableProviderInstancesRequest {
+  synctv.source_config.SourceProvider provider_type = 1 [(buf.validate.field).enum.defined_only = true];
+}
+
+message ListProviderInstancesRequest {
+  option (buf.validate.message).cel = {
+    id: "provider.list_provider_instances.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "provider.list_provider_instances.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+  int32 page = 1;
+  int32 page_size = 2;
+  synctv.source_config.SourceProvider provider_type = 3 [(buf.validate.field).enum.defined_only = true];
+  string search = 4 [(buf.validate.field).string.max_len = 100];
+  optional bool enabled = 5;
+  optional bool tls = 6;
+  ProviderInstanceListSortBy sort_by = 7 [(buf.validate.field).enum.defined_only = true];
+  SortDirection sort_direction = 8 [(buf.validate.field).enum.defined_only = true];
+}
+
+message ListProviderInstancesResponse {
+  repeated ProviderInstance instances = 1;
+  int32 total = 2;
+}
+
+message AddProviderInstanceRequest {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]+$"
+  }];
+  string endpoint = 2;
+  string comment = 3;
+  uint32 timeout_seconds = 4;
+  bool tls = 5;
+  bool insecure_tls = 6;
+  repeated synctv.source_config.SourceProvider providers = 7 [(buf.validate.field).repeated = {
+    min_items: 1
+    unique: true
+    items: { enum: { defined_only: true not_in: [0] } }
+  }];
+  optional string jwt_secret = 8;
+  optional string custom_ca = 9;
+}
+
+message AddProviderInstanceResponse {
+  ProviderInstance instance = 1;
+}
+
+message UpdateProviderInstanceRequest {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]+$"
+  }];
+  optional string endpoint = 2;
+  optional string comment = 3;
+  optional uint32 timeout_seconds = 4;
+  optional bool tls = 5;
+  optional bool insecure_tls = 6;
+  repeated synctv.source_config.SourceProvider providers = 7 [(buf.validate.field).repeated = {
+    unique: true
+    items: { enum: { defined_only: true not_in: [0] } }
+  }];
+  optional string jwt_secret = 8;
+  optional string custom_ca = 9;
+  optional bool clear_comment = 10;
+  optional bool clear_jwt_secret = 11;
+  optional bool clear_custom_ca = 12;
+}
+
+message UpdateProviderInstanceResponse {
+  ProviderInstance instance = 1;
+}
+
+message DeleteProviderInstanceRequest {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]+$"
+  }];
+}
+
+message DeleteProviderInstanceResponse {
+  bool success = 1;
+}
+
+message ReconnectProviderInstanceRequest {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]+$"
+  }];
+}
+
+message ReconnectProviderInstanceResponse {
+  ProviderInstance instance = 1;
+}
+
+message EnableProviderInstanceRequest {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]+$"
+  }];
+}
+
+message EnableProviderInstanceResponse {
+  ProviderInstance instance = 1;
+}
+
+message DisableProviderInstanceRequest {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]+$"
+  }];
+}
+
+message DisableProviderInstanceResponse {
+  ProviderInstance instance = 1;
+}
+
+message ListProviderBackendsRequest {
+  synctv.source_config.SourceProvider provider_type = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+}
+
+message ProviderInstancesResponse {
+  repeated string instances = 1;
+}
+
+message ProviderBackendsResponse {
+  repeated string backends = 1;
+}

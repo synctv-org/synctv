@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package acproto;
+
+message ZtLiveStateSignalItem {
+	string signalType = 1;
+	bytes payload = 2;
+}

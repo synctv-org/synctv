@@ -1,0 +1,46 @@
+flowchart TB
+  Client[客户端应用]
+
+  subgraph Edge["Ingress / 反向代理"]
+    HTTP[HTTP REST / WebSocket]
+    GRPC[公开 gRPC]
+  end
+
+  subgraph Nodes["SyncTV 副本"]
+    A[节点 A<br/>房间 / Provider / 直播]
+    B[节点 B<br/>房间 / Provider / 直播]
+    C[节点 C<br/>房间 / Provider / 直播]
+  end
+
+  PG[(PostgreSQL<br/>持久状态)]
+  Redis[(Redis<br/>协调状态)]
+  HLS[(HLS 后端<br/>memory / file / S3)]
+  HLSProxy[发布节点<br/>HLS gRPC 代理]
+
+  Client --> HTTP
+  Client --> GRPC
+  HTTP --> A
+  HTTP --> B
+  HTTP --> C
+  GRPC --> A
+  GRPC --> B
+  GRPC --> C
+
+  A --> PG
+  B --> PG
+  C --> PG
+  A <--> Redis
+  B <--> Redis
+  C <--> Redis
+  A --> HLS
+  B --> HLS
+  C --> HLS
+  A <--> HLSProxy
+  B <--> HLSProxy
+  C <--> HLSProxy
+
+  Redis -. 节点发现 .-> A
+  Redis -. pub/sub .-> B
+  Redis -. streams .-> C
+  Redis -. leader lock .-> A
+  Redis -. publisher registry .-> HLSProxy

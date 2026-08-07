@@ -1,0 +1,112 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO chat_message_mentions (\n                    room_id, message_id, message_created_at, mentioned_user_id,\n                    start_char, length_chars\n                )\n                VALUES ($1, $2, $3, $4, $5, $6)\n                ON CONFLICT (room_id, message_id, message_created_at, start_char, mentioned_user_id)\n                DO UPDATE SET created_at = chat_message_mentions.created_at\n                RETURNING room_id AS \"room_id!: RoomId\",\n                          message_id AS \"message_id!\",\n                          message_created_at AS \"message_created_at!\",\n                          mentioned_user_id AS \"mentioned_user_id!: UserId\",\n                          NULL::TEXT AS \"username?\",\n                          start_char AS \"start!\",\n                          length_chars AS \"length!\",\n                          created_at AS \"created_at!\"\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_mentions",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "message_id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_mentions",
+            "name": "message_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "message_created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_message_mentions",
+            "name": "message_created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "mentioned_user_id!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_mentions",
+            "name": "mentioned_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "username?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "start!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "chat_message_mentions",
+            "name": "start_char"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "length!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "chat_message_mentions",
+            "name": "length_chars"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_message_mentions",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Timestamptz",
+        "Int8",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "69e25252b2a696a5d2868836a3a285947fad1ff04cfdeec4830425fa2e6e5976"
+}

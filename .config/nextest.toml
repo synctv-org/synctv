@@ -1,0 +1,2 @@
+[profile.default]
+leak-timeout = "500ms"

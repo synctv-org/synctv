@@ -1,0 +1,131 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO file_blob_parts (\n                storage_backend, object_key, part_index, offset_bytes,\n                size_bytes, checksum_sha256, compression, data\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\n            ON CONFLICT (storage_backend, object_key, part_index)\n            DO UPDATE SET\n                offset_bytes = EXCLUDED.offset_bytes,\n                size_bytes = EXCLUDED.size_bytes,\n                checksum_sha256 = EXCLUDED.checksum_sha256,\n                compression = EXCLUDED.compression,\n                data = EXCLUDED.data\n            RETURNING storage_backend, object_key, part_index, offset_bytes,\n                      size_bytes, checksum_sha256,\n                      compression AS \"compression!: FileBlobCompression\",\n                      data, created_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "storage_backend",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_blob_parts",
+            "name": "storage_backend"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "object_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_blob_parts",
+            "name": "object_key"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "part_index",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "file_blob_parts",
+            "name": "part_index"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "offset_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "file_blob_parts",
+            "name": "offset_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "file_blob_parts",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "checksum_sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_blob_parts",
+            "name": "checksum_sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "compression!: FileBlobCompression",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "file_blob_parts",
+            "name": "compression"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "data",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "file_blob_parts",
+            "name": "data"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_blob_parts",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int4",
+        "Int8",
+        "Int8",
+        "Text",
+        "Int2",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "85d7d3bb7e72950a4e435bbf6f5480de4eb586c7c384a088982aa40ae644ee19"
+}

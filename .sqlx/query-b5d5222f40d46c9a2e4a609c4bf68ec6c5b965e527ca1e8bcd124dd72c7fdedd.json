@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        CREATE TRIGGER trg_fail_token_blacklist_family_insert\n        BEFORE INSERT OR UPDATE ON auth_token_blacklist\n        FOR EACH ROW\n        EXECUTE FUNCTION fail_token_blacklist_family_insert()\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "b5d5222f40d46c9a2e4a609c4bf68ec6c5b965e527ca1e8bcd124dd72c7fdedd"
+}

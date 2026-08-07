@@ -1,0 +1,274 @@
+---
+title: 安全与密钥
+description: JWT、OPAQUE、Provider 凭据加密、密码策略、CORS、可信代理和 2FA 行为。
+---
+
+## 关键 secret
+
+| 配置 | 用途 | 必须稳定 | 丢失或泄露影响 |
+| --- | --- | --- | --- |
+| `jwt.secret` | 签发 access、refresh 和 guest token | 可轮换，但会影响登录状态 | 泄露后可能伪造 token |
+| `security.opaque_server_setup_secret` | OPAQUE 密码认证服务端 setup secret | 是 | 改错会导致 OPAQUE 密码记录无法验证 |
+| `security.credential_encryption_key` | 加密 Provider 凭据 | 是 | 丢失后已加密 Provider 凭据可能无法读取 |
+| `security.totp_encryption_key` | 加密 TOTP secret | 是 | 丢失后用户需要重新配置 TOTP |
+| `security.email_outbox_encryption_key` | 加密待发送邮件中的验证码 | 是 | 丢失后队列中的待发邮件无法恢复 |
+| `security.proxy_signing_key` | 签名媒体代理 URL | 所有副本一致 | 轮换后已有代理 URL 失效 |
+| `security.media_swarm_signing_key` | 签名 WebRTC 媒体 swarm 声明 | 所有副本一致 | 轮换后已有 swarm 声明失效 |
+| `security.provider_session_encryption_key` | 加密 Provider 登录会话 | 所有副本一致 | 轮换后进行中的登录会话失效 |
+| `security.login_discovery_key` | 登录发现防枚举 | 所有副本一致 | 轮换后临时发现结果变化 |
+| `security.webauthn_enumeration_key` | WebAuthn 防枚举假凭据 | 所有副本一致 | 轮换后临时假凭据变化 |
+| `file_storage.upload_token_secret` | 签名文件上传和读取 token | 所有副本一致 | 轮换后已有文件 token 失效 |
+
+生产环境使用环境变量或 secret file 注入，不提交到仓库。
+
+## `jwt.secret`
+
+用途：签发登录 token。
+
+要求：
+
+- 至少 32 个字符。
+- 高熵随机值。
+- 不是占位值、项目名、域名、日期或常见单词。
+
+生成：
+
+```bash
+openssl rand -base64 32
+```
+
+推荐 YAML：
+
+```yaml
+jwt:
+  secret_file: "/run/secrets/jwt_secret"
+```
+
+环境变量：
+
+```bash
+SYNCTV_JWT_SECRET=...
+SYNCTV_JWT_SECRET_FILE=/run/secrets/jwt_secret
+```
+
+轮换会让已有 access token 和 refresh token 失效。怀疑泄露时立即轮换。
+
+## Token 时长
+
+| 字段 | 默认值 | 用途 |
+| --- | --- | --- |
+| `jwt.access_token_duration_hours` | `1` | Access token 有效期 |
+| `jwt.refresh_token_duration_days` | `30` | Refresh token 有效期 |
+| `jwt.guest_token_duration_hours` | `4` | Guest token 有效期 |
+| `jwt.clock_skew_leeway_secs` | `60` | 时钟偏移容忍 |
+
+公网部署保持较短 access token，通过 refresh token 续期。服务器时间漂移应使用 NTP 修正，不靠调大 clock skew 掩盖。
+
+## `security.credential_encryption_key`
+
+用途：加密 Provider token、API key 和其他 Provider secret。
+
+格式：
+
+- 64 个十六进制字符。
+- 等价于 32 字节 AES-256-GCM key。
+
+生成：
+
+```bash
+openssl rand -hex 32
+```
+
+推荐 YAML：
+
+```yaml
+security:
+  credential_encryption_key_file: "/run/secrets/credential_encryption_key"
+```
+
+环境变量：
+
+```bash
+SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY=...
+SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY_FILE=/run/secrets/credential_encryption_key
+```
+
+保存加密 Provider 凭据前备份这个 key。没有迁移方案时不要随意轮换。
+
+Provider 数据密文使用 HKDF 数据域派生和业务主键 AAD。Provider 实例、用户凭据和缓存记录都有独立的密文上下文。
+
+## `security.totp_encryption_key`
+
+TOTP 使用独立的 32 字节 AES-256-GCM key，格式与 Provider 凭据 key 相同：
+
+```bash
+openssl rand -hex 32
+```
+
+```yaml
+security:
+  totp_encryption_key_file: "/run/secrets/totp_encryption_key"
+```
+
+## `security.email_outbox_encryption_key`
+
+用途：加密 PostgreSQL email outbox 中的验证码和收件上下文。每个副本必须使用同一个 key。
+
+```bash
+openssl rand -hex 32
+```
+
+推荐 YAML：
+
+```yaml
+security:
+  email_outbox_encryption_key_file: "/run/secrets/email_outbox_encryption_key"
+```
+
+环境变量：
+
+```bash
+SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY=...
+SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY_FILE=/run/secrets/email_outbox_encryption_key
+```
+
+Compose 和 Helm 首次安装会自动生成并长期保存这个 key。备份时将它与 PostgreSQL 一起保存。
+
+## 短期签名与防枚举 key
+
+下面六个字段各自使用独立随机值，最低 32 个字符：
+
+```yaml
+security:
+  proxy_signing_key_file: "/run/secrets/proxy_signing_key"
+  media_swarm_signing_key_file: "/run/secrets/media_swarm_signing_key"
+  provider_session_encryption_key_file: "/run/secrets/provider_session_encryption_key"
+  login_discovery_key_file: "/run/secrets/login_discovery_key"
+  webauthn_enumeration_key_file: "/run/secrets/webauthn_enumeration_key"
+file_storage:
+  upload_token_secret_file: "/run/secrets/file_upload_token_secret"
+```
+
+Compose 和 Helm 会分别生成并保存这些值。配置校验会拒绝不同安全域使用相同值。
+
+## `security.opaque_server_setup_secret`
+
+用途：OPAQUE 密码认证使用的稳定服务端 secret。
+
+生成：
+
+```bash
+openssl rand -base64 48
+```
+
+推荐 YAML：
+
+```yaml
+security:
+  opaque_server_setup_secret_file: "/run/secrets/opaque_server_setup_secret"
+```
+
+环境变量：
+
+```bash
+SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=...
+SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET_FILE=/run/secrets/opaque_server_setup_secret
+```
+
+约束：
+
+- 不要复用 `jwt.secret`。
+- 不要在每次容器启动时生成新值。
+- Helm 升级和重新部署必须保留原值。
+- 改错会破坏已有密码登录记录。
+
+## 密码复杂度
+
+```yaml
+password_complexity:
+  min_length: 8
+  require_uppercase: true
+  require_lowercase: true
+  require_digit: true
+  require_special: false
+  max_repeated_chars: 3
+  zxcvbn_enabled: false
+  zxcvbn_min_score: 3
+```
+
+这组策略作用于用户账户密码，不作用于房间密码。
+
+生产策略通常更应该依赖更长密码和限流，而不是在电视端、移动端等输入体验差的客户端强制大量特殊字符。
+
+`max_repeated_chars=0` 会关闭连续重复字符检查。
+`zxcvbn_enabled=false` 是默认值。启用后，SyncTV 使用 zxcvbn 熵估算器，并拒绝分数低于 `zxcvbn_min_score` 的密码（范围 `0`-`4`，推荐最低 `3`）。
+
+## CORS 和可信代理
+
+CORS 控制哪些浏览器 origin 可以调用 API：
+
+```yaml
+server:
+  cors_allowed_origins:
+    - "https://app.example.com"
+```
+
+origin 不能包含路径、query 或 fragment。
+
+可信代理控制 SyncTV 是否信任 `X-Forwarded-For` 等转发头：
+
+```yaml
+server:
+  trusted_proxies:
+    - "10.0.0.0/8"
+```
+
+只添加你控制的代理 IP 或 CIDR。为空时，SyncTV 使用 socket peer address。
+
+## SSRF 出站策略
+
+SyncTV 使用全局 `security.ssrf` 策略控制服务端发起的 HTTP、代理、Provider、OAuth2、远程 Provider 和直播拉流请求。默认关闭 SSRF 防护，方便自托管环境直接使用内网媒体源。公网部署建议启用 SSRF 防护，并为可信内网媒体端点配置最小 allowlist。
+
+```yaml
+security:
+  ssrf:
+    enabled: true
+    allow_private_network_targets: false
+    allowed_hosts:
+      - "alist.internal"
+    allowed_ip_ranges:
+      - "192.168.1.10/32"
+      - "10.0.8.0/24"
+```
+
+字段含义：
+
+- `enabled=false`：默认值，关闭 SSRF 防护。
+- `enabled=true`：启用 SSRF 防护，阻断本地/内网/metadata 目标。
+- `allow_private_network_targets=false`：启用 SSRF 防护时，保持本地/内网/metadata 目标阻断。
+- `allowed_hosts`：按主机名放行已知内部服务。
+- `allowed_ip_ranges`：按 IP 或 CIDR 放行已知内部网段或单个服务。
+- `allow_private_network_targets=true`：显式放开所有 private/non-global 目标，仅适合可信内网部署。
+
+环境变量：
+
+```bash
+SYNCTV_SECURITY_SSRF_ENABLED=true
+SYNCTV_SECURITY_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS=false
+SYNCTV_SECURITY_SSRF_ALLOWED_HOSTS=nas.example.internal,alist.internal
+SYNCTV_SECURITY_SSRF_ALLOWED_IP_RANGES=192.168.1.10/32,10.0.8.0/24
+```
+
+公网部署应启用 SSRF 防护，避免把内部管理端点作为普通媒体源暴露给不可信用户。优先使用最小 allowlist。
+
+## WebAuthn 和 2FA
+
+WebAuthn/passkey 配置见 [WebAuthn 配置](../webauthn/)。
+
+用户级 2FA 是用户偏好，不是全局 YAML 开关。开启 2FA 前，用户必须至少有两种可用本地验证方式：
+
+- 密码。
+- WebAuthn/passkey。
+- 已验证邮箱。
+
+OAuth2 不参与本地 2FA，但开启 2FA 的用户仍可用 OAuth2 登录。开启 2FA 后，一因素本地 token 不应满足 refresh 或敏感偏好修改。

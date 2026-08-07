@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package synctv.provider.douyu;
+
+import "proto/providers/douyu.proto";
+
+service DouyuProviderService {
+  rpc Resolve(ResolveRequest) returns (ResolveResponse);
+}

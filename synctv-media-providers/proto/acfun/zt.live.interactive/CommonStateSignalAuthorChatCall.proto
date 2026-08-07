@@ -1,0 +1,11 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+import "AuthorChatPlayerInfo.proto";
+
+message CommonStateSignalAuthorChatCall {
+	string authorChatId = 1;
+	AuthorChatPlayerInfo inviterUserInfo = 2;
+	int64 callTimestampMs = 3;
+}

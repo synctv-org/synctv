@@ -1,0 +1,14 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+message CommonStateSignalAuthorChatChangeSoundConfig {
+	string authorChatId = 1;
+	SoundConfigChangeType soundConfigChangeType = 2;
+
+	enum SoundConfigChangeType {
+		UNKNOWN = 0;
+		OPEN_SOUND = 1;
+		CLOSE_SOUND = 2;
+	}
+}

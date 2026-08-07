@@ -1,0 +1,246 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "synctv.fullname" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "synctv.appSelectorLabels" . | nindent 6 }}
+  policyTypes:
+    {{- toYaml .Values.networkPolicy.policyTypes | nindent 4 }}
+  {{- if has "Ingress" .Values.networkPolicy.policyTypes }}
+  ingress:
+    # Allow ingress controller (API + WebSocket)
+    {{- if and .Values.ingress.enabled .Values.networkPolicy.ingressControllerNamespaces }}
+    - from:
+        {{- range .Values.networkPolicy.ingressControllerNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.config.server.port }}
+    {{- end }}
+    {{- if .Values.config.cluster.enabled }}
+    # Allow internal cluster traffic between SyncTV replicas.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "synctv.appSelectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.config.cluster.port | default 50051 }}
+    {{- end }}
+    # Allow RTMP ingest (external publishers)
+    {{- if or .Values.networkPolicy.allowAnyRtmpSource .Values.networkPolicy.rtmpSourceCIDRs }}
+    - from:
+        {{- if .Values.networkPolicy.allowAnyRtmpSource }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        {{- end }}
+        {{- range .Values.networkPolicy.rtmpSourceCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.config.livestream.rtmpPort }}
+    {{- end }}
+    # Allow STUN traffic (WebRTC NAT traversal, UDP)
+    {{- if and .Values.config.webrtc.enableBuiltinStun (or .Values.networkPolicy.allowAnyStunSource .Values.networkPolicy.stunSourceCIDRs) }}
+    - from:
+        {{- if .Values.networkPolicy.allowAnyStunSource }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        {{- end }}
+        {{- range .Values.networkPolicy.stunSourceCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: UDP
+          port: {{ .Values.config.webrtc.stunPort }}
+    {{- end }}
+    # Allow Prometheus scraping
+    {{- if and .Values.metrics.enabled .Values.networkPolicy.metricsSourceNamespaces }}
+    - from:
+        {{- range .Values.networkPolicy.metricsSourceNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.metrics.port | default 9090 }}
+    {{- end }}
+  {{- end }}
+  {{- if has "Egress" .Values.networkPolicy.policyTypes }}
+  egress:
+    # Allow DNS (TCP and UDP)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow PostgreSQL
+    - to:
+        {{- if eq (include "synctv.postgresql.mode" .) "external" }}
+        {{- if or .Values.networkPolicy.allowAnyExternalDatabaseEgress .Values.networkPolicy.externalPostgresqlCIDRs }}
+        {{- if .Values.networkPolicy.allowAnyExternalDatabaseEgress }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        {{- end }}
+        {{- range .Values.networkPolicy.externalPostgresqlCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+        {{- else }}
+        {{- fail "networkPolicy.enabled with postgresql.mode=external requires networkPolicy.externalPostgresqlCIDRs or allowAnyExternalDatabaseEgress=true" }}
+        {{- end }}
+        {{- else }}
+        - podSelector:
+            matchLabels:
+              {{- if eq (include "synctv.postgresql.mode" .) "kubeblocks" }}
+              app.kubernetes.io/instance: {{ include "synctv.postgresql.kubeblocks.clusterName" . | quote }}
+              apps.kubeblocks.io/component-name: "postgresql"
+              kubeblocks.io/role: "primary"
+              {{- else }}
+              app.kubernetes.io/instance: {{ .Release.Name | quote }}
+              app.kubernetes.io/name: {{ include "synctv.name" . | quote }}
+              app.kubernetes.io/component: "postgresql"
+              {{- end }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ include "synctv.postgresql.port" . }}
+    {{- if include "synctv.postgresql.hasAutoReadReplica" . }}
+    # Allow KubeBlocks PostgreSQL read replicas
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ include "synctv.postgresql.kubeblocks.clusterName" . | quote }}
+              apps.kubeblocks.io/component-name: "postgresql"
+              kubeblocks.io/role: "secondary"
+      ports:
+        - protocol: TCP
+          port: {{ include "synctv.postgresql.port" . }}
+    {{- end }}
+    # Allow Redis
+    - to:
+        {{- if eq (include "synctv.redis.mode" .) "external" }}
+        {{- if or .Values.networkPolicy.allowAnyExternalDatabaseEgress .Values.networkPolicy.externalRedisCIDRs }}
+        {{- if .Values.networkPolicy.allowAnyExternalDatabaseEgress }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        {{- end }}
+        {{- range .Values.networkPolicy.externalRedisCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+        {{- else }}
+        {{- fail "networkPolicy.enabled with redis.mode=external requires networkPolicy.externalRedisCIDRs or allowAnyExternalDatabaseEgress=true" }}
+        {{- end }}
+        {{- else }}
+        - podSelector:
+            matchLabels:
+              {{- if eq (include "synctv.redis.mode" .) "kubeblocks" }}
+              app.kubernetes.io/instance: {{ include "synctv.redis.kubeblocks.clusterName" . | quote }}
+              apps.kubeblocks.io/component-name: "redis"
+              {{- else }}
+              app.kubernetes.io/instance: {{ .Release.Name | quote }}
+              app.kubernetes.io/name: {{ include "synctv.name" . | quote }}
+              app.kubernetes.io/component: "redis"
+              {{- end }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ include "synctv.redis.port" . }}
+    {{- if .Values.config.cluster.enabled }}
+    # Allow internal cluster traffic between SyncTV replicas.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "synctv.appSelectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.config.cluster.port | default 50051 }}
+    {{- end }}
+    # Allow external HTTP/HTTPS (for OAuth2, media providers)
+    {{- if or .Values.networkPolicy.allowAnyExternalHttpEgress .Values.networkPolicy.externalHttpCIDRs }}
+    - to:
+        {{- if .Values.networkPolicy.allowAnyExternalHttpEgress }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        {{- end }}
+        {{- range .Values.networkPolicy.externalHttpCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- if and .Values.networkPolicy.enabled (has "Ingress" .Values.networkPolicy.policyTypes) (eq (include "synctv.postgresql.mode" .) "standard") }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "synctv.postgresql.fullname" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      app.kubernetes.io/name: {{ include "synctv.name" . | quote }}
+      app.kubernetes.io/component: "postgresql"
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "synctv.appSelectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ include "synctv.postgresql.port" . }}
+{{- end }}
+{{- if and .Values.networkPolicy.enabled (has "Ingress" .Values.networkPolicy.policyTypes) (eq (include "synctv.redis.mode" .) "standard") }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "synctv.redis.fullname" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      app.kubernetes.io/name: {{ include "synctv.name" . | quote }}
+      app.kubernetes.io/component: "redis"
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "synctv.appSelectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ include "synctv.redis.port" . }}
+{{- end }}

@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO user_registration_requests (\n                username, email, signup_method, status, requested_at,\n                webauthn_credential_id, webauthn_passkey, webauthn_credential_name\n            )\n            VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, $5, $6, $7)\n            RETURNING id AS \"id: UserId\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Int2",
+        "Int2",
+        "Bytea",
+        "Jsonb",
+        "Varchar"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c6367ae20d91a1e7fa1c21c309c05c45afeb42715531b7a5d3310f04bdd18816"
+}

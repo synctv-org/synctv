@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO chat_messages (room_id, user_id, content, message_type, created_at)\n         VALUES ($1, $2, $3, 1, NOW())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0fd150f81c2af069cd3cea0490269da0468fbfd0443cbdae10eb11bffdf4be7f"
+}

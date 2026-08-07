@@ -1,0 +1,35 @@
+{{- if and .Values.metrics.enabled (eq (.Values.metrics.auth.mode | default "bearer_token") "kubernetes") }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "synctv.fullname" . }}-metrics-kubernetes-auth
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "synctv.fullname" . }}-metrics-kubernetes-auth
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "synctv.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.metrics.auth.kubernetes.allowedServiceAccounts }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "synctv.fullname" . }}-metrics-reader
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "synctv.fullname" . }}-metrics-reader
+subjects:
+  {{- range .Values.metrics.auth.kubernetes.allowedServiceAccounts }}
+  - kind: ServiceAccount
+    name: {{ .name }}
+    namespace: {{ .namespace }}
+  {{- end }}
+{{- end }}
+{{- end }}

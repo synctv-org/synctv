@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO audit_logs (\n            actor_id, actor_username, action, target_type, target_id,\n            details, ip_address, user_agent, created_at\n        )\n        SELECT NULLIF(actor_id, 0)::bigint,\n               actor_username::text,\n               action::smallint,\n               target_type::smallint,\n               NULLIF(target_id, '')::text,\n               details::jsonb,\n               NULLIF(ip_address, '')::text,\n               NULLIF(user_agent, '')::text,\n               created_at::timestamptz\n        FROM UNNEST(\n            $1::bigint[],\n            $2::text[],\n            $3::smallint[],\n            $4::smallint[],\n            $5::text[],\n            $6::jsonb[],\n            $7::text[],\n            $8::text[],\n            $9::timestamptz[]\n        ) AS t(\n            actor_id,\n            actor_username,\n            action,\n            target_type,\n            target_id,\n            details,\n            ip_address,\n            user_agent,\n            created_at\n        )\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "TextArray",
+        "Int2Array",
+        "Int2Array",
+        "TextArray",
+        "JsonbArray",
+        "TextArray",
+        "TextArray",
+        "TimestamptzArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "57d47f81f65b9f715e96d3403bfd2ca922c5c564444138b27a3b648fddff41ad"
+}

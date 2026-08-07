@@ -1,0 +1,35 @@
+---
+title: Client Downloads
+description: Download the SyncTV client for Android, iOS, macOS, Windows, and Linux.
+---
+
+SyncTV Server provides the self-hosted service and the client connects to a server you choose. The client has no fixed server address; enter your server URL after installation.
+
+## Official downloads
+
+All desktop builds and public Android builds are published in [SyncTV App GitHub Releases](https://github.com/synctv-org/synctv-app/releases/latest). Open the latest release and choose a matching file from **Assets**.
+
+| Platform | Recommended file | Best for |
+| --- | --- | --- |
+| Android | Universal APK | Phones, tablets, and most Android devices |
+| iOS / iPadOS | App Store build | Apple's official distribution and automatic updates |
+| macOS | Universal DMG | Apple silicon and Intel Macs |
+| Windows | x64 EXE installer | Standard Windows 10/11 installation |
+| Linux | x64 or arm64 DEB | Debian, Ubuntu, and compatible distributions |
+
+GitHub Releases also include macOS ZIP, Windows portable ZIP, Linux TAR.GZ, architecture-specific Android APKs, an iOS IPA, and a SHA-256 checksum file for each version. Store builds are managed by Apple App Store and Google Play; availability, update timing, and signing status follow the corresponding store listing.
+
+## Before installing
+
+- Prefer builds marked `signed` on GitHub and verify the platform and architecture in the file name.
+- Verify downloaded files against `SHA256SUMS.txt` from the same release.
+- The iOS IPA is intended for development, testing, and managed distribution. Most users should install the App Store build.
+- DEB packages target Debian-family distributions. Use the TAR.GZ archive on other distributions and integrate it using that distribution's desktop conventions.
+
+## Connect to a self-hosted server
+
+1. Deploy SyncTV Server with [Docker Compose](./docker-compose/) or [Helm](./helm/).
+2. Confirm that the server HTTPS address and WebSocket endpoint are reachable from the client network.
+3. Start the client, add the server URL, and sign in.
+
+Server and client upgrades are independent. Suite release notes mirror the matching client version and download entry when a release is promoted.

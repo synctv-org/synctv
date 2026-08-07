@@ -1,0 +1,46 @@
+flowchart TB
+  Client[Client apps]
+
+  subgraph Edge["Ingress / reverse proxy"]
+    HTTP[HTTP REST / WebSocket]
+    GRPC[Public gRPC]
+  end
+
+  subgraph Nodes["SyncTV replicas"]
+    A[Node A<br/>rooms / providers / live]
+    B[Node B<br/>rooms / providers / live]
+    C[Node C<br/>rooms / providers / live]
+  end
+
+  PG[(PostgreSQL<br/>durable state)]
+  Redis[(Redis<br/>coordination state)]
+  HLS[(HLS backend<br/>memory / file / S3)]
+  HLSProxy[Publisher-node<br/>HLS gRPC proxy]
+
+  Client --> HTTP
+  Client --> GRPC
+  HTTP --> A
+  HTTP --> B
+  HTTP --> C
+  GRPC --> A
+  GRPC --> B
+  GRPC --> C
+
+  A --> PG
+  B --> PG
+  C --> PG
+  A <--> Redis
+  B <--> Redis
+  C <--> Redis
+  A --> HLS
+  B --> HLS
+  C --> HLS
+  A <--> HLSProxy
+  B <--> HLSProxy
+  C <--> HLSProxy
+
+  Redis -. discovery .-> A
+  Redis -. pub/sub .-> B
+  Redis -. streams .-> C
+  Redis -. leader lock .-> A
+  Redis -. publisher registry .-> HLSProxy

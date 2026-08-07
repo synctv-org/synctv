@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE media_provider_instances SET enabled = true, updated_at = NOW() WHERE name = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8fcaf98a5a7fb63ef42707d87285b90a257b7189b5e56888153a050e8bf1edf1"
+}

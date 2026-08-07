@@ -1,0 +1,102 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT p.room_id AS \"room_id!: RoomId\",\n                   p.message_id AS \"message_id!\",\n                   p.message_created_at AS \"message_created_at!\",\n                   p.pinned_by AS \"pinned_by?: UserId\",\n                   u.username AS \"pinned_by_username?\",\n                   p.note,\n                   p.pinned_at AS \"pinned_at!\"\n            FROM chat_message_pins p\n            LEFT JOIN users u ON u.id = p.pinned_by\n            WHERE p.room_id = $1\n              AND p.message_id = $2\n              AND p.message_created_at = $3\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_pins",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "message_id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_pins",
+            "name": "message_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "message_created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_message_pins",
+            "name": "message_created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "pinned_by?: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_pins",
+            "name": "pinned_by"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "pinned_by_username?",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "note",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_pins",
+            "name": "note"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "pinned_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_message_pins",
+            "name": "pinned_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "daa54cfb30fff13ce3305b05b4bca4c4ad9f37796c5320e45cdaa24440951d4b"
+}

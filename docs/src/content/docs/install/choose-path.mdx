@@ -1,0 +1,30 @@
+---
+title: 选择部署方式
+description: 比较 Docker Compose 与 Helm 的基础设施要求和运维成本。
+---
+
+Docker Compose 覆盖大多数自托管环境。Helm 面向已经运行 Kubernetes、Ingress 和集中式 Secret 管理的平台。
+
+<table class="deployment-matrix">
+  <thead><tr><th>条件</th><th>Docker Compose</th><th>Helm</th></tr></thead>
+  <tbody>
+    <tr><td>运行环境</td><td>一台 Linux 服务器、NAS 或虚拟机</td><td>现有 Kubernetes 集群</td></tr>
+    <tr><td>SyncTV 副本</td><td>单副本</td><td>单副本或多副本</td></tr>
+    <tr><td>PostgreSQL / Redis</td><td>Compose 同时启动</td><td>使用集群内或托管服务</td></tr>
+    <tr><td>TLS 入口</td><td>现有反向代理</td><td>Ingress Controller</td></tr>
+    <tr><td>Secret</td><td>本地 env 文件</td><td>Kubernetes Secret 或外部 Secret 系统</td></tr>
+    <tr><td>开始安装</td><td><a href="../docker-compose/">Docker Compose 安装</a></td><td><a href="../helm/">Helm 安装</a></td></tr>
+  </tbody>
+</table>
+
+## 生产要求
+
+上线前完成以下项目：
+
+- 持久化并备份 PostgreSQL。
+- 长期保存完整的生产 secret 集合，并与数据库一起备份。
+- 公网入口启用 HTTPS。
+- 多副本共享 PostgreSQL、Redis 和集群 secret。
+- 升级前备份并验证数据库 migration。
+
+完整检查项见[生产部署清单](../production-checklist/)。已有实例按[升级与迁移](../../operations/upgrades/)操作。

@@ -1,0 +1,280 @@
+---
+title: Security and Secrets
+description: JWT, OPAQUE, provider credential encryption, password policy, CORS, trusted proxies, and 2FA behavior.
+---
+
+## Important Secrets
+
+Each security domain has its own key. Every replica in one deployment uses the same set of values.
+
+| Setting | Purpose | Must remain stable | Impact if lost or leaked |
+| --- | --- | --- | --- |
+| `jwt.secret` | Signs access, refresh, and guest tokens | Can be rotated, but affects sessions | A leaked value may allow forged tokens |
+| `security.opaque_server_setup_secret` | Server setup secret for OPAQUE password auth | Yes | Changing it can make OPAQUE password records unverifiable |
+| `security.credential_encryption_key` | Encrypts provider credentials | Yes | Losing it can make encrypted provider credentials unreadable |
+| `security.totp_encryption_key` | Encrypts TOTP secrets | Yes | Users must enroll TOTP again if it is lost |
+| `security.email_outbox_encryption_key` | Encrypts verification codes awaiting email delivery | Yes | Losing it makes queued email payloads unrecoverable |
+| `security.proxy_signing_key` | Signs media proxy URLs | Same on every replica | Existing proxy URLs expire after rotation |
+| `security.media_swarm_signing_key` | Signs WebRTC media swarm announcements | Same on every replica | Existing swarm announcements expire after rotation |
+| `security.provider_session_encryption_key` | Encrypts provider login sessions | Same on every replica | In-progress provider logins expire after rotation |
+| `security.login_discovery_key` | Protects login discovery from enumeration | Same on every replica | Temporary discovery results change after rotation |
+| `security.webauthn_enumeration_key` | Creates WebAuthn enumeration decoys | Same on every replica | Temporary decoys change after rotation |
+| `file_storage.upload_token_secret` | Signs file upload and read tokens | Same on every replica | Existing file tokens expire after rotation |
+
+Use environment variables or secret files in production. Do not commit these values.
+
+## `jwt.secret`
+
+Purpose: signs login tokens.
+
+Requirements:
+
+- At least 32 characters.
+- High entropy.
+- Not a placeholder, project name, domain, date, or common word.
+
+Generate:
+
+```bash
+openssl rand -base64 32
+```
+
+Recommended YAML:
+
+```yaml
+jwt:
+  secret_file: "/run/secrets/jwt_secret"
+```
+
+Environment variables:
+
+```bash
+SYNCTV_JWT_SECRET=...
+SYNCTV_JWT_SECRET_FILE=/run/secrets/jwt_secret
+```
+
+Rotating it can invalidate existing access and refresh tokens. Rotate immediately if it may have leaked.
+
+## Token Durations
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `jwt.access_token_duration_hours` | `1` | Access token lifetime |
+| `jwt.refresh_token_duration_days` | `30` | Refresh token lifetime |
+| `jwt.guest_token_duration_hours` | `4` | Guest token lifetime |
+| `jwt.clock_skew_leeway_secs` | `60` | Clock skew tolerance |
+
+For internet-facing deployments, keep access tokens short and rely on refresh rotation. Use NTP instead of increasing clock skew to hide server time drift.
+
+## `security.credential_encryption_key`
+
+Purpose: encrypts sensitive provider credentials such as tokens, API keys, and provider secrets.
+
+Format:
+
+- 64 hexadecimal characters.
+- Equivalent to a 32-byte AES-256-GCM key.
+
+Generate:
+
+```bash
+openssl rand -hex 32
+```
+
+Recommended YAML:
+
+```yaml
+security:
+  credential_encryption_key_file: "/run/secrets/credential_encryption_key"
+```
+
+Environment variables:
+
+```bash
+SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY=...
+SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY_FILE=/run/secrets/credential_encryption_key
+```
+
+Back it up securely before storing encrypted provider credentials. Do not rotate it casually without a migration plan.
+
+Provider ciphertext uses HKDF domain derivation and business-key AAD. Provider instances, user credentials, and cache records have separate authenticated contexts under the configured provider key.
+
+## `security.totp_encryption_key`
+
+TOTP uses a dedicated 32-byte AES-256-GCM key with the same format as the provider credential key:
+
+```bash
+openssl rand -hex 32
+```
+
+```yaml
+security:
+  totp_encryption_key_file: "/run/secrets/totp_encryption_key"
+```
+
+## `security.email_outbox_encryption_key`
+
+Purpose: encrypts verification codes and recipient context in the PostgreSQL email outbox. Every replica must use the same key.
+
+```bash
+openssl rand -hex 32
+```
+
+Recommended YAML:
+
+```yaml
+security:
+  email_outbox_encryption_key_file: "/run/secrets/email_outbox_encryption_key"
+```
+
+Environment variables:
+
+```bash
+SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY=...
+SYNCTV_SECURITY_EMAIL_OUTBOX_ENCRYPTION_KEY_FILE=/run/secrets/email_outbox_encryption_key
+```
+
+Compose and Helm generate and preserve this key on first installation. Back it up together with PostgreSQL.
+
+## Short-lived Signing and Enumeration Keys
+
+Generate a separate random value of at least 32 characters for each field:
+
+```yaml
+security:
+  proxy_signing_key_file: "/run/secrets/proxy_signing_key"
+  media_swarm_signing_key_file: "/run/secrets/media_swarm_signing_key"
+  provider_session_encryption_key_file: "/run/secrets/provider_session_encryption_key"
+  login_discovery_key_file: "/run/secrets/login_discovery_key"
+  webauthn_enumeration_key_file: "/run/secrets/webauthn_enumeration_key"
+file_storage:
+  upload_token_secret_file: "/run/secrets/file_upload_token_secret"
+```
+
+Compose and Helm generate and preserve each value independently. Startup validation rejects reused values across security domains.
+
+## `security.opaque_server_setup_secret`
+
+Purpose: stable server secret used by OPAQUE password authentication.
+
+Generate:
+
+```bash
+openssl rand -base64 48
+```
+
+Recommended YAML:
+
+```yaml
+security:
+  opaque_server_setup_secret_file: "/run/secrets/opaque_server_setup_secret"
+```
+
+Environment variables:
+
+```bash
+SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=...
+SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET_FILE=/run/secrets/opaque_server_setup_secret
+```
+
+Important constraints:
+
+- Do not reuse `jwt.secret`.
+- Do not generate a new value on every container start.
+- Keep the value stable across Helm upgrades and redeployments.
+- Changing it incorrectly can break existing password login records.
+
+## Password Complexity
+
+Default:
+
+```yaml
+password_complexity:
+  min_length: 8
+  require_uppercase: true
+  require_lowercase: true
+  require_digit: true
+  require_special: false
+  max_repeated_chars: 3
+  zxcvbn_enabled: false
+  zxcvbn_min_score: 3
+```
+
+This applies to user account passwords, not room passwords.
+
+Production policy usually benefits more from longer passwords and rate limits than from forcing many special characters on clients with poor text input.
+
+`max_repeated_chars=0` disables the repeated-character check.
+`zxcvbn_enabled=false` is the default. When enabled, SyncTV uses the zxcvbn entropy estimator and rejects passwords with a score below `zxcvbn_min_score` (`0`-`4`; `3` is the recommended minimum).
+
+## CORS and Trusted Proxies
+
+CORS controls which browser origins may call the API.
+
+```yaml
+server:
+  cors_allowed_origins:
+    - "https://app.example.com"
+```
+
+Origins must not include paths, query strings, or fragments.
+
+Trusted proxies control whether SyncTV trusts forwarding headers such as `X-Forwarded-For`.
+
+```yaml
+server:
+  trusted_proxies:
+    - "10.0.0.0/8"
+```
+
+Only add proxy IPs or CIDRs that you control. If this list is empty, SyncTV uses the socket peer address and does not trust forwarded client IP headers.
+
+## SSRF Outbound Policy
+
+SyncTV uses the global `security.ssrf` policy for server-side outbound HTTP, proxy, provider, OAuth2, remote-provider, and livestream pull requests. SSRF protection is disabled by default so self-hosted deployments can bind private media sources without extra setup. Public deployments should enable SSRF protection and configure the narrowest allowlist that covers trusted internal media endpoints.
+
+```yaml
+security:
+  ssrf:
+    enabled: true
+    allow_private_network_targets: false
+    allowed_hosts:
+      - "alist.internal"
+    allowed_ip_ranges:
+      - "192.168.1.10/32"
+      - "10.0.8.0/24"
+```
+
+Field behavior:
+
+- `enabled=false`: default; disable SSRF protection.
+- `enabled=true`: enable SSRF protection and block local, private, and metadata targets.
+- `allow_private_network_targets=false`: keep local, private, and metadata targets blocked when SSRF protection is enabled.
+- `allowed_hosts`: allow known internal services by hostname.
+- `allowed_ip_ranges`: allow known internal services or subnets by IP/CIDR.
+- `allow_private_network_targets=true`: allow all private/non-global targets; use only in trusted private deployments.
+
+Environment variables:
+
+```bash
+SYNCTV_SECURITY_SSRF_ENABLED=true
+SYNCTV_SECURITY_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS=false
+SYNCTV_SECURITY_SSRF_ALLOWED_HOSTS=nas.example.internal,alist.internal
+SYNCTV_SECURITY_SSRF_ALLOWED_IP_RANGES=192.168.1.10/32,10.0.8.0/24
+```
+
+For public deployments, enable SSRF protection before exposing provider endpoints to untrusted users. Prefer minimal allowlists.
+
+## WebAuthn and 2FA
+
+WebAuthn/passkey configuration is documented in [WebAuthn and Passkeys](../webauthn/).
+
+User-level two-factor authentication is a preference, not a global YAML switch. Before enabling 2FA, a user must have at least two usable local verification methods:
+
+- Password.
+- WebAuthn/passkey.
+- Verified email.
+
+OAuth2 does not participate in local 2FA, but a user with 2FA enabled may still log in through OAuth2. OAuth2 sessions are treated as an accepted authentication context for token refresh.
+
+When 2FA is enabled, local one-factor tokens should not be accepted as enough for refresh or security-sensitive preference changes.

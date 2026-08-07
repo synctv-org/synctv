@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM file_upload_session_parts WHERE storage_backend = $1 AND upload_session_key = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a55750aafc53b0e295332da1c2ce28cbc7179ef0ba18f78bce3823f00885edeb"
+}

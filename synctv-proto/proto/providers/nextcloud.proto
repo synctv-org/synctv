@@ -1,0 +1,108 @@
+syntax = "proto3";
+
+package synctv.provider.nextcloud;
+
+import "proto/buf/validate/validate.proto";
+
+message LoginRequest {
+  string endpoint = 1 [(buf.validate.field).string.min_len = 1];
+  string username = 2 [(buf.validate.field).string.min_len = 1];
+  string app_password = 3 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 4;
+}
+
+message LoginResponse {
+  string server_id = 1;
+  string user_id = 2;
+  string display_name = 3;
+  string version = 4;
+  string edition = 5;
+}
+
+message StartLoginFlowRequest {
+  string endpoint = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message StartLoginFlowResponse {
+  string login_url = 1;
+  string poll_endpoint = 2;
+  string poll_token = 3;
+}
+
+message PollLoginFlowRequest {
+  string endpoint = 1 [(buf.validate.field).string.min_len = 1];
+  string poll_endpoint = 2 [(buf.validate.field).string.min_len = 1];
+  string poll_token = 3 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 4;
+}
+
+message ListRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string path = 2;
+  uint64 page = 3 [(buf.validate.field).uint64.gte = 1];
+  uint32 page_size = 4 [(buf.validate.field).uint32 = {gte: 1, lte: 200}];
+  optional string search = 5;
+  string instance_name = 6;
+}
+
+message ListFavoritesRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  uint64 page = 2 [(buf.validate.field).uint64.gte = 1];
+  uint32 page_size = 3 [(buf.validate.field).uint32 = {gte: 1, lte: 200}];
+  string instance_name = 4;
+}
+
+message FileItem {
+  string name = 1;
+  string path = 2;
+  uint64 file_id = 3;
+  bool is_dir = 4;
+  uint64 size = 5;
+  optional string modified_at = 6;
+  optional string content_type = 7;
+  optional string etag = 8;
+  optional string permissions = 9;
+  optional string owner_id = 10;
+  optional string owner_display_name = 11;
+  bool favorite = 12;
+  bool has_preview = 13;
+  optional string blurhash = 14;
+  optional uint32 width = 15;
+  optional uint32 height = 16;
+  optional uint64 duration_millis = 17;
+}
+
+message ListResponse {
+  repeated FileItem content = 1;
+  optional uint64 total = 2;
+  uint64 page = 3;
+  bool has_more = 4;
+}
+
+message LogoutRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message LogoutResponse {
+  bool success = 1;
+}
+
+message GetBindsRequest {
+  string instance_name = 1;
+}
+
+message BindInfo {
+  string id = 1;
+  string server_id = 2;
+  string endpoint = 3;
+  string username = 4;
+  string user_id = 5;
+  string version = 6;
+  string edition = 7;
+  int64 created_at = 8;
+  string provider_instance_name = 9;
+}
+
+message GetBindsResponse {
+  repeated BindInfo binds = 1;
+}

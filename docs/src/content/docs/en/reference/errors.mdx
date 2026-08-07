@@ -1,0 +1,131 @@
+---
+title: Errors
+description: SyncTV HTTP, gRPC, Realtime, Provider, and operations error response shapes, codes, status mapping, and client handling guidance.
+---
+
+
+## HTTP Error Response
+
+HTTP APIs use a Google RPC Status-style JSON error body:
+
+```json
+{
+  "code": 16,
+  "message": "Invalid username or password",
+  "details": [
+    {
+      "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+      "reason": "UNAUTHENTICATED",
+      "domain": "synctv.api",
+      "metadata": {
+        "errorCode": "1002",
+        "errorKind": "unauthenticated",
+        "requestId": "01HX..."
+      }
+    },
+    {
+      "@type": "type.googleapis.com/google.rpc.RequestInfo",
+      "requestId": "01HX..."
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `code` | Numeric gRPC status code. The HTTP status still comes from the HTTP status line. |
+| `message` | User-facing summary. 5xx details are sanitized. |
+| `details[]` | Structured error details, usually including `google.rpc.ErrorInfo` with `reason`, `domain`, and `metadata`. |
+| `details[].metadata.errorCode` | Application error code for programmatic handling. |
+| `details[].metadata.requestId` / `google.rpc.RequestInfo.requestId` | Request identifier for log correlation. |
+
+`429` may include a `Retry-After` header.
+
+## HTTP Status Codes
+
+| Status | Meaning | Client action |
+| --- | --- | --- |
+| `400` | Invalid request structure, field, or format | Fix input; do not retry the same request |
+| `401` | Not logged in, token expired, ticket expired, Provider credential expired | Refresh token, sign in, or rebind Provider |
+| `403` | Authenticated but not allowed, email unverified, banned | Show permission reason |
+| `404` | Resource, room, media, or Provider instance missing | Refresh local state |
+| `409` | Already exists, concurrent update, state conflict | Read current state before retrying |
+| `408` | Backend timeout | Retry with backoff |
+| `429` | Rate limit or resource exhausted | Respect `Retry-After` |
+| `502` | Upstream Provider or proxy error | Check Provider, upstream, and headers |
+| `503` | Dependency or service unavailable | Retry later; operators check dependencies |
+| `504` | Upstream timeout | Retry with backoff and inspect upstream |
+
+## Application Error Codes
+
+| Range | Code | Meaning |
+| --- | --- | --- |
+| Common | `0` | Unspecified |
+| Auth | `1000` | Unauthenticated |
+| Auth | `1001` | Token expired |
+| Auth | `1002` | Invalid credentials |
+| Resource | `2000` | Not found |
+| Resource | `2001` | Already exists |
+| Resource | `2002` | Resource exhausted or rate limited |
+| Resource | `2003` | Conflict |
+| Validation | `3000` | Invalid argument |
+| Validation | `3001` | Invalid format |
+| Validation | `3002` | Value too short |
+| Validation | `3003` | Value too long |
+| Validation | `3004` | Required field missing |
+| Permission | `4000` | Permission denied |
+| Permission | `4001` | Forbidden |
+| Permission | `4002` | Banned |
+| Server | `9000` | Internal error |
+| Server | `9001` | Database error |
+| Server | `9002` | Service unavailable |
+| Server | `9003` | Timeout |
+
+Clients should not parse the `message` text for stable branching.
+
+## gRPC Errors
+
+gRPC errors use the standard status code, message, and embedded `google.rpc.Status` binary details. HTTP-style `x-synctv-error-code` metadata is not sent as a separate trailer; clients should read `google.rpc.ErrorInfo.metadata.errorCode` and `RetryInfo`.
+
+| gRPC code | HTTP equivalent | Meaning |
+| --- | --- | --- |
+| `InvalidArgument` | `400` | Invalid input |
+| `Unauthenticated` | `401` | Missing or invalid auth |
+| `PermissionDenied` | `403` | Authenticated but not allowed |
+| `NotFound` | `404` | Resource missing |
+| `AlreadyExists` | `409` | Resource already exists |
+| `ResourceExhausted` | `429` | Rate limited or capacity exhausted |
+| `Unavailable` | `503` | Service or dependency unavailable |
+| `DeadlineExceeded` | `504` | Timeout |
+| `Internal` | `500` | Internal server error |
+
+See [gRPC Debugging](../grpc/).
+
+## Realtime Errors
+
+WebSocket business errors use protobuf messages, not HTTP JSON:
+
+| Message | Scenario |
+| --- | --- |
+| `ServerMessage.error` | General business error, such as permission or invalid input |
+| `ServerMessage.resourceObserveError` | Invalid observe id, too many observations, or resource load failure |
+| WebSocket close | Auth failure, expired ticket, protocol error, connection limit, shutdown |
+
+Resource observation errors do not necessarily close the connection.
+
+## Provider Errors
+
+| Symptom | Typical status | Handling |
+| --- | --- | --- |
+| Provider credential expired | `401` | Re-login or rebind Provider |
+| Upstream resource missing | `404` | Refresh list and remove stale media |
+| Upstream rejected request | `400` or `502` | Check headers, URL, format |
+| Upstream rate limited or 5xx | `502`/`503`/`504` | Back off and inspect upstream |
+| Credential encryption missing | Sanitized `500` | Configure credential encryption key |
+
+## Client Rules
+
+- **Classify by status**: Use HTTP or gRPC status for login, permission, retry, and refresh decisions.
+- **Use codes**: Read application codes from `google.rpc.ErrorInfo.metadata.errorCode`. Do not parse English text.
+- **Keep request IDs**: Collect `requestId`, time, path, and status for support.
+- **Protect secrets**: Never log tokens, cookies, OAuth2 codes, Provider credentials, or passwords.

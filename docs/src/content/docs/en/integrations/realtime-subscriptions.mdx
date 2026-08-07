@@ -1,0 +1,151 @@
+---
+title: Subscribe to Realtime Resources
+description: Subscribe to playback state, playbacks, room settings, playlist items, and room members through Realtime.
+---
+
+import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+Resource observation subscribes to room resources. Versioned resources can carry recovery cursors, while playback info always returns player-ready data for the current source. When a resource changes, the server can push a full payload or only notify the client to fetch.
+
+## Supported Resources
+
+| Resource | `ObserveResource.resource` field | Version source | Typical use |
+| --- | --- | --- | --- |
+| Playback state | `playbackState` | `RoomPlaybackState.version` | Player UI and synchronized playback status |
+| Playback | `playback` | Current value on every observe | Current playback URL, headers, proxy policy, subtitles, and expiry |
+| Room settings | `roomSettings` | Room settings version | Chat, playback permissions, and UI controls |
+| Playlist items | `playlistItems` | List snapshot version | Root lists, child playlists, provider browsing, and search results |
+| Room members | `roomMembers` | Member list snapshot version | Member pagination, search, role filtering, and status filtering |
+
+Each observation is identified by `observeId`. It only needs to be unique within the current connection, length 1-128. Prefer stable names such as `playback-state`, `playlist-root:p1:50`, or `members:online`.
+
+Each connection can hold up to 64 observations. Over-limit requests return `ResourceObserveError` and do not close the WebSocket.
+
+## Delivery Mode
+
+| Value | Behavior |
+| --- | --- |
+| `0` | Same as `PUSH_SNAPSHOT` |
+| `2` | Push a full `ResourceChanged.payload` when changed; useful for low-latency UI |
+| `1` | Push only `changedOnly`; the client then fetches through HTTP/gRPC |
+
+## Subscribe Flow
+
+<Steps>
+1. The client connects to the room WebSocket.
+2. The client sends `ClientMessage.observeResource` with `observeId`, `deliveryMode`, and the target resource. Resources that support recovery can also carry an event sequence.
+3. The server loads the current resource and sends `ServerMessage.resourceObserved`.
+4. If the server determines that the resource changed, it sends `ServerMessage.resourceChanged` for the same `observeId`.
+5. Later room events, cache invalidation, Provider credential changes, or playback expiry can trigger re-evaluation.
+</Steps>
+
+`ResourceObserved` fields:
+
+| Field | Meaning |
+| --- | --- |
+| `observeId` | The submitted subscription ID |
+| `changed` | Whether the server should send the current resource to the client |
+| `eventCursor` | Recovery cursor for resources with event replay |
+
+`ResourceChanged` fields:
+
+| Field | Meaning |
+| --- | --- |
+| `observeId` | Which subscription changed |
+| `payload` | Full snapshot or `changedOnly`, depending on `deliveryMode` |
+| `eventCursor` | Cursor associated with replayed resource events |
+
+## Unsubscribe
+
+When a view, list, or query is no longer needed, send `ClientMessage.unobserveResource`:
+
+```ts
+sendClientMessage({
+  unobserveResource: {
+    observeId: 'playlist-root',
+  },
+});
+```
+
+There is no acknowledgement for unsubscribe. When the WebSocket disconnects, the server automatically clears all observations for that connection.
+
+## Subscribe Examples
+
+The examples below use TypeScript-style pseudocode. Exact field names depend on your protobuf code generator.
+
+<Tabs syncKey="realtime-observe-examples">
+  <TabItem label="Playback state" icon="youtube">
+
+```ts
+sendClientMessage({
+  observeResource: {
+    observeId: 'playback-state',
+    deliveryMode: 2,
+    playbackState: {
+      afterEventSequence: cached.playbackStateEventSequence,
+    },
+  },
+});
+```
+
+When changed, the server returns `ResourceChanged.payload.playbackState`.
+
+  </TabItem>
+  <TabItem label="Playback" icon="document">
+
+```ts
+sendClientMessage({
+  observeResource: {
+    observeId: 'playback',
+    deliveryMode: 2,
+    playback: {
+      playbackClientProfile: currentPlaybackClientProfile,
+    },
+  },
+});
+```
+
+Playback observation immediately returns the current playable URLs, headers, subtitles, and expiry, then re-evaluates after room events, expiry, or Provider credential changes.
+
+  </TabItem>
+  <TabItem label="Room members" icon="puzzle">
+
+```ts
+sendClientMessage({
+  observeResource: {
+    observeId: 'room-members:online',
+    deliveryMode: 1,
+    roomMembers: {
+      afterEventSequence: cached.membersEventSequence,
+      request: {
+        page: 1,
+        pageSize: 50,
+        search: '',
+        status: 1,
+        sortBy: 1,
+        sortDirection: 1,
+      },
+    },
+  },
+});
+```
+
+In notify-only mode, the server returns `ResourceChanged.payload.changedOnly`, then the client calls the HTTP/gRPC member-list API to refresh its local cache.
+
+  </TabItem>
+</Tabs>
+
+## Change Triggers
+
+| Event type | Refreshed resources |
+| --- | --- |
+| Playback state changed | `playbackState`, `playback` |
+| Current playback media or playlist-related media updated | `playback`, and sometimes `playlistItems` |
+| Playlist created, updated, deleted, reordered, or media added/removed | `playlistItems` |
+| Room settings changed | `roomSettings`, `roomMembers` |
+| User joined, left, or permissions changed | `roomMembers` |
+| Cache invalidation hits the current room or user | Matching playback, settings, list, or member resources |
+| Provider credential changed | May affect the current user's playback and provider browsing results |
+| Playback expires | Automatically re-evaluates `playback` observations |
+
+The server coalesces identical short-window queries in the same room. Clients do not need to rely on this optimization, but can safely create separate `observeId` values for separate views.

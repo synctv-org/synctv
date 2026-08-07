@@ -1,0 +1,30 @@
+---
+title: 管理 SyncTV
+description: 管理用户、房间、权限、Provider 和运行设置。
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+管理命令通过 `synctv admin` 调用 management gRPC。先确认管理入口和认证方式，再执行变更。
+
+<Aside type="caution">
+management gRPC、metrics 和内部调试入口只应通过 Unix socket、内网、VPN、堡垒机或 Kubernetes exec 访问。TCP management 必须配置 `management.auth_token`。
+</Aside>
+
+## 账号与访问
+
+- [用户](./users/)：创建用户、封禁、全局角色和账号安全状态。
+- [角色与权限](./permissions/)：全局角色、房间角色、权限计算和成员覆盖。
+- [认证与安全](./authentication-security/)：登录方式、2FA、token 和认证边界。
+
+## 房间与内容
+
+- [房间与成员](./rooms-members/)：房间生命周期、成员、播放控制和直播入口。
+- [审核与治理](./reviews-moderation/)：注册、建房、加房审核和封禁。
+- [Provider](./providers/)：创建、启停、更新、重连和删除 Provider instance。
+
+## 服务策略
+
+- [运行设置](./runtime-settings/)：热更新注册、RTMP、CORS、聊天和房间策略。
+
+[CLI 参考](../reference/cli/)列出完整参数。[维护任务](../operations/maintenance/)和[部署与运行边界](../operations/deployment-boundaries/)位于运维文档。

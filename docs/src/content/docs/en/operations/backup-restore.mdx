@@ -1,0 +1,153 @@
+---
+title: Backup and Restore
+description: PostgreSQL, secrets, runtime files, Redis state, and restore drills for SyncTV production deployments.
+---
+
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## Backup Scope
+
+Production deployments must back up two categories of data:
+
+| Data | Required | Reason |
+| --- | --- | --- |
+| PostgreSQL | Required | Users, rooms, permissions, provider instances, preferences, audit data, and business data live there |
+| Production secrets | Required | Authentication, decryption, signing, cluster communication, and management access depend on them |
+| Configuration files | Recommended | Restore requires exact listeners, domains, dependencies, paths, and feature flags |
+| Shared HLS storage | As needed | Required if you need to preserve HLS files or shared multi-replica segments |
+| Proxy slice cache | Usually no | It is reproducible cache; losing it only lowers hit rate |
+| Redis | Usually not long-term | Redis stores short-lived auth, rate-limit, and coordination state |
+
+<Aside type="caution">
+`security.opaque_server_setup_secret`, the provider credential key, and the TOTP key are bound to durable PostgreSQL data. Restore the values that were active when the backup was taken.
+</Aside>
+
+## Back Up PostgreSQL
+
+<Tabs syncKey="postgres-backup">
+  <TabItem label="pg_dump" icon="seti:db">
+
+Good for small and medium deployments:
+
+```bash
+pg_dump \
+  --format=custom \
+  --file=synctv-$(date +%Y%m%d-%H%M%S).dump \
+  "$DATABASE_URL"
+```
+
+Restore:
+
+```bash
+createdb synctv_restore
+pg_restore \
+  --dbname=postgresql://synctv:password@localhost:5432/synctv_restore \
+  --clean \
+  --if-exists \
+  synctv-20260504-120000.dump
+```
+
+  </TabItem>
+  <TabItem label="plain SQL" icon="document">
+
+Use this when you want readable SQL or already have an SQL-based backup system:
+
+```bash
+pg_dump "$DATABASE_URL" > synctv-$(date +%Y%m%d-%H%M%S).sql
+```
+
+Restore:
+
+```bash
+psql "$DATABASE_URL" < synctv-20260504-120000.sql
+```
+
+  </TabItem>
+  <TabItem label="Kubernetes" icon="cloud-download">
+
+If PostgreSQL runs inside Kubernetes, port-forward and back up locally:
+
+```bash
+kubectl -n synctv port-forward svc/postgres 5432:5432
+pg_dump --format=custom --file=synctv.dump "$DATABASE_URL"
+```
+
+You can also use your platform's native database backups, such as cloud snapshots, operator backup jobs, or object-storage archives.
+
+  </TabItem>
+</Tabs>
+
+## Back Up Secrets
+
+Store at least these values:
+
+| Setting | Recommended storage |
+| --- | --- |
+| `jwt.secret` | Secret Manager, Kubernetes Secret, password manager |
+| `security.opaque_server_setup_secret` | Secret Manager, offline encrypted backup |
+| `security.credential_encryption_key` | Secret Manager, offline encrypted backup |
+| `security.totp_encryption_key` | Secret Manager, offline encrypted backup |
+| `security.email_outbox_encryption_key` | Secret Manager, offline encrypted backup |
+| Proxy, media swarm, provider session, login discovery, WebAuthn, and file-token keys | Secret Manager |
+| `cluster.secret` | Kubernetes Secret or Secret Manager |
+| `management.auth_token` | Secret Manager |
+| `metrics.auth.*` | Monitoring system secret |
+| `email.smtpCredentials`, `email.smtpProxy.credentials` | Encrypted PostgreSQL backup |
+| Provider token/API key/cookie | Secret Manager or encrypted database storage |
+
+If you use `_file` settings, back up the file contents, not just the paths.
+
+For secret classes, rotation safety, and keys that should not be casually rotated, see [Security Hardening and Rotation](../security-hardening-and-rotation/).
+
+## Restore Order
+
+<Steps>
+1. Stop SyncTV to avoid writes during restore.
+2. Restore production secrets exactly as they were.
+3. Restore configuration files or deployment values.
+4. Restore PostgreSQL.
+5. Restore shared HLS storage if needed.
+6. Start the same SyncTV version and run `synctv db status`.
+7. If upgrading, follow [Upgrades and Migrations](../upgrades/) for configuration, image, and rollback-risk checks.
+8. Start the service. Startup runs embedded SQLx migrations automatically, then check `/health/ready`, login, provider access, WebSocket, and metrics.
+</Steps>
+
+## Restore Validation
+
+After restoring, run:
+
+```bash
+synctv db status
+synctv config validate --strict
+curl -fsS http://localhost:8081/health/ready
+```
+
+Business checks:
+
+- Root/admin users can log in.
+- 2FA-enabled users can complete login.
+- Stored provider credentials decrypt and can reach upstream services.
+- Rooms, members, playlists, and permissions are present.
+- WebAuthn challenge and origin settings work if enabled.
+- OAuth2 redirect state reads and writes through Redis if enabled.
+
+## Restore Drills
+
+- Run a restore drill before each major upgrade.
+- Run one after changing secret-management strategy.
+- Periodically confirm backups can be read, decrypted, and imported.
+
+Do not stop at “backup job succeeded”. A useful backup restores into a SyncTV instance that can log in, play media, and be administered.
+
+## Impact of Redis Loss
+
+Redis loss does not usually destroy durable business data, but it changes short-term behavior:
+
+- OAuth2 state expires and users must restart OAuth2 login.
+- WebAuthn challenges expire and users must retry authentication.
+- Email codes expire and must be resent.
+- Token blacklist is lost, so revoked JWTs may remain valid until expiry.
+- Rate-limit counters reset.
+- Cluster nodes must register and catch up again.
+
+If strong token revocation is required, use highly available Redis and keep token lifetimes short.

@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO file_cleanup_jobs (\n                    origin, storage_backend, object_key, reference_kind,\n                    reference_id, metadata, last_error\n                )\n                VALUES ($1, $2, $3, $4, $5, $6, $7)\n                ON CONFLICT (reference_kind, reference_id, storage_backend, object_key)\n                DO UPDATE SET\n                    origin = EXCLUDED.origin,\n                    metadata = EXCLUDED.metadata,\n                    last_error = EXCLUDED.last_error,\n                    next_attempt_at = CURRENT_TIMESTAMP,\n                    locked_at = NULL,\n                    locked_by = NULL,\n                    completed_at = NULL,\n                    updated_at = CURRENT_TIMESTAMP\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8413f9c93f93e7b04fe8bc93302ffd6a5da75a9b7bedcf1d9431712e9ddf5264"
+}

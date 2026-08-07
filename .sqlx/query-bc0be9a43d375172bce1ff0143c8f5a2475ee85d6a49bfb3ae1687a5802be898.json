@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM user_media_provider_credentials\n            WHERE expires_at IS NOT NULL\n              AND expires_at < CURRENT_TIMESTAMP - make_interval(hours => $1)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bc0be9a43d375172bce1ff0143c8f5a2475ee85d6a49bfb3ae1687a5802be898"
+}

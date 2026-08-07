@@ -1,0 +1,388 @@
+---
+title: Integrate a SyncTV Client
+description: HTTP, gRPC, WebSocket, authentication, MFA, OAuth2, and realtime integration guidance for clients, SDKs, and third-party integrations.
+---
+
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## Integration Entry
+
+OpenAPI and protobuf define request, response, and message shapes. Clients also need to handle authentication, MFA, Realtime, media headers, and retry behavior. Web, desktop, mobile, CLI, bot, and third-party SDK integrations use these conventions.
+
+For a minimal runnable call chain, see [API Examples](../api-examples/). For unified error handling, see [Errors](../../reference/errors/).
+
+## Common Integration Recipes
+
+| Goal | Implementation order | Key page |
+| --- | --- | --- |
+| Sign in and keep a session | Login, handle MFA, store access/refresh tokens, refresh sessions, handle 401 | This page: “Token Usage” and “Local Login and MFA” |
+| Enter room realtime state | Fetch the room, create a WebSocket ticket, connect `/ws/rooms/{roomId}`, decode protobuf | [Realtime API](../realtime-api/) |
+| Show synchronized playback | Read current playback state, fetch playback, observe `playbackState` and `playback` | [Playback and Proxy Protocol](../playback-and-proxy/) |
+| Add media | Choose Provider, browse or search media, submit playlist item, handle Provider errors | [Media Provider Configuration](../../configuration/media-providers/) |
+| Handle URL expiry | Read `expires_at`, refresh playback before expiry, discard old URLs after media switch | [Playback and Proxy Protocol](../playback-and-proxy/) |
+| Reconnect | Request a new ticket, reconnect, observe resources with local versions | [Realtime API](../realtime-api/) |
+| Build unified errors | Classify by HTTP status, business code, `requestId`, and `Retry-After` | [Errors](../../reference/errors/) |
+
+Implement sign-in, room list, ticket creation, Realtime, and playbacks first. Then add Providers, chat, notifications, and WebRTC.
+
+## Choose an Interface
+
+| Scenario | Interface | Notes |
+| --- | --- | --- |
+| Normal business operations | HTTP/OpenAPI or public gRPC | Users, rooms, playlists, notifications, providers, and most business APIs can use either style. |
+| SDK generation | HTTP/OpenAPI | Generate TypeScript, Kotlin, Swift, Go, or other clients from `/api-docs/openapi.json`. |
+| Strongly typed internal clients | gRPC | Use `synctv-proto/proto/client.proto`, `oauth2.proto`, and provider protobuf files. |
+| Room realtime state | WebSocket or gRPC stream | Use for playback state, chat, and WebRTC signaling. |
+| Operations management | management gRPC or CLI | Do not expose the management endpoint to normal clients. Prefer the CLI. |
+| Media playback | Direct provider URL or SyncTV proxy URL | Providers decide headers, proxy policy, and Range behavior. Clients should not infer upstream rules. |
+
+## Room Discovery API
+
+Use `GET /api/rooms/discover` for the anonymous home feed and `GET /api/rooms/{roomId}/discovery` for one public room card. Public `RoomDiscoveryItem` responses include `can_join` and an access state such as `GUEST`, `SIGN_IN`, or `UNAVAILABLE`; `GUEST` starts the direct guest identity flow. Signed-in clients use `GET /api/user/rooms/discover` and `GET /api/user/rooms/{roomId}/discovery`; these responses also include `joined`, `favorited`, and user-specific access states such as `ENTER`, `PASSWORD`, `REQUEST_APPROVAL`, `FULL`, or `COOLDOWN`. Favorites apply only to rooms the user has joined.
+
+On the unfiltered first page, `featured_rooms` contains up to five leading rooms and `rooms` starts after that featured set. `total` counts the pageable `rooms` sequence. Search, category, and label filters return an empty `featured_rooms` list and paginate every match through `rooms`. A room can be favorited only while the viewer is an active member; clients should expose favorite controls only when `joined` is true.
+
+## Chat Message API
+
+Room chat is a durable message system. HTTP and gRPC handle history, single-message lookup, context lookup, send, edit, delete, attachment upload sessions, and read state. Realtime connections deliver message events after explicit subscription.
+
+HTTP endpoints:
+
+| Goal | HTTP |
+| --- | --- |
+| Send message | `POST /api/rooms/{roomId}/chat/messages` |
+| Create attachment upload session | `POST /api/rooms/{roomId}/chat/attachments/upload-session` |
+| Edit message | `PATCH /api/rooms/{roomId}/chat/messages/{messageId}` |
+| Delete message | `DELETE /api/rooms/{roomId}/chat/messages/{messageId}` |
+| Page history | `GET /api/rooms/{roomId}/chat/history` |
+| Fetch playback-scoped chat | `GET /api/rooms/{roomId}/chat/playback-messages` |
+| Fetch one message | `GET /api/rooms/{roomId}/chat/messages/{messageId}` |
+| Fetch message context | `GET /api/rooms/{roomId}/chat/messages/{messageId}/context` |
+| Mark read | `POST /api/rooms/{roomId}/chat/read-state` |
+| Fetch read state | `GET /api/rooms/{roomId}/chat/read-state` |
+| SSE message events | `GET /api/rooms/{roomId}/watch/chat-events` |
+
+gRPC methods on `synctv.client.RoomService`:
+
+| Goal | RPC |
+| --- | --- |
+| Send message | `SendChatMessage` |
+| Create attachment upload session | `CreateChatAttachmentUploadSession` |
+| Edit message | `EditChatMessage` |
+| Delete message | `DeleteChatMessage` |
+| Page history | `GetChatHistory` |
+| Fetch one message | `GetChatMessage` |
+| Fetch message context | `GetChatMessageContext` |
+| Fetch playback-scoped chat | `GetChatPlaybackMessages` |
+| Mark read | `MarkChatRead` |
+| Fetch read state | `GetChatReadState` |
+| Server-stream message events | `WatchChatEvents` |
+
+Client rules:
+
+- `client_message_id` is the send idempotency key. `client_operation_id` is the edit/delete idempotency key. Generate a stable key for one user operation and reuse it for retries.
+- `display_position` and `display_color` are chat presentation metadata. The server validates, stores, and forwards these fields; clients may use them for any presentation mode.
+- When a message is sent, the server records the current playback context: `playback_media_id`, `playback_playlist_id`, `playback_target`, `playback_target_hash`, and `playback_position_seconds`. `GetChatPlaybackMessages` reads historical chat for the current playback object and time window.
+- `expected_version` enables optimistic locking for edit and delete. On conflict, reload the message or context before submitting again.
+- `metadata` must be a JSON object. Empty metadata can be omitted.
+- User avatars, media covers, room covers, and playlist covers also use the `FileUploadReference` returned by upload sessions. Update APIs submit `avatar_reference` or `cover_reference`, and only `id` is required; `UserAvatar`, `MediaCover`, `FileCover`, and `ResourceCover` are server-returned display models for rendering URL, MIME type, dimensions, and metadata.
+- Files and images use `CreateChatAttachmentUploadSession`. The session returns `attachment_reference`, and clients pass it in `SendChatMessage.attachments`. Upload references use `kind=UPLOAD`, and `attachment_reference.id` is the client-visible attachment id. `upload_token` is an upload-session transport token used only for object uploads and `CompleteChatAttachmentUploadSession`.
+- History, single-message, and context responses return `ChatAttachment.reuse_token` and `reuse_expires_at`. To copy, forward, or resend an already visible chat attachment, submit `ChatAttachmentReference { kind=REUSE, id=reuse_token }`. The server rechecks that the current user can still view the source message and attachment, then creates a new business reference for the new message; clients do not download the source file, compute a full-file hash, or upload bytes again.
+- Instant-upload ownership proof is for the flow where a client claims it locally owns bytes matching a `content_manifest_sha256`. Chat attachment reuse tokens are for the flow where the server already authorized the current user to see an attachment. Both flows still pass through attachment count, MIME, size, and room permission validation during send.
+- Attachments are independent message parts. Message content may be empty and may omit any inline reference to attached files; frontends can render `ChatMessageReceive.attachments` below the message. `@` mentions are inline content entities and must point to a matching `@token` range in `content`.
+- Create an upload session first with empty `parts`; the server returns a `FileUploadPlan` containing `part_size_bytes` and each part's `part_number`, `offset_bytes`, and `size_bytes`. The client hashes every planned part with SHA-256, then calls the same create API again with `FileUploadManifestPart[]`. The server computes `content_manifest_sha256` from the canonical manifest and uses it for instant-upload hits and resumable-session lookup.
+- When `upload_required=true`, upload according to the session fields. Database backends return `upload_url`; PUT each planned part with `Content-Range: bytes start-end/total`. S3 backends return `part_urls`; PUT each part to its presigned URL with the signed `x-amz-checksum-sha256` header. Completion submits `file_id=attachment_reference.id`, `token=session.upload_token`, `upload_id`, ownership proof, and each part's ETag, size, and SHA-256. The server validates the recorded part manifest against `content_manifest_sha256`; the S3 path does not download the object.
+- When `ownership_proof_required=true`, read the returned `ownership_proof_ranges` from the local file, compute the SHA-256 hex proof with `ownership_proof_nonce`, and submit `file_id`, `token`, and `ownership_proof` to the complete upload-session API. The proof hash input order is `synctv-file-ownership-proof-v1`, one `0x00` byte, nonce UTF-8, one `0x00` byte, lowercase ASCII `content_manifest_sha256`, `size_bytes` as big-endian i64, range count as big-endian u64, then each range's `offset` as big-endian i64, `length` as big-endian i32, and range bytes.
+- Chat attachments support images, audio, video, common documents, archives, text, CSV, Markdown, JSON, and PDF. Image attachments carry `kind=image` plus optional width and height for previews; other attachments carry `kind=file`.
+- Delete is soft delete: history and events keep the message id, version, delete actor, and reason, while content and attachments are hidden in deleted views.
+
+Event subscription:
+
+- In bidirectional `MessageStream`, send `observeResource.chatEvents` to receive later `resourceChanged.chatEvent` payloads.
+- `WatchChatEvents` is the gRPC server-streaming version.
+- HTTP SSE uses `/watch/chat-events`; initial recovery can pass `afterEventSequence`, and browser reconnects use `Last-Event-ID`.
+- The event cursor is `ChatMessageEvent.eventId`, separate from generic resource versions.
+
+## Minimal HTTP Flow
+
+The examples show how to compose calls. Exact fields are defined by `/api-docs/openapi.json` and protobuf.
+
+<Tabs syncKey="client-http-flow">
+  <TabItem label="OPAQUE login" icon="approve-check-circle">
+
+```bash
+curl -sS http://localhost:8080/api/auth/opaque/login/start \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "root",
+    "credentialRequest": [/* bytes from your OPAQUE client */]
+  }'
+```
+
+Finish the OPAQUE exchange with `/api/auth/opaque/login/finish`. A typical finish response contains `accessToken`, `refreshToken`, `user`, and `mfa`. If `mfa.required=true`, complete MFA before treating the user as logged in. Passwordless email-token login uses `/api/auth/email/confirm`.
+
+  </TabItem>
+  <TabItem label="Create WebSocket ticket" icon="document">
+
+```bash
+ACCESS_TOKEN='paste-access-token-here'
+ROOM_ID='room_1' # Use the room.id returned by create/list room APIs
+
+curl -sS http://localhost:8080/api/tickets \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"roomId\":\"${ROOM_ID}\"}"
+```
+
+The returned `ticket` is short-lived, one-time-use, and room-bound.
+
+  </TabItem>
+  <TabItem label="Connect WebSocket" icon="puzzle">
+
+Browsers cannot reliably set a WebSocket `Authorization` header, so use a ticket:
+
+```js
+const roomId = 'room_1'; // Use the room.id returned by create/list room APIs
+const ticket = ticketResponse.ticket;
+const ws = new WebSocket(`wss://app.example.com/ws/rooms/${roomId}?ticket=${ticket}`);
+ws.binaryType = 'arraybuffer';
+
+ws.onmessage = async (event) => {
+  const bytes =
+    event.data instanceof Blob
+      ? new Uint8Array(await event.data.arrayBuffer())
+      : new Uint8Array(event.data);
+  const message = ServerMessage.decode(bytes); // generated from client.proto
+  console.log(message);
+};
+```
+
+Native clients and server-side SDKs can use:
+
+```http
+Authorization: Bearer <accessToken>
+```
+
+  </TabItem>
+</Tabs>
+
+## Token Usage
+
+Business APIs use Bearer tokens. Signed-in users send access tokens; guests send guest tokens when reading guest-enabled room data:
+
+```http
+Authorization: Bearer <access_token_or_guest_token>
+```
+
+Client guidance:
+
+- Use access tokens only for short-lived API calls.
+- Use guest tokens only for the public room they were issued for. They can read or participate in guest-enabled room data, but cannot log in, refresh a session, log out, call account APIs, or access media resources.
+- When a room grants guests `use_voice_chat` or `use_p2p_media`, guests use the same guest token to fetch ICE servers, connect to Realtime, and send signaling for the authorized business session.
+- Use refresh tokens only for session refresh. Do not put them in WebSocket query strings, media URLs, or third-party requests.
+- After refresh, replace the locally stored token pair with the server response. Avoid concurrent refresh attempts with stale refresh tokens.
+- When a user enables 2FA, local login must complete MFA before receiving an acceptable token. OAuth2 login is not part of local 2FA, but OAuth2-issued tokens are accepted for that login path.
+
+Production deployments must use TLS. Login, registration, password changes, password reset, and MFA verification must use HTTPS or a trusted encrypted tunnel.
+
+## Local Login and MFA
+
+`LoginResponse` always has the same shape. It can return final tokens directly or return `mfa.required=true`.
+
+Client flow:
+
+<Steps>
+1. Submit the first factor, such as password, OPAQUE, passkey, or email-code login.
+2. Read `LoginResponse.mfa.required`.
+3. If `required=false`, store `accessToken` and `refreshToken`.
+4. If `required=true`, store the short-lived `mfa.session_id` and present `available_methods`.
+5. If `MFA_METHOD_EMAIL` is available, call `RequestMfaEmailCode` when the user chooses email.
+6. If `MFA_METHOD_WEBAUTHN` is available, call `StartMfaPasskey` for WebAuthn options, then `FinishMfaPasskey`.
+7. After the second factor succeeds, the final response returns usable tokens.
+</Steps>
+
+`GetUserPreferences` returns `auth_factors`, which lets clients show whether the current user has password, WebAuthn, or verified email factors. Enabling 2FA requires at least two local factors. Password is a first factor completed through OPAQUE or direct password login. OAuth2 does not count as a local 2FA factor.
+
+<Aside type="note">
+OPAQUE is the public client local password login protocol. When a password first factor triggers MFA, clients should complete the challenge with an available non-password method such as email or WebAuthn.
+</Aside>
+
+## Email Codes
+
+Email codes can be used for login, MFA, email verification, and password reset. Keep those flows separate in client state.
+
+Standalone email login request:
+
+```bash
+curl -sS http://localhost:8080/api/auth/email/request \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"user@example.com"}'
+```
+
+Then call login with `email` and `email_token`. Do not mix email-login tokens with MFA email codes; MFA email codes are bound to `mfa_session_id`.
+
+## OAuth2
+
+OAuth2/OIDC is frontend-driven:
+
+<Steps>
+1. Call `GET /api/oauth2/providers` to discover provider instances, `signupEnabled`, and `signupNeedReview`.
+2. Call `GET /api/oauth2/{provider}/authorize?redirectUrl=<callback>` to get the provider authorization URL and state.
+3. Redirect the user to the provider.
+4. The provider redirects back to the client URL with `code` and `state`.
+5. Call `POST /api/oauth2/{provider}/exchange`.
+6. If the response has `registrationReviewRequired=true`, show pending-review state and keep `registrationReviewId`; do not treat it as logged in.
+7. If the response contains tokens, store the SyncTV access and refresh tokens.
+</Steps>
+
+Minimal exchange:
+
+```bash
+curl -sS http://localhost:8080/api/oauth2/github/exchange \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "code": "code-from-callback",
+    "state": "stateFromAuthorizeResponse123456"
+  }'
+```
+
+Use `GET /api/oauth2/{provider}/bind?redirectUrl=<callback>` when binding a provider to an existing authenticated account. The bind authorization request and the later `POST /api/oauth2/{provider}/exchange` call must both include the current user's access token; the exchange token user must match the user captured in the OAuth2 state. OAuth2 login is not a local 2FA first or second factor, but users with 2FA enabled can still log in through OAuth2.
+
+## gRPC Examples
+
+Public gRPC uses the same main port. With reflection:
+
+```bash
+grpcurl -plaintext localhost:8080 list synctv.client.AuthService
+```
+
+The public AuthService local password flow uses OPAQUE. Generate the credential request in your client and call `StartOpaqueLogin`, then finish with `FinishOpaqueLogin`:
+
+```bash
+grpcurl -plaintext \
+  -d '{"username":"root","credentialRequest":"<base64-opaque-request>"}' \
+  localhost:8080 synctv.client.AuthService/StartOpaqueLogin
+```
+
+`AuthService/Login` is reserved for passwordless email-token login.
+
+Room-scoped RPCs need both user identity and room context:
+
+```bash
+grpcurl -plaintext \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H "x-room-id: ${ROOM_ID}" \
+  -d '{}' \
+  localhost:8080 synctv.client.RoomService/GetPlayback
+```
+
+Do not put the room id only in the request body and expect the server to infer it. RPCs marked with `x-room-id metadata` in `client.proto` should send that metadata explicitly.
+
+## WebSocket
+
+WebSocket URL:
+
+```text
+wss://<host>/ws/rooms/<roomId>
+```
+
+Authentication options:
+
+| Method | Clients | Notes |
+| --- | --- | --- |
+| `Authorization: Bearer <token>` | Native clients, CLI, server-side SDKs | The token is not placed in the URL. |
+| `?ticket=<ticket>` | Browsers and clients that cannot set headers | First call `POST /api/tickets` to obtain a short-lived one-time ticket. |
+
+Browser-style flow:
+
+<Steps>
+1. Call `POST /api/tickets` with a normal Bearer token and target `roomId`.
+2. Receive `ticket` and its expiration.
+3. Connect to `wss://<host>/ws/rooms/<roomId>?ticket=<ticket>`.
+4. Do not reuse tickets after success or failure. Request a new one instead.
+</Steps>
+
+WebSocket only handles binary protobuf frames. Clients send `synctv.client.ClientMessage`, and the server returns `synctv.client.ServerMessage`; text frames are ignored. Browser clients should send the `Uint8Array` produced by generated protobuf code and decode received `Blob` or `ArrayBuffer` values into `ServerMessage`.
+
+## Realtime Resource Observation
+
+Realtime resource observation lets a room WebSocket subscribe to cacheable resources such as playback state, playbacks, room settings, playlist items, and room members. Clients send `ClientMessage.observeResource`, and the server returns `resourceObserved`, `resourceChanged`, or `resourceObserveError`.
+
+See [Realtime API](../realtime-api/) for the full protocol, delivery modes, version synchronization, examples for every resource type, reconnect behavior, and error handling.
+
+## WebRTC Bootstrap
+
+WebRTC clients fetch ICE servers before connecting to Realtime for signaling. Signed-in members and authorized guests both use the standard Bearer token path:
+
+```http
+GET /api/rooms/<roomId>/webrtc/ice-servers
+Authorization: Bearer <access_token_or_guest_token>
+```
+
+Access rules:
+
+- A signed-in member must belong to the room and have `use_voice_chat` or `use_p2p_media`.
+- A guest must use a guest token issued for that room, and the room must allow guests and grant one of the WebRTC business permissions.
+- If the room is closed, banned, password-protected, or guest access is revoked, guests cannot fetch fresh ICE configuration.
+
+The response includes a `webrtc` status object. Clients can surface a non-secret warning when `builtin_stun_state` is `degraded` or when no ICE servers are returned, while still using any external STUN/TURN servers present in `servers`.
+
+For a voice join, clients should generate a UUID in `WebRTCVoiceJoinCommand.client_operation_id` before optimistically enabling the local microphone and audio session. When the room is at capacity, the server returns a realtime error carrying the same operation ID. The client rolls back only the matching pending join by closing local tracks, audio mode, and established PeerConnections. The field is optional; interactive clients should send it consistently.
+
+## P2P Media Clients
+
+`PlaybackMedia.p2p_delivery` provides a swarm ID and short-lived ticket. Clients combine a local HTTP gateway, WebRTC DataChannels, piece caching, and HTTP origin fallback to feed P2P data into the player. See [Implement a P2P Media Client](../p2p-media/) for the lifecycle, cache limits, origin racing, and integrity validation.
+
+## Provider List Pagination
+
+Provider list APIs report page or cursor mode through a protobuf oneof. Cloudreve declares the mode supported by the current server. Bilibili history, Twitch, and YouTube use upstream cursors, while traditional folders and indexes generally use page or offset semantics.
+
+Treat cursors as opaque tokens and return them unchanged. Discard the old cursor when the Provider, instance, folder, or filters change, then request the first page again.
+
+## Media URLs and Headers
+
+Provider playback results may include URLs, proxy mode, direct mode, and required headers. Client rules:
+
+- Use the headers returned by the provider. Do not invent `User-Agent`, `Referer`, or `Range`.
+- If a provider returns a direct URL with required headers, the client runtime must be able to set those headers.
+- If the client cannot set required headers, use the provider proxy URL or request proxy mode.
+- Range playback depends on the provider and upstream origin. SyncTV proxy does not automatically forward raw client headers.
+
+See [Media Providers](../../configuration/media-providers/) and [Proxy Slice Cache](../../configuration/proxy-slice-cache/) for provider and proxy behavior.
+
+## Error Handling
+
+HTTP error body:
+
+```json
+{
+  "error": "Invalid username or password",
+  "status": 401,
+  "code": null,
+  "requestId": "..."
+}
+```
+
+Handle errors by category, not by exact text:
+
+| Status | Meaning | Client action |
+| --- | --- | --- |
+| `400` | Invalid request shape or fields | Fix input and show field errors when useful |
+| `401` | Expired token, invalid ticket, or unauthenticated | Start login or refresh |
+| `403` | Authenticated but not authorized | Show permission error and do not retry endlessly |
+| `404` | Resource not found | Refresh local lists or navigate back |
+| `409` | State conflict | Re-fetch the resource before submitting again |
+| `429` | Rate-limited | Back off using `Retry-After` or server guidance |
+| `5xx` | Server or dependency failure | Show retry and collect `requestId`, time, and path |
+
+## Related Reference
+
+- [OpenAPI Access](../../reference/openapi/): Swagger UI and `/api-docs/openapi.json`.
+- [gRPC Debugging](../../reference/grpc/): reflection, grpcurl, and protobuf file locations.
+- [API Examples](../api-examples/): login, refresh, rooms, tickets, Realtime, Providers, and errors.
+- [Realtime API](../realtime-api/): WebSocket protobuf, resource observation, version synchronization, and reconnect handling.
+- [P2P Media Client](../p2p-media/): DataChannels, player gateway, caching, origin fallback, and integrity validation.
+- [Errors](../../reference/errors/): HTTP/gRPC/Realtime/Provider error structures and codes.
+- [Authentication and Security Model](../../admin/authentication-security/): 2FA, OAuth2, token context, and provider header boundaries.
+- [Roles, Permissions, and Preferences](../../admin/permissions/): roles, permission bits, room settings, and user preferences.
+- [Troubleshooting](../../operations/troubleshooting/): CORS, WebSocket, login, provider, and Range diagnostics.

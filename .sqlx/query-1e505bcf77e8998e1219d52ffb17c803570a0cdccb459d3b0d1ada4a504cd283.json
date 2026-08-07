@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*) as \"count!\"\n            FROM room_members rm\n            WHERE rm.room_id = $1\n             \n              AND NOT EXISTS (\n                  SELECT 1 FROM room_member_kick_cooldowns rmkc\n                  WHERE rmkc.room_id = rm.room_id\n                    AND rmkc.user_id = rm.user_id\n                    AND rmkc.ends_at > CURRENT_TIMESTAMP\n              )\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "1e505bcf77e8998e1219d52ffb17c803570a0cdccb459d3b0d1ada4a504cd283"
+}

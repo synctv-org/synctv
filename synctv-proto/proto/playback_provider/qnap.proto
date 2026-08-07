@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package synctv.playback_provider.qnap;
+
+import "proto/buf/validate/validate.proto";
+import "proto/playback_provider/common.proto";
+
+enum QnapHlsResourceKind {
+  QNAP_HLS_RESOURCE_KIND_UNSPECIFIED = 0;
+  QNAP_HLS_RESOURCE_KIND_MEDIA = 1;
+  QNAP_HLS_RESOURCE_KIND_MANIFEST = 2;
+}
+
+message GetQnapResourceRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string mode_name = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 media_index = 3;
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+  optional string range = 8;
+  bool head = 9;
+}
+
+message QnapResourceResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetQnapHlsManifestRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string mode_name = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 media_index = 3;
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+  bool head = 8;
+}
+
+message QnapHlsManifestResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetQnapHlsResourceRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string target_url = 2 [(buf.validate.field).string.min_len = 1];
+  string sig = 3 [(buf.validate.field).string.min_len = 1];
+  string uid = 4 [(buf.validate.field).string.min_len = 1];
+  string rid = 5 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 6;
+  optional string range = 7;
+  bool head = 8;
+  string mode_name = 9 [(buf.validate.field).string.min_len = 1];
+  uint32 media_index = 10;
+  QnapHlsResourceKind resource_kind = 11 [(buf.validate.field).enum.defined_only = true];
+}
+
+message QnapHlsResourceResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetQnapSubtitleRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string mode_name = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 subtitle_index = 3;
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+}
+
+message QnapSubtitleResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetQnapThumbnailRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string sig = 2 [(buf.validate.field).string.min_len = 1];
+  string uid = 3 [(buf.validate.field).string.min_len = 1];
+  string rid = 4 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 5;
+}
+
+message QnapThumbnailResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+service QnapPlaybackProviderService {
+  rpc GetResource(GetQnapResourceRequest) returns (stream QnapResourceResponse);
+  rpc GetHlsManifest(GetQnapHlsManifestRequest) returns (stream QnapHlsManifestResponse);
+  rpc GetHlsResource(GetQnapHlsResourceRequest) returns (stream QnapHlsResourceResponse);
+  rpc GetSubtitle(GetQnapSubtitleRequest) returns (stream QnapSubtitleResponse);
+  rpc GetThumbnail(GetQnapThumbnailRequest) returns (stream QnapThumbnailResponse);
+}

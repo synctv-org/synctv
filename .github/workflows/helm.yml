@@ -1,0 +1,209 @@
+name: Helm Release
+
+on:
+  workflow_call:
+    inputs:
+      release-tag:
+        description: "Version tag, for example v0.2.0"
+        required: true
+        type: string
+      image-tag:
+        description: "Image tag produced by the calling Docker workflow"
+        required: false
+        default: ""
+        type: string
+    secrets:
+      token:
+        required: true
+      DOCKERHUB_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  publish:
+    name: Publish Helm Chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
+
+      - name: Validate source chart
+        run: make validate-helm
+
+      - name: Read chart metadata
+        id: chart
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
+          GHCR_REPOSITORY: ${{ github.repository }}
+          HELM_OCI_NAMESPACE: ${{ vars.HELM_OCI_NAMESPACE }}
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY }}
+        run: |
+          chart_name="$(ruby -ryaml -e 'puts YAML.load_file(ARGV.fetch(0)).fetch("name")' helm/synctv/Chart.yaml)"
+          chart_version="$(ruby -ryaml -e 'puts YAML.load_file(ARGV.fetch(0)).fetch("version")' helm/synctv/Chart.yaml)"
+          app_version="$(ruby -ryaml -e 'puts YAML.load_file(ARGV.fetch(0)).fetch("appVersion")' helm/synctv/Chart.yaml)"
+          cargo_version="$(make -s cargo-workspace-version)"
+
+          if [ -z "$chart_name" ] || [ -z "$chart_version" ] || [ -z "$app_version" ] || [ -z "$cargo_version" ]; then
+            echo "Chart.yaml must define name, version, and appVersion; Cargo.toml must define workspace.package.version." >&2
+            exit 1
+          fi
+
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "release-tag is required." >&2
+            exit 1
+          fi
+
+          if [ "$chart_version" != "$cargo_version" ] || [ "$app_version" != "$cargo_version" ]; then
+            echo "Source chart version ($chart_version), appVersion ($app_version), and Cargo workspace version ($cargo_version) must match." >&2
+            exit 1
+          fi
+
+          tag_version="${RELEASE_TAG#v}"
+          if [ "$chart_version" != "$tag_version" ]; then
+            echo "Chart version ($chart_version) must match release tag ($tag_version)." >&2
+            exit 1
+          fi
+          publish_version="$chart_version"
+          publish_app_version="$app_version"
+          publish_image_tag="${IMAGE_TAG:-$tag_version}"
+
+          repo="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+
+          if [ -n "$DOCKERHUB_REPOSITORY" ]; then
+            case "$DOCKERHUB_REPOSITORY" in
+              */*)
+                dockerhub_repository="$DOCKERHUB_REPOSITORY"
+                ;;
+              *)
+                dockerhub_repository="$DOCKERHUB_USERNAME/$DOCKERHUB_REPOSITORY"
+                ;;
+            esac
+          elif [ -n "$DOCKERHUB_USERNAME" ]; then
+            dockerhub_repository="$DOCKERHUB_USERNAME/$repo"
+          fi
+
+          {
+            echo "name=$chart_name"
+            echo "version=$publish_version"
+            echo "app_version=$publish_app_version"
+            echo "image_tag=$publish_image_tag"
+            echo "dockerhub_username=$DOCKERHUB_USERNAME"
+            echo 'oci_repos<<EOF'
+            if [ -n "$HELM_OCI_NAMESPACE" ]; then
+              printf '%s\n' "$HELM_OCI_NAMESPACE"
+            else
+              echo "ghcr.io/$GHCR_REPOSITORY/charts"
+              if [ -n "${dockerhub_repository:-}" ]; then
+                echo "docker.io/$dockerhub_repository/charts"
+              fi
+            fi
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set published chart and image metadata
+        env:
+          PUBLISH_CHART_VERSION: ${{ steps.chart.outputs.version }}
+          PUBLISH_APP_VERSION: ${{ steps.chart.outputs.app_version }}
+          PUBLISH_IMAGE_REPOSITORY: ${{ github.repository }}
+          PUBLISH_IMAGE_TAG: ${{ steps.chart.outputs.image_tag }}
+        run: |
+          ruby <<'RUBY'
+          require "yaml"
+
+          chart_path = "helm/synctv/Chart.yaml"
+          chart = YAML.load_file(chart_path)
+          chart["version"] = ENV.fetch("PUBLISH_CHART_VERSION")
+          chart["appVersion"] = ENV.fetch("PUBLISH_APP_VERSION")
+          File.write(chart_path, YAML.dump(chart))
+
+          values_path = "helm/synctv/values.yaml"
+          values = YAML.load_file(values_path)
+          image = values.fetch("image")
+          image["registry"] = "ghcr.io"
+          image["repository"] = ENV.fetch("PUBLISH_IMAGE_REPOSITORY").downcase
+          image["tag"] = ENV.fetch("PUBLISH_IMAGE_TAG")
+          File.write(values_path, YAML.dump(values))
+          puts "OCI chart version: #{chart['version']}"
+          puts "OCI chart default image: #{image['registry']}/#{image['repository']}:#{image['tag']}"
+          RUBY
+
+      - name: Validate published chart
+        env:
+          PUBLISH_IMAGE_REPOSITORY: ${{ github.repository }}
+          PUBLISH_IMAGE_TAG: ${{ steps.chart.outputs.image_tag }}
+        run: |
+          helm lint ./helm/synctv
+          rendered_image="$(helm template synctv ./helm/synctv --namespace synctv | ruby -ryaml -e '
+            YAML.load_stream(STDIN.read).compact.each do |document|
+              next unless document["kind"] == "Deployment"
+              containers = document.dig("spec", "template", "spec", "containers") || []
+              container = containers.find { |item| item["name"] == "synctv" }
+              if container
+                puts container.fetch("image")
+                exit
+              end
+            end
+            abort "SyncTV Deployment image was not rendered"
+          ')"
+          expected_image="ghcr.io/${PUBLISH_IMAGE_REPOSITORY,,}:$PUBLISH_IMAGE_TAG"
+          if [ "$rendered_image" != "$expected_image" ]; then
+            echo "Rendered image ($rendered_image) must match published image ($expected_image)." >&2
+            exit 1
+          fi
+
+      - name: Package chart
+        run: |
+          mkdir -p dist
+          helm package ./helm/synctv --destination dist
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.token }}" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Login to Docker Hub
+        if: steps.chart.outputs.dockerhub_username != ''
+        env:
+          DOCKERHUB_USERNAME: ${{ steps.chart.outputs.dockerhub_username }}
+          DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+        run: echo "$DOCKERHUB_PASSWORD" | helm registry login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+
+      - name: Push chart to OCI registries
+        shell: bash
+        run: |
+          while IFS= read -r oci_repo; do
+            if [ -z "$oci_repo" ]; then
+              continue
+            fi
+
+            check_dir="$(mktemp -d)"
+            if helm pull "oci://$oci_repo/${{ steps.chart.outputs.name }}" \
+              --version "${{ steps.chart.outputs.version }}" \
+              --destination "$check_dir" >/dev/null 2>&1; then
+              echo "OCI chart $oci_repo/${{ steps.chart.outputs.name }}:${{ steps.chart.outputs.version }} already exists; skipping push."
+              continue
+            fi
+
+            helm push "dist/${{ steps.chart.outputs.name }}-${{ steps.chart.outputs.version }}.tgz" \
+              "oci://$oci_repo"
+          done <<'EOF'
+          ${{ steps.chart.outputs.oci_repos }}
+          EOF

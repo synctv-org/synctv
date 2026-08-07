@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT MIN(sequence) AS min_sequence, MAX(sequence) AS max_sequence\n            FROM chat_message_events\n            WHERE room_id = $1\n              AND event_type = ANY($2::text[])\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "min_sequence",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "max_sequence",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "b3f392c39590070548555817a44d1de645c1c9a79a0d77dc05166a0f57d9cec2"
+}

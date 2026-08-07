@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ARRAY_AGG(event_id ORDER BY event_id) AS \"event_ids?: Vec<String>\" FROM chat_message_events",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_ids?: Vec<String>",
+        "type_info": "TextArray",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "9e27ba490619fc188ab3df6f58e03a5bce64ee8ad5d155730ead557d1ef44efe"
+}

@@ -1,0 +1,20 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+message PushServiceToken {
+	PushType pushType = 1;
+	bytes token = 2;
+	bool isPassThrough = 3;
+	enum PushType {
+		kPushTypeInvalid = 0;
+		kPushTypeAPNS = 1;
+		kPushTypeXmPush = 2;
+		kPushTypeJgPush = 3;
+		kPushTypeGtPUsh = 4;
+		kPushTypeOpPush = 5;
+		kPushTYpeVvPush = 6;
+		kPushTypeHwPush = 7;
+		kPushTYpeFcm = 8;
+	}
+}

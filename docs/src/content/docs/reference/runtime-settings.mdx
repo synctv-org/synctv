@@ -1,0 +1,260 @@
+---
+title: Runtime settings 参考
+description: 数据库热更新设置的语义、默认值、校验规则、适用范围和 CLI 示例。
+---
+
+import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## 存储与热更新
+
+Runtime settings 是存储在 PostgreSQL 的热更新设置，主要用于运行中调整产品策略。它们不同于 YAML/env/CLI 启动配置：
+
+| 类型 | 存储位置 | 是否热更新 | 适合内容 |
+| --- | --- | --- | --- |
+| 启动配置 | YAML、env、secret file、CLI flag | 否，通常需要重启 | 端口、数据库、Redis、secret、TLS、data_dir、cache 启用 |
+| Runtime settings | PostgreSQL `settings` 表 | 是，多副本通过 LISTEN/NOTIFY 同步 | 注册、房间创建、权限默认值、RTMP、CORS、聊天保留策略 |
+
+<Aside type="caution">
+不要把启动期 secret、数据库连接、Redis 连接、监听端口或 slice cache 启用状态放进 runtime settings。这些必须由启动配置管理。
+</Aside>
+
+## CLI 用法
+
+```bash
+synctv settings list
+synctv settings get user
+synctv settings update --set user.enablePasswordSignup=true
+```
+
+`--set PATH=VALUE` 和 `--unset PATH` 均可重复使用。普通字符串可以直接传入，数组和对象使用 JSON：
+
+```bash
+synctv settings update \
+  --set email.whitelistEnabled=true \
+  --set 'email.whitelistDomains=["example.com"]'
+synctv settings update --unset email.smtpProxy
+```
+
+CLI 会自动构造 protobuf `FieldMask`。路径使用 lowerCamel 叶子字段；`--unset` 用于清除 optional 配置。`--request-json` 接受完整的 `UpdateSettingsRequest` ProtoJSON，适合生成式配置和自动化批量请求。
+
+具体参数以当前二进制的 `synctv settings --help` 为准。
+
+## 同步与一致性
+
+runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通知其他副本刷新本地缓存。
+
+语义：
+
+- 每个设置 key 都有注册的类型 provider。
+- 写入前会做类型和值校验。
+- 多 key 约束会走事务交叉校验，例如 room policy 会在一次事务中校验。
+- 如果某个副本短暂错过通知，会强制重新拉取快照。
+
+## 字段参考
+
+### Server
+
+| Key | 类型 | 默认值 | 校验 | 说明 |
+| --- | --- | --- | --- | --- |
+| `server.name` | string | `"SyncTV"` | 1..=128 个字符，无首尾空白和控制字符 | 对客户端公开的服务器显示名称 |
+| `server.allowRoomCreation` | bool | `true` | bool | 是否允许用户创建房间 |
+| `server.maxRoomsPerUser` | i64 | `10` | `1..=1000` | 每个用户最多创建多少房间 |
+| `server.maxMembersPerRoom` | i64 | `100` | `1..=10000` | 每个房间最大成员数 |
+| `server.maxChatMessages` | u64 | `500` | `<=10000`，`0` 表示不限 | 服务级公开聊天消息数量上限策略；清理任务使用 `chat.maxMessagesPerRoom` |
+
+### Permissions
+
+| Key | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `permissions.adminDefaultPermissions` | 权限名称数组 | 内置 admin 权限集合 | 房间 admin 全局默认权限 |
+| `permissions.memberDefaultPermissions` | 权限名称数组 | 内置 member 权限集合 | 房间 member 全局默认权限 |
+| `permissions.guestDefaultPermissions` | 权限名称数组 | `[]` | 房间 guest 全局默认权限；只允许 `view_members`、`view_chat_history`、`use_voice_chat`、`use_p2p_media` |
+
+这些设置使用 JSON 数组保存稳定的权限名称，例如：
+
+```json
+["send_chat_messages", "manage_own_media", "browse_library", "view_members"]
+```
+
+`permissions.guestDefaultPermissions` 使用独立 guest 上限，不能写入 `browse_library`、`send_chat_messages`、媒体资源、播放控制或管理权限。允许的示例：
+
+```json
+["view_members", "view_chat_history", "use_voice_chat", "use_p2p_media"]
+```
+
+完整权限名称、角色默认集合和房间覆盖规则见 [角色、权限与用户偏好](../../admin/permissions/)。
+
+### Room
+
+| Key | 类型 | 默认值 | 校验 | 说明 |
+| --- | --- | --- | --- | --- |
+| `room.disableCreateRoom` | bool | `false` | bool | 是否禁用创建房间 |
+| `room.createRoomNeedReview` | bool | `false` | bool | 创建房间是否需要审核 |
+| `room.passwordPolicy` | enum string | `optional` | `optional`、`required`、`forbidden` | 房间密码策略 |
+
+### User
+
+| Key | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `user.enablePasswordSignup` | bool | `false` | 是否允许本地密码注册，包括 OPAQUE 注册和直接密码传输注册 |
+| `user.passwordSignupNeedReview` | bool | `false` | 密码注册是否需要审核 |
+| `user.enableEmailSignup` | bool | `false` | 是否允许邮箱注册，注册确认时设置本地密码凭据 |
+| `user.emailSignupNeedReview` | bool | `false` | 邮件注册是否需要审核 |
+| `user.enableWebauthnSignup` | bool | `false` | 是否允许 WebAuthn/passkey 作为初始账号注册方式；登录后绑定 passkey 不属于注册 |
+| `user.webauthnSignupNeedReview` | bool | `false` | WebAuthn 注册是否需要审核；审核队列会保存待审批 passkey，审批通过后创建账号及其 WebAuthn 凭据 |
+| `user.enableGuest` | bool | `true` | 是否允许游客能力 |
+
+注册相关开关默认全部关闭。生产环境应只打开明确需要的注册入口，并分别决定是否需要审核。
+
+### OAuth2
+
+| Key | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `oauth2.providers` | JSON 数组 | `[]` | OAuth2/OIDC provider 实例注册表。每个元素是一个 `OAuth2ProviderSettings` ProtoJSON 对象 |
+| `oauth2.allowedRedirectUrls` | JSON 字符串数组 | `[]` | 客户端可请求的 HTTPS 回调地址白名单；loopback 回调单独放行 |
+
+`oauth2.providers` 是 OAuth2 配置入口。`instanceName` 只能包含 ASCII 字母、数字、`_` 和 `-`，并且最长 64 字节。每个元素使用一个 provider oneof 字段，例如 `github` 或 `oidc`：
+
+移动端和商店包建议配置统一回调地址：
+
+```bash
+synctv settings update --set 'oauth2.allowedRedirectUrls=["https://syncs.tv/oauth2/callback"]'
+```
+
+Apple Services ID 只接受已登记的 HTTPS Return URL。Apple provider 的客户端回调必须与该 provider 的 `redirectUrl` 完全一致；macOS 和 iOS 客户端应通过 `ASWebAuthenticationSession` 接收这个 HTTPS 回调。
+
+```json
+[
+  {
+    "instanceName": "github",
+    "enableSignup": true,
+    "signupNeedReview": false,
+    "github": {
+      "clientId": "github-client-id",
+      "clientSecret": "github-client-secret",
+      "redirectUrl": "https://app.example.com/oauth2/callback"
+    }
+  },
+  {
+    "instanceName": "corp_oidc",
+    "enableSignup": false,
+    "signupNeedReview": false,
+    "oidc": {
+      "clientId": "synctv",
+      "clientSecret": "oidc-client-secret",
+      "issuer": "https://idp.example.com",
+      "redirectUrl": "https://app.example.com/oauth2/callback"
+    }
+  }
+]
+```
+
+缺失 provider 实例表示该登录入口不可用。缺失或为 `false` 的 `enableSignup` 会阻止首次 OAuth2 登录自动创建本地账号，但已绑定的 OAuth2 登录不受影响。`signupNeedReview=true` 会把首次 OAuth2 注册写入用户注册审核队列，审核通过后才创建本地账号和 OAuth2 绑定。
+
+用户级 2FA、通知偏好和 Provider 默认实例属于 user preferences，见 [角色、权限与用户偏好](../../admin/permissions/)。
+
+### RTMP
+
+| Key | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `rtmp.customPublishHost` | string/null | `null` | 可选的自定义发布 host |
+| `rtmp.tsDisguisedAsPng` | bool | `false` | 是否把 TS 片段伪装为 PNG 路径或响应形式 |
+
+设置请求使用 `{"settings":{"rtmp":{"customPublishHost":"rtmp://live.example.com"}},"updateMask":"rtmp.customPublishHost"}`。清除请求使用 `{"settings":{"rtmp":{}},"updateMask":"rtmp.customPublishHost"}`。
+
+### Email
+
+| Key | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `email.enabled` | bool | `false` | 是否启用邮件发送 |
+| `email.smtpHost` | string/null | `null` | SMTP 服务器主机 |
+| `email.smtpPort` | u16 | `587` | SMTP 服务器端口 |
+| `email.smtpCredentials` | object/null | `null` | 可选 SMTP 登录凭据 `{username, password}` |
+| `email.smtpProxy` | object/null | `null` | 可选 SOCKS5 代理 `{url, credentials?}` |
+| `email.useTls` | bool | `true` | 是否使用 SMTP TLS |
+| `email.fromEmail` | string/null | `null` | 发件邮箱 |
+| `email.fromName` | string | `"SyncTV"` | 发件人显示名 |
+| `email.whitelistEnabled` | bool | `false` | 是否启用邮箱白名单 |
+| `email.whitelistDomains` | string[] | `[]` | 邮箱白名单域名或邮箱列表 |
+
+`email.whitelistEnabled=true` 且 `email.whitelistDomains` 为空时不会拒绝任何邮箱；只有白名单非空时才会按域名或邮箱匹配。
+
+SOCKS5 代理 URL 只包含 scheme、host 和 port。代理认证信息位于 `smtpProxy.credentials`。代理启用时，SMTP 目标域名交给 SOCKS5 代理解析。任一 SMTP 或代理字段更新后，服务会清理缓存连接，下一封邮件使用新配置。
+
+可选配置通过对应 FieldMask 路径更新，例如 `{"settings":{"email":{"smtpProxy":{"url":"socks5://proxy.example.com:1080"}}},"updateMask":"email.smtpProxy"}`。清除代理时提交 `{"settings":{"email":{}},"updateMask":"email.smtpProxy"}`。`email.smtpHost`、`email.fromEmail` 和 `email.smtpCredentials` 使用相同语义。管理读取结果省略密码。用户名保持一致时，更新凭据并省略密码会沿用现有值。
+
+### WebRTC
+
+| Key | 类型 | 默认值 | 校验 | 说明 |
+| --- | --- | --- | --- | --- |
+| `webrtc.externalIceServers` | JSON/字符串结构 | `[]` | 有效 ICE server 数组 | 返回给原生客户端的外部 ICE servers |
+| `webrtc.maxVoiceParticipantsPerRoom` | u32 | `8` | `2..=32` | 每个房间同时加入语音通话的 Mesh 参与者上限 |
+
+外部列表默认值为空。内置 STUN 启用且具有客户端可达的公布地址时，服务端会将它加入返回给客户端的 ICE servers。内置 STUN 监听端口、host、candidate 过滤等启动配置见 [WebRTC 配置](../../configuration/webrtc/)。
+
+语音人数上限在每次加入时动态读取。降低上限会阻止后续参与者加入，当前通话连接保持；离开或断开连接会立即释放席位。多副本部署通过 Redis 原子协调房间席位。
+
+### Chat
+
+| Key | 类型 | 默认值 | 校验 | 说明 |
+| --- | --- | --- | --- | --- |
+| `chat.maxMessagesPerRoom` | u64 | `500` | `<=100000`，`0` 表示不限 | 每个房间保留的聊天消息数量上限 |
+| `chat.maxPinnedMessagesPerRoom` | u64 | `20` | `<=1000` | 每个房间保留的置顶聊天消息数量上限 |
+| `chat.messageRetentionDays` | i64 天 | `90` | `1..=3650` | 聊天消息最长保留天数 |
+
+### CORS
+
+| Key | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `cors.allowedOrigins` | JSON/字符串结构 | `[]` | 代理相关 CORS 允许 origin |
+
+主服务启动 CORS 配置是 `server.cors_allowed_origins`。runtime CORS 适合运行时调整代理相关策略，具体使用范围以当前 API 行为为准。
+
+## 典型操作
+
+<Tabs syncKey="runtime-settings-examples">
+  <TabItem label="开启密码注册" icon="setting">
+
+```bash
+synctv settings update --set user.enablePasswordSignup=true
+```
+
+  </TabItem>
+  <TabItem label="密码注册审核" icon="approve-check-circle">
+
+```bash
+synctv settings update --set user.passwordSignupNeedReview=true
+```
+
+  </TabItem>
+  <TabItem label="限制房间数量" icon="document">
+
+```bash
+synctv settings update --set roomCreation.maxRoomsPerUser=20
+```
+
+  </TabItem>
+  <TabItem label="清理聊天保留" icon="warning">
+
+```bash
+synctv settings update \
+  --set chat.maxMessagesPerRoom=1000 \
+  --set chat.messageRetentionDays=180
+```
+
+  </TabItem>
+  <TabItem label="配置 OAuth2" icon="document">
+
+```bash
+synctv settings update --set 'oauth2.providers=[{"name":"github","enableSignup":true,"signupNeedReview":false,"github":{"clientId":"github-client-id","clientSecret":"github-client-secret","redirectUrl":"https://app.example.com/oauth2/callback"}}]'
+```
+
+  </TabItem>
+</Tabs>
+
+## 修改前检查
+
+- **先确认是否应热更新**： 如果是端口、secret、数据库、Redis、TLS 或 cache 启用，应该改启动配置而不是 runtime settings。
+- **先查当前值**： 修改前运行 `synctv settings get <key>`，记录当前值，方便回滚。
+- **关注多副本同步**： 多副本依赖 PostgreSQL 通知同步，修改后观察所有副本日志和行为。
+- **保留变更原因**： 对注册、房间创建、RTMP 和权限默认值这类策略变更记录 reason。

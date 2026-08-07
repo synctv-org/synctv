@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package synctv.provider.seafile;
+
+import "proto/providers/seafile.proto";
+
+service SeafileProviderService {
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc UnlockLibrary(UnlockLibraryRequest) returns (UnlockLibraryResponse);
+  rpc ListRepositories(ListRepositoriesRequest) returns (ListResponse);
+  rpc List(ListRequest) returns (ListResponse);
+  rpc ListStarred(ListStarredRequest) returns (ListResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+}

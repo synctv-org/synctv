@@ -1,0 +1,240 @@
+---
+title: Server Listener and Runtime Paths
+description: server, time, data_dir, logging, and management configuration.
+---
+
+These settings control where SyncTV listens, how other systems reach it, where runtime files are written, how logs are emitted, and how the management CLI connects.
+
+## `server`
+
+HTTP REST and public gRPC use the same `server.port`.
+
+### `server.host`
+
+Default:
+
+```yaml
+server:
+  host: "0.0.0.0"
+```
+
+Common values:
+
+| Value | Meaning | Use case |
+| --- | --- | --- |
+| `0.0.0.0` | Listen on all IPv4 interfaces | Docker, Kubernetes, servers |
+| `127.0.0.1` | Localhost only | Local dev or reverse-proxy-only access |
+| `::` | Listen on all IPv6 interfaces | IPv6 environments |
+
+### `server.port`
+
+Default:
+
+```yaml
+server:
+  port: 8080
+```
+
+HTTP REST API, public gRPC API, and health checks use this port. In Helm, HTTP and gRPC are exposed through separate Services, but both target the same container port.
+
+### `server.enable_reflection`
+
+Default: `false`.
+
+Enables public gRPC reflection. It is disabled by default; enable it explicitly for local development or controlled internal debugging, and keep it disabled on public production endpoints.
+
+### `server.grpc_max_message_size_bytes`
+
+Default: `16777216`, which is 16 MiB.
+
+This limits gRPC request and response message sizes. Increase only when large batch operations require it. Avoid very high values on public endpoints.
+
+### `server.grpc_compression_enabled`
+
+Default:
+
+```yaml
+server:
+  grpc_compression_enabled: true
+```
+
+Allows the main SyncTV process gRPC clients and servers to negotiate gzip compression, including public gRPC, management gRPC, cluster/livestream internal gRPC links, and outbound remote media-provider gRPC clients. It does not force every request to be compressed; compression is used when the peer advertises support and the message can benefit from it.
+
+Standalone remote media-provider server deployments do not load the main SyncTV config file. Configure their server-side compression negotiation with `PROVIDER_GRPC_COMPRESSION_ENABLED` instead.
+
+Keep it enabled when:
+
+- Cluster gRPC, remote management, batch responses, or list APIs are common.
+- Network bandwidth is tighter than CPU.
+- Kubernetes or Ingress traffic crosses nodes.
+
+Disable it only when CPU is the tighter resource and gRPC payloads are usually small or entirely local.
+
+Environment variable:
+
+```bash
+SYNCTV_SERVER_GRPC_COMPRESSION_ENABLED=true
+```
+
+### `server.trusted_proxies`
+
+Default: `[]`.
+
+Controls which reverse proxies may provide trusted client IP headers such as `X-Forwarded-For`.
+
+```yaml
+server:
+  trusted_proxies:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+```
+
+Do not use `0.0.0.0/0` or `::/0`. If unsure, keep the list empty so SyncTV uses the socket peer address.
+
+### `server.cors_allowed_origins`
+
+Default: `[]`.
+
+Allowed browser origins for cross-origin API access:
+
+```yaml
+server:
+  cors_allowed_origins:
+    - "https://app.example.com"
+    - "https://admin.example.com"
+```
+
+Values must be origins only: scheme, host, and optional port. Do not include paths, query strings, or fragments.
+
+Environment variable form:
+
+```bash
+SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
+```
+
+### `server.advertise_host`
+
+Address that other nodes should use to reach this node.
+
+Common cases:
+
+- Kubernetes: set through `SYNCTV_SERVER_ADVERTISE_HOST` or downward API using Pod IP.
+- Static multi-node: set an internal IP or DNS name.
+- Single-node: usually leave empty.
+
+When empty, SyncTV tries `POD_IP`, then system hostname.
+
+### `server.shutdown_drain_timeout_seconds`
+
+Default: `30`.
+
+How long shutdown waits for existing connections to drain. Increase it for many long-lived connections or smoother Kubernetes rolling updates.
+
+## Timezone
+
+`time.timezone` defaults to automatic detection.
+
+Resolution order:
+
+1. `time.timezone`
+2. `SYNCTV_TIME_TIMEZONE`
+3. `TZ`
+4. System timezone
+5. UTC
+
+Example:
+
+```yaml
+time:
+  timezone: "Asia/Shanghai"
+```
+
+## `data_dir`
+
+`data_dir` is the root for runtime-owned local files:
+
+- Management Unix socket.
+- File logs.
+- HLS livestream segments.
+- Proxy slice cache files.
+
+Examples:
+
+```yaml
+data_dir: "/var/lib/synctv"
+```
+
+Container deployments usually use `/data` and mount it as a volume.
+
+`data_dir` does not affect `*_file` secret paths or metrics TLS cert/key paths.
+
+## Logging
+
+Top-level `logging` is the global catch-all output for the database, Redis, caches, proxies, realtime, outbox, migrations, startup, third-party dependencies, and all remaining targets. `server`, `health`, `metrics`, `management`, `cluster`, `livestream`, and `webrtc` use dedicated outputs. Each event enters exactly one output: dedicated targets enter their component output, and every remaining target enters the global output.
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `logging.level` | `info` | Global log level |
+| `logging.format` | `text` | Global log format (`text` or `json`) |
+| `logging.output` | `stdout` | Global `stdout`, `stderr`, or file output |
+| `logging.color` | `auto` | Global color policy (`auto`, `always`, or `never`) |
+| `<component>.logging.level` | `info` (`warn` for metrics/cluster) | Component log level |
+| `<component>.logging.format` | `text` | Component log format (`text` or `json`) |
+| `<component>.logging.output` | `stdout` | Independent `stdout`, `stderr`, or file output |
+| `<component>.logging.color` | `auto` | `auto`, `always`, or `never` |
+
+Use `json` in Kubernetes or log aggregation systems:
+
+```yaml
+logging:
+  level: "info"
+  format: "json"
+  output: stdout
+  color: never
+
+server:
+  logging:
+    level: "info"
+    format: "json"
+    output: stdout
+    color: never
+
+livestream:
+  logging:
+    level: "info"
+    format: "json"
+    output:
+      type: file
+      path: "logs/livestream.log"
+      rotation:
+        strategy: daily
+        max_files: 30
+    color: never
+
+webrtc:
+  logging:
+    level: "info"
+    format: "json"
+    output: stdout
+    color: never
+```
+
+Relative file paths for global and component logs resolve under `data_dir`. File outputs support `daily`, `hourly`, and `never` rotation strategies; `rotation.max_files` retains 30 files by default. Containers commonly send every output to stdout for JSON-aware log collection.
+
+## Management Endpoint
+
+The management endpoint is used by the `synctv` CLI for controlled administrative operations. It is not a client-facing business API.
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `management.enabled` | `true` | Enable management endpoint |
+| `management.transport` | Unix on Unix-like systems, TCP elsewhere | Transport mode |
+| `management.port` | `50052` | TCP management port |
+| `management.unix_socket_path` | platform-specific under `data_dir` | Unix socket path |
+| `management.auth_token` | `""` | Bearer token for TCP management |
+| `management.enable_reflection` | `false` | Management gRPC reflection |
+
+TCP management requires a strong auth token and should not be exposed publicly.
+
+Unix socket paths can be relative to `data_dir`. TCP mode is useful for Windows or controlled remote management networks.

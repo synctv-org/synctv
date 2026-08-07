@@ -1,0 +1,197 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "synctv.fullname" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  {{- if eq .Values.service.type "LoadBalancer" }}
+  {{- with .Values.service.loadBalancerIP }}
+  {{- if ne . "" }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- end }}
+  {{- with .Values.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+  ports:
+    - port: {{ .Values.config.server.port }}
+      targetPort: api
+      protocol: TCP
+      name: api
+  selector:
+    {{- include "synctv.appSelectorLabels" . | nindent 4 }}
+  {{- if .Values.service.sessionAffinity }}
+  sessionAffinity: {{ .Values.service.sessionAffinity }}
+  {{- end }}
+---
+{{- if .Values.config.health.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "synctv.healthServiceName" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: health
+spec:
+  type: ClusterIP
+  ports:
+    - name: health
+      port: {{ .Values.config.health.port | default 8081 }}
+      targetPort: health
+      protocol: TCP
+  selector:
+    {{- include "synctv.appSelectorLabels" . | nindent 4 }}
+{{- end }}
+---
+{{- if .Values.rtmpService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "synctv.rtmpServiceName" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rtmp
+  {{- with .Values.rtmpService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.rtmpService.type }}
+  {{- if eq .Values.rtmpService.type "LoadBalancer" }}
+  {{- with .Values.rtmpService.loadBalancerIP }}
+  {{- if ne . "" }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- end }}
+  {{- with .Values.rtmpService.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+  ports:
+    - port: {{ .Values.config.livestream.rtmpPort }}
+      targetPort: rtmp
+      protocol: TCP
+      name: rtmp
+      {{- if and (or (eq .Values.rtmpService.type "NodePort") (eq .Values.rtmpService.type "LoadBalancer")) .Values.rtmpService.nodePort }}
+      nodePort: {{ .Values.rtmpService.nodePort }}
+      {{- end }}
+  selector:
+    {{- include "synctv.appSelectorLabels" . | nindent 4 }}
+  {{- if .Values.rtmpService.sessionAffinity }}
+  sessionAffinity: {{ .Values.rtmpService.sessionAffinity }}
+  {{- end }}
+---
+{{- end }}
+{{- if and .Values.config.webrtc.enableBuiltinStun .Values.stunService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "synctv.stunServiceName" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: stun
+  {{- with .Values.stunService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.stunService.type }}
+  {{- if eq .Values.stunService.type "LoadBalancer" }}
+  {{- with .Values.stunService.loadBalancerIP }}
+  {{- if ne . "" }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- end }}
+  {{- with .Values.stunService.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+  ports:
+    - port: {{ .Values.config.webrtc.stunPort }}
+      targetPort: stun
+      protocol: UDP
+      name: stun
+      {{- if and (or (eq .Values.stunService.type "NodePort") (eq .Values.stunService.type "LoadBalancer")) .Values.stunService.nodePort }}
+      nodePort: {{ .Values.stunService.nodePort }}
+      {{- end }}
+  selector:
+    {{- include "synctv.appSelectorLabels" . | nindent 4 }}
+  {{- if .Values.stunService.sessionAffinity }}
+  sessionAffinity: {{ .Values.stunService.sessionAffinity }}
+  {{- end }}
+---
+{{- end }}
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "synctv.metricsServiceName" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+  {{- $metricsAnnotations := dict }}
+  {{- if .Values.metrics.scrapeAnnotations.enabled }}
+  {{- $_ := set $metricsAnnotations "prometheus.io/scrape" "true" }}
+  {{- $_ := set $metricsAnnotations "prometheus.io/port" (.Values.metrics.port | default 9090 | toString) }}
+  {{- $_ := set $metricsAnnotations "prometheus.io/path" "/metrics" }}
+  {{- $_ := set $metricsAnnotations "prometheus.io/scheme" (ternary "https" "http" (.Values.metrics.tls.enabled | default false)) }}
+  {{- end }}
+  {{- with .Values.metrics.service.annotations }}
+  {{- range $k, $v := . }}
+  {{- $_ := set $metricsAnnotations $k $v }}
+  {{- end }}
+  {{- end }}
+  {{- if $metricsAnnotations }}
+  annotations:
+    {{- range $k, $v := $metricsAnnotations }}
+    {{ $k }}: {{ $v | quote }}
+    {{- end }}
+  {{- end }}
+spec:
+  type: {{ .Values.metrics.service.type | default "ClusterIP" }}
+  ports:
+    - port: {{ .Values.metrics.port | default 9090 }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    {{- include "synctv.appSelectorLabels" . | nindent 4 }}
+  {{- with .Values.metrics.service.sessionAffinity }}
+  sessionAffinity: {{ . }}
+  {{- end }}
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "synctv.grpcServiceName" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grpc
+  {{- with .Values.grpcService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.grpcService.type | default "ClusterIP" }}
+  ports:
+    - port: {{ .Values.grpcService.port | default .Values.config.server.port }}
+      targetPort: api
+      protocol: TCP
+      name: grpc
+  selector:
+    {{- include "synctv.appSelectorLabels" . | nindent 4 }}
+  {{- if .Values.grpcService.sessionAffinity }}
+  sessionAffinity: {{ .Values.grpcService.sessionAffinity }}
+  {{- end }}

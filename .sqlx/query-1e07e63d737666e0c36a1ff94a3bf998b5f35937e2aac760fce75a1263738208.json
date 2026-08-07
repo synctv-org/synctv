@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM realtime_outbox\n            WHERE (\n                    $1 > 0\n                AND status = $2\n                AND dispatched_at IS NOT NULL\n                AND dispatched_at < CURRENT_TIMESTAMP - make_interval(days => $1)\n            )\n            OR (\n                    $3 > 0\n                AND status = $4\n                AND created_at < CURRENT_TIMESTAMP - make_interval(days => $3)\n            )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int2",
+        "Int4",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1e07e63d737666e0c36a1ff94a3bf998b5f35937e2aac760fce75a1263738208"
+}

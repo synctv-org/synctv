@@ -1,0 +1,42 @@
+---
+title: Run Maintenance Tasks
+description: Inspect system state, clear streams, evict slice cache, and validate that maintenance did not affect users.
+---
+
+Maintenance tasks operate on instance state, online streams, and proxy cache. Before running them, decide whether online playback may be affected. Afterward, check health, logs, metrics, and user paths.
+
+## System State
+
+```bash
+synctv system stats
+synctv system stream list
+synctv system stream kick <STREAM_ID>
+```
+
+| Operation | Use |
+| --- | --- |
+| `system stats` | Inspect service, connection, and internal state |
+| `system stream list` | Find active media streams or abnormal streams |
+| `system stream kick` | Disconnect a stuck or abusive stream |
+
+## Slice Cache
+
+```bash
+synctv slice-cache stats
+synctv slice-cache evict-expired
+synctv slice-cache purge
+```
+
+- `proxy_slice_cache.enabled` decides whether slice cache is enabled.
+- CLI commands provide stats, expiration eviction, and purge; they do not dynamically enable or disable cache.
+- `purge` clears cache data. It does not affect PostgreSQL business data, but it lowers cache hit rate afterward.
+
+## Validate After Maintenance
+
+1. `/health/ready` succeeds.
+2. Sign-in, room list, WebSocket, chat, and playback controls work.
+3. Provider browse, direct playback, and proxy playback work.
+4. Metrics do not show sustained errors.
+5. Logs do not show sustained database, Redis, Provider, or Realtime errors.
+
+Production diagnosis is in [Troubleshooting](../../operations/troubleshooting/). Metrics guidance is in [Observability Runbook](../../operations/observability/).

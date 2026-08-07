@@ -1,0 +1,39 @@
+//! Alist Provider Client
+//!
+//! Pure HTTP client for Alist API, independent of `MediaProvider`.
+//! Can be used as a standalone library or as a `provider_instance`.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use synctv_media_providers::alist::AlistClient;
+//!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let mut client = AlistClient::new("https://alist.example.com")?;
+//! let token = client.login("username", "password", false).await?;
+//! let file_info = client
+//!     .fs_get(
+//!         "/movies/video.mp4",
+//!         None,
+//!         &std::collections::HashMap::from([(
+//!             "User-Agent".to_string(),
+//!             synctv_media_providers::PROVIDER_USER_AGENT.to_string(),
+//!         )]),
+//!     )
+//!     .await?;
+//! # Ok(())
+//! # }
+//! ```
+
+mod client;
+mod service;
+mod types;
+
+pub use crate::error::ProviderClientError as AlistError;
+pub use client::AlistClient;
+pub use service::{AlistInterface, AlistService};
+pub use types::{
+    AlistResp, HttpFsGetRelated, HttpFsGetResp, HttpFsListContent, HttpFsListResp, HttpFsOtherResp,
+    HttpFsSearchContent, HttpFsSearchResp, HttpMeResp, HttpSubtitleTask, HttpTranscodingTask,
+    HttpVideoMeta, HttpVideoPreviewPlayInfo, LoginData,
+};

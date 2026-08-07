@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM notifications\n            WHERE user_id = $1 AND is_read = TRUE\n              AND created_at >= NOW() - INTERVAL '6 months'\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dc1dba1f2c996c53149a046f7ebf714e4a571f3ab7dbf5ea380cd7834180c5c9"
+}

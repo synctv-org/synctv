@@ -1,0 +1,53 @@
+---
+title: 部署与运行边界
+description: PostgreSQL、Redis、secret、管理面、metrics、媒体代理和生产部署边界。
+---
+
+SyncTV 是应用服务，不是数据库、对象存储、媒体库、CDN 或公网管理平台。生产部署前先确认下面这些边界，能减少错误配置和错误预期。
+
+## 必需和推荐依赖
+
+| 组件 | 角色 | 生产要求 |
+| --- | --- | --- |
+| PostgreSQL | 主持久化数据源 | 必须持久化、备份，并在升级前验证 migration |
+| Redis | 短期共享状态和协调层 | 生产推荐，多副本必需 |
+| Secret | token、凭据加密、OPAQUE、管理认证 | 必须长期保存，不能提交仓库或写入日志 |
+| TLS | 保护登录、token、Cookie、MFA 和管理流量 | 公网入口必须使用 HTTPS 或受信任加密隧道 |
+
+PostgreSQL 保存用户、房间、权限、Provider instance、用户偏好、通知、审核和审计数据。Redis 保存 OAuth2 state、WebAuthn challenge、邮箱验证码、限流状态、token blacklist、集群协调和缓存失效等短期状态。
+
+## 管理面不是公网入口
+
+management gRPC、metrics 和内部调试入口面向管理员和运维，不面向普通用户或第三方客户端。生产部署应使用 Unix socket、内网、VPN、堡垒机、Kubernetes exec 或受控抓取链路；如果使用 TCP management，必须配置 `management.auth_token`。
+
+## HTTP/gRPC 传输边界
+
+HTTP 和 gRPC 是同一业务能力的两种传输入口。传输层负责路径、query、JSON/protobuf、headers、stream body 和状态码/状态对象转换；业务实现集中在 `synctv-api/src/impls` 和 `synctv-core` service/repository/provider 层。
+
+新增能力时，protobuf 定义表达共享参数，HTTP/gRPC handler 转换为同一组 impl 参数。Provider、播放、聊天、文件和直播的核心逻辑放在 impls/core，保持传输入口之间行为一致。
+
+## SyncTV 不做什么
+
+| 非目标 | 说明 |
+| --- | --- |
+| 媒体存储系统 | SyncTV 聚合、解析和代理外部媒体，不替代对象存储、网盘、媒体库或 CDN |
+| 通用转码平台 | 转码能力取决于 Provider 或上游媒体系统 |
+| 公网管理面 | 管理控制面不能直接暴露给普通公网 |
+| CDN | proxy 和 slice cache 不能替代带宽规划和边缘分发 |
+| 强一致协同数据库 | Realtime 是房间事件和资源观察通道，不替代数据库事务边界 |
+
+## 本节点 Active Room 边界
+
+后台播放任务使用当前进程的 active room 集合作为调度边界。这里的 active room 指本节点 `ConnectionRuntime` 中至少有一个实时连接的房间。
+
+这个边界用于播放时长探测、播放自动切换和播放资源生命周期任务。这类 worker 在每个节点运行，因为 follower 节点也可能是某个房间唯一存在连接的进程。多个节点可以同时持有同一个房间的连接，重复尝试由数据库层处理：时长探测使用行锁和 `SKIP LOCKED` 抢占任务，播放自动切换使用播放状态事务和乐观版本。
+
+全局热门房间统计属于 presence 和分析数据，适合房间列表、管理视图和 metrics。播放后台任务应读取 `ConnectionRuntime::active_room_ids()`，让每个节点只处理自己正在承载连接的房间。
+
+Leader election 适合分区维护、清理和其他全局单例任务。播放生命周期 worker 的所有权来自本节点实时连接集合。
+
+## 下一步
+
+- 生产上线：读 [生产部署清单](../../install/production-checklist/)。
+- 配置数据库和 Redis：读 [数据库与 Redis](../../configuration/database-and-redis/)。
+- 查看完整限制：读 [能力限制与非目标](../../reference/limitations/)。

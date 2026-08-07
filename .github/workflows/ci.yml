@@ -1,57 +1,271 @@
-name: CI
+name: CI Pipeline
 
 on:
-  workflow_call:
-  workflow_dispatch:
   push:
-    branches:
-      - "**"
-    tags:
-      - "v*.*.*"
-    paths-ignore:
-      - "**/*.md"
-      - "**/*.yaml"
+    branches: ['**']
   pull_request:
-    branches:
-      - "**"
-    paths-ignore:
-      - "**/*.md"
-      - "**/*.yaml"
+    branches: ['**']
+  schedule:
+    # Run security audit daily at 00:00 UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  SQLX_OFFLINE: true
 
 jobs:
-  golangci-lint:
-    name: Lint
-    runs-on: ubuntu-24.04
+  # Check code formatting
+  format:
+    name: Format Check
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
         with:
-          submodules: true
+          components: rustfmt
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - name: Check formatting
+        run: make fmt-check
+
+  # Run Clippy lints independently from the test jobs.
+  clippy:
+    name: Clippy Lints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
         with:
-          go-version-file: "go.mod"
+          components: clippy
 
-      - name: Go test
-        run: |
-          go test -v -timeout 30s -count=1 ./...
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
 
-      - name: Run Linter
-        uses: golangci/golangci-lint-action@v8
-        with:
-          version: latest
-          args: --color=always
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
 
-      - name: Run Fix Linter
-        uses: golangci/golangci-lint-action@v8
-        if: ${{ failure() }}
-        with:
-          install-mode: none
-          args: --fix --color=always
+      - name: Run Clippy
+        timeout-minutes: 60
+        run: make clippy-check
 
-      - name: Auto Fix Diff Content
-        if: ${{ failure() }}
-        run: |
-          git diff --color=always
-          exit 1
+  # Build
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: make build-workspace
+
+  proto-freshness:
+    name: Proto Freshness
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check generated proto artifacts
+        run: make proto-freshness
+
+  # SQLx offline metadata
+  sqlx-offline:
+    name: SQLx Offline Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check SQLx offline metadata
+        run: make check-all-targets
+
+  # Test non-ignored cases
+  test-default:
+    name: Test Default (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+    env:
+      SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS: 600
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Install build dependencies on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
+
+      - name: Install build dependencies on macOS
+        if: runner.os == 'macOS'
+        run: brew install protobuf nasm
+
+      - name: Install protobuf compiler on Windows
+        if: runner.os == 'Windows'
+        run: choco install protoc --yes
+
+      - name: Install Make on Windows
+        if: runner.os == 'Windows'
+        run: choco install make --yes --no-progress
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run non-ignored tests with nextest
+        timeout-minutes: 60
+        run: make nextest-default
+
+      - name: Run documentation tests
+        timeout-minutes: 20
+        run: make doc-test
+
+  # Test ignored cases
+  test-ignored:
+    name: Test Ignored (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+    env:
+      SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS: 600
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Install build dependencies on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run ignored tests with nextest
+        timeout-minutes: 60
+        run: make nextest-ignored
+
+  # Security audit
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-audit
+        run: make install-cargo-audit
+
+      - name: Run security audit
+        run: make audit
+        # SECURITY: Audit failures should block the build
+
+      - name: Run security audit (advisories)
+        run: make audit-advisories
+        continue-on-error: true # Informational output
+
+  # Dependency policy enforcement with cargo-deny
+  cargo-deny:
+    name: Dependency Policy Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-deny
+        run: make install-cargo-deny
+
+      - name: Run cargo-deny check
+        run: make deny-check
+
+      - name: Run cargo-deny check (advisories only - fail on vulnerabilities)
+        run: make deny-advisories
+        continue-on-error: false
+
+      - name: Run cargo-deny check (licenses)
+        run: make deny-licenses
+        continue-on-error: true # Warn but don't fail
+
+      - name: Run cargo-deny check (bans)
+        run: make deny-bans
+        continue-on-error: true # Warn about multiple versions
+
+      - name: Run cargo-deny check (sources)
+        run: make deny-sources
+        continue-on-error: false # Fail on untrusted sources
+
+  # Check for unused dependencies
+  udeps:
+    name: Unused Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
+
+      - name: Install cargo-udeps
+        run: make install-cargo-udeps
+
+      - name: Check for unused dependencies
+        run: make udeps
+        continue-on-error: true # Don't fail the build, just report

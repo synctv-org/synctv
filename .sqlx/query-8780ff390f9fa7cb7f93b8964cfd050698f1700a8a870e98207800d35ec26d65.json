@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE provider_playback_sessions SET lease_expires_at = $3\n               WHERE room_id = $1 AND playback_generation = $2 AND state = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8780ff390f9fa7cb7f93b8964cfd050698f1700a8a870e98207800d35ec26d65"
+}

@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                EXISTS (\n                    SELECT 1\n                    FROM auth_password_credentials\n                    WHERE user_id = $1\n                      AND opaque_record IS NOT NULL\n                      AND opaque_credential_identifier IS NOT NULL\n                      AND opaque_ciphersuite IS NOT NULL\n                      AND opaque_server_setup_version IS NOT NULL\n                ) AS \"password!\",\n                EXISTS (\n                    SELECT 1\n                    FROM auth_webauthn_credentials\n                    WHERE user_id = $1\n                      AND ($2::bytea IS NULL OR credential_id <> $2)\n                ) AS \"webauthn!\",\n                EXISTS (\n                    SELECT 1\n                    FROM auth_totp_credentials\n                    WHERE user_id = $1 AND confirmed_at IS NOT NULL\n                ) AS \"totp!\",\n                COALESCE((\n                    SELECT cardinality(recovery_code_hashes)\n                    FROM auth_totp_credentials\n                    WHERE user_id = $1 AND confirmed_at IS NOT NULL\n                ), 0)::int4 AS \"totp_recovery_codes_remaining!\",\n                EXISTS (\n                    SELECT 1\n                    FROM auth_email_identities\n                    WHERE user_id = $1\n                ) AS \"email!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "password!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "webauthn!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "totp!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "totp_recovery_codes_remaining!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "email!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "eec0fee022437c8d814c4bead345b5d18623e7469283ed050711849de30bc4cf"
+}

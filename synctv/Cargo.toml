@@ -1,0 +1,195 @@
+[package]
+name = "synctv"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "synctv"
+path = "src/main.rs"
+
+[features]
+# OpenAPI is opt-in through the `openapi` feature below.
+default = ["tls-aws-lc", "tls-webpki-roots"]
+# Enable Kubernetes support (K8s DNS discovery, K8s Lease leader election).
+# Disable to reduce binary size for non-K8s deployments:
+#   cargo build --no-default-features
+k8s = ["synctv-cluster/k8s", "synctv-core/k8s", "synctv-api/k8s"]
+# Allocator selection (mutually exclusive — enable at most one):
+#   mimalloc — fast, works on all platforms
+#   jemalloc — excellent for long-running servers, unix only
+mimalloc = ["dep:mimalloc"]
+jemalloc = ["dep:tikv-jemallocator"]
+openapi = ["synctv-api/openapi"]
+# Enable Swagger UI and OpenAPI schema endpoints:
+#   cargo build --features openapi
+
+# TLS contract:
+# - `tls-aws-lc` / `tls-ring` select the rustls crypto provider where upstream
+#   crates expose provider selection.
+# - `tls-webpki-roots` / `tls-native-roots` select trust root sources where
+#   upstream crates expose root selection. SQLx 0.9 bundles provider and root
+#   selection, so both SQLx provider features use webpki roots; reqwest 0.13 uses
+#   platform verification; baseline email TLS keeps webpki roots because lettre
+#   requires a verifier/root feature whenever rustls is compiled.
+# Root features propagate this contract to workspace crates that perform TLS.
+tls-aws-lc = [
+    "synctv-core/tls-aws-lc",
+    "synctv-api/tls-aws-lc",
+    "synctv-livestream/tls-aws-lc",
+    "synctv-cluster/tls-aws-lc",
+    "synctv-realtime/tls-aws-lc",
+    "synctv-proxy/tls-aws-lc",
+    "synctv-proto/tls-aws-lc",
+    "synctv-management/tls-aws-lc",
+    "synctv-media-providers/tls-aws-lc",
+    "synctv-common/tls-aws-lc",
+    "synctv-xiu/tls-aws-lc",
+    "tonic/tls-aws-lc",
+    "sqlx/tls-rustls-aws-lc-rs",
+    "reqwest/rustls",
+    "rustls/aws_lc_rs",
+    "tokio-rustls/aws_lc_rs",
+]
+tls-ring = [
+    "synctv-core/tls-ring",
+    "synctv-api/tls-ring",
+    "synctv-livestream/tls-ring",
+    "synctv-cluster/tls-ring",
+    "synctv-realtime/tls-ring",
+    "synctv-proxy/tls-ring",
+    "synctv-proto/tls-ring",
+    "synctv-management/tls-ring",
+    "synctv-media-providers/tls-ring",
+    "synctv-common/tls-ring",
+    "synctv-xiu/tls-ring",
+    "sqlx/tls-rustls-ring-webpki",
+    "tonic/tls-ring",
+    "reqwest/rustls-no-provider",
+    "rustls/ring",
+    "tokio-rustls/ring",
+]
+tls-webpki-roots = [
+    "synctv-core/tls-webpki-roots",
+    "synctv-api/tls-webpki-roots",
+    "synctv-livestream/tls-webpki-roots",
+    "synctv-cluster/tls-webpki-roots",
+    "synctv-realtime/tls-webpki-roots",
+    "synctv-proxy/tls-webpki-roots",
+    "synctv-proto/tls-webpki-roots",
+    "synctv-management/tls-webpki-roots",
+    "synctv-media-providers/tls-webpki-roots",
+    "synctv-common/tls-webpki-roots",
+    "synctv-xiu/tls-webpki-roots",
+    "tonic/tls-webpki-roots",
+    "redis/tokio-rustls-comp",
+    "redis/tls-rustls-webpki-roots",
+    "tokio-tungstenite/rustls-tls-webpki-roots",
+]
+tls-native-roots = [
+    "synctv-core/tls-native-roots",
+    "synctv-api/tls-native-roots",
+    "synctv-livestream/tls-native-roots",
+    "synctv-cluster/tls-native-roots",
+    "synctv-realtime/tls-native-roots",
+    "synctv-proxy/tls-native-roots",
+    "synctv-proto/tls-native-roots",
+    "synctv-management/tls-native-roots",
+    "synctv-media-providers/tls-native-roots",
+    "synctv-common/tls-native-roots",
+    "synctv-xiu/tls-native-roots",
+    "tonic/tls-native-roots",
+    "redis/tokio-rustls-comp",
+    "tokio-tungstenite/rustls-tls-native-roots",
+]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Internal workspace libraries
+synctv-core = { workspace = true, default-features = false }
+synctv-adapter = { workspace = true, default-features = false }
+synctv-api = { workspace = true, default-features = false }
+synctv-livestream = { workspace = true, default-features = false }
+synctv-cluster = { workspace = true, default-features = false }
+synctv-realtime = { workspace = true, default-features = false }
+synctv-proxy = { workspace = true, default-features = false }
+synctv-proto = { workspace = true, default-features = false, features = ["main", "providers"] }
+synctv-management = { workspace = true, default-features = false }
+synctv-media-providers = { workspace = true, default-features = false }
+synctv-common = { workspace = true, default-features = false }
+synctv-xiu = { workspace = true, default-features = false }
+
+# Async
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+
+# HTTP Framework
+axum.workspace = true
+tonic.workspace = true
+hyper.workspace = true
+
+# Database
+sqlx.workspace = true
+
+# Redis
+redis.workspace = true
+
+# Utilities
+anyhow.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+chrono.workspace = true
+config.workspace = true
+dashmap.workspace = true
+dotenvy.workspace = true
+hostname.workspace = true
+humantime.workspace = true
+ipnet.workspace = true
+parking_lot.workspace = true
+percent-encoding.workspace = true
+serde_json.workspace = true
+serde_ignored.workspace = true
+serde_yaml.workspace = true
+toml.workspace = true
+serde.workspace = true
+tempfile.workspace = true
+url.workspace = true
+rustls-pemfile.workspace = true
+reqwest.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tower.workspace = true
+hyper-util.workspace = true
+tokio-rustls.workspace = true
+rustls.workspace = true
+
+mimalloc = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
+
+[dev-dependencies]
+synctv-common = { workspace = true, default-features = false }
+synctv-core = { workspace = true, default-features = false, features = ["test-support"] }
+synctv-core-testing = { workspace = true, features = ["streaming"] }
+base64.workspace = true
+tonic-health.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+futures.workspace = true
+futures-util.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+tokio-tungstenite.workspace = true
+prost.workspace = true
+jsonwebtoken.workspace = true
+clap = { workspace = true, features = ["derive"] }
+clap_complete.workspace = true
+tokio-stream.workspace = true
+opaque-ke.workspace = true
+sha2_010.workspace = true

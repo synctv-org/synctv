@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package synctv.provider.bilibili;
+
+import "proto/providers/bilibili.proto";
+
+// Bilibili Provider Service
+//
+// Client-facing API for Bilibili video parsing, login, and user management
+service BilibiliProviderService {
+  // Parse Bilibili URL (video, anime, live), using the user's global bind when available
+  rpc Parse(ParseRequest) returns (ParseResponse);
+
+  // List live categories available for dynamic playlist creation
+  rpc ListLiveAreas(ListLiveAreasRequest) returns (ListLiveAreasResponse);
+
+  // List the authenticated user's favorite folders
+  rpc ListFavoriteFolders(ListFavoriteFoldersRequest) returns (ListFavoriteFoldersResponse);
+
+  // List anime or cinema seasons followed by the authenticated user
+  rpc ListFollowedPgc(ListFollowedPgcRequest) returns (ListFollowedPgcResponse);
+  rpc ListHistory(ListHistoryRequest) returns (ListHistoryResponse);
+  rpc ListPgcTimeline(ListPgcTimelineRequest) returns (ListPgcTimelineResponse);
+  rpc ListPgcSeasons(ListPgcSeasonsRequest) returns (ListPgcSeasonsResponse);
+
+  // Generate QR code for login
+  rpc LoginQR(LoginQRRequest) returns (QRCodeResponse);
+
+  // Check QR code login status (persists credential on success)
+  rpc CheckQR(CheckQRRequest) returns (QRStatusResponse);
+
+  // Start SMS login and return captcha data for frontend Geetest rendering
+  rpc StartSMSLogin(StartSMSLoginRequest) returns (StartSMSLoginResponse);
+
+  // Send SMS verification code
+  rpc SendSMS(SendSMSRequest) returns (SendSMSResponse);
+
+  // Login with SMS code (persists credential on success)
+  rpc LoginSMS(LoginSMSRequest) returns (LoginSMSResponse);
+
+  // Get user info from the user's global bind
+  rpc GetUserInfo(UserInfoRequest) returns (UserInfoResponse);
+
+  // Logout (delete stored credential)
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+
+  // Get saved credentials (binds)
+  rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+}

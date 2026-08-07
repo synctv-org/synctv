@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO room_playback_progress\n             (room_id, media_id, playlist_id, target, target_hash, \"position\", version)\n         VALUES ($1, $2, NULL, NULL, $3, 12.5, 0)\n         RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "557ab6ebe9ff28bd51139ba5ebab561e18557efc285a261aa984779ca2a35918"
+}

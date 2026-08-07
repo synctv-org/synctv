@@ -1,0 +1,66 @@
+---
+title: OpenAPI
+description: 访问、导出和保护 SyncTV 内置的 OpenAPI JSON 与 Swagger UI。
+---
+
+SyncTV 官方容器镜像提供 OpenAPI JSON 和 Swagger UI，可用于浏览接口、导出 schema 和生成客户端。自行构建的二进制需要包含 OpenAPI 功能；入口返回 `404` 时先确认安装包的构建选项。
+
+## Swagger UI 地址
+
+服务启动后访问：
+
+```text
+http://localhost:8080/swagger-ui/
+```
+
+`server.port` 不是 `8080` 时，替换为实际端口。
+
+生产或远程环境示例：
+
+```text
+https://api.example.com/swagger-ui/
+```
+
+## OpenAPI JSON 地址
+
+OpenAPI JSON 地址：
+
+```text
+http://localhost:8080/api-docs/openapi.json
+```
+
+导出到文件：
+
+```bash
+curl -fsSL http://localhost:8080/api-docs/openapi.json -o openapi.json
+```
+
+带认证访问普通业务接口时，OpenAPI 文档中的安全方案使用 Bearer Token。公共接口会在文档中标注不需要认证。
+
+## 生成客户端
+
+拿到 JSON 后，可以用 OpenAPI Generator、orval、openapi-typescript、Kiota 等工具生成客户端。
+
+TypeScript 类型示例：
+
+```bash
+npx openapi-typescript http://localhost:8080/api-docs/openapi.json -o synctv-api.d.ts
+```
+
+OpenAPI Generator 示例：
+
+```bash
+openapi-generator-cli generate \
+  -i http://localhost:8080/api-docs/openapi.json \
+  -g typescript-fetch \
+  -o ./generated/synctv-client
+```
+
+## 访问控制
+
+生产环境暴露 Swagger UI 前确认：
+
+- 当前安装包包含 OpenAPI 功能。
+- 反向代理允许访问 `/swagger-ui/`。
+- 反向代理允许访问 `/api-docs/openapi.json`。
+- 只允许内网开发者访问时，在 Ingress、Nginx、网关或防火墙层限制来源。

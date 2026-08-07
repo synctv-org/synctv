@@ -1,0 +1,31 @@
+[package]
+name = "synctv-common"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = ["tls-aws-lc", "tls-webpki-roots"]
+tls-aws-lc = ["dep:rustls", "reqwest/rustls", "rustls/aws_lc_rs"]
+tls-ring = ["dep:rustls", "reqwest/rustls-no-provider", "rustls/ring"]
+tls-webpki-roots = []
+tls-native-roots = []
+
+[dependencies]
+http-acl.workspace = true
+http-acl-reqwest.workspace = true
+ipnet.workspace = true
+reqwest.workspace = true
+rustls = { workspace = true, optional = true }
+tracing.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+iana-time-zone.workspace = true
+nanoid.workspace = true
+tokio-util.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

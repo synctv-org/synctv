@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package acproto;
+
+import "ZtLiveUserInfo.proto";
+
+message CommonStateSignalCurrentRedpackList {
+	repeated Redpack redpacks = 1; //redpack
+
+	enum RedpackDisplayStatus {
+		SHOW = 0;
+		GET_TOKEN = 1;
+		GRAB = 2;
+	}
+
+	message Redpack {
+		ZtLiveUserInfo sender = 1;
+		RedpackDisplayStatus displayStatus = 2;
+		int64 grabBeginTimeMs = 3;
+		int64 getTokenLatestTimeMs = 4;
+		string redPackId = 5;
+		string redpackBizUnit = 6;
+		int64 redpackAmount = 7;
+		int64 settleBeginTime = 8;
+	}
+}

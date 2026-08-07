@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT encrypted_secret FROM auth_totp_credentials WHERE user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "encrypted_secret",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "auth_totp_credentials",
+            "name": "encrypted_secret"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5b195a74ece9ecd3e06c04d273a5f5fe081f309ed8ae8a9e898721cf9e61cc80"
+}

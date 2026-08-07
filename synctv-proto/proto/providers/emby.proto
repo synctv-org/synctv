@@ -1,0 +1,103 @@
+// Emby-compatible Provider Client API
+//
+// This is the client-facing gRPC API for provider type `emby`, which supports
+// Emby-compatible server API.
+//
+// SECURITY: Login transmits the Emby API key as plaintext. Deployments MUST use
+// TLS for all connections to this service.
+
+syntax = "proto3";
+
+package synctv.provider.emby;
+
+import "proto/buf/validate/validate.proto";
+
+// Login request
+message LoginRequest {
+  string host = 1 [(buf.validate.field).string.min_len = 1];
+  string username = 2 [(buf.validate.field).string.min_len = 1]; // Target Emby username to bind and validate
+  oneof credential {
+    string password = 3; // SECURITY: Plaintext password - requires TLS in transit.
+    string api_key = 4; // SECURITY: Plaintext credential - requires TLS in transit.
+  }
+  string instance_name = 5; // Optional provider instance name
+}
+
+// Login response
+message LoginResponse {
+  string user_id = 1;
+  string username = 2;
+  bool is_admin = 3;
+  string server_id = 4; // SHA-256(host) identifier for stored credential
+}
+
+// List items request
+message ListRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1]; // Stored credential identifier
+  string path = 2;
+  uint64 start_index = 3;
+  uint64 limit = 4;
+  string search_term = 5;
+  string instance_name = 6; // Optional provider instance name
+}
+
+// List items response
+message ListResponse {
+  repeated MediaItem items = 1;
+  uint64 total = 2;
+}
+
+// Media item information
+message MediaItem {
+  string id = 1;
+  string name = 2;
+  string type = 3;
+  string parent_id = 4;
+  string series_name = 5;
+  string series_id = 6;
+  string season_name = 7;
+  string thumbnail = 8; // Server-relative thumbnail URL when available
+  string description = 9;
+}
+
+// Get user info request
+message GetMeRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1]; // Stored credential identifier
+  string instance_name = 2; // Optional provider instance name
+}
+
+// Get user info response
+message GetMeResponse {
+  string id = 1;
+  string name = 2;
+}
+
+// Logout request
+message LogoutRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1]; // Which credential to unbind
+}
+
+// Logout response
+message LogoutResponse {
+  string message = 1;
+}
+
+// Get binds request
+message GetBindsRequest {
+  string instance_name = 1; // Optional provider instance name
+}
+
+// Get binds response
+message GetBindsResponse {
+  repeated BindInfo binds = 1;
+}
+
+// Saved credential information
+message BindInfo {
+  string id = 1;
+  string server_id = 2;
+  string host = 3;
+  string user_id = 4;
+  int64 created_at = 5; // Unix epoch timestamp
+  string provider_instance_name = 6; // Empty when the credential is not instance-scoped
+}

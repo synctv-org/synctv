@@ -1,0 +1,83 @@
+use std::sync::Arc;
+use tonic::{Request, Response, Status};
+
+use crate::grpc::map_api_error;
+use synctv_api_common::api_runtime::SharedApiRuntime;
+use synctv_api_common::impls::{EndpointRateLimitCategory, RequestExecutor};
+
+use synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderService;
+use synctv_proto::providers::rtmp::{
+    CreatePublishKeyRequest, CreatePublishKeyResponse, GetStreamInfoRequest, GetStreamInfoResponse,
+};
+
+#[derive(Clone)]
+pub struct RtmpProviderGrpcService {
+    api: Arc<synctv_api_common::impls::ClientApiImpl>,
+    request_executor: Arc<RequestExecutor>,
+    runtime_settings: Arc<synctv_api_common::ApiRuntimeSettings>,
+}
+
+impl RtmpProviderGrpcService {
+    #[must_use]
+    pub fn new(
+        shared_api_runtime: &Arc<SharedApiRuntime>,
+        request_executor: Arc<RequestExecutor>,
+        runtime_settings: Arc<synctv_api_common::ApiRuntimeSettings>,
+    ) -> Self {
+        Self {
+            api: shared_api_runtime.client_api.clone(),
+            request_executor,
+            runtime_settings,
+        }
+    }
+}
+
+#[tonic::async_trait]
+impl RtmpProviderService for RtmpProviderGrpcService {
+    async fn create_publish_key(
+        &self,
+        request: Request<CreatePublishKeyRequest>,
+    ) -> Result<Response<CreatePublishKeyResponse>, Status> {
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let api = self.api.clone();
+
+        self.request_executor
+            .execute_user(
+                &metadata,
+                EndpointRateLimitCategory::Media,
+                move |authenticated| async move {
+                    api.create_publish_key(&authenticated.user_id, req).await
+                },
+            )
+            .await
+            .map(Response::new)
+            .map_err(map_api_error)
+    }
+
+    async fn get_stream_info(
+        &self,
+        request: Request<GetStreamInfoRequest>,
+    ) -> Result<Response<GetStreamInfoResponse>, Status> {
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let api = self.api.clone();
+
+        self.request_executor
+            .execute_user(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |authenticated| async move {
+                    api.get_stream_info(
+                        &authenticated.user_id,
+                        req.room_id.as_str(),
+                        req.media_id.as_str(),
+                    )
+                    .await
+                },
+            )
+            .await
+            .map(Response::new)
+            .map_err(map_api_error)
+    }
+}

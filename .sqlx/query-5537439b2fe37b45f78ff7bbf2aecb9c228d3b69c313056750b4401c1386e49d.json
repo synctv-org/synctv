@@ -1,0 +1,112 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT room_id AS \"room_id: RoomId\",\n                   opaque_record AS \"opaque_record!\",\n                   opaque_credential_identifier AS \"opaque_credential_identifier!\",\n                   opaque_ciphersuite AS \"opaque_ciphersuite!\",\n                   opaque_server_setup_version AS \"opaque_server_setup_version!\",\n                   enabled,\n                   changed_at,\n                   version\n            FROM room_password_credentials\n            WHERE room_id = $1\n              AND opaque_record IS NOT NULL\n              AND opaque_credential_identifier IS NOT NULL\n              AND opaque_ciphersuite IS NOT NULL\n              AND opaque_server_setup_version IS NOT NULL\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "opaque_record!",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "opaque_record"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "opaque_credential_identifier!",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "opaque_credential_identifier"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "opaque_ciphersuite!",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "opaque_ciphersuite"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "opaque_server_setup_version!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "opaque_server_setup_version"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "changed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "changed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5537439b2fe37b45f78ff7bbf2aecb9c228d3b69c313056750b4401c1386e49d"
+}

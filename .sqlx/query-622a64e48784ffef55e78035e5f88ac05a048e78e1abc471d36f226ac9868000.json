@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT EXISTS (\n                SELECT 1\n                FROM user_registration_requests\n                WHERE reviewed_at IS NULL\n                  AND (\n                      LOWER(username) = LOWER($1)\n                      OR ($2::TEXT IS NOT NULL AND LOWER(email) = LOWER($2))\n                  )\n            ) AS \"exists!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "622a64e48784ffef55e78035e5f88ac05a048e78e1abc471d36f226ac9868000"
+}

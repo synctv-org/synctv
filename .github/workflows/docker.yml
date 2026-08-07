@@ -1,0 +1,141 @@
+name: Docker
+
+on:
+  push:
+    branches: ['**']
+    tags:
+      - "v*"
+  pull_request:
+    branches: ['**']
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  docker-prepare:
+    name: Docker Prepare
+    runs-on: ubuntu-latest
+    outputs:
+      meta-images: ${{ steps.meta-images.outputs.value }}
+      image-tag: ${{ steps.meta-images.outputs.image-tag }}
+    steps:
+      - name: Build image metadata inputs
+        id: meta-images
+        env:
+          GHCR_REPOSITORY: ${{ github.repository }}
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY }}
+          DEFAULT_REPOSITORY_NAME: ${{ github.event.repository.name }}
+        run: |
+          image_tag="sha-${GITHUB_SHA::7}"
+          if [ -n "$DOCKERHUB_REPOSITORY" ]; then
+            case "$DOCKERHUB_REPOSITORY" in
+              */*)
+                dockerhub_repository="$DOCKERHUB_REPOSITORY"
+                ;;
+              *)
+                dockerhub_repository="$DOCKERHUB_USERNAME/$DOCKERHUB_REPOSITORY"
+                ;;
+            esac
+          elif [ -n "$DOCKERHUB_USERNAME" ]; then
+            dockerhub_repository="$DOCKERHUB_USERNAME/$DEFAULT_REPOSITORY_NAME"
+          fi
+          {
+            echo "image-tag=$image_tag"
+            echo 'value<<EOF'
+            echo "ghcr.io/$GHCR_REPOSITORY"
+            if [ -n "$dockerhub_repository" ]; then
+              echo "docker.io/$dockerhub_repository"
+            fi
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+  docker-build:
+    name: Docker Build
+    needs: docker-prepare
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: docker/github-builder/.github/workflows/build.yml@v1
+    with:
+      runner: |
+        default=ubuntu-24.04
+        linux/arm=ubuntu-24.04-arm
+        linux/arm64=ubuntu-24.04-arm
+      distribute: true
+      platforms: linux/amd64,linux/arm64
+      output: ${{ github.event_name == 'push' && 'image' || 'local' }}
+      push: ${{ github.event_name == 'push' }}
+      artifact-upload: false
+      sign: ${{ github.event_name == 'push' && 'auto' || 'false' }}
+      cache: true
+      cache-mode: max
+      cache-scope: synctv-image
+      build-args: |
+        SYNCTV_CARGO_BUILD_PROFILE=${{ github.event_name == 'pull_request' && 'dev' || 'release' }}
+        CARGO_INCREMENTAL=0
+        CARGO_TERM_COLOR=always
+      set-meta-annotations: true
+      set-meta-labels: true
+      meta-images: ${{ needs.docker-prepare.outputs.meta-images }}
+      meta-tags: |
+        type=ref,event=branch
+        type=ref,event=pr
+        type=ref,event=tag
+        type=semver,pattern={{version}}
+        type=semver,pattern={{major}}.{{minor}}
+        type=raw,value=${{ needs.docker-prepare.outputs.image-tag }}
+    secrets:
+      registry-auths: |
+        - registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        ${{ vars.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_PASSWORD != '' && format('- registry: docker.io
+          username: {0}
+          password: {1}', vars.DOCKERHUB_USERNAME, secrets.DOCKERHUB_PASSWORD) || '' }}
+
+  publish-image-digest:
+    name: Publish image digest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: docker-build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Wait for component release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          for attempt in {1..60}; do
+            if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              exit 0
+            fi
+            echo "Waiting for GitHub Release $RELEASE_TAG (attempt $attempt/60)."
+            sleep 10
+          done
+          echo "Timed out waiting for GitHub Release $RELEASE_TAG." >&2
+          exit 1
+
+      - name: Upload image digest asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_DIGEST: ${{ needs.docker-build.outputs.digest }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "Docker builder returned an invalid image digest: $IMAGE_DIGEST" >&2
+            exit 1
+          }
+          printf '%s\n' "$IMAGE_DIGEST" > image-digest.txt
+          gh release upload "$RELEASE_TAG" image-digest.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber

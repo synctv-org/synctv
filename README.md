@@ -1,179 +1,103 @@
-<div align="center">
-  <a href="https://github.com/synctv-org/docs"><img height="100px" alt="logo" src="https://cdn.jsdelivr.net/gh/synctv-org/docs@main/logo/logo.png"/></a>
-  <p><em>👫A program that allows you to watch movies/live broadcasts together remotely🍿</em></p>
-    <div>
-        <a href="https://goreportcard.com/report/github.com/synctv-org/synctv">
-            <img src="https://goreportcard.com/badge/github.com/synctv-org/synctv" alt="latest version" />
-        </a>
-        <a href="https://github.com/synctv-org/synctv/blob/main/LICENSE">
-            <img src="https://img.shields.io/github/license/synctv-org/synctv" alt="License" />
-        </a>
-        <a href="https://github.com/synctv-org/synctv/actions?query=workflow%3Arelease">
-            <img src="https://img.shields.io/github/actions/workflow/status/synctv-org/synctv/release.yml?branch=main" alt="Release status" />
-        </a>
-        <a href="https://github.com/synctv-org/synctv/releases">
-            <img src="https://img.shields.io/github/release/synctv-org/synctv" alt="latest version" />
-        </a>
-    </div>
-    <div>
-        <a href="https://github.com/synctv-org/synctv/releases">
-            <img src="https://img.shields.io/github/downloads/synctv-org/synctv/total?color=%239F7AEA&logo=github" alt="Downloads" />
-        </a>
-        <a href="https://hub.docker.com/r/synctvorg/synctv">
-            <img src="https://img.shields.io/docker/pulls/synctvorg/synctv?color=%2348BB78&logo=docker&label=pulls" alt="Downloads" />
-        </a>
-    </div>
-</div>
+<!-- markdownlint-disable MD013 MD033 MD041 -->
 
----
+<p align="center">
+  <img src="./docs/public/logo.svg" alt="SyncTV" width="180">
+</p>
 
-English | [中文](./README-CN.md)
+# SyncTV
 
-# What is SyncTV?
+[简体中文](./README.zh-CN.md) · [Website](https://syncs.tv)
 
-SyncTV is a program that allows you to watch movies and live broadcasts together remotely. It provides features such as synchronized viewing, live streaming, and chat. With SyncTV, you can watch videos and live broadcasts with friends and family, no matter where they are.
+![Rust](https://img.shields.io/badge/Rust-2021-b7410e?logo=rust&logoColor=white)
+![Tokio](https://img.shields.io/badge/runtime-Tokio-2f80ed)
+![Axum](https://img.shields.io/badge/HTTP-Axum-00a8a8)
+![gRPC](https://img.shields.io/badge/API-gRPC-244c5a?logo=grpc&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/database-PostgreSQL-4169e1?logo=postgresql&logoColor=white)
+![Redis](https://img.shields.io/badge/cache%20%26%20coordination-Redis-dc382d?logo=redis&logoColor=white)
+![Docker](https://img.shields.io/badge/deploy-Docker-2496ed?logo=docker&logoColor=white)
+![Helm](https://img.shields.io/badge/deploy-Helm-0f1689?logo=helm&logoColor=white)
+![Kubernetes](https://img.shields.io/badge/orchestration-Kubernetes-326ce5?logo=kubernetes&logoColor=white)
+![OpenAPI](https://img.shields.io/badge/docs-OpenAPI-6ba539?logo=openapiinitiative&logoColor=white)
+![Astro Starlight](https://img.shields.io/badge/docs-Astro%20Starlight-bc52ee?logo=astro&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-SyncTV's synchronized viewing feature ensures that everyone watching the video is at the same point. This means that you can pause, fast forward, rewind, change playback speed, and other operations, and everyone else will be synchronized to the same point.
+SyncTV is a Rust implementation of a real-time synchronized video watching platform with media provider integration, livestreaming, HTTP/gRPC APIs, and Kubernetes-ready horizontal scaling.
 
-# Features
+<p align="center">
+  <img src="./docs/public/screenshots/room-macos.png" alt="SyncTV synchronized room playback" width="860">
+</p>
 
-- [x] Synchronized viewing
-  - [x] Videos Sync
-  - [x] Live streaming
-- [x] Theater
-  - [x] Chat
-  - [x] Bullet chat
-- [x] Proxy
-  - [x] Videos proxy
-  - [x] Live proxy
-  - [x] Proxy cache
-- [x] Parse video
-  - [x] Alist
-  - [x] Bilibili
-  - [x] Emby
-- [x] Parse live
-  - [x] Bilibili
-- [x] WebRTC online call
-  - [x] Audio
-  - [ ] Video
-  - [ ] Screen
+## Highlights
 
----
+- Synchronized room playback with real-time state updates.
+- Media providers for Bilibili, Twitch, YouTube, Douyin, TikTok, Huya, Douyu, AcFun, CCTV, Alist, Cloudreve, Emby/Jellyfin, FNOS, QNAP, Synology, Nextcloud, Seafile, TrueNAS, direct URLs, and livestream sources.
+- RTMP push/pull, HLS, and HTTP-FLV livestream support.
+- RTSP external pull with TCP/UDP transport and live HLS/HTTP-FLV remuxing.
+- HTTP REST, public gRPC, WebSocket, management gRPC, metrics, RTMP, and STUN runtime surfaces.
+- PostgreSQL-backed durable storage with optional Redis shared state, cache, rate limiting, and cluster coordination.
+- Docker Compose and Helm deployment templates.
+- Built-in management CLI and optional OpenAPI/Swagger UI.
+- Astro Starlight documentation site with English and Simplified Chinese content.
 
-# Demo
+## Discussion and Contributors
 
-[https://demo.synctv.wiki](https://demo.synctv.wiki)
+Join the [SyncTV Telegram discussion](https://t.me/synctv) to talk with users and contributors about deployment, operations, media providers, client development, and the product roadmap.
 
----
+![SyncTV contributors](https://contrib.nn.ci/api?repo=synctv-org/synctv&repo=synctv-org/synctv-app)
 
-# Installation
+## Quick Start
 
-## Binary
-
-You can download the latest binary from [release page](https://github.com/synctv-org/synctv/releases) and install it manually.
-
-## Script
-
-You can use the script to install and run SyncTV.
+Development environment from a full repository checkout:
 
 ```bash
-sudo -v ; curl -fsSL https://raw.githubusercontent.com/synctv-org/synctv/main/script/install.sh | sudo bash -s -- -v latest
+# Starts PostgreSQL and Redis, then runs SyncTV locally with development settings.
+make dev-serve
+
+# Starts SyncTV in the background with the same development settings.
+make dev-start
+make dev-stop
+
+# Starts optional media/auth/storage dependencies too.
+make dev-stack
+
+# Runs real CLI/curl provider smoke tests through the Makefile dev startup path.
+make dev-smoke
 ```
 
-## Docker
-
-You can also use docker to install and run SyncTV.
+Production Compose uses generated PostgreSQL, Redis, and application secrets:
 
 ```bash
-docker run -d --name synctv -v /opt/synctv:/root/.synctv -p 8080:8080 synctvorg/synctv
+# Requires Docker Compose and openssl.
+make compose-init
+
+# Edit SYNCTV_BOOTSTRAP_ROOT_PASSWORD in .env.synctv before starting.
+make compose-up
 ```
 
-## Docker compose
-
-[docker-compose.yml](./script/docker-compose.yml)
-
-## Helm
-
-### Helm Install
+Validate configuration:
 
 ```bash
-helm repo add synctv https://docs.synctv.wiki/helm-charts
-helm repo update synctv
-helm upgrade --install synctv synctv/synctv \
-  -n synctv --create-namespace \
-  --set ingress.enabled=true \
-  --set ingress.className=nginx \
-  --set 'ingress.hosts[0].host=<yourdomain.com>' \
-  --set 'ingress.hosts[0].secretName=<yourdomain-secretName>'
+cargo +nightly run -p synctv --bin synctv -- config validate
 ```
 
-### Helm Upgrade
+Optional migration preflight. The server also runs embedded SQLx migrations automatically during startup:
 
 ```bash
-helm repo update synctv
-helm upgrade --install synctv synctv/synctv \
-  -n synctv \
-  --reuse-values
+cargo +nightly run -p synctv --bin synctv -- db migrate
 ```
 
-> More Helm Values:[helm-values](helm-values.md)
-
-### Helm Uninstall
+Start locally:
 
 ```bash
-helm uninstall -n synctv synctv
+cargo +nightly run -p synctv --bin synctv -- serve
 ```
 
----
+## Documentation
 
-# Run
+Read the complete documentation at [docs.syncs.tv](https://docs.syncs.tv).
 
-`synctv server` to start the server
+Download the native client from the [client downloads guide](https://docs.syncs.tv/install/downloads/) or [SyncTV App releases](https://github.com/synctv-org/synctv-app/releases/latest). Store builds are distributed through the supported app stores.
 
-```bash
-synctv server
-# or
-synctv server --data-dir ./
-```
+## License
 
-> Every time it starts, it will check for users with root permissions. If none are found, it will initialize a `root` user with the password `root`. Please change the username and password promptly.
->
-> The user registration function requires the use of any `OAuth2` service, such as `Google`, `Github`, etc. For specific configuration, please refer to [documentation](https://docs.synctv.wiki/#/oauth2).
-
-# Documentation
-
-[https://docs.synctv.wiki](https://docs.synctv.wiki)
-
-# Special sponsors
-
-- [亚洲云](https://www.asiayun.com) supports the server for the [demo](https://demo.synctv.wiki) site.
-- [SwarmCloud](https://swarmcloud.net/) ¥ 200 and provides video P2P acceleration.
-  - When the server network bandwidth is insufficient, you can consider using P2P video acceleration technology.
-  - If you want to use P2P video acceleration technology for free, you can view the documentation [P2P video acceleration](https://docs.synctv.wiki/#/p2p).
-- [LucasYuYu](https://github.com/LucasYuYu) ¥ 18.88
-- [爱发电用户_5vDc](https://afdian.com/u/48fa38ce0e0211ef944d5254001e7c00) ¥ 228
-- masha
-- [T-rabbit](https://github.com/T-rabbit) ¥ 5
-- 矿神SPK源 ¥ 100
-
-# Contributors
-
-Thanks goes to these wonderful people:
-
-[![Contributors](https://contrib.nn.ci/api?repo=synctv-org/synctv&repo=synctv-org/synctv-web&repo=synctv-org/docs)](https://github.com/synctv-org/synctv/graphs/contributors)
-
-# License
-
-The `SyncTV` is open-source software licensed under the AGPL-3.0 license.
-
-# Disclaimer
-
-- This program is a free and open-source project. It aims to play video files on the internet, making it convenient for multiple people to watch videos and learn golang together.
-- Please comply with relevant laws and regulations when using it, and do not abuse it.
-- The program only plays video files/forwards traffic on the client-side and will not intercept, store, or tamper with any user data.
-- Before using the program, you should understand and assume the corresponding risks, including but not limited to copyright disputes, legal restrictions, etc., which are not related to the program.
-- If there is any infringement, please contact me via [email](mailto:pyh1670605849@gmail.com), and it will be dealt with promptly.
-
-# Discussion
-
-- [Telegram](https://t.me/synctv)
+MIT. See [LICENSE](./LICENSE).

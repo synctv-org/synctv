@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package acproto;
+
+import "LocaleMessage.proto";
+
+message ErrorMessage {
+    repeated LocaleMessage localeMessages = 1;
+}

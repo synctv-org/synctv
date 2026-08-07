@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM auth_email_tokens\n            WHERE token = $1\n              AND user_id = $2\n              AND token_type = $3\n              AND used_at IS NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b01a651076266e4347b1a0731ee4ef1bb92bbcf3cae082d0e44d710bb4b00840"
+}

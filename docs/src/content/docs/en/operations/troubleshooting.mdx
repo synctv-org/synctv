@@ -1,0 +1,119 @@
+---
+title: Troubleshooting
+description: Diagnose SyncTV issues by error text, status code, and runtime symptom.
+---
+
+import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## Run These First
+
+<Tabs syncKey="troubleshooting-runtime">
+  <TabItem label="Binary" icon="laptop">
+
+```bash
+synctv --config /etc/synctv/synctv.yaml config show --output yaml
+synctv --config /etc/synctv/synctv.yaml config validate
+synctv --config /etc/synctv/synctv.yaml serve
+```
+
+  </TabItem>
+  <TabItem label="Docker Compose" icon="seti:docker">
+
+```bash
+make compose-config
+make compose-ps
+make compose-logs SERVICE=synctv
+docker compose exec synctv synctv system stats
+```
+
+  </TabItem>
+  <TabItem label="Helm" icon="cloud-download">
+
+```bash
+helm lint ./helm/synctv
+helm template synctv ./helm/synctv --values values.yaml
+kubectl -n synctv get pods
+kubectl -n synctv describe pod -l app.kubernetes.io/name=synctv
+kubectl -n synctv logs deploy/synctv -f
+```
+
+  </TabItem>
+</Tabs>
+
+Start with the first error. Later errors are often cascading failures.
+
+## Error Lookup
+
+| Symptom or error | Cause | Action |
+| --- | --- | --- |
+| `jwt.secret` is a placeholder or too weak | Production still uses an example secret | Generate a strong secret and inject it through secret/env |
+| `opaque_server_setup_secret` is empty or invalid | OPAQUE long-lived secret is missing | Generate and preserve `security.opaque_server_setup_secret` |
+| `credential_encryption_key` has invalid format | Not 64 hex characters | Generate it with `openssl rand -hex 32` |
+| `required variable ... is missing` | Production Compose is missing `.env.postgres`, `.env.redis`, or `.env.synctv` | Run `make compose-init` |
+| `/health/ready` is not 200 | Database, Redis, or startup dependency is not ready | Inspect readiness body and first startup log error |
+| Browser CORS error | Origin missing, path used as origin, or proxy blocks OPTIONS | Use real origins only in `server.cors_allowed_origins` |
+| gRPC Ingress fails but HTTP works | Missing separate gRPC Ingress or backend protocol | Set `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` |
+| `synctv system stats` cannot connect | management endpoint, socket, TCP token, or env var mismatch | Check `management.*` and `SYNCTV_MANAGEMENT_ENDPOINT` |
+| WebSocket 401/403 | Expired token/ticket, missing room membership, or rejected origin | Request a new ticket and verify membership/origin |
+| OAuth2 callback/state error | Redirect mismatch or multi-replica deployment without shared Redis | Match provider registration and configure Redis for replicas |
+| WebAuthn/passkey failure | `rp_origin` does not match the real HTTPS origin | Fix `webauthn.rp_origin` and `webauthn.rp_id` |
+| Range seek or proxy playback failure | Provider headers are incomplete or upstream lacks Range | Check Provider headers and upstream `Accept-Ranges` |
+| Intermittent HLS 404 in multi-replica mode | Publisher node unreachable or HLS storage model mismatch | Use publisher-node proxy, `shared_file`, or S3 |
+
+## Quick Checks
+
+### Readiness
+
+```bash
+curl -i http://localhost:8081/health/ready
+```
+
+Success is HTTP 200. On failure, inspect the response body and service logs.
+
+### CORS
+
+```bash
+curl -i \
+  -X OPTIONS \
+  -H 'Origin: https://app.example.com' \
+  -H 'Access-Control-Request-Method: POST' \
+  http://localhost:8080/api/auth/opaque/login/start
+```
+
+The response should include:
+
+```http
+Access-Control-Allow-Origin: https://app.example.com
+```
+
+### Provider Range
+
+```bash
+curl -I -H 'Range: bytes=0-1023' 'https://upstream.example.com/video.mp4'
+```
+
+Range-capable upstreams usually return `206 Partial Content`. If they return `200 OK`, SyncTV bypasses slice cache and does not write full-body cache.
+
+## Diagnose By Layer
+
+| Layer | Check | Page |
+| --- | --- | --- |
+| Configuration | Effective config, secrets, environment overrides, `*_file` paths | [How Configuration Works](../../configuration/how-configuration-works/) |
+| Deployment | Compose env, Helm values, Services, Ingresses, Secret keys | [Docker Compose](../../install/docker-compose/), [Helm](../../install/helm/) |
+| Authentication | SMTP, OAuth2 redirect, WebAuthn origin, 2FA, rate limits | [Security Model](../../admin/authentication-security/), [Email and OAuth2](../../configuration/email-oauth2/), [WebAuthn](../../configuration/webauthn/) |
+| Media | Provider headers, Range, proxy, slice cache, HLS backend | [Playback and Proxy](../../integrations/playback-and-proxy/) |
+| Capacity | WebSocket, database pool, Redis, Provider, proxy bandwidth, livestreaming | [Capacity Planning](../capacity-planning/), [Metrics Catalog](../../reference/metrics-catalog/) |
+
+## Collect
+
+- SyncTV version and deployment method.
+- Output of `synctv config show --output yaml`. Review it for sensitive values before sharing.
+- Full `synctv config validate` error.
+- Rendered Compose/Helm Service, Ingress, ConfigMap, and Secret key names.
+- First service log error.
+- HTTP error `requestId`, `status`, and `code`.
+- Request path, method, status code, and required headers.
+
+<Aside type="caution">
+Do not share JWTs, OAuth2 codes, cookies, Provider tokens, SMTP passwords, database URLs, or plaintext secrets.
+</Aside>

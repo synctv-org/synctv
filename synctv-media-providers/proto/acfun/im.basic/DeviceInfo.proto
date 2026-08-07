@@ -1,0 +1,29 @@
+﻿syntax = "proto3";
+
+package acproto;
+
+message DeviceInfo {
+    enum PlatformType {
+        kInvalid = 0;
+        kAndroid = 1;
+        kiOS = 2;
+        kWindows = 3;
+        WECHAT_ANDROID = 4;
+        WECHAT_IOS = 5;
+        H5 = 6;
+        H5_ANDROID = 7;
+        H5_IOS = 8;
+        H5_WINDOWS = 9;
+        H5_MAC = 10;
+        kPlatformNum = 11;
+    }
+    PlatformType platformType = 1;
+    string osVersion = 2;
+    string deviceModel = 3;
+    bytes imeiMd5 = 4;
+    string deviceId = 5;
+    string softDid = 6;
+    string kwaiDid = 7;
+    string manufacturer = 8;
+    string deviceName = 9;
+}

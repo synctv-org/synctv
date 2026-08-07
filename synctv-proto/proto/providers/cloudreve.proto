@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+package synctv.provider.cloudreve;
+
+import "proto/buf/validate/validate.proto";
+
+message LoginRequest {
+  string host = 1 [(buf.validate.field).string.min_len = 1];
+  string email = 2 [(buf.validate.field).string.min_len = 1];
+  string password = 3 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 4;
+}
+
+message LoginResponse {
+  string server_id = 1;
+}
+
+message ListRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string path = 2;
+  oneof pagination {
+    PagePagination page = 3;
+    CursorPagination cursor = 4;
+  }
+  uint32 per_page = 5 [(buf.validate.field).uint32 = {gte: 1, lte: 200}];
+  string instance_name = 6;
+}
+
+message ListResponse {
+  repeated FileItem content = 1;
+  oneof pagination {
+    PagePagination page = 2;
+    CursorPagination cursor = 3;
+  }
+}
+
+message PagePagination {
+  uint32 page = 1 [(buf.validate.field).uint32.gte = 1];
+  uint64 total = 2;
+}
+
+message CursorPagination {
+  string cursor = 1;
+}
+
+message SearchRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string keywords = 2 [(buf.validate.field).string.min_len = 1];
+  uint64 offset = 3;
+  string instance_name = 4;
+}
+
+message SearchResponse {
+  repeated FileItem content = 1;
+  uint64 total = 2;
+}
+
+message FileItem {
+  string id = 1;
+  string name = 2;
+  string path = 3;
+  uint64 size = 4;
+  bool is_dir = 5;
+  int64 modified = 6;
+  string thumbnail = 7;
+}
+
+message GetMeRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 2;
+}
+
+message GetMeResponse {
+  string id = 1;
+  string email = 2;
+  string nickname = 3;
+}
+
+message LogoutRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message LogoutResponse {
+  string message = 1;
+}
+
+message GetBindsRequest {
+  string instance_name = 1;
+}
+
+message GetBindsResponse {
+  repeated BindInfo binds = 1;
+}
+
+message BindInfo {
+  string id = 1;
+  string server_id = 2;
+  string host = 3;
+  string email = 4;
+  int64 created_at = 5;
+  string provider_instance_name = 6;
+}

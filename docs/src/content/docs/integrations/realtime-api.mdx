@@ -1,0 +1,216 @@
+---
+title: Realtime 协议
+description: SyncTV 房间 WebSocket 实时协议、连接认证、基础消息、重连和错误处理。
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Realtime API 是房间内的长连接协议。它用于聊天、播放控制、播放进度、WebRTC 信令，以及订阅房间内可缓存资源的变化。
+
+如果你只需要一次性读取或修改资源，优先使用 HTTP/OpenAPI 或 gRPC。只有需要低延迟推送、减少轮询、或保持房间实时状态时，才使用 Realtime API。
+
+## 连接与认证
+
+WebSocket 地址：
+
+```text
+wss://<host>/ws/rooms/<roomId>
+```
+
+认证方式：
+
+| 方式 | 适用客户端 | 说明 |
+| --- | --- | --- |
+| `Authorization: Bearer <accessToken>` | 原生客户端、CLI、服务端 SDK | 登录用户 |
+| `Authorization: Bearer <guest_token>` | 原生客户端、CLI、服务端 SDK | 游客；先调用 `POST /api/auth/guest-token` |
+| `?ticket=<ticket>` | 浏览器和不方便设置 header 的客户端 | 先通过 `POST /api/tickets` 创建短期、一次性、房间绑定 ticket |
+
+WebSocket 只处理二进制 protobuf 帧。客户端发送 `synctv.client.ClientMessage`，服务端返回 `synctv.client.ServerMessage`。文本帧、ping、pong 等非业务帧不会被当作业务消息处理。
+
+```js
+const roomId = 'room_1';
+const ticket = ticketResponse.ticket;
+const ws = new WebSocket(`wss://app.example.com/ws/rooms/${roomId}?ticket=${ticket}`);
+ws.binaryType = 'arraybuffer';
+
+ws.onmessage = async (event) => {
+  const bytes =
+    event.data instanceof Blob
+      ? new Uint8Array(await event.data.arrayBuffer())
+      : new Uint8Array(event.data);
+  const message = ServerMessage.decode(bytes);
+  handleServerMessage(message);
+};
+
+function sendClientMessage(message) {
+  ws.send(ClientMessage.encode(message).finish());
+}
+```
+
+<Aside type="caution">
+不要把 refresh token 放进 WebSocket URL。浏览器客户端应使用 WebSocket ticket；ticket 使用后不要复用，连接失败也应重新申请。
+</Aside>
+
+## 游客连接
+
+游客不是登录用户。服务端不会为游客创建用户记录、成员记录或登录会话；游客身份只由房间绑定的 guest token 表示，对外 ID 使用 `gst_` 前缀。
+
+游客进入房间必须同时满足这些条件：
+
+- 全局 `user.enable_guest` 开启。
+- 房间 `allowGuestJoin` 开启。
+- 房间没有密码，且未关闭、未封禁。
+- guest token 的房间版本仍然有效；房间关闭游客、设置密码或触发游客吊销后，旧 token 失效。
+
+游客默认只能接收基础房间实时状态，不能读取播放列表、发送聊天或管理媒体。房间可以通过 `guestAddedPermissions` 开放 guest 安全能力，例如成员列表、聊天历史或 WebRTC 信令；该上限独立于 member 权限。即使增加权限，游客仍不能调用账号、播放列表、媒体管理、成员管理、房间管理、Provider 凭据或管理面接口。
+
+```bash
+curl -sS "$BASE_URL/api/auth/guest-token" \
+  -H "Content-Type: application/json" \
+  -d '{"roomId":"room_1"}'
+```
+
+原生 WebSocket 客户端使用响应中的 `token`：
+
+```http
+Authorization: Bearer <guest_token>
+```
+
+gRPC `MessageStream` 使用同一个 token：
+
+```text
+x-room-id: room_1
+authorization: Bearer <guest_token>
+```
+
+## 什么时候使用 Realtime
+
+| 场景 | 使用 Realtime 的原因 |
+| --- | --- |
+| 同步播放 | 播放、暂停、seek、切换媒体需要低延迟传播 |
+| 聊天 | 聊天消息事件通过显式订阅接收 |
+| 播放信息 | URL 过期、Provider 凭据变化或媒体切换后需要刷新 |
+| 房间成员列表 | 成员加入、离开、权限变化需要同步 UI |
+| WebRTC 信令 | offer、answer、ICE candidate 需要房间内转发；目标地址使用 `public_actor_id:conn_id`，登录用户是 `usr_*`，游客是 `gst_*` |
+
+WebRTC 客户端在发送信令前调用 `GET /api/rooms/<roomId>/webrtc/ice-servers` 获取 ICE servers。该接口和 Realtime 使用同一套房间 actor 权限：登录成员和游客都通过 `Authorization: Bearer <token>` 认证，并拥有 `use_voice_chat` 或 `use_p2p_media`。每条信令还会按会话类型校验对应业务权限。
+
+## 消息范围
+
+常用客户端消息：
+
+| `ClientMessage` 字段 | 用途 |
+| --- | --- |
+| `chat` | 发送聊天消息 |
+| `heartbeat` | 客户端心跳 |
+| `playback_progress` | 上报当前播放位置和播放状态 |
+| `playback_update` | 发起播放状态更新命令 |
+| `webrtc_offer` / `webrtc_answer` / `webrtc_ice_candidate` | WebRTC 信令转发 |
+| `webrtc_join` / `webrtc_leave` | 加入或离开语音 WebRTC 会话 |
+| `media_swarm_join` | 携带 `PlaybackMedia.p2p_delivery.swarm_ticket` 宣告加入单个媒体 swarm |
+| `media_swarm_leave` | 使用 `swarm_id` 离开当前连接已加入的媒体 swarm |
+| `observeResource` | 订阅实时资源 |
+| `unobserveResource` | 取消订阅实时资源 |
+
+常用服务端消息：
+
+| `ServerMessage` 字段 | 用途 |
+| --- | --- |
+| `chat` | 收到聊天消息 |
+| `heartbeatAck` | 心跳确认 |
+| `error` | 普通业务错误 |
+| `playbackState` / `playingChanged` | 播放状态或播放目标变化 |
+| `roomSettings` | 房间设置变更广播 |
+| `mediaAdded` / `mediaUpdated` / `mediaRemoved` | 媒体变更广播 |
+| `playlistCreated` / `playlistUpdated` / `playlistDeleted` | 播放列表变更广播 |
+| `permissionChanged` / `userJoined` / `userLeft` / `roomMembers` | 成员和权限变化 |
+| `chatEvent` 或 `resourceChanged.chatEvent` | 显式订阅后的聊天消息事件 |
+| `resourceChanged.webrtcEvent.mediaSwarmPeers` | 当前 swarm 的有界 Peer 候选响应 |
+| `resourceObserved` / `resourceChanged` / `resourceObserveError` | 实时资源观察结果 |
+
+字段的完整结构以 `synctv-proto/proto/client.proto` 为准。端到端示例见 [API 调用示例](../api-examples/)。
+
+## 媒体 swarm 信令
+
+P2P 媒体和语音聊天使用独立的 WebRTC 会话。两者共享 ICE 配置和 Realtime 连接，各自维护 Peer 发现、PeerConnection、DataChannel 与生命周期。
+
+客户端从当前 `PlaybackMedia.p2p_delivery` 取得 `swarm_id` 和 `swarm_ticket`，随后发送 `media_swarm_join`。服务端验证 ticket 绑定的房间、actor、swarm 和有效期，通过当前连接返回最多 16 个同房间、同 swarm 的候选 Peer。客户端每 30 秒重新宣告一次；服务端与客户端均按 90 秒成员有效期清理失联连接，主动 leave 会立即完成清理。
+
+媒体会话的 offer、answer 和 ICE candidate 使用以下字段：
+
+| 字段 | 值 |
+| --- | --- |
+| `to` | 目标 `public_actor_id:conn_id` |
+| `data` | opaque SDP 或 ICE candidate JSON |
+| `swarm_id` | 当前单个资源的 swarm ID |
+
+服务端在加入时验证 ticket。后续媒体信令验证发送方与目标连接都已加入同房间、同 swarm，再转发 opaque SDP 或 ICE 数据。Voice 与 Media 使用独立的 protobuf command/event 类型，因此 Voice 消息只包含 `to`/`from` 和 `data`，Media 消息额外包含 `swarm_id`。客户端自行维护各 Peer 拥有的分片、可用性查询、传输排序和缓存。服务端 tracker 只保存短期 swarm 成员关系并返回有界候选集合，媒体资源清单和分片库存由客户端维护。
+
+## 消息分发
+
+Realtime API 的所有业务消息都在 `ClientMessage.message` 和 `ServerMessage.message` 的 `oneof` 中。客户端应该按 `oneof` 类型分发，而不是按文本字段或日志字符串判断。
+
+```ts
+function handleServerMessage(message) {
+  if (message.chatEvent) {
+    appendChatEvent(message.chatEvent);
+    return;
+  }
+
+  if (message.chat) {
+    appendChat(message.chat);
+    return;
+  }
+
+  if (message.playbackState) {
+    updatePlayback(message.playbackState);
+    return;
+  }
+
+  if (message.resourceChanged) {
+    if (message.resourceChanged.chatEvent) {
+      appendChatEvent(message.resourceChanged.chatEvent);
+      return;
+    }
+
+    handleResourceChanged(message.resourceChanged);
+    return;
+  }
+
+  if (message.error) {
+    handleRealtimeError(message.error);
+  }
+}
+```
+
+连接建立后，先订阅当前页面需要的资源。具体方法见 [订阅 Realtime 资源](../realtime-subscriptions/)。
+
+聊天消息事件使用独立游标：双向流中发送 `observeResource.chatEvents.afterEventSequence` 可以补发指定事件之后的事件；HTTP SSE `GET /api/rooms/<roomId>/watch/chat-events` 支持 `afterEventSequence` 查询参数，并在重连时读取浏览器发送的 `Last-Event-ID`。服务端会在 SSE 事件上设置 `id:`，客户端保存该值即可恢复。
+
+## 重连流程
+
+WebSocket 断开后，观察不会跨连接保留。客户端重连时应该：
+
+<Steps>
+1. 重新获取 WebSocket ticket，或用有效 access token 重新连接。
+2. 为当前仍然打开的视图重新发送 `observeResource`。
+3. 带上本地保存的 `version`，让服务端判断是否需要补发快照。
+4. 对 `playback` 同时带上本地缓存的 `mediaId`、`playlistId`、`target` 和 `playbackClientProfile`。
+5. 收到 `resourceObserved.changed=false` 时保留本地缓存；收到 `resourceChanged` 时替换对应缓存。
+</Steps>
+
+如果连接长时间断开，客户端可以先用 HTTP/gRPC 拉取关键资源，再恢复观察，避免用户看到过旧 UI。
+
+## 资源观察错误
+
+资源观察错误通过 `ServerMessage.resourceObserveError` 返回：
+
+| 场景 | 客户端动作 |
+| --- | --- |
+| `observeId` 为空或超过 128 字符 | 修正客户端代码，不要重试同一请求 |
+| 未指定 `resource` | 修正客户端代码 |
+| 超过每连接 64 个观察 | 取消不需要的观察，或合并列表视图 |
+| 快照服务不可用或加载失败 | 展示临时错误，可按退避策略重试 |
+| 权限、资源不存在或输入无效 | 重新拉取房间状态，必要时引导用户返回 |
+
+发送失败或连接被服务端断开时，不要假设观察仍然有效。重连后完整重建观察。

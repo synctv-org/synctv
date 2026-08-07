@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO room_settings (room_id, settings, version)\n                VALUES ($1, $2, $3)\n                ON CONFLICT (room_id) DO UPDATE\n                SET settings = EXCLUDED.settings, version = EXCLUDED.version, updated_at = NOW()\n                WHERE room_settings.version = 0\n                RETURNING version\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_settings",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Jsonb",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0835de9628c193bec8e803c3f944de2d60500263d01d70afe4949d9ad2d045a5"
+}

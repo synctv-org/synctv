@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package synctv.playback_provider.seafile;
+
+import "proto/buf/validate/validate.proto";
+import "proto/playback_provider/common.proto";
+
+enum SeafileHlsResourceKind {
+  SEAFILE_HLS_RESOURCE_KIND_UNSPECIFIED = 0;
+  SEAFILE_HLS_RESOURCE_KIND_MEDIA = 1;
+  SEAFILE_HLS_RESOURCE_KIND_MANIFEST = 2;
+}
+
+message GetSeafileResourceRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string mode_name = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 media_index = 3;
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+  optional string range = 8;
+  bool head = 9;
+}
+
+message SeafileResourceResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetSeafileHlsManifestRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string mode_name = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 media_index = 3;
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+  bool head = 8;
+}
+
+message SeafileHlsManifestResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetSeafileHlsResourceRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string target_url = 2 [(buf.validate.field).string.min_len = 1];
+  string sig = 3 [(buf.validate.field).string.min_len = 1];
+  string uid = 4 [(buf.validate.field).string.min_len = 1];
+  string rid = 5 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 6;
+  optional string range = 7;
+  bool head = 8;
+  string mode_name = 9 [(buf.validate.field).string.min_len = 1];
+  uint32 media_index = 10;
+  SeafileHlsResourceKind resource_kind = 11 [(buf.validate.field).enum.defined_only = true];
+}
+
+message SeafileHlsResourceResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetSeafileSubtitleRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string mode_name = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 subtitle_index = 3;
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+}
+
+message SeafileSubtitleResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+service SeafilePlaybackProviderService {
+  rpc GetResource(GetSeafileResourceRequest) returns (stream SeafileResourceResponse);
+  rpc GetHlsManifest(GetSeafileHlsManifestRequest) returns (stream SeafileHlsManifestResponse);
+  rpc GetHlsResource(GetSeafileHlsResourceRequest) returns (stream SeafileHlsResourceResponse);
+  rpc GetSubtitle(GetSeafileSubtitleRequest) returns (stream SeafileSubtitleResponse);
+}

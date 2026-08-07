@@ -1,0 +1,271 @@
+//! Admin API Implementation
+
+use std::sync::Arc;
+use synctv_core::service::{
+    AuditService, BanRecordService, ContentReportService, EmailService, RemoteProviderManager,
+    ReviewService, RoomService, RuntimeSettingsStore, SettingsService, SystemStatsService,
+    UserService,
+};
+use synctv_livestream::LiveStreamingInfrastructure;
+use synctv_realtime::fanout::RealtimeFanoutService;
+
+#[cfg(test)]
+use synctv_core::models::MediaId;
+#[cfg(test)]
+use synctv_core::models::SortDirection as CoreSortDirection;
+
+use super::client::convert::{
+    playback_client_profile_from_proto, provider_playback_info_to_model, try_members_to_proto,
+    try_playback_state_to_proto, try_playback_to_proto, user_status_to_proto,
+};
+use super::client::user_notification_preferences_to_proto;
+use super::ApiError;
+use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutService};
+use crate::impls::client::media::{
+    prepare_delete_entries_outbox_fanout, PrepareDeleteEntriesOutboxFanout,
+};
+
+use crate::impls::client::playback_lifecycle::ProviderPlaybackLifecycleApi;
+use crate::impls::playback::{playback_expires_at, playback_generation_error_allows_state_only};
+use crate::impls::RequestExecutor;
+use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
+use crate::membership_event_fanout::{
+    default_membership_event_fanout_service, MembershipEventFanoutService,
+};
+use crate::playback_fanout::{
+    default_playback_fanout_service, PlaybackFanoutActor, PlaybackFanoutService,
+};
+use crate::playlist_fanout::{default_playlist_fanout_service, PlaylistFanoutService};
+use crate::realtime_lifecycle::{default_realtime_lifecycle_service, RealtimeLifecycleService};
+use crate::room_cache_fanout::{default_room_cache_fanout_service, RoomCacheFanoutService};
+use crate::room_lifecycle_fanout::{
+    default_room_lifecycle_fanout_service_with_realtime, RoomLifecycleFanoutService,
+};
+use synctv_realtime::fanout::{LocalNoopRealtimeEventService, RealtimeEventService};
+use synctv_realtime::sync::ConnectionRuntime;
+
+mod audit;
+mod auth;
+mod bans;
+mod batch;
+mod common;
+mod lifecycle;
+mod livestream;
+mod mapping;
+mod media;
+mod playback;
+mod query;
+mod reports;
+mod response;
+mod reviews;
+mod rooms;
+pub mod settings;
+mod stats;
+mod users;
+
+pub use auth::{AdminAuthValidator, ValidatedAdmin};
+use common::*;
+pub use livestream::ActiveStreamListSortBy;
+use mapping::*;
+pub use mapping::{
+    slice_cache_evict_expired_to_admin_proto, slice_cache_purge_to_admin_proto,
+    slice_cache_stats_to_admin_proto,
+};
+pub use query::*;
+/// Metadata captured by API/management adapters for admin audit records.
+/// Keep this in the API implementation boundary; shared adapter code owns
+/// protocol conversion helpers, while each runtime owns its request context.
+#[derive(Debug, Clone, Default)]
+pub struct RequestContext {
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+}
+
+pub use synctv_core::models::LOCAL_MANAGEMENT_ACTOR_USER_ID;
+
+#[derive(Clone)]
+pub struct AdminApiOptions {
+    pub room_service: Arc<RoomService>,
+    pub user_service: Arc<UserService>,
+    pub read_services: AdminReadServices,
+    pub settings_service: Arc<SettingsService>,
+    pub runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
+    pub email_service: Arc<EmailService>,
+    pub connection_service: Arc<dyn ConnectionRuntime>,
+    pub provider_instance_manager: Arc<RemoteProviderManager>,
+    pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
+    pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
+    pub runtime_settings: Arc<crate::ApiRuntimeSettings>,
+    pub audit_service: Arc<AuditService>,
+    pub public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
+}
+
+#[derive(Clone)]
+pub struct AdminReadServices {
+    pub system_stats_service: Arc<SystemStatsService>,
+    pub review_service: Arc<ReviewService>,
+    pub ban_record_service: Arc<BanRecordService>,
+    pub content_report_service: Arc<ContentReportService>,
+}
+
+pub struct AdminApiRuntime {
+    pub clock: Arc<dyn synctv_core::Clock>,
+    pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    pub realtime_event_service: Arc<dyn RealtimeEventService>,
+    pub provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
+    pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
+    pub signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
+    pub media_swarm_signing_key: Arc<crate::proxy_signature::MediaSwarmSigningKey>,
+    pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
+    pub request_executor: Arc<RequestExecutor>,
+}
+
+impl AdminApiRuntime {
+    #[must_use]
+    pub fn local_disabled(
+        request_executor: Arc<RequestExecutor>,
+        signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
+        media_swarm_signing_key: Arc<crate::proxy_signature::MediaSwarmSigningKey>,
+        provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
+    ) -> Self {
+        let realtime_event_service = Arc::new(LocalNoopRealtimeEventService::new());
+        Self {
+            clock: Arc::new(synctv_core::SystemClock),
+            realtime_fanout: crate::realtime_fanout::local_realtime_fanout_service(
+                realtime_event_service.clone(),
+            ),
+            realtime_event_service,
+            provider_stores,
+            provider_access_service: crate::impls::disabled_provider_access_service(),
+            signing_key,
+            media_swarm_signing_key,
+            presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
+            request_executor,
+        }
+    }
+}
+
+/// Admin API implementation
+#[derive(Clone)]
+pub struct AdminApiImpl {
+    pub clock: Arc<dyn synctv_core::Clock>,
+    pub room_service: Arc<RoomService>,
+    pub user_service: Arc<UserService>,
+    pub system_stats_service: Arc<synctv_core::service::SystemStatsService>,
+    pub review_service: Arc<ReviewService>,
+    pub ban_record_service: Arc<BanRecordService>,
+    pub content_report_service: Arc<ContentReportService>,
+    pub settings_service: Arc<SettingsService>,
+    pub runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
+    pub email_service: Arc<EmailService>,
+    pub connection_service: Arc<dyn ConnectionRuntime>,
+    pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
+    pub provider_instance_manager: Arc<RemoteProviderManager>,
+    pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
+    pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
+    pub runtime_settings: Arc<crate::ApiRuntimeSettings>,
+    pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    pub room_settings_fanout: Arc<dyn RoomSettingsFanoutService>,
+    pub membership_event_fanout: Arc<dyn MembershipEventFanoutService>,
+    pub media_fanout: Arc<dyn MediaFanoutService>,
+    pub playback_fanout: Arc<dyn PlaybackFanoutService>,
+    pub playlist_fanout: Arc<dyn PlaylistFanoutService>,
+    pub room_cache_fanout: Arc<dyn RoomCacheFanoutService>,
+    pub realtime_lifecycle: Arc<dyn RealtimeLifecycleService>,
+    pub room_lifecycle_fanout: Arc<dyn RoomLifecycleFanoutService>,
+    pub realtime_event_service: Arc<dyn RealtimeEventService>,
+    pub audit_service: Arc<AuditService>,
+    pub provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
+    pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
+    pub signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
+    pub media_swarm_signing_key: Arc<crate::proxy_signature::MediaSwarmSigningKey>,
+    pub public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
+    pub request_executor: Arc<RequestExecutor>,
+}
+
+impl AdminApiImpl {
+    #[must_use]
+    pub fn new_with_runtime(options: AdminApiOptions, runtime: AdminApiRuntime) -> Self {
+        let AdminApiOptions {
+            room_service,
+            user_service,
+            read_services,
+            settings_service,
+            runtime_settings_store,
+            email_service,
+            connection_service,
+            provider_instance_manager,
+            live_streaming_infrastructure,
+            publish_key_service,
+            runtime_settings,
+            audit_service,
+            public_id_codec,
+        } = options;
+
+        let AdminReadServices {
+            system_stats_service,
+            review_service,
+            ban_record_service,
+            content_report_service,
+        } = read_services;
+        let clock = runtime.clock;
+        let realtime_fanout = runtime.realtime_fanout;
+        let realtime_event_service = runtime.realtime_event_service;
+        let room_settings_fanout = default_room_settings_fanout_service(realtime_fanout.clone());
+        let membership_event_fanout = default_membership_event_fanout_service(
+            realtime_fanout.clone(),
+            realtime_event_service.clone(),
+        );
+        let media_fanout = default_media_fanout_service(realtime_fanout.clone());
+        let playback_fanout = default_playback_fanout_service(realtime_fanout.clone());
+        let playlist_fanout = default_playlist_fanout_service(realtime_fanout.clone());
+        let room_cache_fanout = default_room_cache_fanout_service(realtime_fanout.clone());
+        let realtime_lifecycle = default_realtime_lifecycle_service(
+            connection_service.clone(),
+            live_streaming_infrastructure.clone(),
+            realtime_fanout.clone(),
+        );
+        let room_lifecycle_fanout = default_room_lifecycle_fanout_service_with_realtime(
+            realtime_fanout.clone(),
+            realtime_event_service.clone(),
+        );
+        Self {
+            clock,
+            room_service,
+            user_service,
+            system_stats_service,
+            review_service,
+            ban_record_service,
+            content_report_service,
+            settings_service,
+            runtime_settings_store,
+            email_service,
+            connection_service,
+            presence_service: runtime.presence_service,
+            provider_instance_manager,
+            live_streaming_infrastructure,
+            publish_key_service,
+            runtime_settings,
+            realtime_fanout,
+            room_settings_fanout,
+            membership_event_fanout,
+            media_fanout,
+            playback_fanout,
+            playlist_fanout,
+            room_cache_fanout,
+            realtime_lifecycle,
+            room_lifecycle_fanout,
+            realtime_event_service,
+            audit_service,
+            provider_stores: runtime.provider_stores,
+            provider_access_service: runtime.provider_access_service,
+            signing_key: runtime.signing_key,
+            media_swarm_signing_key: runtime.media_swarm_signing_key,
+            public_id_codec,
+            request_executor: runtime.request_executor,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

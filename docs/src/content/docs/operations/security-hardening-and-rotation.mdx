@@ -1,0 +1,145 @@
+---
+title: 安全加固与密钥轮换
+description: SyncTV 生产安全基线、secret 分类、JWT/OPAQUE/凭据加密/cluster/management/metrics 密钥轮换策略。
+---
+
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## 安全基线
+
+生产环境至少满足：
+
+- 所有用户流量走 HTTPS。
+- PostgreSQL、Redis、management gRPC、metrics 不直接暴露公网。
+- root 密码、全部安全域 key 和 cluster secret 都使用 Secret Manager 或 Kubernetes Secret 管理。
+- 禁用默认弱 secret；配置文件和 Helm values 不提交真实 secret。
+- 配置备份和恢复演练，确保 secret 与数据库一起恢复。
+- 开启 metrics 后限制抓取来源或使用鉴权。
+
+## Secret 分类
+
+| Secret | 丢失影响 | 轮换难度 | 处理 |
+| --- | --- | --- | --- |
+| `jwt.secret` | 旧 token 失效，用户需要重新登录 | 中 | 可计划轮换，低峰发布 |
+| `security.opaque_server_setup_secret` | OPAQUE 密码记录可能无法验证 | 高 | 不要常规轮换，必须备份 |
+| `security.credential_encryption_key` | 已加密 Provider 凭据无法解密 | 高 | 不要直接替换，先迁移凭据 |
+| `security.totp_encryption_key` | 已配置 TOTP 无法验证 | 高 | 迁移密文或安排用户重新绑定 |
+| `security.email_outbox_encryption_key` | 待发邮件无法解密 | 高 | 先排空队列，再同步替换所有副本 |
+| 代理、媒体 swarm、Provider 会话和文件 token key | 已签发 URL、声明、会话或 token 失效 | 中 | 同步替换所有副本并接受短期失效 |
+| 登录发现和 WebAuthn 枚举 key | 临时防枚举结果变化 | 低 | 同步替换所有副本 |
+| `cluster.secret` | 节点间认证失败 | 中 | 多副本需滚动协调 |
+| `management.auth_token` | CLI/management TCP 鉴权 | 低 | 可定期轮换 |
+| `metrics.auth.bearer_token` | metrics 抓取鉴权 | 低 | 同步监控系统配置 |
+| SMTP/OAuth2/Provider 凭据 | 邮件、登录或媒体能力异常 | 中 | 按外部系统策略轮换 |
+
+<Aside type="caution">
+不要把 OPAQUE setup secret 或 credential encryption key 当作普通 token 随意轮换。它们和已存储认证数据、已加密 Provider 凭据有长期绑定关系。
+</Aside>
+
+## 轮换前检查
+
+<Steps>
+1. 备份 PostgreSQL、配置文件和全部生产 secret。
+2. 确认轮换目标和影响范围：登录、Provider 凭据、集群、management 或 metrics。
+3. 在测试环境使用生产同结构数据验证。
+4. 准备回滚方案：旧 secret、旧配置、旧镜像或数据库备份。
+5. 通知用户可能需要重新登录或重新绑定 Provider。
+6. 低峰期执行，并观察错误率、登录失败、Provider 解密错误和 WebSocket 重连。
+</Steps>
+
+## 常见轮换流程
+
+<Tabs syncKey="secret-rotation">
+  <TabItem label="JWT secret" icon="seti:lock">
+    1. 生成新 secret。
+    2. 更新 secret 存储。
+    3. 重启所有 SyncTV 副本。
+    4. 预期旧 access/refresh token 失效，用户重新登录。
+    5. 观察 `401`、登录成功率和 WebSocket 重连。
+  </TabItem>
+  <TabItem label="Management token" icon="laptop">
+    1. 生成新 token。
+    2. 更新 `management.auth_token` 或 `_file`。
+    3. 重启服务或对应管理入口。
+    4. 更新 CLI 环境变量或 Secret。
+    5. 执行 `synctv system stats` 验证。
+  </TabItem>
+  <TabItem label="Metrics token" icon="magnifier">
+    1. 生成新 bearer token。
+    2. 更新 SyncTV metrics 配置。
+    3. 更新 Prometheus、ServiceMonitor 或抓取方 Secret。
+    4. 验证 `/metrics` 旧 token 失败、新 token 成功。
+  </TabItem>
+  <TabItem label="Cluster secret" icon="cloud-download">
+    1. 在维护窗口准备新 secret。
+    2. 确认所有副本会使用同一个新值。
+    3. 进行滚动或同步重启；滚动期间可能出现节点间连接失败。
+    4. 观察集群 heartbeat、Redis pub/sub、WebSocket 跨节点事件。
+  </TabItem>
+</Tabs>
+
+## Kubernetes Secret 生效
+
+Helm 通过环境变量注入 Secret。更新 Secret 后，用 values 中的版本标记触发滚动发布：
+
+```yaml
+existingSecret: "synctv-production-secret"
+secretRolloutChecksum: "2026-07-28-jwt-rotation"
+```
+
+```bash
+helm upgrade --install synctv ./helm/synctv \
+  -n synctv \
+  -f values.production.yaml
+kubectl -n synctv rollout status deploy/synctv
+```
+
+直接由 Secret controller 更新且没有配置 Reloader 时，显式重启并等待全部副本完成：
+
+```bash
+kubectl -n synctv rollout restart deploy/synctv
+kubectl -n synctv rollout status deploy/synctv
+```
+
+涉及 cluster、签名或加密 key 的轮换必须让所有副本收敛到同一版本。滚动期间观察节点认证、登录和解密错误。
+
+## 凭据加密 key 迁移
+
+如果必须更换 `security.credential_encryption_key`，不要直接替换后启动。安全流程应该是：
+
+<Steps>
+1. 备份数据库和旧 key。
+2. 在维护模式下停止会写 Provider 凭据的操作。
+3. 使用旧 key 解密现有 Provider 凭据。
+4. 使用新 key 重新加密并写回。
+5. 更新配置为新 key。
+6. 启动服务，验证所有 Provider 登录、浏览和播放。
+</Steps>
+
+如果当前没有自动化迁移工具，保守做法是保留旧 key，不做轮换；或者删除并重新创建受影响的 Provider 凭据。
+
+## OPAQUE setup secret
+
+OPAQUE setup secret 是密码认证协议的长期服务端 secret。除非你已经设计好账号密码迁移或强制用户重置密码流程，否则不要轮换。
+
+如果泄露：
+
+- 立即评估泄露范围。
+- 强制所有用户重置密码或重新注册 OPAQUE 密码记录。
+- 同时轮换 JWT secret，清理会话。
+- 保留审计记录和事件时间线。
+
+## 加固清单
+
+| 项目 | 动作 |
+| --- | --- |
+| TLS | 公网只暴露 HTTPS/WSS |
+| CORS | 只允许真实前端 origin，不带 path |
+| Trusted proxy | 只信任真实反向代理地址 |
+| Rate limit | 登录、验证码、WebSocket、API 都配置合理限制 |
+| WebAuthn | `rp_origin` 与真实 HTTPS origin 一致 |
+| OAuth2 | redirect URL 精确匹配，state 存储依赖 Redis |
+| Provider | 凭据加密，禁止把 token 写入 `sourceConfig` |
+| Logs | JSON 日志，不输出 secret、Cookie、JWT |
+| Metrics | 不公网暴露，启用 bearer 或平台鉴权 |
+| Backups | 数据库和 secret 一起备份、一起演练恢复 |

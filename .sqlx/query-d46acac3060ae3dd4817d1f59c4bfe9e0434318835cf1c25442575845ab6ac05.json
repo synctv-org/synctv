@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)\n          VALUES ($1, $2, $3, 'very old message from a year ago', 1, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d46acac3060ae3dd4817d1f59c4bfe9e0434318835cf1c25442575845ab6ac05"
+}

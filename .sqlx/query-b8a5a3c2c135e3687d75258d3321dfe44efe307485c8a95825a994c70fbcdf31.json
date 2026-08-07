@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT NOT EXISTS (\n                SELECT 1\n                FROM users u\n                WHERE u.id = $1\n                  AND u.deleted_at IS NULL\n                  AND NOT EXISTS (\n                      SELECT 1 FROM user_bans ub\n                      WHERE ub.user_id = u.id\n                        AND ub.revoked_at IS NULL\n                        AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)\n                  )\n            ) AS \"orphaned!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "orphaned!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b8a5a3c2c135e3687d75258d3321dfe44efe307485c8a95825a994c70fbcdf31"
+}

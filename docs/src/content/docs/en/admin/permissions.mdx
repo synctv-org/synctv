@@ -1,0 +1,183 @@
+---
+title: Roles, Permissions, and Preferences
+description: SyncTV global user roles, room roles, permission names, room settings, member overrides, and user preferences.
+---
+
+import Diagram from '../../../../components/Diagram.astro';
+import permissionEvaluationDark from '../../../../assets/diagrams/permission-evaluation-dark.svg';
+import permissionEvaluationLight from '../../../../assets/diagrams/permission-evaluation-light.svg';
+
+## Two Role Layers
+
+SyncTV has two role layers. Keep them separate.
+
+| Layer | Roles | Scope |
+| --- | --- | --- |
+| Global user role | `root`, `admin`, `user` | Platform administration, user management, room management, system settings |
+| Room role | `creator`, `admin`, `member`, `guest` | Playback, members, media, chat, and settings inside one room |
+
+A global `admin` is not automatically a room `admin`. A room `admin` is not a platform administrator.
+
+## Global User Roles
+
+| Role | Boundary |
+| --- | --- |
+| `root` | Super administrator; can manage root/admin/user accounts, global settings, and all rooms |
+| `admin` | Platform administrator; can manage normal users and rooms, but cannot modify root or equally privileged admins |
+| `user` | Normal user; uses rooms and media features according to business permissions |
+
+User status is derived from ban records:
+
+| Status | Effect |
+| --- | --- |
+| `active` | Can log in, create rooms, and join rooms |
+| `banned` | Cannot log in, create rooms, or join rooms |
+
+## Room Roles
+
+| Room role | Default meaning |
+| --- | --- |
+| `creator` | Room creator; has all room permissions and cannot be weakened by room settings |
+| `admin` | Room administrator; can manage members, playback, media, room settings, and moderation by default |
+| `member` | Normal member; can chat, use WebRTC, create/edit their own media resources, delete their own media resources by ownership, and view media resources/member/chat data by default |
+| `guest` | Guest, not a room member. Guests have no media-resource, chat, or administration permissions by default. A room can only grant guest-safe capabilities such as member list, chat history, or WebRTC |
+
+Room roles provide base permissions. Room settings and member overrides then add or remove permissions.
+
+### Guest Boundary
+
+Guests can enter public rooms that explicitly allow guest access, but they do not become room members. Guest permissions use their own ceiling and do not inherit from `member`.
+
+| Capability | Default | Can be granted through guest permissions | Notes |
+| --- | --- | --- | --- |
+| Basic realtime room state | Yes | No setting required | Lets the client show room existence, settings, and playback state after connecting |
+| Member list | No | `view_members` | Read-only |
+| Chat history | No | `view_chat_history` | Read-only |
+| Voice chat | No | `use_voice_chat` | Join room voice sessions |
+| P2P media delivery | No | `use_p2p_media` | Exchange media pieces with clients in the same room and media swarm |
+| Media resources | No | No | Guests cannot read, browse, or manage media resources |
+| Chat sending | No | No | `send_chat_messages` is only for signed-in members |
+| Playback control, member management, room settings | No | No | Requires a signed-in member with the matching permission |
+
+## Permission Evaluation
+
+Effective permissions are evaluated in three layers:
+
+<Diagram
+  light={permissionEvaluationLight}
+  dark={permissionEvaluationDark}
+  alt="Room effective permission evaluation model showing room role base permissions, room settings added and removed permissions, member added and removed overrides, and the creator special case that always keeps all room permissions."
+  caption="Effective permissions start from the room role base, then apply room settings and member-specific overrides. If the same bit is both added and removed, removal wins."
+/>
+
+Rules:
+
+- `creator` always has all room permissions.
+- Add is applied before remove. If the same bit is both added and removed, remove wins.
+- `memberAddedPermissions` cannot exceed the admin-level ceiling.
+- `guestAddedPermissions` uses a dedicated guest ceiling. It cannot grant media-resource, chat-write, or administration permissions.
+- `DELETE_ROOM` is not a room-delegable permission. Room deletion belongs to the creator or the platform management plane.
+
+## Major Permission Names
+
+Runtime settings and administration surfaces use stable snake_case permission names.
+
+| Permission name | Meaning |
+| --- | --- |
+| `send_chat_messages` | Send chat messages |
+| `manage_own_media` | Create media or playlists and edit content created by the actor |
+| `delete_media` | Delete media and playlists created by other users or without a recorded creator |
+| `reorder_media` | Reorder media and playlists |
+| `clear_media` | Clear the room media queue |
+| `manage_live_streams` | Manage live streams and create publish keys |
+| `control_playback_state` | Play, pause, seek, and change playback speed |
+| `navigate_playback` | Select content, play previous or next, and play a history entry |
+| `review_join_requests` | Approve or reject join requests |
+| `remove_members` | Remove members and start a temporary rejoin cooldown |
+| `manage_member_permissions` | Change member permissions |
+| `add_members` | Add members directly |
+| `manage_room_settings` | Modify room settings |
+| `delete_chat_messages` | Delete chat messages created by other room members |
+| `delete_room` | Delete room; not a normal room-delegable permission |
+| `browse_library` | Browse the media library |
+| `view_members` | View member list |
+| `view_chat_history` | View chat history |
+| `use_voice_chat` | Use room voice chat |
+| `use_p2p_media` | Use room-scoped P2P media delivery |
+
+## Room Settings
+
+Deleting a media resource created by the actor is an ownership business rule, not a separate permission bit. A member can always delete their own media resources, even without `manage_own_media`; creating media resources and editing their own media resources require `manage_own_media`.
+
+Room settings control join policy, room features, and default permissions.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `password` | Empty | Initial password on room creation; password APIs update it later |
+| `allowGuestJoin` | `false` | Allow guests to join |
+| `maxMembers` | `100` | Maximum members; upper bound `10000` |
+| `requireApproval` | `false` | Require join approval |
+| `allowAutoJoin` | `true` | Allow eligible users to auto-join |
+| `chatEnabled` | `true` | Enable chat |
+| `voiceChatEnabled` | `true` | Enable room voice calls |
+| `p2pMediaEnabled` | `true` | Enable in-room P2P media delivery |
+| `autoPlay` | `{}` | Auto-play policy, for example `{"enabled":true,"mode":1,"delay":5}` |
+| `adminAddedPermissions` / `adminRemovedPermissions` | Empty permission set | Admin default permission changes |
+| `memberAddedPermissions` / `memberRemovedPermissions` | Empty permission set | Member default permission changes |
+| `guestAddedPermissions` / `guestRemovedPermissions` | Empty permission set | Guest default permission changes |
+
+Voice and media P2P require both the room capability and the member permission. For example, voice join requires `use_voice_chat` and `voiceChatEnabled=true`. When a room administrator disables a capability, the server uses the realtime room-settings event to release current voice slots and media swarms and rejects subsequent joins and signaling. Clients consume the same settings snapshot, close local sessions, and hide the corresponding controls. Closing an established media DataChannel relies on the client processing this event; strict server-enforced media revocation requires an SFU relay architecture.
+
+Example:
+
+```bash
+synctv room settings get <ROOM_ID>
+synctv room settings update <ROOM_ID> --set requireApproval=true --set autoPlay.mode=shuffle
+```
+
+## Member Overrides
+
+Member overrides are for exceptions, such as muting one member, granting playback control to one member, or removing ban capability from one administrator.
+
+Semantics:
+
+- Base permissions come from the room role.
+- `added_permissions` adds normal member permissions.
+- `removed_permissions` removes normal member permissions.
+- Administrators can also have `adminAddedPermissions` and `adminRemovedPermissions`.
+- Weakening `creator` permissions has no effect.
+
+Management rules:
+
+- Use roles for long-term permission design and member overrides for exceptions.
+- Too many overrides make troubleshooting harder; clean up stale overrides.
+- When removing administrator privileges, consider changing the role instead of stacking many deny bits.
+
+## User Preferences
+
+User preferences are database-backed user-level settings, not YAML configuration.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `two_factor_enabled` | `false` | User-level 2FA |
+| `notifications.room_invitation_in_app` | `true` | In-app room invitation notifications |
+| `notifications.room_event_in_app` | `true` | In-app room event notifications |
+| `notifications.system_announcement_in_app` | `true` | In-app system announcements |
+| `notifications.room_invitation_email` | `false` | Email room invitation notifications |
+| `notifications.room_event_email` | `false` | Email room event notifications |
+| `notifications.system_announcement_email` | `true` | Email system announcements |
+
+Provider instance bindings are not user preferences. They are stored on provider credentials when the user logs in to a provider through a specific instance. The database table also has a `settings` JSONB extension payload for low-priority experimental preferences. Stable product preferences should use explicit columns. Do not store secrets, tokens, cookies, passwords, or provider credentials in it.
+
+2FA constraints:
+
+- Enabling 2FA requires at least two local methods: password, WebAuthn/passkey, verified email.
+- OAuth2 is not counted as a local 2FA factor, but 2FA-enabled users may log in with OAuth2.
+- Removing an authentication method while 2FA is enabled must still leave at least two usable local methods.
+
+## Administration Strategy
+
+- **Use Permission Names**: Permission configuration should use stable permission-name sets so changes are readable, reviewable, and easy to roll back.
+- **Separate Scopes**: Platform admin and room admin are separate concepts. Diagnose permission issues by layer first.
+- **Preferences Are Runtime Data**: User preferences are changed through API/CLI and should not live in YAML or Helm values.
+- **Verify Behavior**: After changing join rules, permissions, or 2FA, test real login, room join, and playback flows.

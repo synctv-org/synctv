@@ -1,0 +1,167 @@
+[package]
+name = "synctv-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Internal
+synctv-media-providers = { workspace = true, default-features = false }
+synctv-common = { workspace = true, default-features = false }
+
+# Async
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+
+# Database
+sqlx.workspace = true
+
+# Redis
+redis.workspace = true
+
+# Security
+opaque-ke.workspace = true
+jsonwebtoken.workspace = true
+oauth2.workspace = true
+webauthn-rs.workspace = true
+webauthn-rs-proto.workspace = true
+aes-gcm.workspace = true
+ammonia.workspace = true
+zxcvbn.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Caching
+moka.workspace = true
+lru.workspace = true
+dashmap.workspace = true
+async_singleflight.workspace = true
+
+# IDs & Crypto
+uuid.workspace = true
+rand.workspace = true
+rand_08.workspace = true
+rand_chacha_08.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+sha2_010.workspace = true
+hkdf.workspace = true
+hmac.workspace = true
+humantime.workspace = true
+hex.workspace = true
+
+# Ordered collections
+indexmap.workspace = true
+
+# Utilities
+anyhow.workspace = true
+opendal.workspace = true
+opendal-http-transport-reqwest.workspace = true
+thiserror.workspace = true
+bytes.workspace = true
+parking_lot.workspace = true
+paste.workspace = true
+url.workspace = true
+percent-encoding.workspace = true
+regex.workspace = true
+ipnet.workspace = true
+
+# HTTP Client
+reqwest.workspace = true
+tokio-socks.workspace = true
+tokio-rustls.workspace = true
+webpki-roots.workspace = true
+
+rustls.workspace = true
+
+# Resilience
+tower.workspace = true
+governor.workspace = true
+nonzero_ext.workspace = true
+backon.workspace = true
+failsafe.workspace = true
+futures-util.workspace = true
+
+# Time
+chrono.workspace = true
+rsntp.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+
+prometheus.workspace = true
+
+# Email
+lettre.workspace = true
+handlebars.workspace = true
+
+# Misc
+base64.workspace = true
+hostname.workspace = true
+lz4_flex.workspace = true
+zstd.workspace = true
+image.workspace = true
+symphonia.workspace = true
+
+
+[features]
+default = ["tls-aws-lc", "tls-webpki-roots"]
+k8s = []
+test-support = []
+tls-aws-lc = [
+    "synctv-media-providers/tls-aws-lc",
+    "synctv-common/tls-aws-lc",
+    "sqlx/tls-rustls-aws-lc-rs",
+    "lettre/aws-lc-rs",
+    "reqwest/rustls",
+    "rustls/aws_lc_rs",
+    "jsonwebtoken/aws_lc_rs",
+]
+tls-ring = [
+    "synctv-media-providers/tls-ring",
+    "synctv-common/tls-ring",
+    "sqlx/tls-rustls-ring-webpki",
+    "lettre/ring",
+    "reqwest/rustls-no-provider",
+    "rustls/ring",
+    "jsonwebtoken/rust_crypto",
+]
+tls-webpki-roots = [
+    "synctv-media-providers/tls-webpki-roots",
+    "synctv-common/tls-webpki-roots",
+    "lettre/webpki-roots",
+    "redis/tokio-rustls-comp",
+    "redis/tls-rustls-webpki-roots",
+]
+tls-native-roots = [
+    "synctv-media-providers/tls-native-roots",
+    "synctv-common/tls-native-roots",
+    "lettre/rustls-native-certs",
+    "redis/tokio-rustls-comp",
+]
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+mockall.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+criterion.workspace = true
+rand.workspace = true
+synctv-core-testing.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "auth_service"
+harness = false
+
+[[bench]]
+name = "database_benchmarks"
+harness = false

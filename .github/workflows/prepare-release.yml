@@ -42,7 +42,7 @@ jobs:
         run: make set-release-version VERSION="${{ steps.version.outputs.value }}"
 
       - name: Create release preparation PR
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           commit-message: "release: prepare v${{ steps.version.outputs.value }}"
           branch: "automation/release-v${{ steps.version.outputs.value }}"

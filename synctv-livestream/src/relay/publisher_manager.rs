@@ -22,9 +22,24 @@ use synctv_xiu::streamhub::{
     utils::Uuid,
 };
 use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
+
+struct AbortOnDrop(AbortHandle);
+
+impl AbortOnDrop {
+    fn new(handle: &JoinHandle<()>) -> Self {
+        Self(handle.abort_handle())
+    }
+}
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 /// Publisher readiness transitions emitted after the shared registry is committed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,6 +272,8 @@ pub(crate) struct PublisherManager {
     is_restarting: Arc<AtomicBool>,
     maintenance_tx: mpsc::Sender<PublisherMaintenanceCommand>,
     maintenance_rx: tokio::sync::Mutex<Option<mpsc::Receiver<PublisherMaintenanceCommand>>>,
+    maintenance_cancel: CancellationToken,
+    maintenance_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     sync_notify: Notify,
     lifecycle_tx: Option<mpsc::Sender<StreamLifecycleEvent>>,
 }
@@ -304,6 +321,8 @@ impl PublisherManager {
             is_restarting,
             maintenance_tx: control_handle.sender,
             maintenance_rx: tokio::sync::Mutex::new(Some(maintenance_rx)),
+            maintenance_cancel: CancellationToken::new(),
+            maintenance_handle: tokio::sync::Mutex::new(None),
             sync_notify: Notify::new(),
             lifecycle_tx: None,
         }
@@ -322,6 +341,31 @@ impl PublisherManager {
     pub(crate) fn with_cluster_address(mut self, cluster_address: String) -> Self {
         self.local_cluster_address = cluster_address;
         self
+    }
+
+    /// Stop and join the maintenance worker independently of the broadcast
+    /// event loop. The worker owns Redis heartbeat/reconciliation resources and
+    /// must finish before registry cleanup or runtime shutdown proceeds.
+    pub(crate) async fn shutdown_maintenance(&self, budget: Duration) {
+        self.maintenance_cancel.cancel();
+        if let Some(mut handle) = self.maintenance_handle.lock().await.take() {
+            let _abort_on_drop = AbortOnDrop::new(&handle);
+            match tokio::time::timeout(budget, &mut handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    error!(error = %error, "Publisher maintenance worker failed during shutdown");
+                }
+                Err(_) => {
+                    warn!("Publisher maintenance worker exceeded its shutdown budget; aborting");
+                    handle.abort();
+                    let _ = handle.await;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn cancel_maintenance(&self) {
+        self.maintenance_cancel.cancel();
     }
 
     #[must_use]
@@ -471,10 +515,15 @@ impl PublisherManager {
             error!("Publisher manager maintenance worker was already started");
             return;
         };
-        let maintenance_cancel = CancellationToken::new();
+        if self.maintenance_cancel.is_cancelled() {
+            info!("Publisher manager maintenance worker was cancelled before startup");
+            return;
+        }
         let maintenance_handle = tokio::spawn(
-            Arc::clone(&self).run_maintenance_worker(maintenance_rx, maintenance_cancel.clone()),
+            Arc::clone(&self)
+                .run_maintenance_worker(maintenance_rx, self.maintenance_cancel.clone()),
         );
+        *self.maintenance_handle.lock().await = Some(maintenance_handle);
 
         loop {
             match event_receiver.recv().await {
@@ -499,10 +548,7 @@ impl PublisherManager {
             }
         }
 
-        maintenance_cancel.cancel();
-        if let Err(error) = maintenance_handle.await {
-            error!(error = %error, "Publisher maintenance worker failed during shutdown");
-        }
+        self.shutdown_maintenance(Duration::from_secs(2)).await;
         warn!("Publisher manager stopped");
     }
 

@@ -27,22 +27,23 @@
 //!
 //! 1. **Buffer full**: Falls back to synchronous write; if that also fails,
 //!    logs ERROR and increments dropped counter
-//! 2. **Database unavailable**: Batch flush retries with exponential backoff
-//!    (100ms, 200ms, 400ms); after 3 failures, logs ERROR and drops batch
+//! 2. **Database unavailable**: Regular flushes retain the batch for the next
+//!    interval. Shutdown performs three final attempts before reporting any
+//!    unpersisted records
 //! 3. **Channel closed**: Logs ERROR and continues operation
 //!
 //! ## Monitoring
 //!
 //! Operators should monitor for ERROR logs indicating audit failures:
 //! - "Audit sync fallback write also failed, event dropped"
-//! - "Failed to flush audit batch; events dropped"
+//! - "Failed to flush audit batch; retaining events for retry"
 //!
 //! ## Recovery Strategies
 //!
 //! - **Temporary database outage**: Events are retried with backoff; most
 //!   outages are recovered automatically
-//! - **Extended outage**: Events may be dropped; check application logs
-//!   for ERROR messages and investigate database connectivity
+//! - **Extended outage**: Shutdown reports unpersisted events after the final
+//!   retry window; check application logs and investigate database connectivity
 //! - **Buffer overflow**: Indicates high audit volume; consider increasing
 //!   buffer capacity via configuration
 
@@ -172,8 +173,12 @@ impl AuditLogWriter {
         Ok(())
     }
 
-    async fn flush_batch(&self, buffer: &mut Vec<AuditRecord>, dropped_count: &AtomicUsize) {
-        flush_batch(&self.pool, buffer, dropped_count).await;
+    async fn flush_batch(
+        &self,
+        buffer: &mut Vec<AuditRecord>,
+        dropped_count: &AtomicUsize,
+    ) -> bool {
+        flush_batch(&self.pool, buffer, dropped_count).await
     }
 }
 
@@ -472,7 +477,8 @@ impl std::fmt::Debug for AuditService {
 /// Dropping this handle signals the background task to flush remaining events
 /// and shut down gracefully.
 pub struct AuditFlushHandle {
-    join_handle: Option<tokio::task::JoinHandle<()>>,
+    join_handle: Option<tokio::task::JoinHandle<bool>>,
+    abort_handle: tokio::task::AbortHandle,
     /// Sender kept alive to control channel lifetime. Dropping it causes the
     /// background receiver loop to terminate after draining remaining items.
     cancel_tx: tokio::sync::watch::Sender<bool>,
@@ -502,22 +508,20 @@ impl AuditFlushHandle {
                                    maybe_record = rx.recv() => {
                                        if let Some(record) = maybe_record {
                                            buffer.push(record);
-                                           if buffer.len() >= FLUSH_BATCH_SIZE {
-                                               writer.flush_batch(&mut buffer, &dropped_count).await;
+                                           if buffer.len() == FLUSH_BATCH_SIZE {
+                                               let _ = writer.flush_batch(&mut buffer, &dropped_count).await;
                                            }
                                        } else {
                 // Channel closed, flush remaining and exit
-                                           if !buffer.is_empty() {
-                                               writer.flush_batch(&mut buffer, &dropped_count).await;
-                                           }
+                                           let flushed = flush_with_retries(&writer, &mut buffer, &dropped_count).await;
                                            tracing::info!("Audit flush task: channel closed, exiting");
-                                           return;
+                                           return flushed;
                                        }
                                    }
                 // Periodic flush
                                    _ = interval.tick() => {
                                        if !buffer.is_empty() {
-                                           writer.flush_batch(&mut buffer, &dropped_count).await;
+                                           let _ = writer.flush_batch(&mut buffer, &dropped_count).await;
                                        }
                                    }
                 // Graceful shutdown signal
@@ -527,18 +531,18 @@ impl AuditFlushHandle {
                                        while let Some(record) = rx.recv().await {
                                            buffer.push(record);
                                        }
-                                       if !buffer.is_empty() {
-                                           writer.flush_batch(&mut buffer, &dropped_count).await;
-                                       }
+                                       let flushed = flush_with_retries(&writer, &mut buffer, &dropped_count).await;
                                        tracing::info!("Audit flush task: graceful shutdown complete");
-                                       return;
+                                       return flushed;
                                    }
                                }
             }
         });
 
+        let abort_handle = join_handle.abort_handle();
         Self {
             join_handle: Some(join_handle),
+            abort_handle,
             cancel_tx,
             has_signaled: AtomicBool::new(false),
         }
@@ -567,11 +571,15 @@ impl AuditFlushHandle {
     }
 
     /// Trigger graceful shutdown and wait for the flush to complete.
-    pub async fn shutdown(mut self) {
+    pub async fn shutdown(mut self) -> bool {
         self.send_shutdown_signal();
         if let Some(handle) = self.join_handle.take() {
             match handle.await {
-                Ok(()) => {}
+                Ok(true) => return true,
+                Ok(false) => {
+                    tracing::warn!("Audit flush task could not persist all buffered events");
+                    return false;
+                }
                 Err(error) if error.is_cancelled() => {}
                 Err(error) => {
                     tracing::warn!(
@@ -581,15 +589,18 @@ impl AuditFlushHandle {
                 }
             }
         }
+        false
     }
 }
 
 impl Drop for AuditFlushHandle {
     fn drop(&mut self) {
-        // Signal shutdown (non-blocking, idempotent). The background task
-        // will drain on its next iteration. If shutdown() was already called
-        // the signal is not sent again.
-        self.send_shutdown_signal();
+        // A plain drop starts a detached graceful flush. If an in-progress
+        // shutdown future is cancelled, the second signal attempt identifies
+        // that state and aborts the detached task.
+        if !self.send_shutdown_signal() {
+            self.abort_handle.abort();
+        }
     }
 }
 
@@ -597,12 +608,38 @@ fn parse_actor_id_for_storage(actor_id: &str) -> Option<i64> {
     actor_id.parse::<i64>().ok().filter(|id| *id > 0)
 }
 
+async fn flush_with_retries(
+    writer: &AuditLogWriter,
+    buffer: &mut Vec<AuditRecord>,
+    dropped_count: &AtomicUsize,
+) -> bool {
+    if buffer.is_empty() {
+        return true;
+    }
+
+    for attempt in 0..3 {
+        if writer.flush_batch(buffer, dropped_count).await {
+            return true;
+        }
+        if attempt < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    }
+
+    false
+}
+
 /// Flush a batch of audit records to the database.
-async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count: &AtomicUsize) {
+async fn flush_batch(
+    pool: &PgPool,
+    buffer: &mut Vec<AuditRecord>,
+    dropped_count: &AtomicUsize,
+) -> bool {
     let batch_size = buffer.len();
     tracing::debug!(batch_size = batch_size, "Flushing audit event batch");
 
     // Build a batch insert using UNNEST for efficiency
+    let mut valid_records = Vec::with_capacity(batch_size);
     let mut actor_ids: Vec<i64> = Vec::with_capacity(batch_size);
     let mut actor_usernames = Vec::with_capacity(batch_size);
     let mut actions = Vec::with_capacity(batch_size);
@@ -613,7 +650,8 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
     let mut user_agents: Vec<String> = Vec::with_capacity(batch_size);
     let mut created_ats: Vec<DateTime<Utc>> = Vec::with_capacity(batch_size);
 
-    for record in buffer.iter() {
+    let pending_records = std::mem::take(buffer);
+    for record in pending_records {
         if let Err(error) = details_list.push(&record.details) {
             tracing::error!(
                 error = %error,
@@ -622,6 +660,8 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
             dropped_count.fetch_add(1, Ordering::Relaxed);
             continue;
         }
+        valid_records.push(record);
+        let record = valid_records.last().expect("record was just inserted");
         actor_ids.push(parse_actor_id_for_storage(&record.actor_id).unwrap_or(0));
         actor_usernames.push(record.actor_username.clone());
         actions.push(record.action.as_i16());
@@ -686,21 +726,86 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
             tracing::debug!(batch_size = batch_size, "Audit batch flushed successfully");
         }
         Err(e) => {
-            dropped_count.fetch_add(batch_size, Ordering::Relaxed);
             tracing::error!(
-                batch_size = batch_size,
+                batch_size = valid_records.len(),
                 error = %e,
-                "Failed to flush audit batch; events dropped"
+                "Failed to flush audit batch; retaining events for retry"
             );
+            buffer.extend(valid_records);
+            return false;
         }
     }
 
-    buffer.clear();
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn dropping_flush_handle_allows_graceful_task_completion() {
+        let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+        let completed = Arc::new(AtomicBool::new(false));
+        let completed_in_task = Arc::clone(&completed);
+        let join_handle = tokio::spawn(async move {
+            cancel_rx.changed().await.expect("shutdown sender is alive");
+            tokio::task::yield_now().await;
+            completed_in_task.store(true, Ordering::Release);
+            true
+        });
+        let abort_handle = join_handle.abort_handle();
+        let handle = AuditFlushHandle {
+            join_handle: Some(join_handle),
+            abort_handle,
+            cancel_tx,
+            has_signaled: AtomicBool::new(false),
+        };
+
+        drop(handle);
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !completed.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("plain drop should allow the flush task to finish");
+    }
+
+    #[tokio::test]
+    async fn cancelling_shutdown_future_aborts_detached_flush_task() {
+        let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+        let (signal_seen_tx, signal_seen_rx) = tokio::sync::oneshot::channel();
+        let join_handle = tokio::spawn(async move {
+            cancel_rx.changed().await.expect("shutdown sender is alive");
+            let _ = signal_seen_tx.send(());
+            std::future::pending::<bool>().await
+        });
+        let abort_handle = join_handle.abort_handle();
+        let observed_abort_handle = abort_handle.clone();
+        let handle = AuditFlushHandle {
+            join_handle: Some(join_handle),
+            abort_handle,
+            cancel_tx,
+            has_signaled: AtomicBool::new(false),
+        };
+
+        let shutdown_task = tokio::spawn(handle.shutdown());
+        signal_seen_rx
+            .await
+            .expect("flush task should observe the shutdown signal");
+        shutdown_task.abort();
+        let _ = shutdown_task.await;
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !observed_abort_handle.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled shutdown should abort the detached flush task");
+    }
 
     #[test]
     fn optional_reason_preserves_missing_and_trims_present_reason() {

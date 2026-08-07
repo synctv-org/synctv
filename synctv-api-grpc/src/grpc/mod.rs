@@ -224,7 +224,7 @@ const fn should_register_email_service(email_available: bool, email_token_availa
     email_available && email_token_available
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct GrpcHealthRegistrationState {
     auth_registered: bool,
     user_registered: bool,
@@ -2225,7 +2225,18 @@ async fn build_axum_router_with_health(
 pub async fn build_axum_router(
     grpc_options: GrpcServerOptions<'_>,
 ) -> anyhow::Result<axum::Router> {
-    Ok(build_axum_router_with_health(grpc_options).await?.router)
+    let shutdown_rx = grpc_options.shutdown_rx.clone();
+    let built = build_axum_router_with_health(grpc_options).await?;
+    if shutdown_rx.is_some() {
+        // The unified Axum server owns the transport lifetime. This small
+        // watcher only updates health state before Axum begins draining.
+        drop(tokio::spawn(wait_for_grpc_shutdown(
+            shutdown_rx,
+            built.health_reporter.clone(),
+            built.health_state,
+        )));
+    }
+    Ok(built.router)
 }
 
 async fn wait_for_grpc_shutdown(
@@ -2234,7 +2245,7 @@ async fn wait_for_grpc_shutdown(
     health_state: GrpcHealthRegistrationState,
 ) {
     if let Some(rx) = shutdown_rx.as_mut() {
-        if rx.changed().await.is_err() {
+        if !*rx.borrow() && rx.changed().await.is_err() {
             tracing::debug!("gRPC shutdown signal channel closed");
         }
     } else if let Err(error) = tokio::signal::ctrl_c().await {
@@ -3956,6 +3967,27 @@ mod tests {
                 > as tonic::server::NamedService>::NAME,
             )
             .await,
+            Ok(ServingStatus::NotServing),
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_grpc_shutdown_observes_pretriggered_signal() -> TestResult {
+        let health_reporter = tonic_health::server::HealthReporter::new();
+        let health_service = HealthService::from_health_reporter(health_reporter.clone());
+        let state = GrpcHealthRegistrationState::default();
+        set_registered_grpc_services_serving(&health_reporter, state).await;
+
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(true);
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_grpc_shutdown(Some(shutdown_rx), health_reporter, state),
+        )
+        .await?;
+
+        assert_eq!(
+            health_status_for_service(&health_service, "").await,
             Ok(ServingStatus::NotServing),
         );
         Ok(())

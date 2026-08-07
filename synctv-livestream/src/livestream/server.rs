@@ -31,7 +31,7 @@ use synctv_xiu::rtmp::auth::AuthCallback;
 use synctv_xiu::storage::{FileStorage, HlsStorage, MemoryStorage, S3Config, S3Storage};
 use synctv_xiu::streamhub::StreamsHub;
 use tokio::sync::{mpsc, oneshot, Mutex};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -80,6 +80,20 @@ impl Default for HlsS3Options {
 
 type ReregisterRequest = oneshot::Sender<()>;
 
+struct AbortOnDrop(AbortHandle);
+
+impl AbortOnDrop {
+    fn new(handle: &JoinHandle<()>) -> Self {
+        Self(handle.abort_handle())
+    }
+}
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 async fn abort_and_log_join(task_name: &'static str, handle: &mut JoinHandle<()>) {
     handle.abort();
     match handle.await {
@@ -91,6 +105,35 @@ async fn abort_and_log_join(task_name: &'static str, handle: &mut JoinHandle<()>
                 error = %error,
                 "livestream background task returned join error after abort"
             );
+        }
+    }
+}
+
+async fn join_task_with_deadline(
+    task_name: &'static str,
+    handle: &mut JoinHandle<()>,
+    deadline: tokio::time::Instant,
+) -> bool {
+    let _abort_on_drop = AbortOnDrop::new(handle);
+    match tokio::time::timeout(
+        deadline.saturating_duration_since(tokio::time::Instant::now()),
+        &mut *handle,
+    )
+    .await
+    {
+        Ok(Ok(())) => true,
+        Ok(Err(error)) => {
+            warn!(task = task_name, error = %error, "livestream task failed during graceful shutdown");
+            false
+        }
+        Err(_) => {
+            warn!(
+                task = task_name,
+                "livestream task exceeded shutdown deadline; aborting"
+            );
+            handle.abort();
+            let _ = handle.await;
+            false
         }
     }
 }
@@ -191,6 +234,66 @@ impl HubCycleTasks {
         if let Some(handle) = self.forwarder_handle.take() {
             let mut handle = handle;
             abort_and_log_join("hub cycle broadcast forwarder", &mut handle).await;
+        }
+    }
+
+    async fn shutdown_graceful(&mut self, budget: std::time::Duration) -> bool {
+        self.rtmp_cancel_token.cancel();
+        let deadline = tokio::time::Instant::now() + budget;
+        let mut graceful = true;
+
+        if let Some(mut handle) = self.rtmp_handle.take() {
+            let _abort_on_drop = AbortOnDrop::new(&handle);
+            match tokio::time::timeout(
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+                &mut handle,
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    warn!(error = %error, "RTMP server exited with an error during shutdown");
+                    graceful = false;
+                }
+                Err(_) => {
+                    warn!("RTMP server exceeded the livestream shutdown budget; aborting");
+                    handle.abort();
+                    let _ = handle.await;
+                    graceful = false;
+                }
+            }
+        }
+
+        if let Some(mut handle) = self.forwarder_handle.take() {
+            let _abort_on_drop = AbortOnDrop::new(&handle);
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match tokio::time::timeout(remaining, &mut handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    warn!(error = %error, "StreamHub forwarder exited with an error during shutdown");
+                    graceful = false;
+                }
+                Err(_) => {
+                    warn!("StreamHub forwarder exceeded the livestream shutdown budget; aborting");
+                    handle.abort();
+                    let _ = handle.await;
+                    graceful = false;
+                }
+            }
+        }
+
+        graceful
+    }
+}
+
+impl Drop for HubCycleTasks {
+    fn drop(&mut self) {
+        self.rtmp_cancel_token.cancel();
+        if let Some(handle) = &self.rtmp_handle {
+            handle.abort();
+        }
+        if let Some(handle) = &self.forwarder_handle {
+            handle.abort();
         }
     }
 }
@@ -320,6 +423,7 @@ pub struct LivestreamHandle {
     hub_handle: JoinHandle<()>,
     hub_cycle_tasks: Arc<tokio::sync::Mutex<HubCycleTasks>>,
     hls_remuxer_handle: JoinHandle<()>,
+    publisher_manager: Arc<PublisherManager>,
     publisher_manager_handle: JoinHandle<()>,
     /// Inner re-registration task spawned inside `publisher_manager_handle`.
     /// Must be tracked separately to prevent task leaks on shutdown.
@@ -341,9 +445,13 @@ impl LivestreamHandle {
         let hub_cycle_tasks = Arc::clone(&self.hub_cycle_tasks);
         let pull_manager = Arc::clone(&self.pull_manager);
         let external_publish_manager = Arc::clone(&self.infrastructure.external_publish_manager);
+        let publisher_manager = Arc::clone(&self.publisher_manager);
         let registry = Arc::clone(&self.infrastructure.registry);
         let node_id = self.infrastructure.local_node_id.clone();
         if crate::util::try_spawn(async move {
+            publisher_manager
+                .shutdown_maintenance(std::time::Duration::from_millis(200))
+                .await;
             hub_cycle_tasks.lock().await.shutdown().await;
             pull_manager.stop_all().await;
             external_publish_manager.stop_all().await;
@@ -422,8 +530,9 @@ impl LivestreamHandle {
     /// `true` if all token-based tasks shut down within the timeout,
     /// `false` if any had to be force-aborted.
     pub async fn shutdown_graceful(&mut self, timeout_secs: u64) -> bool {
-        use tokio::time::{timeout, Duration};
+        use tokio::time::Duration;
         let timeout_duration = Duration::from_secs(timeout_secs);
+        let shutdown_deadline = tokio::time::Instant::now() + timeout_duration;
         let mut all_graceful = true;
 
         // Stop admission and producers before retiring registry routes. HLS
@@ -433,20 +542,31 @@ impl LivestreamHandle {
 
         // 1. Stop lease refresh before stopping any source.
         self.reregister_cancel_token.cancel();
-        if timeout(timeout_duration, &mut self.reregister_task_handle)
-            .await
-            .is_ok()
+        if join_task_with_deadline(
+            "re-registration task",
+            &mut self.reregister_task_handle,
+            shutdown_deadline,
+        )
+        .await
         {
             info!("Re-registration task stopped gracefully");
         } else {
-            warn!("Re-registration task shutdown timed out, aborting");
-            self.reregister_task_handle.abort();
             all_graceful = false;
         }
 
         // 2. Stop RTMP sessions so direct publishers emit UnPublish while the
         // StreamHub and HLS remuxer are still alive.
-        self.hub_cycle_tasks.lock().await.shutdown().await;
+        if !self
+            .hub_cycle_tasks
+            .lock()
+            .await
+            .shutdown_graceful(
+                shutdown_deadline.saturating_duration_since(tokio::time::Instant::now()),
+            )
+            .await
+        {
+            all_graceful = false;
+        }
 
         // 3. Stop all managed stream pools to prevent zombie streams.
         info!("Stopping all managed pull streams...");
@@ -460,37 +580,46 @@ impl LivestreamHandle {
             .await;
         info!("All managed external publish streams stopped");
 
-        // 4. Abort publisher manager event loop (no graceful signal)
+        // 4. Stop the maintenance worker before aborting the broadcast loop.
+        self.publisher_manager
+            .shutdown_maintenance(
+                shutdown_deadline.saturating_duration_since(tokio::time::Instant::now()),
+            )
+            .await;
+
+        // 5. Abort publisher manager event loop after maintenance has stopped.
         abort_and_log_join("publisher manager", &mut self.publisher_manager_handle).await;
         info!("Publisher manager stopped");
 
-        // 5. Stop HLS tasks gracefully. The remuxer requests generation-aware
+        // 6. Stop HLS tasks gracefully. The remuxer requests generation-aware
         // UnPublish events and waits for handlers to flush.
         self.hls_shutdown_token.cancel();
-        if timeout(timeout_duration, &mut self.hls_remuxer_handle)
-            .await
-            .is_ok()
+        if join_task_with_deadline(
+            "HLS remuxer",
+            &mut self.hls_remuxer_handle,
+            shutdown_deadline,
+        )
+        .await
         {
             info!("HLS remuxer stopped gracefully");
         } else {
-            warn!("HLS remuxer shutdown timed out, aborting");
-            self.hls_remuxer_handle.abort();
             all_graceful = false;
         }
 
         // Await HLS cleanup task during graceful shutdown.
-        if timeout(timeout_duration, &mut self.hls_cleanup_handle)
-            .await
-            .is_ok()
+        if join_task_with_deadline(
+            "HLS cleanup task",
+            &mut self.hls_cleanup_handle,
+            shutdown_deadline,
+        )
+        .await
         {
             info!("HLS cleanup task stopped gracefully");
         } else {
-            warn!("HLS cleanup task shutdown timed out, aborting");
-            self.hls_cleanup_handle.abort();
             all_graceful = false;
         }
 
-        // 6. Abort the StreamHub event loop after HLS has drained.
+        // 7. Abort the StreamHub event loop after HLS has drained.
         abort_and_log_join("StreamHub", &mut self.hub_handle).await;
         info!("StreamHub stopped");
 
@@ -543,6 +672,9 @@ impl LivestreamHandle {
             warn!("Force shutdown timed out stopping managed external streams");
         }
 
+        self.publisher_manager
+            .shutdown_maintenance(Duration::from_millis(200))
+            .await;
         abort_and_log_join("publisher manager", &mut self.publisher_manager_handle).await;
 
         self.hls_shutdown_token.cancel();
@@ -571,6 +703,7 @@ impl Drop for LivestreamHandle {
         // Cancel all cancellation tokens to signal tasks to exit
         self.reregister_cancel_token.cancel();
         self.hls_shutdown_token.cancel();
+        self.publisher_manager.cancel_maintenance();
 
         // Abort all task handles to ensure they terminate immediately
         // (in case they don't respond to cancellation tokens)
@@ -844,9 +977,16 @@ impl LivestreamServer {
                 // because the hub recreates its internal broadcast::Sender.
                 let mut internal_rx = streams_hub.get_client_event_consumer();
                 let ext_tx = external_broadcast_tx.clone();
+                // The forwarder shares the RTMP cycle token so it can be
+                // joined before the StreamHub itself is aborted.
+                let rtmp_session_token = CancellationToken::new();
+                let forwarder_cancel = rtmp_session_token.clone();
                 let forwarder_handle = tokio::spawn(async move {
                     loop {
-                        match internal_rx.recv().await {
+                        tokio::select! {
+                            biased;
+                            () = forwarder_cancel.cancelled() => break,
+                            event = internal_rx.recv() => match event {
                             Ok(event) => {
                                 // Best-effort forward; if no external receivers, that's fine
                                 if ext_tx.send(event).is_err() {
@@ -863,6 +1003,7 @@ impl LivestreamServer {
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                                 break;
                             }
+                            }
                         }
                     }
                 });
@@ -871,7 +1012,6 @@ impl LivestreamServer {
                 // CancellationToken is single-use: once cancelled it stays cancelled,
                 // so we must create a new one on every restart to keep the RTMP server
                 // functional.
-                let rtmp_session_token = CancellationToken::new();
                 let stream_callbacks = synctv_xiu::rtmp::callbacks::StreamEventCallbacks {
                     on_publisher_start: Some(Arc::new(|| {
                         synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_PUBLISHERS.inc();
@@ -1156,6 +1296,7 @@ impl LivestreamServer {
             hub_handle,
             hub_cycle_tasks,
             hls_remuxer_handle,
+            publisher_manager,
             publisher_manager_handle,
             reregister_task_handle,
             reregister_cancel_token,
@@ -1904,7 +2045,10 @@ mod tests {
         )
         .await?;
 
-        assert!(handle.shutdown_graceful(1).await);
+        assert!(
+            !handle.shutdown_graceful(1).await,
+            "a one-second budget must report the forced RTMP fallback"
+        );
         wait_for_session_eof(&mut session).await?;
         publisher.close();
 
@@ -2022,7 +2166,7 @@ mod tests {
         .await?;
         assert_ne!(replacement_generation, old_generation);
 
-        assert!(handle.shutdown_graceful(1).await);
+        assert!(!handle.shutdown_graceful(1).await);
         wait_for_session_eof(&mut replacement).await?;
         replacement_publisher.close();
         assert!(handle.hls_remuxer_handle.is_finished());
@@ -2112,7 +2256,7 @@ mod tests {
             wait_for_hls_generation(&handle, ROOM_ID, MEDIA_ID, Some(old_generation)).await?;
         assert_ne!(replacement_generation, old_generation);
 
-        assert!(handle.shutdown_graceful(1).await);
+        assert!(!handle.shutdown_graceful(1).await);
         replacement.close();
         tokio::net::TcpListener::bind(local_addr).await?;
         Ok(())

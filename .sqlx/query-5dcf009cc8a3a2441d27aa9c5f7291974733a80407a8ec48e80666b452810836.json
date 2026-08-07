@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE realtime_outbox\n            SET status = $1,\n                locked_by = NULL,\n                locked_at = NULL,\n                next_retry_at = NOW()\n            WHERE status = $2 AND locked_by = $3 AND id = ANY($4::text[])\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "Int2",
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5dcf009cc8a3a2441d27aa9c5f7291974733a80407a8ec48e80666b452810836"
+}

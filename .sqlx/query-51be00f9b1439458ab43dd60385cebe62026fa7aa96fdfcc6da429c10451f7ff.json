@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE realtime_outbox\n            SET status = $2,\n                dispatched_at = NOW(),\n                locked_by = NULL,\n                locked_at = NULL,\n                last_error = NULL\n            WHERE id = $1 AND status = $3 AND locked_by = $4\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int2",
+        "Int2",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "51be00f9b1439458ab43dd60385cebe62026fa7aa96fdfcc6da429c10451f7ff"
+}

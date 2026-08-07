@@ -442,7 +442,7 @@ impl RealtimeOutboxRepository {
         rows.into_iter().map(TryInto::try_into).collect()
     }
 
-    pub async fn mark_sent(&self, id: &str) -> Result<()> {
+    pub async fn mark_sent(&self, id: &str, worker_id: &str) -> Result<()> {
         let result = sqlx::query!(
             r"
             UPDATE realtime_outbox
@@ -451,10 +451,12 @@ impl RealtimeOutboxRepository {
                 locked_by = NULL,
                 locked_at = NULL,
                 last_error = NULL
-            WHERE id = $1
+            WHERE id = $1 AND status = $3 AND locked_by = $4
             ",
             id,
-            RealtimeOutboxStatus::Sent.as_i16()
+            RealtimeOutboxStatus::Sent.as_i16(),
+            RealtimeOutboxStatus::Processing.as_i16(),
+            worker_id,
         )
         .execute(&self.pool)
         .await?;
@@ -462,7 +464,13 @@ impl RealtimeOutboxRepository {
         Ok(())
     }
 
-    pub async fn mark_failed(&self, id: &str, attempts: i32, error: &str) -> Result<()> {
+    pub async fn mark_failed(
+        &self,
+        id: &str,
+        worker_id: &str,
+        attempts: i32,
+        error: &str,
+    ) -> Result<()> {
         let next_attempt = attempts.saturating_add(1);
         let delay_seconds = retry_delay_seconds(next_attempt);
         let status = if next_attempt >= DEFAULT_MAX_ATTEMPTS {
@@ -480,18 +488,43 @@ impl RealtimeOutboxRepository {
                 locked_by = NULL,
                 locked_at = NULL,
                 last_error = $5
-            WHERE id = $1
+            WHERE id = $1 AND status = $6 AND locked_by = $7
             ",
             id,
             status.as_i16(),
             next_attempt,
             delay_seconds,
-            error
+            error,
+            RealtimeOutboxStatus::Processing.as_i16(),
+            worker_id,
         )
         .execute(&self.pool)
         .await?;
         ensure_outbox_row_updated(result.rows_affected(), id, "mark_failed")?;
         Ok(())
+    }
+
+    pub async fn release_claims(&self, worker_id: &str, ids: &[String]) -> Result<u64> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let result = sqlx::query!(
+            r"
+            UPDATE realtime_outbox
+            SET status = $1,
+                locked_by = NULL,
+                locked_at = NULL,
+                next_retry_at = NOW()
+            WHERE status = $2 AND locked_by = $3 AND id = ANY($4::text[])
+            ",
+            RealtimeOutboxStatus::Pending.as_i16(),
+            RealtimeOutboxStatus::Processing.as_i16(),
+            worker_id,
+            ids,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     pub async fn requeue_stale_processing(&self, stale_after_seconds: i64) -> Result<u64> {

@@ -55,6 +55,18 @@ impl AbortOnDropJoinHandle {
         }
     }
 
+    fn abort(&self) {
+        if let Some(handle) = &self.handle {
+            handle.abort();
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.handle
+            .as_ref()
+            .is_none_or(tokio::task::JoinHandle::is_finished)
+    }
+
     fn disarm(&mut self) {
         let _ = self.handle.take();
     }
@@ -125,6 +137,44 @@ impl ShutdownCoordinator {
         self.tokens.push((name, token));
     }
 
+    /// Cancel selected producers before shutting down the services they use.
+    /// Tokens remain registered so the final coordinator pass stays idempotent.
+    pub fn cancel_tokens(&self, names: &[&str]) {
+        for (name, token) in &self.tokens {
+            if names.contains(name) {
+                info!("Cancelling '{name}' before dependent service shutdown");
+                token.cancel();
+            }
+        }
+    }
+
+    /// Stop selected producers before a dependent service is shut down.
+    /// Matching tasks are removed from the regular task drain and consumed by
+    /// this call, so they are joined exactly once.
+    pub async fn stop_tasks_by_name(
+        &mut self,
+        names: &[&str],
+        deadline: tokio::time::Instant,
+        force: bool,
+    ) {
+        let mut selected = Vec::new();
+        let mut remaining = Vec::with_capacity(self.tasks.len());
+        for task in self.tasks.drain(..) {
+            if names.contains(&task.0) {
+                selected.push(task);
+            } else {
+                remaining.push(task);
+            }
+        }
+        self.tasks = remaining;
+
+        if force {
+            Self::abort_background_tasks(selected, deadline).await;
+        } else {
+            Self::drain_background_tasks(selected, 0, deadline).await;
+        }
+    }
+
     /// Register a background task handle to be awaited during shutdown.
     pub fn register_task(&mut self, name: &'static str, handle: JoinHandle<()>) {
         self.tasks.push((name, handle));
@@ -189,7 +239,7 @@ impl ShutdownCoordinator {
                 Self::drain_background_tasks(self.tasks, self.hooks.len(), deadline).await;
             }
             CoordinatorShutdownMode::Force => {
-                Self::abort_background_tasks(self.tasks).await;
+                Self::abort_background_tasks(self.tasks, deadline).await;
             }
         }
 
@@ -236,10 +286,11 @@ impl ShutdownCoordinator {
             "Waiting for {} background task(s) to finish...",
             tasks.len()
         );
-        for (i, (name, mut handle)) in tasks.into_iter().enumerate() {
+        for (i, (name, handle)) in tasks.into_iter().enumerate() {
+            let mut handle = AbortOnDropJoinHandle::new(handle);
             let remaining = remaining_items - i;
             let per_item = Self::budget_per_item(deadline, remaining);
-            match tokio::time::timeout(per_item, &mut handle).await {
+            match tokio::time::timeout(per_item, handle.wait()).await {
                 Ok(Ok(())) => {
                     info!("Background task '{name}' finished");
                 }
@@ -252,13 +303,34 @@ impl ShutdownCoordinator {
                         per_item.as_secs()
                     );
                     handle.abort();
-                    match handle.await {
-                        Ok(()) => info!("Background task '{name}' aborted cleanly"),
-                        Err(e) if e.is_cancelled() => {
+                    let join_budget = Self::remaining_budget(deadline);
+                    if join_budget.is_zero() {
+                        tokio::task::yield_now().await;
+                        if !handle.is_finished() {
+                            warn!(
+                                "Background task '{name}' could not be joined before the shutdown deadline"
+                            );
+                            continue;
+                        }
+                        match handle.wait().await {
+                            Ok(()) => info!("Background task '{name}' aborted cleanly"),
+                            Err(e) if e.is_cancelled() => info!("Background task '{name}' aborted"),
+                            Err(e) => warn!("Background task '{name}' failed after abort: {e}"),
+                        }
+                        continue;
+                    }
+                    match tokio::time::timeout(join_budget, handle.wait()).await {
+                        Ok(Ok(())) => info!("Background task '{name}' aborted cleanly"),
+                        Ok(Err(e)) if e.is_cancelled() => {
                             info!("Background task '{name}' aborted");
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             warn!("Background task '{name}' failed after abort: {e}");
+                        }
+                        Err(_) => {
+                            warn!(
+                                "Background task '{name}' did not join after abort before the shutdown deadline"
+                            );
                         }
                     }
                 }
@@ -266,7 +338,10 @@ impl ShutdownCoordinator {
         }
     }
 
-    async fn abort_background_tasks(tasks: Vec<(&'static str, JoinHandle<()>)>) {
+    async fn abort_background_tasks(
+        tasks: Vec<(&'static str, JoinHandle<()>)>,
+        deadline: tokio::time::Instant,
+    ) {
         if tasks.is_empty() {
             return;
         }
@@ -280,18 +355,28 @@ impl ShutdownCoordinator {
             handle.abort();
         }
 
-        tokio::task::yield_now().await;
-
         for (name, handle) in tasks {
-            if !handle.is_finished() {
-                warn!("Force shutdown: background task '{name}' did not stop immediately");
+            let mut handle = AbortOnDropJoinHandle::new(handle);
+            let remaining = Self::remaining_budget(deadline);
+            if remaining.is_zero() {
+                tokio::task::yield_now().await;
+                if !handle.is_finished() {
+                    warn!(
+                        "Force shutdown: background task '{name}' could not be joined before deadline"
+                    );
+                    continue;
+                }
+                warn!("Force shutdown: background task '{name}' finished after abort");
+                let _ = handle.wait().await;
                 continue;
             }
-
-            match handle.await {
-                Ok(()) => info!("Background task '{name}' aborted cleanly"),
-                Err(e) if e.is_cancelled() => info!("Background task '{name}' aborted"),
-                Err(e) => warn!("Background task '{name}' failed after forced abort: {e}"),
+            match tokio::time::timeout(remaining, handle.wait()).await {
+                Ok(Ok(())) => info!("Background task '{name}' aborted cleanly"),
+                Ok(Err(e)) if e.is_cancelled() => info!("Background task '{name}' aborted"),
+                Ok(Err(e)) => warn!("Background task '{name}' failed after forced abort: {e}"),
+                Err(_) => {
+                    warn!("Force shutdown: background task '{name}' did not join before deadline");
+                }
             }
         }
     }
@@ -305,6 +390,10 @@ impl ShutdownCoordinator {
     /// `MIN_PER_TASK_TIMEOUT` for every pending item, the returned timeout is at
     /// least that preferred minimum. Otherwise the equal-share budget is used so
     /// the coordinator never exceeds the total shutdown budget.
+    fn remaining_budget(deadline: tokio::time::Instant) -> Duration {
+        deadline.saturating_duration_since(tokio::time::Instant::now())
+    }
+
     fn budget_per_item(deadline: tokio::time::Instant, remaining_items: usize) -> Duration {
         let now = tokio::time::Instant::now();
         if now >= deadline || remaining_items == 0 {
@@ -357,9 +446,16 @@ impl ShutdownHook for AuditFlushHook {
                 let flush_fut = flush_handle.shutdown();
                 tokio::pin!(flush_fut);
                 loop {
-                    if tokio::time::timeout(progress_interval, &mut flush_fut).await == Ok(()) {
-                        info!("Audit service buffer flushed successfully");
-                        return;
+                    match tokio::time::timeout(progress_interval, &mut flush_fut).await {
+                        Ok(true) => {
+                            info!("Audit service buffer flushed successfully");
+                            return;
+                        }
+                        Ok(false) => {
+                            warn!("Audit service flush completed with unpersisted events");
+                            return;
+                        }
+                        Err(_) => {}
                     }
                     elapsed += progress_interval;
                     if elapsed >= flush_timeout {
@@ -395,8 +491,10 @@ impl ShutdownHook for CacheInvalidationStopHook {
             self.service.stop().await;
             let mut guard = self.listener_task.lock().await;
             if let Some(task) = guard.take() {
+                let mut task = AbortOnDropJoinHandle::new(task);
                 task.abort();
-                log_hook_task_join_result("cache_invalidation_stop", task.await);
+                log_hook_task_join_result("cache_invalidation_stop", task.wait().await);
+                task.disarm();
             }
             info!("Cache invalidation service stopped");
         })
@@ -625,6 +723,35 @@ mod tests {
         assert!(
             per < Duration::from_secs(1),
             "per-item budget should shrink with constrained total budget, got {per:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_tasks_by_name_drains_selected_producers_before_services() {
+        let mut coordinator = ShutdownCoordinator::new(Duration::from_secs(1));
+        let cancel = coordinator.register_token("producer");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_in_task = Arc::clone(&stopped);
+        coordinator.register_task(
+            "producer",
+            tokio::spawn(async move {
+                cancel.cancelled().await;
+                stopped_in_task.store(true, Ordering::Release);
+            }),
+        );
+
+        coordinator.cancel_tokens(&["producer"]);
+        coordinator
+            .stop_tasks_by_name(
+                &["producer"],
+                tokio::time::Instant::now() + Duration::from_secs(1),
+                false,
+            )
+            .await;
+
+        assert!(
+            stopped.load(Ordering::Acquire),
+            "selected producer should be joined before dependent services stop"
         );
     }
 

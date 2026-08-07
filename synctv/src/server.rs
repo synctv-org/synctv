@@ -872,21 +872,27 @@ async fn load_metrics_tls_server_config(
 }
 
 async fn await_task_shutdown(name: &'static str, mut handle: JoinHandle<()>, timeout: Duration) {
+    let _abort_on_drop = AbortOnDrop(handle.abort_handle());
+    let deadline = tokio::time::Instant::now() + timeout;
     match tokio::time::timeout(timeout, &mut handle).await {
         Ok(Ok(())) => info!("{name} stopped"),
+        Ok(Err(e)) if e.is_cancelled() => warn!("{name} was cancelled during shutdown"),
         Ok(Err(e)) => warn!("{name} panicked during shutdown: {e}"),
         Err(_) => {
             warn!(
                 "{name} did not stop within {}s, aborting task",
                 timeout.as_secs()
             );
-            handle.abort();
-            match handle.await {
-                Ok(()) => info!("{name} aborted cleanly"),
-                Err(e) if e.is_cancelled() => info!("{name} aborted"),
-                Err(e) => warn!("{name} failed after abort: {e}"),
-            }
+            force_abort_background_task_with_deadline(name, handle, deadline).await;
         }
+    }
+}
+
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -983,8 +989,10 @@ async fn await_runtime_server_shutdown(
     handle: JoinHandle<anyhow::Result<()>>,
     timeout: Duration,
 ) {
+    let _abort_on_drop = AbortOnDrop(handle.abort_handle());
+    let deadline = tokio::time::Instant::now() + timeout;
     if timeout == Duration::ZERO {
-        force_abort_runtime_server(name, handle).await;
+        force_abort_runtime_server_with_deadline(name, handle, deadline).await;
         return;
     }
 
@@ -1001,23 +1009,35 @@ async fn await_runtime_server_shutdown(
             "{name} did not stop within {}s, aborting task",
             timeout.as_secs()
         );
-        handle.abort();
+        force_abort_runtime_server_with_deadline(name, handle, deadline).await;
+    }
+}
+
+async fn force_abort_runtime_server_with_deadline(
+    name: &'static str,
+    handle: JoinHandle<anyhow::Result<()>>,
+    deadline: tokio::time::Instant,
+) {
+    let _abort_on_drop = AbortOnDrop(handle.abort_handle());
+    warn!("Force-aborting {name} after its shutdown budget expired");
+    let mut handle = handle;
+    handle.abort();
+    let budget = remaining_budget(deadline);
+    if budget.is_zero() {
+        tokio::task::yield_now().await;
+        if !handle.is_finished() {
+            warn!("{name} could not be joined before the shutdown deadline");
+            return;
+        }
         match handle.await {
             Ok(Ok(())) => info!("{name} aborted cleanly"),
             Ok(Err(err)) => warn!("{name} returned error after abort: {err}"),
             Err(err) if err.is_cancelled() => info!("{name} aborted"),
             Err(err) => warn!("{name} failed after abort: {err}"),
         }
+        return;
     }
-}
-
-async fn force_abort_runtime_server(name: &'static str, handle: JoinHandle<anyhow::Result<()>>) {
-    warn!("{name} exceeded the remaining shutdown budget, aborting task");
-    let mut handle = handle;
-    handle.abort();
-    if let Ok(join_result) =
-        tokio::time::timeout(FORCE_SHUTDOWN_COORDINATOR_BUDGET, &mut handle).await
-    {
+    if let Ok(join_result) = tokio::time::timeout(budget, &mut handle).await {
         match join_result {
             Ok(Ok(())) => info!("{name} aborted cleanly"),
             Ok(Err(err)) => warn!("{name} returned error after forced abort: {err}"),
@@ -1029,13 +1049,30 @@ async fn force_abort_runtime_server(name: &'static str, handle: JoinHandle<anyho
     }
 }
 
-async fn force_abort_background_task(name: &'static str, handle: JoinHandle<()>) {
-    warn!("{name} exceeded the remaining shutdown budget, aborting task");
+async fn force_abort_background_task_with_deadline(
+    name: &'static str,
+    handle: JoinHandle<()>,
+    deadline: tokio::time::Instant,
+) {
+    let _abort_on_drop = AbortOnDrop(handle.abort_handle());
+    warn!("Force-aborting {name} after its shutdown budget expired");
     let mut handle = handle;
     handle.abort();
-    if let Ok(join_result) =
-        tokio::time::timeout(FORCE_SHUTDOWN_COORDINATOR_BUDGET, &mut handle).await
-    {
+    let budget = remaining_budget(deadline);
+    if budget.is_zero() {
+        tokio::task::yield_now().await;
+        if !handle.is_finished() {
+            warn!("{name} could not be joined before the shutdown deadline");
+            return;
+        }
+        match handle.await {
+            Ok(()) => info!("{name} aborted cleanly"),
+            Err(err) if err.is_cancelled() => info!("{name} aborted"),
+            Err(err) => warn!("{name} failed after abort: {err}"),
+        }
+        return;
+    }
+    if let Ok(join_result) = tokio::time::timeout(budget, &mut handle).await {
         match join_result {
             Ok(()) => info!("{name} aborted cleanly"),
             Err(err) if err.is_cancelled() => info!("{name} aborted"),
@@ -1055,10 +1092,11 @@ fn coordinator_shutdown_deadline(
     total_drain_budget: Duration,
     force_shutdown: bool,
 ) -> tokio::time::Instant {
+    let global_deadline = shutdown_start + total_drain_budget;
     if force_shutdown {
-        tokio::time::Instant::now() + FORCE_SHUTDOWN_COORDINATOR_BUDGET
+        (tokio::time::Instant::now() + FORCE_SHUTDOWN_COORDINATOR_BUDGET).min(global_deadline)
     } else {
-        shutdown_start + total_drain_budget
+        global_deadline
     }
 }
 
@@ -1076,18 +1114,11 @@ where
 {
     if let Some(mut state) = livestream_state.take() {
         info!("Stopping livestream infrastructure...");
-        let started = tokio::time::Instant::now();
-        let cleanup_result =
-            tokio::time::timeout(budget, state.cleanup_local_publishers_for_server(budget)).await;
-        if cleanup_result.is_err() {
-            warn!("Local publisher cleanup consumed the remaining livestream shutdown budget");
-        }
-
-        let remaining_budget = budget.saturating_sub(started.elapsed());
-        let timeout_secs = livestream_shutdown_timeout_secs(remaining_budget);
-        let graceful = if remaining_budget.is_zero() {
+        let deadline = tokio::time::Instant::now() + budget;
+        let timeout_secs = livestream_shutdown_timeout_secs(remaining_budget(deadline));
+        let graceful = if remaining_budget(deadline).is_zero() {
             warn!(
-                "No livestream shutdown budget remains after publisher cleanup; force-aborting livestream infrastructure"
+                "No livestream shutdown budget remains; force-aborting livestream infrastructure"
             );
             let _ = tokio::time::timeout(
                 FORCE_SHUTDOWN_COORDINATOR_BUDGET,
@@ -1095,8 +1126,11 @@ where
             )
             .await;
             false
-        } else if let Ok(graceful) =
-            tokio::time::timeout(remaining_budget, state.shutdown_for_server(timeout_secs)).await
+        } else if let Ok(graceful) = tokio::time::timeout(
+            remaining_budget(deadline),
+            state.shutdown_for_server(timeout_secs),
+        )
+        .await
         {
             graceful
         } else {
@@ -1110,11 +1144,32 @@ where
             .await;
             false
         };
+
+        if !graceful {
+            let cleanup_budget = remaining_budget(deadline);
+            if cleanup_budget.is_zero() {
+                warn!("No livestream budget remains for registry fallback cleanup");
+            } else if tokio::time::timeout(
+                cleanup_budget,
+                state.cleanup_local_publishers_for_server(cleanup_budget),
+            )
+            .await
+            .is_err()
+            {
+                warn!("Livestream registry fallback cleanup exceeded its remaining budget");
+            }
+        }
         if !graceful {
             warn!("Livestream infrastructure required force-abort or timed out during shutdown");
         }
         info!("Livestream infrastructure shut down");
     }
+}
+
+struct RuntimeShutdownOptions {
+    deadline: tokio::time::Instant,
+    defer_management_wait: bool,
+    force_shutdown: bool,
 }
 
 async fn shutdown_runtime_phase(
@@ -1123,63 +1178,112 @@ async fn shutdown_runtime_phase(
     management_handle: Option<JoinHandle<anyhow::Result<()>>>,
     cleanup_handle: JoinHandle<()>,
     playback_lifecycle_event_source_handle: Option<JoinHandle<()>>,
-    total_budget: Duration,
-    defer_management_wait: bool,
+    options: RuntimeShutdownOptions,
 ) -> Option<JoinHandle<anyhow::Result<()>>> {
-    let deadline = tokio::time::Instant::now() + total_budget;
+    let RuntimeShutdownOptions {
+        deadline,
+        defer_management_wait,
+        force_shutdown,
+    } = options;
     let mut management_handle = management_handle;
 
     info!(
         "Waiting up to {}s for API server, management server, and cleanup task to stop...",
-        total_budget.as_secs()
+        remaining_budget(deadline).as_secs()
     );
 
     if let Some(api_handle) = api_handle {
-        let budget = remaining_budget(deadline);
-        if budget.is_zero() {
-            force_abort_runtime_server("API server", api_handle).await;
+        if force_shutdown {
+            force_abort_runtime_server_with_deadline("API server", api_handle, deadline).await;
         } else {
-            await_runtime_server_shutdown("API server", api_handle, budget).await;
+            let budget = remaining_budget(deadline);
+            if budget.is_zero() {
+                force_abort_runtime_server_with_deadline("API server", api_handle, deadline).await;
+            } else {
+                await_runtime_server_shutdown("API server", api_handle, budget).await;
+            }
         }
     }
 
     if let Some(metrics_handle) = metrics_handle {
-        let budget = remaining_budget(deadline);
-        if budget.is_zero() {
-            force_abort_runtime_server("Metrics server", metrics_handle).await;
+        if force_shutdown {
+            force_abort_runtime_server_with_deadline("Metrics server", metrics_handle, deadline)
+                .await;
         } else {
-            await_runtime_server_shutdown("Metrics server", metrics_handle, budget).await;
+            let budget = remaining_budget(deadline);
+            if budget.is_zero() {
+                force_abort_runtime_server_with_deadline(
+                    "Metrics server",
+                    metrics_handle,
+                    deadline,
+                )
+                .await;
+            } else {
+                await_runtime_server_shutdown("Metrics server", metrics_handle, budget).await;
+            }
         }
     }
 
-    if defer_management_wait {
+    if defer_management_wait && !force_shutdown {
         info!("Deferring management server shutdown wait until stop-stream consumers disconnect");
     } else if let Some(management_handle) = management_handle.take() {
-        let budget = remaining_budget(deadline);
-        if budget.is_zero() {
-            force_abort_runtime_server("Management server", management_handle).await;
+        if force_shutdown {
+            force_abort_runtime_server_with_deadline(
+                "Management server",
+                management_handle,
+                deadline,
+            )
+            .await;
         } else {
-            await_runtime_server_shutdown("Management server", management_handle, budget).await;
+            let budget = remaining_budget(deadline);
+            if budget.is_zero() {
+                force_abort_runtime_server_with_deadline(
+                    "Management server",
+                    management_handle,
+                    deadline,
+                )
+                .await;
+            } else {
+                await_runtime_server_shutdown("Management server", management_handle, budget).await;
+            }
         }
     }
 
-    await_task_shutdown(
-        "connection cleanup task",
-        cleanup_handle,
-        remaining_budget(deadline),
-    )
-    .await;
-
-    if let Some(playback_lifecycle_event_source_handle) = playback_lifecycle_event_source_handle {
+    if force_shutdown {
+        force_abort_background_task_with_deadline(
+            "connection cleanup task",
+            cleanup_handle,
+            deadline,
+        )
+        .await;
+    } else {
         await_task_shutdown(
-            "observed playback lifecycle event source",
-            playback_lifecycle_event_source_handle,
+            "connection cleanup task",
+            cleanup_handle,
             remaining_budget(deadline),
         )
         .await;
     }
 
-    if defer_management_wait {
+    if let Some(playback_lifecycle_event_source_handle) = playback_lifecycle_event_source_handle {
+        if force_shutdown {
+            force_abort_background_task_with_deadline(
+                "observed playback lifecycle event source",
+                playback_lifecycle_event_source_handle,
+                deadline,
+            )
+            .await;
+        } else {
+            await_task_shutdown(
+                "observed playback lifecycle event source",
+                playback_lifecycle_event_source_handle,
+                remaining_budget(deadline),
+            )
+            .await;
+        }
+    }
+
+    if defer_management_wait && !force_shutdown {
         management_handle
     } else {
         None
@@ -1209,29 +1313,17 @@ async fn cleanup_partial_startup(
 
     if let Some(handle) = api_handle {
         let timeout = remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT);
-        if timeout.is_zero() {
-            force_abort_runtime_server("API server", handle).await;
-        } else {
-            await_runtime_server_shutdown("API server", handle, timeout).await;
-        }
+        await_runtime_server_shutdown("API server", handle, timeout).await;
     }
 
     if let Some(handle) = metrics_handle {
         let timeout = remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT);
-        if timeout.is_zero() {
-            force_abort_runtime_server("Metrics server", handle).await;
-        } else {
-            await_runtime_server_shutdown("Metrics server", handle, timeout).await;
-        }
+        await_runtime_server_shutdown("Metrics server", handle, timeout).await;
     }
 
     if let Some(handle) = management_handle {
         let timeout = remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT);
-        if timeout.is_zero() {
-            force_abort_runtime_server("Management gRPC server", handle).await;
-        } else {
-            await_runtime_server_shutdown("Management gRPC server", handle, timeout).await;
-        }
+        await_runtime_server_shutdown("Management gRPC server", handle, timeout).await;
     }
 }
 
@@ -1304,38 +1396,22 @@ async fn shutdown_after_cluster_activation_failure(
 
     if let Some(handle) = api_handle {
         let timeout = remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT);
-        if timeout.is_zero() {
-            force_abort_runtime_server("API server", handle).await;
-        } else {
-            await_runtime_server_shutdown("API server", handle, timeout).await;
-        }
+        await_runtime_server_shutdown("API server", handle, timeout).await;
     }
 
     if let Some(handle) = metrics_handle {
         let timeout = remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT);
-        if timeout.is_zero() {
-            force_abort_runtime_server("Metrics server", handle).await;
-        } else {
-            await_runtime_server_shutdown("Metrics server", handle, timeout).await;
-        }
+        await_runtime_server_shutdown("Metrics server", handle, timeout).await;
     }
 
     if let Some(handle) = management_handle {
         let timeout = remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT);
-        if timeout.is_zero() {
-            force_abort_runtime_server("Management gRPC server", handle).await;
-        } else {
-            await_runtime_server_shutdown("Management gRPC server", handle, timeout).await;
-        }
+        await_runtime_server_shutdown("Management gRPC server", handle, timeout).await;
     }
 
     if let Some(handle) = playback_lifecycle_event_source_handle {
         let timeout = remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT);
-        if timeout.is_zero() {
-            force_abort_background_task("observed playback lifecycle event source", handle).await;
-        } else {
-            await_task_shutdown("observed playback lifecycle event source", handle, timeout).await;
-        }
+        await_task_shutdown("observed playback lifecycle event source", handle, timeout).await;
     }
 
     server.shutdown_startup_failure_components(deadline).await;
@@ -1556,9 +1632,7 @@ impl SyncTvServer {
             coordinator,
         )
         .await;
-        info!("Closing database connection pools after startup failure...");
-        self.database_pools.close().await;
-        info!("Database pools closed after startup failure");
+        self.close_database_pools_with_deadline(deadline).await;
         err
     }
 
@@ -1570,6 +1644,32 @@ impl SyncTvServer {
         if let Some(handle) = self.health_handle.take() {
             await_runtime_server_shutdown("Health server", handle, remaining_budget(deadline))
                 .await;
+        }
+    }
+
+    async fn abort_auxiliary_handles(&mut self, deadline: tokio::time::Instant) {
+        if let Some(handle) = self.cluster_handle.take() {
+            force_abort_runtime_server_with_deadline("Cluster server", handle, deadline).await;
+        }
+        if let Some(handle) = self.health_handle.take() {
+            force_abort_runtime_server_with_deadline("Health server", handle, deadline).await;
+        }
+    }
+
+    async fn close_database_pools_with_deadline(&self, deadline: tokio::time::Instant) {
+        let budget = remaining_budget(deadline);
+        if budget.is_zero() {
+            warn!("Database pool shutdown skipped because the shutdown deadline has expired");
+            return;
+        }
+        info!("Closing database connection pools...");
+        if tokio::time::timeout(budget, self.database_pools.close())
+            .await
+            .is_err()
+        {
+            warn!("Database pool shutdown exceeded the remaining shutdown budget");
+        } else {
+            info!("Database pools closed");
         }
     }
 
@@ -1890,9 +1990,8 @@ impl SyncTvServer {
                     },
                 )
                 .await;
-                info!("Closing database connection pools after startup failure...");
-                self.database_pools.close().await;
-                info!("Database pools closed after startup failure");
+                self.close_database_pools_with_deadline(startup_cleanup_deadline)
+                    .await;
                 return Err(err);
             }
         }
@@ -2052,20 +2151,33 @@ impl SyncTvServer {
 
         // Phase 1: Wait for unified API server to finish (use 60% of budget).
         let http_drain_budget = total_drain_budget * 60 / 100;
+        let runtime_shutdown_deadline = if force_shutdown {
+            coordinator_shutdown_deadline(shutdown_start, total_drain_budget, true)
+        } else {
+            shutdown_start + http_drain_budget
+        };
         info!(
             "Waiting up to {}s for API server and management server to shut down...",
             http_drain_budget.as_secs()
         );
-        self.shutdown_auxiliary_handles(tokio::time::Instant::now() + http_drain_budget)
-            .await;
+        if force_shutdown {
+            self.abort_auxiliary_handles(runtime_shutdown_deadline)
+                .await;
+        } else {
+            self.shutdown_auxiliary_handles(runtime_shutdown_deadline)
+                .await;
+        }
         let deferred_management_handle = shutdown_runtime_phase(
             api_handle,
             metrics_handle,
             management_handle,
             cleanup_handle,
             self.playback_lifecycle_event_source_handle.take(),
-            http_drain_budget,
-            defer_management_shutdown_wait,
+            RuntimeShutdownOptions {
+                deadline: runtime_shutdown_deadline,
+                defer_management_wait: defer_management_shutdown_wait,
+                force_shutdown,
+            },
         )
         .await;
         if deferred_management_handle.is_some() {
@@ -2140,8 +2252,43 @@ impl SyncTvServer {
         )
         .await;
 
+        let force_shutdown = matches!(*lifecycle_shutdown_rx.borrow(), Some(ShutdownMode::Force));
+        let final_shutdown_deadline =
+            coordinator_shutdown_deadline(shutdown_start, total_drain_budget, force_shutdown);
+
+        // Stop producers that publish into realtime while the manager and
+        // connection registry are still available for final cleanup.
+        coordinator.cancel_tokens(&[
+            "realtime_outbox_dispatcher",
+            "email_outbox_dispatcher",
+            "room_notification_bridge",
+            "playback_background_tasks",
+        ]);
+        coordinator
+            .stop_tasks_by_name(
+                &[
+                    "realtime_outbox_dispatcher",
+                    "email_outbox_dispatcher",
+                    "room_notification_bridge",
+                    "playback_auto_advance",
+                    "playback_duration_probe",
+                ],
+                final_shutdown_deadline,
+                force_shutdown,
+            )
+            .await;
+
         info!("Shutting down realtime event service (post-drain, closing admin event channel)...");
-        self.services.realtime_event_service.shutdown().await;
+        let realtime_budget = remaining_budget(final_shutdown_deadline);
+        if tokio::time::timeout(
+            realtime_budget,
+            self.services.realtime_event_service.shutdown(),
+        )
+        .await
+        .is_err()
+        {
+            warn!("Realtime event service exceeded the shutdown deadline");
+        }
         info!("Realtime event service shut down (admin event channel closed)");
 
         // Wait for admin event listener
@@ -2159,37 +2306,36 @@ impl SyncTvServer {
         // Shut down remaining infrastructure components. Livestream was already
         // stopped above; this remains a no-op for livestream because the state
         // is consumed by `shutdown_livestream_state`.
-        self.shutdown_components(
-            if matches!(*lifecycle_shutdown_rx.borrow(), Some(ShutdownMode::Force)) {
-                Duration::ZERO
-            } else {
-                total_drain_budget.saturating_sub(shutdown_start.elapsed())
-            },
-        )
-        .await;
+        self.shutdown_components(final_shutdown_deadline).await;
 
         // Centralized shutdown: cancel tokens -> drain/abort tasks -> run hooks.
         // Force shutdown intentionally grants a short bounded cleanup window
         // so local hooks can close listeners and flush critical state after
         // skipping the normal connection/component drains.
         self.lifecycle_controller.publish_finalizing();
-        let force_shutdown = matches!(*lifecycle_shutdown_rx.borrow(), Some(ShutdownMode::Force));
-        let coordinator_deadline =
-            coordinator_shutdown_deadline(shutdown_start, total_drain_budget, force_shutdown);
         if force_shutdown {
             coordinator
-                .shutdown_force_with_deadline(coordinator_deadline)
+                .shutdown_force_with_deadline(final_shutdown_deadline)
                 .await;
         } else {
             coordinator
-                .shutdown_with_deadline(coordinator_deadline)
+                .shutdown_with_deadline(final_shutdown_deadline)
                 .await;
         }
 
-        // Close the database connection pools (after audit flush and settings task)
-        info!("Closing database connection pools...");
-        self.database_pools.close().await;
-        info!("Database pools closed");
+        if let Some(handle) = deferred_management_handle {
+            let timeout = if matches!(*lifecycle_shutdown_rx.borrow(), Some(ShutdownMode::Force)) {
+                Duration::ZERO
+            } else {
+                total_drain_budget.saturating_sub(shutdown_start.elapsed())
+            };
+            await_runtime_server_shutdown("Management server", handle, timeout).await;
+        }
+
+        // Close the database connection pools after every server that may use
+        // them has exited.
+        self.close_database_pools_with_deadline(final_shutdown_deadline)
+            .await;
 
         info!("SyncTV server shut down complete");
         if let Some(result) = unexpected_exit {
@@ -2200,14 +2346,6 @@ impl SyncTvServer {
             return result;
         }
         self.lifecycle_controller.publish_completed();
-        if let Some(handle) = deferred_management_handle {
-            let timeout = if matches!(*lifecycle_shutdown_rx.borrow(), Some(ShutdownMode::Force)) {
-                Duration::ZERO
-            } else {
-                total_drain_budget.saturating_sub(shutdown_start.elapsed())
-            };
-            await_runtime_server_shutdown("Management server", handle, timeout).await;
-        }
         Ok(())
     }
 
@@ -2215,12 +2353,19 @@ impl SyncTvServer {
     ///
     /// This is separate from the `ShutdownCoordinator` because these components
     /// have custom shutdown protocols (not just cancellation tokens or join handles).
-    async fn shutdown_components(&mut self, budget_remaining: Duration) {
-        let deadline = tokio::time::Instant::now() + budget_remaining;
-
+    async fn shutdown_components(&mut self, deadline: tokio::time::Instant) {
         // Shut down realtime connection service (stops TTL refresh/background maintenance).
         info!("Shutting down realtime connection service...");
-        self.services.realtime_connection_service.shutdown().await;
+        let connection_budget = remaining_budget(deadline);
+        if tokio::time::timeout(
+            connection_budget,
+            self.services.realtime_connection_service.shutdown(),
+        )
+        .await
+        .is_err()
+        {
+            warn!("Realtime connection service exceeded the shutdown deadline");
+        }
         info!("Realtime connection service shut down");
 
         // Minor fix: Removed redundant `registry.unregister()` call.
@@ -2242,7 +2387,13 @@ impl SyncTvServer {
         // Shut down health monitor
         if let Some(ref health_monitor) = self.services.health_monitor {
             info!("Shutting down health monitor...");
-            health_monitor.shutdown().await;
+            let health_budget = remaining_budget(deadline);
+            if tokio::time::timeout(health_budget, health_monitor.shutdown())
+                .await
+                .is_err()
+            {
+                warn!("Health monitor exceeded the shutdown deadline");
+            }
             info!("Health monitor shut down");
         }
     }
@@ -2263,7 +2414,7 @@ impl SyncTvServer {
             warn!("Realtime event service shutdown exceeded startup rollback budget");
         }
 
-        self.shutdown_components(remaining_budget(deadline)).await;
+        self.shutdown_components(deadline).await;
     }
 
     async fn build_grpc_router(
@@ -3033,8 +3184,9 @@ mod tests {
         livestream_shutdown_timeout_secs, management_apis_from_http_state,
         map_background_task_exit, map_runtime_server_exit, shutdown_after_startup_failure,
         shutdown_livestream_state, shutdown_metrics_connection_tasks, shutdown_runtime_phase,
-        spawn_admin_event_listener, LivestreamShutdown, SharedProviderPlaybackRuntime,
-        StartupFailureShutdownContext, FORCE_SHUTDOWN_COORDINATOR_BUDGET,
+        spawn_admin_event_listener, LivestreamShutdown, RuntimeShutdownOptions,
+        SharedProviderPlaybackRuntime, StartupFailureShutdownContext,
+        FORCE_SHUTDOWN_COORDINATOR_BUDGET,
     };
     use crate::app_config::AppConfig as Config;
     use crate::shutdown::ShutdownCoordinator;
@@ -3694,8 +3846,11 @@ mod tests {
             None,
             cleanup_handle,
             None,
-            Duration::from_millis(60),
-            false,
+            RuntimeShutdownOptions {
+                deadline: tokio::time::Instant::now() + Duration::from_millis(60),
+                defer_management_wait: false,
+                force_shutdown: false,
+            },
         )
         .await;
 
@@ -3728,8 +3883,11 @@ mod tests {
             Some(management_handle),
             cleanup_handle,
             None,
-            Duration::from_millis(60),
-            true,
+            RuntimeShutdownOptions {
+                deadline: tokio::time::Instant::now() + Duration::from_millis(60),
+                defer_management_wait: true,
+                force_shutdown: false,
+            },
         )
         .await;
 
@@ -3787,6 +3945,40 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_shutdown_livestream_state_force_path_runs_with_zero_budget() {
+        struct ForceRecordingLivestreamState {
+            graceful_called: Arc<AtomicBool>,
+            force_called: Arc<AtomicBool>,
+        }
+
+        #[async_trait]
+        impl LivestreamShutdown for ForceRecordingLivestreamState {
+            async fn cleanup_local_publishers_for_server(&mut self, _timeout: Duration) {}
+
+            async fn force_shutdown_for_server(&mut self) {
+                self.force_called.store(true, Ordering::SeqCst);
+            }
+
+            async fn shutdown_for_server(&mut self, _timeout_secs: u64) -> bool {
+                self.graceful_called.store(true, Ordering::SeqCst);
+                true
+            }
+        }
+
+        let graceful_called = Arc::new(AtomicBool::new(false));
+        let force_called = Arc::new(AtomicBool::new(false));
+        let mut livestream_state = Some(ForceRecordingLivestreamState {
+            graceful_called: Arc::clone(&graceful_called),
+            force_called: Arc::clone(&force_called),
+        });
+
+        shutdown_livestream_state(&mut livestream_state, Duration::ZERO).await;
+
+        assert!(!graceful_called.load(Ordering::SeqCst));
+        assert!(force_called.load(Ordering::SeqCst));
+    }
+
     #[test]
     fn test_livestream_shutdown_timeout_secs_rounds_subsecond_budget_up() {
         assert_eq!(
@@ -3832,21 +4024,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_shutdown_livestream_state_bounds_cleanup_by_budget() {
+    async fn test_shutdown_livestream_state_drains_before_registry_fallback_cleanup() {
         struct SlowCleanupLivestreamState {
             shutdown_called: Arc<AtomicBool>,
             force_shutdown_called: Arc<AtomicBool>,
-            cleanup_timeout_seen: Arc<std::sync::Mutex<Option<Duration>>>,
+            cleanup_called: Arc<AtomicBool>,
         }
 
         #[async_trait]
         impl LivestreamShutdown for SlowCleanupLivestreamState {
             async fn cleanup_local_publishers_for_server(&mut self, timeout: Duration) {
-                *self
-                    .cleanup_timeout_seen
-                    .lock()
-                    .expect("cleanup timeout mutex poisoned") = Some(timeout);
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                self.cleanup_called.store(true, Ordering::SeqCst);
+                assert!(timeout <= Duration::from_millis(20));
             }
 
             async fn force_shutdown_for_server(&mut self) {
@@ -3855,17 +4044,18 @@ mod tests {
 
             async fn shutdown_for_server(&mut self, _timeout_secs: u64) -> bool {
                 self.shutdown_called.store(true, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 true
             }
         }
 
         let shutdown_called = Arc::new(AtomicBool::new(false));
         let force_shutdown_called = Arc::new(AtomicBool::new(false));
-        let cleanup_timeout_seen = Arc::new(std::sync::Mutex::new(None));
+        let cleanup_called = Arc::new(AtomicBool::new(false));
         let mut livestream_state = Some(SlowCleanupLivestreamState {
             shutdown_called: Arc::clone(&shutdown_called),
             force_shutdown_called: Arc::clone(&force_shutdown_called),
-            cleanup_timeout_seen: Arc::clone(&cleanup_timeout_seen),
+            cleanup_called: Arc::clone(&cleanup_called),
         });
 
         let result = tokio::time::timeout(
@@ -3878,20 +4068,17 @@ mod tests {
             result.is_ok(),
             "publisher cleanup must be bounded by the livestream shutdown budget"
         );
-        assert_eq!(
-            *cleanup_timeout_seen
-                .lock()
-                .expect("cleanup timeout mutex poisoned"),
-            Some(Duration::from_millis(20)),
-            "cleanup should receive the caller's remaining budget"
-        );
         assert!(
-            !shutdown_called.load(Ordering::SeqCst),
-            "graceful livestream shutdown must not be polled with a zero remaining budget"
+            shutdown_called.load(Ordering::SeqCst),
+            "graceful livestream shutdown should run before registry fallback cleanup"
         );
         assert!(
             force_shutdown_called.load(Ordering::SeqCst),
-            "livestream handle must still be force-aborted after cleanup consumes the budget"
+            "force cleanup should run after the graceful shutdown budget expires"
+        );
+        assert!(
+            !cleanup_called.load(Ordering::SeqCst),
+            "fallback registry cleanup should be skipped when the shutdown budget is exhausted"
         );
     }
 

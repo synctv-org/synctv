@@ -61,11 +61,16 @@ async fn run_dispatcher(
     let mut stale_requeue = StaleRequeueSchedule::new(STALE_REQUEUE_INTERVAL);
 
     loop {
+        if cancel.is_cancelled() {
+            info!(worker_id = %worker_id, "Realtime outbox dispatcher stopping before claiming new events");
+            return;
+        }
         let dispatched = dispatch_once(
             outbox.clone(),
             realtime_manager.clone(),
             &worker_id,
             &mut stale_requeue,
+            &cancel,
         )
         .await;
         if dispatched {
@@ -87,8 +92,16 @@ async fn dispatch_once(
     realtime_manager: Arc<RealtimeManager>,
     worker_id: &str,
     stale_requeue: &mut StaleRequeueSchedule,
+    cancel: &CancellationToken,
 ) -> bool {
+    if cancel.is_cancelled() {
+        return false;
+    }
     requeue_stale_processing_if_due(&outbox, stale_requeue).await;
+
+    if cancel.is_cancelled() {
+        return false;
+    }
 
     let events = match outbox.claim_batch(worker_id, CLAIM_BATCH_SIZE).await {
         Ok(events) => events,
@@ -102,8 +115,25 @@ async fn dispatch_once(
         return false;
     }
 
+    let mut unprocessed_ids = Vec::new();
     for event in events {
-        dispatch_event(&outbox, &realtime_manager, event).await;
+        if cancel.is_cancelled() {
+            unprocessed_ids.push(event.id);
+            continue;
+        }
+        if let Err(error) = dispatch_event(&outbox, &realtime_manager, event, worker_id).await {
+            warn!(error = %error, "Realtime outbox event processing failed");
+        }
+    }
+
+    if !unprocessed_ids.is_empty() {
+        if let Err(error) = outbox.release_claims(worker_id, &unprocessed_ids).await {
+            warn!(error = %error, count = unprocessed_ids.len(), "Failed to release unprocessed realtime outbox claims");
+        }
+    }
+
+    if cancel.is_cancelled() {
+        return false;
     }
 
     tokio::time::sleep(BUSY_POLL_INTERVAL).await;
@@ -189,7 +219,8 @@ async fn dispatch_event(
     outbox: &RealtimeOutboxRepository,
     realtime_manager: &RealtimeManager,
     event: RealtimeOutboxEvent,
-) {
+    worker_id: &str,
+) -> Result<(), synctv_core::Error> {
     let outbox_id = event.id;
     let attempts = event.attempts;
     let realtime_event = event.payload;
@@ -221,37 +252,24 @@ async fn dispatch_event(
     {
         Ok(()) => {
             realtime_manager.broadcast_local(realtime_event);
-            if let Err(error) = outbox.mark_sent(&outbox_id).await {
-                error!(
-                    outbox_id = %outbox_id,
-                    event_type = %event_type,
-                    error = %error,
-                    "Realtime outbox event was published but could not be marked sent"
-                );
-            } else {
-                debug!(
-                    outbox_id = %outbox_id,
-                    event_type = %event_type,
-                    "Realtime outbox event published"
-                );
-            }
+            outbox.mark_sent(&outbox_id, worker_id).await?;
+            debug!(
+                outbox_id = %outbox_id,
+                event_type = %event_type,
+                "Realtime outbox event published"
+            );
         }
         Err(error) => {
-            if let Err(mark_error) = outbox.mark_failed(&outbox_id, attempts, &error).await {
-                error!(
-                    outbox_id = %outbox_id,
-                    event_type = %event_type,
-                    error = %mark_error,
-                    "Failed to mark realtime outbox event for retry"
-                );
-            } else {
-                warn!(
-                    outbox_id = %outbox_id,
-                    event_type = %event_type,
-                    error = %error,
-                    "Realtime outbox event publish was not confirmed; scheduled retry"
-                );
-            }
+            outbox
+                .mark_failed(&outbox_id, worker_id, attempts, error.as_str())
+                .await?;
+            warn!(
+                outbox_id = %outbox_id,
+                event_type = %event_type,
+                error = %error,
+                "Realtime outbox event publish was not confirmed; scheduled retry"
+            );
         }
     }
+    Ok(())
 }

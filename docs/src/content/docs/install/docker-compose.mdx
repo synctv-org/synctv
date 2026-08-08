@@ -24,13 +24,13 @@ import {
 
 <ComposeEnvGenerator locale="zh" />
 
-生成器会下载三个文件：
+生成器通过 TAR 压缩包提供三个环境文件：
 
 - `.env.synctv`：SyncTV 数据库连接、认证密钥和 root 初始化参数。
 - `.env.postgres`：PostgreSQL 用户、密码和数据库名。
 - `.env.redis`：Redis AUTH 密码。
 
-随机密钥只在当前页面内存中生成，不写入浏览器存储或服务端。把这些文件放进部署目录并妥善备份。
+“下载 TAR”会生成包含上述三个环境文件的 TAR 压缩包。随机密钥只在当前页面内存中生成，不写入浏览器存储或服务端。
 
 ## 安装
 
@@ -39,15 +39,22 @@ import {
 
     <Code code={`mkdir -p synctv && cd synctv\ncurl -fsSL ${githubRawComposeUrl} -o docker-compose.yml`} lang="bash" />
 
-2. [返回“生成环境文件”](#生成环境文件)，下载三个环境文件并放到当前目录。
+2. [返回“生成环境文件”](#生成环境文件)，下载 `synctv-compose-env.tar` 并放到当前目录。
 
-3. 检查最终 Compose 配置：
+3. 解压环境文件。三个文件名以 `.` 开头，在 Linux 上属于隐藏文件，使用 `ls -a` 查看：
+
+    ```bash
+    tar -xf synctv-compose-env.tar
+    ls -a
+    ```
+
+4. 检查最终 Compose 配置：
 
     ```bash
     docker compose -f docker-compose.yml config --quiet
     ```
 
-4. 拉取镜像并在后台启动服务：
+5. 拉取镜像并在后台启动服务：
 
     ```bash
     docker compose -f docker-compose.yml up -d

@@ -810,7 +810,7 @@ mod tests {
         assert_eq!(decoded.timeout_seconds, 0);
         assert!(!decoded.tls);
         assert!(!decoded.insecure_tls);
-        assert!(decoded.providers.is_empty());
+        assert_eq!(decoded.providers.len(), 0);
         assert_eq!(decoded.jwt_secret, None);
         assert_eq!(decoded.custom_ca, None);
     }
@@ -824,12 +824,12 @@ mod tests {
             serde_json::from_str(json)
                 .expect("path-populated provider update fields should default");
 
-        assert!(decoded.name.is_empty());
+        assert_eq!(decoded.name, "");
         assert_eq!(
             decoded.endpoint.as_deref(),
             Some("https://provider.example.com")
         );
-        assert!(decoded.providers.is_empty());
+        assert_eq!(decoded.providers.len(), 0);
         assert_eq!(decoded.jwt_secret, None);
         assert_eq!(decoded.custom_ca, None);
         assert_eq!(decoded.clear_comment, None);
@@ -855,7 +855,7 @@ mod tests {
             serde_json::from_str(r#"{"beforePlaylistId":"playlist-2"}"#)
                 .expect("flat oneof fields should deserialize");
 
-        assert!(decoded.playlist_id.is_empty());
+        assert_eq!(decoded.playlist_id, "");
         assert_eq!(
             decoded.anchor,
             Some(
@@ -871,7 +871,7 @@ mod tests {
         let decoded: crate::client::MovePlaylistRequest =
             serde_json::from_str(r"{}").expect("transport deserialization should succeed");
 
-        assert!(decoded.playlist_id.is_empty());
+        assert_eq!(decoded.playlist_id, "");
         assert!(decoded.anchor.is_none());
     }
 
@@ -1938,11 +1938,11 @@ mod tests {
             }"#,
         )
         .expect("Plain text chat send should allow omitted optional payload fields");
-        assert!(decoded.attachments.is_empty());
+        assert_eq!(decoded.attachments.len(), 0);
         assert!(decoded.metadata.is_none());
-        assert!(decoded.reply_to_message_id.is_empty());
-        assert!(decoded.display_position.is_empty());
-        assert!(decoded.display_color.is_empty());
+        assert_eq!(decoded.reply_to_message_id, "");
+        assert_eq!(decoded.display_position, "");
+        assert_eq!(decoded.display_color, "");
 
         let decoded: crate::client::SendChatMessageRequest = serde_json::from_str(
             r#"{
@@ -2011,7 +2011,7 @@ mod tests {
             serde_json::from_str(r#"{"playbackMediaId":"med_probe"}"#)
                 .expect("Chat playback query should allow omitted optional filters");
         assert_eq!(decoded.playback_media_id, "med_probe");
-        assert!(decoded.playback_playlist_id.is_empty());
+        assert_eq!(decoded.playback_playlist_id, "");
         assert!(decoded.playback_target.is_none());
         assert_eq!(decoded.position_seconds, 0.0);
         assert_eq!(decoded.before_seconds, 0.0);
@@ -2063,7 +2063,7 @@ mod tests {
             decoded.provider_type,
             crate::source_config::SourceProvider::Unspecified as i32
         );
-        assert!(decoded.search.is_empty());
+        assert_eq!(decoded.search, "");
         assert_eq!(decoded.enabled, None);
         assert_eq!(decoded.tls, None);
 

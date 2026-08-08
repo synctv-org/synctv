@@ -123,7 +123,7 @@ synctv settings update --set 'oauth2.allowedRedirectUrls=["https://syncs.tv/oaut
 
 Apple 浏览器授权使用 Services ID，只接受已登记的 HTTPS Return URL。客户端通过请求级 `redirectUrl` 选择回调地址，地址必须位于 `oauth2.allowedRedirectUrls` 白名单；macOS 和 iOS 客户端通过 `ASWebAuthenticationSession` 接收这个 HTTPS 回调。
 
-Apple 原生授权使用 `native=true`，省略 `redirectUrl`，由 iOS/macOS 的 Sign in with Apple 返回 authorization code。Apple provider 通过 `/api/oauth2/providers` 的 `supportedModes` 声明原生能力，并配置 `webClientId`、`webClientSecret`、`nativeClientId` 和 `nativeClientSecret`。`nativeClientId` 必须匹配签名 App 的 Bundle ID。官方客户端使用 `org.synctv.app`；自托管发行通常需要自有 Apple Developer Team、Bundle ID、签名和对应的 `nativeClientSecret`，详见 [邮件与 OAuth2](../../configuration/email-oauth2/)。
+Apple 原生授权使用 `native=true`，省略 `redirectUrl`，由 iOS/macOS 的 Sign in with Apple 返回 authorization code。Apple provider 通过 `/api/oauth2/providers` 的 `supportedModes` 声明原生能力。至少配置一组完整凭据：`webClientId` 与 `webClientSecret` 启用浏览器授权，`nativeClientId` 与 `nativeClientSecret` 启用原生授权。`nativeClientId` 必须匹配签名 App 的 Bundle ID。官方客户端使用 `org.synctv.app`；自托管发行通常需要自有 Apple Developer Team、Bundle ID、签名和对应的 `nativeClientSecret`，详见 [邮件与 OAuth2](../../configuration/email-oauth2/)。
 
 原生 Apple OAuth 不依赖 `/.well-known/apple-app-site-association`。该文件用于 Universal Links、浏览器 OAuth 回调关联和 Passkey。
 

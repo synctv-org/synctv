@@ -128,7 +128,7 @@ Microsoft provider 额外使用 `tenant`（默认值为 `common`），Feishu pro
 ]
 ```
 
-`webClientId` 是 Apple Services ID，供浏览器授权使用；它必须注册对应的 HTTPS Return URL。`nativeClientId` 是签名 App 的 Bundle ID，供 iOS/macOS 原生 Sign in with Apple 使用；它必须与安装包的 Bundle ID 一致。两个 `clientSecret` 都是服务端凭据，使用 Apple Developer Team、Key ID、私钥和对应 client ID 生成，禁止写入客户端或提交到仓库。
+`webClientId` 是 Apple Services ID，供浏览器授权使用；它必须注册对应的 HTTPS Return URL。`nativeClientId` 是签名 App 的 Bundle ID，供 iOS/macOS 原生 Sign in with Apple 使用；它必须与安装包的 Bundle ID 一致。至少配置一组完整凭据：`webClientId` 与 `webClientSecret` 启用浏览器授权，`nativeClientId` 与 `nativeClientSecret` 启用原生授权。仅使用一种模式时可以省略另一组。两个 `clientSecret` 都是服务端凭据，使用 Apple Developer Team、Key ID、私钥和对应 client ID 生成，禁止写入客户端或提交到仓库。
 
 官方 SyncTV 构建使用 `org.synctv.app`。自托管服务器通常没有官方 Apple Developer Team 的 App ID 私钥和 client secret，因此自托管发行应创建自己的 Apple Developer Team、Bundle ID 和 Sign in with Apple 配置，使用自己的 Bundle ID 重新签名客户端，并将它配置为 `nativeClientId`。
 

@@ -128,7 +128,7 @@ The Microsoft provider also accepts `tenant` (default `common`). The Feishu prov
 ]
 ```
 
-`webClientId` is an Apple Services ID for browser authorization and must have the HTTPS Return URL registered. `nativeClientId` is the signed app's Bundle ID for native Sign in with Apple on iOS and macOS; it must match the installed app's Bundle ID. Both `clientSecret` values are server credentials generated with the Apple Developer Team, Key ID, private key, and corresponding client ID. Keep them on the server and out of the client or repository.
+`webClientId` is an Apple Services ID for browser authorization and must have the HTTPS Return URL registered. `nativeClientId` is the signed app's Bundle ID for native Sign in with Apple on iOS and macOS; it must match the installed app's Bundle ID. Configure at least one complete pair: `webClientId` plus `webClientSecret` enables browser authorization, while `nativeClientId` plus `nativeClientSecret` enables native authorization. The unused pair can be omitted for a single-mode deployment. Both `clientSecret` values are server credentials generated with the Apple Developer Team, Key ID, private key, and corresponding client ID. Keep them on the server and out of the client or repository.
 
 The official SyncTV build uses `org.synctv.app`. A self-hosted operator normally does not have the official Apple Developer Team's App ID private key and client secret. A self-hosted Apple distribution should create its own Apple Developer Team, Bundle ID, and Sign in with Apple configuration, sign a client with that Bundle ID, and configure the same value as `nativeClientId`.
 

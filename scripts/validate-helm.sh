@@ -391,8 +391,10 @@ docs_default_app_version="$(node --input-type=module -e 'const project = await i
   fail "chart version ($chart_version) must match Cargo workspace version ($cargo_version)"
 [ "$app_version" = "$cargo_version" ] ||
   fail "chart appVersion ($app_version) must match Cargo workspace version ($cargo_version)"
-[ "$compose_image" = "synctvorg/synctv:latest" ] ||
-  fail "Compose image ($compose_image) must be synctvorg/synctv:latest"
+case "$compose_image" in
+  'synctvorg/synctv:${SYNCTV_IMAGE_TAG:-latest}') ;;
+  *) fail "Compose image ($compose_image) must use the SYNCTV_IMAGE_TAG fallback" ;;
+esac
 [ "$docs_default_app_version" = "$cargo_version" ] ||
   fail "docs default app version ($docs_default_app_version) must match Cargo workspace version ($cargo_version)"
 

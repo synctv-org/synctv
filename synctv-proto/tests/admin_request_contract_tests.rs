@@ -121,8 +121,8 @@ fn test_admin_list_rooms_request_rejects_invalid_creator_id() {
 fn test_admin_list_rooms_request_defaults_taxonomy_filters_from_json() {
     let request: ListRoomsRequest = serde_json::from_str("{}").expect("request should deserialize");
 
-    assert!(request.category_id.is_empty());
-    assert!(request.label_ids.is_empty());
+    assert_eq!(request.category_id, "");
+    assert_eq!(request.label_ids.len(), 0);
 }
 
 #[test]
@@ -131,7 +131,7 @@ fn test_admin_list_room_labels_request_defaults_category_filter_from_json() {
         serde_json::from_str("{}").expect("request should deserialize");
 
     assert!(!request.include_disabled);
-    assert!(request.category_id.is_empty());
+    assert_eq!(request.category_id, "");
 }
 
 #[test]
@@ -142,7 +142,7 @@ fn test_admin_update_room_taxonomy_request_defaults_optional_fields_from_json() 
 
     assert_eq!(request.room_id, "room_abc");
     assert_eq!(request.category_id, None);
-    assert!(request.label_ids.is_empty());
+    assert_eq!(request.label_ids.len(), 0);
     assert!(!request.clear_category);
 }
 
@@ -163,9 +163,9 @@ fn test_admin_upsert_room_label_request_defaults_optional_category_from_json() {
         serde_json::from_str(r#"{"key":"featured","name":"Featured"}"#)
             .expect("request should deserialize");
 
-    assert!(request.category_id.is_empty());
-    assert!(request.description.is_empty());
-    assert!(request.color.is_empty());
+    assert_eq!(request.category_id, "");
+    assert_eq!(request.description, "");
+    assert_eq!(request.color, "");
 }
 
 #[test]

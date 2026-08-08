@@ -161,3 +161,5 @@ synctv config --config synctv.yaml validate --strict
 
 这个命令不会启动完整服务，但会尽量检查配置是否安全、完整、合理。部署前建议总是执行一次。
 `config validate` 默认会把未知配置项和不支持的 `SYNCTV_` 环境变量作为 warning 输出；加 `--strict` 后会直接校验失败。`synctv serve` 启动服务时始终使用严格加载，生产启动不会静默忽略拼错的配置。
+
+Runtime settings 通过管理 API、CLI 或导入快照加载时会忽略未知字段，同时继续执行已知字段的类型、范围和业务校验。这样可以让新版本导出的 settings 在旧版本上安全读取；静态启动配置仍按上面的严格规则处理。

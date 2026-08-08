@@ -386,7 +386,7 @@ impl std::str::FromStr for OAuth2AllowedRedirectUrls {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct OAuth2SignupPolicy {
     pub enable_signup: bool,
     pub signup_need_review: bool,
@@ -405,14 +405,19 @@ pub struct OAuth2ProviderConfig {
 #[serde(
     tag = "type",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum OAuth2ProviderPrivateConfig {
+    #[serde(rename = "qq")]
+    Qq(OAuth2QqProviderConfig),
     #[serde(rename = "github")]
     GitHub(OAuth2GithubProviderConfig),
     #[serde(rename = "google")]
     Google(OAuth2GoogleProviderConfig),
+    #[serde(rename = "microsoft")]
+    Microsoft(OAuth2MicrosoftProviderConfig),
+    #[serde(rename = "discord")]
+    Discord(OAuth2DiscordProviderConfig),
     #[serde(rename = "logto")]
     Logto(OAuth2LogtoProviderConfig),
     #[serde(rename = "casdoor")]
@@ -421,6 +426,10 @@ pub enum OAuth2ProviderPrivateConfig {
     Oidc(OAuth2OidcProviderConfig),
     #[serde(rename = "apple")]
     Apple(OAuth2AppleProviderConfig),
+    #[serde(rename = "feishu")]
+    Feishu(OAuth2FeishuProviderConfig),
+    #[serde(rename = "gitee")]
+    Gitee(OAuth2GiteeProviderConfig),
 }
 
 impl Default for OAuth2ProviderPrivateConfig {
@@ -430,36 +439,64 @@ impl Default for OAuth2ProviderPrivateConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct OAuth2GithubProviderConfig {
     pub client_id: String,
     pub client_secret: String,
-    pub redirect_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
+pub struct OAuth2QqProviderConfig {
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default, rename_all = "camelCase")]
 pub struct OAuth2GoogleProviderConfig {
     pub client_id: String,
     pub client_secret: String,
-    pub redirect_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct OAuth2MicrosoftProviderConfig {
+    pub client_id: String,
+    pub client_secret: String,
+    pub tenant: String,
+}
+
+impl Default for OAuth2MicrosoftProviderConfig {
+    fn default() -> Self {
+        Self {
+            client_id: String::new(),
+            client_secret: String::new(),
+            tenant: "common".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
+pub struct OAuth2DiscordProviderConfig {
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default, rename_all = "camelCase")]
 pub struct OAuth2LogtoProviderConfig {
     pub client_id: String,
     pub client_secret: String,
-    pub redirect_url: String,
     pub endpoint: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct OAuth2OidcProviderConfig {
     pub client_id: String,
     pub client_secret: String,
-    pub redirect_url: String,
     #[serde(default)]
     pub issuer: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -475,11 +512,10 @@ pub struct OAuth2OidcProviderConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct OAuth2CasdoorProviderConfig {
     pub client_id: String,
     pub client_secret: String,
-    pub redirect_url: String,
     pub issuer: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_url: Option<String>,
@@ -492,23 +528,44 @@ pub struct OAuth2CasdoorProviderConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct OAuth2AppleProviderConfig {
+    pub web_client_id: String,
+    pub web_client_secret: String,
+    pub native_client_id: String,
+    pub native_client_secret: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct OAuth2FeishuProviderConfig {
     pub client_id: String,
     pub client_secret: String,
-    pub redirect_url: String,
+    pub endpoint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct OAuth2GiteeProviderConfig {
+    pub client_id: String,
+    pub client_secret: String,
 }
 
 impl OAuth2ProviderPrivateConfig {
     #[must_use]
     pub const fn provider_type_name(&self) -> &'static str {
         match self {
+            Self::Qq(_) => "qq",
             Self::GitHub(_) => "github",
             Self::Google(_) => "google",
+            Self::Microsoft(_) => "microsoft",
+            Self::Discord(_) => "discord",
             Self::Logto(_) => "logto",
             Self::Casdoor(_) => "casdoor",
             Self::Oidc(_) => "oidc",
             Self::Apple(_) => "apple",
+            Self::Feishu(_) => "feishu",
+            Self::Gitee(_) => "gitee",
         }
     }
 }

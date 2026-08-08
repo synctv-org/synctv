@@ -17,6 +17,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::models::UserId;
+use synctv_core::oauth2::OAuth2AuthorizationMode;
 use synctv_core::service::{
     local_oauth_state_store, OAuth2Operation, OAuth2State, OAuthStateStore,
 };
@@ -35,6 +36,7 @@ fn create_test_state(instance_name: &str) -> OAuth2State {
         redirect_url: Some("/dashboard".to_string()),
         created_at: chrono::Utc::now(),
         operation: OAuth2Operation::Login,
+        authorization_mode: OAuth2AuthorizationMode::Browser,
         target_user_id: None,
         pkce_verifier: "test_verifier_abc123".to_string(),
         nonce: None,
@@ -111,6 +113,7 @@ async fn test_oauth2_state_expired_fails() {
         redirect_url: None,
         created_at: expired_time,
         operation: OAuth2Operation::Login,
+        authorization_mode: OAuth2AuthorizationMode::Browser,
         target_user_id: None,
         pkce_verifier: "expired_verifier".to_string(),
         nonce: None,
@@ -157,6 +160,7 @@ async fn test_oauth2_state_different_tokens_independent() {
         redirect_url: Some("/profile".to_string()),
         created_at: chrono::Utc::now(),
         operation: OAuth2Operation::Bind,
+        authorization_mode: OAuth2AuthorizationMode::Browser,
         target_user_id: Some(UserId::new()),
         pkce_verifier: "verifier_logto".to_string(),
         nonce: None,
@@ -260,6 +264,7 @@ async fn test_oauth2_state_with_target_user_id_consumed_correctly() {
         redirect_url: Some("/settings".to_string()),
         created_at: chrono::Utc::now(),
         operation: OAuth2Operation::Bind,
+        authorization_mode: OAuth2AuthorizationMode::Browser,
         target_user_id: Some(target_user_id),
         pkce_verifier: "bind_verifier".to_string(),
         nonce: None,

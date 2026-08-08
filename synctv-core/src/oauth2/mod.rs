@@ -9,10 +9,14 @@
 
 pub mod providers;
 
-pub use providers::{GitHubConfig, GoogleConfig, LogtoConfig, OidcConfig};
+pub use providers::{
+    AppleConfig, CasdoorConfig, DiscordConfig, FeishuConfig, GitHubConfig, GiteeConfig,
+    GoogleConfig, LogtoConfig, MicrosoftConfig, OidcConfig, QqConfig,
+};
 
 use crate::{service::OAuth2ProviderPrivateConfig, Error};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -26,6 +30,13 @@ pub struct OAuth2Authorization {
     pub nonce: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuth2AuthorizationMode {
+    Browser,
+    Native,
+}
+
 impl OAuth2Authorization {
     #[must_use]
     pub fn new(auth_url: String, pkce_verifier: String) -> Self {
@@ -34,6 +45,11 @@ impl OAuth2Authorization {
             pkce_verifier,
             nonce: None,
         }
+    }
+
+    #[must_use]
+    pub fn without_pkce(auth_url: String) -> Self {
+        Self::new(auth_url, String::new())
     }
 
     #[must_use]
@@ -53,8 +69,10 @@ impl OAuth2Authorization {
 /// 2. `GetUserInfo` - exchange code for user info
 #[async_trait]
 pub trait Provider: Send + Sync {
-    /// Provider type identifier (e.g., "github", "logto", "oidc")
-    fn provider_type(&self) -> &str;
+    /// Authorization modes implemented by this provider instance.
+    fn supported_authorization_modes(&self) -> &'static [OAuth2AuthorizationMode] {
+        &[OAuth2AuthorizationMode::Browser]
+    }
 
     /// Validate a client-requested redirect URL before generating an
     /// authorization request. Providers with fixed return URLs can reject
@@ -66,7 +84,7 @@ pub trait Provider: Send + Sync {
         Ok(())
     }
 
-    /// Generate authorization URL with state and PKCE challenge
+    /// Generate an authorization URL with state and provider-selected PKCE policy.
     ///
     /// Returns an authorization context containing the URL plus provider-generated
     /// values that must be stored and passed back during `get_user_info`.
@@ -76,9 +94,10 @@ pub trait Provider: Send + Sync {
         &self,
         state: &str,
         redirect_url: Option<&str>,
+        mode: OAuth2AuthorizationMode,
     ) -> Result<OAuth2Authorization, Error>;
 
-    /// Exchange authorization code for user info, verifying the PKCE challenge
+    /// Exchange authorization code for user info, verifying PKCE when the provider requested it.
     ///
     /// This method:
     /// 1. Exchanges the code for an access token (with PKCE verifier)
@@ -90,8 +109,9 @@ pub trait Provider: Send + Sync {
         &self,
         code: &str,
         redirect_url: Option<&str>,
-        pkce_verifier: &str,
+        pkce_verifier: Option<&str>,
         nonce: Option<&str>,
+        mode: OAuth2AuthorizationMode,
     ) -> Result<OAuth2UserInfo, Error>;
 }
 
@@ -109,7 +129,7 @@ pub struct OAuth2UserInfo {
 ///
 /// Each provider type registers a factory function that knows how to
 /// create instances of that provider with configuration.
-/// All parameters (`client_id`, `client_secret`, `redirect_url`, etc.) are in config.
+/// Provider credentials and endpoint policies are stored in config. Redirect URLs are supplied per authorization request.
 pub type OAuth2ProviderFactory =
     Arc<dyn Fn(&OAuth2ProviderPrivateConfig) -> Result<Box<dyn Provider>, Error> + Send + Sync>;
 

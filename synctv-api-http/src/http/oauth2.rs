@@ -44,7 +44,9 @@ use synctv_api_common::impls::EndpointRateLimitCategory;
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 pub struct AuthorizationUrlQuery {
     #[serde(default)]
-    redirect_url: String,
+    redirect_url: Option<String>,
+    #[serde(default)]
+    native: Option<bool>,
 }
 
 impl AuthorizationUrlQuery {
@@ -52,6 +54,7 @@ impl AuthorizationUrlQuery {
         GetAuthorizationUrlRequest {
             provider,
             redirect_url: self.redirect_url,
+            native: self.native,
         }
     }
 }
@@ -61,9 +64,11 @@ impl AuthorizationUrlQuery {
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 pub struct BindAuthorizationUrlQuery {
     #[serde(default)]
-    redirect_url: String,
+    redirect_url: Option<String>,
     #[serde(default)]
     verification_id: String,
+    #[serde(default)]
+    native: Option<bool>,
 }
 
 impl BindAuthorizationUrlQuery {
@@ -72,6 +77,7 @@ impl BindAuthorizationUrlQuery {
             provider,
             redirect_url: self.redirect_url,
             verification_id: self.verification_id,
+            native: self.native,
         }
     }
 }
@@ -484,7 +490,10 @@ mod tests {
         .expect("unknown path field should be ignored");
         let authorize = authorize.into_request("path-provider".to_string());
         assert_eq!(authorize.provider, "path-provider");
-        assert_eq!(authorize.redirect_url, "http://localhost/callback");
+        assert_eq!(
+            authorize.redirect_url.as_deref(),
+            Some("http://localhost/callback")
+        );
 
         let unlink = serde_urlencoded::from_str::<UnlinkProviderQuery>(
             "provider=1&providerUserId=remote-user-1",

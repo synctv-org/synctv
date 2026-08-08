@@ -57,7 +57,7 @@ OPAQUE、Provider credential 和 email outbox 使用各自的长期 secret。备
 | --- | --- |
 | WebAuthn/passkey | `webauthn.rp_id` 和 `webauthn.rp_origin` 与真实 HTTPS 入口匹配。 |
 | 邮件 | SMTP 配置完成，并用 `synctv settings test-email` 验证。 |
-| OAuth2 | `redirectUrl` 与第三方平台注册值一致。 |
+| OAuth2 | 浏览器授权客户端请求的 `redirectUrl` 已加入 `oauth2.allowedRedirectUrls`，并与第三方平台注册值一致；Apple provider 已配置 Web Services ID 和与签名 App Bundle ID 一致的 `nativeClientId`，并生成对应的服务端 secrets。 |
 | Provider 凭据 | 凭据通过 secret 或受控管理流程写入，不出现在仓库。 |
 | Slice cache 文件后端 | 缓存目录有容量规划和清理策略。 |
 | 直播 HLS | 单机已确认本地存储；多副本已选择 publisher-node proxy、`shared_file` 或 S3。 |

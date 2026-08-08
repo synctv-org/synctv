@@ -1,0 +1,30 @@
+---
+title: User Support
+description: Help for connecting, signing in, playback, and safety in the SyncTV self-hosted client.
+---
+
+SyncTV is self-hosted. The client connects to a SyncTV Server chosen by you; the server administrator owns the instance address, availability, and account policies.
+
+## Connect to a server
+
+Add the HTTPS server address provided by the administrator. The address must be reachable from your network and the server must allow WebSocket connections. When a connection fails, check the address for extra path segments, verify that the server health page is reachable, and contact the instance administrator.
+
+## Sign-in problems
+
+Confirm that the administrator enabled the sign-in method you selected. OAuth sign-in opens the system authorization experience and returns to the client after authorization. Sign in with Apple uses Apple's system flow; the device needs an Apple account and permission to complete authorization.
+
+## Playback problems
+
+Playback stalls can come from the server-to-source network, provider rate limits, or the client network. Record the room, media name, time, client platform, and server address, then send them to the instance administrator. Administrators can continue with server logs and provider status.
+
+## Report and block
+
+Use the action menu on a chat message or user to report it and provide a reason. Blocking a user stores the filter on the server for that account, so later content requests omit that user's messages and pinned content; the report remains available to the server administrator for moderation.
+
+## Delete an account
+
+Open Account Center after signing in, choose Delete account in Security settings, and complete verification. Deletion invalidates the current account sessions. The server administrator handles backups and audit records according to the instance retention policy.
+
+## Contact
+
+Contact the instance administrator for connection, account, and content issues. Submit feature feedback and reproducible client problems to [GitHub Issues](https://github.com/synctv-org/synctv/issues) with the platform, client version, and redacted debug information.

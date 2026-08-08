@@ -12,7 +12,7 @@ fn test_provider_common_list_provider_instances_defaults_http_query_fields() {
     assert_eq!(request.page, 0);
     assert_eq!(request.page_size, 0);
     assert_eq!(request.provider_type, SourceProvider::Alist as i32);
-    assert!(request.search.is_empty());
+    assert_eq!(request.search, "");
     assert_eq!(request.enabled, None);
     assert_eq!(request.tls, None);
     assert_eq!(request.sort_by, 0);
@@ -89,7 +89,7 @@ fn test_provider_common_update_provider_request_accepts_full_body() {
         Some("https://provider.example.com")
     );
     assert_eq!(request.name, "alist-main");
-    assert!(request.providers.is_empty());
+    assert_eq!(request.providers, [] as [i32; 0]);
     assert_eq!(request.jwt_secret, None);
     assert_eq!(request.custom_ca, None);
     assert_eq!(request.clear_comment, None);

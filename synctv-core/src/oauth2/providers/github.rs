@@ -2,9 +2,9 @@
 
 use super::{
     build_oauth2_http_client, build_provider_http_client, map_provider_http_error,
-    validate_oauth2_redirect_url, validate_required_oauth2_field,
+    require_oauth2_redirect_url, validate_required_oauth2_field,
 };
-use crate::oauth2::{OAuth2Authorization, OAuth2UserInfo, Provider};
+use crate::oauth2::{OAuth2Authorization, OAuth2AuthorizationMode, OAuth2UserInfo, Provider};
 use crate::service::{OAuth2GithubProviderConfig, OAuth2ProviderPrivateConfig};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
@@ -21,7 +21,6 @@ use std::sync::Arc;
 pub struct GitHubConfig {
     pub client_id: String,
     pub client_secret: String,
-    pub redirect_url: String,
 }
 
 /// GitHub `OAuth2` provider
@@ -42,17 +41,10 @@ struct GitHubUser {
 impl GitHubProvider {
     /// Create a new GitHub provider with configuration
     ///
-    /// # Errors
-    /// Returns error if `redirect_url` is not a valid URL.
-    pub fn create(
-        client_id: String,
-        client_secret: String,
-        redirect_url: String,
-    ) -> Result<Self, Error> {
+    pub fn create(client_id: String, client_secret: String) -> Result<Self, Error> {
         Self::create_with_ssrf_guard(
             client_id,
             client_secret,
-            redirect_url,
             &synctv_common::ssrf::SsrfGuard::strict_policy(),
         )
     }
@@ -60,12 +52,8 @@ impl GitHubProvider {
     pub fn create_with_ssrf_guard(
         client_id: String,
         client_secret: String,
-        redirect_url: String,
         ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     ) -> Result<Self, Error> {
-        validate_oauth2_redirect_url(&redirect_url, "Invalid GitHub OAuth2 redirect URL")?;
-        let redirect = RedirectUrl::new(redirect_url)
-            .map_err(|e| Error::InvalidInput(format!("Invalid GitHub OAuth2 redirect URL: {e}")))?;
         let client = Arc::new(
             BasicClient::new(ClientId::new(client_id))
                 .set_client_secret(ClientSecret::new(client_secret))
@@ -79,8 +67,7 @@ impl GitHubProvider {
                         .map_err(|e| {
                             Error::InvalidInput(format!("Invalid GitHub token URL: {e}"))
                         })?,
-                )
-                .set_redirect_uri(redirect),
+                ),
         );
 
         Ok(Self {
@@ -93,27 +80,28 @@ impl GitHubProvider {
 
 #[async_trait]
 impl Provider for GitHubProvider {
-    fn provider_type(&self) -> &'static str {
-        "github"
-    }
-
     async fn new_auth_url(
         &self,
         state: &str,
         redirect_url: Option<&str>,
+        mode: OAuth2AuthorizationMode,
     ) -> Result<OAuth2Authorization, Error> {
+        if mode == OAuth2AuthorizationMode::Native {
+            return Err(Error::InvalidInput(
+                "GitHub OAuth does not support native authorization".to_string(),
+            ));
+        }
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
+        let redirect_url = require_oauth2_redirect_url(redirect_url, "GitHub OAuth2")?;
         let mut request = self
             .client
             .authorize_url(|| oauth2::CsrfToken::new(state.to_string()))
             .set_pkce_challenge(pkce_challenge);
-        if let Some(redirect_url) = redirect_url {
-            request = request.set_redirect_uri(std::borrow::Cow::Owned(
-                RedirectUrl::new(redirect_url.to_string()).map_err(|e| {
-                    Error::InvalidInput(format!("Invalid GitHub OAuth2 redirect URL: {e}"))
-                })?,
-            ));
-        }
+        request = request.set_redirect_uri(std::borrow::Cow::Owned(
+            RedirectUrl::new(redirect_url.to_string()).map_err(|e| {
+                Error::InvalidInput(format!("Invalid GitHub OAuth2 redirect URL: {e}"))
+            })?,
+        ));
         let (auth_url, _csrf_token) = request.url();
         Ok(OAuth2Authorization::new(
             auth_url.to_string(),
@@ -125,22 +113,24 @@ impl Provider for GitHubProvider {
         &self,
         code: &str,
         redirect_url: Option<&str>,
-        pkce_verifier: &str,
+        pkce_verifier: Option<&str>,
         _nonce: Option<&str>,
+        _mode: OAuth2AuthorizationMode,
     ) -> Result<OAuth2UserInfo, Error> {
+        let pkce_verifier = pkce_verifier
+            .ok_or_else(|| Error::InvalidInput("GitHub OAuth requires PKCE".to_string()))?;
         // Exchange code for token with PKCE verifier
         let verifier = PkceCodeVerifier::new(pkce_verifier.to_string());
         let mut request = self
             .client
             .exchange_code(oauth2::AuthorizationCode::new(code.to_string()))
             .set_pkce_verifier(verifier);
-        if let Some(redirect_url) = redirect_url {
-            request = request.set_redirect_uri(std::borrow::Cow::Owned(
-                RedirectUrl::new(redirect_url.to_string()).map_err(|e| {
-                    Error::InvalidInput(format!("Invalid GitHub OAuth2 redirect URL: {e}"))
-                })?,
-            ));
-        }
+        let redirect_url = require_oauth2_redirect_url(redirect_url, "GitHub OAuth2")?;
+        request = request.set_redirect_uri(std::borrow::Cow::Owned(
+            RedirectUrl::new(redirect_url.to_string()).map_err(|e| {
+                Error::InvalidInput(format!("Invalid GitHub OAuth2 redirect URL: {e}"))
+            })?,
+        ));
         let token = request
             .request_async(self.oauth2_http_client.as_ref())
             .await
@@ -187,11 +177,9 @@ fn github_factory_from_basic_config(
 ) -> Result<Box<dyn Provider>, Error> {
     validate_required_oauth2_field("GitHub", "client_id", &config.client_id)?;
     validate_required_oauth2_field("GitHub", "client_secret", &config.client_secret)?;
-    validate_required_oauth2_field("GitHub", "redirect_url", &config.redirect_url)?;
     Ok(Box::new(GitHubProvider::create_with_ssrf_guard(
         config.client_id.clone(),
         config.client_secret.clone(),
-        config.redirect_url.clone(),
         ssrf_guard,
     )?))
 }
@@ -201,83 +189,32 @@ mod tests {
     use super::*;
     use crate::test_helpers::TestResultExt;
 
-    fn github_private_config(
-        client_id: &str,
-        client_secret: &str,
-        redirect_url: &str,
-    ) -> OAuth2ProviderPrivateConfig {
+    fn github_private_config(client_id: &str, client_secret: &str) -> OAuth2ProviderPrivateConfig {
         OAuth2ProviderPrivateConfig::GitHub(OAuth2GithubProviderConfig {
             client_id: client_id.to_string(),
             client_secret: client_secret.to_string(),
-            redirect_url: redirect_url.to_string(),
         })
     }
 
     #[test]
     fn test_create_provider_valid_config() {
-        let provider = GitHubProvider::create(
-            "my_client_id".to_string(),
-            "my_secret".to_string(),
-            "https://example.com/callback".to_string(),
-        );
+        let provider = GitHubProvider::create("my_client_id".to_string(), "my_secret".to_string());
         assert!(provider.is_ok());
-    }
-
-    #[test]
-    fn test_create_provider_invalid_redirect_url() {
-        let result = GitHubProvider::create(
-            "my_client_id".to_string(),
-            "my_secret".to_string(),
-            "not a valid url".to_string(),
-        );
-        assert!(result.is_err());
-        match result {
-            Err(Error::InvalidInput(msg)) => assert!(msg.contains("redirect URL")),
-            Ok(_) => std::panic::panic_any("Expected error but got Ok"),
-            Err(e) => std::panic::panic_any(format!("Expected InvalidInput error, got: {e}")),
-        }
-    }
-
-    #[test]
-    fn test_create_provider_empty_redirect_url() {
-        let result = GitHubProvider::create("id".to_string(), "secret".to_string(), String::new());
-        assert!(result.is_err());
-        assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
-    }
-
-    #[test]
-    fn test_create_provider_rejects_custom_scheme_redirect_url() {
-        let result = GitHubProvider::create(
-            "id".to_string(),
-            "secret".to_string(),
-            "native-app://callback".to_string(),
-        );
-        assert!(matches!(result, Err(Error::InvalidInput(_))));
-    }
-
-    #[test]
-    fn test_provider_type() {
-        let provider = GitHubProvider::create(
-            "id".to_string(),
-            "secret".to_string(),
-            "https://example.com/cb".to_string(),
-        )
-        .checked("operation should succeed");
-        assert_eq!(provider.provider_type(), "github");
     }
 
     #[tokio::test]
     async fn test_new_auth_url_contains_required_params() {
-        let provider = GitHubProvider::create(
-            "test_client_id".to_string(),
-            "test_secret".to_string(),
-            "https://example.com/callback".to_string(),
-        )
-        .checked("operation should succeed");
+        let provider =
+            GitHubProvider::create("test_client_id".to_string(), "test_secret".to_string())
+                .checked("operation should succeed");
 
         let state = "random_state_value";
         let auth = provider
-            .new_auth_url(state, None)
+            .new_auth_url(
+                state,
+                Some("https://example.com/callback"),
+                OAuth2AuthorizationMode::Browser,
+            )
             .await
             .checked("operation should succeed");
         let auth_url = auth.auth_url;
@@ -301,25 +238,17 @@ mod tests {
 
     #[test]
     fn test_factory_valid_config() {
-        let config = github_private_config(
-            "gh_id",
-            "gh_secret",
-            "https://example.com/oauth/github/callback",
-        );
+        let config = github_private_config("gh_id", "gh_secret");
         let provider = github_factory_from_private_config(
             &config,
             &synctv_common::ssrf::SsrfGuard::strict_policy(),
         );
         assert!(provider.is_ok());
-        assert_eq!(
-            provider.checked("operation should succeed").provider_type(),
-            "github"
-        );
     }
 
     #[test]
     fn test_factory_missing_client_id() {
-        let config = github_private_config("", "secret", "https://example.com/cb");
+        let config = github_private_config("", "secret");
         let result = github_factory_from_private_config(
             &config,
             &synctv_common::ssrf::SsrfGuard::strict_policy(),
@@ -330,27 +259,7 @@ mod tests {
 
     #[test]
     fn test_factory_missing_client_secret() {
-        let config = github_private_config("id", "", "https://example.com/cb");
-        let result = github_factory_from_private_config(
-            &config,
-            &synctv_common::ssrf::SsrfGuard::strict_policy(),
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_factory_missing_redirect_url() {
-        let config = github_private_config("id", "secret", "");
-        let result = github_factory_from_private_config(
-            &config,
-            &synctv_common::ssrf::SsrfGuard::strict_policy(),
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_factory_invalid_redirect_url() {
-        let config = github_private_config("id", "secret", "://invalid");
+        let config = github_private_config("id", "");
         let result = github_factory_from_private_config(
             &config,
             &synctv_common::ssrf::SsrfGuard::strict_policy(),
@@ -362,12 +271,10 @@ mod tests {
     fn test_github_config_deserialize() {
         let json = serde_json::json!({
             "client_id": "abc123",
-            "client_secret": "def456",
-            "redirect_url": "https://example.com/cb"
+            "client_secret": "def456"
         });
         let config: GitHubConfig = serde_json::from_value(json).checked("operation should succeed");
         assert_eq!(config.client_id, "abc123");
         assert_eq!(config.client_secret, "def456");
-        assert_eq!(config.redirect_url, "https://example.com/cb");
     }
 }

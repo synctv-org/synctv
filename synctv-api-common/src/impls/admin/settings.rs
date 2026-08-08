@@ -413,7 +413,6 @@ fn oauth2_github_config_to_proto(
     synctv_proto::admin::OAuth2GithubProviderConfig {
         client_id: config.client_id.clone(),
         client_secret: include_credentials.then(|| config.client_secret.clone()),
-        redirect_url: config.redirect_url.clone(),
     }
 }
 
@@ -425,6 +424,10 @@ fn oauth2_config_to_proto(
     use synctv_proto::admin::o_auth2_provider_settings::Config;
 
     match config {
+        CoreConfig::Qq(config) => Config::Qq(synctv_proto::admin::OAuth2QqProviderConfig {
+            client_id: config.client_id.clone(),
+            client_secret: include_credentials.then(|| config.client_secret.clone()),
+        }),
         CoreConfig::GitHub(config) => {
             Config::Github(oauth2_github_config_to_proto(config, include_credentials))
         }
@@ -432,21 +435,31 @@ fn oauth2_config_to_proto(
             Config::Google(synctv_proto::admin::OAuth2GoogleProviderConfig {
                 client_id: config.client_id.clone(),
                 client_secret: include_credentials.then(|| config.client_secret.clone()),
-                redirect_url: config.redirect_url.clone(),
+            })
+        }
+        CoreConfig::Microsoft(config) => {
+            Config::Microsoft(synctv_proto::admin::OAuth2MicrosoftProviderConfig {
+                client_id: config.client_id.clone(),
+                client_secret: include_credentials.then(|| config.client_secret.clone()),
+                tenant: config.tenant.clone(),
+            })
+        }
+        CoreConfig::Discord(config) => {
+            Config::Discord(synctv_proto::admin::OAuth2DiscordProviderConfig {
+                client_id: config.client_id.clone(),
+                client_secret: include_credentials.then(|| config.client_secret.clone()),
             })
         }
         CoreConfig::Logto(config) => {
             Config::Logto(synctv_proto::admin::OAuth2LogtoProviderConfig {
                 client_id: config.client_id.clone(),
                 client_secret: include_credentials.then(|| config.client_secret.clone()),
-                redirect_url: config.redirect_url.clone(),
                 endpoint: config.endpoint.clone(),
             })
         }
         CoreConfig::Oidc(config) => Config::Oidc(synctv_proto::admin::OAuth2OidcProviderConfig {
             client_id: config.client_id.clone(),
             client_secret: include_credentials.then(|| config.client_secret.clone()),
-            redirect_url: config.redirect_url.clone(),
             issuer: config.issuer.clone(),
             auth_url: config.auth_url.clone(),
             token_url: config.token_url.clone(),
@@ -458,7 +471,6 @@ fn oauth2_config_to_proto(
             Config::Casdoor(synctv_proto::admin::OAuth2CasdoorProviderConfig {
                 client_id: config.client_id.clone(),
                 client_secret: include_credentials.then(|| config.client_secret.clone()),
-                redirect_url: config.redirect_url.clone(),
                 issuer: config.issuer.clone(),
                 auth_url: config.auth_url.clone(),
                 token_url: config.token_url.clone(),
@@ -468,9 +480,24 @@ fn oauth2_config_to_proto(
         }
         CoreConfig::Apple(config) => {
             Config::Apple(synctv_proto::admin::OAuth2AppleProviderConfig {
+                web_client_id: config.web_client_id.clone(),
+                web_client_secret: include_credentials.then(|| config.web_client_secret.clone()),
+                native_client_id: config.native_client_id.clone(),
+                native_client_secret: include_credentials
+                    .then(|| config.native_client_secret.clone()),
+            })
+        }
+        CoreConfig::Feishu(config) => {
+            Config::Feishu(synctv_proto::admin::OAuth2FeishuProviderConfig {
                 client_id: config.client_id.clone(),
                 client_secret: include_credentials.then(|| config.client_secret.clone()),
-                redirect_url: config.redirect_url.clone(),
+                endpoint: config.endpoint.clone(),
+            })
+        }
+        CoreConfig::Gitee(config) => {
+            Config::Gitee(synctv_proto::admin::OAuth2GiteeProviderConfig {
+                client_id: config.client_id.clone(),
+                client_secret: include_credentials.then(|| config.client_secret.clone()),
             })
         }
     }

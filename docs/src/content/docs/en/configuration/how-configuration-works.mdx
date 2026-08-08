@@ -169,3 +169,5 @@ synctv --config /etc/synctv/synctv.yaml config validate --strict
 
 Validation checks required secrets, unsafe placeholder values, CORS origins, WebAuthn origins, cluster dependencies, gRPC size limits, and path resolution constraints.
 `config validate` reports unknown config-file keys and unsupported `SYNCTV_` environment variables as warnings by default. Add `--strict` to make those unknown inputs fail validation. `synctv serve` always uses strict startup loading, so production startup fails instead of ignoring misspelled settings.
+
+Runtime settings loaded through the management API, CLI, or an import snapshot ignore unknown fields while continuing to validate known fields for type, range, and business rules. This lets a newer settings snapshot be read safely by an older binary; static startup configuration follows the strict rules above.

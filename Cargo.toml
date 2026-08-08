@@ -46,6 +46,7 @@ perf = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
 todo = "deny"
 unwrap_used = "deny"
+assert_is_empty = "allow"
 doc_markdown = "allow"
 struct_excessive_bools = "allow"
 case_sensitive_file_extension_comparisons = "allow"
@@ -226,6 +227,7 @@ rust_h265 = "=0.1.0"
 rusty_aac = { version = "=0.1.1", default-features = false }
 rusty_h264 = { version = "=0.7.0", default-features = false }
 ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["build", "format"] }
+ffmpeg-sys-next = { version = "=9.0.0", features = ["build-portable"] }
 
 # Object Storage
 opendal = { version = "=0.58.1", default-features = false, features = [

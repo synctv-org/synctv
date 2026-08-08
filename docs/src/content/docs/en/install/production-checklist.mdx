@@ -57,7 +57,7 @@ OPAQUE, Provider credentials, and the email outbox use separate long-lived secre
 | --- | --- |
 | WebAuthn/passkeys | `webauthn.rp_id` and `webauthn.rp_origin` match the real HTTPS entrypoint. |
 | Email | SMTP is configured and verified with `synctv settings test-email`. |
-| OAuth2 | `redirectUrl` matches provider registration. |
+| OAuth2 | Browser authorization `redirectUrl` is in `oauth2.allowedRedirectUrls` and matches the provider registration; the Apple provider has a Web Services ID, a `nativeClientId` matching the signed app Bundle ID, and matching server-side secrets. |
 | Provider credentials | Credentials are stored through secrets or controlled admin flows, not in the repository. |
 | File-backed slice cache | Cache directory has capacity planning and cleanup policy. |
 | Livestream HLS | Single-node storage is confirmed; multi-replica mode uses publisher-node proxy, `shared_file`, or S3. |

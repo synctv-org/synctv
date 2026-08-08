@@ -5994,7 +5994,6 @@ fn render_human_output_uses_proto_json_for_admin_settings() {
                         synctv_proto::admin::OAuth2GithubProviderConfig {
                             client_id: "client-id".into(),
                             client_secret: Some("client-secret".into()),
-                            redirect_url: "https://example.com/callback".into(),
                         },
                     ),
                 ),

@@ -274,7 +274,7 @@ fn test_protojson_query_deserialization_uses_lower_camel_case_and_integer_enums(
         "page=1&pageSize=20&sourceProvider=SOURCE_PROVIDER_ALIST",
     )
     .expect_err("enum string query values should be rejected");
-    assert!(!enum_error.to_string().is_empty());
+    assert_ne!(enum_error.to_string(), "");
 }
 
 #[test]
@@ -620,8 +620,8 @@ fn test_media_source_config_json_accepts_omitted_proto_default_fields() {
         synctv_proto::source_config::media_source_config::Provider::DirectUrl(config) => {
             assert_eq!(config.medias.len(), 1);
             assert_eq!(config.medias[0].url, "https://example.com/video.mp4");
-            assert!(config.subtitles.is_empty());
-            assert!(config.danmakus.is_empty());
+            assert_eq!(config.subtitles.len(), 0);
+            assert_eq!(config.danmakus.len(), 0);
         }
         other => panic!("unexpected provider: {other:?}"),
     }
@@ -698,7 +698,8 @@ fn test_list_provider_backends_request_rejects_invalid_provider_type_format() {
 fn test_get_authorization_url_request_rejects_invalid_provider_instance_name() {
     let request = GetAuthorizationUrlRequest {
         provider: "bad provider".to_string(),
-        redirect_url: String::new(),
+        redirect_url: Some(String::new()),
+        native: None,
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -721,8 +722,9 @@ fn test_oauth2_provider_instance_path_request_rejects_invalid_provider_name() {
 fn test_get_authorization_url_for_bind_request_rejects_dangerous_redirect_url() {
     let request = GetAuthorizationUrlForBindRequest {
         provider: "github".to_string(),
-        redirect_url: "javascript:alert(1)".to_string(),
+        redirect_url: Some("javascript:alert(1)".to_string()),
         verification_id: "verification-id".to_string(),
+        native: None,
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -734,7 +736,8 @@ fn test_get_authorization_url_for_bind_request_rejects_dangerous_redirect_url() 
 fn test_get_authorization_url_request_rejects_non_loopback_http_redirect_url() {
     let request = GetAuthorizationUrlRequest {
         provider: "github".to_string(),
-        redirect_url: "http://example.com/oauth2/callback".to_string(),
+        redirect_url: Some("http://example.com/oauth2/callback".to_string()),
+        native: None,
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -797,6 +800,15 @@ fn test_oauth2_provider_type_path_request_rejects_invalid_provider_type() {
 }
 
 #[test]
+fn test_oauth2_provider_type_path_request_accepts_apple() {
+    let request = OAuth2ProviderTypePathRequest {
+        provider: "apple".to_string(),
+    };
+
+    synctv_proto::validate(&request).expect("Apple provider path should be valid");
+}
+
+#[test]
 fn test_discover_rooms_request_rejects_too_long_search() {
     let request = synctv_proto::client::DiscoverRoomsRequest {
         page: 1,
@@ -816,8 +828,8 @@ fn test_create_room_request_defaults_optional_taxonomy_fields_from_json() {
     let request: CreateRoomRequest = serde_json::from_str(r#"{"name":"room","settings":{}}"#)
         .expect("request should deserialize");
 
-    assert!(request.category_id.is_empty());
-    assert!(request.label_ids.is_empty());
+    assert_eq!(request.category_id, "");
+    assert_eq!(request.label_ids.len(), 0);
 }
 
 #[test]
@@ -825,8 +837,8 @@ fn test_discover_rooms_request_defaults_taxonomy_filters_from_json() {
     let request: synctv_proto::client::DiscoverRoomsRequest =
         serde_json::from_str("{}").expect("request should deserialize");
 
-    assert!(request.category_id.is_empty());
-    assert!(request.label_ids.is_empty());
+    assert_eq!(request.category_id, "");
+    assert_eq!(request.label_ids.len(), 0);
 }
 
 #[test]
@@ -835,7 +847,7 @@ fn test_list_room_labels_request_defaults_category_filter_from_json() {
         serde_json::from_str("{}").expect("request should deserialize");
 
     assert!(!request.include_disabled);
-    assert!(request.category_id.is_empty());
+    assert_eq!(request.category_id, "");
 }
 
 #[test]

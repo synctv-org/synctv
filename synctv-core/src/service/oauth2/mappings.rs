@@ -75,7 +75,14 @@ impl OAuth2Service {
 
     pub async fn list_available_instances(
         &self,
-    ) -> Result<Vec<(String, OAuth2Provider, OAuth2SignupPolicy)>> {
+    ) -> Result<
+        Vec<(
+            String,
+            OAuth2Provider,
+            OAuth2SignupPolicy,
+            Vec<crate::oauth2::OAuth2AuthorizationMode>,
+        )>,
+    > {
         self.sync_runtime_providers().await?;
         let providers = self.providers.read().await;
         Ok(providers
@@ -85,6 +92,7 @@ impl OAuth2Service {
                     name.clone(),
                     entry.provider_type.clone(),
                     entry.signup_policy.clone(),
+                    entry.provider.supported_authorization_modes().to_vec(),
                 )
             })
             .collect())

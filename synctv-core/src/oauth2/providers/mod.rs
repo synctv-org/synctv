@@ -7,16 +7,30 @@
 //!
 //! Factory pattern: providers are registered once, then created multiple times with different configs.
 
+pub mod apple;
+pub mod casdoor;
+pub mod discord;
+pub mod feishu;
+pub mod gitee;
 pub mod github;
 pub mod google;
 pub mod logto;
+pub mod microsoft;
 pub mod oidc;
+pub mod qq;
 
 // Re-export provider structs and config structs for convenience
+pub use apple::{AppleConfig, AppleProvider};
+pub use casdoor::{CasdoorConfig, CasdoorProvider};
+pub use discord::{DiscordConfig, DiscordProvider};
+pub use feishu::{FeishuConfig, FeishuProvider};
+pub use gitee::{GiteeConfig, GiteeProvider};
 pub use github::{GitHubConfig, GitHubProvider};
 pub use google::{GoogleConfig, GoogleProvider};
 pub use logto::{LogtoConfig, LogtoProvider};
+pub use microsoft::{MicrosoftConfig, MicrosoftProvider};
 pub use oidc::{OidcConfig, OidcProvider};
+pub use qq::{QqConfig, QqProvider};
 
 use crate::{Error, InternalExt};
 use oauth2::{AsyncHttpClient, HttpClientError, HttpRequest, HttpResponse};
@@ -155,6 +169,19 @@ pub(super) fn validate_oauth2_redirect_url(url: &str, context: &str) -> Result<(
     Ok(())
 }
 
+pub(super) fn require_oauth2_redirect_url<'a>(
+    redirect_url: Option<&'a str>,
+    context: &str,
+) -> Result<&'a str, Error> {
+    let redirect_url = redirect_url.ok_or_else(|| {
+        Error::InvalidInput(format!(
+            "{context} requires a redirect URL for browser authorization"
+        ))
+    })?;
+    validate_oauth2_redirect_url(redirect_url, context)?;
+    Ok(redirect_url)
+}
+
 pub(super) fn validate_required_oauth2_field(
     provider: &str,
     field: &str,
@@ -224,10 +251,29 @@ pub fn provider_registry(
         "github",
         Arc::new(move |config| github::github_factory_from_private_config(config, &github_guard)),
     );
+    let qq_guard = ssrf_guard.clone();
+    registry.register(
+        "qq",
+        Arc::new(move |config| qq::qq_factory_from_private_config(config, &qq_guard)),
+    );
     let google_guard = ssrf_guard.clone();
     registry.register(
         "google",
         Arc::new(move |config| google::google_factory_from_private_config(config, &google_guard)),
+    );
+    let microsoft_guard = ssrf_guard.clone();
+    registry.register(
+        "microsoft",
+        Arc::new(move |config| {
+            microsoft::microsoft_factory_from_private_config(config, &microsoft_guard)
+        }),
+    );
+    let discord_guard = ssrf_guard.clone();
+    registry.register(
+        "discord",
+        Arc::new(move |config| {
+            discord::discord_factory_from_private_config(config, &discord_guard)
+        }),
     );
     let logto_guard = ssrf_guard.clone();
     registry.register(
@@ -237,12 +283,24 @@ pub fn provider_registry(
     let casdoor_guard = ssrf_guard.clone();
     registry.register(
         "casdoor",
-        Arc::new(move |config| oidc::casdoor_factory_from_private_config(config, &casdoor_guard)),
+        Arc::new(move |config| {
+            casdoor::casdoor_factory_from_private_config(config, &casdoor_guard)
+        }),
     );
     let apple_guard = ssrf_guard.clone();
     registry.register(
         "apple",
-        Arc::new(move |config| oidc::apple_factory_from_private_config(config, &apple_guard)),
+        Arc::new(move |config| apple::apple_factory_from_private_config(config, &apple_guard)),
+    );
+    let feishu_guard = ssrf_guard.clone();
+    registry.register(
+        "feishu",
+        Arc::new(move |config| feishu::feishu_factory_from_private_config(config, &feishu_guard)),
+    );
+    let gitee_guard = ssrf_guard.clone();
+    registry.register(
+        "gitee",
+        Arc::new(move |config| gitee::gitee_factory_from_private_config(config, &gitee_guard)),
     );
     let oidc_guard = ssrf_guard;
     registry.register(

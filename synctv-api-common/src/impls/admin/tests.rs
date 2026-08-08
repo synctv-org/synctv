@@ -199,7 +199,6 @@ fn runtime_settings_with_github_provider() -> synctv_core::service::RuntimeSetti
                 synctv_core::service::OAuth2GithubProviderConfig {
                     client_id: "github-client".to_string(),
                     client_secret: "github-secret".to_string(),
-                    redirect_url: "https://app.example.com/oauth/callback".to_string(),
                 },
             ),
         },

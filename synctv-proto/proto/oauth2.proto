@@ -26,6 +26,13 @@ enum OAuth2Operation {
   OAUTH2_OPERATION_BIND = 2;
 }
 
+// Authorization modes supported by a provider instance.
+enum OAuth2ProviderMode {
+  OAUTH2_PROVIDER_MODE_UNSPECIFIED = 0;
+  OAUTH2_PROVIDER_MODE_BROWSER = 1;
+  OAUTH2_PROVIDER_MODE_NATIVE = 2;
+}
+
 // ==================== OAuth2 Service ====================
 // OAuth2/OIDC authentication service
 //
@@ -85,7 +92,7 @@ message OAuth2ProviderTypePathRequest {
   string provider = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 32
-    pattern: "^(qq|github|google|microsoft|discord|casdoor|logto|oidc|feishu|gitee)$"
+    pattern: "^(qq|github|google|microsoft|discord|casdoor|logto|oidc|feishu|gitee|apple)$"
   }];
 }
 
@@ -100,17 +107,19 @@ message GetAuthorizationUrlRequest {
   // Optional OAuth2 callback URL for this authorization flow.
   // Clients use HTTPS App Links/Universal Links on mobile and loopback HTTP
   // URLs on desktop. Custom URL schemes are not supported.
-  string redirect_url = 2 [(buf.validate.field).cel = {
+  optional string redirect_url = 2 [(buf.validate.field).cel = {
     id: "oauth2.get_authorization_url.redirect_url"
     message: "redirect_url must be empty, an https URL, or a loopback http URL"
     expression: "this == '' || (size(this) <= 2048 && (this.matches('^https://[^\\\\s]+$') || this.matches('^http://(127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(:[0-9]+)?/[^\\\\s]*$')))"
   }];
+  // Ask the selected provider to use its native platform authorization flow.
+  optional bool native = 3;
 }
 
 message GetAuthorizationUrlResponse {
   // Authorization URL to redirect user to
-  // Frontend should redirect the browser to this URL
-  string authorization_url = 1;
+  // Present for browser authorization and omitted for native authorization.
+  optional string authorization_url = 1;
 
   // State token for CSRF protection
   // Frontend should store this temporarily and validate it matches the state
@@ -121,6 +130,9 @@ message GetAuthorizationUrlResponse {
     defined_only: true
     not_in: [0]
   }];
+
+  // Provider-generated OIDC nonce when the authorization flow requires one.
+  optional string nonce = 4;
 }
 
 // ==================== Get Authorization URL for Bind ====================
@@ -136,21 +148,26 @@ message GetAuthorizationUrlForBindRequest {
   // Optional OAuth2 callback URL for this bind flow.
   // Clients use HTTPS App Links/Universal Links on mobile and loopback HTTP
   // URLs on desktop. Custom URL schemes are not supported.
-  string redirect_url = 2 [(buf.validate.field).cel = {
+  optional string redirect_url = 2 [(buf.validate.field).cel = {
     id: "oauth2.get_authorization_url_for_bind.redirect_url"
     message: "redirect_url must be empty, an https URL, or a loopback http URL"
     expression: "this == '' || (size(this) <= 2048 && (this.matches('^https://[^\\\\s]+$') || this.matches('^http://(127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(:[0-9]+)?/[^\\\\s]*$')))"
   }];
 
+  // Ask the selected provider to use its native platform authorization flow.
+  optional bool native = 4;
+
   string verification_id = 3 [(buf.validate.field).string = {
     min_len: 1
     max_len: 128
   }];
+
 }
 
 message GetAuthorizationUrlForBindResponse {
   // Authorization URL to redirect user to
-  string authorization_url = 1;
+  // Present for browser authorization and omitted for native authorization.
+  optional string authorization_url = 1;
 
   // State token for CSRF protection
   string state = 2;
@@ -159,6 +176,9 @@ message GetAuthorizationUrlForBindResponse {
     defined_only: true
     not_in: [0]
   }];
+
+  // Provider-generated OIDC nonce when the authorization flow requires one.
+  optional string nonce = 4;
 }
 
 // ==================== Exchange Authorization Code ====================
@@ -236,6 +256,12 @@ message OAuth2ProviderInstance {
 
   // Whether new account creation through this provider instance requires review.
   bool signup_need_review = 4;
+
+  // Authorization modes implemented by this provider instance.
+  repeated OAuth2ProviderMode supported_modes = 5 [(buf.validate.field).repeated.items.enum = {
+    defined_only: true
+    not_in: [0]
+  }];
 }
 
 // ==================== Unlink Provider ====================

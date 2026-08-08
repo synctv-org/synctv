@@ -226,14 +226,15 @@ Then call login with `email` and `email_token`. Do not mix email-login tokens wi
 OAuth2/OIDC is frontend-driven:
 
 <Steps>
-1. Call `GET /api/oauth2/providers` to discover provider instances, `signupEnabled`, and `signupNeedReview`.
-2. Call `GET /api/oauth2/{provider}/authorize?redirectUrl=<callback>` to get the provider authorization URL and state.
-3. Redirect the user to the provider.
-4. The provider redirects back to the client URL with `code` and `state`.
-5. Call `POST /api/oauth2/{provider}/exchange`.
-6. If the response has `registrationReviewRequired=true`, show pending-review state and keep `registrationReviewId`; do not treat it as logged in.
-7. If the response contains tokens, store the SyncTV access and refresh tokens.
+1. Call `GET /api/oauth2/providers` to discover provider instances, `signupEnabled`, `signupNeedReview`, and `supportedModes`. iOS/macOS prefers an Apple instance supporting both `browser` and `native`; other platforms use `browser`, and unsupported instances stay hidden.
+2. For browser authorization, call `GET /api/oauth2/{provider}/authorize?redirectUrl=<callback>` to get the provider authorization URL and state; `authorizationUrl` is present in this response. For native Apple authorization, call `GET /api/oauth2/{provider}/authorize?native=true` and omit `redirectUrl`; native responses omit `authorizationUrl` and the client uses Apple's system Sign in with Apple flow directly.
+3. Browser authorization redirects the user to the provider, which returns `code` and `state` to the client callback. Native Apple authorization uses Sign in with Apple on iOS/macOS and returns `code` and `state` through the platform API. Use the `nonce` returned by the native authorize response as the server-side nonce input: hash it with SHA-256 and set the Apple request nonce to the lowercase hexadecimal digest. Preserve the returned `state` and send it with the code during exchange.
+4. Call `POST /api/oauth2/{provider}/exchange`.
+5. If the response has `registrationReviewRequired=true`, show pending-review state and keep `registrationReviewId`; do not treat it as logged in.
+6. If the response contains tokens, store the SyncTV access and refresh tokens.
 </Steps>
+
+Native Apple login uses the Apple App ID Bundle ID as `nativeClientId`; the server exchanges the authorization code with `nativeClientSecret`. The official client Bundle ID is `org.synctv.app`. A self-hosted distribution normally needs its own Apple Developer Team, Bundle ID, signing, and server-side secret. These settings are separate from the Apple Services ID and HTTPS `redirectUrl` used by browser authorization.
 
 Minimal exchange:
 
@@ -246,7 +247,7 @@ curl -sS http://localhost:8080/api/oauth2/github/exchange \
   }'
 ```
 
-Use `GET /api/oauth2/{provider}/bind?redirectUrl=<callback>` when binding a provider to an existing authenticated account. The bind authorization request and the later `POST /api/oauth2/{provider}/exchange` call must both include the current user's access token; the exchange token user must match the user captured in the OAuth2 state. OAuth2 login is not a local 2FA first or second factor, but users with 2FA enabled can still log in through OAuth2.
+Use `GET /api/oauth2/{provider}/bind?redirectUrl=<callback>` for browser authorization when binding a provider to an existing authenticated account. Use `GET /api/oauth2/{provider}/bind?native=true` and omit `redirectUrl` for native Apple authorization. The bind authorization request and the later `POST /api/oauth2/{provider}/exchange` call must both include the current user's access token; the exchange token user must match the user captured in the OAuth2 state. OAuth2 login is not a local 2FA first or second factor, but users with 2FA enabled can still log in through OAuth2.
 
 ## gRPC Examples
 

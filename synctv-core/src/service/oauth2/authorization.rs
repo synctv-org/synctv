@@ -3,6 +3,7 @@ use tracing::debug;
 
 use crate::{
     models::UserId,
+    oauth2::OAuth2AuthorizationMode,
     service::oauth2::{OAuth2Operation, OAuth2Service, OAuth2State, PreparedOAuth2Authorization},
     Error, InternalExt, Result,
 };
@@ -71,6 +72,7 @@ impl OAuth2Service {
         redirect_url: Option<String>,
         operation: OAuth2Operation,
         target_user_id: Option<UserId>,
+        mode: OAuth2AuthorizationMode,
         control: Option<&ExecutionControl>,
     ) -> Result<PreparedOAuth2Authorization> {
         Self::validate_operation_target(operation, target_user_id)?;
@@ -83,13 +85,18 @@ impl OAuth2Service {
         }
 
         let provider = self.provider_entry(instance_name).await?.provider;
+        if !provider.supported_authorization_modes().contains(&mode) {
+            return Err(Error::InvalidInput(format!(
+                "OAuth2 provider '{instance_name}' does not support {mode:?} authorization"
+            )));
+        }
 
         let state_token = synctv_common::snanoid!(32);
         let auth_redirect_url = redirect_url.as_deref();
         provider.validate_authorization_redirect_url(auth_redirect_url)?;
         let auth = Self::run_with_control(control, async {
             provider
-                .new_auth_url(&state_token, auth_redirect_url)
+                .new_auth_url(&state_token, auth_redirect_url, mode)
                 .await
                 .internal_with_err("Failed to generate authorization URL")
         })
@@ -98,6 +105,7 @@ impl OAuth2Service {
         let oauth_state = OAuth2State {
             instance_name: instance_name.to_string(),
             operation,
+            authorization_mode: mode,
             redirect_url,
             created_at: crate::SystemClock.now(),
             target_user_id,
@@ -135,6 +143,7 @@ impl OAuth2Service {
                 redirect_url,
                 operation,
                 target_user_id,
+                OAuth2AuthorizationMode::Browser,
                 control,
             )
             .await?;

@@ -1,7 +1,7 @@
 use super::state_store::run_oauth_state_redis_op;
 use super::*;
-use crate::oauth2::OAuth2Authorization;
 use crate::oauth2::Provider as OAuth2ProviderTrait;
+use crate::oauth2::{OAuth2Authorization, OAuth2AuthorizationMode};
 use crate::test_helpers::failing_redis_runtime;
 use crate::{Error, SharedStateMode, SharedStateProfile};
 use async_trait::async_trait;
@@ -123,14 +123,11 @@ impl TestOAuth2Provider {
 
 #[async_trait]
 impl OAuth2ProviderTrait for TestOAuth2Provider {
-    fn provider_type(&self) -> &'static str {
-        "test"
-    }
-
     async fn new_auth_url(
         &self,
         state: &str,
         redirect_url: Option<&str>,
+        _mode: OAuth2AuthorizationMode,
     ) -> Result<OAuth2Authorization> {
         let mut url = format!("{}&state={state}", self.auth_url);
         if let Some(redirect_url) = redirect_url {
@@ -144,8 +141,9 @@ impl OAuth2ProviderTrait for TestOAuth2Provider {
         &self,
         _code: &str,
         _redirect_url: Option<&str>,
-        _pkce_verifier: &str,
+        _pkce_verifier: Option<&str>,
         _nonce: Option<&str>,
+        _mode: OAuth2AuthorizationMode,
     ) -> Result<crate::oauth2::OAuth2UserInfo> {
         if let Some(ref err) = self.exchange_error {
             return Err(Error::Internal(err.clone()));
@@ -185,7 +183,7 @@ fn create_test_service_with_allowed_urls(urls: Vec<String>) -> OAuth2Service {
     let guard = synctv_common::ssrf::SsrfGuard::strict_policy();
     let settings = create_test_runtime_settings_store(&guard);
     let providers: crate::service::OAuth2ProviderConfigs = ok(
-        r#"{"github":{"type":"github","enableSignup":true,"clientId":"id","clientSecret":"secret","redirectUrl":"https://syncs.tv/oauth2/callback"}}"#.parse(),
+        r#"{"github":{"type":"github","enableSignup":true,"clientId":"id","clientSecret":"secret"}}"#.parse(),
         "test GitHub provider config should parse",
     );
     ok(
@@ -421,6 +419,7 @@ async fn test_store_and_consume_state() {
         redirect_url: Some("http://127.0.0.1:34567/dashboard".to_string()),
         created_at: crate::SystemClock.now(),
         operation: OAuth2Operation::Login,
+        authorization_mode: OAuth2AuthorizationMode::Browser,
         target_user_id: None,
         pkce_verifier: "verifier123".to_string(),
         nonce: None,
@@ -452,6 +451,7 @@ async fn test_state_single_use_consumed_on_first_retrieval() {
         redirect_url: None,
         created_at: crate::SystemClock.now(),
         operation: OAuth2Operation::Login,
+        authorization_mode: OAuth2AuthorizationMode::Browser,
         target_user_id: None,
         pkce_verifier: "v".to_string(),
         nonce: None,
@@ -497,6 +497,7 @@ async fn test_state_preserves_target_user_id() {
         redirect_url: None,
         created_at: crate::SystemClock.now(),
         operation: OAuth2Operation::Bind,
+        authorization_mode: OAuth2AuthorizationMode::Browser,
         target_user_id: Some(user_id),
         pkce_verifier: "bind_verifier".to_string(),
         nonce: None,
@@ -529,6 +530,7 @@ async fn test_verify_state_consumes_token() {
         redirect_url: None,
         created_at: crate::SystemClock.now(),
         operation: OAuth2Operation::Login,
+        authorization_mode: OAuth2AuthorizationMode::Browser,
         target_user_id: None,
         pkce_verifier: "pkce_v".to_string(),
         nonce: None,
@@ -618,7 +620,7 @@ async fn test_list_available_instances_uses_runtime_ssrf_policy_for_dynamic_oidc
         .build();
     let registry = create_test_runtime_settings_store(&guard);
     let configs: crate::service::OAuth2ProviderConfigs = ok(
-        r#"{"casdoor_oidc":{"type":"oidc","enableSignup":true,"clientId":"id","clientSecret":"secret","redirectUrl":"http://127.0.0.1:18081/oauth/callback","issuer":"http://127.0.0.1:18000"}}"#.parse(),
+        r#"{"casdoor_oidc":{"type":"oidc","enableSignup":true,"clientId":"id","clientSecret":"secret","issuer":"http://127.0.0.1:18000"}}"#.parse(),
         "test OAuth2 provider config should parse",
     );
     ok(
@@ -683,7 +685,7 @@ async fn test_register_multiple_providers() {
     );
     assert_eq!(providers.len(), 3);
 
-    let names: Vec<&str> = providers.iter().map(|(n, _, _)| n.as_str()).collect();
+    let names: Vec<&str> = providers.iter().map(|(n, _, _, _)| n.as_str()).collect();
     assert!(names.contains(&"github"));
     assert!(names.contains(&"logto1"));
     assert!(names.contains(&"google"));
@@ -745,6 +747,35 @@ async fn test_get_authorization_url_success() {
     assert_eq!(state.pkce_verifier, "test_pkce_verifier_abc123");
     assert!(state.redirect_url.is_none());
     assert!(state.target_user_id.is_none());
+}
+
+#[tokio::test]
+async fn test_authorization_rejects_mode_not_advertised_by_provider() {
+    let service = create_test_service();
+    service
+        .register_provider(
+            "github".to_string(),
+            OAuth2Provider::GitHub,
+            Box::new(TestOAuth2Provider::new()),
+        )
+        .await;
+
+    let error = err(
+        service
+            .prepare_authorization_url_with_control(
+                "github",
+                None,
+                OAuth2Operation::Login,
+                None,
+                OAuth2AuthorizationMode::Native,
+                None,
+            )
+            .await,
+        "unsupported provider mode should be rejected",
+    );
+    assert!(error
+        .to_string()
+        .contains("does not support Native authorization"));
 }
 
 #[tokio::test]
@@ -1144,6 +1175,7 @@ fn test_oauth2_state_serialization_roundtrip() {
         redirect_url: Some("http://127.0.0.1:34567/dashboard".to_string()),
         created_at: crate::SystemClock.now(),
         operation: OAuth2Operation::Bind,
+        authorization_mode: OAuth2AuthorizationMode::Browser,
         target_user_id: Some(UserId::expect_positive(93_004)),
         pkce_verifier: "S256_challenge_verifier".to_string(),
         nonce: Some("oidc_nonce_123".to_string()),
@@ -1173,6 +1205,7 @@ fn test_oauth2_state_serialization_none_fields() {
         redirect_url: None,
         created_at: crate::SystemClock.now(),
         operation: OAuth2Operation::Login,
+        authorization_mode: OAuth2AuthorizationMode::Browser,
         target_user_id: None,
         pkce_verifier: "v".to_string(),
         nonce: None,
@@ -1195,6 +1228,7 @@ async fn test_multiple_concurrent_states() {
             redirect_url: None,
             created_at: crate::SystemClock.now(),
             operation: OAuth2Operation::Login,
+            authorization_mode: OAuth2AuthorizationMode::Browser,
             target_user_id: None,
             pkce_verifier: format!("verifier_{i}"),
             nonce: None,
@@ -1291,6 +1325,7 @@ async fn test_concurrent_state_consumption_only_first_succeeds() {
         redirect_url: None,
         created_at: crate::SystemClock.now(),
         operation: OAuth2Operation::Login,
+        authorization_mode: OAuth2AuthorizationMode::Browser,
         target_user_id: None,
         pkce_verifier: "concurrent_verifier".to_string(),
         nonce: None,
@@ -1376,6 +1411,7 @@ async fn test_consuming_one_state_does_not_affect_others() {
             redirect_url: None,
             created_at: crate::SystemClock.now(),
             operation: OAuth2Operation::Login,
+            authorization_mode: OAuth2AuthorizationMode::Browser,
             target_user_id: None,
             pkce_verifier: format!("verifier_{i}"),
             nonce: None,
@@ -1416,6 +1452,7 @@ async fn test_state_expired_created_at_rejected() {
         redirect_url: None,
         created_at: expired_time,
         operation: OAuth2Operation::Login,
+        authorization_mode: OAuth2AuthorizationMode::Browser,
         target_user_id: None,
         pkce_verifier: "expired_verifier".to_string(),
         nonce: None,
@@ -1445,6 +1482,7 @@ async fn test_state_within_ttl_accepted() {
         redirect_url: None,
         created_at: within_ttl_time,
         operation: OAuth2Operation::Login,
+        authorization_mode: OAuth2AuthorizationMode::Browser,
         target_user_id: None,
         pkce_verifier: "valid_verifier".to_string(),
         nonce: None,
@@ -1472,6 +1510,7 @@ async fn test_state_at_ttl_boundary() {
         redirect_url: None,
         created_at: past_boundary_time,
         operation: OAuth2Operation::Login,
+        authorization_mode: OAuth2AuthorizationMode::Browser,
         target_user_id: None,
         pkce_verifier: "boundary_verifier".to_string(),
         nonce: None,
@@ -1503,6 +1542,7 @@ async fn test_verify_state_checks_created_at_expiry() {
         redirect_url: None,
         created_at: expired_time,
         operation: OAuth2Operation::Login,
+        authorization_mode: OAuth2AuthorizationMode::Browser,
         target_user_id: None,
         pkce_verifier: "expired".to_string(),
         nonce: None,

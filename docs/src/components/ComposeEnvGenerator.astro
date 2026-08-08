@@ -322,7 +322,8 @@ const copy = isEnglish
         const { default: Tar } = await import('tar-js');
         const archive = new Tar();
         for (const [filename, content] of Object.entries(files)) archive.append(filename, content, { mode: 0o600 });
-        const tarBytes = archive.out.slice(0, archive.written + 1024);
+        const tarBytes = new Uint8Array(archive.written + 1024);
+        tarBytes.set(archive.out.subarray(0, archive.written));
         download('synctv-compose-env.tar', new Blob([tarBytes], { type: 'application/x-tar' }));
         status.textContent = copy.generated;
       } catch (error) {

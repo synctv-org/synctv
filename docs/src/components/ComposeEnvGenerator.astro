@@ -1,4 +1,6 @@
 ---
+import { Code, Icon } from '@astrojs/starlight/components';
+
 interface Props {
   locale?: 'zh' | 'en';
 }
@@ -9,7 +11,7 @@ const copy = isEnglish
   ? {
       title: 'Generate your Compose environment',
       intro:
-        'Choose the values you want to control. Database credentials and application secrets are generated in page memory and included in the downloaded files.',
+        'Choose the values you want to control. Database credentials and application secrets are generated in page memory and included in the downloaded TAR archive.',
       deployment: 'Deployment settings',
       username: 'Initial root username',
       password: 'Initial root password',
@@ -19,19 +21,17 @@ const copy = isEnglish
       hidePassword: 'Hide',
       downloads: 'Download files',
       downloadTab: 'Download',
-      downloadAll: 'Download all files',
-      downloadPostgres: 'Download .env.postgres',
-      downloadRedis: 'Download .env.redis',
-      downloadSynctv: 'Download .env.synctv',
+      downloadTar: 'Download TAR',
       previewWarning: 'Warning: this file contains passwords and long-lived secrets. Do not share it, commit it to a repository, or upload it to a third-party service.',
-      generated: 'Files are ready to download.',
-      composeNote: 'Save the three files in the same directory as docker-compose.yml, then run docker compose up -d.',
+      generated: 'The archive is ready to download.',
+      downloading: 'Preparing archive...',
       invalidPassword: 'Enter a root password without line breaks.',
+      downloadFailed: 'Unable to create the archive. Reload the page and try again.',
     }
   : {
       title: '生成 Compose 环境文件',
       intro:
-        '填写需要控制的参数。数据库凭据和应用密钥只在当前页面内存中生成，并写入下载的环境文件。',
+        '填写需要控制的参数。数据库凭据和应用密钥只在当前页面内存中生成，并写入下载的 TAR 压缩包。',
       deployment: '部署参数',
       username: '初始 root 用户名',
       password: '初始 root 密码',
@@ -41,14 +41,12 @@ const copy = isEnglish
       hidePassword: '隐藏密码',
       downloads: '下载文件',
       downloadTab: '下载',
-      downloadAll: '下载全部文件',
-      downloadPostgres: '下载 .env.postgres',
-      downloadRedis: '下载 .env.redis',
-      downloadSynctv: '下载 .env.synctv',
+      downloadTar: '下载 TAR',
       previewWarning: '警告：文件包含密码和长期密钥。请勿分享、提交到代码仓库或上传到第三方服务。',
-      generated: '文件已经生成，可以下载。',
-      composeNote: '把三个文件放在 docker-compose.yml 同一目录，然后运行 docker compose up -d。',
+      generated: '压缩包已经生成，可以下载。',
+      downloading: '正在生成压缩包……',
       invalidPassword: '请输入不含换行的 root 密码。',
+      downloadFailed: '无法生成压缩包，请刷新页面后重试。',
     };
 ---
 
@@ -59,6 +57,9 @@ const copy = isEnglish
   data-show-password={copy.showPassword}
   data-hide-password={copy.hidePassword}
   data-generated={copy.generated}
+  data-downloading={copy.downloading}
+  data-download-failed={copy.downloadFailed}
+  data-download-tar={copy.downloadTar}
 >
   <div class="compose-generator__header">
     <h3>{copy.title}</h3>
@@ -89,10 +90,10 @@ const copy = isEnglish
 
   <div class="compose-generator__downloads" data-downloads>
     <div class="compose-generator__tabs" role="tablist" aria-label={copy.downloads}>
-      <button type="button" role="tab" aria-selected="true" aria-controls="compose-generator-download-panel" data-tab="download">{copy.downloadTab}</button>
-      <button type="button" role="tab" aria-selected="false" aria-controls="compose-generator-preview-panel" data-tab=".env.synctv">.env.synctv</button>
-      <button type="button" role="tab" aria-selected="false" aria-controls="compose-generator-preview-panel" data-tab=".env.postgres">.env.postgres</button>
-      <button type="button" role="tab" aria-selected="false" aria-controls="compose-generator-preview-panel" data-tab=".env.redis">.env.redis</button>
+      <button type="button" role="tab" data-tab-group="view" aria-selected="true" aria-controls="compose-generator-download-panel" data-tab="download">{copy.downloadTab}</button>
+      <button type="button" role="tab" data-tab-group="view" aria-selected="false" aria-controls="compose-generator-preview-panel" data-tab=".env.synctv">.env.synctv</button>
+      <button type="button" role="tab" data-tab-group="view" aria-selected="false" aria-controls="compose-generator-preview-panel" data-tab=".env.postgres">.env.postgres</button>
+      <button type="button" role="tab" data-tab-group="view" aria-selected="false" aria-controls="compose-generator-preview-panel" data-tab=".env.redis">.env.redis</button>
     </div>
     <div id="compose-generator-download-panel" role="tabpanel" tabindex="0" data-panel="download">
       <div class="compose-generator__downloads-header">
@@ -100,21 +101,20 @@ const copy = isEnglish
           <h4>{copy.downloads}</h4>
           <p data-status>{copy.generated}</p>
         </div>
-        <button type="button" class="compose-generator__primary-button" data-action="download-all">{copy.downloadAll}</button>
+        <button type="button" class="compose-generator__primary-button" data-action="download-tar">
+          <Icon name="download" />
+          <span>{copy.downloadTar}</span>
+        </button>
       </div>
-      <div class="compose-generator__file-list">
-        <button type="button" data-action="download-synctv">{copy.downloadSynctv}</button>
-        <button type="button" data-action="download-postgres">{copy.downloadPostgres}</button>
-        <button type="button" data-action="download-redis">{copy.downloadRedis}</button>
-      </div>
-      <p class="compose-generator__note">{copy.composeNote}</p>
     </div>
     <div id="compose-generator-preview-panel" role="tabpanel" tabindex="0" data-panel="preview" hidden>
       <div class="compose-generator__preview-header">
         <h4 data-preview-title></h4>
         <p class="compose-generator__warning">{copy.previewWarning}</p>
       </div>
-      <pre class="compose-generator__preview" data-preview-content></pre>
+      <div class="compose-generator__preview-code" data-preview-code>
+        <Code code="# SyncTV Compose environment preview" lang="bash" locale={isEnglish ? 'en' : 'zh-CN'} />
+      </div>
     </div>
   </div>
 </section>
@@ -127,17 +127,21 @@ const copy = isEnglish
     const rootPassword = generator.querySelector('[data-field="rootPassword"]');
     const status = generator.querySelector('[data-status]');
     const previewTitle = generator.querySelector('[data-preview-title]');
-    const previewContent = generator.querySelector('[data-preview-content]');
+    const previewContent = generator.querySelector('[data-preview-code] code');
+    const previewCopyButton = generator.querySelector('[data-preview-code] .copy button');
     const downloadPanel = generator.querySelector('[data-panel="download"]');
     const previewPanel = generator.querySelector('[data-panel="preview"]');
+    const downloadTarButton = generator.querySelector('[data-action="download-tar"]');
     if (
       !(form instanceof HTMLFormElement) ||
       !(rootPassword instanceof HTMLInputElement) ||
       !(status instanceof HTMLElement) ||
       !(previewTitle instanceof HTMLElement) ||
-      !(previewContent instanceof HTMLPreElement) ||
+      !(previewContent instanceof HTMLElement) ||
+      !(previewCopyButton instanceof HTMLButtonElement) ||
       !(downloadPanel instanceof HTMLElement) ||
-      !(previewPanel instanceof HTMLElement)
+      !(previewPanel instanceof HTMLElement) ||
+      !(downloadTarButton instanceof HTMLButtonElement)
     ) {
       throw new Error('Compose environment generator markup is incomplete');
     }
@@ -146,6 +150,9 @@ const copy = isEnglish
       showPassword: generator.dataset.showPassword ?? '',
       hidePassword: generator.dataset.hidePassword ?? '',
       generated: generator.dataset.generated ?? '',
+      downloading: generator.dataset.downloading ?? '',
+      downloadFailed: generator.dataset.downloadFailed ?? '',
+      downloadTar: generator.dataset.downloadTar ?? '',
     };
     const bytesToHex = (bytes: Uint8Array) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
     const randomHex = (byteLength = 32): string => {
@@ -260,12 +267,24 @@ const copy = isEnglish
     };
     const renderPreview = (filename: string) => {
       const files = generatedFiles();
+      const content = files[filename] ?? '';
+      const lines = document.createDocumentFragment();
+      for (const line of content.split('\n')) {
+        const lineElement = document.createElement('div');
+        lineElement.className = 'ec-line';
+        const codeElement = document.createElement('div');
+        codeElement.className = 'code';
+        codeElement.textContent = line || ' ';
+        lineElement.append(codeElement);
+        lines.append(lineElement);
+      }
       previewTitle.textContent = filename;
-      previewContent.textContent = files[filename] ?? '';
+      previewContent.replaceChildren(lines);
+      previewCopyButton.dataset.code = content;
     };
     const setActiveTab = (tab: string) => {
       activeTab = tab;
-      generator.querySelectorAll('[role="tab"]').forEach((element) => {
+      generator.querySelectorAll('[role="tab"][data-tab-group="view"]').forEach((element) => {
         if (!(element instanceof HTMLButtonElement)) return;
         const selected = element.dataset.tab === tab;
         element.setAttribute('aria-selected', String(selected));
@@ -276,8 +295,7 @@ const copy = isEnglish
       previewPanel.hidden = showingDownload;
       if (!showingDownload) renderPreview(tab);
     };
-    const download = (filename: string, content: string) => {
-      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const download = (filename: string, blob: Blob) => {
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
       link.download = filename;
@@ -289,41 +307,61 @@ const copy = isEnglish
         URL.revokeObjectURL(link.href);
       }, 1000);
     };
-    const downloadFiles = (selected: string[]) => {
+    const downloadArchive = async () => {
       const error = validate();
       if (error) {
         status.textContent = error;
         status.dataset.error = 'true';
         return;
       }
-      status.textContent = copy.generated;
+      status.textContent = copy.downloading;
       delete status.dataset.error;
+      downloadTarButton.disabled = true;
       const files = generatedFiles();
-      for (const filename of selected) download(filename, files[filename]);
+      try {
+        const { default: Tar } = await import('tar-js');
+        const archive = new Tar();
+        for (const [filename, content] of Object.entries(files)) archive.append(filename, content, { mode: 0o600 });
+        const tarBytes = archive.out.slice(0, archive.written + 1024);
+        download('synctv-compose-env.tar', new Blob([tarBytes], { type: 'application/x-tar' }));
+        status.textContent = copy.generated;
+      } catch (error) {
+        console.error('Failed to create Compose environment archive', error);
+        status.textContent = copy.downloadFailed;
+        status.dataset.error = 'true';
+      } finally {
+        downloadTarButton.disabled = false;
+      }
     };
     const bind = (action: string, callback: (event: Event) => void) => {
       generator.querySelector(`[data-action="${action}"]`)?.addEventListener('click', callback);
     };
 
+    const bindTabList = (selector: string, onSelect: (element: HTMLButtonElement) => void) => {
+      generator.querySelectorAll(selector).forEach((element) => {
+        element.addEventListener('click', () => {
+          if (element instanceof HTMLButtonElement) onSelect(element);
+        });
+        element.addEventListener('keydown', (event) => {
+          if (!(event instanceof KeyboardEvent) || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+          const tabs = [...generator.querySelectorAll<HTMLButtonElement>(selector)];
+          const current = tabs.indexOf(element as HTMLButtonElement);
+          if (current < 0) return;
+          const next = event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+              ? tabs.length - 1
+              : (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+          event.preventDefault();
+          tabs[next].focus();
+          onSelect(tabs[next]);
+        });
+      });
+    };
+
     initializeSecrets();
-    generator.querySelectorAll('[role="tab"]').forEach((element) => {
-      element.addEventListener('click', () => {
-        if (element instanceof HTMLButtonElement && element.dataset.tab) setActiveTab(element.dataset.tab);
-      });
-      element.addEventListener('keydown', (event) => {
-        if (!(event instanceof KeyboardEvent) || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-        const tabs = [...generator.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
-        const current = tabs.indexOf(element as HTMLButtonElement);
-        if (current < 0) return;
-        const next = event.key === 'Home'
-          ? 0
-          : event.key === 'End'
-            ? tabs.length - 1
-            : (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
-        event.preventDefault();
-        tabs[next].focus();
-        setActiveTab(tabs[next].dataset.tab ?? 'download');
-      });
+    bindTabList('[role="tab"][data-tab-group="view"]', (element) => {
+      setActiveTab(element.dataset.tab ?? 'download');
     });
     setActiveTab('download');
     bind('generate-password', () => {
@@ -339,10 +377,7 @@ const copy = isEnglish
       button.setAttribute('title', visible ? copy.showPassword : copy.hidePassword);
       button.textContent = visible ? copy.showPassword : copy.hidePassword;
     });
-    bind('download-all', () => downloadFiles(Object.keys(generatedFiles())));
-    bind('download-postgres', () => downloadFiles(['.env.postgres']));
-    bind('download-redis', () => downloadFiles(['.env.redis']));
-    bind('download-synctv', () => downloadFiles(['.env.synctv']));
+    bind('download-tar', () => void downloadArchive());
     form?.addEventListener('input', () => {
       delete status.dataset.error;
       status.textContent = copy.generated;
@@ -488,10 +523,19 @@ const copy = isEnglish
   }
 
   .compose-generator__primary-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
     border-color: var(--sl-color-accent) !important;
     background: var(--sl-color-accent) !important;
     color: var(--sl-color-text-invert) !important;
     font-weight: 650 !important;
+  }
+
+  .compose-generator__primary-button:disabled {
+    cursor: progress;
+    opacity: 0.65;
   }
 
   .compose-generator__help {
@@ -574,37 +618,10 @@ const copy = isEnglish
     line-height: 1.5;
   }
 
-  .compose-generator__preview {
+  .compose-generator__preview-code {
     max-height: 28rem;
     margin: 0.8rem 0 0;
     overflow: auto;
-    border: 1px solid var(--docs-border);
-    border-radius: 5px;
-    padding: 0.85rem;
-    color: var(--sl-color-gray-1);
-    background: var(--sl-color-bg);
-    font-size: 0.76rem;
-    line-height: 1.55;
-    white-space: pre;
-  }
-
-  .compose-generator__file-list {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 0.5rem;
-    margin-top: 0.8rem;
-  }
-
-  .compose-generator__file-list button {
-    width: 100%;
-    min-height: 2.5rem;
-    margin: 0;
-    padding-inline: 0.35rem;
-    white-space: nowrap;
-  }
-
-  .compose-generator__file-list button {
-    color: var(--sl-color-text-accent);
   }
 
   .compose-generator__note {
@@ -614,10 +631,6 @@ const copy = isEnglish
   @media (max-width: 640px) {
     .compose-generator {
       padding: 0.8rem;
-    }
-
-    .compose-generator__file-list {
-      grid-template-columns: 1fr;
     }
 
     .compose-generator__downloads-header {

@@ -24,13 +24,13 @@ If you have not chosen a deployment model yet, start with [Choose a Deployment P
 
 <ComposeEnvGenerator locale="en" />
 
-The generator downloads three files:
+The generator provides three environment files in a TAR archive:
 
 - `.env.synctv`: SyncTV database connection, authentication keys, and root bootstrap settings.
 - `.env.postgres`: PostgreSQL user, password, and database name.
 - `.env.redis`: Redis AUTH password.
 
-Random secrets are generated in page memory and never written to browser storage or the server. Keep the downloaded files together and back them up.
+"Download TAR" creates a TAR archive containing all three environment files. Random secrets are generated in page memory and never written to browser storage or the server.
 
 ## Install
 
@@ -39,15 +39,22 @@ Random secrets are generated in page memory and never written to browser storage
 
     <Code code={`mkdir -p synctv && cd synctv\ncurl -fsSL ${githubRawComposeUrl} -o docker-compose.yml`} lang="bash" />
 
-2. [Return to Generate Environment Files](#generate-environment-files), download the three environment files, and put them in the current directory.
+2. [Return to Generate Environment Files](#generate-environment-files), download `synctv-compose-env.tar`, and put it in the current directory.
 
-3. Validate the final Compose configuration:
+3. Extract the environment files. Their names start with `.`, so Linux treats them as hidden files; use `ls -a` to view them:
+
+    ```bash
+    tar -xf synctv-compose-env.tar
+    ls -a
+    ```
+
+4. Validate the final Compose configuration:
 
     ```bash
     docker compose -f docker-compose.yml config --quiet
     ```
 
-4. Pull the images and start the services in the background:
+5. Pull the images and start the services in the background:
 
     ```bash
     docker compose -f docker-compose.yml up -d

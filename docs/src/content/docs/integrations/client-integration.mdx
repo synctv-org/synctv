@@ -232,9 +232,9 @@ curl -sS http://localhost:8080/api/auth/email/request \
 OAuth2/OIDC 是前端驱动流程：
 
 <Steps>
-1. 调用 `GET /api/oauth2/providers` 获取可用 provider 实例、`signupEnabled`、`signupNeedReview` 和 `supportedModes`。iOS/macOS 优先使用同时支持 `browser` 与 `native` 的 Apple 实例，其他平台使用 `browser`，当前平台不支持的实例隐藏。
+1. 调用 `GET /api/oauth2/providers` 获取可用 provider 实例、`signupEnabled`、`signupNeedReview` 和 `supportedModes`。iOS 和 Mac App Store 构建优先使用同时支持 `browser` 与 `native` 的 Apple 实例，macOS Developer ID、Windows、Linux 和其他平台使用 `browser`，当前平台不支持的实例隐藏。
 2. 浏览器授权调用 `GET /api/oauth2/{provider}/authorize?redirectUrl=<callback>`，获取第三方授权 URL 和 state；响应的 `authorizationUrl` 必须存在。原生 Apple 授权调用 `GET /api/oauth2/{provider}/authorize?native=true`，省略 `redirectUrl`；原生响应省略 `authorizationUrl`，客户端直接使用系统 Sign in with Apple。
-3. 浏览器授权把用户跳转到第三方授权页面，第三方回调到客户端 URL 并带回 `code` 和 `state`。原生 Apple 授权由 iOS/macOS 的 Sign in with Apple 返回 `code` 和 `state`。原生授权响应中的 `nonce` 用作服务端 nonce 输入：客户端对它计算 SHA-256，并把小写十六进制摘要设置为 Apple 请求的 nonce；保留响应中的 `state`，在 exchange 时和 code 一起提交。
+3. 浏览器授权把用户跳转到第三方授权页面，第三方回调到客户端 URL 并带回 `code` 和 `state`。原生 Apple 授权由 iOS 和 Mac App Store 构建的 Sign in with Apple 返回 `code` 和 `state`。原生授权响应中的 `nonce` 用作服务端 nonce 输入：客户端对它计算 SHA-256，并把小写十六进制摘要设置为 Apple 请求的 nonce；保留响应中的 `state`，在 exchange 时和 code 一起提交。
 4. 客户端调用 `POST /api/oauth2/{provider}/exchange`。
 5. 如果响应包含 `registrationReviewRequired=true`，展示待审核状态并保存 `registrationReviewId`，不要把它当作已登录。
 6. 如果响应包含 token，保存 SyncTV access/refresh token。

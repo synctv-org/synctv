@@ -128,7 +128,7 @@ The Microsoft provider also accepts `tenant` (default `common`). The Feishu prov
 ]
 ```
 
-`webClientId` is an Apple Services ID for browser authorization and must have the HTTPS Return URL registered. `nativeClientId` is the signed app's Bundle ID for native Sign in with Apple on iOS and macOS; it must match the installed app's Bundle ID. Configure at least one complete pair: `webClientId` plus `webClientSecret` enables browser authorization, while `nativeClientId` plus `nativeClientSecret` enables native authorization. The unused pair can be omitted for a single-mode deployment. Both `clientSecret` values are server credentials generated with the Apple Developer Team, Key ID, private key, and corresponding client ID. Keep them on the server and out of the client or repository.
+`webClientId` is an Apple Services ID for browser authorization and must have the HTTPS Return URL registered. `nativeClientId` is the signed app's Bundle ID for native Sign in with Apple on iOS and Mac App Store builds; it must match the installed app's Bundle ID. macOS Developer ID builds use browser authorization because Developer ID profiles do not carry the restricted native Apple entitlement. Configure at least one complete pair: `webClientId` plus `webClientSecret` enables browser authorization, while `nativeClientId` plus `nativeClientSecret` enables native authorization. The unused pair can be omitted for a single-mode deployment. Both `clientSecret` values are server credentials generated with the Apple Developer Team, Key ID, private key, and corresponding client ID. Keep them on the server and out of the client or repository.
 
 The official SyncTV build uses `org.synctv.app`. A self-hosted operator normally does not have the official Apple Developer Team's App ID private key and client secret. A self-hosted Apple distribution should create its own Apple Developer Team, Bundle ID, and Sign in with Apple configuration, sign a client with that Bundle ID, and configure the same value as `nativeClientId`.
 
@@ -158,7 +158,7 @@ Apple configuration links: [Web Sign in with Apple](https://developer.apple.com/
 
 Browser authorization requests pass `redirectUrl`; the server validates HTTPS callbacks against `oauth2.allowedRedirectUrls`, while loopback callbacks are handled separately. Register the same callback URL with the third-party provider.
 
-Native authorization requests omit `redirectUrl` and pass `native=true`. The Apple provider advertises native support through `supportedModes`; iOS and macOS use Apple's system Sign in with Apple flow and return an authorization code to the client, which exchanges it with the SyncTV server. The server rejects modes that the provider has not advertised.
+Native authorization requests omit `redirectUrl` and pass `native=true`. The Apple provider advertises native support through `supportedModes`; iOS and Mac App Store builds use Apple's system Sign in with Apple flow and return an authorization code to the client, which exchanges it with the SyncTV server. macOS Developer ID builds use browser authorization. The server rejects modes that the provider has not advertised.
 
 Native Apple login does not use `/.well-known/apple-app-site-association`. That document is used for Apple Universal Links, browser OAuth callback association, and passkey association.
 

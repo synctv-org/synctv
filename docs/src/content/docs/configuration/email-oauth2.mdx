@@ -128,7 +128,7 @@ Microsoft provider 额外使用 `tenant`（默认值为 `common`），Feishu pro
 ]
 ```
 
-`webClientId` 是 Apple Services ID，供浏览器授权使用；它必须注册对应的 HTTPS Return URL。`nativeClientId` 是签名 App 的 Bundle ID，供 iOS/macOS 原生 Sign in with Apple 使用；它必须与安装包的 Bundle ID 一致。至少配置一组完整凭据：`webClientId` 与 `webClientSecret` 启用浏览器授权，`nativeClientId` 与 `nativeClientSecret` 启用原生授权。仅使用一种模式时可以省略另一组。两个 `clientSecret` 都是服务端凭据，使用 Apple Developer Team、Key ID、私钥和对应 client ID 生成，禁止写入客户端或提交到仓库。
+`webClientId` 是 Apple Services ID，供浏览器授权使用；它必须注册对应的 HTTPS Return URL。`nativeClientId` 是签名 App 的 Bundle ID，供 iOS 和 Mac App Store 构建的原生 Sign in with Apple 使用；它必须与安装包的 Bundle ID 一致。macOS Developer ID 构建使用浏览器授权流程，因为 Developer ID profile 不携带受限制的原生 Apple entitlement。至少配置一组完整凭据：`webClientId` 与 `webClientSecret` 启用浏览器授权，`nativeClientId` 与 `nativeClientSecret` 启用原生授权。仅使用一种模式时可以省略另一组。两个 `clientSecret` 都是服务端凭据，使用 Apple Developer Team、Key ID、私钥和对应 client ID 生成，禁止写入客户端或提交到仓库。
 
 官方 SyncTV 构建使用 `org.synctv.app`。自托管服务器通常没有官方 Apple Developer Team 的 App ID 私钥和 client secret，因此自托管发行应创建自己的 Apple Developer Team、Bundle ID 和 Sign in with Apple 配置，使用自己的 Bundle ID 重新签名客户端，并将它配置为 `nativeClientId`。
 
@@ -158,7 +158,7 @@ Apple 官方配置入口：[Web Sign in with Apple](https://developer.apple.com/
 
 浏览器授权请求传入 `redirectUrl`，服务端使用 `oauth2.allowedRedirectUrls` 校验 HTTPS 回调地址，loopback 回调单独放行。客户端应在每次授权开始时生成或选择当前回调地址，并在第三方平台注册相同地址。
 
-原生授权请求省略 `redirectUrl`，并传入 `native=true`。Apple provider 通过 `supportedModes` 声明原生能力；iOS/macOS 通过系统 Sign in with Apple 返回 authorization code，客户端随后把 code 和 state 交给 SyncTV 服务端交换。服务端会拒绝 provider 未声明的模式。
+原生授权请求省略 `redirectUrl`，并传入 `native=true`。Apple provider 通过 `supportedModes` 声明原生能力；iOS 和 Mac App Store 构建通过系统 Sign in with Apple 返回 authorization code，客户端随后把 code 和 state 交给 SyncTV 服务端交换。macOS Developer ID 构建使用浏览器授权流程。服务端会拒绝 provider 未声明的模式。
 
 Apple 原生登录不使用 `/.well-known/apple-app-site-association`。该文件属于 Apple Universal Links、浏览器 OAuth 回调关联和 Passkey 关联。
 

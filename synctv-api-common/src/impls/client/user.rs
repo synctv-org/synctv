@@ -306,7 +306,10 @@ fn prepare_deleted_room_outbox_fanout(
         let prepared = api
             .room_lifecycle_fanout
             .prepare_room_deleted_outbox_fanout(room_id, deleted_by)?;
-        outbox_events.insert(*room_id, prepared.cloned_outbox_event());
+        let outbox_event = prepared.cloned_outbox_event();
+        if outbox_event.enqueue_outbox {
+            outbox_events.insert(*room_id, outbox_event);
+        }
         fanout.push(DeletedRoomAfterCommitFanout {
             room_id: *room_id,
             event: prepared.into_event(),

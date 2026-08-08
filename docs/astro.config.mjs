@@ -129,6 +129,7 @@ export default defineConfig({
           translations: { en: 'Get Started' },
           items: [
             { label: '客户端下载', translations: { en: 'Client Downloads' }, slug: 'install/downloads' },
+            { label: '用户支持', translations: { en: 'User Support' }, slug: 'support' },
             { label: '选择部署方式', translations: { en: 'Choose a Deployment' }, slug: 'install/choose-path' },
             { label: 'Docker Compose 安装', translations: { en: 'Install with Docker Compose' }, slug: 'install/docker-compose' },
             { label: 'Helm 部署', translations: { en: 'Helm Deployment' }, slug: 'install/helm' },
@@ -154,6 +155,7 @@ export default defineConfig({
             { label: '配置示例', translations: { en: 'Configuration Examples' }, slug: 'configuration/full-example' },
             { label: '验证配置', translations: { en: 'Validate Configuration' }, slug: 'configuration/validation' },
             { label: '安全与密钥', translations: { en: 'Security and Secrets' }, slug: 'configuration/security' },
+            { label: '公开 ID', translations: { en: 'Public IDs' }, slug: 'configuration/public-ids' },
             { label: '数据库与 Redis', translations: { en: 'Database and Redis' }, slug: 'configuration/database-and-redis' },
             { label: '服务监听与运行路径', translations: { en: 'Listener and Runtime Paths' }, slug: 'configuration/server-and-runtime' },
             { label: '初始化 root 用户', translations: { en: 'Bootstrap Root User' }, slug: 'configuration/bootstrap' },
@@ -172,7 +174,6 @@ export default defineConfig({
               items: [
                 { label: 'WebRTC', slug: 'configuration/webrtc' },
                 { label: '直播', translations: { en: 'Livestreaming' }, slug: 'configuration/livestream' },
-                { label: '公开 ID', translations: { en: 'Public IDs' }, slug: 'configuration/public-ids' },
               ],
             },
             {

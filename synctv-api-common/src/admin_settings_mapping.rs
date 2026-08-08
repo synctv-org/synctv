@@ -4,9 +4,11 @@ use synctv_core::{
     models::PlayMode,
     service::{
         ConfiguredIceServer, OAuth2AppleProviderConfig, OAuth2CasdoorProviderConfig,
+        OAuth2DiscordProviderConfig, OAuth2FeishuProviderConfig, OAuth2GiteeProviderConfig,
         OAuth2GithubProviderConfig, OAuth2GoogleProviderConfig, OAuth2LogtoProviderConfig,
-        OAuth2OidcProviderConfig, OAuth2ProviderConfig, OAuth2ProviderConfigs,
-        OAuth2ProviderPrivateConfig, RoomPasswordPolicy,
+        OAuth2MicrosoftProviderConfig, OAuth2OidcProviderConfig, OAuth2ProviderConfig,
+        OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig, OAuth2QqProviderConfig,
+        RoomPasswordPolicy,
     },
 };
 use synctv_proto::{admin as admin_proto, client as client_proto};
@@ -552,6 +554,24 @@ fn oauth2_config_from_admin_proto(
         match provider.config.clone().ok_or_else(|| {
             ApiError::InvalidInput(format!("OAuth2 provider '{name}' config is required"))
         })? {
+            Config::Qq(config) => {
+                let current_secret = current.and_then(|provider| match &provider.config {
+                    OAuth2ProviderPrivateConfig::Qq(current) => {
+                        Some((current.client_id.as_str(), current.client_secret.as_str()))
+                    }
+                    _ => None,
+                });
+                OAuth2ProviderPrivateConfig::Qq(OAuth2QqProviderConfig {
+                    client_secret: resolve_oauth2_client_secret(
+                        name,
+                        "qq",
+                        &config.client_id,
+                        config.client_secret,
+                        current_secret,
+                    )?,
+                    client_id: config.client_id,
+                })
+            }
             Config::Github(config) => {
                 let current_secret = current.and_then(|provider| match &provider.config {
                     OAuth2ProviderPrivateConfig::GitHub(current) => {
@@ -568,7 +588,6 @@ fn oauth2_config_from_admin_proto(
                         current_secret,
                     )?,
                     client_id: config.client_id,
-                    redirect_url: config.redirect_url,
                 })
             }
             Config::Google(config) => {
@@ -587,7 +606,43 @@ fn oauth2_config_from_admin_proto(
                         current_secret,
                     )?,
                     client_id: config.client_id,
-                    redirect_url: config.redirect_url,
+                })
+            }
+            Config::Microsoft(config) => {
+                let current_secret = current.and_then(|provider| match &provider.config {
+                    OAuth2ProviderPrivateConfig::Microsoft(current) => {
+                        Some((current.client_id.as_str(), current.client_secret.as_str()))
+                    }
+                    _ => None,
+                });
+                OAuth2ProviderPrivateConfig::Microsoft(OAuth2MicrosoftProviderConfig {
+                    client_secret: resolve_oauth2_client_secret(
+                        name,
+                        "microsoft",
+                        &config.client_id,
+                        config.client_secret,
+                        current_secret,
+                    )?,
+                    client_id: config.client_id,
+                    tenant: microsoft_tenant_or_default(config.tenant),
+                })
+            }
+            Config::Discord(config) => {
+                let current_secret = current.and_then(|provider| match &provider.config {
+                    OAuth2ProviderPrivateConfig::Discord(current) => {
+                        Some((current.client_id.as_str(), current.client_secret.as_str()))
+                    }
+                    _ => None,
+                });
+                OAuth2ProviderPrivateConfig::Discord(OAuth2DiscordProviderConfig {
+                    client_secret: resolve_oauth2_client_secret(
+                        name,
+                        "discord",
+                        &config.client_id,
+                        config.client_secret,
+                        current_secret,
+                    )?,
+                    client_id: config.client_id,
                 })
             }
             Config::Logto(config) => {
@@ -606,7 +661,6 @@ fn oauth2_config_from_admin_proto(
                         current_secret,
                     )?,
                     client_id: config.client_id,
-                    redirect_url: config.redirect_url,
                     endpoint: config.endpoint,
                 })
             }
@@ -626,7 +680,6 @@ fn oauth2_config_from_admin_proto(
                         current_secret,
                     )?,
                     client_id: config.client_id,
-                    redirect_url: config.redirect_url,
                     issuer: config.issuer,
                     auth_url: config.auth_url,
                     token_url: config.token_url,
@@ -651,7 +704,6 @@ fn oauth2_config_from_admin_proto(
                         current_secret,
                     )?,
                     client_id: config.client_id,
-                    redirect_url: config.redirect_url,
                     issuer: config.issuer,
                     auth_url: config.auth_url,
                     token_url: config.token_url,
@@ -660,22 +712,74 @@ fn oauth2_config_from_admin_proto(
                 })
             }
             Config::Apple(config) => {
+                let current_credentials = current.and_then(|provider| match &provider.config {
+                    OAuth2ProviderPrivateConfig::Apple(current) => Some(current),
+                    _ => None,
+                });
+                OAuth2ProviderPrivateConfig::Apple(OAuth2AppleProviderConfig {
+                    web_client_secret: resolve_oauth2_client_secret(
+                        name,
+                        "apple.web",
+                        &config.web_client_id,
+                        config.web_client_secret,
+                        current_credentials.map(|current| {
+                            (
+                                current.web_client_id.as_str(),
+                                current.web_client_secret.as_str(),
+                            )
+                        }),
+                    )?,
+                    web_client_id: config.web_client_id,
+                    native_client_secret: resolve_oauth2_client_secret(
+                        name,
+                        "apple.native",
+                        &config.native_client_id,
+                        config.native_client_secret,
+                        current_credentials.map(|current| {
+                            (
+                                current.native_client_id.as_str(),
+                                current.native_client_secret.as_str(),
+                            )
+                        }),
+                    )?,
+                    native_client_id: config.native_client_id,
+                })
+            }
+            Config::Feishu(config) => {
                 let current_secret = current.and_then(|provider| match &provider.config {
-                    OAuth2ProviderPrivateConfig::Apple(current) => {
+                    OAuth2ProviderPrivateConfig::Feishu(current) => {
                         Some((current.client_id.as_str(), current.client_secret.as_str()))
                     }
                     _ => None,
                 });
-                OAuth2ProviderPrivateConfig::Apple(OAuth2AppleProviderConfig {
+                OAuth2ProviderPrivateConfig::Feishu(OAuth2FeishuProviderConfig {
                     client_secret: resolve_oauth2_client_secret(
                         name,
-                        "apple",
+                        "feishu",
                         &config.client_id,
                         config.client_secret,
                         current_secret,
                     )?,
                     client_id: config.client_id,
-                    redirect_url: config.redirect_url,
+                    endpoint: config.endpoint,
+                })
+            }
+            Config::Gitee(config) => {
+                let current_secret = current.and_then(|provider| match &provider.config {
+                    OAuth2ProviderPrivateConfig::Gitee(current) => {
+                        Some((current.client_id.as_str(), current.client_secret.as_str()))
+                    }
+                    _ => None,
+                });
+                OAuth2ProviderPrivateConfig::Gitee(OAuth2GiteeProviderConfig {
+                    client_secret: resolve_oauth2_client_secret(
+                        name,
+                        "gitee",
+                        &config.client_id,
+                        config.client_secret,
+                        current_secret,
+                    )?,
+                    client_id: config.client_id,
                 })
             }
         },
@@ -689,6 +793,9 @@ fn resolve_oauth2_client_secret(
     supplied: Option<String>,
     current: Option<(&str, &str)>,
 ) -> Result<String, ApiError> {
+    if client_id.trim().is_empty() {
+        return Ok(String::new());
+    }
     if let Some(secret) = supplied {
         return Ok(secret);
     }
@@ -700,6 +807,14 @@ fn resolve_oauth2_client_secret(
     Err(ApiError::InvalidInput(format!(
         "OAuth2 provider '{name}' {provider_type}.client_secret is required for a new provider, provider type change, or client_id change"
     )))
+}
+
+fn microsoft_tenant_or_default(tenant: String) -> String {
+    if tenant.trim().is_empty() {
+        "common".to_string()
+    } else {
+        tenant
+    }
 }
 
 fn core_room_password_policy(value: i32) -> Result<RoomPasswordPolicy, ApiError> {
@@ -741,5 +856,59 @@ fn core_ice_server(value: client_proto::IceServer) -> ConfiguredIceServer {
         urls: value.urls,
         username: value.username,
         credential: value.credential,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use admin_proto::o_auth2_provider_settings::Config;
+
+    #[test]
+    fn apple_native_only_config_skips_missing_web_secret() {
+        let provider = admin_proto::OAuth2ProviderSettings {
+            name: "apple-native".to_string(),
+            enable_signup: true,
+            signup_need_review: false,
+            config: Some(Config::Apple(admin_proto::OAuth2AppleProviderConfig {
+                web_client_id: String::new(),
+                web_client_secret: None,
+                native_client_id: "org.example.app".to_string(),
+                native_client_secret: Some("native-secret".to_string()),
+            })),
+        };
+
+        let mapped = oauth2_config_from_admin_proto("apple-native", &provider, None)
+            .expect("native-only Apple config should map");
+        let OAuth2ProviderPrivateConfig::Apple(mapped) = mapped else {
+            panic!("expected Apple provider config");
+        };
+
+        assert!(mapped.web_client_secret.is_empty());
+        assert_eq!(mapped.native_client_secret, "native-secret");
+    }
+
+    #[test]
+    fn microsoft_empty_tenant_uses_common_default() {
+        let provider = admin_proto::OAuth2ProviderSettings {
+            name: "microsoft".to_string(),
+            enable_signup: true,
+            signup_need_review: false,
+            config: Some(Config::Microsoft(
+                admin_proto::OAuth2MicrosoftProviderConfig {
+                    client_id: "client-id".to_string(),
+                    client_secret: Some("client-secret".to_string()),
+                    tenant: String::new(),
+                },
+            )),
+        };
+
+        let mapped = oauth2_config_from_admin_proto("microsoft", &provider, None)
+            .expect("Microsoft config should map");
+        let OAuth2ProviderPrivateConfig::Microsoft(mapped) = mapped else {
+            panic!("expected Microsoft provider config");
+        };
+
+        assert_eq!(mapped.tenant, "common");
     }
 }

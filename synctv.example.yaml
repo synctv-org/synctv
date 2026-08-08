@@ -722,7 +722,7 @@ media_providers:
 
 # OAuth2/OIDC providers are runtime settings, not static startup config.
 # Configure them with the management API or CLI:
-#   synctv settings update oauth2 --set providers='{"github":{"type":"github","enableSignup":false,"signupNeedReview":false,"clientId":"...","clientSecret":"...","redirectUrl":"https://app.example.com/oauth2/callback"}}'
+#   synctv settings update oauth2 --set providers='{"github":{"type":"github","enableSignup":false,"signupNeedReview":false,"clientId":"...","clientSecret":"..."}}'
 
 webauthn:
   # Enables passkey/security-key registration and login endpoints:

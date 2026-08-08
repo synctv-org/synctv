@@ -36,6 +36,7 @@ const OAUTH2_STATE_TTL_SECONDS_I64: i64 = 300;
 pub struct OAuth2State {
     pub instance_name: String,
     pub operation: OAuth2Operation,
+    pub authorization_mode: crate::oauth2::OAuth2AuthorizationMode,
     pub redirect_url: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Operation-specific user target. Bind uses this as the account receiving

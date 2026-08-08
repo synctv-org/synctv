@@ -51,8 +51,7 @@ synctv settings update \
   "signupNeedReview": false,
   "github": {
     "clientId": "github-client-id",
-    "clientSecret": "github-client-secret",
-    "redirectUrl": "https://app.example.com/oauth2/callback"
+    "clientSecret": "github-client-secret"
   }
 }
 ```
@@ -64,7 +63,7 @@ synctv settings update \
 | `instanceName` | provider 实例名 |
 | `enableSignup` | 是否允许这个 provider 的首次登录自动创建本地账号 |
 | `signupNeedReview` | 首次登录是否进入注册审核 |
-| provider oneof 字段 | 例如 `github`、`google`、`logto`、`oidc`、`casdoor`。每个对象内写 provider 私有字段 |
+| provider oneof 字段 | `qq`、`github`、`google`、`microsoft`、`discord`、`casdoor`、`logto`、`oidc`、`feishu`、`gitee`、`apple`。每个对象内写 provider 私有字段 |
 
 ## 常见 provider 示例
 
@@ -79,8 +78,7 @@ synctv settings update \
     "signupNeedReview": false,
     "github": {
       "clientId": "github-client-id",
-      "clientSecret": "github-client-secret",
-      "redirectUrl": "https://app.example.com/oauth2/callback"
+      "clientSecret": "github-client-secret"
     }
   }
 ]
@@ -98,14 +96,51 @@ synctv settings update \
     "oidc": {
       "clientId": "synctv",
       "clientSecret": "oidc-client-secret",
-      "issuer": "https://idp.example.com",
-      "redirectUrl": "https://app.example.com/oauth2/callback"
+      "issuer": "https://idp.example.com"
     }
   }
 ]
 ```
 
 默认使用 `issuer` 进行 OIDC discovery。只有在 IdP 没有标准 discovery 文档时才手动配置 `authUrl`、`tokenUrl` 和 `jwksUrl`；`userinfoUrl` 可选，缺失时会使用已验证的 ID Token claims。
+
+</TabItem>
+<TabItem label="Microsoft / Feishu" value="microsoft-feishu">
+
+Microsoft provider 额外使用 `tenant`（默认值为 `common`），Feishu provider 可选使用 `endpoint`（默认值为 `https://open.feishu.cn`）。QQ、Discord 和 Gitee 只需要各自的 `clientId` 与 `clientSecret`。
+
+</TabItem>
+<TabItem label="Apple" value="apple">
+
+```json
+[
+  {
+    "instanceName": "apple",
+    "enableSignup": true,
+    "signupNeedReview": false,
+    "apple": {
+      "webClientId": "com.example.synctv.web",
+      "webClientSecret": "<Apple Services ID client secret>",
+      "nativeClientId": "org.example.synctv",
+      "nativeClientSecret": "<Apple Bundle ID client secret>"
+    }
+  }
+]
+```
+
+`webClientId` 是 Apple Services ID，供浏览器授权使用；它必须注册对应的 HTTPS Return URL。`nativeClientId` 是签名 App 的 Bundle ID，供 iOS/macOS 原生 Sign in with Apple 使用；它必须与安装包的 Bundle ID 一致。两个 `clientSecret` 都是服务端凭据，使用 Apple Developer Team、Key ID、私钥和对应 client ID 生成，禁止写入客户端或提交到仓库。
+
+官方 SyncTV 构建使用 `org.synctv.app`。自托管服务器通常没有官方 Apple Developer Team 的 App ID 私钥和 client secret，因此自托管发行应创建自己的 Apple Developer Team、Bundle ID 和 Sign in with Apple 配置，使用自己的 Bundle ID 重新签名客户端，并将它配置为 `nativeClientId`。
+
+### Apple 配置联动
+
+| SyncTV 配置 | Apple Developer 配置 | 客户端构建联动 |
+| --- | --- | --- |
+| `webClientId` | Services ID，以及 Services ID 下的 HTTPS Return URL | `redirectUrl` 必须使用已登记地址，并通过 `oauth2.allowedRedirectUrls` 校验 |
+| `nativeClientId` | App ID（Bundle ID），启用 Sign in with Apple | 必须等于签名包的 Bundle ID，并匹配 Apple capability |
+| `webClientSecret` / `nativeClientSecret` | 使用同一 Team 的 Key ID、Sign in with Apple 私钥和对应 `client_id` 生成 | 只放在服务端；JWT `sub` 分别匹配对应 client ID |
+
+Apple 官方配置入口：[Web Sign in with Apple](https://developer.apple.com/help/account/configure-sign-in-with-apple-for-the-web/)、[App Sign in with Apple](https://developer.apple.com/help/account/configure-sign-in-with-apple/)、[生成 client secret](https://developer.apple.com/documentation/sign_in_with_apple/generate_and_validate_tokens)。Passkey 的 RP ID、AASA 和 `SYNCTV_PASSKEY_RP_IDS` 属于独立配置；`SYNCTV_OAUTH2_APP_LINK_ORIGIN` 只影响浏览器 OAuth 回调。
 
 </TabItem>
 </Tabs>
@@ -119,10 +154,14 @@ synctv settings update \
 
 ## 回调地址与密钥
 
-### Redirect URL
+### 浏览器授权回调
 
-每个 provider 实例通过 `redirectUrl` 配置完整回调地址。不同 provider 可以使用各自的回调路径和协议。
+浏览器授权请求传入 `redirectUrl`，服务端使用 `oauth2.allowedRedirectUrls` 校验 HTTPS 回调地址，loopback 回调单独放行。客户端应在每次授权开始时生成或选择当前回调地址，并在第三方平台注册相同地址。
+
+原生授权请求省略 `redirectUrl`，并传入 `native=true`。Apple provider 通过 `supportedModes` 声明原生能力；iOS/macOS 通过系统 Sign in with Apple 返回 authorization code，客户端随后把 code 和 state 交给 SyncTV 服务端交换。服务端会拒绝 provider 未声明的模式。
+
+Apple 原生登录不使用 `/.well-known/apple-app-site-association`。该文件属于 Apple Universal Links、浏览器 OAuth 回调关联和 Passkey 关联。
 
 ### `clientSecret` 应该放哪里
 
-放在 `clientSecret`，并通过 runtime settings 管理。
+所有 provider secret 都放在 provider 配置中，并通过 runtime settings 管理。Apple 使用 `webClientSecret` 和 `nativeClientSecret` 两个独立 secret。

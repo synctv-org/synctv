@@ -134,6 +134,8 @@ webauthn:
 
 ## 原生 App 关联
 
+本节的“原生 App 关联”专指 WebAuthn/Passkey。原生 Sign in with Apple 属于 OAuth2 provider，使用 Apple App ID 和服务端 client secret，配置方法见 [邮件与 OAuth2](../email-oauth2/)。
+
 Apple 平台通过 `webauthn.apple_app_ids` 配置允许使用该 RP ID 的原生 App。每一项使用 Apple application identifier，格式为 `TeamID.BundleID`：
 
 ```yaml
@@ -142,7 +144,7 @@ webauthn:
     - "ABCDE12345.org.synctv.app"
 ```
 
-服务器会在 `/.well-known/apple-app-site-association` 返回 `webcredentials.apps` 和 App Link 关联。App Link 路径从 HTTPS 主机与当前请求域名相同的 `oauth2.allowedRedirectUrls` 条目自动派生。启用 OAuth2 登录时，App 的 Associated Domains entitlement 需要同时包含 `webcredentials:example.com` 和 `applinks:example.com`。
+服务器会在 `/.well-known/apple-app-site-association` 返回 `webcredentials.apps` 和 App Link 关联。App Link 路径从 HTTPS 主机与当前请求域名相同的 `oauth2.allowedRedirectUrls` 条目自动派生。启用浏览器 OAuth2 回调时，App 的 Associated Domains entitlement 需要同时包含 `webcredentials:example.com` 和 `applinks:example.com`。
 
 Android 平台通过包名和发布证书 SHA-256 指纹配置：
 
@@ -203,7 +205,7 @@ Apple 将允许的 RP ID 固定在签名 App 的 Associated Domains entitlement 
 - 使用系统浏览器承载 WebAuthn，让浏览器按自托管域名管理 Passkey；当前官方 App 仅提供原生 Passkey，采用此路径需要后续实现浏览器认证流程。
 - 使用已由官方 Apple App entitlement 覆盖的 RP 域名。
 
-Android 的授权方向由每个自托管服务器控制，因此官方预构建 App 可以在运行时扩展到新域名。Apple 的原生授权同时受构建签名和服务器 AASA 约束，因此域名集合需要在构建时确定。
+Android Passkey 关联由每个自托管服务器控制，因此官方预构建 App 可以在运行时扩展到新域名。Apple Passkey 的 RP 域名同时受构建签名和服务器 AASA 约束，因此域名集合需要在构建时确定。这个约束不适用于原生 Sign in with Apple；原生 Apple OAuth 使用签名 App 的 Bundle ID 和服务端 Apple client secret。
 
 ## `webauthn.allow_subdomains`
 

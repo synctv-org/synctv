@@ -256,12 +256,10 @@ async fn oauth2_service_with_provider_signup(
             "github" => OAuth2ProviderPrivateConfig::GitHub(OAuth2GithubProviderConfig {
                 client_id: format!("{provider_name}-client-id"),
                 client_secret: format!("{provider_name}-client-secret"),
-                redirect_url: "https://app.example.com/oauth2/callback".to_string(),
             }),
             "google" => OAuth2ProviderPrivateConfig::Google(OAuth2GoogleProviderConfig {
                 client_id: format!("{provider_name}-client-id"),
                 client_secret: format!("{provider_name}-client-secret"),
-                redirect_url: "https://app.example.com/oauth2/callback".to_string(),
             }),
             other => panic!("unsupported test OAuth2 provider: {other}"),
         },

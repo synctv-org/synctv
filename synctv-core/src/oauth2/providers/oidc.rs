@@ -4,11 +4,8 @@ use super::{
     build_oauth2_http_client, build_provider_http_client, map_provider_http_error,
     validate_oauth2_redirect_url, validate_provider_url, validate_required_oauth2_field,
 };
-use crate::oauth2::{OAuth2Authorization, OAuth2UserInfo, Provider};
-use crate::service::{
-    OAuth2AppleProviderConfig, OAuth2CasdoorProviderConfig, OAuth2OidcProviderConfig,
-    OAuth2ProviderPrivateConfig,
-};
+use crate::oauth2::{OAuth2Authorization, OAuth2AuthorizationMode, OAuth2UserInfo, Provider};
+use crate::service::{OAuth2OidcProviderConfig, OAuth2ProviderPrivateConfig};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use jsonwebtoken::{
@@ -54,19 +51,13 @@ type OidcClient = Client<
 
 const OIDC_JWKS_CACHE_TTL: Duration = Duration::from_mins(10);
 const OIDC_JWKS_REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
-const APPLE_OIDC_ISSUER: &str = "https://appleid.apple.com";
 const DEFAULT_OIDC_SCOPES: &[&str] = &["openid", "profile"];
-const APPLE_OIDC_SCOPES: &[&str] = &["openid"];
 const MAX_OIDC_SCOPES: usize = 32;
 const MAX_OIDC_SCOPE_LEN: usize = 256;
 const MAX_OIDC_SCOPES_TOTAL_LEN: usize = 2048;
 
-fn normalize_oidc_scopes(scopes: Vec<String>, issuer: &str) -> Result<Vec<String>, Error> {
-    let defaults = if issuer.eq_ignore_ascii_case(APPLE_OIDC_ISSUER) {
-        APPLE_OIDC_SCOPES
-    } else {
-        DEFAULT_OIDC_SCOPES
-    };
+fn normalize_oidc_scopes(scopes: Vec<String>) -> Result<Vec<String>, Error> {
+    let defaults = DEFAULT_OIDC_SCOPES;
     let source = if scopes.is_empty() {
         defaults.iter().map(|scope| (*scope).to_string()).collect()
     } else {
@@ -118,7 +109,6 @@ fn normalize_oidc_scopes(scopes: Vec<String>, issuer: &str) -> Result<Vec<String
 pub struct OidcConfig {
     pub client_id: String,
     pub client_secret: String,
-    pub redirect_url: String,
     #[serde(default)]
     pub issuer: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -178,7 +168,7 @@ impl TokenEndpointAuthMethod {
 }
 
 fn select_token_endpoint_auth_method(
-    provider_type: &str,
+    force_client_secret_post: bool,
     advertised_methods: Option<&[String]>,
 ) -> Result<TokenEndpointAuthMethod, Error> {
     let supports = |method: TokenEndpointAuthMethod| {
@@ -186,12 +176,13 @@ fn select_token_endpoint_auth_method(
             .is_none_or(|methods| methods.iter().any(|value| value == method.as_str()))
     };
 
-    if provider_type == "apple" {
+    if force_client_secret_post {
         if supports(TokenEndpointAuthMethod::ClientSecretPost) {
             return Ok(TokenEndpointAuthMethod::ClientSecretPost);
         }
         return Err(Error::InvalidInput(
-            "Apple OIDC discovery does not support client_secret_post".to_string(),
+            "OIDC discovery does not support the configured client_secret_post authentication method"
+                .to_string(),
         ));
     }
 
@@ -218,13 +209,21 @@ struct ResolvedOidc {
     jwks_uri: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OidcIssuerPolicy {
+    Exact,
+    MicrosoftTenant,
+}
+
 /// Generic OIDC provider
 ///
 /// When created via `create()` (issuer-only mode), the `OAuth2` client and endpoints
 /// are resolved lazily on first use by fetching `{issuer}/.well-known/openid-configuration`.
 /// When created via `create_with_endpoints()`, the provided endpoints are used directly.
 pub struct OidcProvider {
-    provider_type: &'static str,
+    allow_missing_pkce: bool,
+    force_client_secret_post: bool,
+    issuer_policy: OidcIssuerPolicy,
     resolved: OnceCell<ResolvedOidc>,
     jwks_cache: RwLock<Option<CachedJwks>>,
     jwks_refresh_state: Mutex<JwksRefreshState>,
@@ -239,7 +238,6 @@ pub struct OidcProvider {
 struct OidcInitConfig {
     client_id: String,
     client_secret: String,
-    redirect_url: String,
     issuer: String,
     scopes: Vec<String>,
     /// If set, these are static overrides (no discovery needed)
@@ -297,7 +295,7 @@ struct OidcIdTokenClaims {
     azp: Option<String>,
     #[serde(default)]
     nonce: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "username")]
     preferred_username: Option<String>,
     #[serde(default)]
     name: Option<String>,
@@ -328,13 +326,42 @@ impl OidcAudience {
 #[derive(Deserialize)]
 struct OidcUserInfoResponse {
     sub: String,
-    #[serde(default)]
+    #[serde(default, alias = "username")]
     preferred_username: Option<String>,
     name: Option<String>,
     picture: Option<String>,
 }
 
 impl OidcProvider {
+    fn issuer_matches(&self, actual_issuer: &str) -> bool {
+        let actual_issuer = actual_issuer.trim_end_matches('/');
+        match self.issuer_policy {
+            OidcIssuerPolicy::Exact => actual_issuer == self.init_config.issuer,
+            OidcIssuerPolicy::MicrosoftTenant => {
+                let Some(configured_tenant) = self
+                    .init_config
+                    .issuer
+                    .strip_prefix("https://login.microsoftonline.com/")
+                    .and_then(|value| value.strip_suffix("/v2.0"))
+                else {
+                    return false;
+                };
+                let Some(actual_tenant) = actual_issuer
+                    .strip_prefix("https://login.microsoftonline.com/")
+                    .and_then(|value| value.strip_suffix("/v2.0"))
+                else {
+                    return false;
+                };
+                !actual_tenant.is_empty()
+                    && (configured_tenant == "{tenantid}"
+                        || configured_tenant.eq_ignore_ascii_case("common")
+                        || configured_tenant.eq_ignore_ascii_case("organizations")
+                        || configured_tenant.eq_ignore_ascii_case("consumers")
+                        || configured_tenant.eq_ignore_ascii_case(actual_tenant))
+            }
+        }
+    }
+
     /// Create a new OIDC provider with issuer (uses .well-known discovery)
     ///
     /// Endpoints are discovered lazily on first use by fetching
@@ -342,16 +369,10 @@ impl OidcProvider {
     ///
     /// # Errors
     /// Returns error if the HTTP client cannot be built.
-    pub fn create(
-        client_id: String,
-        client_secret: String,
-        redirect_url: String,
-        issuer: &str,
-    ) -> Result<Self, Error> {
+    pub fn create(client_id: String, client_secret: String, issuer: &str) -> Result<Self, Error> {
         Self::create_with_ssrf_guard(
             client_id,
             client_secret,
-            redirect_url,
             issuer,
             &synctv_common::ssrf::SsrfGuard::strict_policy(),
         )
@@ -360,14 +381,12 @@ impl OidcProvider {
     pub fn create_with_ssrf_guard(
         client_id: String,
         client_secret: String,
-        redirect_url: String,
         issuer: &str,
         ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     ) -> Result<Self, Error> {
         Self::create_with_scopes_and_ssrf_guard(
             client_id,
             client_secret,
-            redirect_url,
             issuer,
             Vec::new(),
             ssrf_guard,
@@ -377,24 +396,23 @@ impl OidcProvider {
     pub fn create_with_scopes_and_ssrf_guard(
         client_id: String,
         client_secret: String,
-        redirect_url: String,
         issuer: &str,
         scopes: Vec<String>,
         ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     ) -> Result<Self, Error> {
         let issuer = issuer.trim_end_matches('/');
         validate_provider_url(issuer, "Invalid OIDC issuer URL", ssrf_guard)?;
-        validate_oauth2_redirect_url(&redirect_url, "Invalid OIDC redirect URL")?;
-        let scopes = normalize_oidc_scopes(scopes, issuer)?;
+        let scopes = normalize_oidc_scopes(scopes)?;
         Ok(Self {
-            provider_type: "oidc",
+            allow_missing_pkce: false,
+            force_client_secret_post: false,
+            issuer_policy: OidcIssuerPolicy::Exact,
             resolved: OnceCell::new(),
             jwks_cache: RwLock::new(None),
             jwks_refresh_state: Mutex::new(JwksRefreshState::default()),
             init_config: OidcInitConfig {
                 client_id,
                 client_secret,
-                redirect_url,
                 issuer: issuer.to_string(),
                 scopes,
                 static_endpoints: None,
@@ -412,14 +430,12 @@ impl OidcProvider {
     pub fn create_with_endpoints(
         client_id: String,
         client_secret: String,
-        redirect_url: String,
         issuer: &str,
         endpoints: OidcEndpointOverrides,
     ) -> Result<Self, Error> {
         Self::create_with_endpoints_and_ssrf_guard(
             client_id,
             client_secret,
-            redirect_url,
             issuer,
             endpoints,
             &synctv_common::ssrf::SsrfGuard::strict_policy(),
@@ -429,7 +445,6 @@ impl OidcProvider {
     pub fn create_with_endpoints_and_ssrf_guard(
         client_id: String,
         client_secret: String,
-        redirect_url: String,
         issuer: &str,
         endpoints: OidcEndpointOverrides,
         ssrf_guard: &synctv_common::ssrf::SsrfGuard,
@@ -437,7 +452,6 @@ impl OidcProvider {
         Self::create_with_endpoints_scopes_and_ssrf_guard(
             client_id,
             client_secret,
-            redirect_url,
             issuer,
             endpoints,
             Vec::new(),
@@ -448,7 +462,6 @@ impl OidcProvider {
     pub fn create_with_endpoints_scopes_and_ssrf_guard(
         client_id: String,
         client_secret: String,
-        redirect_url: String,
         issuer: &str,
         endpoints: OidcEndpointOverrides,
         scopes: Vec<String>,
@@ -461,8 +474,7 @@ impl OidcProvider {
             ));
         }
         validate_provider_url(issuer_trimmed, "Invalid OIDC issuer URL", ssrf_guard)?;
-        validate_oauth2_redirect_url(&redirect_url, "Invalid OIDC redirect URL")?;
-        let scopes = normalize_oidc_scopes(scopes, issuer_trimmed)?;
+        let scopes = normalize_oidc_scopes(scopes)?;
         let auth = endpoints.auth_url.ok_or_else(|| {
             Error::InvalidInput(
                 "OIDC static endpoint mode requires explicit 'auth_url'".to_string(),
@@ -485,14 +497,15 @@ impl OidcProvider {
             validate_provider_url(userinfo, "Invalid OIDC userinfo URL", ssrf_guard)?;
         }
         Ok(Self {
-            provider_type: "oidc",
+            allow_missing_pkce: false,
+            force_client_secret_post: false,
+            issuer_policy: OidcIssuerPolicy::Exact,
             resolved: OnceCell::new(),
             jwks_cache: RwLock::new(None),
             jwks_refresh_state: Mutex::new(JwksRefreshState::default()),
             init_config: OidcInitConfig {
                 client_id,
                 client_secret,
-                redirect_url,
                 issuer: issuer_trimmed.to_string(),
                 scopes,
                 static_endpoints: Some(StaticEndpoints {
@@ -509,9 +522,29 @@ impl OidcProvider {
     }
 
     #[must_use]
-    fn with_provider_type(mut self, provider_type: &'static str) -> Self {
-        self.provider_type = provider_type;
+    pub(crate) fn with_optional_pkce(mut self) -> Self {
+        self.allow_missing_pkce = true;
         self
+    }
+
+    #[must_use]
+    pub(crate) fn with_client_secret_post(mut self) -> Self {
+        self.force_client_secret_post = true;
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_microsoft_tenant_issuer_policy(mut self) -> Self {
+        self.issuer_policy = OidcIssuerPolicy::MicrosoftTenant;
+        self
+    }
+
+    pub(crate) async fn new_auth_url_without_pkce(
+        &self,
+        state: &str,
+        redirect_url: Option<&str>,
+    ) -> Result<OAuth2Authorization, Error> {
+        self.build_auth_url(state, redirect_url, false).await
     }
 
     /// Resolve the `OAuth2` client, performing .well-known discovery if needed.
@@ -532,7 +565,10 @@ impl OidcProvider {
                         static_ep.token.clone(),
                         static_ep.userinfo.clone(),
                         static_ep.jwks.clone(),
-                        select_token_endpoint_auth_method(self.provider_type, None)?,
+                        select_token_endpoint_auth_method(
+                            self.force_client_secret_post,
+                            None,
+                        )?,
                     )
                 } else {
                     // Perform .well-known/openid-configuration discovery
@@ -575,7 +611,7 @@ impl OidcProvider {
                     }
 
                     let token_auth_method = select_token_endpoint_auth_method(
-                        self.provider_type,
+                        self.force_client_secret_post,
                         doc.token_endpoint_auth_methods_supported.as_deref(),
                     )?;
 
@@ -624,15 +660,11 @@ impl OidcProvider {
                     .map_err(|e| Error::InvalidInput(format!("Invalid OIDC auth URL: {e}")))?;
                 let token = TokenUrl::new(token_url_str)
                     .map_err(|e| Error::InvalidInput(format!("Invalid OIDC token URL: {e}")))?;
-                let redirect = RedirectUrl::new(config.redirect_url.clone())
-                    .map_err(|e| Error::InvalidInput(format!("Invalid OIDC redirect URL: {e}")))?;
-
                 let client = OidcClientBuilder::new(ClientId::new(config.client_id.clone()))
                     .set_client_secret(ClientSecret::new(config.client_secret.clone()))
                     .set_auth_type(token_auth_method.oauth2_auth_type())
                     .set_auth_uri(auth)
-                    .set_token_uri(token)
-                    .set_redirect_uri(redirect);
+                    .set_token_uri(token);
 
                 Ok(ResolvedOidc {
                     client,
@@ -641,6 +673,50 @@ impl OidcProvider {
                 })
             })
             .await
+    }
+
+    async fn build_auth_url(
+        &self,
+        state: &str,
+        redirect_url: Option<&str>,
+        include_pkce: bool,
+    ) -> Result<OAuth2Authorization, Error> {
+        if include_pkce && redirect_url.is_none() {
+            return Err(Error::InvalidInput(
+                "OIDC OAuth2 requires a redirect URL for browser authorization".to_string(),
+            ));
+        }
+        if let Some(redirect_url) = redirect_url {
+            validate_oauth2_redirect_url(redirect_url, "Invalid OIDC redirect URL")?;
+        }
+        let resolved = self.get_resolved().await?;
+        let mut request = resolved
+            .client
+            .authorize_url(|| oauth2::CsrfToken::new(state.to_string()));
+        let pkce_verifier = if include_pkce {
+            let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
+            request = request.set_pkce_challenge(pkce_challenge);
+            Some(pkce_verifier.secret().clone())
+        } else {
+            None
+        };
+        for scope in &self.init_config.scopes {
+            request = request.add_scope(Scope::new(scope.clone()));
+        }
+        let nonce = synctv_common::snanoid!(32);
+        request = request.add_extra_param("nonce", nonce.as_str());
+        if let Some(redirect_url) = redirect_url {
+            request = request.set_redirect_uri(std::borrow::Cow::Owned(
+                RedirectUrl::new(redirect_url.to_string())
+                    .map_err(|e| Error::InvalidInput(format!("Invalid OIDC redirect URL: {e}")))?,
+            ));
+        }
+        let (auth_url, _csrf_token) = request.url();
+        let authorization = match pkce_verifier {
+            Some(pkce_verifier) => OAuth2Authorization::new(auth_url.to_string(), pkce_verifier),
+            None => OAuth2Authorization::without_pkce(auth_url.to_string()),
+        };
+        Ok(authorization.with_nonce(nonce))
     }
 
     async fn fetch_jwks(&self, jwks_uri: &str) -> Result<JwkSet, Error> {
@@ -790,7 +866,7 @@ impl OidcProvider {
                 .await?
         };
 
-        if claims.iss.trim_end_matches('/') != self.init_config.issuer {
+        if !self.issuer_matches(&claims.iss) {
             return Err(Error::Authentication(
                 "OIDC ID Token issuer does not match configured issuer".to_string(),
             ));
@@ -826,7 +902,9 @@ impl OidcProvider {
 
     fn id_token_validation(&self, alg: Algorithm) -> Validation {
         let mut validation = Validation::new(alg);
-        validation.set_issuer(&[self.init_config.issuer.as_str()]);
+        if self.issuer_policy == OidcIssuerPolicy::Exact {
+            validation.set_issuer(&[self.init_config.issuer.as_str()]);
+        }
         validation.set_audience(&[self.init_config.client_id.as_str()]);
         validation.set_required_spec_claims(&["exp", "iat", "iss", "sub", "aud"]);
         validation
@@ -989,19 +1067,10 @@ fn validate_jwk_for_id_token(jwk: &Jwk, algorithm: Algorithm) -> Result<(), Erro
 
 #[async_trait]
 impl Provider for OidcProvider {
-    fn provider_type(&self) -> &'static str {
-        self.provider_type
-    }
-
-    fn validate_authorization_redirect_url(&self, redirect_url: Option<&str>) -> Result<(), Error> {
-        if self.provider_type == "apple"
-            && redirect_url.is_some_and(|url| url != self.init_config.redirect_url)
-        {
-            return Err(Error::InvalidInput(
-                "Apple OAuth redirect URL must match the configured provider redirect URL"
-                    .to_string(),
-            ));
-        }
+    fn validate_authorization_redirect_url(
+        &self,
+        _redirect_url: Option<&str>,
+    ) -> Result<(), Error> {
         Ok(())
     }
 
@@ -1009,53 +1078,49 @@ impl Provider for OidcProvider {
         &self,
         state: &str,
         redirect_url: Option<&str>,
+        mode: OAuth2AuthorizationMode,
     ) -> Result<OAuth2Authorization, Error> {
-        let resolved = self.get_resolved().await?;
-        let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
-        let nonce = synctv_common::snanoid!(32);
-        let mut request = resolved
-            .client
-            .authorize_url(|| oauth2::CsrfToken::new(state.to_string()));
-        for scope in &self.init_config.scopes {
-            request = request.add_scope(Scope::new(scope.clone()));
-        }
-        let mut request = request
-            .add_extra_param("nonce", nonce.as_str())
-            .set_pkce_challenge(pkce_challenge);
-        if let Some(redirect_url) = redirect_url {
-            request = request.set_redirect_uri(std::borrow::Cow::Owned(
-                RedirectUrl::new(redirect_url.to_string())
-                    .map_err(|e| Error::InvalidInput(format!("Invalid OIDC redirect URL: {e}")))?,
+        if mode == OAuth2AuthorizationMode::Native {
+            return Err(Error::InvalidInput(
+                "OIDC provider does not support native authorization".to_string(),
             ));
         }
-        let (auth_url, _csrf_token) = request.url();
-        Ok(
-            OAuth2Authorization::new(auth_url.to_string(), pkce_verifier.secret().clone())
-                .with_nonce(nonce),
-        )
+        self.build_auth_url(state, redirect_url, true).await
     }
 
     async fn get_user_info(
         &self,
         code: &str,
         redirect_url: Option<&str>,
-        pkce_verifier: &str,
+        pkce_verifier: Option<&str>,
         nonce: Option<&str>,
+        _mode: OAuth2AuthorizationMode,
     ) -> Result<OAuth2UserInfo, Error> {
+        if pkce_verifier.is_none() && !self.allow_missing_pkce {
+            return Err(Error::InvalidInput(
+                "OIDC provider requires PKCE".to_string(),
+            ));
+        }
         let resolved = self.get_resolved().await?;
+        if redirect_url.is_none() && !self.allow_missing_pkce {
+            return Err(Error::InvalidInput(
+                "OIDC OAuth2 requires a redirect URL for token exchange".to_string(),
+            ));
+        }
         let nonce = nonce.ok_or_else(|| {
             Error::Authentication(
                 "OIDC callback is missing nonce from authorization state".to_string(),
             )
         })?;
 
-        // Exchange code for token with PKCE verifier
-        let verifier = PkceCodeVerifier::new(pkce_verifier.to_string());
         let mut request = resolved
             .client
-            .exchange_code(oauth2::AuthorizationCode::new(code.to_string()))
-            .set_pkce_verifier(verifier);
+            .exchange_code(oauth2::AuthorizationCode::new(code.to_string()));
+        if let Some(pkce_verifier) = pkce_verifier {
+            request = request.set_pkce_verifier(PkceCodeVerifier::new(pkce_verifier.to_string()));
+        }
         if let Some(redirect_url) = redirect_url {
+            validate_oauth2_redirect_url(redirect_url, "Invalid OIDC redirect URL")?;
             request = request.set_redirect_uri(std::borrow::Cow::Owned(
                 RedirectUrl::new(redirect_url.to_string())
                     .map_err(|e| Error::InvalidInput(format!("Invalid OIDC redirect URL: {e}")))?,
@@ -1116,42 +1181,16 @@ pub fn oidc_factory_from_private_config(
     oidc_factory_from_typed_config(config, ssrf_guard)
 }
 
-pub fn casdoor_factory_from_private_config(
-    config: &OAuth2ProviderPrivateConfig,
-    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
-) -> Result<Box<dyn Provider>, Error> {
-    let OAuth2ProviderPrivateConfig::Casdoor(config) = config else {
-        return Err(Error::InvalidInput(
-            "Casdoor provider requires casdoor config".to_string(),
-        ));
-    };
-    casdoor_factory_from_typed_config(config, ssrf_guard)
-}
-
-pub fn apple_factory_from_private_config(
-    config: &OAuth2ProviderPrivateConfig,
-    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
-) -> Result<Box<dyn Provider>, Error> {
-    let OAuth2ProviderPrivateConfig::Apple(config) = config else {
-        return Err(Error::InvalidInput(
-            "Apple provider requires apple config".to_string(),
-        ));
-    };
-    apple_factory_from_typed_config(config, ssrf_guard)
-}
-
 fn oidc_factory_from_typed_config(
     config: &OAuth2OidcProviderConfig,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
 ) -> Result<Box<dyn Provider>, Error> {
     validate_required_oauth2_field("OIDC", "client_id", &config.client_id)?;
     validate_required_oauth2_field("OIDC", "client_secret", &config.client_secret)?;
-    validate_required_oauth2_field("OIDC", "redirect_url", &config.redirect_url)?;
-    oidc_factory_from_config(
+    Ok(Box::new(create_from_config(
         OidcConfig {
             client_id: config.client_id.clone(),
             client_secret: config.client_secret.clone(),
-            redirect_url: config.redirect_url.clone(),
             issuer: config.issuer.clone(),
             auth_url: config.auth_url.clone(),
             token_url: config.token_url.clone(),
@@ -1159,65 +1198,14 @@ fn oidc_factory_from_typed_config(
             jwks_url: config.jwks_url.clone(),
             scopes: config.scopes.clone(),
         },
-        "oidc",
         ssrf_guard,
-    )
+    )?))
 }
 
-fn casdoor_factory_from_typed_config(
-    config: &OAuth2CasdoorProviderConfig,
-    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
-) -> Result<Box<dyn Provider>, Error> {
-    validate_required_oauth2_field("Casdoor", "client_id", &config.client_id)?;
-    validate_required_oauth2_field("Casdoor", "client_secret", &config.client_secret)?;
-    validate_required_oauth2_field("Casdoor", "redirect_url", &config.redirect_url)?;
-    oidc_factory_from_config(
-        OidcConfig {
-            client_id: config.client_id.clone(),
-            client_secret: config.client_secret.clone(),
-            redirect_url: config.redirect_url.clone(),
-            issuer: config.issuer.clone(),
-            auth_url: config.auth_url.clone(),
-            token_url: config.token_url.clone(),
-            userinfo_url: config.userinfo_url.clone(),
-            jwks_url: config.jwks_url.clone(),
-            scopes: DEFAULT_OIDC_SCOPES
-                .iter()
-                .map(|scope| (*scope).to_string())
-                .collect(),
-        },
-        "casdoor",
-        ssrf_guard,
-    )
-}
-
-fn apple_factory_from_typed_config(
-    config: &OAuth2AppleProviderConfig,
-    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
-) -> Result<Box<dyn Provider>, Error> {
-    validate_required_oauth2_field("Apple", "client_id", &config.client_id)?;
-    validate_required_oauth2_field("Apple", "client_secret", &config.client_secret)?;
-    validate_required_oauth2_field("Apple", "redirect_url", &config.redirect_url)?;
-    let provider = OidcProvider::create_with_scopes_and_ssrf_guard(
-        config.client_id.clone(),
-        config.client_secret.clone(),
-        config.redirect_url.clone(),
-        APPLE_OIDC_ISSUER,
-        APPLE_OIDC_SCOPES
-            .iter()
-            .map(|scope| (*scope).to_string())
-            .collect(),
-        ssrf_guard,
-    )?
-    .with_provider_type("apple");
-    Ok(Box::new(provider))
-}
-
-fn oidc_factory_from_config(
+pub(crate) fn create_from_config(
     config: OidcConfig,
-    provider_type: &'static str,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
-) -> Result<Box<dyn Provider>, Error> {
+) -> Result<OidcProvider, Error> {
     let has_custom_endpoints = config.auth_url.is_some()
         || config.token_url.is_some()
         || config.userinfo_url.is_some()
@@ -1242,7 +1230,6 @@ fn oidc_factory_from_config(
         OidcProvider::create_with_endpoints_scopes_and_ssrf_guard(
             config.client_id,
             config.client_secret,
-            config.redirect_url,
             &config.issuer,
             OidcEndpointOverrides {
                 auth_url: config.auth_url,
@@ -1257,14 +1244,13 @@ fn oidc_factory_from_config(
         OidcProvider::create_with_scopes_and_ssrf_guard(
             config.client_id,
             config.client_secret,
-            config.redirect_url,
             &config.issuer,
             config.scopes,
             ssrf_guard,
         )?
     };
 
-    Ok(Box::new(provider.with_provider_type(provider_type)))
+    Ok(provider)
 }
 
 #[cfg(test)]
@@ -1281,14 +1267,12 @@ mod tests {
     fn oidc_private_config(
         client_id: &str,
         client_secret: &str,
-        redirect_url: &str,
         issuer: &str,
         endpoints: OidcEndpointOverrides,
     ) -> OAuth2ProviderPrivateConfig {
         OAuth2ProviderPrivateConfig::Oidc(OAuth2OidcProviderConfig {
             client_id: client_id.to_string(),
             client_secret: client_secret.to_string(),
-            redirect_url: redirect_url.to_string(),
             issuer: issuer.to_string(),
             auth_url: endpoints.auth_url,
             token_url: endpoints.token_url,
@@ -1468,7 +1452,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let provider = OidcProvider::create(
             "oidc_client_id".to_string(),
             "oidc_secret".to_string(),
-            "https://example.com/callback".to_string(),
             "https://issuer.example.com",
         );
         assert!(provider.is_ok());
@@ -1480,7 +1463,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let provider = OidcProvider::create_with_ssrf_guard(
             "oidc_client_id".to_string(),
             "oidc_secret".to_string(),
-            "https://example.com/callback".to_string(),
             "http://127.0.0.1:8443",
             &guard,
         );
@@ -1493,21 +1475,23 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let provider = OidcProvider::create(
             "id".to_string(),
             "secret".to_string(),
-            "https://example.com/cb".to_string(),
             "https://issuer.example.com/",
         )
         .checked("operation should succeed");
         assert_eq!(provider.init_config.issuer, "https://issuer.example.com");
     }
 
-    #[test]
-    fn test_create_provider_rejects_custom_scheme_redirect_url() {
-        let result = OidcProvider::create(
+    #[tokio::test]
+    async fn test_new_auth_requires_redirect_url() {
+        let provider = OidcProvider::create(
             "id".to_string(),
             "secret".to_string(),
-            "native-app://callback".to_string(),
             "https://issuer.example.com",
-        );
+        )
+        .checked("operation should succeed");
+        let result = provider
+            .new_auth_url("state", None, OAuth2AuthorizationMode::Browser)
+            .await;
         assert!(matches!(result, Err(Error::InvalidInput(_))));
     }
 
@@ -1516,7 +1500,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let provider = OidcProvider::create_with_endpoints(
             "id".to_string(),
             "secret".to_string(),
-            "https://example.com/cb".to_string(),
             "https://issuer.example.com",
             OidcEndpointOverrides {
                 auth_url: Some("https://issuer.example.com/authorize".to_string()),
@@ -1547,7 +1530,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let provider = OidcProvider::create_with_endpoints_and_ssrf_guard(
             "id".to_string(),
             "secret".to_string(),
-            "https://example.com/cb".to_string(),
             "https://issuer.example.com",
             OidcEndpointOverrides {
                 auth_url: Some("https://issuer.example.com/authorize".to_string()),
@@ -1566,7 +1548,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let result = OidcProvider::create_with_endpoints(
             "id".to_string(),
             "secret".to_string(),
-            "https://example.com/cb".to_string(),
             "https://issuer.example.com/",
             OidcEndpointOverrides {
                 auth_url: None,
@@ -1579,18 +1560,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         assert!(
             matches!(result, Err(Error::InvalidInput(message)) if message.contains("auth_url"))
         );
-    }
-
-    #[test]
-    fn test_provider_type() {
-        let provider = OidcProvider::create(
-            "id".to_string(),
-            "secret".to_string(),
-            "https://example.com/cb".to_string(),
-            "https://issuer.example.com",
-        )
-        .checked("operation should succeed");
-        assert_eq!(provider.provider_type(), "oidc");
     }
 
     #[test]
@@ -1630,7 +1599,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
     }
 
     #[test]
-    fn test_token_endpoint_auth_method_honors_discovery_and_apple_requirements() {
+    fn test_token_endpoint_auth_method_honors_discovery_and_forced_request_body() {
         let post = vec![TokenEndpointAuthMethod::ClientSecretPost
             .as_str()
             .to_string()];
@@ -1640,22 +1609,22 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let unsupported = vec!["private_key_jwt".to_string()];
 
         assert_eq!(
-            select_token_endpoint_auth_method("apple", Some(&post))
-                .checked("Apple should use request-body client authentication"),
+            select_token_endpoint_auth_method(true, Some(&post))
+                .checked("forced request-body authentication should be selected"),
             TokenEndpointAuthMethod::ClientSecretPost,
         );
         assert_eq!(
-            select_token_endpoint_auth_method("oidc", Some(&post))
+            select_token_endpoint_auth_method(false, Some(&post))
                 .checked("OIDC should honor client_secret_post discovery"),
             TokenEndpointAuthMethod::ClientSecretPost,
         );
         assert_eq!(
-            select_token_endpoint_auth_method("oidc", Some(&basic))
+            select_token_endpoint_auth_method(false, Some(&basic))
                 .checked("OIDC should honor client_secret_basic discovery"),
             TokenEndpointAuthMethod::ClientSecretBasic,
         );
-        assert!(select_token_endpoint_auth_method("apple", Some(&basic)).is_err());
-        assert!(select_token_endpoint_auth_method("oidc", Some(&unsupported)).is_err());
+        assert!(select_token_endpoint_auth_method(true, Some(&basic)).is_err());
+        assert!(select_token_endpoint_auth_method(false, Some(&unsupported)).is_err());
     }
 
     #[test]
@@ -1850,7 +1819,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let provider = OidcProvider::create_with_endpoints_and_ssrf_guard(
             "id".to_string(),
             "secret".to_string(),
-            "https://example.com/cb".to_string(),
             "http://issuer.example.com",
             OidcEndpointOverrides {
                 auth_url: Some("http://issuer.example.com/authorize".to_string()),
@@ -1885,7 +1853,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let provider = OidcProvider::create_with_endpoints_and_ssrf_guard(
             "id".to_string(),
             "secret".to_string(),
-            "https://example.com/cb".to_string(),
             "http://issuer.example.com",
             OidcEndpointOverrides {
                 auth_url: Some("http://issuer.example.com/authorize".to_string()),
@@ -1927,7 +1894,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let provider = OidcProvider::create_with_endpoints_and_ssrf_guard(
             "id".to_string(),
             "secret".to_string(),
-            "https://example.com/cb".to_string(),
             "http://issuer.example.com",
             OidcEndpointOverrides {
                 auth_url: Some("http://issuer.example.com/authorize".to_string()),
@@ -1959,7 +1925,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let provider = OidcProvider::create_with_endpoints_and_ssrf_guard(
             "id".to_string(),
             "secret".to_string(),
-            "https://example.com/cb".to_string(),
             "http://issuer.example.com",
             OidcEndpointOverrides {
                 auth_url: Some("http://issuer.example.com/authorize".to_string()),
@@ -1987,7 +1952,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let provider = OidcProvider::create_with_endpoints_and_ssrf_guard(
             "id".to_string(),
             "secret".to_string(),
-            "https://example.com/cb".to_string(),
             "http://issuer.example.com",
             OidcEndpointOverrides {
                 auth_url: Some("http://issuer.example.com/authorize".to_string()),
@@ -2016,7 +1980,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let provider = OidcProvider::create_with_endpoints_and_ssrf_guard(
             "id".to_string(),
             "secret".to_string(),
-            "https://example.com/cb".to_string(),
             "http://issuer.example.com",
             OidcEndpointOverrides {
                 auth_url: Some("http://issuer.example.com/authorize".to_string()),
@@ -2060,7 +2023,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let provider = OidcProvider::create_with_endpoints_and_ssrf_guard(
             "id".to_string(),
             "secret".to_string(),
-            "https://example.com/cb".to_string(),
             "http://issuer.example.com",
             OidcEndpointOverrides {
                 auth_url: Some("http://issuer.example.com/authorize".to_string()),
@@ -2147,7 +2109,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let provider = OidcProvider::create_with_endpoints(
             "oidc_test_id".to_string(),
             "secret".to_string(),
-            "https://example.com/callback".to_string(),
             "https://issuer.example.com",
             OidcEndpointOverrides {
                 auth_url: Some("https://issuer.example.com/authorize".to_string()),
@@ -2160,7 +2121,11 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
 
         let state = "oidc_state_123";
         let auth = provider
-            .new_auth_url(state, None)
+            .new_auth_url(
+                state,
+                Some("https://app.example.com/callback"),
+                OAuth2AuthorizationMode::Browser,
+            )
             .await
             .checked("operation should succeed");
         let auth_url = auth.auth_url;
@@ -2187,24 +2152,28 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
     }
 
     #[tokio::test]
-    async fn test_apple_auth_url_uses_supported_scopes() {
-        let provider = OidcProvider::create_with_endpoints(
-            "org.synctv.app.web".to_string(),
+    async fn test_explicit_openid_scope_is_used_in_authorization_url() {
+        let provider = OidcProvider::create_with_endpoints_scopes_and_ssrf_guard(
+            "oidc-client".to_string(),
             "secret".to_string(),
-            "https://syncs.tv/oauth2/callback".to_string(),
-            "https://appleid.apple.com",
+            "https://issuer.example.com",
             OidcEndpointOverrides {
-                auth_url: Some("https://appleid.apple.com/auth/authorize".to_string()),
-                token_url: Some("https://appleid.apple.com/auth/token".to_string()),
+                auth_url: Some("https://issuer.example.com/auth/authorize".to_string()),
+                token_url: Some("https://issuer.example.com/auth/token".to_string()),
                 userinfo_url: None,
-                jwks_url: Some("https://appleid.apple.com/auth/keys".to_string()),
+                jwks_url: Some("https://issuer.example.com/auth/keys".to_string()),
             },
+            vec!["openid".to_string()],
+            &synctv_common::ssrf::SsrfGuard::strict_policy(),
         )
-        .checked("operation should succeed")
-        .with_provider_type("apple");
+        .checked("operation should succeed");
 
         let auth = provider
-            .new_auth_url("apple_state", None)
+            .new_auth_url(
+                "oidc_state",
+                Some("https://app.example.com/callback"),
+                OAuth2AuthorizationMode::Browser,
+            )
             .await
             .checked("operation should succeed");
 
@@ -2215,25 +2184,24 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
     }
 
     #[tokio::test]
-    async fn test_apple_token_exchange_sends_client_credentials_in_request_body() {
+    async fn test_forced_request_body_auth_sends_client_credentials_in_request_body() {
         let provider = OidcProvider::create_with_endpoints(
-            "org.synctv.app.web".to_string(),
-            "signed-client-secret".to_string(),
-            "https://syncs.tv/oauth2/callback".to_string(),
-            "https://appleid.apple.com",
+            "oidc-client".to_string(),
+            "client-secret".to_string(),
+            "https://issuer.example.com",
             OidcEndpointOverrides {
-                auth_url: Some("https://appleid.apple.com/auth/authorize".to_string()),
-                token_url: Some("https://appleid.apple.com/auth/token".to_string()),
+                auth_url: Some("https://issuer.example.com/auth/authorize".to_string()),
+                token_url: Some("https://issuer.example.com/auth/token".to_string()),
                 userinfo_url: None,
-                jwks_url: Some("https://appleid.apple.com/auth/keys".to_string()),
+                jwks_url: Some("https://issuer.example.com/auth/keys".to_string()),
             },
         )
-        .checked("Apple provider should be created")
-        .with_provider_type("apple");
+        .checked("OIDC provider should be created")
+        .with_client_secret_post();
         let resolved = provider
             .get_resolved()
             .await
-            .checked("Apple provider should resolve");
+            .checked("OIDC provider should resolve");
         let captured = Arc::new(std::sync::Mutex::new(None));
         let captured_request = Arc::clone(&captured);
         let http_client = move |request: oauth2::HttpRequest| {
@@ -2267,21 +2235,21 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             ))
             .request_async(&http_client)
             .await
-            .checked("Apple token response should parse");
+            .checked("OIDC token response should parse");
 
         let (has_authorization_header, form) = captured
             .lock()
             .checked("captured request mutex should remain available")
             .clone()
-            .checked("Apple token request should be captured");
+            .checked("OIDC token request should be captured");
         assert!(!has_authorization_header);
         assert_eq!(
             form.get("client_id").map(String::as_str),
-            Some("org.synctv.app.web"),
+            Some("oidc-client"),
         );
         assert_eq!(
             form.get("client_secret").map(String::as_str),
-            Some("signed-client-secret"),
+            Some("client-secret"),
         );
     }
 
@@ -2290,7 +2258,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let provider = OidcProvider::create_with_endpoints_scopes_and_ssrf_guard(
             "client".to_string(),
             "secret".to_string(),
-            "https://app.example.com/callback".to_string(),
             "https://issuer.example.com",
             OidcEndpointOverrides {
                 auth_url: Some("https://issuer.example.com/authorize".to_string()),
@@ -2304,7 +2271,11 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         .checked("custom OIDC scopes should be accepted");
 
         let auth = provider
-            .new_auth_url("custom_scope_state", None)
+            .new_auth_url(
+                "custom_scope_state",
+                Some("https://app.example.com/callback"),
+                OAuth2AuthorizationMode::Browser,
+            )
             .await
             .checked("authorization URL should be generated");
 
@@ -2317,26 +2288,18 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
     #[test]
     fn test_normalize_oidc_scopes_trims_deduplicates_and_requires_openid() {
         assert_eq!(
-            normalize_oidc_scopes(
-                vec![
-                    " openid ".to_string(),
-                    "groups".to_string(),
-                    "groups".to_string(),
-                ],
-                "https://issuer.example.com",
-            )
+            normalize_oidc_scopes(vec![
+                " openid ".to_string(),
+                "groups".to_string(),
+                "groups".to_string(),
+            ])
             .checked("valid scopes should normalize"),
             vec!["openid".to_string(), "groups".to_string()]
         );
+        assert!(normalize_oidc_scopes(vec!["profile".to_string()]).is_err());
         assert!(
-            normalize_oidc_scopes(vec!["profile".to_string()], "https://issuer.example.com")
-                .is_err()
+            normalize_oidc_scopes(vec!["openid".to_string(), "bad scope".to_string()]).is_err()
         );
-        assert!(normalize_oidc_scopes(
-            vec!["openid".to_string(), "bad scope".to_string()],
-            "https://issuer.example.com"
-        )
-        .is_err());
     }
 
     #[test]
@@ -2344,56 +2307,11 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let config = oidc_private_config(
             "oidc_id",
             "oidc_secret",
-            "https://example.com/oauth/oidc/callback",
             "https://issuer.example.com",
             no_oidc_endpoint_overrides(),
         );
         let provider = oidc_factory_for_test(&config);
         assert!(provider.is_ok());
-        assert_eq!(
-            provider.checked("operation should succeed").provider_type(),
-            "oidc"
-        );
-    }
-
-    #[test]
-    fn test_dedicated_provider_factories_report_stable_types() {
-        let guard = synctv_common::ssrf::SsrfGuard::strict_policy();
-        let apple_redirect_url = "https://app.example.com/oauth2/callback";
-        let apple = OAuth2ProviderPrivateConfig::Apple(OAuth2AppleProviderConfig {
-            client_id: "org.example.app.web".to_string(),
-            client_secret: "secret".to_string(),
-            redirect_url: apple_redirect_url.to_string(),
-        });
-        let apple_provider = apple_factory_from_private_config(&apple, &guard)
-            .checked("Apple provider should be created");
-        assert_eq!(apple_provider.provider_type(), "apple");
-        assert!(apple_provider
-            .validate_authorization_redirect_url(None)
-            .is_ok());
-        assert!(apple_provider
-            .validate_authorization_redirect_url(Some(apple_redirect_url))
-            .is_ok());
-        assert!(apple_provider
-            .validate_authorization_redirect_url(Some("http://127.0.0.1:49152/oauth2/callback"))
-            .is_err());
-
-        let casdoor = OAuth2ProviderPrivateConfig::Casdoor(OAuth2CasdoorProviderConfig {
-            client_id: "client".to_string(),
-            client_secret: "secret".to_string(),
-            redirect_url: "https://app.example.com/oauth2/callback".to_string(),
-            issuer: "https://casdoor.example.com".to_string(),
-            auth_url: None,
-            token_url: None,
-            userinfo_url: None,
-            jwks_url: None,
-        });
-        assert_eq!(
-            casdoor_factory_from_private_config(&casdoor, &guard)
-                .checked("Casdoor provider should be created")
-                .provider_type(),
-            "casdoor"
-        );
     }
 
     #[test]
@@ -2401,7 +2319,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let config = oidc_private_config(
             "oidc_id",
             "oidc_secret",
-            "https://example.com/cb",
             "https://issuer.example.com",
             OidcEndpointOverrides {
                 auth_url: Some("https://issuer.example.com/custom/authorize".to_string()),
@@ -2419,7 +2336,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let config = oidc_private_config(
             "id",
             "secret",
-            "https://example.com/cb",
             "https://issuer.example.com",
             OidcEndpointOverrides {
                 auth_url: Some("https://issuer.example.com/auth".to_string()),
@@ -2439,7 +2355,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let config = oidc_private_config(
             "",
             "secret",
-            "https://example.com/cb",
             "https://issuer.example.com",
             no_oidc_endpoint_overrides(),
         );
@@ -2447,16 +2362,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
 
         let config = oidc_private_config(
             "id",
-            "",
-            "https://example.com/cb",
-            "https://issuer.example.com",
-            no_oidc_endpoint_overrides(),
-        );
-        assert!(oidc_factory_for_test(&config).is_err());
-
-        let config = oidc_private_config(
-            "id",
-            "secret",
             "",
             "https://issuer.example.com",
             no_oidc_endpoint_overrides(),
@@ -2466,13 +2371,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
 
     #[test]
     fn test_factory_default_empty_issuer_rejected() {
-        let config = oidc_private_config(
-            "id",
-            "secret",
-            "https://example.com/cb",
-            "",
-            no_oidc_endpoint_overrides(),
-        );
+        let config = oidc_private_config("id", "secret", "", no_oidc_endpoint_overrides());
         let result = oidc_factory_for_test(&config);
         assert!(result.is_err());
         assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
@@ -2483,7 +2382,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let config = oidc_private_config(
             "id",
             "secret",
-            "https://example.com/cb",
             "",
             OidcEndpointOverrides {
                 auth_url: Some("https://provider.example.com/authorize".to_string()),
@@ -2501,7 +2399,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let json = serde_json::json!({
             "client_id": "oidc_abc",
             "client_secret": "oidc_def",
-            "redirect_url": "https://example.com/cb",
             "issuer": "https://issuer.example.com",
             "auth_url": "https://issuer.example.com/auth",
             "token_url": "https://issuer.example.com/token",
@@ -2511,7 +2408,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let config: OidcConfig = serde_json::from_value(json).checked("operation should succeed");
         assert_eq!(config.client_id, "oidc_abc");
         assert_eq!(config.client_secret, "oidc_def");
-        assert_eq!(config.redirect_url, "https://example.com/cb");
         assert_eq!(config.issuer, "https://issuer.example.com");
         assert_eq!(
             config.auth_url.as_deref(),
@@ -2536,7 +2432,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let json = serde_json::json!({
             "client_id": "id",
             "client_secret": "secret",
-            "redirect_url": "https://example.com/cb"
         });
         let config: OidcConfig = serde_json::from_value(json).checked("operation should succeed");
         assert_eq!(config.issuer, ""); // Default
@@ -2551,7 +2446,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let config = OidcConfig {
             client_id: "id".to_string(),
             client_secret: "secret".to_string(),
-            redirect_url: "https://example.com/cb".to_string(),
             issuer: "https://issuer.example.com".to_string(),
             auth_url: None,
             token_url: None,
@@ -2573,7 +2467,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let provider = OidcProvider::create_with_endpoints(
             "id".to_string(),
             "secret".to_string(),
-            "https://example.com/cb".to_string(),
             "https://issuer.example.com",
             OidcEndpointOverrides {
                 auth_url: Some("https://issuer.example.com/authorize".to_string()),
@@ -2600,7 +2493,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let provider = OidcProvider::create_with_endpoints(
             "id".to_string(),
             "secret".to_string(),
-            "https://example.com/cb".to_string(),
             "https://issuer.example.com",
             OidcEndpointOverrides {
                 auth_url: Some("https://issuer.example.com/authorize".to_string()),

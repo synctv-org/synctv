@@ -36,13 +36,15 @@ mod types;
 pub use types::{
     ChatRuntimeSettings, ConfiguredIceServer, CorsAllowedOrigins, CorsRuntimeSettings,
     EmailRuntimeSettings, IceServerList, OAuth2AllowedRedirectUrls, OAuth2AppleProviderConfig,
-    OAuth2CasdoorProviderConfig, OAuth2GithubProviderConfig, OAuth2GoogleProviderConfig,
-    OAuth2LogtoProviderConfig, OAuth2OidcProviderConfig, OAuth2ProviderConfig,
-    OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig, OAuth2RuntimeSettings, OAuth2SignupPolicy,
-    OptionalRuntimeConfig, PermissionRuntimeSettings, PermissionSet,
-    PlaybackHistoryRuntimeSettings, PublicSettings, RoomCreationRuntimeSettings,
-    RoomDefaultsRuntimeSettings, RoomPasswordPolicy, RtmpRuntimeSettings, RuntimeSettings,
-    RuntimeSettingsUpdateMask, ServerRuntimeSettings, UserRuntimeSettings, WebRtcRuntimeSettings,
+    OAuth2CasdoorProviderConfig, OAuth2DiscordProviderConfig, OAuth2FeishuProviderConfig,
+    OAuth2GiteeProviderConfig, OAuth2GithubProviderConfig, OAuth2GoogleProviderConfig,
+    OAuth2LogtoProviderConfig, OAuth2MicrosoftProviderConfig, OAuth2OidcProviderConfig,
+    OAuth2ProviderConfig, OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig,
+    OAuth2QqProviderConfig, OAuth2RuntimeSettings, OAuth2SignupPolicy, OptionalRuntimeConfig,
+    PermissionRuntimeSettings, PermissionSet, PlaybackHistoryRuntimeSettings, PublicSettings,
+    RoomCreationRuntimeSettings, RoomDefaultsRuntimeSettings, RoomPasswordPolicy,
+    RtmpRuntimeSettings, RuntimeSettings, RuntimeSettingsUpdateMask, ServerRuntimeSettings,
+    UserRuntimeSettings, WebRtcRuntimeSettings,
 };
 
 /// Maximum allowed value for `default_max_chat_messages` setting (0 = unlimited)
@@ -1696,7 +1698,7 @@ mod tests {
     #[test]
     fn test_oauth2_provider_configs_parse_dynamic_instances() {
         let configs: OAuth2ProviderConfigs = ok(
-            r#"{"github":{"type":"github","enableSignup":true,"clientId":"id","clientSecret":"secret","redirectUrl":"https://app.example.com/cb"},"corp_oidc":{"type":"oidc","enableSignup":true,"signupNeedReview":true,"clientId":"id","clientSecret":"secret","redirectUrl":"https://app.example.com/cb","issuer":"https://idp.example.com"}}"#
+            r#"{"github":{"type":"github","enableSignup":true,"clientId":"id","clientSecret":"secret"},"corp_oidc":{"type":"oidc","enableSignup":true,"signupNeedReview":true,"clientId":"id","clientSecret":"secret","issuer":"https://idp.example.com"}}"#
                 .parse(),
             "OAuth2 provider configs should parse",
         );
@@ -1705,45 +1707,43 @@ mod tests {
         assert!(configs.policy_for("corp_oidc").enable_signup);
         assert!(configs.policy_for("corp_oidc").signup_need_review);
         assert!(!configs.policy_for("missing").enable_signup);
-        let OAuth2ProviderPrivateConfig::GitHub(config) = &configs.0["github"].config else {
+        let OAuth2ProviderPrivateConfig::GitHub(_config) = &configs.0["github"].config else {
             panic!("expected github OAuth2 config");
         };
-        assert_eq!(config.redirect_url, "https://app.example.com/cb");
     }
 
     #[test]
-    fn test_oauth2_provider_configs_reject_snake_case_fields() {
-        let error = r#"{"github":{"type":"github","enable_signup":true,"client_id":"id","client_secret":"secret","redirect_url":"https://app.example.com/cb"}}"#
+    fn test_oauth2_provider_configs_ignore_unknown_fields() {
+        let configs = r#"{"github":{"type":"github","enable_signup":true,"client_id":"id","client_secret":"secret","futureField":true}}"#
             .parse::<OAuth2ProviderConfigs>()
-            .expect_err("OAuth2 provider runtime JSON should reject snake_case fields");
+            .expect("unknown runtime fields should be ignored");
 
-        assert!(!error.to_string().is_empty());
-
-        let error = r#"{"github":{"type":"github","enable_signup":true,"clientId":"id","clientSecret":"secret","redirectUrl":"https://app.example.com/cb"}}"#
-            .parse::<OAuth2ProviderConfigs>()
-            .expect_err("OAuth2 provider runtime JSON should reject outer snake_case fields");
-
-        assert!(!error.to_string().is_empty());
+        let provider = &configs.0["github"];
+        assert!(!provider.enable_signup);
+        let OAuth2ProviderPrivateConfig::GitHub(config) = &provider.config else {
+            panic!("expected github provider config");
+        };
+        assert!(config.client_id.is_empty());
     }
 
     #[test]
     fn test_oauth2_provider_configs_validate_instance_names() {
         let configs: OAuth2ProviderConfigs = ok(
-            r#"{"github_enterprise-1":{"type":"github","enableSignup":true,"clientId":"id","clientSecret":"secret","redirectUrl":"https://app.example.com/cb"}}"#
+            r#"{"github_enterprise-1":{"type":"github","enableSignup":true,"clientId":"id","clientSecret":"secret"}}"#
                 .parse(),
             "OAuth2 provider configs should parse",
         );
         assert!(validate_configs(&configs).is_ok());
 
         let dotted: OAuth2ProviderConfigs = ok(
-            r#"{"github.enterprise-1":{"type":"github","enableSignup":true,"clientId":"id","clientSecret":"secret","redirectUrl":"https://app.example.com/cb"}}"#
+            r#"{"github.enterprise-1":{"type":"github","enableSignup":true,"clientId":"id","clientSecret":"secret"}}"#
                 .parse(),
             "OAuth2 provider configs should parse",
         );
         assert!(validate_configs(&dotted).is_err());
 
         let invalid: OAuth2ProviderConfigs = ok(
-            r#"{"bad/name":{"type":"github","enableSignup":true,"clientId":"id","clientSecret":"secret","redirectUrl":"https://app.example.com/cb"}}"#
+            r#"{"bad/name":{"type":"github","enableSignup":true,"clientId":"id","clientSecret":"secret"}}"#
                 .parse(),
             "OAuth2 provider configs should parse",
         );
@@ -1761,7 +1761,6 @@ mod tests {
                 config: OAuth2ProviderPrivateConfig::Oidc(OAuth2OidcProviderConfig {
                     client_id: "id".to_string(),
                     client_secret: "secret".to_string(),
-                    redirect_url: "https://app.example.com/callback".to_string(),
                     issuer: "http://127.0.0.1:8443".to_string(),
                     auth_url: None,
                     token_url: None,
@@ -1787,10 +1786,10 @@ mod tests {
     }
 
     #[test]
-    fn test_oauth2_provider_configs_validate_rejects_unimplemented_or_invalid_provider() {
-        let unimplemented = r#"{"microsoft":{"type":"microsoft","enableSignup":true,"clientId":"id","clientSecret":"secret","redirectUrl":"https://app.example.com/cb"}}"#
+    fn test_oauth2_provider_configs_rejects_unknown_or_invalid_provider() {
+        let unknown = r#"{"unknown":{"type":"unknown","enableSignup":true,"clientId":"id","clientSecret":"secret"}}"#
             .parse::<OAuth2ProviderConfigs>();
-        assert!(unimplemented.is_err());
+        assert!(unknown.is_err());
 
         let invalid_config: OAuth2ProviderConfigs = ok(
             r#"{"github":{"type":"github","enableSignup":true,"clientId":"id"}}"#.parse(),

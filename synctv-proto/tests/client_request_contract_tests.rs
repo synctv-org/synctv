@@ -698,7 +698,8 @@ fn test_list_provider_backends_request_rejects_invalid_provider_type_format() {
 fn test_get_authorization_url_request_rejects_invalid_provider_instance_name() {
     let request = GetAuthorizationUrlRequest {
         provider: "bad provider".to_string(),
-        redirect_url: String::new(),
+        redirect_url: Some(String::new()),
+        native: None,
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -721,8 +722,9 @@ fn test_oauth2_provider_instance_path_request_rejects_invalid_provider_name() {
 fn test_get_authorization_url_for_bind_request_rejects_dangerous_redirect_url() {
     let request = GetAuthorizationUrlForBindRequest {
         provider: "github".to_string(),
-        redirect_url: "javascript:alert(1)".to_string(),
+        redirect_url: Some("javascript:alert(1)".to_string()),
         verification_id: "verification-id".to_string(),
+        native: None,
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -734,7 +736,8 @@ fn test_get_authorization_url_for_bind_request_rejects_dangerous_redirect_url() 
 fn test_get_authorization_url_request_rejects_non_loopback_http_redirect_url() {
     let request = GetAuthorizationUrlRequest {
         provider: "github".to_string(),
-        redirect_url: "http://example.com/oauth2/callback".to_string(),
+        redirect_url: Some("http://example.com/oauth2/callback".to_string()),
+        native: None,
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -794,6 +797,15 @@ fn test_oauth2_provider_type_path_request_rejects_invalid_provider_type() {
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();
     assert!(message.contains("provider"), "{message}");
+}
+
+#[test]
+fn test_oauth2_provider_type_path_request_accepts_apple() {
+    let request = OAuth2ProviderTypePathRequest {
+        provider: "apple".to_string(),
+    };
+
+    synctv_proto::validate(&request).expect("Apple provider path should be valid");
 }
 
 #[test]

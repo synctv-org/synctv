@@ -259,61 +259,89 @@ message OAuth2ProviderSettings {
 
   oneof config {
     option (buf.validate.oneof).required = true;
-    OAuth2GithubProviderConfig github = 4;
-    OAuth2GoogleProviderConfig google = 5;
-    OAuth2LogtoProviderConfig logto = 6;
-    OAuth2OidcProviderConfig oidc = 7;
-    OAuth2CasdoorProviderConfig casdoor = 8;
-    OAuth2AppleProviderConfig apple = 9;
+    OAuth2QqProviderConfig qq = 4;
+    OAuth2GithubProviderConfig github = 5;
+    OAuth2GoogleProviderConfig google = 6;
+    OAuth2MicrosoftProviderConfig microsoft = 7;
+    OAuth2DiscordProviderConfig discord = 8;
+    OAuth2CasdoorProviderConfig casdoor = 9;
+    OAuth2LogtoProviderConfig logto = 10;
+    OAuth2OidcProviderConfig oidc = 11;
+    OAuth2FeishuProviderConfig feishu = 12;
+    OAuth2GiteeProviderConfig gitee = 13;
+    OAuth2AppleProviderConfig apple = 14;
   }
 }
 
 message OAuth2GithubProviderConfig {
   string client_id = 1;
   optional string client_secret = 2;
-  string redirect_url = 3;
 }
 
 message OAuth2GoogleProviderConfig {
   string client_id = 1;
   optional string client_secret = 2;
-  string redirect_url = 3;
 }
 
 message OAuth2LogtoProviderConfig {
   string client_id = 1;
   optional string client_secret = 2;
-  string redirect_url = 3;
-  string endpoint = 4;
+  string endpoint = 3;
 }
 
 message OAuth2OidcProviderConfig {
   string client_id = 1;
   optional string client_secret = 2;
-  string redirect_url = 3;
-  string issuer = 4;
-  optional string auth_url = 5;
-  optional string token_url = 6;
-  optional string userinfo_url = 7;
-  optional string jwks_url = 8;
-  repeated string scopes = 9;
-}
-
-message OAuth2AppleProviderConfig {
-  string client_id = 1;
-  optional string client_secret = 2;
-  string redirect_url = 3;
+  string issuer = 3;
+  optional string auth_url = 4;
+  optional string token_url = 5;
+  optional string userinfo_url = 6;
+  optional string jwks_url = 7;
+  repeated string scopes = 8;
 }
 
 message OAuth2CasdoorProviderConfig {
   string client_id = 1;
   optional string client_secret = 2;
-  string redirect_url = 3;
-  string issuer = 4;
-  optional string auth_url = 5;
-  optional string token_url = 6;
-  optional string userinfo_url = 7;
-  optional string jwks_url = 8;
+  string issuer = 3;
+  optional string auth_url = 4;
+  optional string token_url = 5;
+  optional string userinfo_url = 6;
+  optional string jwks_url = 7;
+}
+
+message OAuth2AppleProviderConfig {
+  string web_client_id = 1;
+  optional string web_client_secret = 2;
+  string native_client_id = 3;
+  optional string native_client_secret = 4;
+}
+
+message OAuth2QqProviderConfig {
+  string client_id = 1;
+  optional string client_secret = 2;
+}
+
+message OAuth2MicrosoftProviderConfig {
+  string client_id = 1;
+  optional string client_secret = 2;
+  string tenant = 3;
+}
+
+message OAuth2DiscordProviderConfig {
+  string client_id = 1;
+  optional string client_secret = 2;
+}
+
+message OAuth2FeishuProviderConfig {
+  string client_id = 1;
+  optional string client_secret = 2;
+  string endpoint = 3;
+}
+
+message OAuth2GiteeProviderConfig {
+  string client_id = 1;
+  optional string client_secret = 2;
 }
 
 message RtmpSettings {

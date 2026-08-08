@@ -21,6 +21,7 @@
 
 use std::{collections::HashSet, sync::Arc};
 use synctv_core::models::{OAuth2Provider, User, UserId, UserRole, UserStatus};
+use synctv_core::oauth2::OAuth2AuthorizationMode;
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::{OAuth2LinkResult, OAuth2Operation, OAuth2Service, UserService};
 use synctv_proto::client::{
@@ -28,8 +29,8 @@ use synctv_proto::client::{
     GetAuthorizationUrlForBindRequest, GetAuthorizationUrlForBindResponse,
     GetAuthorizationUrlRequest, GetAuthorizationUrlResponse, GetLinkedProvidersResponse,
     LinkedProvider, ListAvailableProvidersResponse, OAuth2Operation as ProtoOAuth2Operation,
-    OAuth2ProviderInstance, OAuth2ProviderType, OAuth2UserInfo, UnlinkProviderRequest,
-    UnlinkProviderResponse,
+    OAuth2ProviderInstance, OAuth2ProviderMode, OAuth2ProviderType, OAuth2UserInfo,
+    UnlinkProviderRequest, UnlinkProviderResponse,
 };
 
 use super::ApiError;
@@ -50,9 +51,23 @@ struct UnlinkProviderPlan {
 }
 
 impl OAuth2ApiImpl {
+    fn authorization_url_for_mode(
+        mode: OAuth2AuthorizationMode,
+        authorization_url: String,
+    ) -> Option<String> {
+        match mode {
+            OAuth2AuthorizationMode::Browser => Some(authorization_url),
+            OAuth2AuthorizationMode::Native => None,
+        }
+    }
+
     fn optional_non_empty_trimmed(value: &str) -> Option<String> {
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
+    }
+
+    fn optional_proto_non_empty_trimmed(value: Option<&str>) -> Option<String> {
+        value.and_then(Self::optional_non_empty_trimmed)
     }
 
     fn oauth2_provider_to_proto(provider: &OAuth2Provider) -> i32 {
@@ -339,7 +354,7 @@ impl OAuth2ApiImpl {
             .await
             .map_err(ApiError::from)?
             .into_iter()
-            .map(|(name, provider, _)| (name, provider))
+            .map(|(name, provider, _, _)| (name, provider))
             .collect())
     }
 
@@ -399,15 +414,33 @@ impl OAuth2ApiImpl {
         control: Option<&ExecutionControl>,
     ) -> Result<GetAuthorizationUrlResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let redirect_url = Self::optional_non_empty_trimmed(&req.redirect_url);
-        let (authorization_url, state) = self
-            .get_authorization_url_with_control(&req.provider, redirect_url, control)
+        let redirect_url = Self::optional_proto_non_empty_trimmed(req.redirect_url.as_deref());
+        let mode = if req.native.unwrap_or(false) {
+            OAuth2AuthorizationMode::Native
+        } else {
+            OAuth2AuthorizationMode::Browser
+        };
+        let prepared = self
+            .oauth2_service
+            .prepare_authorization_url_with_control(
+                &req.provider,
+                redirect_url,
+                OAuth2Operation::Login,
+                None,
+                mode,
+                control,
+            )
             .await?;
+        self.oauth2_service
+            .store_prepared_authorization_with_control(&prepared, control)
+            .await
+            .map_err(ApiError::from)?;
 
         Ok(GetAuthorizationUrlResponse {
-            authorization_url,
-            state,
+            authorization_url: Self::authorization_url_for_mode(mode, prepared.auth_url),
+            state: prepared.state_token,
             operation: Self::oauth2_operation_to_proto(OAuth2Operation::Login),
+            nonce: prepared.oauth_state.nonce,
         })
     }
 
@@ -471,7 +504,12 @@ impl OAuth2ApiImpl {
         control: Option<&ExecutionControl>,
     ) -> Result<GetAuthorizationUrlForBindResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let redirect_url = Self::optional_non_empty_trimmed(&req.redirect_url);
+        let redirect_url = Self::optional_proto_non_empty_trimmed(req.redirect_url.as_deref());
+        let mode = if req.native.unwrap_or(false) {
+            OAuth2AuthorizationMode::Native
+        } else {
+            OAuth2AuthorizationMode::Browser
+        };
         self.user_service
             .get_user(user_id)
             .await
@@ -492,6 +530,7 @@ impl OAuth2ApiImpl {
                 redirect_url,
                 OAuth2Operation::Bind,
                 Some(*user_id),
+                mode,
                 control,
             )
             .await
@@ -506,9 +545,10 @@ impl OAuth2ApiImpl {
             .map_err(ApiError::from)?;
 
         Ok(GetAuthorizationUrlForBindResponse {
-            authorization_url: prepared.auth_url,
+            authorization_url: Self::authorization_url_for_mode(mode, prepared.auth_url),
             state: prepared.state_token,
             operation: Self::oauth2_operation_to_proto(prepared.oauth_state.operation),
+            nonce: prepared.oauth_state.nonce,
         })
     }
 
@@ -557,7 +597,7 @@ impl OAuth2ApiImpl {
         let operation = oauth_state.operation;
         let provider_instance_name = oauth_state.instance_name.clone();
 
-        // 2. Exchange code for user info using PKCE verifier from stored state
+        // 2. Exchange code for user info using the provider-generated state context.
         let user_info = self
             .oauth2_service
             .exchange_code_for_user_info_with_state_and_control(
@@ -820,12 +860,15 @@ impl OAuth2ApiImpl {
 
         let result = providers
             .into_iter()
-            .map(|(name, provider_type, signup_policy)| ProviderInfo {
-                name,
-                provider_type,
-                signup_enabled: signup_policy.enable_signup,
-                signup_need_review: signup_policy.signup_need_review,
-            })
+            .map(
+                |(name, provider_type, signup_policy, supported_modes)| ProviderInfo {
+                    name,
+                    provider_type,
+                    signup_enabled: signup_policy.enable_signup,
+                    signup_need_review: signup_policy.signup_need_review,
+                    supported_modes,
+                },
+            )
             .collect();
 
         Ok(result)
@@ -960,6 +1003,7 @@ pub struct ProviderInfo {
     pub provider_type: OAuth2Provider,
     pub signup_enabled: bool,
     pub signup_need_review: bool,
+    pub supported_modes: Vec<OAuth2AuthorizationMode>,
 }
 
 /// Unlink provider result
@@ -1016,6 +1060,18 @@ impl From<ProviderInfo> for OAuth2ProviderInstance {
             r#type: OAuth2ApiImpl::oauth2_provider_to_proto(&info.provider_type),
             signup_enabled: info.signup_enabled,
             signup_need_review: info.signup_need_review,
+            supported_modes: info
+                .supported_modes
+                .into_iter()
+                .map(|mode| match mode {
+                    OAuth2AuthorizationMode::Browser => {
+                        OAuth2ProviderMode::Oauth2ProviderModeBrowser as i32
+                    }
+                    OAuth2AuthorizationMode::Native => {
+                        OAuth2ProviderMode::Oauth2ProviderModeNative as i32
+                    }
+                })
+                .collect(),
         }
     }
 }
@@ -1038,6 +1094,7 @@ impl From<LinkedProviderInfo> for LinkedProvider {
 mod tests {
     use std::collections::HashSet;
 
+    use super::OAuth2AuthorizationMode;
     use crate::impls::ApiError;
     use synctv_proto::client::{
         ExchangeAuthorizationCodeRequest, GetAuthorizationUrlForBindRequest,
@@ -1191,7 +1248,8 @@ mod tests {
     fn test_oauth2_request_validation_rejects_invalid_redirect_url() {
         let err = crate::impls::validate_proto_request(&GetAuthorizationUrlRequest {
             provider: "github".to_string(),
-            redirect_url: "javascript:alert(1)".to_string(),
+            redirect_url: Some("javascript:alert(1)".to_string()),
+            native: None,
         })
         .expect_err("invalid redirect URL must be rejected");
 
@@ -1199,11 +1257,31 @@ mod tests {
     }
 
     #[test]
+    fn native_authorization_response_omits_authorization_url() {
+        assert_eq!(
+            super::OAuth2ApiImpl::authorization_url_for_mode(
+                OAuth2AuthorizationMode::Native,
+                "https://provider.example/authorize".to_string(),
+            ),
+            None,
+        );
+        assert_eq!(
+            super::OAuth2ApiImpl::authorization_url_for_mode(
+                OAuth2AuthorizationMode::Browser,
+                "https://provider.example/authorize".to_string(),
+            )
+            .as_deref(),
+            Some("https://provider.example/authorize"),
+        );
+    }
+
+    #[test]
     fn test_oauth2_request_validation_rejects_custom_scheme_redirect_url() {
         let err = crate::impls::validate_proto_request(&GetAuthorizationUrlForBindRequest {
             provider: "logto1".to_string(),
-            redirect_url: "native-app://oauth2/callback".to_string(),
+            redirect_url: Some("native-app://oauth2/callback".to_string()),
             verification_id: "verification-id".to_string(),
+            native: None,
         })
         .expect_err("custom scheme redirect URL must be rejected");
 

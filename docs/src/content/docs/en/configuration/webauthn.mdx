@@ -85,6 +85,8 @@ Keep this list minimal.
 
 ## Native App Associations
 
+The “native app association” section covers WebAuthn/passkeys only. Native Sign in with Apple is an OAuth2 provider flow that uses an Apple App ID and a server-side client secret; see [Email and OAuth2](../email-oauth2/).
+
 Apple platforms use `webauthn.apple_app_ids` to declare native apps that may use this RP ID. Each value is an Apple application identifier in `TeamID.BundleID` form:
 
 ```yaml
@@ -93,7 +95,7 @@ webauthn:
     - "ABCDE12345.org.synctv.app"
 ```
 
-The server exposes these values as `webcredentials.apps` and App Link identities at `/.well-known/apple-app-site-association`. App Link paths are derived from `oauth2.allowedRedirectUrls` entries whose HTTPS host matches the request domain. Add both `webcredentials:example.com` and `applinks:example.com` to the app's Associated Domains entitlement when OAuth2 login is enabled.
+The server exposes these values as `webcredentials.apps` and App Link identities at `/.well-known/apple-app-site-association`. App Link paths are derived from `oauth2.allowedRedirectUrls` entries whose HTTPS host matches the request domain. Add both `webcredentials:example.com` and `applinks:example.com` to the app's Associated Domains entitlement when browser OAuth2 callbacks are enabled.
 
 Android uses the app package and SHA-256 fingerprints of its signing certificates:
 
@@ -154,7 +156,7 @@ Apple fixes the allowed RP IDs in the signed app's Associated Domains entitlemen
 - Use a system-browser WebAuthn flow, where the browser manages the passkey for the self-hosted domain; the current official app exposes native passkeys only, so this path requires a future browser authentication flow.
 - Use an RP domain already covered by the official Apple app entitlement.
 
-Each self-hosted server controls Android authorization, allowing the official prebuilt app to add domains at runtime. Native Apple authorization is constrained by both the build signature and the server AASA document, so the domain set is determined at build time.
+Each self-hosted server controls Android passkey association, allowing the official prebuilt app to add domains at runtime. Apple passkey RP domains are constrained by both the build signature and the server AASA document, so the domain set is determined at build time. This constraint does not apply to native Sign in with Apple; native Apple OAuth uses the signed app's Bundle ID and a server-side Apple client secret.
 
 ## `webauthn.allow_subdomains`
 

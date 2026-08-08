@@ -232,14 +232,15 @@ curl -sS http://localhost:8080/api/auth/email/request \
 OAuth2/OIDC 是前端驱动流程：
 
 <Steps>
-1. 调用 `GET /api/oauth2/providers` 获取可用 provider 实例、`signupEnabled` 和 `signupNeedReview`。
-2. 调用 `GET /api/oauth2/{provider}/authorize?redirectUrl=<callback>` 获取第三方授权 URL 和 state。
-3. 把用户跳转到第三方授权页面。
-4. 第三方回调到客户端 URL，带回 `code` 和 `state`。
-5. 客户端调用 `POST /api/oauth2/{provider}/exchange`。
-6. 如果响应包含 `registrationReviewRequired=true`，展示待审核状态并保存 `registrationReviewId`，不要把它当作已登录。
-7. 如果响应包含 token，保存 SyncTV access/refresh token。
+1. 调用 `GET /api/oauth2/providers` 获取可用 provider 实例、`signupEnabled`、`signupNeedReview` 和 `supportedModes`。iOS/macOS 优先使用同时支持 `browser` 与 `native` 的 Apple 实例，其他平台使用 `browser`，当前平台不支持的实例隐藏。
+2. 浏览器授权调用 `GET /api/oauth2/{provider}/authorize?redirectUrl=<callback>`，获取第三方授权 URL 和 state；响应的 `authorizationUrl` 必须存在。原生 Apple 授权调用 `GET /api/oauth2/{provider}/authorize?native=true`，省略 `redirectUrl`；原生响应省略 `authorizationUrl`，客户端直接使用系统 Sign in with Apple。
+3. 浏览器授权把用户跳转到第三方授权页面，第三方回调到客户端 URL 并带回 `code` 和 `state`。原生 Apple 授权由 iOS/macOS 的 Sign in with Apple 返回 `code` 和 `state`。
+4. 客户端调用 `POST /api/oauth2/{provider}/exchange`。
+5. 如果响应包含 `registrationReviewRequired=true`，展示待审核状态并保存 `registrationReviewId`，不要把它当作已登录。
+6. 如果响应包含 token，保存 SyncTV access/refresh token。
 </Steps>
+
+Apple 原生登录使用 Apple App ID 的 Bundle ID 作为 `nativeClientId`，并由服务端使用 `nativeClientSecret` 换取身份。官方客户端 Bundle ID 是 `org.synctv.app`。自托管发行通常需要自有 Apple Developer Team、Bundle ID、签名和对应的服务端 secret；这些配置与浏览器 Apple 的 Services ID、HTTPS `redirectUrl` 属于两套独立流程。
 
 最小交换示例：
 
@@ -252,7 +253,7 @@ curl -sS http://localhost:8080/api/oauth2/github/exchange \
   }'
 ```
 
-绑定已有账号时使用 `GET /api/oauth2/{provider}/bind?redirectUrl=<callback>`。绑定发起请求和后续 `POST /api/oauth2/{provider}/exchange` 都必须携带当前用户 access token；exchange 时 token 用户必须与 OAuth2 state 中记录的用户一致。OAuth2 登录不作为本地 2FA 第一因素或第二因素，但开启 2FA 的用户仍可使用 OAuth2 登录。
+绑定已有账号时，浏览器授权使用 `GET /api/oauth2/{provider}/bind?redirectUrl=<callback>`，原生 Apple 授权使用 `GET /api/oauth2/{provider}/bind?native=true` 并省略 `redirectUrl`。绑定发起请求和后续 `POST /api/oauth2/{provider}/exchange` 都必须携带当前用户 access token；exchange 时 token 用户必须与 OAuth2 state 中记录的用户一致。OAuth2 登录不作为本地 2FA 第一因素或第二因素，但开启 2FA 的用户仍可使用 OAuth2 登录。
 
 ## gRPC 示例
 

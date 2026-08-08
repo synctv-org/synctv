@@ -111,7 +111,7 @@ All registration modes are disabled by default. Production deployments should en
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `oauth2.providers` | JSON array | `[]` | OAuth2/OIDC provider instance registry. Each element is an `OAuth2ProviderSettings` ProtoJSON object |
-| `oauth2.allowedRedirectUrls` | JSON string array | `[]` | Allowlist of HTTPS callbacks requested by clients; loopback callbacks are handled separately |
+| `oauth2.allowedRedirectUrls` | JSON string array | `[]` | Allowlist of HTTPS callbacks requested by browser authorization clients; loopback callbacks are handled separately, and native authorization omits `redirectUrl` |
 
 `oauth2.providers` is the OAuth2 configuration entry point. `instanceName` may contain only ASCII letters, digits, `_`, and `-`, and must be at most 64 bytes. Each element uses one provider oneof field such as `github` or `oidc`:
 
@@ -121,7 +121,11 @@ Configure the shared callback allowlist as a runtime setting. Store builds commo
 synctv settings update --set 'oauth2.allowedRedirectUrls=["https://syncs.tv/oauth2/callback"]'
 ```
 
-Apple Services IDs accept registered HTTPS Return URLs. An Apple provider client callback must exactly match that provider's `redirectUrl`; macOS and iOS clients should receive this HTTPS callback through `ASWebAuthenticationSession`.
+Apple browser authorization uses a Services ID and accepts only registered HTTPS Return URLs. Clients pass a request-level `redirectUrl`; the server validates it against `oauth2.allowedRedirectUrls`. macOS and iOS clients receive this HTTPS callback through `ASWebAuthenticationSession`.
+
+Apple native authorization uses `native=true` and omits `redirectUrl`; iOS and macOS receive an authorization code from Sign in with Apple. The Apple provider advertises native support through `supportedModes` in `/api/oauth2/providers` and requires `webClientId`, `webClientSecret`, `nativeClientId`, and `nativeClientSecret`. `nativeClientId` must match the signed app's Bundle ID. The official client uses `org.synctv.app`; a self-hosted distribution normally needs its own Apple Developer Team, Bundle ID, signing, and matching `nativeClientSecret`. See [Email and OAuth2](../../configuration/email-oauth2/).
+
+Native Apple OAuth does not depend on `/.well-known/apple-app-site-association`. That document serves Universal Links, browser OAuth callback association, and passkeys.
 
 ```json
 [
@@ -131,8 +135,7 @@ Apple Services IDs accept registered HTTPS Return URLs. An Apple provider client
     "signupNeedReview": false,
     "github": {
       "clientId": "github-client-id",
-      "clientSecret": "github-client-secret",
-      "redirectUrl": "https://app.example.com/oauth2/callback"
+      "clientSecret": "github-client-secret"
     }
   },
   {
@@ -142,8 +145,7 @@ Apple Services IDs accept registered HTTPS Return URLs. An Apple provider client
     "oidc": {
       "clientId": "synctv",
       "clientSecret": "oidc-client-secret",
-      "issuer": "https://idp.example.com",
-      "redirectUrl": "https://app.example.com/oauth2/callback"
+      "issuer": "https://idp.example.com"
     }
   }
 ]
@@ -246,7 +248,7 @@ synctv settings update \
   <TabItem label="Configure OAuth2" icon="document">
 
 ```bash
-synctv settings update --set 'oauth2.providers=[{"name":"github","enableSignup":true,"signupNeedReview":false,"github":{"clientId":"github-client-id","clientSecret":"github-client-secret","redirectUrl":"https://app.example.com/oauth2/callback"}}]'
+synctv settings update --set 'oauth2.providers=[{"name":"github","enableSignup":true,"signupNeedReview":false,"github":{"clientId":"github-client-id","clientSecret":"github-client-secret"}}]'
 ```
 
   </TabItem>

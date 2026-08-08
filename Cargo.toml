@@ -46,6 +46,7 @@ perf = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
 todo = "deny"
 unwrap_used = "deny"
+assert_is_empty = "allow"
 doc_markdown = "allow"
 struct_excessive_bools = "allow"
 case_sensitive_file_extension_comparisons = "allow"

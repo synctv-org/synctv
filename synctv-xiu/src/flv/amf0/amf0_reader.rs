@@ -283,7 +283,7 @@ mod tests {
     fn test_byte_order() {
         use byteorder::{BigEndian, ByteOrder};
 
-        let phi = 1.618_033_988_7;
+        let phi = std::f64::consts::GOLDEN_RATIO;
         let mut buf = [0; 8];
         BigEndian::write_f64(&mut buf, phi);
         assert_eq!(phi.to_bits(), BigEndian::read_f64(&buf).to_bits());

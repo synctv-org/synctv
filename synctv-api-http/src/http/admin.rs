@@ -168,6 +168,7 @@ pub(crate) fn create_admin_router() -> Router<AppState> {
         // User management
         .route("/users", get(list_users).post(create_user))
         .route("/users/{userId}", get(get_user).delete(delete_user))
+        .route("/users/{userId}/restore", post(restore_user))
         .route(
             "/users/{userId}/preferences",
             get(get_user_preferences).patch(update_user_preferences),
@@ -1241,6 +1242,42 @@ pub(crate) async fn delete_user(
             },
         )
         .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/users/{userId}/restore",
+        tag = "Admin",
+        params(("userId" = String, Path, description = "Deleted user ID")),
+        request_body = admin::RestoreUserRequest,
+        responses(
+            (status = 200, description = "User restored", body = admin::RestoreUserResponse),
+            (status = 409, description = "Identity conflict", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Root authentication required", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn restore_user(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<admin::UserPathRequest>,
+    Json(mut req): Json<admin::RestoreUserRequest>,
+) -> AppResult<Json<admin::RestoreUserResponse>> {
+    req.user_id = path.user_id;
+    synctv_api_common::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
+    let resp = execute_root_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, rctx| async move {
+            api.restore_user(req, &validated.user_id, &rctx).await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 

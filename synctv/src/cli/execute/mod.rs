@@ -238,6 +238,7 @@ fn merge_user_command_globals(command: &mut UserCommand, root: &GlobalConfigArgs
         UserSubcommand::Get(args) => merge_remote_access_args(&mut args.remote, root),
         UserSubcommand::Create(args) => merge_remote_access_args(&mut args.remote, root),
         UserSubcommand::Delete(args) => merge_remote_access_args(&mut args.remote, root),
+        UserSubcommand::Restore(args) => merge_remote_access_args(&mut args.remote, root),
         UserSubcommand::Ban(args) => merge_remote_access_args(&mut args.remote, root),
         UserSubcommand::Unban(args) => merge_remote_access_args(&mut args.remote, root),
         UserSubcommand::SetRole(args) => merge_remote_access_args(&mut args.remote, root),

@@ -126,7 +126,16 @@ impl AdminApiImpl {
 
             match self
                 .user_service
-                .delete_user_with_summary_and_outbox(&uid, deleted_room_outbox_events)
+                .delete_user_with_summary_and_outbox_with_options(
+                    &uid,
+                    deleted_room_outbox_events,
+                    synctv_core::service::UserDeletionOptions {
+                        source: synctv_core::service::UserDeletionSource::Admin,
+                        deleted_by: (*admin_user_id != super::LOCAL_MANAGEMENT_ACTOR_USER_ID)
+                            .then_some(*admin_user_id),
+                        reason: Some("Deleted by administrator batch operation".to_string()),
+                    },
+                )
                 .await
             {
                 Ok(summary) => {

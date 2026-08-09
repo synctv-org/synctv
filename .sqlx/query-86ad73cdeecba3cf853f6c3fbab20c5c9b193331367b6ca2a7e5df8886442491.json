@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT playing_media_id, playing_playlist_id, is_playing AS \"is_playing!\"\n               FROM room_playback_state\n               WHERE room_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "playing_media_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "playing_media_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "playing_playlist_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "playing_playlist_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "is_playing!",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "is_playing"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "86ad73cdeecba3cf853f6c3fbab20c5c9b193331367b6ca2a7e5df8886442491"
+}

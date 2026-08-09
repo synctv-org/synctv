@@ -21,6 +21,7 @@ use crate::{Error, InternalExt, Result};
 const UNREFERENCED_FILE_REFERENCE_KIND: &str = "unreferenced_file";
 const CHAT_MESSAGE_CLEANUP_BATCH_SIZE: i64 = 1_000;
 const CHAT_CLEANUP_ROOM_BATCH_SIZE: usize = 100;
+const RESOURCE_LIFECYCLE_CLEANUP_BATCH_SIZE: i64 = 1_000;
 const EVENT_CLEANUP_BATCH_SIZE: i64 = 5_000;
 pub(super) const CHAT_MESSAGE_COUNT_PRUNING_DAYS: i32 = 90;
 
@@ -37,6 +38,17 @@ pub(super) enum ChatMessageCleanupScope {
     Retention {
         retention_days: i64,
     },
+    SoftDeletedRetention {
+        retention_days: i64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct SoftDeletedResourceCleanupResult {
+    pub media_purged: u64,
+    pub playlists_purged: u64,
+    pub email_identities_purged: u64,
+    pub oauth2_identities_purged: u64,
 }
 
 /// Compute the effective chat message event retention window.
@@ -282,6 +294,40 @@ async fn cleanup_retained_chat_messages_batch(
     cleanup_candidate_chat_messages(executor, candidates).await
 }
 
+async fn cleanup_soft_deleted_chat_messages_batch(
+    executor: &mut PgConnection,
+    retention_days: i64,
+) -> Result<ChatCleanupBatch> {
+    if retention_days <= 0 {
+        return Ok(ChatCleanupBatch {
+            deleted: 0,
+            attachments: Vec::new(),
+        });
+    }
+    let retention_days = i32::try_from(retention_days)
+        .map_err(|_| Error::InvalidInput("resource retention days is too large".to_string()))?;
+
+    let candidates = sqlx::query_as!(
+        DeletedChatMessageRow,
+        r#"
+        SELECT id, created_at
+        FROM chat_messages
+        WHERE deletion_source = 'user'
+          AND deleted_at <= NOW() - make_interval(days => $1)
+        ORDER BY deleted_at ASC, created_at ASC, id ASC
+        LIMIT $2
+        FOR UPDATE SKIP LOCKED
+        "#,
+        retention_days,
+        CHAT_MESSAGE_CLEANUP_BATCH_SIZE,
+    )
+    .fetch_all(&mut *executor)
+    .await
+    .internal_with_err("Failed to list soft-deleted chat cleanup candidates")?;
+
+    cleanup_candidate_chat_messages(executor, candidates).await
+}
+
 async fn active_chat_rooms_for_cleanup<'e, E>(
     executor: E,
     keep_count: i64,
@@ -462,7 +508,277 @@ pub(super) async fn cleanup_chat_messages_with_files(
             }
             Ok(batch.deleted)
         }
+        ChatMessageCleanupScope::SoftDeletedRetention { retention_days } => {
+            let mut total_deleted = 0;
+            loop {
+                let mut tx = pool.begin().await?;
+                let batch =
+                    cleanup_soft_deleted_chat_messages_batch(&mut tx, retention_days).await?;
+                tx.commit()
+                    .await
+                    .internal_with_err("Failed to commit soft-deleted chat cleanup batch")?;
+                if let Some(storage) = storage {
+                    schedule_chat_attachment_cleanup(
+                        storage,
+                        origin,
+                        &batch.attachments,
+                        batch.deleted,
+                        log_context,
+                    )
+                    .await;
+                }
+                total_deleted += batch.deleted;
+                if batch.deleted < CHAT_MESSAGE_CLEANUP_BATCH_SIZE.cast_unsigned() {
+                    break;
+                }
+            }
+            Ok(total_deleted)
+        }
     }
+}
+
+pub(super) async fn cleanup_soft_deleted_media_and_playlists(
+    pool: &PgPool,
+    retention_days: u32,
+) -> Result<SoftDeletedResourceCleanupResult> {
+    if retention_days == 0 {
+        return Ok(SoftDeletedResourceCleanupResult::default());
+    }
+    let retention_days = u32_to_i32(retention_days, "resource_soft_delete_retention_days")?;
+    let mut cleanup = SoftDeletedResourceCleanupResult::default();
+
+    loop {
+        let mut tx = pool.begin().await?;
+        let media_ids = sqlx::query_scalar!(
+            r#"
+            SELECT id
+            FROM media
+            WHERE deletion_source = 'user'
+              AND deleted_at <= NOW() - make_interval(days => $1)
+            ORDER BY deleted_at ASC, id ASC
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+            "#,
+            retention_days,
+            RESOURCE_LIFECYCLE_CLEANUP_BATCH_SIZE,
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .internal_with_err("Failed to list soft-deleted media cleanup candidates")?;
+
+        if media_ids.is_empty() {
+            tx.commit()
+                .await
+                .internal_with_err("Failed to commit soft-deleted media cleanup scan")?;
+            break;
+        }
+
+        sqlx::query!(
+            r#"
+            UPDATE file_references fr
+            SET expires_at = COALESCE(fr.expires_at, CURRENT_TIMESTAMP),
+                updated_at = CURRENT_TIMESTAMP
+            FROM media m
+            WHERE m.id = ANY($1)
+              AND (fr.id = m.cover_file_reference_id OR fr.id = m.thumbnail_file_reference_id)
+              AND fr.released_at IS NULL
+            "#,
+            &media_ids,
+        )
+        .execute(&mut *tx)
+        .await
+        .internal_with_err("Failed to expire soft-deleted media file references")?;
+        sqlx::query!(
+            r#"
+            UPDATE room_playback_state
+            SET playing_media_id = NULL,
+                playing_playlist_id = NULL,
+                target = NULL,
+                current_progress_id = NULL,
+                speed = 1.0,
+                is_playing = FALSE,
+                playback_generation = playback_generation + 1,
+                version = version + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE playing_media_id = ANY($1)
+            "#,
+            &media_ids,
+        )
+        .execute(&mut *tx)
+        .await
+        .internal_with_err("Failed to clear playback state for expired media")?;
+        sqlx::query!(
+            "DELETE FROM room_playback_progress WHERE media_id = ANY($1)",
+            &media_ids,
+        )
+        .execute(&mut *tx)
+        .await
+        .internal_with_err("Failed to delete playback progress for expired media")?;
+        let deleted = sqlx::query!(
+            "DELETE FROM media WHERE id = ANY($1) AND deletion_source = 'user'",
+            &media_ids,
+        )
+        .execute(&mut *tx)
+        .await
+        .internal_with_err("Failed to purge soft-deleted media")?;
+        tx.commit()
+            .await
+            .internal_with_err("Failed to commit soft-deleted media cleanup batch")?;
+        cleanup.media_purged += deleted.rows_affected();
+    }
+
+    loop {
+        let mut tx = pool.begin().await?;
+        // Leaf-only selection makes every batch safe for the self-referencing
+        // playlist tree and naturally advances from children to parents.
+        let playlist_ids = sqlx::query_scalar!(
+            r#"
+            SELECT p.id
+            FROM playlists p
+            WHERE p.deletion_source = 'user'
+              AND p.deleted_at <= NOW() - make_interval(days => $1)
+              AND NOT EXISTS (SELECT 1 FROM media m WHERE m.playlist_id = p.id)
+              AND NOT EXISTS (SELECT 1 FROM playlists child WHERE child.parent_id = p.id)
+            ORDER BY p.deleted_at ASC, p.id ASC
+            LIMIT $2
+            FOR UPDATE OF p SKIP LOCKED
+            "#,
+            retention_days,
+            RESOURCE_LIFECYCLE_CLEANUP_BATCH_SIZE,
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .internal_with_err("Failed to list soft-deleted playlist cleanup candidates")?;
+
+        if playlist_ids.is_empty() {
+            tx.commit()
+                .await
+                .internal_with_err("Failed to commit soft-deleted playlist cleanup scan")?;
+            break;
+        }
+
+        sqlx::query!(
+            r#"
+            UPDATE file_references fr
+            SET expires_at = COALESCE(fr.expires_at, CURRENT_TIMESTAMP),
+                updated_at = CURRENT_TIMESTAMP
+            FROM playlists p
+            WHERE p.id = ANY($1)
+              AND fr.id = p.cover_file_reference_id
+              AND fr.released_at IS NULL
+            "#,
+            &playlist_ids,
+        )
+        .execute(&mut *tx)
+        .await
+        .internal_with_err("Failed to expire soft-deleted playlist file references")?;
+        sqlx::query!(
+            r#"
+            UPDATE room_playback_state
+            SET playing_media_id = NULL,
+                playing_playlist_id = NULL,
+                target = NULL,
+                current_progress_id = NULL,
+                speed = 1.0,
+                is_playing = FALSE,
+                playback_generation = playback_generation + 1,
+                version = version + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE playing_playlist_id = ANY($1)
+            "#,
+            &playlist_ids,
+        )
+        .execute(&mut *tx)
+        .await
+        .internal_with_err("Failed to clear playback state for expired playlists")?;
+        sqlx::query!(
+            "DELETE FROM room_playback_progress WHERE playlist_id = ANY($1)",
+            &playlist_ids,
+        )
+        .execute(&mut *tx)
+        .await
+        .internal_with_err("Failed to delete playback progress for expired playlists")?;
+        let deleted = sqlx::query!(
+            "DELETE FROM playlists WHERE id = ANY($1) AND deletion_source = 'user'",
+            &playlist_ids,
+        )
+        .execute(&mut *tx)
+        .await
+        .internal_with_err("Failed to purge soft-deleted playlists")?;
+        tx.commit()
+            .await
+            .internal_with_err("Failed to commit soft-deleted playlist cleanup batch")?;
+        cleanup.playlists_purged += deleted.rows_affected();
+    }
+
+    loop {
+        let mut tx = pool.begin().await?;
+        let email_identity_ids = sqlx::query_scalar!(
+            r#"
+            SELECT id
+            FROM auth_email_identities
+            WHERE deletion_source = 'user'
+              AND deleted_at <= NOW() - make_interval(days => $1)
+            ORDER BY deleted_at ASC, id ASC
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+            "#,
+            retention_days,
+            RESOURCE_LIFECYCLE_CLEANUP_BATCH_SIZE,
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .internal_with_err("Failed to list soft-deleted email identity cleanup candidates")?;
+        let oauth2_identity_ids = sqlx::query_scalar!(
+            r#"
+            SELECT id
+            FROM auth_oauth2_identities
+            WHERE deletion_source = 'user'
+              AND deleted_at <= NOW() - make_interval(days => $1)
+            ORDER BY deleted_at ASC, id ASC
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+            "#,
+            retention_days,
+            RESOURCE_LIFECYCLE_CLEANUP_BATCH_SIZE,
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .internal_with_err("Failed to list soft-deleted OAuth2 identity cleanup candidates")?;
+
+        if email_identity_ids.is_empty() && oauth2_identity_ids.is_empty() {
+            tx.commit()
+                .await
+                .internal_with_err("Failed to commit soft-deleted identity cleanup scan")?;
+            break;
+        }
+
+        if !email_identity_ids.is_empty() {
+            let deleted = sqlx::query!(
+                "DELETE FROM auth_email_identities WHERE id = ANY($1) AND deletion_source = 'user'",
+                &email_identity_ids,
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to purge soft-deleted email identities")?;
+            cleanup.email_identities_purged += deleted.rows_affected();
+        }
+        if !oauth2_identity_ids.is_empty() {
+            let deleted = sqlx::query!(
+                "DELETE FROM auth_oauth2_identities WHERE id = ANY($1) AND deletion_source = 'user'",
+                &oauth2_identity_ids,
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to purge soft-deleted OAuth2 identities")?;
+            cleanup.oauth2_identities_purged += deleted.rows_affected();
+        }
+        tx.commit()
+            .await
+            .internal_with_err("Failed to commit soft-deleted identity cleanup batch")?;
+    }
+
+    Ok(cleanup)
 }
 
 /// Delete expired media provider credentials with a buffer that prevents races

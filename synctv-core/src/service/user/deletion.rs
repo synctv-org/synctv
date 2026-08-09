@@ -1,14 +1,41 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+use chrono::{DateTime, Utc};
 
 use crate::{
-    models::{MediaId, RoomId, RoomPlaybackState, User, UserId},
-    repository::{realtime_outbox::NewRealtimeOutboxEvent, RoomMemberRepository},
+    models::{ChatMessageType, MediaId, RoomId, RoomPlaybackState, User, UserId},
+    repository::realtime_outbox::NewRealtimeOutboxEvent,
     Error, Result,
 };
 
 use super::UserService;
 use permissions::PendingRemovedMemberFence;
 use playback::PendingPlaybackResetFence;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum UserDeletionSource {
+    #[default]
+    Account,
+    Admin,
+    System,
+}
+
+impl UserDeletionSource {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Account => "account",
+            Self::Admin => "admin",
+            Self::System => "system",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct UserDeletionOptions {
+    pub source: UserDeletionSource,
+    pub deleted_by: Option<UserId>,
+    pub reason: Option<String>,
+}
 
 mod entries;
 mod permissions;
@@ -24,13 +51,27 @@ pub struct UserDeletedRoomImpact {
     playback_fence: Option<PendingPlaybackResetFence>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserDeletedChatMessage {
+    pub room_id: RoomId,
+    pub message_id: i64,
+    pub message_created_at: DateTime<Utc>,
+    pub message_type: ChatMessageType,
+    pub version: i64,
+    pub deleted_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UserDeletionSummary {
     pub user_id: UserId,
     pub username: String,
     pub deleted_room_ids: Vec<RoomId>,
     pub membership_room_ids: Vec<RoomId>,
+    /// Every room whose visible resource graph changed during account deletion.
+    pub affected_room_ids: Vec<RoomId>,
     pub modified_rooms: Vec<UserDeletedRoomImpact>,
+    /// Account-owned messages in surviving rooms that need an online delete event.
+    pub deleted_chat_messages: Vec<UserDeletedChatMessage>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -38,10 +79,11 @@ struct UserDeletionCleanupStats {
     oauth_mappings_deleted: u64,
     email_identities_deleted: u64,
     email_tokens_deleted: u64,
+    email_bind_requests_deleted: u64,
     provider_credentials_deleted: u64,
     notifications_deleted: u64,
     ban_actor_references_cleared: u64,
-    chat_messages_anonymized: u64,
+    chat_messages_soft_deleted: u64,
     memberships_removed: u64,
     deleted_rooms: usize,
     deleted_playlists: usize,
@@ -69,7 +111,7 @@ impl UserService {
     ///    a. Delete rooms owned by the user
     ///    b. Delete playlists/media created by the user in surviving rooms
     ///    c. Reset playback state in affected rooms when deleted entries are currently playing
-    ///    d. Delete user-scoped ancillary rows and anonymize surviving chat messages
+    ///    d. Delete user-scoped ancillary rows and soft-delete surviving chat messages
     ///    e. Mark all remaining room memberships as `Left`
     ///    f. Soft-delete the user row
     /// 2. Reset username-scoped auth/rate-limit state (best-effort)
@@ -91,6 +133,20 @@ impl UserService {
         user_id: &UserId,
         deleted_room_outbox_events: HashMap<RoomId, NewRealtimeOutboxEvent>,
     ) -> Result<UserDeletionSummary> {
+        self.delete_user_with_summary_and_outbox_with_options(
+            user_id,
+            deleted_room_outbox_events,
+            UserDeletionOptions::default(),
+        )
+        .await
+    }
+
+    pub async fn delete_user_with_summary_and_outbox_with_options(
+        &self,
+        user_id: &UserId,
+        deleted_room_outbox_events: HashMap<RoomId, NewRealtimeOutboxEvent>,
+        options: UserDeletionOptions,
+    ) -> Result<UserDeletionSummary> {
         Self::validate_deleted_room_outbox_config(
             self.realtime_outbox.is_some(),
             &deleted_room_outbox_events,
@@ -108,9 +164,21 @@ impl UserService {
             return Err(Error::InvalidInput("User is already deleted".to_string()));
         };
 
-        let (cleanup, deleted_room_ids, membership_room_ids, mut modified_rooms) = self
+        let (
+            cleanup,
+            deleted_room_ids,
+            membership_room_ids,
+            deleted_chat_messages,
+            mut modified_rooms,
+        ) = self
             .cleanup_transactional_user_resources(user_id, &deleted_room_outbox_events, &mut tx)
             .await?;
+
+        let mut affected_room_ids = HashSet::new();
+        affected_room_ids.extend(deleted_room_ids.iter().copied());
+        affected_room_ids.extend(membership_room_ids.iter().copied());
+        affected_room_ids.extend(modified_rooms.iter().map(|impact| impact.room_id));
+        affected_room_ids.extend(deleted_chat_messages.iter().map(|message| message.room_id));
 
         let deleted = match self
             .repository
@@ -131,6 +199,20 @@ impl UserService {
                 .await;
             return Err(Error::InvalidInput("User is already deleted".to_string()));
         }
+
+        // Keep a single lifecycle marker for downstream cleanup and recovery.
+        // The user row itself remains the source of truth for visibility.
+        let deletion_source = options.source.as_str();
+        let deletion_reason = options.reason.as_deref().unwrap_or("account closure");
+        sqlx::query!(
+            "UPDATE users SET deletion_source = $2, deletion_reason = $3, deleted_by = $4 WHERE id = $1",
+            user_id.as_i64(),
+            deletion_source,
+            deletion_reason,
+            options.deleted_by.map(|id| id.as_i64()),
+        )
+        .execute(&mut *tx)
+        .await?;
 
         if let Err(error) = tx.commit().await {
             self.abort_playback_reset_fences(&modified_rooms).await;
@@ -202,10 +284,11 @@ impl UserService {
             oauth_mappings_deleted = cleanup_stats.oauth_mappings_deleted,
             email_identities_deleted = cleanup_stats.email_identities_deleted,
             email_tokens_deleted = cleanup_stats.email_tokens_deleted,
+            email_bind_requests_deleted = cleanup_stats.email_bind_requests_deleted,
             provider_credentials_deleted = cleanup_stats.provider_credentials_deleted,
             notifications_deleted = cleanup_stats.notifications_deleted,
             ban_actor_references_cleared = cleanup_stats.ban_actor_references_cleared,
-            chat_messages_anonymized = cleanup_stats.chat_messages_anonymized,
+            chat_messages_soft_deleted = cleanup_stats.chat_messages_soft_deleted,
             memberships_removed = cleanup_stats.memberships_removed,
             deleted_rooms = cleanup_stats.deleted_rooms,
             deleted_playlists = cleanup_stats.deleted_playlists,
@@ -215,13 +298,17 @@ impl UserService {
         );
 
         modified_rooms.sort_by_key(|room| room.room_id);
+        let mut affected_room_ids: Vec<_> = affected_room_ids.into_iter().collect();
+        affected_room_ids.sort_unstable();
 
         Ok(UserDeletionSummary {
             user_id: user.id,
             username: user.username,
             deleted_room_ids,
             membership_room_ids,
+            affected_room_ids,
             modified_rooms,
+            deleted_chat_messages,
         })
     }
 
@@ -253,11 +340,13 @@ impl UserService {
         Ok(updated)
     }
 
-    /// Ban a user and remove them from all room memberships in the same transaction.
+    /// Ban a user while preserving account data and room memberships.
     ///
-    /// Ban is independent moderation state. The user's lifecycle status is
-    /// preserved so unban does not implicitly approve or reactivate accounts.
-    pub async fn ban_user_and_cleanup_memberships(
+    /// Ban is an access-control state independent from account deletion. The
+    /// membership graph remains intact so unbanning is reversible and does not
+    /// require guessing which roles or permissions to recreate. Request guards,
+    /// room access checks, and realtime invalidation enforce the restriction.
+    pub async fn ban_user(
         &self,
         user_id: &UserId,
         banned_by: Option<&UserId>,
@@ -271,61 +360,10 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
 
-        if self.repository.is_banned(user_id).await? {
-            return Err(Error::InvalidInput("User is already banned".to_string()));
-        }
-
         self.repository
             .insert_ban_with_executor(user_id, banned_by, reason, &mut *tx)
             .await?;
-
-        let room_member_repo = RoomMemberRepository::new(pool.clone());
-        let owned_room_ids = self.query_owned_room_ids_in_tx(user_id, &mut tx).await?;
-        let mut pending_permission_fences = self
-            .reserve_permission_fences_for_rooms(&owned_room_ids, &mut tx)
-            .await?;
-        let mut removed_members = match room_member_repo
-            .remove_all_for_rooms_with_executor(&owned_room_ids, &mut tx)
-            .await
-        {
-            Ok(removed) => removed,
-            Err(error) => {
-                self.abort_removed_member_permission_fences(&pending_permission_fences)
-                    .await;
-                return Err(error);
-            }
-        };
-        let (mut banned_user_removed_members, banned_user_permission_fences) = match self
-            .remove_user_memberships_with_permission_fences(&room_member_repo, user_id, &mut tx)
-            .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                self.abort_removed_member_permission_fences(&pending_permission_fences)
-                    .await;
-                return Err(error);
-            }
-        };
-        pending_permission_fences.extend(banned_user_permission_fences);
-        removed_members.append(&mut banned_user_removed_members);
-
-        if let Err(error) = tx.commit().await {
-            self.abort_removed_member_permission_fences(&pending_permission_fences)
-                .await;
-            return Err(error.into());
-        }
-        if let Err(error) = self
-            .commit_removed_member_permission_fences(pending_permission_fences, &removed_members)
-            .await
-        {
-            tracing::warn!(
-                error = %error,
-                user_id = %user_id,
-                "Failed to finalize removed member permission fences after committed user ban cleanup; continuing post-commit cleanup"
-            );
-        }
-        self.invalidate_removed_member_permission_caches(&removed_members)
-            .await;
+        tx.commit().await?;
         let updated = self
             .repository
             .get_by_id(user_id)

@@ -18,6 +18,8 @@ pub enum UserSubcommand {
     Create(UserAddArgs),
     /// Delete a user
     Delete(UserDeleteArgs),
+    /// Restore a user during the deletion retention window
+    Restore(UserRestoreArgs),
     /// Ban a user
     Ban(UserBanArgs),
     /// Unban a user
@@ -105,6 +107,10 @@ pub struct UserListArgs {
 
     #[arg(long = "sort-dir", value_enum, default_value_t = CliSortDirection::Desc)]
     pub sort_dir: CliSortDirection,
+
+    /// Include users currently in the deletion recovery window
+    #[arg(long)]
+    pub include_deleted: bool,
 }
 
 #[derive(Debug, Args)]
@@ -259,6 +265,19 @@ pub struct UserDeleteArgs {
 
     #[command(flatten)]
     pub user: UserRefArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct UserRestoreArgs {
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+
+    #[command(flatten)]
+    pub user: UserRefArgs,
+
+    /// Restore the account while leaving occupied username/email/OAuth identities released
+    #[arg(long)]
+    pub ignore_identity_conflicts: bool,
 }
 
 #[derive(Debug, Args)]

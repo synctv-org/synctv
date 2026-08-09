@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    DELETE FROM playlists parent\n                    WHERE (parent.creator_id = $1 OR parent.deleted_owner_id = $1)\n                      AND NOT EXISTS (\n                          SELECT 1\n                          FROM playlists child\n                          WHERE child.parent_id = parent.id\n                      )\n                    ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5076e08fd5e04348229c7275d7c82bd5ce0af4cd806849a31005f2bcc418732e"
+}

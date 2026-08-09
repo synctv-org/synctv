@@ -760,6 +760,39 @@ fn cli_parses_user_list_sorting_flags() {
 }
 
 #[test]
+fn cli_parses_user_list_include_deleted() {
+    let cli = Cli::parse_from(["synctv", "user", "list", "--include-deleted"]);
+    match cli.command {
+        Commands::User(UserCommand {
+            command: UserSubcommand::List(args),
+            ..
+        }) => assert!(args.include_deleted),
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_user_restore_identity_conflict_policy() {
+    let cli = Cli::parse_from([
+        "synctv",
+        "user",
+        "restore",
+        "deleted-user",
+        "--ignore-identity-conflicts",
+    ]);
+    match cli.command {
+        Commands::User(UserCommand {
+            command: UserSubcommand::Restore(args),
+            ..
+        }) => {
+            assert_eq!(args.user.username.as_deref(), Some("deleted-user"));
+            assert!(args.ignore_identity_conflicts);
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
 fn cli_parses_remote_room_members() {
     let cli = Cli::parse_from([
         "synctv",
@@ -5586,6 +5619,12 @@ fn render_human_output_converts_user_timestamps_role_and_status() {
         banned_reason: "test".into(),
         avatar_url: String::new(),
         presence: None,
+        deleted_at: 0,
+        deletion_reason: String::new(),
+        restored_at: 0,
+        deletion_source: String::new(),
+        deleted_by: String::new(),
+        restored_by: String::new(),
     })
     .expect("human output should render");
 

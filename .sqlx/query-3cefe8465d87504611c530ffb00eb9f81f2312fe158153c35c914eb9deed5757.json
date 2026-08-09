@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id: crate::models::RoomId\"\n                   FROM rooms\n                   WHERE created_by = $1\n                     AND deleted_at IS NOT NULL\n                   ORDER BY id\n                   FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: crate::models::RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3cefe8465d87504611c530ffb00eb9f81f2312fe158153c35c914eb9deed5757"
+}

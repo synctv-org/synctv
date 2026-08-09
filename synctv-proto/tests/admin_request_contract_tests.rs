@@ -38,6 +38,7 @@ fn test_admin_list_users_request_rejects_too_long_search() {
         is_banned: None,
         sort_by: 0,
         sort_direction: 0,
+        include_deleted: false,
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");

@@ -216,6 +216,7 @@ impl RoomService {
                     is_banned: None,
                     sort_by: crate::models::UserListSortBy::CreatedAt,
                     sort_direction: crate::models::SortDirection::Desc,
+                    include_deleted: false,
                 };
                 let all_admins = match self.user_service.list_admins(&query).await {
                     Ok((users, _)) => users,

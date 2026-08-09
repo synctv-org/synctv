@@ -56,7 +56,7 @@ impl RoomService {
                 r#"SELECT EXISTS(
                     SELECT 1
                     FROM playlists
-                    WHERE room_id = $1 AND id = $2
+                    WHERE room_id = $1 AND id = $2 AND deleted_at IS NULL
                 ) AS "exists!""#,
                 room_id.as_i64(),
                 playlist_id.as_i64()

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ARRAY_AGG(id ORDER BY id) AS \"ids?: Vec<i64>\"\n               FROM chat_messages\n               WHERE id = ANY($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ids?: Vec<i64>",
+        "type_info": "Int8Array",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "007c43631a73c843ac43269c1742cdf08088ddf6b6c27f4b7f4833eb40044645"
+}

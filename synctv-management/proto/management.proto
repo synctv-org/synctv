@@ -40,6 +40,7 @@ service ManagementService {
     rpc ListAdmins(ListAdminsRequest) returns (synctv.admin.ListAdminsResponse);
     rpc CreateUser(CreateUserRequest) returns (synctv.admin.AdminUser);
     rpc DeleteUser(DeleteUserRequest) returns (synctv.admin.DeleteUserResponse);
+    rpc RestoreUser(RestoreUserRequest) returns (synctv.admin.RestoreUserResponse);
     rpc BanUser(BanUserRequest) returns (synctv.admin.AdminUser);
     rpc UnbanUser(UnbanUserRequest) returns (synctv.admin.AdminUser);
     rpc UpdateUserRole(UpdateUserRoleRequest) returns (synctv.admin.AdminUser);
@@ -685,6 +686,7 @@ message ListUsersRequest {
     UserListSortBy sort_by = 6;
     SortDirection sort_direction = 7;
     optional bool is_banned = 8;
+    bool include_deleted = 9;
 }
 
 message UserRef {
@@ -741,6 +743,12 @@ message CreateUserRequest {
 message DeleteUserRequest {
     string user_id = 1;
     string username = 2;
+}
+
+message RestoreUserRequest {
+    string user_id = 1;
+    string username = 2;
+    bool ignore_identity_conflicts = 3;
 }
 
 message BanUserRequest {

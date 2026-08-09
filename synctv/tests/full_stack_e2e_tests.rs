@@ -54,6 +54,7 @@ const PROVIDER_PROBE_HOST: &str = "provider-test.example.com";
 const PROVIDER_PROBE_SECRET: &str = "provider-remote-e2e-secret";
 const MANAGEMENT_E2E_AUTH_TOKEN: &str = "management-e2e-secret";
 const BOOTSTRAP_ROOT_USERNAME: &str = "e2e_root";
+const ROOM_REALTIME_EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 const TEST_CREDENTIAL_ENCRYPTION_KEY: &str =
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -3339,19 +3340,68 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
     );
 
     for deleted_user_id in [&batch_user_b_id, &batch_user_c_id] {
-        let error = run_synctv_remote_cli_failure(
+        let deleted_user = run_synctv_remote_cli_json(
             &server,
             &["user", "get", "--user-id", deleted_user_id],
             "get deleted batch user",
         )
         .await;
         assert!(
-            error.contains("not found")
-                || error.contains("Not found")
-                || error.contains("NotFound"),
-            "deleted batch user lookup should return not found, got: {error}"
+            json_i64(&deleted_user["deletedAt"]).is_some_and(|deleted_at| deleted_at > 0),
+            "deleted batch user should expose lifecycle metadata: {deleted_user}"
         );
+        assert_eq!(deleted_user["id"], deleted_user_id.as_str());
+        assert_eq!(deleted_user["deletionSource"], "admin");
     }
+
+    let default_user_list = run_synctv_remote_cli_json(
+        &server,
+        &["user", "list", "--search", "cli_batch_user_"],
+        "list batch users without deleted accounts",
+    )
+    .await;
+    let default_users = default_user_list["users"]
+        .as_array()
+        .expect("default user list should return users array");
+    assert!(default_users
+        .iter()
+        .all(|user| { user["id"] != batch_user_b_id && user["id"] != batch_user_c_id }));
+
+    let deleted_user_list = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "user",
+            "list",
+            "--search",
+            "cli_batch_user_",
+            "--include-deleted",
+        ],
+        "list batch users including deleted accounts",
+    )
+    .await;
+    let deleted_users = deleted_user_list["users"]
+        .as_array()
+        .expect("deleted user list should return users array");
+    for deleted_user_id in [&batch_user_b_id, &batch_user_c_id] {
+        assert!(deleted_users.iter().any(|user| {
+            user["id"] == deleted_user_id.as_str()
+                && json_i64(&user["deletedAt"]).is_some_and(|deleted_at| deleted_at > 0)
+        }));
+    }
+
+    let restored_user = run_synctv_remote_cli_json(
+        &server,
+        &["user", "restore", "--user-id", &batch_user_c_id],
+        "restore deleted batch user",
+    )
+    .await;
+    assert_eq!(restored_user["success"], true);
+    assert_eq!(restored_user["user"]["id"], batch_user_c_id);
+    assert!(restored_user["user"].get("deletedAt").is_none());
+    assert!(
+        json_i64(&restored_user["user"]["restoredAt"]).is_some_and(|restored_at| restored_at > 0),
+        "restored user should expose restoration metadata: {restored_user}"
+    );
 
     let room_settings_group = run_synctv_remote_cli_json(
         &server,
@@ -3793,15 +3843,40 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
         .expect("connect management gRPC client");
 
     for deleted_user_id in [&delete_one_id, &delete_two_id] {
-        let deleted_lookup = management_client
+        let deleted_user = management_client
             .get_user(management_request(management_proto::GetUserRequest {
                 user_id: (*deleted_user_id).clone(),
                 username: String::new(),
             }))
             .await
-            .expect_err("deleted user should not be retrievable via management");
-        assert_eq!(deleted_lookup.code(), tonic::Code::NotFound);
+            .expect("deleted user should remain retrievable for lifecycle management")
+            .into_inner();
+        assert_eq!(&deleted_user.id, deleted_user_id);
+        assert!(deleted_user.deleted_at > 0);
+        assert_eq!(deleted_user.deletion_source, "admin");
     }
+
+    let restored_deleted_user = run_synctv_remote_cli_json(
+        &server,
+        &["user", "restore", "--user-id", &delete_one_id],
+        "restore individually deleted user",
+    )
+    .await;
+    assert_eq!(restored_deleted_user["success"], true);
+    assert_eq!(restored_deleted_user["user"]["id"], delete_one_id);
+    assert!(restored_deleted_user["user"].get("deletedAt").is_none());
+
+    let restored_lookup = management_client
+        .get_user(management_request(management_proto::GetUserRequest {
+            user_id: delete_one_id.clone(),
+            username: String::new(),
+        }))
+        .await
+        .expect("restored user should be retrievable via management")
+        .into_inner();
+    assert_eq!(restored_lookup.deleted_at, 0);
+    assert!(restored_lookup.restored_at > 0);
+    assert!(restored_lookup.deletion_source.is_empty());
 
     let still_banned = management_client
         .get_user(management_request(management_proto::GetUserRequest {
@@ -8931,7 +9006,18 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
         ),
     )
     .await;
-    let _ = drain_until_quiet(&mut member_ws, 250).await;
+    let _ = recv_matching_server_message(
+        &mut member_ws,
+        ROOM_REALTIME_EVENT_TIMEOUT,
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::ResourceObserved(_))
+            )
+        },
+        "playlist observation acknowledgement",
+    )
+    .await;
 
     let created_playlist = run_synctv_remote_cli_json(
         &server,
@@ -8953,7 +9039,7 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
 
     let _ = recv_matching_server_message(
         &mut member_ws,
-        Duration::from_secs(10),
+        ROOM_REALTIME_EVENT_TIMEOUT,
         |message| {
             resource_playlist_items(message).is_some_and(|snapshot| {
                 snapshot
@@ -8981,7 +9067,7 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
     .await;
     let _ = recv_matching_server_message(
         &mut member_ws,
-        Duration::from_secs(10),
+        ROOM_REALTIME_EVENT_TIMEOUT,
         |message| {
             resource_playlist_items(message).is_some_and(|snapshot| {
                 snapshot.playlists.iter().any(|entry| {
@@ -9001,7 +9087,7 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
     .await;
     let _ = recv_matching_server_message(
         &mut member_ws,
-        Duration::from_secs(10),
+        ROOM_REALTIME_EVENT_TIMEOUT,
         |message| {
             resource_playlist_items(message).is_some_and(|snapshot| {
                 snapshot

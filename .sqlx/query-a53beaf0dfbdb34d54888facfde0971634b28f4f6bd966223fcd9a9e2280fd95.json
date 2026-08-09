@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE file_references fr SET expires_at = COALESCE(fr.expires_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP FROM rooms r WHERE r.id = $1 AND fr.id = r.cover_file_reference_id AND fr.released_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a53beaf0dfbdb34d54888facfde0971634b28f4f6bd966223fcd9a9e2280fd95"
+}

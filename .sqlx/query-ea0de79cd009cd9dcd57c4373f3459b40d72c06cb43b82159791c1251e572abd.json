@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT MAX(position)\n            FROM media\n            WHERE room_id = $1\n              AND deleted_at IS NULL\n              AND playlist_id IS NOT DISTINCT FROM $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "max",
+        "type_info": "Float8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "ea0de79cd009cd9dcd57c4373f3459b40d72c06cb43b82159791c1251e572abd"
+}

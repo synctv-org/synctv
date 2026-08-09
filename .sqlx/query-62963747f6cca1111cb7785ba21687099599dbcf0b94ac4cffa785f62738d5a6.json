@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT candidate AS \"candidate!\"\n                   FROM (\n                       SELECT CASE\n                           WHEN suffix = 0 THEN $1\n                           ELSE $1 || '_' || suffix::TEXT\n                       END AS candidate,\n                       suffix\n                       FROM generate_series(0, 1000) AS suffix\n                   ) candidates\n                   WHERE LENGTH(candidate) <= 50\n                     AND NOT EXISTS (\n                         SELECT 1\n                         FROM users\n                         WHERE LOWER(username) = LOWER(candidate)\n                           AND deleted_at IS NULL\n                     )\n                   ORDER BY suffix\n                   LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "candidate!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "62963747f6cca1111cb7785ba21687099599dbcf0b94ac4cffa785f62738d5a6"
+}

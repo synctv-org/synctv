@@ -35,11 +35,13 @@ async fn collect_target_playlist_nodes_in_tx(
             FROM playlists
             WHERE room_id = $1
               AND id = ANY($2)
+              AND deleted_at IS NULL
             UNION ALL
             SELECT p.id, tp.depth + 1
             FROM playlists p
             JOIN target_playlists tp ON p.parent_id = tp.id
             WHERE p.room_id = $1
+              AND p.deleted_at IS NULL
         )
         SELECT id AS "id!: PlaylistId", MAX(depth) AS depth
         FROM target_playlists
@@ -68,11 +70,13 @@ pub(super) async fn collect_all_room_playlist_nodes_in_tx(
             FROM playlists
             WHERE room_id = $1
               AND parent_id IS NULL
+              AND deleted_at IS NULL
             UNION ALL
             SELECT p.id, pt.depth + 1
             FROM playlists p
             JOIN playlist_tree pt ON p.parent_id = pt.id
             WHERE p.room_id = $1
+              AND p.deleted_at IS NULL
         )
         SELECT id AS "id!: PlaylistId", MAX(depth) AS depth
         FROM playlist_tree
@@ -99,6 +103,7 @@ pub(super) async fn collect_room_root_media_ids_in_tx(
          FROM media
          WHERE room_id = $1
            AND playlist_id IS NULL
+           AND deleted_at IS NULL
          ORDER BY id"#,
         room_id.as_i64(),
     )
@@ -126,14 +131,17 @@ pub(super) async fn collect_deleted_media_ids_in_tx(
             SELECT id
             FROM playlists
             WHERE id = ANY($1)
+              AND deleted_at IS NULL
             UNION ALL
             SELECT p.id
             FROM playlists p
             JOIN target_playlists tp ON p.parent_id = tp.id
+            WHERE p.deleted_at IS NULL
         )
         SELECT DISTINCT m.id AS "id: MediaId"
         FROM media m
         WHERE m.room_id = $2
+          AND m.deleted_at IS NULL
           AND (
               m.id = ANY($3)
               OR m.playlist_id IN (SELECT id FROM target_playlists)
@@ -265,7 +273,10 @@ pub(super) async fn delete_playlist_ids_in_depth_order_in_tx(
     }
 
     for (_depth, ids) in ids_by_depth.into_iter().rev() {
-        sqlx::query!("DELETE FROM playlists WHERE id = ANY($1)", &ids)
+        sqlx::query!(
+            "UPDATE playlists SET deleted_at = CURRENT_TIMESTAMP, deletion_source = 'user', version = version + 1 WHERE id = ANY($1) AND deleted_at IS NULL",
+            &ids,
+        )
             .execute(&mut **tx)
             .await?;
     }
@@ -365,7 +376,10 @@ pub(super) async fn apply_delete_entries_impact_in_tx(
         )
         .execute(&mut **tx)
         .await?;
-        sqlx::query!("DELETE FROM media WHERE id = ANY($1)", &media_id_strs)
+        sqlx::query!(
+            "UPDATE media SET deleted_at = CURRENT_TIMESTAMP, deletion_source = 'user', version = version + 1 WHERE id = ANY($1) AND deleted_at IS NULL",
+            &media_id_strs,
+        )
             .execute(&mut **tx)
             .await?;
     }
@@ -441,11 +455,13 @@ async fn collect_child_playlist_nodes_in_tx(
                   ($2::BIGINT IS NULL AND parent_id IS NULL)
                   OR parent_id = $2
               )
+              AND deleted_at IS NULL
             UNION ALL
             SELECT p.id, cp.depth + 1
             FROM playlists p
             JOIN child_playlists cp ON p.parent_id = cp.id
             WHERE p.room_id = $1
+              AND p.deleted_at IS NULL
         )
         SELECT id AS "playlist_id!: PlaylistId", COALESCE(MAX(depth), 0) AS "depth!: i32"
         FROM child_playlists
@@ -477,6 +493,7 @@ async fn collect_direct_scope_media_ids_in_tx(
                ($2::BIGINT IS NULL AND playlist_id IS NULL)
                OR playlist_id = $2
          )
+           AND deleted_at IS NULL
          ORDER BY id"#,
         room_id.as_i64(),
         playlist_id.map(|playlist_id| playlist_id.as_i64())

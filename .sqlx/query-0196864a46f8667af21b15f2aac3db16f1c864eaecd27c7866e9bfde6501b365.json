@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id as \"id: crate::models::RoomId\"\n            FROM rooms r\n            WHERE r.deleted_at IS NOT NULL\n              AND r.deleted_at < CURRENT_TIMESTAMP - make_interval(days => $1)\n            ORDER BY r.deleted_at ASC, r.id ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: crate::models::RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0196864a46f8667af21b15f2aac3db16f1c864eaecd27c7866e9bfde6501b365"
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO auth_oauth2_identities (\n                   provider_type, provider_instance_name, provider_user_id,\n                   user_id, username, deleted_at, deletion_source\n               )\n               VALUES\n                   (2, 'github', 'expired-unbound', $1, 'expired', $2, 'user'),\n                   (2, 'github', 'recent-unbound', $1, 'recent', $3, 'user'),\n                   (2, 'github', 'account-retained', $1, 'account', $2, 'account')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "61a24054b1808d7dcc54787240d245bf221c74a3677c6b57c02fcacbc62513af"
+}

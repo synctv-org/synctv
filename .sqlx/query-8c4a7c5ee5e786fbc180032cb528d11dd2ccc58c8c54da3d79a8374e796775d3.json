@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE playlists SET deleted_at = $2, deletion_source = COALESCE(deletion_source, 'room'), version = version + 1 WHERE id = ANY($1) AND deleted_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8c4a7c5ee5e786fbc180032cb528d11dd2ccc58c8c54da3d79a8374e796775d3"
+}

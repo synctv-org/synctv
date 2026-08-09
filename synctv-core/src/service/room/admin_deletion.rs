@@ -38,7 +38,7 @@ impl RoomService {
         let mut tx = self.pool.begin().await?;
         let guard = PermissionFenceGuard::reserve(Arc::new(self.clone()), room_id, &mut tx).await?;
 
-        let impact = match soft_delete_room_and_cleanup_in_tx(&mut tx, room_id).await {
+        let impact = match soft_delete_room_and_cleanup_in_tx(&mut tx, room_id, "admin").await {
             Ok(impact) => impact,
             Err(error) => {
                 guard.abort().await;
@@ -156,7 +156,7 @@ impl RoomService {
         let mut tx = self.pool.begin().await?;
         let guard = PermissionFenceGuard::reserve(Arc::new(self.clone()), room_id, &mut tx).await?;
 
-        let impact = match soft_delete_room_and_cleanup_in_tx(&mut tx, room_id).await {
+        let impact = match soft_delete_room_and_cleanup_in_tx(&mut tx, room_id, "admin").await {
             Ok(impact) => impact,
             Err(error) => {
                 guard.abort().await;

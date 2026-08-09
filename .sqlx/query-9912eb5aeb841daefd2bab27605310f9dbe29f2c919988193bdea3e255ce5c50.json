@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id AS \"id: MediaId\"\n            FROM media\n            WHERE room_id = $1\n              AND deleted_at IS NULL\n              AND playlist_id IS NOT DISTINCT FROM $2\n            ORDER BY position ASC, id ASC\n            FOR UPDATE\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: MediaId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9912eb5aeb841daefd2bab27605310f9dbe29f2c919988193bdea3e255ce5c50"
+}

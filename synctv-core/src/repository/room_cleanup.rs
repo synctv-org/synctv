@@ -139,6 +139,13 @@ pub(crate) async fn hard_delete_room_and_cleanup_in_tx(
         return Ok(false);
     }
 
+    sqlx::query!(
+        "UPDATE file_references fr SET expires_at = COALESCE(fr.expires_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP FROM rooms r WHERE r.id = $1 AND fr.id = r.cover_file_reference_id AND fr.released_at IS NULL",
+        room_id.as_i64(),
+    )
+    .execute(&mut **tx)
+    .await?;
+
     let playlist_nodes = collect_all_room_playlist_nodes_in_tx(tx, room_id).await?;
     let deleted_playlist_ids: Vec<PlaylistId> = playlist_nodes
         .iter()
@@ -158,9 +165,28 @@ pub(crate) async fn hard_delete_room_and_cleanup_in_tx(
 
     if !deleted_media_ids.is_empty() {
         let media_id_strs: Vec<i64> = deleted_media_ids.iter().map(MediaId::as_i64).collect();
+        sqlx::query!(
+            "UPDATE file_references fr SET expires_at = COALESCE(fr.expires_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP FROM media m WHERE m.id = ANY($1) AND (fr.id = m.cover_file_reference_id OR fr.id = m.thumbnail_file_reference_id) AND fr.released_at IS NULL",
+            &media_id_strs,
+        )
+        .execute(&mut **tx)
+        .await?;
         sqlx::query!("DELETE FROM media WHERE id = ANY($1)", &media_id_strs)
             .execute(&mut **tx)
             .await?;
+    }
+
+    let playlist_id_strs: Vec<i64> = deleted_playlist_ids
+        .iter()
+        .map(PlaylistId::as_i64)
+        .collect();
+    if !playlist_id_strs.is_empty() {
+        sqlx::query!(
+            "UPDATE file_references fr SET expires_at = COALESCE(fr.expires_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP FROM playlists p WHERE p.id = ANY($1) AND fr.id = p.cover_file_reference_id AND fr.released_at IS NULL",
+            &playlist_id_strs,
+        )
+        .execute(&mut **tx)
+        .await?;
     }
 
     delete_playlist_ids_in_depth_order_in_tx(tx, &playlist_nodes).await?;
@@ -177,12 +203,57 @@ pub(crate) async fn hard_delete_room_and_cleanup_in_tx(
     )
     .execute(&mut **tx)
     .await?;
+    // Room resource events have an intentionally loose schema so they can
+    // record aggregates that outlive individual rows. A hard-deleted room
+    // has no replayable resource graph, so remove its durable events here.
+    sqlx::query!(
+        "DELETE FROM room_resource_events WHERE room_id = $1",
+        room_id.as_i64(),
+    )
+    .execute(&mut **tx)
+    .await?;
+    // Chat attachments own a file reference whose row is independent from
+    // the attachment row. Expire those references before the message FK
+    // cascade removes the attachment rows so the storage cleanup worker can
+    // release the backend object after the transaction commits.
+    sqlx::query!(
+        r#"
+        UPDATE file_references fr
+        SET expires_at = COALESCE(fr.expires_at, CURRENT_TIMESTAMP),
+            updated_at = CURRENT_TIMESTAMP
+        FROM chat_message_attachments a
+        WHERE a.room_id = $1
+          AND fr.storage_backend = a.storage_backend
+          AND fr.object_key = a.object_key
+          AND fr.reference_kind = 'chat_message_attachment'
+          AND fr.reference_id = format(
+              '%s:%s:%s:%s',
+              a.room_id,
+              a.message_id,
+              round(extract(epoch FROM a.message_created_at) * 1000000)::BIGINT,
+              a.id
+          )
+          AND fr.released_at IS NULL
+        "#,
+        room_id.as_i64(),
+    )
+    .execute(&mut **tx)
+    .await?;
     sqlx::query!(
         "DELETE FROM chat_messages WHERE room_id = $1",
         room_id.as_i64(),
     )
     .execute(&mut **tx)
     .await?;
+    sqlx::query!(
+        "DELETE FROM room_join_requests WHERE room_id = $1",
+        room_id.as_i64(),
+    )
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query!("DELETE FROM room_bans WHERE room_id = $1", room_id.as_i64(),)
+        .execute(&mut **tx)
+        .await?;
 
     let deleted = sqlx::query!("DELETE FROM rooms WHERE id = $1", room_id.as_i64())
         .execute(&mut **tx)

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE room_creation_requests SET reviewed_by = NULL WHERE reviewed_by = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9f179220d402b679bdd8f58ae747162745a61cd3c16c75dcdf3ce3d0a0deeb65"
+}

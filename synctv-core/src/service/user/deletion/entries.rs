@@ -1,7 +1,7 @@
 use sqlx::{Postgres, Transaction};
 
 use crate::{
-    models::{MediaId, PlaylistId, RoomId, RoomPlaybackState},
+    models::{MediaId, PlaylistId, RoomId, RoomPlaybackState, UserId},
     Error, Result,
 };
 
@@ -26,14 +26,17 @@ impl UserService {
                 SELECT id
                 FROM playlists
                 WHERE id = ANY($1)
+                  AND deleted_at IS NULL
                 UNION ALL
                 SELECT p.id
                 FROM playlists p
                 JOIN target_playlists tp ON p.parent_id = tp.id
+                WHERE p.deleted_at IS NULL
             )
             SELECT DISTINCT m.id AS "id: MediaId"
             FROM media m
             WHERE m.room_id = $2
+              AND m.deleted_at IS NULL
               AND (
                   m.id = ANY($3)
                   OR m.playlist_id IN (SELECT id FROM target_playlists)
@@ -51,6 +54,7 @@ impl UserService {
 
     pub(super) async fn delete_owned_entries_in_room_in_tx(
         &self,
+        deleted_owner_id: &UserId,
         room_id: &RoomId,
         playlist_ids: Vec<PlaylistId>,
         media_ids: Vec<MediaId>,
@@ -94,10 +98,12 @@ impl UserService {
                             SELECT id
                             FROM playlists
                             WHERE id = ANY($1)
+                              AND deleted_at IS NULL
                             UNION ALL
                             SELECT p.id
                             FROM playlists p
                             JOIN target_playlists tp ON p.parent_id = tp.id
+                            WHERE p.deleted_at IS NULL
                         )
                         SELECT EXISTS(
                             SELECT 1
@@ -215,9 +221,13 @@ impl UserService {
                     .await;
                 return Err(error.into());
             }
-            if let Err(error) = sqlx::query!("DELETE FROM media WHERE id = ANY($1)", &media_id_strs)
-                .execute(&mut **tx)
-                .await
+            if let Err(error) = sqlx::query!(
+                "UPDATE media SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP), deletion_source = COALESCE(deletion_source, 'account'), deleted_owner_id = COALESCE(deleted_owner_id, $2), version = version + 1 WHERE id = ANY($1) AND deleted_at IS NULL",
+                &media_id_strs,
+                deleted_owner_id.as_i64(),
+            )
+            .execute(&mut **tx)
+            .await
             {
                 self.abort_playback_reset_fence_option(playback_fence.as_ref())
                     .await;
@@ -240,8 +250,9 @@ impl UserService {
                 return Err(error.into());
             }
             if let Err(error) = sqlx::query!(
-                "DELETE FROM playlists WHERE id = ANY($1)",
-                &playlist_id_strs
+                "WITH RECURSIVE target AS (SELECT id FROM playlists WHERE id = ANY($1) AND deleted_at IS NULL UNION ALL SELECT p.id FROM playlists p JOIN target t ON p.parent_id = t.id WHERE p.deleted_at IS NULL) UPDATE playlists SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP), deletion_source = COALESCE(deletion_source, 'account'), deleted_owner_id = COALESCE(deleted_owner_id, $2), version = version + 1 WHERE id IN (SELECT id FROM target) AND deleted_at IS NULL",
+                &playlist_id_strs,
+                deleted_owner_id.as_i64(),
             )
             .execute(&mut **tx)
             .await

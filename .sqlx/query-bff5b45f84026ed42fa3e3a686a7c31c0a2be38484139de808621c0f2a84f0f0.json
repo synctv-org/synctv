@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*) AS \"count!\"\n            FROM playlists p\n            WHERE p.room_id = $1\n              AND p.parent_id = $2\n              AND p.deleted_at IS NULL\n              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)\n              AND (p.creator_id IS NULL OR EXISTS (\n                  SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL\n              ))\n              AND EXISTS (\n                  SELECT 1 FROM playlists parent\n                  WHERE parent.id = p.parent_id\n                    AND parent.deleted_at IS NULL\n                    AND (parent.creator_id IS NULL OR EXISTS (\n                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL\n                    ))\n              )\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "bff5b45f84026ed42fa3e3a686a7c31c0a2be38484139de808621c0f2a84f0f0"
+}

@@ -13,6 +13,8 @@ pub enum ResourceInvalidation {
     ChatEvents {
         event: Box<ChatMessageEvent>,
     },
+    /// Chat history changed without a replayable event payload.
+    ChatEventsSnapshot,
     ChatPinEvents {
         event: Box<ChatPinEvent>,
     },
@@ -31,7 +33,8 @@ impl PartialEq for ResourceInvalidation {
             | (Self::PlaylistItems, Self::PlaylistItems)
             | (Self::RoomMemberEvents, Self::RoomMemberEvents)
             | (Self::OnlineCount, Self::OnlineCount)
-            | (Self::OnlineEvent, Self::OnlineEvent) => true,
+            | (Self::OnlineEvent, Self::OnlineEvent)
+            | (Self::ChatEventsSnapshot, Self::ChatEventsSnapshot) => true,
             (Self::Playback(left), Self::Playback(right)) => left == right,
             (Self::ChatEvents { event: left }, Self::ChatEvents { event: right }) => {
                 left.event_id == right.event_id
@@ -174,6 +177,7 @@ pub fn resource_invalidations_for_cache_targets(
         );
         push_unique(&mut invalidations, ResourceInvalidation::RoomSettings);
         push_unique(&mut invalidations, ResourceInvalidation::PlaylistItems);
+        push_unique(&mut invalidations, ResourceInvalidation::ChatEventsSnapshot);
         push_unique(&mut invalidations, ResourceInvalidation::RoomMemberEvents);
         push_unique(&mut invalidations, ResourceInvalidation::OnlineCount);
     }
@@ -474,6 +478,7 @@ mod tests {
                 ResourceInvalidation::Playback(PlaybackInvalidation::Cache),
                 ResourceInvalidation::RoomSettings,
                 ResourceInvalidation::PlaylistItems,
+                ResourceInvalidation::ChatEventsSnapshot,
                 ResourceInvalidation::RoomMemberEvents,
                 ResourceInvalidation::OnlineCount,
             ]

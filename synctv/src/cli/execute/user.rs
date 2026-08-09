@@ -27,6 +27,7 @@ pub(super) async fn execute_user(user_command: UserCommand) -> Result<()> {
                     ),
                     sort_direction: args.sort_dir.to_proto(),
                     is_banned: None,
+                    include_deleted: args.include_deleted,
                 }
             )?;
             args.remote.print_output(&response)
@@ -104,6 +105,21 @@ pub(super) async fn execute_user(user_command: UserCommand) -> Result<()> {
                 "delete user",
                 delete_user,
                 management_proto::DeleteUserRequest { user_id, username }
+            )?;
+            args.remote.print_output(&response)
+        }
+        UserSubcommand::Restore(args) => {
+            let session = connect_remote_access(&args.remote).await?;
+            let (user_id, username) = args.user.to_management_selector()?;
+            let response = management_unary_call!(
+                session,
+                "restore user",
+                restore_user,
+                management_proto::RestoreUserRequest {
+                    user_id,
+                    username,
+                    ignore_identity_conflicts: args.ignore_identity_conflicts,
+                }
             )?;
             args.remote.print_output(&response)
         }

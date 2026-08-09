@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE media\n               SET deleted_at = CURRENT_TIMESTAMP,\n                   deletion_source = 'user',\n                   version = version + 1\n             WHERE playlist_id = $1 AND deleted_at IS NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "45c81cde874df8cc413eef9d236ea6010842e8a5ad7cb40a920daf891afc0aa8"
+}

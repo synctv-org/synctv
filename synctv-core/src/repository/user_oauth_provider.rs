@@ -76,6 +76,7 @@ impl UserOAuthProviderRepository {
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (provider_instance_name, provider_user_id)
+            WHERE deleted_at IS NULL
             DO UPDATE SET
                 provider_type = EXCLUDED.provider_type,
                 provider_issuer = EXCLUDED.provider_issuer,
@@ -88,7 +89,7 @@ impl UserOAuthProviderRepository {
             provider_instance_name,
             user_info.provider_issuer.as_deref(),
             provider_user_id,
-            user_id as &UserId,
+            user_id.as_i64(),
             user_info.username.as_str(),
             user_info.avatar.as_deref(),
         )
@@ -134,12 +135,14 @@ impl UserOAuthProviderRepository {
         let row = sqlx::query_as!(
             OAuth2ClientRow,
             r#"
-            SELECT id, provider_type as "provider: OAuth2Provider",
+            SELECT id, provider_type AS "provider: OAuth2Provider",
                    provider_instance_name, provider_issuer, provider_user_id,
-                   user_id as "user_id: UserId",
+                   user_id AS "user_id: UserId",
                    username, avatar_url, created_at, updated_at
             FROM auth_oauth2_identities
-            WHERE provider_instance_name = $1 AND provider_user_id = $2
+            WHERE provider_instance_name = $1
+              AND provider_user_id = $2
+              AND deleted_at IS NULL
             "#,
             provider_instance_name,
             provider_user_id,
@@ -167,14 +170,14 @@ impl UserOAuthProviderRepository {
         let rows = sqlx::query_as!(
             OAuth2ClientRow,
             r#"
-            SELECT id, provider_type as "provider: OAuth2Provider",
+            SELECT id, provider_type AS "provider: OAuth2Provider",
                    provider_instance_name, provider_issuer, provider_user_id,
-                   user_id as "user_id: UserId",
+                   user_id AS "user_id: UserId",
                    username, avatar_url, created_at, updated_at
             FROM auth_oauth2_identities
-            WHERE user_id = $1
+            WHERE user_id = $1 AND deleted_at IS NULL
             "#,
-            user_id as &UserId,
+            user_id.as_i64(),
         )
         .fetch_all(executor)
         .await?;
@@ -216,7 +219,7 @@ impl UserOAuthProviderRepository {
         provider_user_id: &str,
     ) -> Result<bool> {
         let result = sqlx::query!(
-            "DELETE FROM auth_oauth2_identities WHERE user_id = $1 AND provider_instance_name = $2 AND provider_user_id = $3",
+            "UPDATE auth_oauth2_identities SET deleted_at = CURRENT_TIMESTAMP, deletion_source = 'user', updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 AND provider_instance_name = $2 AND provider_user_id = $3 AND deleted_at IS NULL",
             user_id as &UserId,
             provider_instance_name,
             provider_user_id,
@@ -248,7 +251,7 @@ impl UserOAuthProviderRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let result = sqlx::query!(
-            "DELETE FROM auth_oauth2_identities WHERE user_id = $1",
+            "UPDATE auth_oauth2_identities SET deleted_at = CURRENT_TIMESTAMP, deletion_source = 'user', updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 AND deleted_at IS NULL",
             user_id as &UserId,
         )
         .execute(executor)
@@ -264,7 +267,7 @@ impl UserOAuthProviderRepository {
         provider_type: &OAuth2Provider,
     ) -> Result<bool> {
         let result = sqlx::query!(
-            "DELETE FROM auth_oauth2_identities WHERE user_id = $1 AND provider_type = $2",
+            "UPDATE auth_oauth2_identities SET deleted_at = CURRENT_TIMESTAMP, deletion_source = 'user', updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 AND provider_type = $2 AND deleted_at IS NULL",
             user_id as &UserId,
             provider_type.as_i16(),
         )

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM media WHERE creator_id = $1 OR deleted_owner_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ab2049c1f0f0a3aa6f23226770461df33efaee7f68227a3e2f8d83e2c233fa2c"
+}

@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT m.playlist_id AS \"playlist_id!: PlaylistId\", COUNT(*) AS \"cnt!\"\n            FROM media m\n            WHERE m.playlist_id = ANY($1)\n              AND m.deleted_at IS NULL\n              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = m.room_id AND r.deleted_at IS NULL)\n              AND (m.creator_id IS NULL OR EXISTS (\n                  SELECT 1 FROM users u WHERE u.id = m.creator_id AND u.deleted_at IS NULL\n              ))\n              AND EXISTS (\n                  SELECT 1\n                  FROM playlists p\n                  WHERE p.id = m.playlist_id\n                    AND p.deleted_at IS NULL\n                    AND (p.creator_id IS NULL OR EXISTS (\n                        SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL\n                    ))\n              )\n            GROUP BY m.playlist_id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "playlist_id!: PlaylistId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "playlist_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "cnt!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      true,
+      null
+    ]
+  },
+  "hash": "a30b6c3316b1155ba95592bebbb4e9a179042e240128db4bd08d50dad53b55c9"
+}

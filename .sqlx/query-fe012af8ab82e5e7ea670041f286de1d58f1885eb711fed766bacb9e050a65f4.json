@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE chat_messages SET deleted_at = $2, deletion_source = COALESCE(deletion_source, 'room') WHERE room_id = $1 AND deleted_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fe012af8ab82e5e7ea670041f286de1d58f1885eb711fed766bacb9e050a65f4"
+}

@@ -204,6 +204,11 @@ impl PlaylistRepository {
     ) -> Result<()> {
         builder.push(" FROM playlists p LEFT JOIN users u ON p.creator_id = u.id AND u.deleted_at IS NULL WHERE p.room_id = ");
         builder.push_bind(room_id.as_i64());
+        builder.push(" AND p.deleted_at IS NULL AND (p.creator_id IS NULL OR u.id IS NOT NULL)");
+        builder.push(
+            " AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)",
+        );
+        builder.push(" AND (p.parent_id IS NULL OR EXISTS (SELECT 1 FROM playlists parent WHERE parent.id = p.parent_id AND parent.deleted_at IS NULL AND (parent.creator_id IS NULL OR EXISTS (SELECT 1 FROM users pu WHERE pu.id = parent.creator_id AND pu.deleted_at IS NULL))))");
         match parent_id {
             Some(parent_id) => {
                 builder.push(" AND p.parent_id = ");
@@ -343,6 +348,20 @@ impl PlaylistRepository {
                    version as "version!"
             FROM playlists
             WHERE id = $1
+              AND deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = playlists.room_id AND r.deleted_at IS NULL)
+              AND (creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users WHERE users.id = playlists.creator_id AND users.deleted_at IS NULL
+              ))
+              AND (parent_id IS NULL OR EXISTS (
+                  SELECT 1
+                  FROM playlists parent
+                  WHERE parent.id = playlists.parent_id
+                    AND parent.deleted_at IS NULL
+                    AND (parent.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
             "#,
             id as &PlaylistId,
         )
@@ -376,7 +395,22 @@ impl PlaylistRepository {
                    updated_at as "updated_at!",
                    version as "version!"
             FROM playlists
-            WHERE room_id = $1 AND id = $2
+            WHERE room_id = $1
+              AND id = $2
+              AND deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = playlists.room_id AND r.deleted_at IS NULL)
+              AND (creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users WHERE users.id = playlists.creator_id AND users.deleted_at IS NULL
+              ))
+              AND (parent_id IS NULL OR EXISTS (
+                  SELECT 1
+                  FROM playlists parent
+                  WHERE parent.id = playlists.parent_id
+                    AND parent.deleted_at IS NULL
+                    AND (parent.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
             "#,
             room_id as &RoomId,
             id as &PlaylistId,
@@ -413,8 +447,23 @@ impl PlaylistRepository {
                    created_at as "created_at!",
                    updated_at as "updated_at!",
                    version as "version!"
-            FROM playlists
-            WHERE room_id = $1 AND id = $2
+            FROM playlists p
+            WHERE p.room_id = $1
+              AND p.id = $2
+              AND p.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)
+              AND (p.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+              ))
+              AND (p.parent_id IS NULL OR EXISTS (
+                  SELECT 1
+                  FROM playlists parent
+                  WHERE parent.id = p.parent_id
+                    AND parent.deleted_at IS NULL
+                    AND (parent.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
             FOR UPDATE
             "#,
             room_id as &RoomId,
@@ -457,8 +506,22 @@ impl PlaylistRepository {
                    created_at as "created_at!",
                    updated_at as "updated_at!",
                    version as "version!"
-            FROM playlists
-            WHERE id = ANY($1)
+            FROM playlists p
+            WHERE p.id = ANY($1)
+              AND p.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)
+              AND (p.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+              ))
+              AND (p.parent_id IS NULL OR EXISTS (
+                  SELECT 1
+                  FROM playlists parent
+                  WHERE parent.id = p.parent_id
+                    AND parent.deleted_at IS NULL
+                    AND (parent.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
             "#,
             &id_strs,
         )
@@ -500,8 +563,23 @@ impl PlaylistRepository {
                    created_at,
                    updated_at,
                    version
-            FROM playlists
-            WHERE room_id = $1 AND id = ANY($2)
+            FROM playlists p
+            WHERE p.room_id = $1
+              AND p.id = ANY($2)
+              AND p.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)
+              AND (p.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+              ))
+              AND (p.parent_id IS NULL OR EXISTS (
+                  SELECT 1
+                  FROM playlists parent
+                  WHERE parent.id = p.parent_id
+                    AND parent.deleted_at IS NULL
+                    AND (parent.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
             "#,
             room_id as &RoomId,
             &id_strs,
@@ -531,8 +609,23 @@ impl PlaylistRepository {
                    created_at,
                    updated_at,
                    version
-            FROM playlists
-            WHERE room_id = $1 AND parent_id IS NULL
+            FROM playlists p
+            WHERE p.room_id = $1
+              AND p.parent_id IS NULL
+              AND p.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)
+              AND (p.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+              ))
+              AND (p.parent_id IS NULL OR EXISTS (
+                  SELECT 1
+                  FROM playlists parent
+                  WHERE parent.id = p.parent_id
+                    AND parent.deleted_at IS NULL
+                    AND (parent.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
             ORDER BY position ASC
             "#,
             room_id as &RoomId,
@@ -547,7 +640,15 @@ impl PlaylistRepository {
     pub async fn count_top_level(&self, room_id: &RoomId) -> Result<i64> {
         let count = sqlx::query_scalar!(
             r"
-            SELECT COUNT(*) FROM playlists WHERE room_id = $1 AND parent_id IS NULL
+            SELECT COUNT(*)
+            FROM playlists p
+            WHERE p.room_id = $1
+              AND p.parent_id IS NULL
+              AND p.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)
+              AND (p.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+              ))
             ",
             room_id as &RoomId,
         )
@@ -581,8 +682,14 @@ impl PlaylistRepository {
                    created_at,
                    updated_at,
                    version
-            FROM playlists
-            WHERE room_id = $1 AND parent_id IS NULL
+            FROM playlists p
+            WHERE p.room_id = $1
+              AND p.parent_id IS NULL
+              AND p.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)
+              AND (p.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+              ))
             ORDER BY position ASC
             LIMIT $2 OFFSET $3
             "#,
@@ -615,8 +722,21 @@ impl PlaylistRepository {
                    created_at,
                    updated_at,
                    version
-            FROM playlists
-            WHERE parent_id = $1
+            FROM playlists p
+            WHERE p.parent_id = $1
+              AND p.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)
+              AND (p.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+              ))
+              AND EXISTS (
+                  SELECT 1 FROM playlists parent
+                  WHERE parent.id = p.parent_id
+                    AND parent.deleted_at IS NULL
+                    AND (parent.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL
+                    ))
+              )
             ORDER BY position ASC
             "#,
             parent_id as &PlaylistId,
@@ -631,7 +751,22 @@ impl PlaylistRepository {
     pub async fn count_children(&self, parent_id: &PlaylistId) -> Result<i64> {
         let count = sqlx::query_scalar!(
             r"
-            SELECT COUNT(*) FROM playlists WHERE parent_id = $1
+            SELECT COUNT(*)
+            FROM playlists p
+            WHERE p.parent_id = $1
+              AND p.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)
+              AND (p.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+              ))
+              AND EXISTS (
+                  SELECT 1 FROM playlists parent
+                  WHERE parent.id = p.parent_id
+                    AND parent.deleted_at IS NULL
+                    AND (parent.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL
+                    ))
+              )
             ",
             parent_id as &PlaylistId,
         )
@@ -649,7 +784,23 @@ impl PlaylistRepository {
     ) -> Result<i64> {
         let count = sqlx::query_scalar!(
             r#"
-            SELECT COUNT(*) AS "count!" FROM playlists WHERE room_id = $1 AND parent_id = $2
+            SELECT COUNT(*) AS "count!"
+            FROM playlists p
+            WHERE p.room_id = $1
+              AND p.parent_id = $2
+              AND p.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)
+              AND (p.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+              ))
+              AND EXISTS (
+                  SELECT 1 FROM playlists parent
+                  WHERE parent.id = p.parent_id
+                    AND parent.deleted_at IS NULL
+                    AND (parent.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL
+                    ))
+              )
             "#,
             room_id.as_i64(),
             parent_id.as_i64()
@@ -684,8 +835,21 @@ impl PlaylistRepository {
                    created_at,
                    updated_at,
                    version
-            FROM playlists
-            WHERE parent_id = $1
+            FROM playlists p
+            WHERE p.parent_id = $1
+              AND p.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)
+              AND (p.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+              ))
+              AND EXISTS (
+                  SELECT 1 FROM playlists parent
+                  WHERE parent.id = p.parent_id
+                    AND parent.deleted_at IS NULL
+                    AND (parent.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL
+                    ))
+              )
             ORDER BY position ASC
             LIMIT $2 OFFSET $3
             "#,
@@ -718,8 +882,22 @@ impl PlaylistRepository {
                    created_at,
                    updated_at,
                    version
-            FROM playlists
-            WHERE room_id = $1
+            FROM playlists p
+            WHERE p.room_id = $1
+              AND p.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)
+              AND (p.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+              ))
+              AND (p.parent_id IS NULL OR EXISTS (
+                  SELECT 1
+                  FROM playlists parent
+                  WHERE parent.id = p.parent_id
+                    AND parent.deleted_at IS NULL
+                    AND (parent.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
             ORDER BY parent_id NULLS FIRST, position ASC
             "#,
             room_id as &RoomId,
@@ -734,7 +912,23 @@ impl PlaylistRepository {
     pub async fn count_by_room(&self, room_id: &RoomId) -> Result<i64> {
         let count = sqlx::query_scalar!(
             r"
-            SELECT COUNT(*) FROM playlists WHERE room_id = $1
+            SELECT COUNT(*)
+            FROM playlists p
+            WHERE p.room_id = $1
+              AND p.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)
+              AND (p.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+              ))
+              AND (p.parent_id IS NULL OR EXISTS (
+                  SELECT 1
+                  FROM playlists parent
+                  WHERE parent.id = p.parent_id
+                    AND parent.deleted_at IS NULL
+                    AND (parent.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
             ",
             room_id as &RoomId,
         )
@@ -768,8 +962,22 @@ impl PlaylistRepository {
                    created_at,
                    updated_at,
                    version
-            FROM playlists
-            WHERE room_id = $1
+            FROM playlists p
+            WHERE p.room_id = $1
+              AND p.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)
+              AND (p.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+              ))
+              AND (p.parent_id IS NULL OR EXISTS (
+                  SELECT 1
+                  FROM playlists parent
+                  WHERE parent.id = p.parent_id
+                    AND parent.deleted_at IS NULL
+                    AND (parent.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
             ORDER BY parent_id NULLS FIRST, position ASC
             LIMIT $2 OFFSET $3
             "#,
@@ -819,6 +1027,7 @@ impl PlaylistRepository {
             SELECT position
             FROM playlists
             WHERE room_id = $1
+              AND deleted_at IS NULL
               AND parent_id IS NOT DISTINCT FROM $2
               AND id <> $3
               AND (
@@ -853,6 +1062,7 @@ impl PlaylistRepository {
             SELECT position
             FROM playlists
             WHERE room_id = $1
+              AND deleted_at IS NULL
               AND parent_id IS NOT DISTINCT FROM $2
               AND id <> $3
               AND (
@@ -884,6 +1094,7 @@ impl PlaylistRepository {
             SELECT id as "id: PlaylistId"
             FROM playlists
             WHERE room_id = $1
+              AND deleted_at IS NULL
               AND parent_id IS NOT DISTINCT FROM $2
             ORDER BY position ASC, id ASC
             FOR UPDATE
@@ -897,7 +1108,7 @@ impl PlaylistRepository {
         let mut position = Self::ORDER_STEP;
         for row in rows {
             sqlx::query!(
-                "UPDATE playlists SET position = $2, version = version + 1 WHERE id = $1",
+                "UPDATE playlists SET position = $2, version = version + 1 WHERE id = $1 AND deleted_at IS NULL",
                 row.id as PlaylistId,
                 position,
             )
@@ -968,7 +1179,13 @@ impl PlaylistRepository {
             INSERT INTO playlists (room_id, creator_id, name, description,
                                    cover_file_reference_id,
                                    parent_id, position, source_provider, source_config, provider_instance_name)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+            WHERE $2::BIGINT IS NULL OR EXISTS (
+                SELECT 1
+                FROM users
+                WHERE users.id = $2::BIGINT AND users.deleted_at IS NULL
+                FOR KEY SHARE
+            )
             RETURNING id as "id: PlaylistId",
                       room_id as "room_id: RoomId",
                       creator_id as "creator_id: crate::models::UserId",
@@ -1018,6 +1235,7 @@ impl PlaylistRepository {
             SELECT MAX(position)
             FROM playlists
             WHERE room_id = $1
+              AND deleted_at IS NULL
               AND parent_id IS NOT DISTINCT FROM $2
             ",
             room_id as &RoomId,
@@ -1064,7 +1282,20 @@ impl PlaylistRepository {
                 cover_file_reference_id = $4,
                 position = $5,
                 version = version + 1
-            WHERE id = $1 AND version = $6
+            WHERE id = $1
+              AND deleted_at IS NULL
+              AND version = $6
+              AND (creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = playlists.creator_id AND u.deleted_at IS NULL
+              ))
+              AND (parent_id IS NULL OR EXISTS (
+                  SELECT 1 FROM playlists parent
+                  WHERE parent.id = playlists.parent_id
+                    AND parent.deleted_at IS NULL
+                    AND (parent.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
             RETURNING id as "id: PlaylistId",
                       room_id as "room_id: RoomId",
                       creator_id as "creator_id: crate::models::UserId",
@@ -1135,8 +1366,22 @@ impl PlaylistRepository {
                    created_at,
                    updated_at,
                    version
-            FROM playlists
-            WHERE room_id = $1 AND id = $2
+            FROM playlists p
+            WHERE p.room_id = $1
+              AND p.id = $2
+              AND p.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)
+              AND (p.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+              ))
+              AND (p.parent_id IS NULL OR EXISTS (
+                  SELECT 1 FROM playlists parent
+                  WHERE parent.id = p.parent_id
+                    AND parent.deleted_at IS NULL
+                    AND (parent.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
             FOR UPDATE
             "#,
             room_id as &RoomId,
@@ -1165,8 +1410,22 @@ impl PlaylistRepository {
                    created_at,
                    updated_at,
                    version
-            FROM playlists
-            WHERE room_id = $1 AND id = $2
+            FROM playlists p
+            WHERE p.room_id = $1
+              AND p.id = $2
+              AND p.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)
+              AND (p.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+              ))
+              AND (p.parent_id IS NULL OR EXISTS (
+                  SELECT 1 FROM playlists parent
+                  WHERE parent.id = p.parent_id
+                    AND parent.deleted_at IS NULL
+                    AND (parent.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
             FOR UPDATE
             "#,
             room_id as &RoomId,
@@ -1190,7 +1449,7 @@ impl PlaylistRepository {
 
         for _ in 0..2 {
             let anchor_position: f64 = sqlx::query_scalar!(
-                "SELECT position FROM playlists WHERE id = $1 FOR UPDATE",
+                "SELECT position FROM playlists WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
                 anchor.id as PlaylistId,
             )
             .fetch_one(&mut **tx)
@@ -1234,7 +1493,7 @@ impl PlaylistRepository {
                     r#"
                     UPDATE playlists
                     SET position = $2, version = version + 1
-                    WHERE id = $1
+                    WHERE id = $1 AND deleted_at IS NULL
                     RETURNING id as "id: PlaylistId",
                               room_id as "room_id: RoomId",
                               creator_id as "creator_id: crate::models::UserId",
@@ -1279,8 +1538,13 @@ impl PlaylistRepository {
                        parent_id, position,
                        source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                        created_at, updated_at, version, 0 AS depth
-                FROM playlists
-                WHERE id = $1
+                FROM playlists p0
+                WHERE p0.id = $1
+                  AND p0.deleted_at IS NULL
+                  AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p0.room_id AND r.deleted_at IS NULL)
+                  AND (p0.creator_id IS NULL OR EXISTS (
+                      SELECT 1 FROM users u WHERE u.id = p0.creator_id AND u.deleted_at IS NULL
+                  ))
               UNION ALL
                 SELECT p.id, p.room_id, p.creator_id, p.name, p.description,
                        p.cover_file_reference_id,
@@ -1289,7 +1553,12 @@ impl PlaylistRepository {
                        p.created_at, p.updated_at, p.version, a.depth + 1
                 FROM playlists p
                 JOIN ancestors a ON p.id = a.parent_id
-                WHERE a.depth < 50
+                WHERE p.deleted_at IS NULL
+                  AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)
+                  AND (p.creator_id IS NULL OR EXISTS (
+                      SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                  ))
+                  AND a.depth < 50
             )
             SELECT id as "id!: PlaylistId",
                    room_id as "room_id!: RoomId",
@@ -1331,8 +1600,14 @@ impl PlaylistRepository {
                        parent_id, position,
                        source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                        created_at, updated_at, version, 0 AS depth
-                FROM playlists
-                WHERE room_id = $1 AND id = $2
+                FROM playlists p0
+                WHERE p0.room_id = $1
+                  AND p0.id = $2
+                  AND p0.deleted_at IS NULL
+                  AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p0.room_id AND r.deleted_at IS NULL)
+                  AND (p0.creator_id IS NULL OR EXISTS (
+                      SELECT 1 FROM users u WHERE u.id = p0.creator_id AND u.deleted_at IS NULL
+                  ))
               UNION ALL
                 SELECT p.id, p.room_id, p.creator_id, p.name, p.description,
                        p.cover_file_reference_id,
@@ -1341,7 +1616,12 @@ impl PlaylistRepository {
                        p.created_at, p.updated_at, p.version, a.depth + 1
                 FROM playlists p
                 JOIN ancestors a ON p.id = a.parent_id AND p.room_id = a.room_id
-                WHERE a.depth < 50
+                WHERE p.deleted_at IS NULL
+                  AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)
+                  AND (p.creator_id IS NULL OR EXISTS (
+                      SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                  ))
+                  AND a.depth < 50
             )
             SELECT id as "id!: PlaylistId",
                    room_id as "room_id!: RoomId",

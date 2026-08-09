@@ -299,6 +299,21 @@ pub struct User {
     pub deleted_at: Option<DateTime<Utc>>,
 }
 
+/// Administrative metadata for the account deletion and recovery lifecycle.
+///
+/// Authentication and normal user lookups only need [`User`]. Keeping this
+/// metadata separate prevents lifecycle internals from leaking into public
+/// user projections while still giving operators a complete audit view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserLifecycleMetadata {
+    pub user_id: UserId,
+    pub deletion_source: Option<String>,
+    pub deletion_reason: Option<String>,
+    pub deleted_by: Option<UserId>,
+    pub restored_at: Option<DateTime<Utc>>,
+    pub restored_by: Option<UserId>,
+}
+
 impl User {
     #[must_use]
     pub fn new(username: String, signup_method: SignupMethod) -> Self {
@@ -436,6 +451,9 @@ pub struct UserListQuery {
     pub sort_by: UserListSortBy,
     #[serde(default)]
     pub sort_direction: SortDirection,
+    /// Include users in the recovery window. Deleted users remain hidden by default.
+    #[serde(default)]
+    pub include_deleted: bool,
 }
 
 #[cfg(test)]

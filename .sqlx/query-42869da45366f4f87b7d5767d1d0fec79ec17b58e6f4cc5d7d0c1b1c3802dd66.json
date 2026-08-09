@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE chat_messages SET deletion_source = 'account', deleted_owner_id = $2 WHERE room_id = $1 AND deleted_at = $3 AND deletion_source = 'room' AND deleted_owner_id IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "42869da45366f4f87b7d5767d1d0fec79ec17b58e6f4cc5d7d0c1b1c3802dd66"
+}

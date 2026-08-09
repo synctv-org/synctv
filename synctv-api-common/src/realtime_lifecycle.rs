@@ -1,9 +1,12 @@
 use async_trait::async_trait;
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use synctv_core::models::{MediaId, RoomId, UserId};
+use synctv_core::models::{
+    ChatEventKind, ChatMessage, ChatMessageEvent, ChatMessageStatus, ChatMessageWithAttachments,
+    MediaId, RoomId, UserId,
+};
 use synctv_core::service::RoomService;
-use synctv_core::service::UserDeletionSummary;
+use synctv_core::service::{UserDeletedChatMessage, UserDeletionSummary};
 use synctv_livestream::LiveStreamingInfrastructure;
 use synctv_livestream::StreamError;
 use synctv_realtime::fanout::RealtimeFanoutService;
@@ -66,6 +69,54 @@ impl DefaultRealtimeLifecycleService {
             connection_service,
             live_streaming_infrastructure,
             realtime_fanout,
+        }
+    }
+
+    fn account_deleted_chat_event(
+        summary: &UserDeletionSummary,
+        deleted: &UserDeletedChatMessage,
+    ) -> RealtimeEvent {
+        let event_id = synctv_common::snanoid!(16);
+        let message = ChatMessage {
+            id: deleted.message_id,
+            room_id: deleted.room_id,
+            user_id: Some(summary.user_id),
+            client_message_id: None,
+            content: String::new(),
+            message_type: deleted.message_type,
+            status: ChatMessageStatus::Deleted,
+            version: deleted.version,
+            reply_to_message_id: None,
+            reply_to_message_created_at: None,
+            metadata: None,
+            edited_at: None,
+            deleted_at: Some(deleted.deleted_at),
+            deleted_by: Some(summary.user_id),
+            delete_reason: Some("account closure".to_string()),
+            created_at: deleted.message_created_at,
+        };
+        let event = ChatMessageEvent {
+            event_id: event_id.clone(),
+            sequence: 0,
+            room_id: deleted.room_id,
+            actor_user_id: summary.user_id,
+            kind: ChatEventKind::Deleted,
+            message: ChatMessageWithAttachments {
+                message,
+                attachments: Vec::new(),
+                reactions: Vec::new(),
+                mentions: Vec::new(),
+                pin: None,
+            },
+            occurred_at: deleted.deleted_at,
+        };
+
+        RealtimeEvent::ChatMessageEvent {
+            event_id,
+            room_id: deleted.room_id,
+            actor_user_id: summary.user_id,
+            event,
+            timestamp: deleted.deleted_at,
         }
     }
 }
@@ -295,6 +346,24 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
         disconnect_reason: &str,
         deleted_room_fanout: Vec<DeletedRoomAfterCommitFanout>,
     ) {
+        let deleted_room_ids: BTreeSet<_> = summary.deleted_room_ids.iter().copied().collect();
+        let modified_room_ids: BTreeSet<_> = summary
+            .modified_rooms
+            .iter()
+            .map(|impact| impact.room_id)
+            .collect();
+
+        // A room can be affected only by a cross-room chat message. Refresh
+        // its room-scoped snapshots so clients do not retain stale state.
+        for room_id in &summary.affected_room_ids {
+            if deleted_room_ids.contains(room_id) || modified_room_ids.contains(room_id) {
+                continue;
+            }
+            room_service
+                .finalize_entry_deletions_after_commit(room_id, &[], None)
+                .await;
+        }
+
         for room_id in &summary.membership_room_ids {
             room_service
                 .permission_service()
@@ -323,6 +392,27 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
                         "Failed to kick publisher while finalizing user deletion"
                     );
                 }
+            }
+        }
+
+        // Account-level chat rows intentionally stay recoverable and are
+        // excluded from durable chat history. Push a deletion event through
+        // realtime fanout so connected observers update immediately. A fresh
+        // connection reads the filtered snapshot.
+        for deleted in &summary.deleted_chat_messages {
+            let event = Self::account_deleted_chat_event(summary, deleted);
+            if !self
+                .realtime_fanout
+                .try_publish(PublishRequest::new(event))
+                .await
+                && self.realtime_fanout.is_distributed_enabled()
+            {
+                tracing::warn!(
+                    room_id = %deleted.room_id,
+                    message_id = deleted.message_id,
+                    user_id = %summary.user_id,
+                    "Failed to publish account chat deletion event"
+                );
             }
         }
 

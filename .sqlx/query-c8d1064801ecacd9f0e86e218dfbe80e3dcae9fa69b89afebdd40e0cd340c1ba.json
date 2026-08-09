@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO media (\n                   room_id, creator_id, name, position, source_provider, source_config,\n                   deleted_at, deletion_source\n               )\n               VALUES ($1, $2, 'recent-media', 2.0, 1, '{}'::JSONB, $3, 'user')\n               RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c8d1064801ecacd9f0e86e218dfbe80e3dcae9fa69b89afebdd40e0cd340c1ba"
+}

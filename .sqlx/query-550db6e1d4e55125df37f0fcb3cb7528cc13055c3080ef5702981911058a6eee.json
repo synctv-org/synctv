@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT deletion_source, deleted_owner_id AS \"deleted_owner_id: UserId\"\n           FROM playlists\n           WHERE id = ANY($1)\n           UNION ALL\n           SELECT deletion_source, deleted_owner_id AS \"deleted_owner_id: UserId\"\n           FROM media\n           WHERE id = ANY($2)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "deletion_source",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "deleted_owner_id: UserId",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "550db6e1d4e55125df37f0fcb3cb7528cc13055c3080ef5702981911058a6eee"
+}

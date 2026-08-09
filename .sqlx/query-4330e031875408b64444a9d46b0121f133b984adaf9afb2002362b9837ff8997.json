@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE media\n                SET deleted_owner_id = $1\n                WHERE deleted_owner_id IS DISTINCT FROM $1\n                  AND (\n                      creator_id = $1\n                      OR playlist_id IN (\n                          SELECT id FROM playlists WHERE deleted_owner_id = $1\n                      )\n                  )\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4330e031875408b64444a9d46b0121f133b984adaf9afb2002362b9837ff8997"
+}

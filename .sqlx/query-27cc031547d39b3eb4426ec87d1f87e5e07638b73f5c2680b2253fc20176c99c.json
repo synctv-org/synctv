@@ -1,0 +1,192 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT id as \"id: MediaId\",\n                       playlist_id as \"playlist_id: PlaylistId\",\n                       room_id as \"room_id: RoomId\",\n                       creator_id as \"creator_id: UserId\",\n                       name,\n                       description,\n                       position,\n                       source_provider as \"source_provider: ProviderTypeName\",\n                       source_config as \"source_config: crate::models::MediaSourceConfig\",\n                       NULLIF(provider_instance_name, '') AS \"provider_instance_name?\",\n                       cover_file_reference_id,\n    thumbnail_file_reference_id,\n                       added_at, updated_at, version\n                FROM media\n                WHERE room_id = $1 AND id = $2 AND deleted_at IS NULL\n                FOR UPDATE\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: MediaId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "playlist_id: PlaylistId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "playlist_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "room_id: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "creator_id: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "creator_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "name",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "position",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "position"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "source_provider: ProviderTypeName",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "source_provider"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "source_config: crate::models::MediaSourceConfig",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "source_config"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "provider_instance_name?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "cover_file_reference_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "cover_file_reference_id"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "thumbnail_file_reference_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "thumbnail_file_reference_id"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "added_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "added_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "27cc031547d39b3eb4426ec87d1f87e5e07638b73f5c2680b2253fc20176c99c"
+}

@@ -1,0 +1,79 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT event_id AS \"event_id!\",\n                   sequence,\n                   resource_type AS \"resource_type!\",\n                   event_type AS \"event_type!\",\n                   payload AS \"payload?: sqlx::types::Json<RoomResourceEventPayload>\"\n            FROM room_resource_events e\n            WHERE e.room_id = $1\n              AND e.sequence > $2\n              AND e.resource_type = ANY($3::TEXT[])\n              AND NOT (\n                    (e.resource_type = 'chat_pins'\n                     AND e.aggregate_type = 'chat_message'\n                     AND EXISTS (\n                         SELECT 1\n                         FROM chat_messages m\n                         WHERE m.room_id = e.room_id\n                           AND e.aggregate_id = m.id::TEXT\n                           AND m.deletion_source = 'account'\n                     ))\n                 OR (e.resource_type = 'media'\n                     AND EXISTS (\n                         SELECT 1\n                         FROM media m\n                         WHERE m.room_id = e.room_id\n                           AND e.resource_id = m.id::TEXT\n                           AND m.deletion_source = 'account'\n                     ))\n                 OR (e.resource_type = 'playlist'\n                     AND EXISTS (\n                         SELECT 1\n                         FROM playlists p\n                         WHERE p.room_id = e.room_id\n                           AND e.resource_id = p.id::TEXT\n                           AND p.deletion_source = 'account'\n                     ))\n              )\n            ORDER BY sequence ASC\n            LIMIT $4\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_id!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_resource_events",
+            "name": "event_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "sequence",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_resource_events",
+            "name": "sequence"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "resource_type!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_resource_events",
+            "name": "resource_type"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "event_type!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_resource_events",
+            "name": "event_type"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "payload?: sqlx::types::Json<RoomResourceEventPayload>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "room_resource_events",
+            "name": "payload"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "TextArray",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "99b5489abb69c8e1fbe991d6fca4f0e7752cfd5b716efe695f8bb99f6ac6516b"
+}

@@ -8,8 +8,9 @@ impl RoomService {
             self.broadcast_playback_reset_after_entry_deletion(state)
                 .await;
         }
-        self.cleanup_deleted_media_file_references(&impact.deleted_media_file_references)
-            .await;
+        // Soft-deleted media still owns its file references during the
+        // recovery window. Hard-purge cleanup marks those references expired
+        // after the database rows are permanently removed.
     }
 
     pub(super) async fn notify_user_entry_deletion_after_commit(

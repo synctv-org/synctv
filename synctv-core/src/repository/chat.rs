@@ -531,6 +531,7 @@ impl ChatRepository {
              AND m.created_at = p.message_created_at
             WHERE p.room_id = $1
               AND m.status <> $2
+              AND m.deletion_source IS DISTINCT FROM 'account'
             ORDER BY p.pinned_at DESC, p.message_id DESC
             LIMIT $3
             "#,
@@ -838,7 +839,9 @@ impl ChatRepository {
                    delete_reason,
                    created_at AS "created_at!"
             FROM chat_messages
-            WHERE room_id = $1 AND id = $2
+            WHERE room_id = $1
+              AND id = $2
+              AND deletion_source IS DISTINCT FROM 'account'
             FOR UPDATE
             "#,
             request.room_id.as_i64(),
@@ -1247,17 +1250,22 @@ impl ChatRepository {
             sqlx::query_as!(
                 ChatEventRow,
                 r#"
-                SELECT sequence AS "sequence!",
-                       event_id AS "event_id!",
-                       room_id AS "room_id?",
-                       actor_user_id AS "actor_user_id?",
-                       payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
-                       occurred_at AS "occurred_at!"
-                FROM chat_message_events
-                WHERE room_id = $1
-                  AND sequence > $2
-                  AND event_type = ANY($3::text[])
-                  AND (payload #>> '{message,message,messageType}') = ANY($5::text[])
+                SELECT e.sequence AS "sequence!",
+                       e.event_id AS "event_id!",
+                       e.room_id AS "room_id?",
+                       e.actor_user_id AS "actor_user_id?",
+                       e.payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
+                       e.occurred_at AS "occurred_at!"
+                FROM chat_message_events e
+                JOIN chat_messages m
+                  ON m.room_id = e.room_id
+                 AND m.id = e.message_id
+                 AND m.created_at = e.message_created_at
+                 AND m.deletion_source IS DISTINCT FROM 'account'
+                WHERE e.room_id = $1
+                  AND e.sequence > $2
+                  AND e.event_type = ANY($3::text[])
+                  AND (e.payload #>> '{message,message,messageType}') = ANY($5::text[])
                 ORDER BY sequence ASC
                 LIMIT $4
                 "#,
@@ -1273,16 +1281,21 @@ impl ChatRepository {
             sqlx::query_as!(
                 ChatEventRow,
                 r#"
-                SELECT sequence AS "sequence!",
-                       event_id AS "event_id!",
-                       room_id AS "room_id?",
-                       actor_user_id AS "actor_user_id?",
-                       payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
-                       occurred_at AS "occurred_at!"
-                FROM chat_message_events
-                WHERE room_id = $1
-                  AND event_type = ANY($2::text[])
-                  AND (payload #>> '{message,message,messageType}') = ANY($4::text[])
+                SELECT e.sequence AS "sequence!",
+                       e.event_id AS "event_id!",
+                       e.room_id AS "room_id?",
+                       e.actor_user_id AS "actor_user_id?",
+                       e.payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
+                       e.occurred_at AS "occurred_at!"
+                FROM chat_message_events e
+                JOIN chat_messages m
+                  ON m.room_id = e.room_id
+                 AND m.id = e.message_id
+                 AND m.created_at = e.message_created_at
+                 AND m.deletion_source IS DISTINCT FROM 'account'
+                WHERE e.room_id = $1
+                  AND e.event_type = ANY($2::text[])
+                  AND (e.payload #>> '{message,message,messageType}') = ANY($4::text[])
                 ORDER BY sequence ASC
                 LIMIT $3
                 "#,
@@ -1327,17 +1340,22 @@ impl ChatRepository {
         let rows = sqlx::query_as!(
             ChatEventRow,
             r#"
-            SELECT sequence AS "sequence!",
-                   event_id AS "event_id!",
-                   room_id AS "room_id?",
-                   actor_user_id AS "actor_user_id?",
-                   payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
-                   occurred_at AS "occurred_at!"
-            FROM chat_message_events
-            WHERE room_id = $1
-              AND sequence > $2
-              AND event_type = ANY($3::text[])
-              AND (payload #>> '{message,message,messageType}') = ANY($5::text[])
+            SELECT e.sequence AS "sequence!",
+                   e.event_id AS "event_id!",
+                   e.room_id AS "room_id?",
+                   e.actor_user_id AS "actor_user_id?",
+                   e.payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
+                   e.occurred_at AS "occurred_at!"
+            FROM chat_message_events e
+            JOIN chat_messages m
+              ON m.room_id = e.room_id
+             AND m.id = e.message_id
+             AND m.created_at = e.message_created_at
+             AND m.deletion_source IS DISTINCT FROM 'account'
+            WHERE e.room_id = $1
+              AND e.sequence > $2
+              AND e.event_type = ANY($3::text[])
+              AND (e.payload #>> '{message,message,messageType}') = ANY($5::text[])
             ORDER BY sequence ASC
             LIMIT $4
             "#,
@@ -1371,12 +1389,17 @@ impl ChatRepository {
         let row = sqlx::query_as!(
             EventCursor,
             r#"
-            SELECT event_id AS "event_id?", sequence AS "sequence!"
-            FROM chat_message_events
-            WHERE room_id = $1
-              AND event_type = ANY($2::text[])
-              AND (payload #>> '{message,message,messageType}') = ANY($3::text[])
-            ORDER BY sequence DESC
+            SELECT e.event_id AS "event_id?", e.sequence AS "sequence!"
+            FROM chat_message_events e
+            JOIN chat_messages m
+              ON m.room_id = e.room_id
+             AND m.id = e.message_id
+             AND m.created_at = e.message_created_at
+             AND m.deletion_source IS DISTINCT FROM 'account'
+            WHERE e.room_id = $1
+              AND e.event_type = ANY($2::text[])
+              AND (e.payload #>> '{message,message,messageType}') = ANY($3::text[])
+            ORDER BY e.sequence DESC
             LIMIT 1
             "#,
             room_id.as_i64(),
@@ -1423,17 +1446,22 @@ impl ChatRepository {
         let row = sqlx::query_as!(
             ChatEventRow,
             r#"
-            SELECT sequence AS "sequence!",
-                   event_id AS "event_id!",
-                   room_id AS "room_id?",
-                   actor_user_id AS "actor_user_id?",
-                   payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
-                   occurred_at AS "occurred_at!"
-            FROM chat_message_events
-            WHERE room_id = $1
-              AND event_type = ANY($2::text[])
-              AND message_id = $3
-              AND message_created_at = $4
+            SELECT e.sequence AS "sequence!",
+                   e.event_id AS "event_id!",
+                   e.room_id AS "room_id?",
+                   e.actor_user_id AS "actor_user_id?",
+                   e.payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
+                   e.occurred_at AS "occurred_at!"
+            FROM chat_message_events e
+            JOIN chat_messages m
+              ON m.room_id = e.room_id
+             AND m.id = e.message_id
+             AND m.created_at = e.message_created_at
+             AND m.deletion_source IS DISTINCT FROM 'account'
+            WHERE e.room_id = $1
+              AND e.event_type = ANY($2::text[])
+              AND e.message_id = $3
+              AND e.message_created_at = $4
             ORDER BY sequence DESC
             LIMIT 1
             "#,
@@ -1457,17 +1485,22 @@ impl ChatRepository {
         let row = sqlx::query_as!(
             ChatEventRow,
             r#"
-            SELECT sequence AS "sequence!",
-                   event_id AS "event_id!",
-                   room_id AS "room_id?",
-                   actor_user_id AS "actor_user_id?",
-                   payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
-                   occurred_at AS "occurred_at!"
-            FROM chat_message_events
-            WHERE event_type = $1
-              AND room_id = $2
-              AND message_id = $3
-              AND message_created_at = $4
+            SELECT e.sequence AS "sequence!",
+                   e.event_id AS "event_id!",
+                   e.room_id AS "room_id?",
+                   e.actor_user_id AS "actor_user_id?",
+                   e.payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
+                   e.occurred_at AS "occurred_at!"
+            FROM chat_message_events e
+            JOIN chat_messages m
+              ON m.room_id = e.room_id
+             AND m.id = e.message_id
+             AND m.created_at = e.message_created_at
+             AND m.deletion_source IS DISTINCT FROM 'account'
+            WHERE e.event_type = $1
+              AND e.room_id = $2
+              AND e.message_id = $3
+              AND e.message_created_at = $4
             ORDER BY sequence ASC
             LIMIT 1
             "#,
@@ -1585,6 +1618,7 @@ impl ChatRepository {
                     SELECT COUNT(*) AS "count!"
                     FROM chat_messages
                     WHERE room_id = $1
+                      AND deletion_source IS DISTINCT FROM 'account'
                       AND status <> $2
                       AND (user_id IS NULL OR user_id <> $3)
                       AND (created_at, id) > ($4, $5)
@@ -1896,6 +1930,7 @@ impl ChatRepository {
               AND e.sequence > $2
               AND e.event_type = $3
               AND m.status <> $4
+              AND m.deletion_source IS DISTINCT FROM 'account'
               AND (m.user_id IS NULL OR m.user_id <> $5)
             "#,
             room_id.as_i64(),
@@ -1917,6 +1952,7 @@ impl ChatRepository {
             SELECT COUNT(*) AS "count!"
             FROM chat_messages
             WHERE room_id = $1
+              AND deletion_source IS DISTINCT FROM 'account'
               AND status <> $2
               AND (user_id IS NULL OR user_id <> $3)
               AND created_at >= NOW() - INTERVAL '90 days'
@@ -2012,7 +2048,8 @@ impl ChatRepository {
                        delete_reason,
                        created_at AS "created_at!"
                 FROM chat_messages
-                WHERE room_id = $1
+            WHERE room_id = $1
+                  AND deletion_source IS DISTINCT FROM 'account'
                   AND ($2 OR status <> $3)
                   AND (created_at, id) < ($4, $5)
                   AND message_type = ANY($7::smallint[])
@@ -2050,7 +2087,8 @@ impl ChatRepository {
                        delete_reason,
                        created_at AS "created_at!"
                 FROM chat_messages
-                WHERE room_id = $1
+            WHERE room_id = $1
+                  AND deletion_source IS DISTINCT FROM 'account'
                   AND ($2 OR status <> $3)
                   AND created_at >= NOW() - INTERVAL '90 days'
                   AND message_type = ANY($5::smallint[])
@@ -2178,6 +2216,7 @@ impl ChatRepository {
                 FROM chat_messages m
                 CROSS JOIN search_terms st
                 WHERE m.room_id = $1
+                  AND m.deletion_source IS DISTINCT FROM 'account'
                   AND (m.content_search @@ st.tsquery OR m.content ILIKE $3 ESCAPE '\')
                   AND ($4 OR m.status <> $5)
                   AND ($6::bigint IS NULL OR m.user_id = $6)
@@ -2223,6 +2262,7 @@ impl ChatRepository {
                 FROM chat_messages m
                 CROSS JOIN search_terms st
                 WHERE m.room_id = $1
+                  AND m.deletion_source IS DISTINCT FROM 'account'
                   AND (m.content_search @@ st.tsquery OR m.content ILIKE $3 ESCAPE '\')
                   AND ($4 OR m.status <> $5)
                   AND ($6::bigint IS NULL OR m.user_id = $6)
@@ -2318,6 +2358,7 @@ impl ChatRepository {
                        END AS playback_position
                 FROM chat_messages
                 WHERE room_id = $1
+                  AND deletion_source IS DISTINCT FROM 'account'
                   AND ($2 OR status <> $3)
                   AND ($4::text IS NULL OR metadata #>> '{playback,mediaId}' = $4)
                   AND ($5::text IS NULL OR metadata #>> '{playback,playlistId}' = $5)
@@ -2423,6 +2464,7 @@ impl ChatRepository {
                    created_at AS "created_at!"
             FROM chat_messages
             WHERE room_id = $1
+              AND deletion_source IS DISTINCT FROM 'account'
               AND ($2 OR status <> $3)
               AND (created_at, id) < ($4, $5)
             ORDER BY created_at DESC, id DESC
@@ -2460,6 +2502,7 @@ impl ChatRepository {
                    created_at AS "created_at!"
             FROM chat_messages
             WHERE room_id = $1
+              AND deletion_source IS DISTINCT FROM 'account'
               AND ($2 OR status <> $3)
               AND (created_at, id) > ($4, $5)
             ORDER BY created_at ASC, id ASC
@@ -2517,6 +2560,7 @@ impl ChatRepository {
                    created_at AS "created_at!"
             FROM chat_messages
             WHERE id = $1
+              AND deletion_source IS DISTINCT FROM 'account'
             "#,
             message_id
         )
@@ -2571,6 +2615,7 @@ impl ChatRepository {
                    created_at AS "created_at!"
             FROM chat_messages
             WHERE room_id = $1 AND id = $2
+              AND deletion_source IS DISTINCT FROM 'account'
             "#,
             room_id.as_i64(),
             message_id
@@ -2869,7 +2914,9 @@ impl ChatRepository {
             SET content = '', status = ",
         );
         builder.push_bind(i16::from(ChatMessageStatus::Deleted));
-        builder.push(", version = version + 1, deleted_at = NOW(), deleted_by = ");
+        builder.push(
+            ", version = version + 1, deleted_at = NOW(), deletion_source = 'user', deleted_by = ",
+        );
         builder.push_bind(deleted_by.as_i64());
         builder.push(", delete_reason = ");
         builder.push_bind(reason);
@@ -2943,7 +2990,9 @@ impl ChatRepository {
             SET content = '', status = ",
         );
         builder.push_bind(i16::from(ChatMessageStatus::Deleted));
-        builder.push(", version = version + 1, deleted_at = NOW(), deleted_by = ");
+        builder.push(
+            ", version = version + 1, deleted_at = NOW(), deletion_source = 'user', deleted_by = ",
+        );
         builder.push_bind(request.deleted_by.as_i64());
         builder.push(", delete_reason = ");
         builder.push_bind(request.reason);
@@ -3721,7 +3770,10 @@ impl ChatRepository {
                    delete_reason,
                    created_at AS "created_at!"
             FROM chat_messages
-            WHERE room_id = $1 AND id = $2 AND created_at = $3
+            WHERE room_id = $1
+              AND id = $2
+              AND created_at = $3
+              AND deletion_source IS DISTINCT FROM 'account'
             "#,
             room_id.as_i64(),
             message_id,
@@ -3908,16 +3960,21 @@ impl ChatRepository {
         let row = sqlx::query_as!(
             ChatEventRow,
             r#"
-            SELECT sequence AS "sequence!",
-                   event_id AS "event_id!",
-                   room_id AS "room_id?",
-                   actor_user_id AS "actor_user_id?",
-                   payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
-                   occurred_at AS "occurred_at!"
-            FROM chat_message_events
-            WHERE room_id = $1
-              AND event_id = $2
-              AND event_type = ANY($3::text[])
+            SELECT e.sequence AS "sequence!",
+                   e.event_id AS "event_id!",
+                   e.room_id AS "room_id?",
+                   e.actor_user_id AS "actor_user_id?",
+                   e.payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
+                   e.occurred_at AS "occurred_at!"
+            FROM chat_message_events e
+            JOIN chat_messages m
+              ON m.room_id = e.room_id
+             AND m.id = e.message_id
+             AND m.created_at = e.message_created_at
+             AND m.deletion_source IS DISTINCT FROM 'account'
+            WHERE e.room_id = $1
+              AND e.event_id = $2
+              AND e.event_type = ANY($3::text[])
             "#,
             room_id.as_i64(),
             event_id,
@@ -4187,6 +4244,7 @@ impl ChatRepository {
               ON m.id = wanted.id AND m.created_at = wanted.created_at
             WHERE m.room_id = $1
               AND m.status <> $4
+              AND m.deletion_source IS DISTINCT FROM 'account'
             "#,
             room_id.as_i64(),
             &ids,
@@ -4279,7 +4337,9 @@ impl ChatRepository {
                    delete_reason,
                    created_at AS "created_at!"
             FROM chat_messages
-            WHERE room_id = $1 AND id = $2
+            WHERE room_id = $1
+              AND id = $2
+              AND deletion_source IS DISTINCT FROM 'account'
             FOR UPDATE
             "#,
             room_id.as_i64(),

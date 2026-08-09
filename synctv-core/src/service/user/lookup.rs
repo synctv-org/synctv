@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::{
     cache::{KeyBuilder, UsernameCache},
-    models::{StoredFileReference, User, UserId},
+    models::{StoredFileReference, User, UserId, UserLifecycleMetadata},
     repository::FileStorageRepository,
     service::{file_storage::FileStorageService, TokenBlacklistStore, UserService},
     Error, Result,
@@ -15,6 +15,34 @@ impl UserService {
             .get_by_id(user_id)
             .await?
             .ok_or_else(|| Error::NotFound("User not found".to_string()))
+    }
+
+    /// Load an account for administrative lifecycle operations, including a
+    /// soft-deleted account that remains inside its recovery window.
+    pub async fn get_user_for_admin(&self, user_id: &UserId) -> Result<User> {
+        self.repository
+            .get_by_id_including_deleted(user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("User not found".to_string()))
+    }
+
+    pub async fn get_user_lifecycle_metadata(
+        &self,
+        user_id: &UserId,
+    ) -> Result<UserLifecycleMetadata> {
+        self.repository
+            .get_lifecycle_metadata(user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("User lifecycle metadata not found".to_string()))
+    }
+
+    pub async fn get_user_lifecycle_metadata_by_ids_eventually_consistent(
+        &self,
+        user_ids: &[UserId],
+    ) -> Result<Vec<UserLifecycleMetadata>> {
+        self.repository
+            .get_lifecycle_metadata_by_ids_eventually_consistent(user_ids)
+            .await
     }
 
     pub async fn list_users(

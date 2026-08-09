@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET username = $2, deleted_at = NULL, deletion_source = NULL, deletion_reason = NULL, deleted_by = NULL, restored_at = CURRENT_TIMESTAMP, restored_by = $3, updated_at = CURRENT_TIMESTAMP, version = version + 1 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Varchar",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0ac937224551c6f9c539dbf311213dbb0f95660a7cecb0025a5263e6daa7479f"
+}

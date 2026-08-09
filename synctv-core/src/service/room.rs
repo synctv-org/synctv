@@ -96,8 +96,8 @@ mod deletion;
 use deletion::{
     apply_delete_entries_impact_in_tx, collect_all_room_playlist_nodes_in_tx,
     collect_deleted_media_ids_in_tx, collect_room_root_media_ids_in_tx,
-    delete_entries_result_from_impact, delete_playlist_ids_in_depth_order_in_tx,
-    plan_clear_playlist_scope_in_tx, plan_delete_entries_in_room_in_tx,
+    delete_entries_result_from_impact, plan_clear_playlist_scope_in_tx,
+    plan_delete_entries_in_room_in_tx,
 };
 mod cover;
 pub use cover::CreateRoomCoverUploadSession;
@@ -242,7 +242,6 @@ pub struct RoomService {
     opaque_password_login_session_store: Arc<dyn RoomOpaquePasswordLoginSessionStore>,
 
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
-    media_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
     room_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
 }
 

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO room_resource_events (\n                event_id, scope_type, room_id, aggregate_type, aggregate_id,\n                resource_type, resource_id, event_type, event_version,\n                actor_user_id, payload, summary, occurred_at\n            ) VALUES ('deleted-user-chat-pin-event', 1, $1, 'chat_message', $2,\n                      'chat_pins', $2, 'chat_pin_pinned', 1, $3,\n                      NULL, '{}'::JSONB, CURRENT_TIMESTAMP)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ad17560a387e0f6edf37633c07d5b3d0a57bbf7947dd7800d22ec91e86d5da14"
+}

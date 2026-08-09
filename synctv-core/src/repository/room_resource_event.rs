@@ -318,9 +318,36 @@ impl RoomResourceEventRepository {
         let row = sqlx::query!(
             r"
             SELECT event_id, sequence
-            FROM room_resource_events
-            WHERE room_id = $1
-              AND resource_type = ANY($2::TEXT[])
+            FROM room_resource_events e
+            WHERE e.room_id = $1
+              AND e.resource_type = ANY($2::TEXT[])
+              AND NOT (
+                    (e.resource_type = 'chat_pins'
+                     AND e.aggregate_type = 'chat_message'
+                     AND EXISTS (
+                         SELECT 1
+                         FROM chat_messages m
+                         WHERE m.room_id = e.room_id
+                           AND e.aggregate_id = m.id::TEXT
+                           AND m.deletion_source = 'account'
+                     ))
+                 OR (e.resource_type = 'media'
+                     AND EXISTS (
+                         SELECT 1
+                         FROM media m
+                         WHERE m.room_id = e.room_id
+                           AND e.resource_id = m.id::TEXT
+                           AND m.deletion_source = 'account'
+                     ))
+                 OR (e.resource_type = 'playlist'
+                     AND EXISTS (
+                         SELECT 1
+                         FROM playlists p
+                         WHERE p.room_id = e.room_id
+                           AND e.resource_id = p.id::TEXT
+                           AND p.deletion_source = 'account'
+                     ))
+              )
             ORDER BY sequence DESC
             LIMIT 1
             ",
@@ -365,10 +392,37 @@ impl RoomResourceEventRepository {
                    resource_type AS "resource_type!",
                    event_type AS "event_type!",
                    payload AS "payload?: sqlx::types::Json<RoomResourceEventPayload>"
-            FROM room_resource_events
-            WHERE room_id = $1
-              AND sequence > $2
-              AND resource_type = ANY($3::TEXT[])
+            FROM room_resource_events e
+            WHERE e.room_id = $1
+              AND e.sequence > $2
+              AND e.resource_type = ANY($3::TEXT[])
+              AND NOT (
+                    (e.resource_type = 'chat_pins'
+                     AND e.aggregate_type = 'chat_message'
+                     AND EXISTS (
+                         SELECT 1
+                         FROM chat_messages m
+                         WHERE m.room_id = e.room_id
+                           AND e.aggregate_id = m.id::TEXT
+                           AND m.deletion_source = 'account'
+                     ))
+                 OR (e.resource_type = 'media'
+                     AND EXISTS (
+                         SELECT 1
+                         FROM media m
+                         WHERE m.room_id = e.room_id
+                           AND e.resource_id = m.id::TEXT
+                           AND m.deletion_source = 'account'
+                     ))
+                 OR (e.resource_type = 'playlist'
+                     AND EXISTS (
+                         SELECT 1
+                         FROM playlists p
+                         WHERE p.room_id = e.room_id
+                           AND e.resource_id = p.id::TEXT
+                           AND p.deletion_source = 'account'
+                     ))
+              )
             ORDER BY sequence ASC
             LIMIT $4
             "#,

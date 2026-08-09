@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(\n                   SELECT 1\n                   FROM users\n                   WHERE LOWER(username) = LOWER($1)\n                     AND deleted_at IS NULL\n                     AND id <> $2\n               ) AS \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "522775c57fa7c33c49a87922cc341762f88ff841c3b85df8c3400365412517ef"
+}

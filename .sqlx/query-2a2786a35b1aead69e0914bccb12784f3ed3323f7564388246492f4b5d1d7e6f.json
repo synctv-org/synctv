@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO playlists (\n                   room_id, creator_id, name, parent_id, position,\n                   deleted_at, deletion_source\n               )\n               VALUES ($1, $2, 'retained-other-user-child', $3, 1.0, $4, 'user')\n               RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "playlists",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2a2786a35b1aead69e0914bccb12784f3ed3323f7564388246492f4b5d1d7e6f"
+}

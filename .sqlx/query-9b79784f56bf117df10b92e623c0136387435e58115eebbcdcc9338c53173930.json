@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id: MediaId\"\n         FROM media\n         WHERE room_id = $1\n           AND (\n               ($2::BIGINT IS NULL AND playlist_id IS NULL)\n               OR playlist_id = $2\n         )\n           AND deleted_at IS NULL\n         ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: MediaId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9b79784f56bf117df10b92e623c0136387435e58115eebbcdcc9338c53173930"
+}

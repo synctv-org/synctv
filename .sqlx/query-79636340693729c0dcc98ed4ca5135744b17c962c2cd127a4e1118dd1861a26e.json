@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH object AS (\n                   INSERT INTO file_objects (\n                       storage_backend, object_key, mime_type, size_bytes,\n                       content_manifest_sha256, metadata, validated_at\n                   )\n                   VALUES ('local', 'cleanup-user-avatar', 'image/png', 1,\n                           repeat('b', 64), '{}'::JSONB, CURRENT_TIMESTAMP)\n               )\n               INSERT INTO file_references (\n                   storage_backend, object_key, reference_kind, reference_id, metadata\n               )\n               VALUES ('local', 'cleanup-user-avatar', 'user_avatar', 'cleanup-user', '{}'::JSONB)\n               RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "file_references",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "79636340693729c0dcc98ed4ca5135744b17c962c2cd127a4e1118dd1861a26e"
+}

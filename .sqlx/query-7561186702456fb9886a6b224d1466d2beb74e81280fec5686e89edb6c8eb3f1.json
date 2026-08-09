@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*) AS \"count!\"\n            FROM chat_messages\n            WHERE room_id = $1\n              AND deletion_source IS DISTINCT FROM 'account'\n              AND status <> $2\n              AND (user_id IS NULL OR user_id <> $3)\n              AND created_at >= NOW() - INTERVAL '90 days'\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "7561186702456fb9886a6b224d1466d2beb74e81280fec5686e89edb6c8eb3f1"
+}

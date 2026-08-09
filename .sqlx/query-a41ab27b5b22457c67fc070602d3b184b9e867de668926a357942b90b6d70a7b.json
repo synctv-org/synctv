@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    SELECT id AS \"id: crate::models::RoomId\"\n                    FROM rooms\n                    WHERE id = $1\n                      AND deleted_at IS NOT NULL\n                      AND deletion_source = 'account'\n                      AND deleted_owner_id = $2\n                    FOR UPDATE\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: crate::models::RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a41ab27b5b22457c67fc070602d3b184b9e867de668926a357942b90b6d70a7b"
+}

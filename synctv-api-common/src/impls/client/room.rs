@@ -541,12 +541,29 @@ impl ClientApiImpl {
         let room_id = self.parse_room_id(&req.room_id)?;
         let room = self
             .room_service
-            .list_active_unbanned_rooms_by_ids(&[room_id])
+            .get_room(&room_id)
             .await
-            .map_err(ApiError::from)?
-            .into_iter()
-            .next()
-            .ok_or_else(|| ApiError::NotFound("Room not found".to_string()))?;
+            .map_err(ApiError::from)?;
+        if room.is_banned {
+            let is_member = self
+                .room_service
+                .member_service()
+                .is_member(&room_id, viewer_id)
+                .await
+                .map_err(ApiError::from)?;
+            let is_admin = self
+                .user_service
+                .get_user(viewer_id)
+                .await
+                .map_err(ApiError::from)?
+                .role
+                .is_admin_or_above();
+            if !is_member && !is_admin {
+                return Err(ApiError::NotFound("Room not found".to_string()));
+            }
+        } else if room.status.is_closed() {
+            return Err(ApiError::NotFound("Room not found".to_string()));
+        }
         self.rooms_to_discovery_items(vec![room], viewer_id, DiscoveryReadConsistency::Primary)
             .await?
             .into_iter()
@@ -732,25 +749,32 @@ impl ClientApiImpl {
             rooms.iter().map(|(room, _, _, _)| room.id).collect();
         let room_models: Vec<synctv_core::models::Room> =
             rooms.iter().map(|(room, _, _, _)| room.clone()).collect();
-        let (room_settings_map, presence_stats, creator_views, favorite_room_ids) = tokio::try_join!(
-            async {
-                self.room_service
-                    .get_room_settings_batch_eventually_consistent(&room_ids)
-                    .await
-                    .map_err(ApiError::from)
-            },
-            async {
-                self.presence_service
-                    .room_stats_batch(&room_ids)
-                    .await
-                    .map_err(ApiError::from)
-            },
-            self.load_room_creator_public_views(
-                &room_models,
-                DiscoveryReadConsistency::EventuallyConsistent,
-            ),
-            self.favorite_room_ids_for_viewer_eventually_consistent(Some(uid), &room_ids),
-        )?;
+        let (room_settings_map, presence_stats, availability_map, creator_views, favorite_room_ids) =
+            tokio::try_join!(
+                async {
+                    self.room_service
+                        .get_room_settings_batch_eventually_consistent(&room_ids)
+                        .await
+                        .map_err(ApiError::from)
+                },
+                async {
+                    self.presence_service
+                        .room_stats_batch(&room_ids)
+                        .await
+                        .map_err(ApiError::from)
+                },
+                async {
+                    self.room_service
+                        .room_availability_batch_eventually_consistent(&room_models)
+                        .await
+                        .map_err(ApiError::from)
+                },
+                self.load_room_creator_public_views(
+                    &room_models,
+                    DiscoveryReadConsistency::EventuallyConsistent,
+                ),
+                self.favorite_room_ids_for_viewer_eventually_consistent(Some(uid), &room_ids),
+            )?;
         let presence_by_room: HashMap<synctv_core::models::RoomId, _> = presence_stats
             .iter()
             .map(|stats| (stats.room_id, stats))
@@ -768,9 +792,11 @@ impl ClientApiImpl {
             .map(|((room, role, _status, member_count), creator)| {
                 let room_settings_map = &room_settings_map;
                 let presence_by_room = &presence_by_room;
+                let availability_map = &availability_map;
                 let favorite_room_ids = &favorite_room_ids;
                 async move {
                     let settings = required_room_settings(room_settings_map, &room.id)?;
+                    let availability = required_room_availability(availability_map, &room.id)?;
                     let permissions = self
                         .room_service
                         .permission_service()
@@ -786,7 +812,7 @@ impl ClientApiImpl {
                             &room,
                             Some(settings),
                             Some(member_count),
-                            synctv_core::service::ClientResourceAvailability::Available,
+                            availability,
                             presence_by_room.get(&room.id).copied(),
                             Some(creator),
                         )
@@ -1037,13 +1063,18 @@ impl ClientApiImpl {
             self.load_room_member_count(&rid),
             favorite,
         )?;
+        let availability = self
+            .room_service
+            .room_availability(&room)
+            .await
+            .map_err(ApiError::from)?;
 
         let proto_room = self
             .room_to_proto_with_availability_presence_and_loaded_cover(
                 &room,
                 Some(&settings),
                 member_count,
-                synctv_core::service::ClientResourceAvailability::Available,
+                availability,
                 Some(&presence),
                 None,
             )
@@ -3108,6 +3139,176 @@ mod tests {
             .is_room_favorited_by_user(&member.id, &room.id)
             .await
             .map_err(|error| test_error(error.to_string()))?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn banned_room_remains_visible_to_members_and_rejects_entry() -> TestResult {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let user_service =
+            std::sync::Arc::new(synctv_core_testing::create_test_user_service(pool.clone()));
+        let owner = create_user(&pool, "banned_room_visible_owner").await?;
+        let member = create_user(&pool, "banned_room_visible_member").await?;
+        let outsider = create_user(&pool, "banned_room_visible_outsider").await?;
+        let api = test_client_api(pool, user_service);
+        let (room, _) = api_ok(
+            api.room_service
+                .create_room(
+                    "Banned room remains visible".to_string(),
+                    String::new(),
+                    owner.id,
+                    None,
+                    None,
+                )
+                .await
+                .map_err(crate::impls::ApiError::from),
+        )?;
+        api_ok(
+            api.room_service
+                .add_member(room.id, owner.id, member.id, RoomRole::Member, false)
+                .await
+                .map_err(crate::impls::ApiError::from),
+        )?;
+        api_ok(
+            api.room_service
+                .ban_room(&room.id, &owner.id)
+                .await
+                .map_err(crate::impls::ApiError::from),
+        )?;
+        let room_id = codec_ok(api.public_id_codec.encode_room_id(room.id))?;
+
+        let my_rooms = api_ok(
+            api.list_my_rooms(
+                &member.id,
+                synctv_proto::client::ListMyRoomsRequest::default(),
+            )
+            .await,
+        )?;
+        assert_eq!(my_rooms.total, 1);
+        let listed_room = my_rooms.rooms[0]
+            .room
+            .as_ref()
+            .ok_or_else(|| test_error("my room response should include the room"))?;
+        assert!(listed_room.is_banned);
+        assert_eq!(
+            listed_room.availability,
+            synctv_proto::client::ResourceAvailability::CreatorInactive as i32
+        );
+
+        let room_detail = api_ok(api.get_room(&member.id, &room_id).await)?;
+        let detail_room = room_detail
+            .room
+            .as_ref()
+            .ok_or_else(|| test_error("room detail should include the room"))?;
+        assert_eq!(
+            detail_room.availability,
+            synctv_proto::client::ResourceAvailability::CreatorInactive as i32
+        );
+
+        let discovery_request = synctv_proto::client::GetRoomDiscoveryRequest {
+            room_id: room_id.clone(),
+        };
+        let discovery = api_ok(
+            api.get_room_discovery(&member.id, discovery_request.clone())
+                .await,
+        )?;
+        assert!(discovery.joined);
+        assert!(!discovery.can_join);
+        assert_eq!(
+            discovery.access,
+            synctv_proto::client::RoomDiscoveryAccess::Unavailable as i32
+        );
+
+        let outsider_error = api_err(
+            api.get_room_discovery(&outsider.id, discovery_request.clone())
+                .await,
+        )?;
+        assert!(matches!(
+            outsider_error,
+            crate::impls::ApiError::NotFound(_)
+        ));
+        let public_error = api_err(api.get_public_room_discovery(discovery_request).await)?;
+        assert!(matches!(public_error, crate::impls::ApiError::NotFound(_)));
+
+        let ticket_error = api_err(
+            api.create_websocket_ticket_with_control(
+                &member.id,
+                0,
+                synctv_proto::client::CreateWebSocketTicketRequest {
+                    room_id: room_id.clone(),
+                },
+                None,
+            )
+            .await,
+        )?;
+        assert!(matches!(
+            ticket_error,
+            crate::impls::ApiError::Authorization(ref message) if message.contains("banned")
+        ));
+
+        let leave = api_ok(api.leave_room(&member.id, &room_id).await)?;
+        assert!(leave.success);
+        let deleted = api_ok(api.delete_room(&owner.id, &room_id).await)?;
+        assert!(deleted.success);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn room_with_banned_creator_remains_in_member_list_as_unavailable() -> TestResult {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let user_service =
+            std::sync::Arc::new(synctv_core_testing::create_test_user_service(pool.clone()));
+        let owner = create_user(&pool, "banned_creator_visible_owner").await?;
+        let member = create_user(&pool, "banned_creator_visible_member").await?;
+        let api = test_client_api(pool, user_service);
+        let (room, _) = api_ok(
+            api.room_service
+                .create_room(
+                    "Banned creator room remains visible".to_string(),
+                    String::new(),
+                    owner.id,
+                    None,
+                    None,
+                )
+                .await
+                .map_err(crate::impls::ApiError::from),
+        )?;
+        api_ok(
+            api.room_service
+                .add_member(room.id, owner.id, member.id, RoomRole::Member, false)
+                .await
+                .map_err(crate::impls::ApiError::from),
+        )?;
+        api_ok(
+            api.user_service
+                .ban_user(
+                    &owner.id,
+                    Some(&member.id),
+                    Some("creator lifecycle test".to_string()),
+                )
+                .await
+                .map_err(crate::impls::ApiError::from),
+        )?;
+
+        let my_rooms = api_ok(
+            api.list_my_rooms(
+                &member.id,
+                synctv_proto::client::ListMyRoomsRequest::default(),
+            )
+            .await,
+        )?;
+        assert_eq!(my_rooms.total, 1);
+        let listed_room = my_rooms.rooms[0]
+            .room
+            .as_ref()
+            .ok_or_else(|| test_error("my room response should include the room"))?;
+        assert!(!listed_room.is_banned);
+        assert_eq!(
+            listed_room.availability,
+            synctv_proto::client::ResourceAvailability::CreatorInactive as i32
+        );
         Ok(())
     }
 

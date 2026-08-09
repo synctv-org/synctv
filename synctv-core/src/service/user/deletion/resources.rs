@@ -1,19 +1,33 @@
 use std::collections::{HashMap, HashSet};
 
+use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
 
 use crate::{
-    models::{MediaId, PlaylistId, RoomId, UserId},
+    models::{ChatMessageType, MediaId, PlaylistId, RoomId, UserId},
     repository::{realtime_outbox::NewRealtimeOutboxEvent, RoomMemberRepository},
     Result,
 };
 
-use super::{UserDeletedRoomImpact, UserDeletionCleanup, UserDeletionCleanupStats, UserService};
+use super::{
+    UserDeletedChatMessage, UserDeletedRoomImpact, UserDeletionCleanup, UserDeletionCleanupStats,
+    UserService,
+};
 
 #[derive(Debug, Default)]
 pub(super) struct UserOwnedRoomEntries {
     pub(super) playlist_ids: Vec<PlaylistId>,
     pub(super) media_ids: Vec<MediaId>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct AccountDeletedChatMessageRow {
+    id: i64,
+    room_id: RoomId,
+    message_type: ChatMessageType,
+    version: i64,
+    created_at: DateTime<Utc>,
+    deleted_at: Option<DateTime<Utc>>,
 }
 
 impl UserService {
@@ -93,6 +107,7 @@ impl UserService {
              FROM playlists p
              JOIN rooms r ON r.id = p.room_id
              WHERE p.creator_id = $1
+               AND p.deleted_at IS NULL
                AND r.deleted_at IS NULL
              ORDER BY p.room_id, p.id"#,
             user_id.as_i64(),
@@ -117,6 +132,7 @@ impl UserService {
              FROM media m
              JOIN rooms r ON r.id = m.room_id
              WHERE m.creator_id = $1
+               AND m.deleted_at IS NULL
                AND r.deleted_at IS NULL
              ORDER BY m.room_id, m.id"#,
             user_id.as_i64(),
@@ -148,6 +164,7 @@ impl UserService {
         UserDeletionCleanup,
         Vec<RoomId>,
         Vec<RoomId>,
+        Vec<UserDeletedChatMessage>,
         Vec<UserDeletedRoomImpact>,
     )> {
         let owned_room_ids = self.query_owned_room_ids_in_tx(user_id, tx).await?;
@@ -176,6 +193,7 @@ impl UserService {
                 deleted_playlists += entries.playlist_ids.len();
                 let impact = self
                     .delete_owned_entries_in_room_in_tx(
+                        user_id,
                         &room_id,
                         entries.playlist_ids.clone(),
                         entries.media_ids.clone(),
@@ -196,7 +214,58 @@ impl UserService {
 
             for room_id in &owned_room_ids {
                 let impact =
-                    crate::service::soft_delete_room_and_cleanup_in_tx(tx, room_id).await?;
+                    crate::service::soft_delete_room_and_cleanup_in_tx(tx, room_id, "account")
+                        .await?;
+                sqlx::query!(
+                    "UPDATE rooms SET deletion_source = 'account', deleted_owner_id = $2 WHERE id = $1",
+                    room_id.as_i64(),
+                    user_id.as_i64(),
+                )
+                .execute(&mut **tx)
+                .await?;
+                let playlist_id_strs: Vec<i64> = impact
+                    .deleted_playlist_ids
+                    .iter()
+                    .map(PlaylistId::as_i64)
+                    .collect();
+                if !playlist_id_strs.is_empty() {
+                    sqlx::query!(
+                        "UPDATE playlists SET deletion_source = 'account', deleted_owner_id = $2 WHERE id = ANY($1) AND deleted_at IS NOT NULL",
+                        &playlist_id_strs,
+                        user_id.as_i64(),
+                    )
+                    .execute(&mut **tx)
+                    .await?;
+                }
+                let media_id_strs: Vec<i64> = impact
+                    .deleted_media_ids
+                    .iter()
+                    .map(MediaId::as_i64)
+                    .collect();
+                if !media_id_strs.is_empty() {
+                    sqlx::query!(
+                        "UPDATE media SET deletion_source = 'account', deleted_owner_id = $2 WHERE id = ANY($1) AND deleted_at IS NOT NULL",
+                        &media_id_strs,
+                        user_id.as_i64(),
+                    )
+                    .execute(&mut **tx)
+                    .await?;
+                }
+                if impact.chat_deleted > 0 {
+                    let Some(deletion_timestamp) = impact.deletion_timestamp else {
+                        return Err(crate::Error::Internal(
+                            "room deletion did not return a deletion timestamp".to_string(),
+                        ));
+                    };
+                    sqlx::query!(
+                        "UPDATE chat_messages SET deletion_source = 'account', deleted_owner_id = $2 WHERE room_id = $1 AND deleted_at = $3 AND deletion_source = 'room' AND deleted_owner_id IS NULL",
+                        room_id.as_i64(),
+                        user_id.as_i64(),
+                        deletion_timestamp,
+                    )
+                    .execute(&mut **tx)
+                    .await?;
+                }
                 self.insert_deleted_room_outbox_tx(tx, room_id, deleted_room_outbox_events)
                     .await?;
                 deleted_playlists += impact.deleted_playlist_ids.len();
@@ -208,7 +277,7 @@ impl UserService {
             }
 
             let oauth_mappings_deleted = sqlx::query!(
-                "DELETE FROM auth_oauth2_identities WHERE user_id = $1",
+                "UPDATE auth_oauth2_identities SET deleted_at = CURRENT_TIMESTAMP, deletion_source = 'account' WHERE user_id = $1 AND deleted_at IS NULL",
                 user_id.as_i64(),
             )
             .execute(&mut **tx)
@@ -223,27 +292,18 @@ impl UserService {
             .await?
             .rows_affected();
 
+            let email_bind_requests_deleted = self
+                .email_bind_repository
+                .delete_unused_for_user_with_executor(user_id, &mut **tx)
+                .await?;
+
             let email_identities_deleted = sqlx::query!(
-                "DELETE FROM auth_email_identities WHERE user_id = $1",
+                "UPDATE auth_email_identities SET deleted_at = CURRENT_TIMESTAMP, deletion_source = 'account', updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 AND deleted_at IS NULL",
                 user_id.as_i64(),
             )
             .execute(&mut **tx)
             .await?
             .rows_affected();
-
-            sqlx::query!(
-                "DELETE FROM auth_password_credentials WHERE user_id = $1",
-                user_id.as_i64(),
-            )
-            .execute(&mut **tx)
-            .await?;
-
-            sqlx::query!(
-                "DELETE FROM auth_webauthn_credentials WHERE user_id = $1",
-                user_id.as_i64(),
-            )
-            .execute(&mut **tx)
-            .await?;
 
             let provider_credentials_deleted = sqlx::query!(
                 "DELETE FROM user_media_provider_credentials WHERE user_id = $1",
@@ -290,13 +350,43 @@ impl UserService {
             .await?
             .rows_affected();
 
-            let chat_messages_anonymized = sqlx::query!(
-                "UPDATE chat_messages SET user_id = NULL WHERE user_id = $1",
-                user_id.as_i64(),
+            // Messages authored in surviving rooms belong to the account
+            // recovery aggregate as well. Keep their body and author for
+            // restoration, while account-level visibility filters hide them
+            // until the account is restored or permanently purged.
+            let deleted_chat_messages = sqlx::query_as::<_, AccountDeletedChatMessageRow>(
+                r"
+                UPDATE chat_messages
+                SET deleted_at = CURRENT_TIMESTAMP,
+                    deletion_source = 'account',
+                    deleted_owner_id = $1,
+                    version = version + 1
+                WHERE user_id = $1
+                  AND deleted_at IS NULL
+                RETURNING id, room_id, message_type, version, created_at, deleted_at
+                ",
             )
-            .execute(&mut **tx)
+            .bind(user_id.as_i64())
+            .fetch_all(&mut **tx)
             .await?
-            .rows_affected();
+            .into_iter()
+            .map(|row| {
+                let deleted_at = row.deleted_at.ok_or_else(|| {
+                    crate::Error::Internal(
+                        "account-deleted chat message did not return deleted_at".to_string(),
+                    )
+                })?;
+                Ok(UserDeletedChatMessage {
+                    room_id: row.room_id,
+                    message_id: row.id,
+                    message_created_at: row.created_at,
+                    message_type: row.message_type,
+                    version: row.version,
+                    deleted_at,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+            let chat_messages_soft_deleted = deleted_chat_messages.len() as u64;
 
             let room_member_repo = RoomMemberRepository::new(self.repository.pool().clone());
             let (user_memberships_removed, permission_fences) = self
@@ -308,11 +398,13 @@ impl UserService {
             Ok((
                 oauth_mappings_deleted,
                 email_tokens_deleted,
+                email_bind_requests_deleted,
                 email_identities_deleted,
                 provider_credentials_deleted,
                 notifications_deleted,
                 ban_actor_references_cleared,
-                chat_messages_anonymized,
+                chat_messages_soft_deleted,
+                deleted_chat_messages,
                 memberships_removed,
             ))
         }
@@ -321,11 +413,13 @@ impl UserService {
         let (
             oauth_mappings_deleted,
             email_tokens_deleted,
+            email_bind_requests_deleted,
             email_identities_deleted,
             provider_credentials_deleted,
             notifications_deleted,
             ban_actor_references_cleared,
-            chat_messages_anonymized,
+            chat_messages_soft_deleted,
+            deleted_chat_messages,
             memberships_removed,
         ) = match cleanup_result {
             Ok(cleanup) => cleanup,
@@ -344,10 +438,11 @@ impl UserService {
                     oauth_mappings_deleted,
                     email_identities_deleted,
                     email_tokens_deleted,
+                    email_bind_requests_deleted,
                     provider_credentials_deleted,
                     notifications_deleted,
                     ban_actor_references_cleared,
-                    chat_messages_anonymized,
+                    chat_messages_soft_deleted,
                     memberships_removed: memberships_removed_count,
                     deleted_rooms: owned_room_ids.len(),
                     deleted_playlists,
@@ -359,6 +454,7 @@ impl UserService {
             },
             owned_room_ids,
             membership_room_ids,
+            deleted_chat_messages,
             modified_rooms,
         ))
     }

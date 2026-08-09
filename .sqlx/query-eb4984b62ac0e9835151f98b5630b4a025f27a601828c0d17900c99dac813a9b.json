@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM playlists WHERE id = ANY($1) AND deletion_source = 'user'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eb4984b62ac0e9835151f98b5630b4a025f27a601828c0d17900c99dac813a9b"
+}

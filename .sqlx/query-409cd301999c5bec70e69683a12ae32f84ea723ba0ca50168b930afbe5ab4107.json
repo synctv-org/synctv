@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id: UserId\"\n               FROM users\n               WHERE LOWER(username) = LOWER($1)\n                 AND deleted_at IS NOT NULL\n               ORDER BY deleted_at DESC\n               LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "409cd301999c5bec70e69683a12ae32f84ea723ba0ca50168b930afbe5ab4107"
+}

@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO media (\n                   playlist_id, room_id, creator_id, name, position,\n                   source_provider, source_config, cover_file_reference_id,\n                   deleted_at, deletion_source\n               )\n               VALUES ($1, $2, $3, 'expired-media', 1.0, 1, '{}'::JSONB, $4, $5, 'user')\n               RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6621dfd1df429630c999369ba4d6815ef0ba7241239a7c00a46ec1ac08911530"
+}

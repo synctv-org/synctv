@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE user_registration_requests SET reviewed_by = NULL WHERE reviewed_by = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "de7bb63175b5afd97f5c21b899a743fb98652eb616d67ff9adef0d40f9ce5df5"
+}

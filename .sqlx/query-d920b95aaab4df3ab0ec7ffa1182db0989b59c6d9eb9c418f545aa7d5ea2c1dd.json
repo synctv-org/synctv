@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO room_resource_events (\n                event_id, scope_type, room_id, aggregate_type, aggregate_id,\n                resource_type, resource_id, event_type, event_version,\n                payload, summary, occurred_at\n            ) VALUES ($1, 1, $2, 'room', $3, 'room', $3, 'room_deleted', 1,\n                      NULL, '{}'::JSONB, CURRENT_TIMESTAMP)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d920b95aaab4df3ab0ec7ffa1182db0989b59c6d9eb9c418f545aa7d5ea2c1dd"
+}

@@ -20,17 +20,15 @@ impl RoomService {
     /// (default: 90 days). Permanent purge uses the same explicit cleanup path
     /// as normal room deletion before removing the room row itself.
     ///
-    /// **Soft-delete lifecycle (optimized):**
-    /// 1. This method sets `rooms.deleted_at = NOW()` (room becomes invisible to queries)
-    /// 2. IMMEDIATELY deletes non-critical related data to free storage:
-    /// - playlists and nested media via explicit subtree cleanup
-    /// - `room_members`
-    /// - `room_settings`
-    /// - `room_playback_state`
-    /// - `chat_messages`
-    /// 3. Preserves only the room row (for audit) and `audit_logs` entries
-    /// 4. `CleanupService::purge_soft_deleted_rooms()` eventually purges the room row
-    ///    after `room_soft_delete_retention_days` (default: 90 days)
+    /// **Soft-delete lifecycle:**
+    /// 1. This method sets `rooms.deleted_at = NOW()` (the room becomes invisible to normal queries).
+    /// 2. Related playlists, media, and chat messages receive the same deletion timestamp and
+    ///    a `room` deletion source, so the complete aggregate remains recoverable during the
+    ///    room retention window.
+    /// 3. Membership access is revoked immediately and playback state is reset. Room settings
+    ///    remain attached to the recoverable room row.
+    /// 4. `CleanupService::purge_soft_deleted_rooms()` performs dependency-aware hard deletion
+    ///    after `room_soft_delete_retention_days` (default: 90 days).
     ///
     /// Authorization model:
     /// - room creator can delete their own room
@@ -74,7 +72,7 @@ impl RoomService {
         let guard =
             PermissionFenceGuard::reserve(Arc::new(self.clone()), &room_id, &mut tx).await?;
 
-        let impact = match soft_delete_room_and_cleanup_in_tx(&mut tx, &room_id).await {
+        let impact = match soft_delete_room_and_cleanup_in_tx(&mut tx, &room_id, "user").await {
             Ok(impact) => impact,
             Err(error) => {
                 guard.abort().await;
@@ -120,7 +118,7 @@ impl RoomService {
             members_deleted = impact.members_deleted,
             settings_deleted = impact.settings_deleted,
             chat_deleted = impact.chat_deleted,
-            "Room soft-deleted with immediate cleanup of related data (room row preserved for audit, will be purged by CleanupService after retention period)"
+            "Room aggregate soft-deleted; related resources are hidden and retained for recovery until the cleanup retention window expires"
         );
 
         // Track room metrics

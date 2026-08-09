@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH object AS (\n                   INSERT INTO file_objects (\n                       storage_backend, object_key, mime_type, size_bytes,\n                       content_manifest_sha256, metadata, validated_at\n                   )\n                   VALUES ('test-storage', $1, 'image/webp', 1,\n                           repeat('c', 64), '{}'::JSONB, CURRENT_TIMESTAMP)\n               )\n               INSERT INTO file_references (\n                   storage_backend, object_key, reference_kind, reference_id, metadata\n               )\n               VALUES ('test-storage', $1, $2, $3, '{}'::JSONB)\n               RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "file_references",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "981ccf2c75db220ea14a6631da8469ffd38c545bdcaeb78d90b09252f6bd52ce"
+}

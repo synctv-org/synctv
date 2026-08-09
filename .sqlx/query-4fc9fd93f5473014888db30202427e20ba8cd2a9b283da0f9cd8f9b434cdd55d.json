@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT position\n            FROM playlists\n            WHERE room_id = $1\n              AND deleted_at IS NULL\n              AND parent_id IS NOT DISTINCT FROM $2\n              AND id <> $3\n              AND (\n                    position > $4\n                 OR (position = $4 AND id > $5)\n              )\n            ORDER BY position ASC, id ASC\n            LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "position",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "playlists",
+            "name": "position"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Float8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4fc9fd93f5473014888db30202427e20ba8cd2a9b283da0f9cd8f9b434cdd55d"
+}

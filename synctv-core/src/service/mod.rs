@@ -279,8 +279,9 @@ pub use user::{
     OpaqueRegistrationSessionStore, OpaqueRegistrationStartChallenge, PendingAccountRegistration,
     RefreshRateLimitConfig, RegistrationMode, RegistrationPolicy, SensitiveVerificationChallenge,
     SensitiveVerificationOutcome, SensitiveVerificationSession, SensitiveVerificationSessionStore,
-    TotpRecoveryCodes, TotpSetup, UserDeletedRoomImpact, UserDeletionSummary, UserService,
-    UserServiceDependencies, UserServiceRuntimeOptions,
+    TotpRecoveryCodes, TotpSetup, UserDeletedChatMessage, UserDeletedRoomImpact,
+    UserDeletionOptions, UserDeletionSource, UserDeletionSummary, UserRestoreOptions,
+    UserRestoreResult, UserService, UserServiceDependencies, UserServiceRuntimeOptions,
 };
 pub use user::{
     InMemoryLoginSessionStore, InMemoryMfaSessionStore, InMemoryOpaqueRegistrationSessionStore,

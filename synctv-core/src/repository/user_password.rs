@@ -308,7 +308,7 @@ impl UserPasswordRepository {
             FROM user_account_profiles u
             LEFT JOIN auth_password_credentials apc ON apc.user_id = u.id
             JOIN auth_email_identities aei ON aei.user_id = u.id
-            WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL
+            WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL AND aei.deleted_at IS NULL
             "#,
             email
         )

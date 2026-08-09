@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE file_references fr SET expires_at = COALESCE(fr.expires_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP FROM playlists p WHERE p.id = ANY($1) AND fr.id = p.cover_file_reference_id AND fr.released_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b45b85963439c0f48d8947939b0a84ec51cc5c26869f48725b5f3e97390d10a1"
+}

@@ -159,7 +159,10 @@ impl std::fmt::Debug for UserService {
 mod avatar;
 mod constructor;
 mod deletion;
-pub use deletion::{UserDeletedRoomImpact, UserDeletionSummary};
+pub use deletion::{
+    UserDeletedChatMessage, UserDeletedRoomImpact, UserDeletionOptions, UserDeletionSource,
+    UserDeletionSummary,
+};
 mod identity_bindings;
 mod identity_policy;
 mod login;
@@ -167,6 +170,8 @@ mod lookup;
 mod oauth2_users;
 mod password_credentials;
 mod profile;
+mod recovery;
+pub use recovery::{UserRestoreOptions, UserRestoreResult};
 mod registration_auth;
 mod registration_review;
 mod registration_types;

@@ -1,0 +1,196 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT u.id AS \"id!: UserId\",\n                   u.username AS \"username!\",\n                   u.signup_method AS \"signup_method!: SignupMethod\",\n                   u.role AS \"role!: UserRole\",\n                   u.avatar_file_reference_id,\n                   u.status AS \"status!: UserStatus\",\n                   u.is_banned AS \"is_banned!\",\n                   u.banned_at,\n                   u.banned_by AS \"banned_by?: UserId\",\n                   u.banned_reason,\n                   u.created_at AS \"created_at!\",\n                   u.updated_at AS \"updated_at!\",\n                   u.version AS \"version!\",\n                   u.deleted_at,\n                   aei.email\n            FROM user_account_profiles u\n            LEFT JOIN auth_email_identities aei ON aei.user_id = u.id AND aei.deleted_at IS NULL\n            WHERE u.id = $1 AND u.deleted_at IS NULL\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "user_account_profiles",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "username!",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "user_account_profiles",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "signup_method!: SignupMethod",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "user_account_profiles",
+            "name": "signup_method"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "role!: UserRole",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "user_account_profiles",
+            "name": "role"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "avatar_file_reference_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "user_account_profiles",
+            "name": "avatar_file_reference_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "status!: UserStatus",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "user_account_profiles",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "is_banned!",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "user_account_profiles",
+            "name": "is_banned"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "banned_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_account_profiles",
+            "name": "banned_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "banned_by?: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "user_account_profiles",
+            "name": "banned_by"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "banned_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_account_profiles",
+            "name": "banned_reason"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_account_profiles",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "updated_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_account_profiles",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "version!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "user_account_profiles",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "deleted_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_account_profiles",
+            "name": "deleted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "email",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "auth_email_identities",
+            "name": "email"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "f44880772d2a8923827cae475264d32492ebc8784488d7cfe93053b11deca7fe"
+}

@@ -86,7 +86,7 @@ impl AdminApiImpl {
 
         let updated = self
             .user_service
-            .ban_user_and_cleanup_memberships(
+            .ban_user(
                 target_user_id,
                 (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id),
                 reason,

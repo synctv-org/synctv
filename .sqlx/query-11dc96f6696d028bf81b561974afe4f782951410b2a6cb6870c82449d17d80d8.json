@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT provider_user_id FROM auth_oauth2_identities ORDER BY provider_user_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "provider_user_id",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "auth_oauth2_identities",
+            "name": "provider_user_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "11dc96f6696d028bf81b561974afe4f782951410b2a6cb6870c82449d17d80d8"
+}

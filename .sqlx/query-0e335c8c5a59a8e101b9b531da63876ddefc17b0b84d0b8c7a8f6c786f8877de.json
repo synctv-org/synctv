@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM room_playback_progress WHERE media_id = ANY($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0e335c8c5a59a8e101b9b531da63876ddefc17b0b84d0b8c7a8f6c786f8877de"
+}

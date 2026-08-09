@@ -617,6 +617,20 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
             )?;
             args.remote.print_output(&response)
         }
+        RoomSubcommand::Bans(command) => match command.command {
+            RoomBansSubcommand::List(args) => {
+                super::ban::execute_ban_records_list(
+                    &args.remote,
+                    synctv_proto::admin::BanTargetType::Room as i32,
+                    args.active,
+                    String::new(),
+                    args.room_id.unwrap_or_default(),
+                    args.page,
+                    args.page_size,
+                )
+                .await
+            }
+        },
         RoomSubcommand::Delete(args) => {
             let session = connect_remote_access(&args.remote).await?;
             let response = management_unary_call!(

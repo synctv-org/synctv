@@ -102,8 +102,6 @@ pub enum Commands {
     Room(RoomCommand),
     /// Review workflow operations
     Review(ReviewCommand),
-    /// Moderation ban record operations
-    Ban(BanCommand),
     /// Playlist lifecycle operations within a room
     Playlist(PlaylistCommand),
     /// Media lifecycle operations within a room

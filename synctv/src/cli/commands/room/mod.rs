@@ -62,6 +62,8 @@ pub enum RoomSubcommand {
     Ban(RoomBanArgs),
     /// Unban a room
     Unban(RoomUnbanArgs),
+    /// Inspect room ban records
+    Bans(RoomBansCommand),
     /// Delete a room
     Delete(RoomDeleteArgs),
 }
@@ -145,6 +147,38 @@ impl RoomTransferTargetUserArgs {
 pub struct RoomFavoriteCommand {
     #[command(subcommand)]
     pub command: RoomFavoriteSubcommand,
+}
+
+#[derive(Debug, Args)]
+pub struct RoomBansCommand {
+    #[command(subcommand)]
+    pub command: RoomBansSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RoomBansSubcommand {
+    /// List room ban records
+    List(RoomBansListArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct RoomBansListArgs {
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+
+    /// Filter by active or inactive records
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub active: Option<bool>,
+
+    /// Filter by public room ID
+    #[arg(long, allow_hyphen_values = true)]
+    pub room_id: Option<String>,
+
+    #[arg(long, default_value_t = 1)]
+    pub page: i32,
+
+    #[arg(long, default_value_t = 50)]
+    pub page_size: i32,
 }
 
 #[derive(Debug, Subcommand)]

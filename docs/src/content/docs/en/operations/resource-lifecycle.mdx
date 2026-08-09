@@ -1,0 +1,152 @@
+---
+title: Resource Lifecycle
+description: How bans, soft deletion, recovery, and permanent cleanup apply to users, rooms, and related resources.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+This page is the lifecycle contract implemented today. It describes observable states, cascade scope, recovery boundaries, and cleanup ordering for administrators and operators. Retention settings and the absolute chat retention cap are listed in [Data, Privacy, and Retention](../data-retention/).
+
+## Lifecycle States
+
+| State | Access and visibility | Data behavior | Recovery |
+| --- | --- | --- | --- |
+| Active | Normally visible and usable | Normal queries return the row | Normal product operations |
+| `banned` | Request guards, sign-in, room creation, room join, or room access checks deny the operation | Account, membership, media, playlists, and chat remain intact | `unban` revokes the active ban |
+| Soft-deleted | Hidden from normal queries and resource lists; the security pipeline rejects existing tokens | The transaction writes `deleted_at`; dependent rows keep lifecycle metadata | The user aggregate can be restored during retention |
+| Permanently purged | Rows, relationships, and file references are removed | Cleanup performs hard deletion under locks and dependency ordering | Database or backup recovery procedures |
+
+A ban is an access-control state. Deletion is a data-lifecycle state. Both states can exist together, so choose the action that matches the incident or data-termination goal.
+
+## Deletion Sources
+
+`deletion_source` is a business-level `SMALLINT` code. The database stores the number and retains historical `NULL` values:
+
+| Code | Meaning | Typical case |
+| --- | --- | --- |
+| `1` `Account` | Account aggregate deletion | User closure or an administrator deleting a user and its cascade |
+| `2` `Admin` | Direct administrator deletion | An administrator directly deletes a user or room |
+| `3` `System` | System-task deletion | A system policy or background workflow |
+| `4` `Room` | Room aggregate deletion | Room deletion cascades to playlists, media, and chat |
+| `5` `User` | Direct user or member resource deletion | A single media, playlist, or chat message is deleted |
+| `NULL` | `unknown` | Historical data lacks source metadata |
+
+The database does not parse the business enum or depend on a source `CHECK`. Cleanup selects known sources explicitly. `NULL` rows follow the historical-data path and require an operator to correlate audit evidence.
+
+`deleted_owner_id` is the account-aggregate key. It binds resources created in the user's rooms and in other rooms to the same account recovery or permanent cleanup, without inferring ownership from the containing room.
+
+## Ban Lifecycle
+
+User and room bans are independent records. A record is active when `revoked_at IS NULL` and the current time falls within the `starts_at` and `ends_at` window.
+
+| Target | Effect | `unban` behavior | Data cleanup |
+| --- | --- | --- | --- |
+| User | Denies sign-in, room creation, and room join; realtime connections are invalidated | Revokes the active record while keeping the account and membership graph | The user's ban history is removed during permanent account cleanup; audit events remain |
+| Room | Denies room entry and use; realtime connections are invalidated | Revokes the active record while keeping room resources | Room ban records are removed during permanent room cleanup |
+
+Ban records retain the actor, reason, start, end, and revocation details. When a deleted user was an actor, the lifecycle transaction sets the actor foreign key to `NULL` while retaining the audit subject and reason.
+
+## User Deletion Transaction
+
+Account closure and administrator user deletion process cleanup and the user soft delete in one database transaction. The user row records the selected operation source; account-related rows use `Account` and `deleted_owner_id`.
+
+The transaction performs these steps:
+
+1. Lock the user and collect active owned rooms, plus the user's playlists and media in other rooms.
+2. Soft-delete the user's playlists, media, and chat messages in surviving rooms. Playback resets when the current state references a deleted resource.
+3. Soft-delete owned rooms. Memberships are removed immediately, playback state is cleared immediately, and room settings remain in the recoverable room aggregate.
+4. Mark all account email/OAuth2 identities as `Account` soft-deleted and release their email and Provider-subject slots from active unique indexes.
+5. Immediately delete email tokens, email bind requests, Provider credentials, and notifications that are short-lived or secret-bearing.
+6. Keep the body and author of account-owned chat in surviving rooms for recovery while normal message queries hide those rows. Chat in an owned room joins the same account aggregate.
+7. Remove all memberships, clear deleted-user actor references from ban records, and commit cache, permission, and realtime invalidation.
+
+Failures before commit roll back the whole operation. Post-commit cache or realtime notification failures are logged and converge through later invalidation or retry paths.
+
+## Resource Cascade Matrix
+
+| Resource | User deletion | Room deletion | Permanent cleanup |
+| --- | --- | --- | --- |
+| User row | `deleted_at`, source, reason, and operator | N/A | Hard-deleted after the user retention window |
+| Owned rooms | `Account` + `deleted_owner_id`; memberships removed | Source is `User` or `Admin` | Room and account windows are coordinated; account purge cleans owned rooms in one transaction |
+| User playlists and media in other rooms | `Account` + `deleted_owner_id`; hidden from normal lists | Keeps the room's own source | Removed during permanent account cleanup |
+| Directly deleted playlists and media | Soft-deleted with `User` | Soft-deleted with `Room` | Purged after resource retention, leaf playlists before parents, file references first expired |
+| Chat messages | Account messages use `Account` and keep the body; single-message delete clears the body and uses `User` | Soft-deleted with `Room` and hidden | The resource window or absolute chat cap, whichever comes first, hard-deletes them |
+| Email/OAuth2 identity | `Account` soft delete releases active unique slots; explicit unbind uses `User` | N/A | `User` rows are purged by the resource window; account purge removes remaining identities |
+| Tokens, bind requests, Provider credentials, notifications | Deleted immediately | Room runtime state follows room cleanup | Dedicated short-lived cleanup jobs |
+| Audit logs | Subject, action, and reason remain; deleted actors become `NULL` | Delete and ban audits remain | Managed by audit partition retention |
+| File objects | References expire when business rows are purged | Same rule | Storage cleanup removes objects with no active reference after object retention |
+
+When a resource already has a soft-delete state, a cascade updates active rows only. The account cascade records ownership with `deleted_owner_id`; recovery matches the `Account` source written by that deletion and preserves an earlier `User` or `Room` deletion fact.
+
+## User Recovery
+
+Recovery must happen before the user and its aggregate are permanently purged. The recovery transaction locks the user and candidate identities, restores the user row, owned rooms, and Creator membership, and restores playlists, media, and chat with `Account` source.
+
+Recovery rules:
+
+- The original username, email, and OAuth2 identity must be available. Any occupied identity returns a conflict and rolls back the recovery transaction.
+- `--ignore-identity-conflicts` restores the account and resources. An occupied username becomes `restored_<user_id>`; conflicting email/OAuth2 identities stay released; the response reports `released_identities` for audit.
+- An identity explicitly unbound by the user carries `User` and remains released after account recovery.
+- Media, playlists, and individual chat messages explicitly deleted by the user remain deleted.
+- Former memberships are not automatically recreated. The restored user becomes Creator of owned rooms; other members return through the normal join flow.
+- Recovery records `restored_at` and `restored_by`, then refreshes permissions, caches, and realtime state for affected rooms.
+
+<Aside type="caution">
+  `ignore_identity_conflicts` changes the username and releases conflicting identities. Use it after recording the conflict and review the bindings manually. The absolute chat retention cap can remove messages before the account recovery window, so configure the message window to cover the messages that must remain recoverable.
+</Aside>
+
+The management plane currently exposes user recovery. There is no general standalone restore command for an independently deleted room, media item, playlist, or chat message; those resources recover through the account aggregate or database backups.
+
+## Room Lifecycle
+
+Room deletion writes `rooms.deleted_at` with `User` or `Admin` source and soft-deletes room playlists, media, and chat in the same transaction. Memberships, playback state, and realtime permissions are invalidated immediately; settings and resource rows remain during the recovery window.
+
+Room bans change access control while leaving the room available for administrator query, unban, and audit. Permanent room cleanup expires references, removes media, playlists, memberships, settings, resource events, chat, and ban records in dependency order, then deletes the room row. Account-owned rooms also wait for the account retention window so recovery never returns a partial room aggregate.
+
+## Background Cleanup
+
+The default soft-delete retention is 90 days. `0` disables the matching permanent cleanup:
+
+| Setting | Default | Scope |
+| --- | --- | --- |
+| `soft_delete_retention_days` | `90` | User permanent cleanup and account aggregate finalization |
+| `room_soft_delete_retention_days` | `90` | Independently deleted rooms |
+| `resource_soft_delete_retention_days` | `90` | `User` media, playlists, chat, email, and OAuth2 identities |
+| `chat.message_retention_days` | `90` | Absolute retention cap for all chat messages; it can take effect before soft-delete recovery |
+
+Cleanup is leader-gated in multi-replica deployments. The run handles eligible rooms first, then users, then independent resources. Each batch uses row locks and `SKIP LOCKED`; the user-row lock coordinates recovery with purge.
+
+File references are expired before database hard deletion. Objects without active product references are removed by the storage worker after `file_storage.unreferenced_object_retention_seconds`. A committed database deletion ends the product row's lifecycle; object-storage deletion can complete in a later cycle.
+
+## Administration
+
+```bash
+# List accounts in the recovery window
+synctv user list --include-deleted
+
+# Restore the account aggregate during retention
+synctv user restore alice
+synctv user restore alice --ignore-identity-conflicts
+
+# Use bans for policy violations
+synctv user ban alice --reason "abuse"
+synctv user unban alice
+synctv room ban <ROOM_ID> --reason "policy"
+synctv room unban <ROOM_ID>
+
+# Data-lifecycle operations
+synctv user delete alice
+synctv room delete <ROOM_ID>
+synctv user bans list
+synctv room bans list
+```
+
+Management gRPC, the HTTP management API, and the `synctv` CLI share the same service semantics. Record the ticket, operator, and reason before deletion or recovery. After recovery, verify the username, identity bindings, room Creator, member admission, media lists, chat visibility, and realtime connections.
+
+## Historical Data and Backups
+
+Historical `NULL` sources mean `unknown`. Cleanup never assigns them automatically to `User`, `Room`, or `Account`. Correlate audit events, creators, and room state before handling these rows manually.
+
+Permanent deletion from the primary database does not erase old backups, logging-platform copies, or object-storage replicas. Manage database backup retention, log retention, object-storage lifecycle, and deletion-request compliance as one operational policy.
+
+Related pages: [Users](../../admin/users/), [Rooms and Members](../../admin/rooms-members/), and the [CLI Reference](../../reference/cli/).

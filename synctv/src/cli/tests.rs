@@ -2063,17 +2063,18 @@ fn cli_parses_review_reject_user_registration() {
 }
 
 #[test]
-fn cli_parses_ban_list_filters() {
+fn cli_rejects_removed_top_level_ban_command() {
+    assert!(Cli::try_parse_from(["synctv", "ban", "list"]).is_err());
+}
+
+#[test]
+fn cli_parses_user_bans_list_filters() {
     let cli = Cli::parse_from([
         "synctv",
-        "ban",
+        "user",
+        "bans",
         "list",
-        "--target",
-        "room",
         "--active",
-        "true",
-        "--room-id",
-        "room12345678",
         "--user-id",
         "user12345678",
         "--page",
@@ -2082,16 +2083,50 @@ fn cli_parses_ban_list_filters() {
         "10",
     ]);
     match cli.command {
-        Commands::Ban(BanCommand {
-            command: BanSubcommand::List(args),
+        Commands::User(UserCommand {
+            command:
+                UserSubcommand::Bans(UserBansCommand {
+                    command: UserBansSubcommand::List(args),
+                }),
             ..
         }) => {
-            assert_eq!(args.target, Some(CliBanTarget::Room));
             assert_eq!(args.active, Some(true));
-            assert_eq!(args.room_id.as_deref(), Some("room12345678"));
             assert_eq!(args.user_id.as_deref(), Some("user12345678"));
             assert_eq!(args.page, 3);
             assert_eq!(args.page_size, 10);
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_room_bans_list_filters() {
+    let cli = Cli::parse_from([
+        "synctv",
+        "room",
+        "bans",
+        "list",
+        "--active",
+        "false",
+        "--room-id",
+        "room12345678",
+        "--page",
+        "2",
+        "--page-size",
+        "25",
+    ]);
+    match cli.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Bans(RoomBansCommand {
+                    command: RoomBansSubcommand::List(args),
+                }),
+            ..
+        }) => {
+            assert_eq!(args.active, Some(false));
+            assert_eq!(args.room_id.as_deref(), Some("room12345678"));
+            assert_eq!(args.page, 2);
+            assert_eq!(args.page_size, 25);
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }

@@ -149,6 +149,20 @@ pub(super) async fn execute_user(user_command: UserCommand) -> Result<()> {
             )?;
             args.remote.print_output(&response)
         }
+        UserSubcommand::Bans(command) => match command.command {
+            UserBansSubcommand::List(args) => {
+                super::ban::execute_ban_records_list(
+                    &args.remote,
+                    synctv_proto::admin::BanTargetType::User as i32,
+                    args.active,
+                    args.user_id.unwrap_or_default(),
+                    String::new(),
+                    args.page,
+                    args.page_size,
+                )
+                .await
+            }
+        },
         UserSubcommand::SetRole(args) => {
             let session = connect_remote_access(&args.remote).await?;
             let role = args.resolved_role();

@@ -1,6 +1,5 @@
 mod prelude;
 
-pub mod ban;
 pub mod config;
 pub mod db;
 pub mod media;
@@ -17,7 +16,6 @@ pub mod stop;
 pub mod system;
 pub mod user;
 
-pub use ban::*;
 pub use config::*;
 pub use db::*;
 pub use media::*;

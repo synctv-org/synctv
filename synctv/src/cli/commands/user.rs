@@ -24,6 +24,8 @@ pub enum UserSubcommand {
     Ban(UserBanArgs),
     /// Unban a user
     Unban(UserUnbanArgs),
+    /// Inspect user ban records
+    Bans(UserBansCommand),
     /// Update a user's global role
     SetRole(UserSetRoleArgs),
     /// Set a user's direct password credential
@@ -80,6 +82,38 @@ pub enum UserBatchSubcommand {
     Ban(UserBatchBanArgs),
     /// Delete multiple users
     Delete(UserBatchDeleteArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct UserBansCommand {
+    #[command(subcommand)]
+    pub command: UserBansSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum UserBansSubcommand {
+    /// List user ban records
+    List(UserBansListArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct UserBansListArgs {
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+
+    /// Filter by active or inactive records
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub active: Option<bool>,
+
+    /// Filter by public user ID
+    #[arg(long, allow_hyphen_values = true)]
+    pub user_id: Option<String>,
+
+    #[arg(long, default_value_t = 1)]
+    pub page: i32,
+
+    #[arg(long, default_value_t = 50)]
+    pub page_size: i32,
 }
 
 #[derive(Debug, Args)]

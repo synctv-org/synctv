@@ -86,15 +86,18 @@ In multi-replica deployments, cleanup tasks are leader-gated. Periodic database 
 
 ## User and Room Deletion
 
+The full ban, soft-delete, recovery, source-code, and resource-cascade contract is documented in [Resource Lifecycle](../resource-lifecycle/).
+
 User deletion uses soft delete plus transactional resource cleanup:
 
 - The user row enters a `deleted_at` state.
-- OAuth2 mappings, email identities, email tokens, provider credentials, notifications, and related user data are cleaned as part of the deletion flow.
+- OAuth2 mappings and email identities become account-level soft-deleted rows with their active unique slots released. Email tokens, provider credentials, notifications, and other short-lived or secret-bearing rows are cleaned immediately.
+- Playlists, media, and chat messages created by the user in surviving rooms also become account-level soft-deleted rows and disappear from normal queries.
 - Room memberships are removed.
-- Chat messages may be anonymized or retained with necessary context according to user cleanup semantics.
+- Account-level chat keeps the body and author for recovery. A single-message delete clears the body.
 - Soft-deleted records are permanently purged after the retention window.
 
-Room deletion also starts with soft delete and cleans room playlists, media, members, invitation notifications, review records, playback state, and related resources. The room row is hard-deleted after the retention window.
+Room deletion also starts with soft delete and cleans room playlists, media, members, playback state, chat, and runtime resources. Room settings and resource rows remain hidden during the window, then the room aggregate is hard-deleted in dependency order.
 
 ## Backups
 

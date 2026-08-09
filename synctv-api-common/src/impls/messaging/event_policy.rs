@@ -27,7 +27,7 @@ pub fn disconnect_signal_requires_skip_cleanup(
         // A global user disconnect (ban/delete) must still let cleanup emit a
         // room-scoped UserLeft for the connection's current room.
         DisconnectSignal::User(_uid) => false,
-        DisconnectSignal::Room(rid) => rid == room_id,
+        DisconnectSignal::Room { room_id: rid, .. } => rid == room_id,
         DisconnectSignal::UserFromRoom {
             user_id: uid,
             room_id: rid,
@@ -71,7 +71,7 @@ pub fn watch_disconnect_signal_matches(
     match signal {
         DisconnectSignal::Connection(conn_id) => conn_id == connection_id,
         DisconnectSignal::User(uid) => uid == user_id,
-        DisconnectSignal::Room(rid) => rid == room_id,
+        DisconnectSignal::Room { room_id: rid, .. } => rid == room_id,
         DisconnectSignal::UserFromRoom {
             user_id: uid,
             room_id: rid,

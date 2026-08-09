@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_realtime::sync::ConnectionManager;
-use synctv_realtime::sync::{ConnectionLimits, DisconnectSignal};
+use synctv_realtime::sync::{ConnectionLimits, DisconnectSignal, RoomDisconnectReason};
 
 fn stable_test_id(s: &str) -> i64 {
     s.bytes().fold(0_i64, |acc, byte| {
@@ -177,11 +177,17 @@ async fn test_disconnect_signal_to_room() {
     let mut rx = mgr.subscribe_disconnect();
 
     // Disconnect entire room
-    mgr.disconnect_room(&room);
+    mgr.disconnect_room(&room, RoomDisconnectReason::Deleted);
 
     // Should receive signal
     let signal = rx.recv().await.expect("Should receive disconnect signal");
-    assert!(matches!(signal, DisconnectSignal::Room(ref r) if r == &room));
+    assert!(matches!(
+        signal,
+        DisconnectSignal::Room {
+            room_id,
+            reason: RoomDisconnectReason::Deleted,
+        } if room_id == room
+    ));
 }
 
 #[tokio::test]

@@ -1,5 +1,6 @@
 use super::notifications::system_notification_server_message;
 use synctv_proto::client::{RealtimeTerminationCode, ServerMessage};
+use synctv_realtime::sync::RoomDisconnectReason;
 
 /// Build a terminal realtime message that is delivered before the transport
 /// is closed. The dedicated code is stable for client-side classification.
@@ -15,6 +16,30 @@ pub(super) fn realtime_termination_server_message(
             },
         )),
     }
+}
+
+pub(super) fn room_disconnect_termination_server_message(
+    reason: RoomDisconnectReason,
+) -> ServerMessage {
+    let (message, code) = match reason {
+        RoomDisconnectReason::AccessRevoked => (
+            "This room is no longer available",
+            RealtimeTerminationCode::RoomAccessRevoked,
+        ),
+        RoomDisconnectReason::Deleted => (
+            "Room has been deleted",
+            RealtimeTerminationCode::RoomDeleted,
+        ),
+        RoomDisconnectReason::Banned => {
+            ("Room has been banned", RealtimeTerminationCode::RoomBanned)
+        }
+        RoomDisconnectReason::OwnerInactive => (
+            "Room is unavailable because its creator is not active",
+            RealtimeTerminationCode::RoomOwnerInactive,
+        ),
+    };
+
+    realtime_termination_server_message(message, code)
 }
 
 /// Convert a realtime event into one or more server messages.
@@ -33,21 +58,18 @@ pub(super) fn realtime_event_to_server_messages(
             *timestamp,
         )?],
         RealtimeEvent::RoomDeleted { .. } => {
-            vec![realtime_termination_server_message(
-                "Room has been deleted",
-                RealtimeTerminationCode::RoomDeleted,
+            vec![room_disconnect_termination_server_message(
+                RoomDisconnectReason::Deleted,
             )]
         }
         RealtimeEvent::RoomBanned { .. } => {
-            vec![realtime_termination_server_message(
-                "Room has been banned",
-                RealtimeTerminationCode::RoomBanned,
+            vec![room_disconnect_termination_server_message(
+                RoomDisconnectReason::Banned,
             )]
         }
         RealtimeEvent::RoomOwnerInactive { .. } => {
-            vec![realtime_termination_server_message(
-                "Room is unavailable because its creator is not active",
-                RealtimeTerminationCode::RoomOwnerInactive,
+            vec![room_disconnect_termination_server_message(
+                RoomDisconnectReason::OwnerInactive,
             )]
         }
         RealtimeEvent::KickPublisher { .. }

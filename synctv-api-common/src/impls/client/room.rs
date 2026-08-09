@@ -1700,7 +1700,7 @@ impl ClientApiImpl {
 
         // Force disconnect room members and any active publishers tied to this room.
         self.realtime_lifecycle
-            .disconnect_room(&rid, "room_deleted")
+            .disconnect_room(&rid, synctv_realtime::sync::RoomDisconnectReason::Deleted)
             .await;
 
         Ok(synctv_proto::client::DeleteRoomResponse { success: true })

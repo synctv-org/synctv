@@ -118,7 +118,10 @@ impl AdminApiImpl {
             prepared_fanout.publish_after_outbox_commit();
 
             self.realtime_lifecycle
-                .disconnect_room(&room_id, "room_owner_inactive")
+                .disconnect_room(
+                    &room_id,
+                    synctv_realtime::sync::RoomDisconnectReason::OwnerInactive,
+                )
                 .await;
         }
 

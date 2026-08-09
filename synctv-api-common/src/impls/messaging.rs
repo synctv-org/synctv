@@ -215,6 +215,8 @@ pub struct StreamMessageHandler {
     ///   `UserLeft` would create a ghost offline event for a user that was never
     ///   actually announced as online
     skip_cleanup_user_left: Arc<std::sync::atomic::AtomicBool>,
+    /// Arbitrates terminal messages emitted by concurrent per-connection tasks.
+    realtime_termination_sent: Arc<std::sync::atomic::AtomicBool>,
     /// Last known room role for this connection's actor.
     ///
     /// Cleanup uses this cached value so disconnect paths do not depend on a
@@ -346,6 +348,7 @@ impl Clone for StreamMessageHandler {
             active_media_swarms: Arc::clone(&self.active_media_swarms),
             room_capability_transition_lock: Arc::clone(&self.room_capability_transition_lock),
             skip_cleanup_user_left: Arc::clone(&self.skip_cleanup_user_left),
+            realtime_termination_sent: Arc::clone(&self.realtime_termination_sent),
             current_room_role: Arc::clone(&self.current_room_role),
             membership_cache: Arc::clone(&self.membership_cache),
             pending_room_event_rx: Arc::clone(&self.pending_room_event_rx),
@@ -385,7 +388,22 @@ impl StreamMessageHandler {
         message: impl Into<String>,
         code: RealtimeTerminationCode,
     ) {
-        if let Err(error) = stream.send(realtime_termination_server_message(message, code)) {
+        self.send_realtime_termination_message(
+            stream,
+            realtime_termination_server_message(message, code),
+        );
+    }
+
+    fn send_realtime_termination_message<S: StreamMessage>(
+        &self,
+        stream: &S,
+        message: ServerMessage,
+    ) {
+        if !self.should_send_server_message(&message) {
+            return;
+        }
+
+        if let Err(error) = stream.send(message) {
             tracing::debug!(
                 user_id = %self.user_id,
                 room_id = %self.room_id,
@@ -393,6 +411,31 @@ impl StreamMessageHandler {
                 "Failed to send realtime termination before closing stream"
             );
         }
+    }
+
+    fn send_server_message(&self, message: ServerMessage) -> Result<(), String> {
+        if self.should_send_server_message(&message) {
+            self.sender.send(message)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn should_send_server_message(&self, message: &ServerMessage) -> bool {
+        use synctv_proto::client::server_message::Message;
+
+        if !matches!(message.message.as_ref(), Some(Message::Termination(_))) {
+            return true;
+        }
+
+        self.realtime_termination_sent
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
     }
 
     fn client_operation_id(message: &ClientMessage) -> Option<&str> {
@@ -505,6 +548,7 @@ impl StreamMessageHandler {
             active_media_swarms: Arc::new(parking_lot::Mutex::new(BTreeSet::new())),
             room_capability_transition_lock: Arc::new(tokio::sync::Mutex::new(())),
             skip_cleanup_user_left: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            realtime_termination_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             current_room_role: Arc::new(std::sync::atomic::AtomicI32::new(
                 synctv_proto::common::RoomMemberRole::Member as i32,
             )),
@@ -1326,16 +1370,19 @@ impl StreamMessageHandler {
                                 break;
                             }
                         }
-                        Ok(synctv_realtime::sync::DisconnectSignal::Room(rid)) => {
+                        Ok(synctv_realtime::sync::DisconnectSignal::Room {
+                            room_id: rid,
+                            reason,
+                        }) => {
                             if rid == self.room_id {
                                 tracing::info!(
                                     room_id = %self.room_id,
+                                    ?reason,
                                     "Received disconnect signal for this room"
                                 );
-                                self.send_realtime_termination(
+                                self.send_realtime_termination_message(
                                     stream,
-                                    "This room is no longer available",
-                                    RealtimeTerminationCode::RoomAccessRevoked,
+                                    room_disconnect_termination_server_message(reason),
                                 );
                                 // Room deletion already published RoomDeleted;
                                 // skip redundant UserLeft.
@@ -2277,7 +2324,7 @@ impl StreamMessageHandler {
                                         }
                                     };
                                     for msg in messages {
-                                        if let Err(e) = sender.send(msg) {
+                                        if let Err(e) = event_handler.send_server_message(msg) {
                                             tracing::error!("Failed to send message: {}", e);
                                             event_token.cancel();
                                             break;
@@ -2441,11 +2488,12 @@ impl StreamMessageHandler {
                                         "Your account access has been revoked",
                                         RealtimeTerminationCode::UserAccessRevoked,
                                     )),
-                                Ok(synctv_realtime::sync::DisconnectSignal::Room(rid))
-                                    if *rid == room_id => Some(realtime_termination_server_message(
-                                        "This room is no longer available",
-                                        RealtimeTerminationCode::RoomAccessRevoked,
-                                    )),
+                                Ok(synctv_realtime::sync::DisconnectSignal::Room {
+                                    room_id: rid,
+                                    reason,
+                                }) if *rid == room_id => {
+                                    Some(room_disconnect_termination_server_message(*reason))
+                                }
                                 Ok(synctv_realtime::sync::DisconnectSignal::UserFromRoom { user_id: uid, room_id: rid })
                                     if *uid == user_id && *rid == room_id => Some(realtime_termination_server_message(
                                         "Your room membership has ended",
@@ -2475,7 +2523,7 @@ impl StreamMessageHandler {
                                                 reason,
                                                 "start() real-time access is no longer valid after disconnect signal lag"
                                             );
-                                            if let Err(error) = admin_sender.send(
+                                            if let Err(error) = admin_handler.send_server_message(
                                                 realtime_termination_server_message(
                                                     "Your room membership has ended",
                                                     RealtimeTerminationCode::RoomMembershipRevoked,
@@ -2505,7 +2553,7 @@ impl StreamMessageHandler {
                                     }
                                 }
                                 if let Some(termination) = termination {
-                                    if let Err(error) = admin_sender.send(termination) {
+                                    if let Err(error) = admin_handler.send_server_message(termination) {
                                         tracing::debug!(error = %error, "Failed to send realtime termination before disconnect cancellation");
                                     }
                                 }
@@ -2617,7 +2665,7 @@ impl StreamMessageHandler {
                                                 reason,
                                                 "start() real-time access is no longer valid after admin event lag"
                                             );
-                                            if let Err(error) = admin_sender.send(
+                                            if let Err(error) = admin_handler.send_server_message(
                                                 realtime_termination_server_message(
                                                     "Your room membership has ended",
                                                     RealtimeTerminationCode::RoomMembershipRevoked,
@@ -2647,7 +2695,7 @@ impl StreamMessageHandler {
                                     }
                                 }
                                 if let Some(termination) = termination {
-                                    if let Err(error) = admin_sender.send(termination) {
+                                    if let Err(error) = admin_handler.send_server_message(termination) {
                                         tracing::debug!(error = %error, "Failed to send realtime termination before admin disconnect cancellation");
                                     }
                                 }
@@ -2709,7 +2757,7 @@ impl StreamMessageHandler {
                                             reason,
                                             "start() periodic check: guest access is no longer valid, disconnecting"
                                         );
-                                        if let Err(error) = heartbeat_sender.send(
+                                        if let Err(error) = heartbeat_handler.send_server_message(
                                             realtime_termination_server_message(
                                                 "Guest access to this room has ended",
                                                 RealtimeTerminationCode::GuestAccessRevoked,
@@ -2746,7 +2794,7 @@ impl StreamMessageHandler {
                                         reason,
                                         "start() periodic check: real-time access is no longer valid, disconnecting"
                                     );
-                                    if let Err(error) = heartbeat_sender.send(
+                                    if let Err(error) = heartbeat_handler.send_server_message(
                                         realtime_termination_server_message(
                                             "Your room membership has ended",
                                             RealtimeTerminationCode::RoomMembershipRevoked,
@@ -2959,7 +3007,10 @@ impl StreamMessageHandler {
 }
 
 mod event_messages;
-use event_messages::{realtime_event_to_server_messages, realtime_termination_server_message};
+use event_messages::{
+    realtime_event_to_server_messages, realtime_termination_server_message,
+    room_disconnect_termination_server_message,
+};
 
 impl StreamMessageHandler {
     async fn take_initial_realtime_join_state(

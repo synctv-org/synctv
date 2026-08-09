@@ -1277,7 +1277,7 @@ fn disconnect_applies_to_live_stream(
 ) -> bool {
     match event {
         synctv_realtime::sync::DisconnectSignal::User(uid) => uid == user_id,
-        synctv_realtime::sync::DisconnectSignal::Room(rid) => rid == room_id,
+        synctv_realtime::sync::DisconnectSignal::Room { room_id: rid, .. } => rid == room_id,
         synctv_realtime::sync::DisconnectSignal::UserFromRoom {
             user_id: uid,
             room_id: rid,

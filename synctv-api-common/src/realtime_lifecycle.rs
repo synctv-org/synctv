@@ -10,7 +10,7 @@ use synctv_core::service::{UserDeletedChatMessage, UserDeletionSummary};
 use synctv_livestream::LiveStreamingInfrastructure;
 use synctv_livestream::StreamError;
 use synctv_realtime::fanout::RealtimeFanoutService;
-use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
+use synctv_realtime::sync::{PublishRequest, RealtimeEvent, RoomDisconnectReason};
 
 use synctv_realtime::sync::ConnectionRuntime;
 
@@ -36,7 +36,7 @@ pub trait RealtimeLifecycleService: Send + Sync {
 
     async fn active_room_stream_media_ids(&self, room_id: &RoomId) -> Vec<MediaId>;
 
-    async fn disconnect_room(&self, room_id: &RoomId, publisher_reason: &str);
+    async fn disconnect_room(&self, room_id: &RoomId, reason: RoomDisconnectReason);
 
     async fn disconnect_user_from_room(&self, room_id: &RoomId, user_id: &UserId);
 
@@ -268,8 +268,8 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
         media_ids.into_iter().collect()
     }
 
-    async fn disconnect_room(&self, room_id: &RoomId, _publisher_reason: &str) {
-        self.connection_service.disconnect_room(room_id);
+    async fn disconnect_room(&self, room_id: &RoomId, reason: RoomDisconnectReason) {
+        self.connection_service.disconnect_room(room_id, reason);
         let room_id_key = room_id.to_string();
 
         if let Some(infra) = &self.live_streaming_infrastructure {
@@ -425,7 +425,8 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
             self.realtime_fanout
                 .publish_after_outbox_commit(deleted_room.event);
 
-            self.disconnect_room(&room_id, "room_deleted").await;
+            self.disconnect_room(&room_id, RoomDisconnectReason::Deleted)
+                .await;
         }
 
         self.disconnect_user(&summary.user_id, disconnect_reason)

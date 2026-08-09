@@ -226,7 +226,7 @@ async fn test_total_connection_limit() {
 
 #[tokio::test]
 async fn test_disconnect_signals() {
-    use synctv_realtime::sync::DisconnectSignal;
+    use synctv_realtime::sync::{DisconnectSignal, RoomDisconnectReason};
 
     let mgr = ConnectionManager::default();
     let user = uid("u1");
@@ -255,10 +255,16 @@ async fn test_disconnect_signals() {
     );
 
     // Room disconnect
-    mgr.disconnect_room(&room);
+    mgr.disconnect_room(&room, RoomDisconnectReason::AccessRevoked);
     let sig = rx.recv().await.unwrap();
     assert!(
-        matches!(sig, DisconnectSignal::Room(ref id) if id == &room),
+        matches!(
+            sig,
+            DisconnectSignal::Room {
+                room_id,
+                reason: RoomDisconnectReason::AccessRevoked,
+            } if room_id == room
+        ),
         "Expected Room signal"
     );
 }

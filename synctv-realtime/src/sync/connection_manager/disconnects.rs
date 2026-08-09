@@ -4,7 +4,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 use super::metrics::{ShutdownReport, ShutdownTaskOutcome};
-use super::{ConnectionManager, DisconnectSignal};
+use super::{ConnectionManager, DisconnectSignal, RoomDisconnectReason};
 use synctv_core::models::id::{RoomId, UserId};
 
 impl ConnectionManager {
@@ -149,14 +149,18 @@ impl ConnectionManager {
         self.send_disconnect_signal(&signal);
     }
 
-    pub fn disconnect_room(&self, room_id: &RoomId) {
+    pub fn disconnect_room(&self, room_id: &RoomId, reason: RoomDisconnectReason) {
         let conn_count = self.room_connection_count(room_id);
         info!(
             room_id = %room_id,
+            ?reason,
             connection_count = conn_count,
             "Forcing disconnect of all room connections"
         );
-        let signal = DisconnectSignal::Room(*room_id);
+        let signal = DisconnectSignal::Room {
+            room_id: *room_id,
+            reason,
+        };
         self.send_disconnect_signal(&signal);
     }
 

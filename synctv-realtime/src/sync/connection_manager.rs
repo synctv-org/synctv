@@ -46,9 +46,21 @@ pub enum DisconnectSignal {
     /// Disconnect all connections for a user
     User(UserId),
     /// Disconnect all connections in a room
-    Room(RoomId),
+    Room {
+        room_id: RoomId,
+        reason: RoomDisconnectReason,
+    },
     /// Disconnect a specific user from a specific room
     UserFromRoom { user_id: UserId, room_id: RoomId },
+}
+
+/// Stable internal classification for room-wide forced disconnects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomDisconnectReason {
+    AccessRevoked,
+    Deleted,
+    Banned,
+    OwnerInactive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

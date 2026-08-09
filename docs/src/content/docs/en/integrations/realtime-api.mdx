@@ -119,6 +119,7 @@ Common server messages:
 | `chat` | Chat message received |
 | `heartbeatAck` | Heartbeat acknowledgement |
 | `error` | General business error |
+| `termination` | Server-initiated realtime stream termination; classify with the dedicated `RealtimeTerminationCode`, then reconnect |
 | `playbackState` / `playingChanged` | Playback state or playback target changed |
 | `roomSettings` | Room settings changed |
 | `mediaAdded` / `mediaUpdated` / `mediaRemoved` | Media changed |
@@ -152,6 +153,11 @@ All Realtime API business messages live in the `ClientMessage.message` and `Serv
 
 ```ts
 function handleServerMessage(message) {
+  if (message.termination) {
+    handleRealtimeTermination(message.termination);
+    return;
+  }
+
   if (message.chatEvent) {
     appendChatEvent(message.chatEvent);
     return;

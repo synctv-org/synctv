@@ -916,6 +916,7 @@ const fn is_critical_message(message: &ServerMessage) -> bool {
         &message.message,
         Some(
             Message::Error(_)
+                | Message::Termination(_)
                 | Message::ResourceObserved(_)
                 | Message::ResourceEvent(_)
                 | Message::ResourceObserveError(_)
@@ -934,6 +935,7 @@ const fn message_type_name(message: &ServerMessage) -> &'static str {
     match &message.message {
         Some(Message::HeartbeatAck(_)) => "HeartbeatAck",
         Some(Message::Error(_)) => "Error",
+        Some(Message::Termination(_)) => "Termination",
         Some(Message::ResourceObserved(_)) => "ResourceObserved",
         Some(Message::ResourceEvent(_)) => "ResourceEvent",
         Some(Message::ResourceObserveError(_)) => "ResourceObserveError",

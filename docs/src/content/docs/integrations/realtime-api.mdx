@@ -119,6 +119,7 @@ WebRTC 客户端在发送信令前调用 `GET /api/rooms/<roomId>/webrtc/ice-ser
 | `chat` | 收到聊天消息 |
 | `heartbeatAck` | 心跳确认 |
 | `error` | 普通业务错误 |
+| `termination` | 服务端主动结束实时流；通过专用 `RealtimeTerminationCode` 分类，随后按重连流程处理 |
 | `playbackState` / `playingChanged` | 播放状态或播放目标变化 |
 | `roomSettings` | 房间设置变更广播 |
 | `mediaAdded` / `mediaUpdated` / `mediaRemoved` | 媒体变更广播 |
@@ -152,6 +153,11 @@ Realtime API 的所有业务消息都在 `ClientMessage.message` 和 `ServerMess
 
 ```ts
 function handleServerMessage(message) {
+  if (message.termination) {
+    handleRealtimeTermination(message.termination);
+    return;
+  }
+
   if (message.chatEvent) {
     appendChatEvent(message.chatEvent);
     return;

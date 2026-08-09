@@ -143,6 +143,10 @@ const NAMED_PERMISSIONS: &[(&str, u64)] = &[
         "delete_chat_messages",
         RoomAdminPermissionBits::DELETE_CHAT_MESSAGES,
     ),
+    (
+        "view_playback_history",
+        RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY,
+    ),
     ("delete_room", RoomAdminPermissionBits::DELETE_ROOM),
 ];
 
@@ -192,13 +196,28 @@ mod tests {
 
     #[test]
     fn permission_set_accepts_exact_canonical_names() {
-        let permissions = PermissionSet::from_str(r#"["manage_live_streams","view_members"]"#)
-            .expect("canonical permission names should parse");
+        let permissions = PermissionSet::from_str(
+            r#"["manage_live_streams","view_members","view_playback_history"]"#,
+        )
+        .expect("canonical permission names should parse");
 
         assert_eq!(
             permissions.bits().0,
-            RoomAdminPermissionBits::MANAGE_LIVE_STREAMS | RoomAdminPermissionBits::VIEW_MEMBERS
+            RoomAdminPermissionBits::MANAGE_LIVE_STREAMS
+                | RoomAdminPermissionBits::VIEW_MEMBERS
+                | RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY
         );
+    }
+
+    #[test]
+    fn permission_set_preserves_playback_history_in_display_round_trip() {
+        let original = PermissionSet::from_bits(crate::models::RoomPermissionSet(
+            RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY,
+        ));
+        let restored = PermissionSet::from_str(&original.to_string())
+            .expect("displayed permission names should parse");
+
+        assert_eq!(restored, original);
     }
 
     #[test]

@@ -113,6 +113,7 @@ WebSocket 业务错误通过 protobuf 消息返回，不是 HTTP JSON：
 | 消息 | 场景 |
 | --- | --- |
 | `ServerMessage.error` | 普通业务错误，例如权限不足、输入无效 |
+| `ServerMessage.termination` | 服务端主动结束实时流，包含专用 `RealtimeTerminationCode` 和展示文案 |
 | `ServerMessage.resourceObserveError` | 资源观察失败，例如 observe id 无效、超过订阅上限、资源加载失败 |
 | WebSocket close | 认证失败、ticket 失效、协议错误、连接限制或服务关闭 |
 

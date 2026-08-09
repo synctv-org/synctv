@@ -108,6 +108,7 @@ WebSocket business errors use protobuf messages, not HTTP JSON:
 | Message | Scenario |
 | --- | --- |
 | `ServerMessage.error` | General business error, such as permission or invalid input |
+| `ServerMessage.termination` | Server-initiated realtime stream termination with a dedicated `RealtimeTerminationCode` and display message |
 | `ServerMessage.resourceObserveError` | Invalid observe id, too many observations, or resource load failure |
 | WebSocket close | Auth failure, expired ticket, protocol error, connection limit, shutdown |
 

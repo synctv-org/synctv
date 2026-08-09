@@ -59,7 +59,7 @@ use crate::playback_fanout::default_playback_fanout_service;
 use crate::playback_fanout::PlaybackFanoutService;
 #[cfg(test)]
 use crate::resource_change::ResourceInvalidation;
-use synctv_proto::client::{ClientMessage, ServerMessage};
+use synctv_proto::client::{ClientMessage, RealtimeTerminationCode, ServerMessage};
 use synctv_realtime::fanout::RealtimeEventService;
 use synctv_realtime::sync::ConnectionRuntime;
 
@@ -376,6 +376,22 @@ impl StreamMessageHandler {
         error.client_operation_id = client_operation_id.unwrap_or_default().to_string();
         ServerMessage {
             message: Some(synctv_proto::client::server_message::Message::Error(error)),
+        }
+    }
+
+    fn send_realtime_termination<S: StreamMessage>(
+        &self,
+        stream: &S,
+        message: impl Into<String>,
+        code: RealtimeTerminationCode,
+    ) {
+        if let Err(error) = stream.send(realtime_termination_server_message(message, code)) {
+            tracing::debug!(
+                user_id = %self.user_id,
+                room_id = %self.room_id,
+                error = %error,
+                "Failed to send realtime termination before closing stream"
+            );
         }
     }
 
@@ -1286,6 +1302,11 @@ impl StreamMessageHandler {
                                     connection_id = %self.connection_id,
                                     "Received disconnect signal for this connection"
                                 );
+                                self.send_realtime_termination(
+                                    stream,
+                                    "Connection closed by server",
+                                    RealtimeTerminationCode::ConnectionRevoked,
+                                );
                                 break;
                             }
                         }
@@ -1294,6 +1315,11 @@ impl StreamMessageHandler {
                                 tracing::info!(
                                     user_id = %self.user_id,
                                     "Received disconnect signal for this user (room kick or platform ban)"
+                                );
+                                self.send_realtime_termination(
+                                    stream,
+                                    "Your account access has been revoked",
+                                    RealtimeTerminationCode::UserAccessRevoked,
                                 );
                                 self.skip_cleanup_user_left
                                     .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1305,6 +1331,11 @@ impl StreamMessageHandler {
                                 tracing::info!(
                                     room_id = %self.room_id,
                                     "Received disconnect signal for this room"
+                                );
+                                self.send_realtime_termination(
+                                    stream,
+                                    "This room is no longer available",
+                                    RealtimeTerminationCode::RoomAccessRevoked,
                                 );
                                 // Room deletion already published RoomDeleted;
                                 // skip redundant UserLeft.
@@ -1318,6 +1349,11 @@ impl StreamMessageHandler {
                                     user_id = %self.user_id,
                                     room_id = %self.room_id,
                                     "Received disconnect signal: kicked from room"
+                                );
+                                self.send_realtime_termination(
+                                    stream,
+                                    "Your room membership has ended",
+                                    RealtimeTerminationCode::RoomMembershipRevoked,
                                 );
                                 // The leave_room API already published UserLeft;
                                 // skip redundant broadcast in cleanup().
@@ -1348,6 +1384,11 @@ impl StreamMessageHandler {
                                         room_id = %self.room_id,
                                         reason,
                                         "Real-time access is no longer valid (detected after disconnect signal lag), disconnecting"
+                                    );
+                                    self.send_realtime_termination(
+                                        stream,
+                                        "Your room membership has ended",
+                                        RealtimeTerminationCode::RoomMembershipRevoked,
                                     );
                                     self.skip_cleanup_user_left
                                         .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1384,6 +1425,11 @@ impl StreamMessageHandler {
                                     reason = %reason,
                                     "Received cross-replica KickUser event, disconnecting"
                                 );
+                                self.send_realtime_termination(
+                                    stream,
+                                    "Your account access has been revoked",
+                                    RealtimeTerminationCode::UserAccessRevoked,
+                                );
                                 self.skip_cleanup_user_left.store(
                                     true,
                                     std::sync::atomic::Ordering::Relaxed,
@@ -1404,6 +1450,11 @@ impl StreamMessageHandler {
                                     reason = %reason,
                                     "Received cross-replica KickUserFromRoom event, disconnecting"
                                 );
+                                self.send_realtime_termination(
+                                    stream,
+                                    "Your room membership has ended",
+                                    RealtimeTerminationCode::RoomMembershipRevoked,
+                                );
                                 self.skip_cleanup_user_left.store(
                                     true,
                                     std::sync::atomic::Ordering::Relaxed,
@@ -1421,6 +1472,44 @@ impl StreamMessageHandler {
                                 // UserLeft was already published by the leave_room
                                 // or delete_room API call. Skip the redundant
                                 // broadcast in cleanup().
+                                self.send_realtime_termination(
+                                    stream,
+                                    "Your room membership has ended",
+                                    RealtimeTerminationCode::RoomMembershipRevoked,
+                                );
+                                self.skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
+                                break;
+                            }
+                        }
+                        Ok(RealtimeEvent::RoomDeleted { ref room_id, .. }) => {
+                            if *room_id == self.room_id {
+                                self.send_realtime_termination(
+                                    stream,
+                                    "Room has been deleted",
+                                    RealtimeTerminationCode::RoomDeleted,
+                                );
+                                self.skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
+                                break;
+                            }
+                        }
+                        Ok(RealtimeEvent::RoomBanned { ref room_id, .. }) => {
+                            if *room_id == self.room_id {
+                                self.send_realtime_termination(
+                                    stream,
+                                    "Room has been banned",
+                                    RealtimeTerminationCode::RoomBanned,
+                                );
+                                self.skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
+                                break;
+                            }
+                        }
+                        Ok(RealtimeEvent::RoomOwnerInactive { ref room_id, .. }) => {
+                            if *room_id == self.room_id {
+                                self.send_realtime_termination(
+                                    stream,
+                                    "Room is unavailable because its creator is not active",
+                                    RealtimeTerminationCode::RoomOwnerInactive,
+                                );
                                 self.skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                 break;
                             }
@@ -1491,6 +1580,11 @@ impl StreamMessageHandler {
                                         room_id = %self.room_id,
                                         reason,
                                         "Real-time access is no longer valid (detected after admin event lag), disconnecting"
+                                    );
+                                    self.send_realtime_termination(
+                                        stream,
+                                        "Your room membership has ended",
+                                        RealtimeTerminationCode::RoomMembershipRevoked,
                                     );
                                     self.skip_cleanup_user_left
                                         .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1592,6 +1686,11 @@ impl StreamMessageHandler {
                                     reason,
                                     "Periodic check: guest access is no longer valid, disconnecting"
                                 );
+                                self.send_realtime_termination(
+                                    stream,
+                                    "Guest access to this room has ended",
+                                    RealtimeTerminationCode::GuestAccessRevoked,
+                                );
                                 break;
                             }
                             Ok(None) => continue,
@@ -1614,6 +1713,11 @@ impl StreamMessageHandler {
                                 user_id = %self.user_id,
                                 room_id = %self.room_id,
                                 "Periodic check (cached): user is no longer a member, disconnecting"
+                            );
+                            self.send_realtime_termination(
+                                stream,
+                                "Your room membership has ended",
+                                RealtimeTerminationCode::RoomMembershipRevoked,
                             );
                             self.skip_cleanup_user_left
                                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1641,6 +1745,11 @@ impl StreamMessageHandler {
                                 room_id = %self.room_id,
                                 reason,
                                 "Periodic check: real-time access is no longer valid, disconnecting"
+                            );
+                            self.send_realtime_termination(
+                                stream,
+                                "Your room membership has ended",
+                                RealtimeTerminationCode::RoomMembershipRevoked,
                             );
                             self.skip_cleanup_user_left
                                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2321,22 +2430,31 @@ impl StreamMessageHandler {
                         () = disconnect_token.cancelled() => break,
 
                         signal = disconnect_rx.recv() => {
-                            let should_disconnect = match &signal {
-                                Ok(synctv_realtime::sync::DisconnectSignal::Connection(conn_id)) => {
-                                    *conn_id == connection_id
-                                }
-                                Ok(synctv_realtime::sync::DisconnectSignal::User(uid)) => {
-                                    *uid == user_id
-                                }
-                                Ok(synctv_realtime::sync::DisconnectSignal::Room(rid)) => {
-                                    *rid == room_id
-                                }
-                                Ok(synctv_realtime::sync::DisconnectSignal::UserFromRoom { user_id: uid, room_id: rid }) => {
-                                    *uid == user_id && *rid == room_id
-                                }
-                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => false,
-                                Err(tokio::sync::broadcast::error::RecvError::Closed) => true,
+                            let termination = match &signal {
+                                Ok(synctv_realtime::sync::DisconnectSignal::Connection(conn_id))
+                                    if *conn_id == connection_id => Some(realtime_termination_server_message(
+                                        "Connection closed by server",
+                                        RealtimeTerminationCode::ConnectionRevoked,
+                                    )),
+                                Ok(synctv_realtime::sync::DisconnectSignal::User(uid))
+                                    if *uid == user_id => Some(realtime_termination_server_message(
+                                        "Your account access has been revoked",
+                                        RealtimeTerminationCode::UserAccessRevoked,
+                                    )),
+                                Ok(synctv_realtime::sync::DisconnectSignal::Room(rid))
+                                    if *rid == room_id => Some(realtime_termination_server_message(
+                                        "This room is no longer available",
+                                        RealtimeTerminationCode::RoomAccessRevoked,
+                                    )),
+                                Ok(synctv_realtime::sync::DisconnectSignal::UserFromRoom { user_id: uid, room_id: rid })
+                                    if *uid == user_id && *rid == room_id => Some(realtime_termination_server_message(
+                                        "Your room membership has ended",
+                                        RealtimeTerminationCode::RoomMembershipRevoked,
+                                    )),
+                                _ => None,
                             };
+                            let should_disconnect = termination.is_some()
+                                || matches!(&signal, Err(tokio::sync::broadcast::error::RecvError::Closed));
                             // Handle lag separately (needs mutable borrow of disconnect_rx)
                             if let Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) = signal {
                                 tracing::warn!(
@@ -2357,6 +2475,14 @@ impl StreamMessageHandler {
                                                 reason,
                                                 "start() real-time access is no longer valid after disconnect signal lag"
                                             );
+                                            if let Err(error) = admin_sender.send(
+                                                realtime_termination_server_message(
+                                                    "Your room membership has ended",
+                                                    RealtimeTerminationCode::RoomMembershipRevoked,
+                                                ),
+                                            ) {
+                                                tracing::debug!(error = %error, "Failed to send realtime termination after disconnect signal lag");
+                                            }
                                             skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                             disconnect_token.cancel();
                                             break;
@@ -2376,6 +2502,11 @@ impl StreamMessageHandler {
                                 if let Ok(signal) = &signal {
                                     if disconnect_signal_requires_skip_cleanup(signal, &user_id, &room_id, &connection_id) {
                                         skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                }
+                                if let Some(termination) = termination {
+                                    if let Err(error) = admin_sender.send(termination) {
+                                        tracing::debug!(error = %error, "Failed to send realtime termination before disconnect cancellation");
                                     }
                                 }
                                 tracing::info!(
@@ -2446,19 +2577,26 @@ impl StreamMessageHandler {
                                     .await;
                                 continue;
                             }
-                            let should_disconnect = match &admin_event {
-                                Ok(RealtimeEvent::KickUser { user_id: uid, .. }) => {
-                                    *uid == user_id
-                                }
-                                Ok(
-                                    RealtimeEvent::KickUserFromRoom { user_id: uid, room_id: rid, .. }
-                                    | RealtimeEvent::UserLeft { user_id: uid, room_id: rid, .. },
-                                ) => {
-                                    *uid == user_id && *rid == room_id
-                                }
-                                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => false,
-                                Err(tokio::sync::broadcast::error::RecvError::Closed) => true,
+                            let termination = match &admin_event {
+                                Ok(RealtimeEvent::KickUser { user_id: uid, .. })
+                                    if *uid == user_id => Some(realtime_termination_server_message(
+                                        "Your account access has been revoked",
+                                        RealtimeTerminationCode::UserAccessRevoked,
+                                    )),
+                                Ok(RealtimeEvent::KickUserFromRoom { user_id: uid, room_id: rid, .. })
+                                    if *uid == user_id && *rid == room_id => Some(realtime_termination_server_message(
+                                        "Your room membership has ended",
+                                        RealtimeTerminationCode::RoomMembershipRevoked,
+                                    )),
+                                Ok(RealtimeEvent::UserLeft { user_id: uid, room_id: rid, .. })
+                                    if *uid == user_id && *rid == room_id => Some(realtime_termination_server_message(
+                                        "Your room membership has ended",
+                                        RealtimeTerminationCode::RoomMembershipRevoked,
+                                    )),
+                                _ => None,
                             };
+                            let should_disconnect = termination.is_some()
+                                || matches!(&admin_event, Err(tokio::sync::broadcast::error::RecvError::Closed));
                             // Handle lag separately
                             if let Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) = admin_event {
                                 tracing::warn!(
@@ -2479,6 +2617,14 @@ impl StreamMessageHandler {
                                                 reason,
                                                 "start() real-time access is no longer valid after admin event lag"
                                             );
+                                            if let Err(error) = admin_sender.send(
+                                                realtime_termination_server_message(
+                                                    "Your room membership has ended",
+                                                    RealtimeTerminationCode::RoomMembershipRevoked,
+                                                ),
+                                            ) {
+                                                tracing::debug!(error = %error, "Failed to send realtime termination after admin event lag");
+                                            }
                                             skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                             disconnect_token.cancel();
                                             break;
@@ -2498,6 +2644,11 @@ impl StreamMessageHandler {
                                 if let Ok(event) = &admin_event {
                                     if admin_event_requires_skip_cleanup(event, &user_id, &room_id) {
                                         skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                }
+                                if let Some(termination) = termination {
+                                    if let Err(error) = admin_sender.send(termination) {
+                                        tracing::debug!(error = %error, "Failed to send realtime termination before admin disconnect cancellation");
                                     }
                                 }
                                 tracing::info!(
@@ -2558,6 +2709,14 @@ impl StreamMessageHandler {
                                             reason,
                                             "start() periodic check: guest access is no longer valid, disconnecting"
                                         );
+                                        if let Err(error) = heartbeat_sender.send(
+                                            realtime_termination_server_message(
+                                                "Guest access to this room has ended",
+                                                RealtimeTerminationCode::GuestAccessRevoked,
+                                            ),
+                                        ) {
+                                            tracing::debug!(error = %error, "Failed to send realtime termination after guest access check");
+                                        }
                                         heartbeat_token.cancel();
                                         break;
                                     }
@@ -2587,6 +2746,14 @@ impl StreamMessageHandler {
                                         reason,
                                         "start() periodic check: real-time access is no longer valid, disconnecting"
                                     );
+                                    if let Err(error) = heartbeat_sender.send(
+                                        realtime_termination_server_message(
+                                            "Your room membership has ended",
+                                            RealtimeTerminationCode::RoomMembershipRevoked,
+                                        ),
+                                    ) {
+                                        tracing::debug!(error = %error, "Failed to send realtime termination after membership check");
+                                    }
                                     skip_cleanup_user_left
                                         .store(true, std::sync::atomic::Ordering::Relaxed);
                                     heartbeat_token.cancel();
@@ -2792,7 +2959,7 @@ impl StreamMessageHandler {
 }
 
 mod event_messages;
-use event_messages::realtime_event_to_server_messages;
+use event_messages::{realtime_event_to_server_messages, realtime_termination_server_message};
 
 impl StreamMessageHandler {
     async fn take_initial_realtime_join_state(

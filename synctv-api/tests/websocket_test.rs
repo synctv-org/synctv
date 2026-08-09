@@ -2878,23 +2878,35 @@ mod websocket_e2e {
             |message| {
                 matches!(
                     &message.message,
-                    Some(server_message::Message::Error(error))
-                        if error.message.contains("deleted")
+                    Some(server_message::Message::Termination(termination))
+                        if termination.code
+                            == synctv_proto::client::RealtimeTerminationCode::RoomDeleted as i32
                 )
             },
-            "cross-replica room deleted error",
+            "cross-replica room deleted termination",
         )
         .await;
         assert!(
             matches!(
                 room_deleted_msg.message,
-                Some(server_message::Message::Error(_))
+                Some(server_message::Message::Termination(termination))
+                    if termination.code
+                        == synctv_proto::client::RealtimeTerminationCode::RoomDeleted as i32
             ),
-            "RoomDeleted event should be forwarded as terminal error"
+            "RoomDeleted should terminate the realtime stream with a dedicated code"
+        );
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                recv_server_message(&mut ws_member),
+            )
+            .await
+            .expect("room-deleted stream termination should complete")
+            .is_none(),
+            "RoomDeleted should close the realtime stream after the termination message"
         );
 
         ws_owner.close(None).await.expect("close owner");
-        ws_member.close(None).await.expect("close member");
     }
 
     #[tokio::test]

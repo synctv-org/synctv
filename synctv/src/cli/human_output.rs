@@ -121,6 +121,18 @@ pub(in crate::cli) struct HumanAdminUser {
     status: String,
     created_at: String,
     updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deleted_at: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    deletion_reason: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    deletion_source: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    deleted_by: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restored_at: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    restored_by: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -754,6 +766,15 @@ pub(in crate::cli) struct HumanUserMutationCliOutput {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanRestoreUserResponse {
+    success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<HumanAdminUser>,
+    released_identities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanUsersResponse<T> {
     users: Vec<T>,
     total: i32,
@@ -1033,6 +1054,12 @@ impl ToHuman for synctv_proto::admin::AdminUser {
                 .unwrap_or_else(|| self.status.to_string()),
             created_at: humanize_timestamp(self.created_at),
             updated_at: humanize_timestamp(self.updated_at),
+            deleted_at: (self.deleted_at > 0).then(|| humanize_timestamp(self.deleted_at)),
+            deletion_reason: self.deletion_reason.clone(),
+            deletion_source: self.deletion_source.clone(),
+            deleted_by: self.deleted_by.clone(),
+            restored_at: (self.restored_at > 0).then(|| humanize_timestamp(self.restored_at)),
+            restored_by: self.restored_by.clone(),
         }
     }
 }
@@ -1611,6 +1638,18 @@ impl ToHuman for UserMutationCliOutput {
         HumanUserMutationCliOutput {
             success: self.success,
             user: self.user.to_human(),
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::admin::RestoreUserResponse {
+    type Human = HumanRestoreUserResponse;
+
+    fn to_human(&self) -> Self::Human {
+        HumanRestoreUserResponse {
+            success: self.success,
+            user: self.user.to_human(),
+            released_identities: self.released_identities.clone(),
         }
     }
 }

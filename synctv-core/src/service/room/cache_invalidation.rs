@@ -1,7 +1,7 @@
 use crate::{
     models::{MediaId, RoomId, RoomPlaybackState, UserId},
     repository::room_member::RemovedRoomMember,
-    service::{room::MemberResourceCleanupResult, FileStorageCleanupOrigin, RoomService},
+    service::{room::MemberResourceCleanupResult, RoomService},
 };
 
 impl RoomService {
@@ -23,30 +23,6 @@ impl RoomService {
         self.playback_service
             .broadcast_playback_reset_after_force_delete(state)
             .await;
-    }
-
-    pub(super) async fn cleanup_deleted_media_file_references(
-        &self,
-        references: &[crate::models::FileReferenceTarget],
-    ) {
-        if references.is_empty() {
-            return;
-        }
-
-        let Some(storage) = self.media_file_storage_service.as_ref() else {
-            return;
-        };
-
-        if let Err(error) = storage
-            .schedule_delete_files(FileStorageCleanupOrigin::ReferenceReleased, references)
-            .await
-        {
-            tracing::warn!(
-                error = %error,
-                file_references = references.len(),
-                "Failed to cleanup media file references after entry deletion"
-            );
-        }
     }
 
     /// Invalidate room cache locally and broadcast to other replicas.

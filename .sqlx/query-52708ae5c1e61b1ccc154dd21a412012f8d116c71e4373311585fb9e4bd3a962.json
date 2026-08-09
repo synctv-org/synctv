@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT aei.email\n            FROM auth_email_identities aei\n            JOIN users u ON u.id = aei.user_id\n            WHERE u.id = $1 AND u.deleted_at IS NULL AND aei.deleted_at IS NULL\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "email",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "auth_email_identities",
+            "name": "email"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "52708ae5c1e61b1ccc154dd21a412012f8d116c71e4373311585fb9e4bd3a962"
+}

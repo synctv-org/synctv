@@ -252,6 +252,9 @@ synctv user list
 synctv user get alice
 synctv user create alice --email alice@example.com
 synctv user delete alice
+synctv user list --include-deleted
+synctv user restore alice
+synctv user restore alice --ignore-identity-conflicts
 synctv user ban alice --reason "abuse"
 synctv user unban alice
 synctv user set-role alice admin
@@ -282,7 +285,7 @@ synctv user batch ban alice bob --reason "spam"
 synctv user batch delete alice bob
 ```
 
-注意：涉及 root/admin 的操作会遵守角色层级，普通 admin 不能越权修改 root 或其他高权限用户的敏感设置。
+`user restore` 只适用于永久清理前的账号。默认要求用户名、email 和 OAuth2 identity 仍可用；`--ignore-identity-conflicts` 会生成恢复用户名并报告被释放的身份。涉及 root/admin 的操作会遵守角色层级，普通 admin 不能越权修改 root 或其他高权限用户的敏感设置。
 
 ## 房间管理
 
@@ -355,10 +358,13 @@ synctv review room-join approve <REVIEW_ID>
 synctv review room-join reject <REVIEW_ID> --reason "reason"
 ```
 
-封禁记录：
+封禁记录按资源查询：
 
 ```bash
-synctv ban list
+synctv user bans list
+synctv user bans list --active --user-id <USER_ID>
+synctv room bans list
+synctv room bans list --active false --room-id <ROOM_ID>
 ```
 
 ## 播放列表与媒体

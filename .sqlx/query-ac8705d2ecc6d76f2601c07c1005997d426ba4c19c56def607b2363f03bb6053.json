@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT deleted_at,\n                  deletion_source AS \"deletion_source?: DeletionSource\",\n                  deleted_owner_id AS \"deleted_owner_id: UserId\"\n           FROM chat_messages WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "deleted_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "deleted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "deletion_source?: DeletionSource",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "deletion_source"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "deleted_owner_id: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "deleted_owner_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "ac8705d2ecc6d76f2601c07c1005997d426ba4c19c56def607b2363f03bb6053"
+}

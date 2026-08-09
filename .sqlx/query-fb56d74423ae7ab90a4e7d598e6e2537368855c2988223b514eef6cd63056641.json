@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE file_references fr\n                SET expires_at = COALESCE(fr.expires_at, CURRENT_TIMESTAMP),\n                    updated_at = CURRENT_TIMESTAMP\n                FROM chat_message_attachments a\n                JOIN chat_messages m\n                  ON m.room_id = a.room_id\n                 AND m.id = a.message_id\n                 AND m.created_at = a.message_created_at\n                WHERE (m.user_id = $1 OR m.deleted_owner_id = $1)\n                  AND fr.storage_backend = a.storage_backend\n                  AND fr.object_key = a.object_key\n                  AND fr.reference_kind = 'chat_message_attachment'\n                  AND fr.reference_id = format(\n                      '%s:%s:%s:%s',\n                      a.room_id,\n                      a.message_id,\n                      round(extract(epoch FROM a.message_created_at) * 1000000)::BIGINT,\n                      a.id\n                  )\n                  AND fr.released_at IS NULL\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fb56d74423ae7ab90a4e7d598e6e2537368855c2988223b514eef6cd63056641"
+}

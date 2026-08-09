@@ -222,6 +222,7 @@ pub enum AuditAction {
     SettingsViewed,
     ChatMessageDeleted,
     ContentReportStatusUpdated,
+    UserRestored,
 }
 
 impl AuditAction {
@@ -269,6 +270,7 @@ impl AuditAction {
             Self::SettingsViewed => "settings_viewed",
             Self::ChatMessageDeleted => "chat_message_deleted",
             Self::ContentReportStatusUpdated => "content_report_status_updated",
+            Self::UserRestored => "user_restored",
         }
     }
 
@@ -314,6 +316,7 @@ impl AuditAction {
             Self::SettingsViewed => 37,
             Self::ChatMessageDeleted => 39,
             Self::ContentReportStatusUpdated => 40,
+            Self::UserRestored => 41,
         }
     }
 }
@@ -368,6 +371,7 @@ impl TryFrom<i16> for AuditAction {
             37 => Ok(Self::SettingsViewed),
             39 => Ok(Self::ChatMessageDeleted),
             40 => Ok(Self::ContentReportStatusUpdated),
+            41 => Ok(Self::UserRestored),
             other => Err(format!("Unknown audit action code: {other}")),
         }
     }
@@ -417,6 +421,7 @@ impl FromStr for AuditAction {
             "settings_viewed" => Ok(Self::SettingsViewed),
             "chat_message_deleted" => Ok(Self::ChatMessageDeleted),
             "content_report_status_updated" => Ok(Self::ContentReportStatusUpdated),
+            "user_restored" => Ok(Self::UserRestored),
             other => Err(format!("Unknown audit action: {other}")),
         }
     }

@@ -10,10 +10,10 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
         room_settings::{AllowAutoJoin, MaxMembers, RequireApproval},
-        Media, MediaId, MemberStatus, MyRoomListQuery, PageParams, Playlist, PlaylistId,
-        ReviewRequestId, RoomAdminPermissionBits, RoomId, RoomListQuery, RoomRole, RoomSettings,
-        RoomStatus, SourceProvider, UpsertRoomCategory, UpsertRoomLabel, User, UserId, UserRole,
-        UserStatus,
+        DeletionSource, Media, MediaId, MemberStatus, MyRoomListQuery, PageParams, Playlist,
+        PlaylistId, ReviewRequestId, RoomAdminPermissionBits, RoomId, RoomListQuery, RoomRole,
+        RoomSettings, RoomStatus, SourceProvider, UpsertRoomCategory, UpsertRoomLabel, User,
+        UserId, UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, ReviewRepository, RoomMemberRepository,
@@ -4998,7 +4998,7 @@ async fn test_list_accessible_rooms_excludes_rooms_with_inactive_creator() {
 
     room_service
         .user_service()
-        .ban_user_and_cleanup_memberships(&inactive_owner.id, None, None)
+        .ban_user(&inactive_owner.id, None, None)
         .await
         .checked("test operation should succeed");
 
@@ -5026,7 +5026,7 @@ async fn test_list_accessible_rooms_excludes_rooms_with_inactive_creator() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator() {
+async fn test_list_accessible_joined_rooms_retains_rooms_with_banned_creator() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -5076,7 +5076,7 @@ async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator(
 
     room_service
         .user_service()
-        .ban_user_and_cleanup_memberships(&inactive_owner.id, None, None)
+        .ban_user(&inactive_owner.id, None, None)
         .await
         .checked("test operation should succeed");
 
@@ -5091,16 +5091,10 @@ async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator(
         .await
         .checked("test operation should succeed");
 
-    assert_eq!(
-        total, 1,
-        "joined-room total should exclude rooms whose creator is inactive"
-    );
-    assert_eq!(
-        rooms.len(),
-        1,
-        "joined-room list should exclude rooms whose creator is inactive"
-    );
-    assert_eq!(rooms[0].0.id, visible_room.id);
+    assert_eq!(total, 2, "both joined rooms should be counted");
+    assert_eq!(rooms.len(), 2, "both joined rooms should be listed");
+    assert!(rooms.iter().any(|entry| entry.0.id == visible_room.id));
+    assert!(rooms.iter().any(|entry| entry.0.id == hidden_room.id));
 }
 
 #[tokio::test]
@@ -5498,10 +5492,10 @@ async fn test_concurrent_joins_cannot_exceed_max_members() {
     );
 }
 
-/// Soft-delete marks the room deleted and removes non-critical room data.
+/// Soft-delete retains the recoverable aggregate and removes volatile room data.
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
+async fn test_soft_delete_retains_recoverable_data_and_cleans_up_volatile_data() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -5595,6 +5589,15 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
     .checked("test operation should succeed");
     assert_eq!(playback_count_before, 1, "Should have playback state");
 
+    let chat_count_before: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM chat_messages WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
+    assert!(chat_count_before > 0, "Should have system chat messages");
+
     room_service
         .delete_room(room.id, owner.id)
         .await
@@ -5608,8 +5611,6 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
     .await
     .checked("test operation should succeed");
     assert!(deleted_at.is_some(), "Room should be soft-deleted");
-
-    // This is the key optimization - these should be gone, not waiting 90 days
 
     let member_count_after: i64 = sqlx::query_scalar!(
         r#"SELECT COUNT(*) AS "count!" FROM room_members WHERE room_id = $1"#,
@@ -5631,9 +5632,18 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
     .await
     .checked("test operation should succeed");
     assert_eq!(
-        playlist_count_after, 0,
-        "Playlists should be immediately cleaned up"
+        playlist_count_after, playlist_count_before,
+        "Playlists should remain available for room recovery"
     );
+    let deleted_playlist_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM playlists WHERE room_id = $1 AND deleted_at IS NOT NULL AND deletion_source = $2",
+    )
+    .bind(room.id.as_i64())
+    .bind(DeletionSource::Room)
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
+    assert_eq!(deleted_playlist_count, playlist_count_before);
 
     let media_count_after: i64 = sqlx::query_scalar!(
         r#"SELECT COUNT(*) AS "count!" FROM media WHERE room_id = $1"#,
@@ -5643,9 +5653,18 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
     .await
     .checked("test operation should succeed");
     assert_eq!(
-        media_count_after, 0,
-        "Media should be immediately cleaned up"
+        media_count_after, media_count_before,
+        "Media should remain available for room recovery"
     );
+    let deleted_media_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM media WHERE room_id = $1 AND deleted_at IS NOT NULL AND deletion_source = $2",
+    )
+    .bind(room.id.as_i64())
+    .bind(DeletionSource::Room)
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
+    assert_eq!(deleted_media_count, media_count_before);
 
     let settings_count_after: i64 = sqlx::query_scalar!(
         r#"SELECT COUNT(*) AS "count!" FROM room_settings WHERE room_id = $1"#,
@@ -5655,8 +5674,8 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
     .await
     .checked("test operation should succeed");
     assert_eq!(
-        settings_count_after, 0,
-        "Settings should be immediately cleaned up"
+        settings_count_after, settings_count_before,
+        "Settings should remain available for room recovery"
     );
 
     let playback_count_after: i64 = sqlx::query_scalar!(
@@ -5679,9 +5698,18 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
     .await
     .checked("test operation should succeed");
     assert_eq!(
-        chat_count_after, 0,
-        "Chat messages should be immediately cleaned up"
+        chat_count_after, chat_count_before,
+        "Chat messages should remain available for room recovery"
     );
+    let deleted_chat_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM chat_messages WHERE room_id = $1 AND deleted_at IS NOT NULL AND deletion_source = $2",
+    )
+    .bind(room.id.as_i64())
+    .bind(DeletionSource::Room)
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
+    assert_eq!(deleted_chat_count, chat_count_before);
 
     let room_exists = sqlx::query_scalar!(
         r#"SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1) AS "exists!""#,
@@ -6374,7 +6402,7 @@ async fn test_create_room_rejects_banned_creator_in_service_layer() {
         .await
         .checked("test operation should succeed");
     user_service
-        .ban_user_and_cleanup_memberships(&owner.id, None, Some("test ban".to_string()))
+        .ban_user(&owner.id, None, Some("test ban".to_string()))
         .await
         .checked("test operation should succeed");
 
@@ -6666,7 +6694,7 @@ async fn test_approve_pending_room_rejects_creator_banned_after_request() {
         .checked("request should be accepted while creator is active");
 
     user_service
-        .ban_user_and_cleanup_memberships(&owner.id, None, Some("test ban".to_string()))
+        .ban_user(&owner.id, None, Some("test ban".to_string()))
         .await
         .checked("test operation should succeed");
 

@@ -1,0 +1,181 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id as \"id: PlaylistId\",\n                   room_id as \"room_id: RoomId\",\n                   creator_id as \"creator_id: crate::models::UserId\",\n                   name,\n                   description,\n                   cover_file_reference_id,\n                   parent_id as \"parent_id: PlaylistId\",\n                   position,\n                   source_provider,\n                   source_config as \"source_config: crate::models::PlaylistSourceConfig\",\n                   NULLIF(provider_instance_name, '') AS \"provider_instance_name?\",\n                   created_at,\n                   updated_at,\n                   version\n            FROM playlists p\n            WHERE p.room_id = $1\n              AND p.deleted_at IS NULL\n              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)\n              AND (p.creator_id IS NULL OR EXISTS (\n                  SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL\n              ))\n              AND (p.parent_id IS NULL OR EXISTS (\n                  SELECT 1\n                  FROM playlists parent\n                  WHERE parent.id = p.parent_id\n                    AND parent.deleted_at IS NULL\n                    AND (parent.creator_id IS NULL OR EXISTS (\n                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL\n                    ))\n              ))\n            ORDER BY parent_id NULLS FIRST, position ASC\n            LIMIT $2 OFFSET $3\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: PlaylistId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "playlists",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "playlists",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "creator_id: crate::models::UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "playlists",
+            "name": "creator_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "playlists",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "playlists",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "cover_file_reference_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "playlists",
+            "name": "cover_file_reference_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "parent_id: PlaylistId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "playlists",
+            "name": "parent_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "position",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "playlists",
+            "name": "position"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "source_provider",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "playlists",
+            "name": "source_provider"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "source_config: crate::models::PlaylistSourceConfig",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "playlists",
+            "name": "source_config"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "provider_instance_name?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 11,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "playlists",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "playlists",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "playlists",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      null,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "29817f9c04cf30a00e9927e20357e3e188e2a5b8b91d251142f76341f2a9c058"
+}

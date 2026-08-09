@@ -1425,6 +1425,7 @@ mod tests {
             is_banned: None,
             sort_by: 99,
             sort_direction: 99,
+            include_deleted: false,
         };
         let user_rooms = crate::admin::GetUserRoomsRequest {
             user_id: "abc123def456".into(),
@@ -1512,6 +1513,7 @@ mod tests {
             is_banned: Some(false),
             sort_by: crate::admin::UserListSortBy::Unspecified as i32,
             sort_direction: crate::admin::SortDirection::Unspecified as i32,
+            include_deleted: false,
         })
         .unwrap();
 

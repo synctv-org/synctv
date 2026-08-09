@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE playlists SET deleted_at = CURRENT_TIMESTAMP, deletion_source = $2, version = version + 1 WHERE id = ANY($1) AND deleted_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f6997e57f8294eb3629df085b15d7ec9bb5d2d4bccb463e095b7fc8fc7988eb9"
+}

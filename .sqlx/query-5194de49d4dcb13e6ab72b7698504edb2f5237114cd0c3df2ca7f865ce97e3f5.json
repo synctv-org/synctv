@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM room_creation_requests WHERE requested_by = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5194de49d4dcb13e6ab72b7698504edb2f5237114cd0c3df2ca7f865ce97e3f5"
+}

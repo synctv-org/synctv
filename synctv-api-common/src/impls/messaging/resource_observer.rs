@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
-    models::{ChatMessageSelection, RoomId, UserId},
+    models::{ChatEventKind, ChatMessageSelection, RoomId, UserId},
     service::{
         ChatService, OnlinePresenceService, RoomResourceEventPayload, RoomResourceKind, RoomService,
     },
@@ -1650,33 +1650,67 @@ impl MediaResourceHub {
                             }
                         }
                     }
-                    ResourceInvalidation::ChatEvents { event } => {
-                        if !chat_event_visible_to_observation(observation, event) {
+                    ResourceInvalidation::ChatEvents { event: chat_event } => {
+                        if !chat_event_visible_to_observation(observation, chat_event) {
                             continue;
                         }
+                        if chat_event.kind == ChatEventKind::Deleted
+                            && chat_event.message.message.delete_reason.as_deref()
+                                == Some("account closure")
+                        {
+                            if let RealtimeEvent::ChatMessageEvent {
+                                event: incoming_event,
+                                ..
+                            } = event
+                            {
+                                if let Ok(Some(current)) = observer
+                                    .room_service
+                                    .get_chat_message_from_primary(
+                                        &incoming_event.room_id,
+                                        incoming_event.message.message.id,
+                                    )
+                                    .await
+                                {
+                                    if current.deleted_at.is_none() {
+                                        // A delayed account-delete outbox
+                                        // event must not hide a message
+                                        // restored since it was queued.
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
                         let mut updated_observation = observation.clone();
-                        let cursor = event_cursor_for_chat_event(event);
+                        let cursor = event_cursor.clone().unwrap_or_else(|| {
+                            synctv_proto::client::EventCursor {
+                                event_id: Some(chat_event.event_id.clone()),
+                                sequence: chat_event
+                                    .sequence
+                                    .max(observation.last_sent_event_sequence.saturating_add(1)),
+                            }
+                        });
                         if !ResourceObserver::apply_event_cursor_to_observation(
                             &mut updated_observation,
                             &cursor,
                         ) {
                             continue;
                         }
-                        let event_payload = match observer.chat_message_event_to_proto(event).await
-                        {
-                            Ok(event) => event,
-                            Err(error) => {
-                                tracing::warn!(
-                                    room_id = %observer.room_id,
-                                    user_id = %observer.user_id,
-                                    observe_id = %updated_observation.observe_id,
-                                    error = %error,
-                                    "Failed to convert chat event for resource observer"
-                                );
-                                event_outcome.record_send_failure(key.connection_id.clone(), error);
-                                continue;
-                            }
-                        };
+                        let event_payload =
+                            match observer.chat_message_event_to_proto(chat_event).await {
+                                Ok(event) => event,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        room_id = %observer.room_id,
+                                        user_id = %observer.user_id,
+                                        observe_id = %updated_observation.observe_id,
+                                        error = %error,
+                                        "Failed to convert chat event for resource observer"
+                                    );
+                                    event_outcome
+                                        .record_send_failure(key.connection_id.clone(), error);
+                                    continue;
+                                }
+                            };
                         let changed = synctv_proto::client::ResourceEvent {
                             observe_id: updated_observation.observe_id.clone(),
                             payload: Some(
@@ -2941,7 +2975,11 @@ impl ResourceObserver {
                 ResourceInvalidation::RoomMemberEvents | ResourceInvalidation::RoomSettings
             ),
             ObservedResource::ChatEvents { .. } => {
-                matches!(invalidation, ResourceInvalidation::ChatEvents { .. })
+                matches!(
+                    invalidation,
+                    ResourceInvalidation::ChatEvents { .. }
+                        | ResourceInvalidation::ChatEventsSnapshot
+                )
             }
             ObservedResource::ChatPinEvents => {
                 matches!(invalidation, ResourceInvalidation::ChatPinEvents { .. })

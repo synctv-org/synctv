@@ -137,7 +137,7 @@ async fn test_banned_user_returns_unified_error_message() {
     let user = register_test_user(&user_service, "banned_test_user", "banned@example.com").await;
 
     user_service
-        .ban_user_and_cleanup_memberships(&user.id, None, None)
+        .ban_user(&user.id, None, None)
         .await
         .expect("Failed to ban user");
 
@@ -240,7 +240,7 @@ async fn test_all_failure_scenarios_return_identical_error_messages() {
     )
     .await;
     user_service
-        .ban_user_and_cleanup_memberships(&banned_user.id, None, None)
+        .ban_user(&banned_user.id, None, None)
         .await
         .unwrap();
     let result = AdminAuthValidator::new(&user_service)

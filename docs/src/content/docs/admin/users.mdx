@@ -3,7 +3,7 @@ title: 用户管理
 description: 管理 SyncTV 用户、全局角色、封禁状态、账号安全状态和敏感操作边界。
 ---
 
-用户有全局角色、有效状态和安全偏好。平台管理员处理用户问题时，先判断问题是账号状态、认证方式、全局角色还是房间内权限。
+用户有全局角色、有效状态和安全偏好。平台管理员处理用户问题时，先判断问题是账号状态、认证方式、全局角色还是房间内权限。删除、恢复和资源级联规则见[资源生命周期](../../operations/resource-lifecycle/)。
 
 ## 用户状态
 
@@ -26,8 +26,12 @@ description: 管理 SyncTV 用户、全局角色、封禁状态、账号安全�
 synctv user list
 synctv user get alice
 synctv user create alice --email alice@example.com
+synctv user list --include-deleted
 synctv user ban alice --reason "abuse"
 synctv user unban alice
+synctv user bans list --active
+synctv user restore alice
+synctv user restore alice --ignore-identity-conflicts
 synctv user set-role alice admin
 synctv user preferences get alice
 ```
@@ -37,6 +41,7 @@ synctv user preferences get alice
 | 场景 | 推荐处理 |
 | --- | --- |
 | 用户违规 | 优先 `ban`，保留原因，避免直接删除造成审计断点 |
+| 恢复账号 | 在用户保留期内使用 `user restore`；身份占用时先处理冲突 |
 | 找回账号 | 先确认身份和绑定方式，再调整密码、邮箱或 2FA |
 | 提升管理员 | 使用 root 操作，并记录授权原因 |
 | 修改 2FA 偏好 | 确认用户至少有两种本地验证方式 |

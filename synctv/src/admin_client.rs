@@ -383,10 +383,10 @@ mod tests {
         ListUsersRequest, MoveMediaRequest, MovePlaylistRequest, PurgeSliceCacheRequest,
         RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
         RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
-        SearchChatMessagesRequest, SendTestEmailRequest, SetUserPasswordRequest,
-        StartPlaybackRequest, StopPlaybackRequest, StopServerEvent, StopServerRequest,
-        TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest, UnfavoriteRoomRequest,
-        UpdateMemberDisplayTagRequest, UpdateMemberPermissionsRequest,
+        RestoreUserRequest, SearchChatMessagesRequest, SendTestEmailRequest,
+        SetUserPasswordRequest, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
+        StopServerRequest, TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest,
+        UnfavoriteRoomRequest, UpdateMemberDisplayTagRequest, UpdateMemberPermissionsRequest,
         UpdateMemberRemarkNameRequest, UpdatePlaybackStateRequest, UpdatePlaylistRequest,
         UpdateRoomPasswordRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
         UpdateUserUsernameRequest,
@@ -1180,6 +1180,12 @@ mod tests {
             &self,
             _: Request<DeleteUserRequest>,
         ) -> std::result::Result<Response<admin_proto::DeleteUserResponse>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn restore_user(
+            &self,
+            _: Request<RestoreUserRequest>,
+        ) -> std::result::Result<Response<admin_proto::RestoreUserResponse>, Status> {
             unavailable_test_management_response()
         }
         async fn ban_user(

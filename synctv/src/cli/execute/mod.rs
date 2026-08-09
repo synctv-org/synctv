@@ -81,7 +81,6 @@ mod stop;
 mod system;
 mod user;
 
-use ban::execute_ban;
 use config::execute_config;
 use db::execute_db;
 use media::execute_media;
@@ -129,7 +128,6 @@ pub async fn execute(cli: Cli) -> Result<()> {
         Commands::User(user) => execute_user(user).await,
         Commands::Room(room) => Box::pin(execute_room(room)).await,
         Commands::Review(review) => execute_review(review).await,
-        Commands::Ban(ban) => execute_ban(ban).await,
         Commands::Playlist(playlist) => execute_playlist(playlist).await,
         Commands::Media(media) => execute_media(media).await,
         Commands::Provider(provider) => execute_provider(provider).await,
@@ -164,7 +162,6 @@ pub(in crate::cli) fn apply_root_global_overrides(mut cli: Cli) -> Cli {
         Commands::User(command) => merge_user_command_globals(command, &root),
         Commands::Room(command) => merge_room_command_globals(command, &root),
         Commands::Review(command) => merge_review_command_globals(command, &root),
-        Commands::Ban(command) => merge_ban_command_globals(command, &root),
         Commands::Playlist(command) => merge_playlist_command_globals(command, &root),
         Commands::Media(command) => merge_media_command_globals(command, &root),
         Commands::ProviderInstance(command) => {
@@ -222,12 +219,6 @@ fn merge_review_command_globals(command: &mut ReviewCommand, root: &GlobalConfig
     }
 }
 
-fn merge_ban_command_globals(command: &mut BanCommand, root: &GlobalConfigArgs) {
-    match &mut command.command {
-        BanSubcommand::List(args) => merge_remote_access_args(&mut args.remote, root),
-    }
-}
-
 fn merge_room_scoped_remote_args(room: &mut RoomScopedRemoteArgs, root: &GlobalConfigArgs) {
     merge_remote_access_args(&mut room.remote, root);
 }
@@ -238,8 +229,12 @@ fn merge_user_command_globals(command: &mut UserCommand, root: &GlobalConfigArgs
         UserSubcommand::Get(args) => merge_remote_access_args(&mut args.remote, root),
         UserSubcommand::Create(args) => merge_remote_access_args(&mut args.remote, root),
         UserSubcommand::Delete(args) => merge_remote_access_args(&mut args.remote, root),
+        UserSubcommand::Restore(args) => merge_remote_access_args(&mut args.remote, root),
         UserSubcommand::Ban(args) => merge_remote_access_args(&mut args.remote, root),
         UserSubcommand::Unban(args) => merge_remote_access_args(&mut args.remote, root),
+        UserSubcommand::Bans(command) => match &mut command.command {
+            UserBansSubcommand::List(args) => merge_remote_access_args(&mut args.remote, root),
+        },
         UserSubcommand::SetRole(args) => merge_remote_access_args(&mut args.remote, root),
         UserSubcommand::SetPassword(args) => merge_remote_access_args(&mut args.remote, root),
         UserSubcommand::SetUsername(args) => merge_remote_access_args(&mut args.remote, root),
@@ -279,6 +274,9 @@ fn merge_room_command_globals(command: &mut RoomCommand, root: &GlobalConfigArgs
         RoomSubcommand::SetPassword(args) => merge_remote_access_args(&mut args.remote, root),
         RoomSubcommand::Ban(args) => merge_remote_access_args(&mut args.remote, root),
         RoomSubcommand::Unban(args) => merge_remote_access_args(&mut args.remote, root),
+        RoomSubcommand::Bans(command) => match &mut command.command {
+            RoomBansSubcommand::List(args) => merge_remote_access_args(&mut args.remote, root),
+        },
         RoomSubcommand::Delete(args) => merge_remote_access_args(&mut args.remote, root),
         RoomSubcommand::Settings(command) => match &mut command.command {
             RoomSettingsSubcommand::Get(args) => merge_remote_access_args(&mut args.remote, root),

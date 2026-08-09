@@ -13,6 +13,7 @@ fn test_user_list_order_clause_supports_username_ascending() {
         sort_by: crate::models::UserListSortBy::Username,
         sort_direction: crate::models::SortDirection::Asc,
         pagination: crate::models::PageParams::default(),
+        include_deleted: false,
     };
 
     assert_eq!(UserRepository::order_by_sql(&query), "username ASC, id ASC");
@@ -28,6 +29,7 @@ fn test_user_list_order_clause_supports_effective_status() {
         sort_by: crate::models::UserListSortBy::Status,
         sort_direction: crate::models::SortDirection::Desc,
         pagination: crate::models::PageParams::default(),
+        include_deleted: false,
     };
 
     assert_eq!(
@@ -46,6 +48,7 @@ fn test_user_list_order_clause_supports_email_nulls_last() {
         sort_by: crate::models::UserListSortBy::Email,
         sort_direction: crate::models::SortDirection::Asc,
         pagination: crate::models::PageParams::default(),
+        include_deleted: false,
     };
 
     assert_eq!(
@@ -84,6 +87,7 @@ async fn test_list_filters_by_search_and_role_with_total() {
         sort_by: crate::models::UserListSortBy::Username,
         sort_direction: crate::models::SortDirection::Asc,
         pagination: crate::models::PageParams::new(Some(1), Some(10)),
+        include_deleted: false,
     };
     let (users, total) = repo.list(&query).await.checked("operation should succeed");
     let usernames: Vec<_> = users.iter().map(|user| user.username.as_str()).collect();
@@ -129,6 +133,7 @@ async fn test_list_admins_returns_root_and_admin_only() {
         sort_by: crate::models::UserListSortBy::Username,
         sort_direction: crate::models::SortDirection::Asc,
         pagination: crate::models::PageParams::new(Some(1), Some(10)),
+        include_deleted: false,
     };
     let (users, total) = repo
         .list_admins(&query)

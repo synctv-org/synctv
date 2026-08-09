@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                DELETE FROM chat_message_events e\n                WHERE e.actor_user_id = $1\n                   OR EXISTS (\n                       SELECT 1\n                       FROM chat_messages m\n                       WHERE m.room_id = e.room_id\n                         AND m.id = e.message_id\n                         AND m.created_at = e.message_created_at\n                         AND m.user_id = $1\n                   )\n                   OR EXISTS (\n                       SELECT 1\n                       FROM chat_message_mentions mention\n                       WHERE mention.room_id = e.room_id\n                         AND mention.message_id = e.message_id\n                         AND mention.message_created_at = e.message_created_at\n                         AND mention.mentioned_user_id = $1\n                   )\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "945c8fcc0e2d95417b646ef40261e0ef10303b4bc216985b3bed772dfb2c8ed3"
+}

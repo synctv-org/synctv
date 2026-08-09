@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT (\n                   (SELECT COUNT(*) FROM playlists WHERE id = ANY($1))\n                   + (SELECT COUNT(*) FROM media WHERE id = $2)\n               ) AS \"count!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "99762add84e69ceeaf8fa25f1be3087146601e36883d6e8bdd36300c3db0231b"
+}

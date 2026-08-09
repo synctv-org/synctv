@@ -27,6 +27,7 @@ pub(super) async fn execute_user(user_command: UserCommand) -> Result<()> {
                     ),
                     sort_direction: args.sort_dir.to_proto(),
                     is_banned: None,
+                    include_deleted: args.include_deleted,
                 }
             )?;
             args.remote.print_output(&response)
@@ -107,6 +108,21 @@ pub(super) async fn execute_user(user_command: UserCommand) -> Result<()> {
             )?;
             args.remote.print_output(&response)
         }
+        UserSubcommand::Restore(args) => {
+            let session = connect_remote_access(&args.remote).await?;
+            let (user_id, username) = args.user.to_management_selector()?;
+            let response = management_unary_call!(
+                session,
+                "restore user",
+                restore_user,
+                management_proto::RestoreUserRequest {
+                    user_id,
+                    username,
+                    ignore_identity_conflicts: args.ignore_identity_conflicts,
+                }
+            )?;
+            args.remote.print_output(&response)
+        }
         UserSubcommand::Ban(args) => {
             let session = connect_remote_access(&args.remote).await?;
             let (user_id, username) = args.user.to_management_selector()?;
@@ -133,6 +149,20 @@ pub(super) async fn execute_user(user_command: UserCommand) -> Result<()> {
             )?;
             args.remote.print_output(&response)
         }
+        UserSubcommand::Bans(command) => match command.command {
+            UserBansSubcommand::List(args) => {
+                super::ban::execute_ban_records_list(
+                    &args.remote,
+                    synctv_proto::admin::BanTargetType::User as i32,
+                    args.active,
+                    args.user_id.unwrap_or_default(),
+                    String::new(),
+                    args.page,
+                    args.page_size,
+                )
+                .await
+            }
+        },
         UserSubcommand::SetRole(args) => {
             let session = connect_remote_access(&args.remote).await?;
             let role = args.resolved_role();

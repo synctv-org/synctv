@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id\n            FROM auth_oauth2_identities\n            WHERE deletion_source = $3\n              AND deleted_at <= NOW() - make_interval(days => $1)\n            ORDER BY deleted_at ASC, id ASC\n            LIMIT $2\n            FOR UPDATE SKIP LOCKED\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "auth_oauth2_identities",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "133937f1cceaeeae64e2d508e4115f35a3e46de1a5e85a7b43b5e4a8087f7c13"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE room_playback_state\n            SET playing_media_id = NULL,\n                playing_playlist_id = NULL,\n                target = NULL,\n                current_progress_id = NULL,\n                speed = 1.0,\n                is_playing = FALSE,\n                playback_generation = playback_generation + 1,\n                version = version + 1,\n                updated_at = CURRENT_TIMESTAMP\n            WHERE playing_media_id = ANY($1)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e4fa192e75a39ba4a5a9c12fe1e2e7a97d51a0030a5e3d326b60a33cc0876251"
+}

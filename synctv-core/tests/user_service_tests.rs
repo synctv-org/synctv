@@ -10,14 +10,14 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
 use sqlx::PgPool;
 use synctv_core::{
-    cache::{CacheDomain, KeyBuilder, LocalVersionFenceStore, UsernameCache, VersionFenceStore},
+    cache::{KeyBuilder, LocalVersionFenceStore, UsernameCache, VersionFenceStore},
     models::{
-        Media, MediaId, MemberStatus, NotificationType, Playlist, PlaylistId, Room, RoomId,
-        RoomMember, RoomStatus, SignupMethod, SourceProvider, User, UserId, UserRole, UserStatus,
-        OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID, OPAQUE_SERVER_SETUP_VERSION,
+        DeletionSource, Media, MediaId, MemberStatus, NotificationType, Playlist, PlaylistId, Room,
+        RoomId, RoomMember, RoomStatus, SignupMethod, SourceProvider, User, UserId, UserRole,
+        UserStatus, OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID, OPAQUE_SERVER_SETUP_VERSION,
     },
     repository::{
-        MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository,
+        ChatRepository, MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository,
         SettingsRepository, UserEmailRepository, UserPasswordRepository, UserRepository,
         WebAuthnCredentialRepository,
     },
@@ -26,8 +26,8 @@ use synctv_core::{
         AuthenticatedLogin, BruteForceProtection, InMemoryTokenBlacklistStore, JwtService,
         OpaquePasswordService, PasskeyService, PasskeyServiceOptions, PermissionService,
         PermissionServiceRuntime, RuntimeSettingsStore, SecurityPipeline, SecurityPipelineRuntime,
-        SensitiveVerificationOutcome, SettingsService, TokenAuthContext, UserService,
-        UserServiceRuntimeOptions,
+        SensitiveVerificationOutcome, SettingsService, TokenAuthContext, UserRestoreOptions,
+        UserService, UserServiceRuntimeOptions,
     },
     validation::PasswordComplexityOptions,
     Error,
@@ -846,6 +846,10 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         .create(&make_user("other_creator"))
         .await
         .checked("create other creator");
+    UserEmailRepository::new(pool.clone())
+        .create_for_user_with_executor(&doomed_user, Some("delete-owner@example.com"), &pool)
+        .await
+        .checked("create retained email identity");
 
     let owned_room = room_repo
         .create(&make_room("owned room", &doomed_user.id))
@@ -933,6 +937,20 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         ))
         .await
         .checked("create surviving media");
+    let explicitly_deleted_media = media_repo
+        .create(&make_media(
+            &foreign_room.id,
+            Some(&survivor_playlist.id),
+            &doomed_user.id,
+            "explicitly deleted before account closure",
+            1,
+        ))
+        .await
+        .checked("create explicitly deleted media");
+    assert!(media_repo
+        .delete(&explicitly_deleted_media.id)
+        .await
+        .checked("soft-delete media before account closure"));
 
     let foreign_progress_id: i64 = sqlx::query_scalar!(
         r#"INSERT INTO room_playback_progress
@@ -999,6 +1017,30 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     .execute(&pool)
     .await
     .checked("create chat message");
+    sqlx::query!(
+        "INSERT INTO chat_messages (room_id, user_id, content, message_type, created_at)
+         VALUES ($1, $2, $3, 1, NOW())",
+        owned_room.id.as_i64(),
+        doomed_user.id.as_i64(),
+        "owned room history"
+    )
+    .execute(&pool)
+    .await
+    .checked("create owned room chat message");
+    let foreign_chat_message_id = sqlx::query_scalar!(
+        "SELECT id AS \"id!\" FROM chat_messages WHERE room_id = $1 AND user_id = $2 AND content = $3 ORDER BY id DESC LIMIT 1",
+        foreign_room.id.as_i64(),
+        doomed_user.id.as_i64(),
+        "hello",
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("load foreign chat message id");
+
+    let pending_bind_token = service
+        .start_email_bind(&doomed_user.id, "pending-delete-bind@example.com")
+        .await
+        .checked("create pending email bind request");
 
     let summary = service
         .delete_user_with_summary(&doomed_user.id)
@@ -1009,6 +1051,16 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     assert_eq!(summary.username, doomed_user.username);
     assert_eq!(summary.deleted_room_ids, vec![owned_room.id]);
     assert_eq!(summary.membership_room_ids, vec![foreign_room.id]);
+    assert_eq!(
+        summary.affected_room_ids,
+        vec![owned_room.id, foreign_room.id]
+    );
+    assert_eq!(summary.deleted_chat_messages.len(), 1);
+    assert_eq!(summary.deleted_chat_messages[0].room_id, foreign_room.id);
+    assert_eq!(
+        summary.deleted_chat_messages[0].message_id,
+        foreign_chat_message_id
+    );
     assert_eq!(summary.modified_rooms.len(), 1);
     assert_eq!(summary.modified_rooms[0].room_id, foreign_room.id);
     assert_eq!(
@@ -1124,14 +1176,54 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     );
     assert!(!playback_row.is_playing, "playback must be stopped");
 
-    let oauth2_count: i64 = sqlx::query_scalar!(
-        r#"SELECT COUNT(*) AS "count!" FROM auth_oauth2_identities WHERE user_id = $1"#,
+    let oauth2_identity = sqlx::query!(
+        r#"SELECT deleted_at,
+                  deletion_source AS "deletion_source?: DeletionSource"
+           FROM auth_oauth2_identities WHERE user_id = $1"#,
         doomed_user.id.as_i64()
     )
     .fetch_one(&pool)
     .await
-    .checked("count oauth2 mappings");
-    assert_eq!(oauth2_count, 0, "oauth2 mappings must be deleted");
+    .checked("query retained oauth2 mapping");
+    assert!(oauth2_identity.deleted_at.is_some());
+    assert_eq!(
+        oauth2_identity.deletion_source,
+        Some(DeletionSource::Account)
+    );
+
+    assert_eq!(
+        service
+            .get_email(&doomed_user.id)
+            .await
+            .checked("load active email after deletion"),
+        None
+    );
+    assert_eq!(
+        service
+            .get_email_for_admin(&doomed_user.id)
+            .await
+            .checked("load retained recovery email"),
+        Some("delete-owner@example.com".to_string())
+    );
+
+    let pending_bind_count: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!"
+           FROM auth_email_bind_requests
+           WHERE user_id = $1"#,
+        doomed_user.id.as_i64(),
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("count pending email bind requests after deletion");
+    assert_eq!(pending_bind_count, 0);
+    assert!(!service
+        .is_email_bind_token_active(
+            &doomed_user.id,
+            "pending-delete-bind@example.com",
+            &pending_bind_token,
+        )
+        .await
+        .checked("check revoked email bind token"));
 
     let notification_count: i64 = sqlx::query_scalar!(
         r#"SELECT COUNT(*) AS "count!" FROM notifications WHERE user_id = $1"#,
@@ -1151,9 +1243,299 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     .checked("query chat messages");
     assert_eq!(
         chat_user_ids,
-        vec![None],
-        "chat author should be anonymized"
+        vec![Some(doomed_user.id)],
+        "surviving-room chat keeps its author during the recovery window"
     );
+    let foreign_chat_lifecycle = sqlx::query!(
+        r#"SELECT deleted_at,
+                  deletion_source AS "deletion_source?: DeletionSource",
+                  deleted_owner_id AS "deleted_owner_id: UserId"
+           FROM chat_messages WHERE id = $1"#,
+        foreign_chat_message_id,
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("query surviving-room chat lifecycle");
+    assert!(foreign_chat_lifecycle.deleted_at.is_some());
+    assert_eq!(
+        foreign_chat_lifecycle.deletion_source,
+        Some(DeletionSource::Account)
+    );
+    assert_eq!(
+        foreign_chat_lifecycle.deleted_owner_id,
+        Some(doomed_user.id)
+    );
+    let chat_repository = ChatRepository::new(pool.clone());
+    assert!(chat_repository
+        .get_by_room_and_id(&foreign_room.id, foreign_chat_message_id)
+        .await
+        .checked("account-deleted chat should be hidden")
+        .is_none());
+
+    let owned_chat = sqlx::query!(
+        r#"SELECT deleted_at,
+                  deletion_source AS "deletion_source?: DeletionSource",
+                  deleted_owner_id AS "deleted_owner_id: UserId"
+           FROM chat_messages WHERE room_id = $1"#,
+        owned_room.id.as_i64(),
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("query owned room chat lifecycle");
+    assert!(owned_chat.deleted_at.is_some());
+    assert_eq!(owned_chat.deletion_source, Some(DeletionSource::Account));
+    assert_eq!(owned_chat.deleted_owner_id, Some(doomed_user.id));
+
+    let propagated_resources = sqlx::query!(
+        r#"SELECT deletion_source AS "deletion_source?: DeletionSource",
+                  deleted_owner_id AS "deleted_owner_id: UserId"
+           FROM playlists
+           WHERE id = ANY($1)
+           UNION ALL
+           SELECT deletion_source, deleted_owner_id
+           FROM media
+           WHERE id = ANY($2)"#,
+        &[owned_playlist.id.as_i64(), foreign_playlist.id.as_i64()],
+        &[owned_media.id.as_i64(), foreign_media.id.as_i64()],
+    )
+    .fetch_all(&pool)
+    .await
+    .checked("query propagated resource lifecycle");
+    assert_eq!(propagated_resources.len(), 4);
+    for row in propagated_resources {
+        assert_eq!(row.deletion_source, Some(DeletionSource::Account));
+        assert_eq!(row.deleted_owner_id, Some(doomed_user.id));
+    }
+
+    let explicit_lifecycle = sqlx::query!(
+        r#"SELECT deleted_at,
+                  deletion_source AS "deletion_source?: DeletionSource",
+                  deleted_owner_id AS "deleted_owner_id: UserId"
+           FROM media WHERE id = $1"#,
+        explicitly_deleted_media.id.as_i64(),
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("query explicitly deleted media lifecycle");
+    assert!(explicit_lifecycle.deleted_at.is_some());
+    assert_eq!(
+        explicit_lifecycle.deletion_source,
+        Some(DeletionSource::User)
+    );
+    assert_eq!(explicit_lifecycle.deleted_owner_id, None);
+
+    let restored = service
+        .restore_user(&doomed_user.id, UserRestoreOptions::default())
+        .await
+        .checked("restore account during retention window");
+    assert_eq!(restored.user.username, doomed_user.username);
+    assert!(restored.released_identities.is_empty());
+    assert_eq!(restored.restored_room_ids, vec![owned_room.id]);
+
+    assert!(room_repo
+        .get_by_id(&owned_room.id)
+        .await
+        .checked("load restored room")
+        .is_some());
+    assert!(playlist_repo
+        .get_by_id(&owned_playlist.id)
+        .await
+        .checked("load restored owned playlist")
+        .is_some());
+    assert!(media_repo
+        .get_by_id(&owned_media.id)
+        .await
+        .checked("load restored owned media")
+        .is_some());
+    assert!(playlist_repo
+        .get_by_id(&foreign_playlist.id)
+        .await
+        .checked("load restored foreign-room playlist")
+        .is_some());
+    assert!(media_repo
+        .get_by_id(&foreign_media.id)
+        .await
+        .checked("load restored foreign-room media")
+        .is_some());
+    assert!(media_repo
+        .get_by_id(&explicitly_deleted_media.id)
+        .await
+        .checked("load explicitly deleted media after restore")
+        .is_none());
+
+    let restored_owned_chat_deleted_at = sqlx::query_scalar!(
+        "SELECT deleted_at FROM chat_messages WHERE room_id = $1",
+        owned_room.id.as_i64(),
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("query restored owned room chat");
+    assert!(restored_owned_chat_deleted_at.is_none());
+    let restored_foreign_chat = chat_repository
+        .get_by_room_and_id(&foreign_room.id, foreign_chat_message_id)
+        .await
+        .checked("restored foreign-room chat should be visible");
+    assert_eq!(
+        restored_foreign_chat.map(|message| message.content),
+        Some("hello".to_string())
+    );
+
+    let creator_membership = room_member_repo
+        .get(&owned_room.id, &doomed_user.id)
+        .await
+        .checked("load restored creator membership")
+        .checked("creator membership should be restored");
+    assert_eq!(
+        creator_membership.role,
+        synctv_core::models::RoomRole::Creator
+    );
+    let lifecycle = sqlx::query!(
+        "SELECT version, is_member FROM room_member_versions WHERE room_id = $1 AND user_id = $2",
+        owned_room.id.as_i64(),
+        doomed_user.id.as_i64(),
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("query restored creator membership lifecycle");
+    assert!(lifecycle.is_member);
+    assert_eq!(lifecycle.version, creator_membership.version);
+
+    assert!(room_member_repo
+        .get(&foreign_room.id, &doomed_user.id)
+        .await
+        .checked("load former foreign-room membership after restore")
+        .is_none());
+    assert_eq!(
+        service
+            .get_email(&doomed_user.id)
+            .await
+            .checked("load restored email"),
+        Some("delete-owner@example.com".to_string())
+    );
+    let oauth_active = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!"
+           FROM auth_oauth2_identities
+           WHERE user_id = $1 AND deleted_at IS NULL"#,
+        doomed_user.id.as_i64(),
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("count restored oauth identity");
+    assert_eq!(oauth_active, 1);
+}
+
+async fn assert_restore_identity_conflict_modes(pool: PgPool) {
+    let service = create_user_service(&pool);
+    let user_repository = UserRepository::new(pool.clone());
+    let original = user_repository
+        .create(&make_user("restore_conflict"))
+        .await
+        .checked("create account to restore");
+    insert_trusted_email_identity(&pool, &original.id, "restore-conflict@example.com").await;
+    insert_oauth2_identity(&pool, &original.id, "github", "restore-conflict-subject").await;
+
+    service
+        .delete_user(&original.id)
+        .await
+        .checked("soft-delete account before conflict test");
+
+    let claimant = user_repository
+        .create(&make_user("restore_conflict"))
+        .await
+        .checked("claim released username");
+    insert_trusted_email_identity(&pool, &claimant.id, "restore-conflict@example.com").await;
+    insert_oauth2_identity(&pool, &claimant.id, "github", "restore-conflict-subject").await;
+
+    let strict_error = service
+        .restore_user(&original.id, UserRestoreOptions::default())
+        .await
+        .failed("strict restoration should report occupied identity");
+    assert!(matches!(strict_error, Error::AlreadyExists(_)));
+
+    let restored = service
+        .restore_user(
+            &original.id,
+            UserRestoreOptions {
+                ignore_identity_conflicts: true,
+                restored_by: None,
+            },
+        )
+        .await
+        .checked("conflict-tolerant restoration should restore account body");
+    assert!(restored.user.username.starts_with("restored_"));
+    assert_eq!(restored.released_identities.len(), 3);
+    assert!(restored
+        .released_identities
+        .contains(&"username:restore_conflict".to_string()));
+    assert!(restored
+        .released_identities
+        .contains(&"email:restore-conflict@example.com".to_string()));
+    assert!(restored
+        .released_identities
+        .contains(&"oauth2:github:restore-conflict-subject".to_string()));
+    assert_eq!(
+        service
+            .get_email(&original.id)
+            .await
+            .checked("load original account email after conflict restore"),
+        None
+    );
+    assert_eq!(
+        service
+            .get_email(&claimant.id)
+            .await
+            .checked("load claimant email"),
+        Some("restore-conflict@example.com".to_string())
+    );
+    let active_oauth_owner = sqlx::query_scalar!(
+        r#"SELECT user_id AS "user_id: UserId"
+           FROM auth_oauth2_identities
+           WHERE provider_instance_name = 'github'
+             AND provider_user_id = 'restore-conflict-subject'
+             AND deleted_at IS NULL"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("load active OAuth2 identity owner");
+    assert_eq!(active_oauth_owner, claimant.id);
+
+    let explicit_identity = user_repository
+        .create(&make_user("explicit_identity"))
+        .await
+        .checked("create explicit identity account");
+    insert_trusted_email_identity(&pool, &explicit_identity.id, "explicit@example.com").await;
+    sqlx::query!(
+        "UPDATE auth_email_identities SET deleted_at = CURRENT_TIMESTAMP, deletion_source = $2 WHERE user_id = $1",
+        explicit_identity.id.as_i64(),
+        DeletionSource::User as DeletionSource,
+    )
+    .execute(&pool)
+    .await
+    .checked("explicitly unbind email");
+    service
+        .delete_user(&explicit_identity.id)
+        .await
+        .checked("delete account with previously unbound identity");
+    service
+        .restore_user(&explicit_identity.id, UserRestoreOptions::default())
+        .await
+        .checked("restore account with explicitly unbound identity");
+    assert_eq!(
+        service
+            .get_email(&explicit_identity.id)
+            .await
+            .checked("load explicitly unbound email after restore"),
+        None
+    );
+    let explicit_source = sqlx::query_scalar!(
+        r#"SELECT deletion_source AS "deletion_source?: DeletionSource"
+           FROM auth_email_identities WHERE user_id = $1"#,
+        explicit_identity.id.as_i64(),
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("load explicit identity deletion source");
+    assert_eq!(explicit_source, Some(DeletionSource::User));
 }
 
 /// Test that "username taken" errors do NOT count against IP brute-force lockout.
@@ -1220,7 +1602,7 @@ async fn assert_register_username_taken_no_brute_force_lockout(service: &UserSer
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_ban_user_cleans_up_owned_room_memberships() {
+async fn test_ban_user_preserves_owned_room_memberships_for_unban() {
     let (_container, pool) = create_test_pool().await;
     let version_fence: Arc<dyn VersionFenceStore> = Arc::new(LocalVersionFenceStore::new());
     let permission_service = PermissionService::new_with_runtime(
@@ -1275,7 +1657,7 @@ async fn test_ban_user_cleans_up_owned_room_memberships() {
         .checked("test operation should succeed");
 
     user_service
-        .ban_user_and_cleanup_memberships(&owner.id, None, None)
+        .ban_user(&owner.id, None, None)
         .await
         .checked("banning owner should succeed");
 
@@ -1283,9 +1665,10 @@ async fn test_ban_user_cleans_up_owned_room_memberships() {
         .get(&owned_room.id, &owner.id)
         .await
         .checked("owner membership lookup should succeed");
-    assert!(
-        owner_membership.is_none(),
-        "banned owner must no longer be an active member of their owned room"
+    assert_eq!(
+        owner_membership.map(|membership| membership.role),
+        Some(synctv_core::models::RoomRole::Creator),
+        "a global ban preserves the creator membership for reversible moderation"
     );
 
     let member_membership = room_member_repo
@@ -1293,20 +1676,21 @@ async fn test_ban_user_cleans_up_owned_room_memberships() {
         .await
         .checked("member membership lookup should succeed");
     assert!(
-        member_membership.is_none(),
-        "banning a room owner must remove other memberships from the owned room"
+        member_membership.is_some(),
+        "banning a room owner preserves other room memberships"
     );
 
-    let member_fence = version_fence
-        .current_version(&CacheDomain::Permission {
-            room_id: owned_room.id,
-            user_id: member.id,
-        })
+    user_service
+        .unban_user(&owner.id)
         .await
-        .checked("member permission fence should be readable");
+        .checked("unbanning owner should succeed");
     assert!(
-        member_fence.is_some(),
-        "banning a room owner must commit permission fences for removed owned-room members"
+        room_member_repo
+            .get(&owned_room.id, &owner.id)
+            .await
+            .checked("restored owner membership lookup should succeed")
+            .is_some(),
+        "unban keeps the creator membership available"
     );
 }
 
@@ -1475,6 +1859,48 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
     assert!(
         matches!(consumed_result, Error::InvalidInput(_)),
         "expected InvalidInput for consumed token"
+    );
+
+    let pending_unbind_token = service
+        .start_email_bind(&created.id, "email_bind_flow_pending_unbind@example.com")
+        .await
+        .checked("start pending bind before unbind");
+    assert!(service
+        .is_email_bind_token_active(
+            &created.id,
+            "email_bind_flow_pending_unbind@example.com",
+            &pending_unbind_token,
+        )
+        .await
+        .checked("pending bind token should be active before unbind"));
+
+    service
+        .unbind_email(
+            &created.id,
+            &password_verification_id(&service, &created.id, "StrongPass1").await,
+        )
+        .await
+        .checked("unbind email should succeed");
+    assert!(!service
+        .is_email_bind_token_active(
+            &created.id,
+            "email_bind_flow_pending_unbind@example.com",
+            &pending_unbind_token,
+        )
+        .await
+        .checked("pending bind token state should load after unbind"));
+
+    service
+        .delete_user(&created.id)
+        .await
+        .checked("user should be soft-deleted after bind lifecycle");
+    let deleted_user_bind = service
+        .start_email_bind(&created.id, "email_bind_flow_after_delete@example.com")
+        .await
+        .failed("deleted users must not create email bind requests");
+    assert!(
+        matches!(deleted_user_bind, Error::NotFound(_)),
+        "deleted user bind creation should report NotFound"
     );
 }
 
@@ -2541,4 +2967,18 @@ async fn test_user_service_registration_brute_force_flows() {
 
     let validation_error_service = create_user_service(&pool);
     assert_register_validation_errors_trigger_brute_force_lockout(&validation_error_service).await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_user_restore_identity_conflicts() {
+    let (_container, pool) = create_test_pool().await;
+    assert_restore_identity_conflict_modes(pool).await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_user_delete_restore_resource_lifecycle() {
+    let (_container, pool) = create_test_pool().await;
+    assert_delete_user_removes_owned_resources_and_resets_foreign_room_playback(pool).await;
 }

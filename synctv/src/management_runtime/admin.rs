@@ -18,13 +18,13 @@ use synctv_management::admin_runtime::{
     ListRoomLabelsQuery, ListRoomStreamsQuery, ListRoomsQuery, ListUserRegistrationReviewsQuery,
     ListUsersQuery, MoveMediaCommand, MovePlaylistCommand, RejectRoomCreationReviewCommand,
     RejectRoomJoinReviewCommand, RejectUserRegistrationReviewCommand, RemoveAdminCommand,
-    ResetRoomSettingsCommand, RoomMemberListSortBy, RoomStreamListSortBy, SendTestEmailCommand,
-    SetUserPasswordCommand, StartPlaybackCommand, UnbanRoomCommand, UnbanUserCommand,
-    UpdateMemberDisplayTagCommand, UpdateMemberPermissionsCommand, UpdateMemberRemarkNameCommand,
-    UpdatePlaybackStateCommand, UpdatePlaylistCommand, UpdateRoomPasswordCommand,
-    UpdateRoomSettingsCommand, UpdateRoomTaxonomyCommand, UpdateSettingsCommand,
-    UpdateUserPreferencesCommand, UpdateUserRoleCommand, UpdateUserUsernameCommand,
-    UpsertRoomCategoryCommand, UpsertRoomLabelCommand, UserListSortBy,
+    ResetRoomSettingsCommand, RestoreUserCommand, RoomMemberListSortBy, RoomStreamListSortBy,
+    SendTestEmailCommand, SetUserPasswordCommand, StartPlaybackCommand, UnbanRoomCommand,
+    UnbanUserCommand, UpdateMemberDisplayTagCommand, UpdateMemberPermissionsCommand,
+    UpdateMemberRemarkNameCommand, UpdatePlaybackStateCommand, UpdatePlaylistCommand,
+    UpdateRoomPasswordCommand, UpdateRoomSettingsCommand, UpdateRoomTaxonomyCommand,
+    UpdateSettingsCommand, UpdateUserPreferencesCommand, UpdateUserRoleCommand,
+    UpdateUserUsernameCommand, UpsertRoomCategoryCommand, UpsertRoomLabelCommand, UserListSortBy,
 };
 use synctv_management::request_context::RequestContext;
 use synctv_management::runtime_error::RuntimeError;
@@ -198,6 +198,7 @@ impl AdminRuntime for ManagementAdminRuntime {
             status: user_status_to_proto(query.status),
             role: optional_user_role_to_proto(query.role),
             is_banned: query.is_banned,
+            include_deleted: query.include_deleted,
             sort_by: user_list_sort_by_to_proto(query.sort_by),
             sort_direction: admin_sort_direction_to_proto(query.sort_direction),
         };
@@ -338,6 +339,25 @@ impl AdminRuntime for ManagementAdminRuntime {
             .delete_user(
                 admin_proto::DeleteUserRequest {
                     user_id: command.user_id,
+                },
+                admin_user_id,
+                &api_request_context(ctx),
+            )
+            .await
+            .map_err(|error| map_runtime_error(&error))
+    }
+
+    async fn restore_user(
+        &self,
+        command: RestoreUserCommand,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<admin_proto::RestoreUserResponse, RuntimeError> {
+        self.inner
+            .restore_user(
+                admin_proto::RestoreUserRequest {
+                    user_id: command.user_id,
+                    ignore_identity_conflicts: command.ignore_identity_conflicts,
                 },
                 admin_user_id,
                 &api_request_context(ctx),

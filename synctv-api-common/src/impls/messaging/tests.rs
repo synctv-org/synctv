@@ -9282,7 +9282,7 @@ async fn test_pre_join_after_registration_rejects_banned_user_on_final_revalidat
         .checked("register should succeed before final admission");
 
     user_service
-        .ban_user_and_cleanup_memberships(&member.id, None, None)
+        .ban_user(&member.id, None, None)
         .await
         .checked("banning user should succeed");
 

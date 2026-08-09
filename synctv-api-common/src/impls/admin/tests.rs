@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use synctv_core::models::{
-    FromProviderParams, MemberStatus, PlaylistId, ReviewRequestId, RoomId, RoomRole, RoomStatus,
-    UserId, UserRole, UserStatus,
+    DeletionSource, FromProviderParams, MemberStatus, PlaylistId, ReviewRequestId, RoomId,
+    RoomRole, RoomStatus, UserId, UserRole, UserStatus,
 };
 use synctv_core::service::ProvidersManager;
 use synctv_core::{
@@ -1613,8 +1613,9 @@ fn test_admin_user_to_proto_all_roles() -> TestResult {
         (UserRole::User, synctv_proto::common::UserRole::User as i32),
     ] {
         let user = make_test_user(role, UserStatus::Active);
-        let proto = try_admin_user_to_proto(&user, Some("admin@test.com"), None, &public_id_codec)
-            .map_err(|error| test_error(format!("{error:?}")))?;
+        let proto =
+            try_admin_user_to_proto(&user, Some("admin@test.com"), None, None, &public_id_codec)
+                .map_err(|error| test_error(format!("{error:?}")))?;
         assert_eq!(proto.role, expected);
     }
     Ok(())
@@ -1634,8 +1635,9 @@ fn test_admin_user_to_proto_all_statuses() -> TestResult {
         ),
     ] {
         let user = make_test_user(UserRole::User, status);
-        let proto = try_admin_user_to_proto(&user, Some("admin@test.com"), None, &public_id_codec)
-            .map_err(|error| test_error(format!("{error:?}")))?;
+        let proto =
+            try_admin_user_to_proto(&user, Some("admin@test.com"), None, None, &public_id_codec)
+                .map_err(|error| test_error(format!("{error:?}")))?;
         assert_eq!(proto.status, expected);
     }
     Ok(())
@@ -1645,8 +1647,9 @@ fn test_admin_user_to_proto_all_statuses() -> TestResult {
 fn test_admin_user_to_proto_fields() -> TestResult {
     let public_id_codec = synctv_adapter::PublicIdCodec::plain();
     let user = make_test_user(UserRole::Admin, UserStatus::Active);
-    let proto = try_admin_user_to_proto(&user, Some("admin@test.com"), None, &public_id_codec)
-        .map_err(|error| test_error(format!("{error:?}")))?;
+    let proto =
+        try_admin_user_to_proto(&user, Some("admin@test.com"), None, None, &public_id_codec)
+            .map_err(|error| test_error(format!("{error:?}")))?;
 
     assert_eq!(
         proto.id,
@@ -1667,8 +1670,9 @@ fn test_admin_user_to_proto_preserves_ban_timestamp() -> TestResult {
     user.is_banned = true;
     user.banned_at = Some(banned_at);
 
-    let proto = try_admin_user_to_proto(&user, Some("banned@test.com"), None, &public_id_codec)
-        .map_err(|error| test_error(format!("{error:?}")))?;
+    let proto =
+        try_admin_user_to_proto(&user, Some("banned@test.com"), None, None, &public_id_codec)
+            .map_err(|error| test_error(format!("{error:?}")))?;
 
     assert_eq!(proto.banned_at, banned_at.timestamp());
     Ok(())
@@ -1684,6 +1688,7 @@ fn test_admin_user_to_proto_rejects_banned_user_without_ban_timestamp() -> TestR
         &user,
         Some("banned@test.com"),
         None,
+        None,
         &public_id_codec,
     ))?;
 
@@ -1698,9 +1703,40 @@ fn test_admin_user_to_proto_rejects_banned_user_without_ban_timestamp() -> TestR
 fn test_admin_user_to_proto_no_email() -> TestResult {
     let public_id_codec = synctv_adapter::PublicIdCodec::plain();
     let user = make_test_user(UserRole::User, UserStatus::Active);
-    let proto = try_admin_user_to_proto(&user, None, None, &public_id_codec)
+    let proto = try_admin_user_to_proto(&user, None, None, None, &public_id_codec)
         .map_err(|error| test_error(format!("{error:?}")))?;
     assert_eq!(proto.email, "");
+    Ok(())
+}
+
+#[test]
+fn test_admin_user_to_proto_preserves_lifecycle_metadata() -> TestResult {
+    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
+    let mut user = make_test_user(UserRole::User, UserStatus::Active);
+    let deleted_at = synctv_core::SystemClock.now();
+    let actor_id = UserId::new();
+    user.deleted_at = Some(deleted_at);
+    let lifecycle = synctv_core::models::UserLifecycleMetadata {
+        user_id: user.id,
+        deletion_source: Some(DeletionSource::Admin),
+        deletion_reason: Some("policy violation".to_string()),
+        deleted_by: Some(actor_id),
+        restored_at: None,
+        restored_by: None,
+    };
+
+    let proto = try_admin_user_to_proto(&user, None, None, Some(&lifecycle), &public_id_codec)
+        .map_err(|error| test_error(format!("{error:?}")))?;
+
+    assert_eq!(proto.deleted_at, deleted_at.timestamp());
+    assert_eq!(proto.deletion_source, "admin");
+    assert_eq!(proto.deletion_reason, "policy violation");
+    assert_eq!(
+        proto.deleted_by,
+        public_id_codec
+            .encode_user_id(actor_id)
+            .map_err(test_error)?
+    );
     Ok(())
 }
 
@@ -3464,6 +3500,88 @@ async fn test_delete_user_publishes_kick_user_realtime_event() -> TestResult {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_admin_delete_user_exposes_lifecycle_metadata() -> TestResult {
+    let (_postgres, pool) = create_test_pool().await;
+    let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
+    let user_repo = UserRepository::new(pool.clone());
+    let admin_user = create_db_user(&user_repo, "root_lifecycle_admin", UserRole::Root).await;
+    let target_user = create_db_user(&user_repo, "deleted_lifecycle_target", UserRole::User).await;
+
+    api_ok(
+        admin_api
+            .delete_user(
+                synctv_proto::admin::DeleteUserRequest {
+                    user_id: public_user_id(&admin_api, target_user.id),
+                },
+                &admin_user.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
+
+    let response = api_ok(
+        admin_api
+            .list_users(synctv_proto::admin::ListUsersRequest {
+                page: 1,
+                page_size: 20,
+                search: target_user.username.clone(),
+                include_deleted: true,
+                ..Default::default()
+            })
+            .await,
+    )?;
+    let deleted = response
+        .users
+        .into_iter()
+        .find(|user| user.id == public_user_id(&admin_api, target_user.id))
+        .ok_or_else(|| test_error("deleted user should be visible to administrators"))?;
+
+    assert!(deleted.deleted_at > 0);
+    assert_eq!(deleted.deletion_source, "admin");
+    assert_eq!(deleted.deletion_reason, "Deleted by administrator");
+    assert_eq!(
+        deleted.deleted_by,
+        public_user_id(&admin_api, admin_user.id)
+    );
+
+    let fetched = api_ok(
+        admin_api
+            .get_user(synctv_proto::admin::GetUserRequest {
+                user_id: public_user_id(&admin_api, target_user.id),
+            })
+            .await,
+    )?;
+    assert_eq!(fetched.deletion_source, "admin");
+
+    let restored = api_ok(
+        admin_api
+            .restore_user(
+                synctv_proto::admin::RestoreUserRequest {
+                    user_id: public_user_id(&admin_api, target_user.id),
+                    ignore_identity_conflicts: false,
+                },
+                &admin_user.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
+    let restored = restored
+        .user
+        .ok_or_else(|| test_error("restored response should contain the user"))?;
+    assert_eq!(restored.deleted_at, 0);
+    assert_eq!(restored.deletion_source, "");
+    assert_eq!(restored.deletion_reason, "");
+    assert_eq!(restored.deleted_by, "");
+    assert!(restored.restored_at > 0);
+    assert_eq!(
+        restored.restored_by,
+        public_user_id(&admin_api, admin_user.id)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_user_allows_missing_email_and_explicit_status() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
@@ -3688,7 +3806,7 @@ async fn test_delete_user_deletes_owned_rooms_and_publishes_room_deleted() -> Te
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_ban_user_cleans_memberships_and_preserves_kick_user_event() -> TestResult {
+async fn test_ban_user_preserves_memberships_and_kicks_user() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, mut redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -3736,8 +3854,8 @@ async fn test_ban_user_cleans_memberships_and_preserves_kick_user_event() -> Tes
             .await,
     )?;
     assert!(
-        room_member.is_none(),
-        "banned user must no longer appear as an active room member"
+        room_member.is_some(),
+        "banning a user preserves the membership for reversible moderation"
     );
 
     let mut saw_kick_user = false;

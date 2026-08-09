@@ -23,8 +23,8 @@ use crate::admin_runtime::{
     ListRoomLabelsQuery, ListRoomStreamsQuery, ListRoomsQuery, ListUserRegistrationReviewsQuery,
     ListUsersQuery, MoveMediaCommand, MovePlaylistCommand, RejectRoomCreationReviewCommand,
     RejectRoomJoinReviewCommand, RejectUserRegistrationReviewCommand, RemoveAdminCommand,
-    ResetRoomSettingsCommand, SendTestEmailCommand, SetUserPasswordCommand, StartPlaybackCommand,
-    UnbanRoomCommand, UnbanUserCommand, UpdateMemberDisplayTagCommand,
+    ResetRoomSettingsCommand, RestoreUserCommand, SendTestEmailCommand, SetUserPasswordCommand,
+    StartPlaybackCommand, UnbanRoomCommand, UnbanUserCommand, UpdateMemberDisplayTagCommand,
     UpdateMemberPermissionsCommand, UpdateMemberRemarkNameCommand, UpdatePlaybackStateCommand,
     UpdatePlaylistCommand, UpdateRoomPasswordCommand, UpdateRoomSettingsCommand,
     UpdateRoomTaxonomyCommand, UpdateSettingsCommand, UpdateUserPreferencesCommand,
@@ -78,7 +78,7 @@ use crate::proto::{
     ListRoomsRequest, ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
     MovePlaylistRequest, PurgeSliceCacheRequest, RejectRoomCreationReviewRequest,
     RejectRoomJoinReviewRequest, RejectUserRegistrationReviewRequest, RemoveAdminRequest,
-    ResetRoomSettingsRequest, SearchChatMessagesRequest, SendTestEmailRequest,
+    ResetRoomSettingsRequest, RestoreUserRequest, SearchChatMessagesRequest, SendTestEmailRequest,
     SetUserPasswordRequest, ShutdownMode as ProtoShutdownMode, StartPlaybackRequest,
     StopPlaybackRequest, StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest,
     UnbanRoomRequest, UnbanUserRequest, UnfavoriteRoomRequest, UpdateMemberDisplayTagRequest,
@@ -1670,6 +1670,7 @@ impl ManagementService for ManagementServiceImpl {
                 search: req.search,
                 sort_by: map_management_user_list_sort_by(req.sort_by)?,
                 is_banned: req.is_banned,
+                include_deleted: req.include_deleted,
                 sort_direction: map_management_sort_direction(
                     req.sort_direction,
                     AdminSortDirection::Desc,
@@ -1840,6 +1841,48 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .delete_user(DeleteUserCommand { user_id }, &validated.user_id, &ctx)
+            .await
+            .map_err(|error| map_api_error(&error))?;
+        Ok(Response::new(response))
+    }
+
+    async fn restore_user(
+        &self,
+        request: Request<RestoreUserRequest>,
+    ) -> Result<Response<admin_proto::RestoreUserResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = self.grpc_request_context(&request);
+        let req = request.into_inner();
+        let user_id = if req.user_id.trim().is_empty() {
+            let username = req.username.trim();
+            if username.is_empty() {
+                return Err(Status::invalid_argument(
+                    "user must contain either user_id or username",
+                ));
+            }
+            let deleted_user_id = self
+                .user_service
+                .find_deleted_user_id_by_username(username)
+                .await
+                .map_err(map_management_user_lookup_error)?
+                .ok_or_else(|| Status::not_found("Deleted user not found"))?;
+            self.public_id_codec
+                .encode_user_id(deleted_user_id)
+                .map_err(|error| Status::internal(format!("failed to encode user id: {error}")))?
+        } else {
+            self.resolve_required_user_selector(&req.user_id, "", "user")
+                .await?
+        };
+        let response = self
+            .admin_api
+            .restore_user(
+                RestoreUserCommand {
+                    user_id,
+                    ignore_identity_conflicts: req.ignore_identity_conflicts,
+                },
+                &validated.user_id,
+                &ctx,
+            )
             .await
             .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))

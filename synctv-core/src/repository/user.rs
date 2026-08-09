@@ -4,7 +4,10 @@ use sqlx::{PgPool, Postgres, QueryBuilder};
 use super::query_builder::ilike_contains_pattern;
 use crate::repository::pools::RepoPools;
 use crate::{
-    models::{SignupMethod, User, UserId, UserListQuery, UserListSortBy, UserRole, UserStatus},
+    models::{
+        DeletionSource, SignupMethod, User, UserId, UserLifecycleMetadata, UserListQuery,
+        UserListSortBy, UserRole, UserStatus,
+    },
     Error, Result,
 };
 
@@ -193,6 +196,86 @@ impl UserRepository {
         .await?;
 
         Ok(u)
+    }
+
+    /// Administrative lookup that includes accounts in their recovery window.
+    pub async fn get_by_id_including_deleted(&self, user_id: &UserId) -> Result<Option<User>> {
+        let user = sqlx::query_as!(
+            User,
+            r#"
+            SELECT p.id AS "id!: UserId",
+                   p.username AS "username!",
+                   p.signup_method AS "signup_method!: SignupMethod",
+                   p.role AS "role!: UserRole",
+                   p.avatar_file_reference_id,
+                   p.status AS "status!: UserStatus",
+                   p.is_banned AS "is_banned!",
+                   p.banned_at,
+                   p.banned_by AS "banned_by?: UserId",
+                   p.banned_reason,
+                   p.created_at AS "created_at!",
+                   p.updated_at AS "updated_at!",
+                   p.version AS "version!",
+                   p.deleted_at
+            FROM user_account_profiles p
+            WHERE p.id = $1
+            "#,
+            user_id.as_i64()
+        )
+        .fetch_optional(self.pool())
+        .await?;
+
+        Ok(user)
+    }
+
+    pub async fn get_lifecycle_metadata(
+        &self,
+        user_id: &UserId,
+    ) -> Result<Option<UserLifecycleMetadata>> {
+        sqlx::query_as!(
+            UserLifecycleMetadata,
+            r#"
+            SELECT id AS "user_id!: UserId",
+                   deletion_source AS "deletion_source?: DeletionSource",
+                   deletion_reason,
+                   deleted_by AS "deleted_by?: UserId",
+                   restored_at,
+                   restored_by AS "restored_by?: UserId"
+            FROM users
+            WHERE id = $1
+            "#,
+            user_id.as_i64(),
+        )
+        .fetch_optional(self.pool())
+        .await
+        .map_err(Error::Database)
+    }
+
+    pub async fn get_lifecycle_metadata_by_ids_eventually_consistent(
+        &self,
+        user_ids: &[UserId],
+    ) -> Result<Vec<UserLifecycleMetadata>> {
+        if user_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids = user_ids.iter().map(UserId::as_i64).collect::<Vec<_>>();
+        sqlx::query_as!(
+            UserLifecycleMetadata,
+            r#"
+            SELECT id AS "user_id!: UserId",
+                   deletion_source AS "deletion_source?: DeletionSource",
+                   deletion_reason,
+                   deleted_by AS "deleted_by?: UserId",
+                   restored_at,
+                   restored_by AS "restored_by?: UserId"
+            FROM users
+            WHERE id = ANY($1)
+            "#,
+            &ids,
+        )
+        .fetch_all(self.eventually_consistent_pool())
+        .await
+        .map_err(Error::Database)
     }
 
     /// Get user by ID using a provided executor and lock the row for update.
@@ -812,11 +895,22 @@ impl UserRepository {
         role_scope: UserListRoleScope,
         search_pattern: Option<&'a str>,
     ) {
-        builder.push(
-            " FROM user_account_profiles u \
+        builder
+            .push(
+                " FROM user_account_profiles u \
              LEFT JOIN auth_email_identities aei ON aei.user_id = u.id \
-             WHERE u.deleted_at IS NULL",
-        );
+               AND ((u.deleted_at IS NULL AND aei.deleted_at IS NULL) \
+                    OR (u.deleted_at IS NOT NULL AND aei.deleted_at IS NOT NULL \
+                        AND aei.deletion_source = ",
+            )
+            .push_bind(DeletionSource::Account)
+            .push(")) WHERE ");
+
+        if query.include_deleted {
+            builder.push("TRUE");
+        } else {
+            builder.push("u.deleted_at IS NULL");
+        }
 
         if matches!(role_scope, UserListRoleScope::Admins) {
             builder

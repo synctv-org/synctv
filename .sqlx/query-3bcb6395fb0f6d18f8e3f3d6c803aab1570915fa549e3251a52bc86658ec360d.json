@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM provider_playback_sessions WHERE credential_owner_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3bcb6395fb0f6d18f8e3f3d6c803aab1570915fa549e3251a52bc86658ec360d"
+}

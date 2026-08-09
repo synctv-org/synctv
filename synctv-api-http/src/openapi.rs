@@ -402,6 +402,7 @@ pub struct GoogleRpcStatusSchema {
         admin::create_user,
         admin::get_user,
         admin::delete_user,
+        admin::restore_user,
         admin::get_user_preferences,
         admin::update_user_preferences,
         admin::set_user_role,

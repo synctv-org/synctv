@@ -134,16 +134,19 @@ impl AdminApiImpl {
         &self,
         user: &synctv_core::models::User,
     ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
-        let (email, presence) = tokio::join!(
-            self.user_service.get_email(&user.id),
+        let (email, presence, lifecycle) = tokio::join!(
+            self.user_service.get_email_for_admin(&user.id),
             self.presence_service.user_stats(user.id),
+            self.user_service.get_user_lifecycle_metadata(&user.id),
         );
         let email = email.map_err(ApiError::from)?;
         let presence = presence.map_err(ApiError::from)?;
+        let lifecycle = lifecycle.map_err(ApiError::from)?;
         try_admin_user_to_proto(
             user,
             email.as_deref(),
             Some(&presence),
+            Some(&lifecycle),
             &self.public_id_codec,
         )
     }
@@ -152,8 +155,35 @@ impl AdminApiImpl {
         &self,
         users: &[synctv_core::models::User],
     ) -> Result<Vec<synctv_proto::admin::AdminUser>, ApiError> {
+        let user_ids = users.iter().map(|user| user.id).collect::<Vec<_>>();
+        let lifecycle = self
+            .user_service
+            .get_user_lifecycle_metadata_by_ids_eventually_consistent(&user_ids)
+            .await
+            .map_err(ApiError::from)?
+            .into_iter()
+            .map(|metadata| (metadata.user_id, metadata))
+            .collect::<std::collections::HashMap<_, _>>();
         stream::iter(0..users.len())
-            .map(|index| async move { self.admin_user_to_proto_with_email(&users[index]).await })
+            .map(|index| {
+                let lifecycle = &lifecycle;
+                async move {
+                    let user = &users[index];
+                    let (email, presence) = tokio::join!(
+                        self.user_service.get_email_for_admin(&user.id),
+                        self.presence_service.user_stats(user.id),
+                    );
+                    let email = email.map_err(ApiError::from)?;
+                    let presence = presence.map_err(ApiError::from)?;
+                    try_admin_user_to_proto(
+                        user,
+                        email.as_deref(),
+                        Some(&presence),
+                        lifecycle.get(&user.id),
+                        &self.public_id_codec,
+                    )
+                }
+            })
             .buffered(ADMIN_USER_LOAD_CONCURRENCY)
             .try_collect()
             .await

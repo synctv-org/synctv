@@ -4,15 +4,15 @@ use crate::models::permission::Role;
 use crate::models::{
     AuditDetails, BanRecordId, ChatAttachmentKind, ChatEventKind, ChatMessage, ChatMessageStatus,
     ChatMessageType, ChatMetadata, ContentReport, ContentReportAdminRow, ContentReportId,
-    ContentReportMetadata, ContentReportStatus, ContentReportTargetType, EmailRegistrationTokenId,
-    FileBlobCompression, FileCleanupMetadata, FileMetadata, FileObjectAccess,
-    FileReferenceMetadata, FileUploadSessionKind, FileUploadSessionMetadata, FileVariantMetadata,
-    MediaId, MediaSourceConfig, Notification, NotificationData, NotificationType, OAuth2Provider,
-    PlaybackDurationSource, PlaybackDurationStatus, PlaybackKind, PlaybackSourceMetadata, Playlist,
-    PlaylistId, PlaylistSourceConfig, ProviderPlaybackSession, ProviderPlaybackSessionState,
-    ProviderPlaybackStopReason, ProviderTarget, ReviewRequestId, ReviewStatus, RoomCategoryId,
-    RoomId, RoomLabelId, RoomPlaybackProgress, RoomPlaybackState, RoomSettings, RuntimeSetting,
-    SignupMethod, SourceProvider, UserId, UserRole, UserStatus,
+    ContentReportMetadata, ContentReportStatus, ContentReportTargetType, DeletionSource,
+    EmailRegistrationTokenId, FileBlobCompression, FileCleanupMetadata, FileMetadata,
+    FileObjectAccess, FileReferenceMetadata, FileUploadSessionKind, FileUploadSessionMetadata,
+    FileVariantMetadata, MediaId, MediaSourceConfig, Notification, NotificationData,
+    NotificationType, OAuth2Provider, PlaybackDurationSource, PlaybackDurationStatus, PlaybackKind,
+    PlaybackSourceMetadata, Playlist, PlaylistId, PlaylistSourceConfig, ProviderPlaybackSession,
+    ProviderPlaybackSessionState, ProviderPlaybackStopReason, ProviderTarget, ReviewRequestId,
+    ReviewStatus, RoomCategoryId, RoomId, RoomLabelId, RoomPlaybackProgress, RoomPlaybackState,
+    RoomSettings, RuntimeSetting, SignupMethod, SourceProvider, UserId, UserRole, UserStatus,
 };
 
 macro_rules! sqlx_numeric_id {
@@ -99,6 +99,7 @@ sqlx_i16_enum!(Role);
 sqlx_i16_enum!(NotificationType);
 sqlx_i16_enum!(ReviewStatus);
 sqlx_i16_enum!(SourceProvider);
+sqlx_i16_enum!(DeletionSource);
 
 sqlx_i16_enum!(PlaybackKind);
 

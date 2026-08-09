@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(\n                       SELECT 1\n                       FROM auth_oauth2_identities\n                       WHERE provider_instance_name = $1\n                         AND provider_user_id = $2\n                         AND deleted_at IS NULL\n                         AND user_id <> $3\n                   ) AS \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "8e3d49f363483071b62e383136d3e11bfb3d7ce38e697b92afdd3e385be24e3a"
+}

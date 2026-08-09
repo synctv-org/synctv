@@ -30,6 +30,7 @@ async fn collect_member_owned_root_playlist_ids_in_tx(
            FROM playlists
            WHERE room_id = $1
              AND creator_id = $2
+             AND deleted_at IS NULL
              AND (
                  parent_id IS NULL
                  OR parent_id NOT IN (
@@ -37,6 +38,7 @@ async fn collect_member_owned_root_playlist_ids_in_tx(
                      FROM playlists
                      WHERE room_id = $1
                        AND creator_id = $2
+                       AND deleted_at IS NULL
                  )
              )
            ORDER BY id"#,
@@ -59,6 +61,7 @@ async fn collect_member_owned_root_media_ids_in_tx(
            FROM media
            WHERE room_id = $1
              AND creator_id = $2
+             AND deleted_at IS NULL
              AND (
                  playlist_id IS NULL
                  OR playlist_id NOT IN (
@@ -66,6 +69,7 @@ async fn collect_member_owned_root_media_ids_in_tx(
                      FROM playlists
                      WHERE room_id = $1
                        AND creator_id = $2
+                       AND deleted_at IS NULL
                  )
              )
            ORDER BY id"#,

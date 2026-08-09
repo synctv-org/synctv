@@ -30,6 +30,7 @@ service AdminService {
   // =========================
   rpc CreateUser(CreateUserRequest) returns (AdminUser);
   rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
+  rpc RestoreUser(RestoreUserRequest) returns (RestoreUserResponse);
   rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
   rpc GetUser(GetUserRequest) returns (AdminUser);
   rpc GetUserPreferences(GetUserPreferencesRequest) returns (GetUserPreferencesResponse);
@@ -144,6 +145,12 @@ message AdminUser {
   string banned_reason = 11;
   string avatar_url = 12;
   synctv.common.UserPresenceStats presence = 13;
+  int64 deleted_at = 14;
+  string deletion_reason = 15;
+  int64 restored_at = 16;
+  string deletion_source = 17;
+  string deleted_by = 18;
+  string restored_by = 19;
 }
 
 message Room {
@@ -673,6 +680,21 @@ message DeleteUserResponse {
   bool success = 1;
 }
 
+message RestoreUserRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  bool ignore_identity_conflicts = 2;
+}
+
+message RestoreUserResponse {
+  bool success = 1;
+  AdminUser user = 2;
+  repeated string released_identities = 3;
+}
+
 message ListUsersRequest {
   option (buf.validate.message).cel = {
     id: "admin.list_users.page"
@@ -692,6 +714,7 @@ message ListUsersRequest {
   UserListSortBy sort_by = 6 [(buf.validate.field).enum.defined_only = true];
   SortDirection sort_direction = 7 [(buf.validate.field).enum.defined_only = true];
   optional bool is_banned = 8;
+  bool include_deleted = 9;
 }
 
 message ListUsersResponse {

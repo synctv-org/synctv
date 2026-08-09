@@ -18,10 +18,14 @@ pub enum UserSubcommand {
     Create(UserAddArgs),
     /// Delete a user
     Delete(UserDeleteArgs),
+    /// Restore a user during the deletion retention window
+    Restore(UserRestoreArgs),
     /// Ban a user
     Ban(UserBanArgs),
     /// Unban a user
     Unban(UserUnbanArgs),
+    /// Inspect user ban records
+    Bans(UserBansCommand),
     /// Update a user's global role
     SetRole(UserSetRoleArgs),
     /// Set a user's direct password credential
@@ -81,6 +85,38 @@ pub enum UserBatchSubcommand {
 }
 
 #[derive(Debug, Args)]
+pub struct UserBansCommand {
+    #[command(subcommand)]
+    pub command: UserBansSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum UserBansSubcommand {
+    /// List user ban records
+    List(UserBansListArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct UserBansListArgs {
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+
+    /// Filter by active or inactive records
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub active: Option<bool>,
+
+    /// Filter by public user ID
+    #[arg(long, allow_hyphen_values = true)]
+    pub user_id: Option<String>,
+
+    #[arg(long, default_value_t = 1)]
+    pub page: i32,
+
+    #[arg(long, default_value_t = 50)]
+    pub page_size: i32,
+}
+
+#[derive(Debug, Args)]
 pub struct UserListArgs {
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
@@ -105,6 +141,10 @@ pub struct UserListArgs {
 
     #[arg(long = "sort-dir", value_enum, default_value_t = CliSortDirection::Desc)]
     pub sort_dir: CliSortDirection,
+
+    /// Include users currently in the deletion recovery window
+    #[arg(long)]
+    pub include_deleted: bool,
 }
 
 #[derive(Debug, Args)]
@@ -259,6 +299,19 @@ pub struct UserDeleteArgs {
 
     #[command(flatten)]
     pub user: UserRefArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct UserRestoreArgs {
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+
+    #[command(flatten)]
+    pub user: UserRefArgs,
+
+    /// Restore the account while leaving occupied username/email/OAuth identities released
+    #[arg(long)]
+    pub ignore_identity_conflicts: bool,
 }
 
 #[derive(Debug, Args)]

@@ -389,6 +389,10 @@ impl ClientApiImpl {
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<synctv_proto::client::Playback, ApiError> {
+        self.room_service
+            .ensure_client_usable_media(&media)
+            .await
+            .map_err(ApiError::from)?;
         let providers_manager = self.room_service.media_service().providers_manager();
 
         let provider = providers_manager
@@ -684,6 +688,10 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
+            self.room_service
+                .ensure_client_usable_media(&media)
+                .await
+                .map_err(ApiError::from)?;
             let providers_manager = self.room_service.media_service().providers_manager();
             let provider = providers_manager
                 .resolve_provider(

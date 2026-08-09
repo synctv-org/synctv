@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 use crate::{
-    models::{SignupMethod, User, UserId, UserRole, UserStatus},
+    models::{DeletionSource, SignupMethod, User, UserId, UserRole, UserStatus},
     Error, Result,
 };
 
@@ -136,6 +136,8 @@ impl UserEmailRepository {
                 ON CONFLICT (user_id)
                 DO UPDATE SET
                     email = EXCLUDED.email,
+                    deleted_at = NULL,
+                    deletion_source = NULL,
                     updated_at = EXCLUDED.updated_at
                 RETURNING user_id, email
             )
@@ -205,9 +207,13 @@ impl UserEmailRepository {
                           version, deleted_at
             ),
             deleted_email AS (
-                DELETE FROM auth_email_identities
-                USING updated_user
-                WHERE auth_email_identities.user_id = updated_user.id
+                UPDATE auth_email_identities identity
+                SET deleted_at = $2,
+                    deletion_source = $3,
+                    updated_at = $2
+                FROM updated_user
+                WHERE identity.user_id = updated_user.id
+                  AND identity.deleted_at IS NULL
             )
             SELECT u.id AS "id!: UserId",
                    u.username AS "username!",
@@ -241,7 +247,8 @@ impl UserEmailRepository {
             ) active_ban ON TRUE
             "#,
             user_id.as_i64(),
-            now
+            now,
+            DeletionSource::User as DeletionSource,
         )
         .fetch_optional(executor)
         .await?
@@ -250,6 +257,32 @@ impl UserEmailRepository {
 
     pub async fn get_email(&self, user_id: &UserId) -> Result<Option<String>> {
         self.get_email_with_executor(user_id, &self.pool).await
+    }
+
+    /// Load the identity retained for account recovery. Explicitly unbound
+    /// identities remain private and are excluded from this administrative view.
+    pub async fn get_email_for_admin(&self, user_id: &UserId) -> Result<Option<String>> {
+        sqlx::query_scalar!(
+            r"
+            SELECT aei.email
+            FROM auth_email_identities aei
+            JOIN users u ON u.id = aei.user_id
+            WHERE u.id = $1
+              AND (
+                  (u.deleted_at IS NULL AND aei.deleted_at IS NULL)
+                  OR (
+                      u.deleted_at IS NOT NULL
+                      AND aei.deleted_at IS NOT NULL
+                      AND aei.deletion_source = $2
+                  )
+              )
+            ",
+            user_id.as_i64(),
+            DeletionSource::Account as DeletionSource,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Error::Database)
     }
 
     pub async fn get_email_with_executor<'e, E>(
@@ -265,7 +298,7 @@ impl UserEmailRepository {
             SELECT aei.email
             FROM auth_email_identities aei
             JOIN users u ON u.id = aei.user_id
-            WHERE u.id = $1 AND u.deleted_at IS NULL
+            WHERE u.id = $1 AND u.deleted_at IS NULL AND aei.deleted_at IS NULL
             ",
             user_id.as_i64()
         )
@@ -294,7 +327,7 @@ impl UserEmailRepository {
                    u.deleted_at,
                    aei.email
             FROM user_account_profiles u
-            LEFT JOIN auth_email_identities aei ON aei.user_id = u.id
+            LEFT JOIN auth_email_identities aei ON aei.user_id = u.id AND aei.deleted_at IS NULL
             WHERE u.id = $1 AND u.deleted_at IS NULL
             "#,
             user_id.as_i64()
@@ -325,7 +358,7 @@ impl UserEmailRepository {
                    aei.email
             FROM user_account_profiles u
             JOIN auth_email_identities aei ON aei.user_id = u.id
-            WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL
+            WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL AND aei.deleted_at IS NULL
             "#,
             email
         )
@@ -362,7 +395,7 @@ impl UserEmailRepository {
                    aei.email
             FROM user_account_profiles u
             JOIN auth_email_identities aei ON aei.user_id = u.id
-            WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL
+            WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL AND aei.deleted_at IS NULL
             "#,
             email
         )
@@ -385,7 +418,7 @@ impl UserEmailRepository {
                 SELECT 1
                 FROM auth_email_identities aei
                 JOIN users u ON u.id = aei.user_id
-                WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL
+                WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL AND aei.deleted_at IS NULL
             ) AS "exists!"
             "#,
             email

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE file_references fr SET expires_at = COALESCE(fr.expires_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE fr.released_at IS NULL AND (EXISTS (SELECT 1 FROM media m WHERE (m.creator_id = $1 OR m.deleted_owner_id = $1) AND (fr.id = m.cover_file_reference_id OR fr.id = m.thumbnail_file_reference_id)) OR EXISTS (SELECT 1 FROM playlists p WHERE (p.creator_id = $1 OR p.deleted_owner_id = $1) AND fr.id = p.cover_file_reference_id))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "83aee105d9ef970b7ad48ab6736e066155fd0d4656b7be4c2eaf1eac6abc0ac5"
+}

@@ -144,6 +144,7 @@ export default defineConfig({
             { label: '升级与迁移', translations: { en: 'Upgrades and Migrations' }, slug: 'operations/upgrades' },
             { label: '备份与恢复', translations: { en: 'Backup and Restore' }, slug: 'operations/backup-restore' },
             { label: '数据与保留策略', translations: { en: 'Data and Retention' }, slug: 'operations/data-retention' },
+            { label: '资源生命周期', translations: { en: 'Resource Lifecycle' }, slug: 'operations/resource-lifecycle' },
           ],
           collapsed: true,
         },

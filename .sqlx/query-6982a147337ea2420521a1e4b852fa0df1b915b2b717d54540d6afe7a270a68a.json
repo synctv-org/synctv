@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE room_playback_state\n                SET playing_media_id = NULL,\n                    playing_playlist_id = NULL,\n                    target = NULL,\n                    current_progress_id = NULL,\n                    speed = 1.0,\n                    is_playing = FALSE,\n                    playback_generation = playback_generation + 1,\n                    version = version + 1,\n                    updated_at = CURRENT_TIMESTAMP\n                WHERE playing_media_id IN (\n                          SELECT id\n                          FROM media\n                          WHERE creator_id = $1 OR deleted_owner_id = $1\n                      )\n                   OR playing_playlist_id IN (\n                          SELECT id\n                          FROM playlists\n                          WHERE creator_id = $1 OR deleted_owner_id = $1\n                      )\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6982a147337ea2420521a1e4b852fa0df1b915b2b717d54540d6afe7a270a68a"
+}

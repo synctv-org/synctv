@@ -89,6 +89,7 @@ pub mod content_report;
 pub mod email_token;
 pub mod file_storage;
 pub mod id;
+pub mod lifecycle;
 pub mod media;
 pub mod notification;
 pub mod oauth2_client;
@@ -156,6 +157,7 @@ pub use id::{
     ReviewRequestId, RoomCategoryId, RoomId, RoomLabelId, TypedId, UserId,
     LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
+pub use lifecycle::DeletionSource;
 pub use media::{
     provider_type_code_from_name, provider_type_codes_from_names, provider_type_name_from_code,
     AcFunPlaybackFormat, AcFunPlaybackMetadata, AcFunPlaybackResourceKind, AlistPlaybackMetadata,
@@ -274,8 +276,8 @@ pub use source_config::{
     YoutubeChannelContent, YoutubeMediaSourceConfig, YoutubePlaylistSourceConfig,
 };
 pub use user::{
-    CreateUserRequest, SignupMethod, UpdateUserRequest, User, UserListQuery, UserListSortBy,
-    UserRole, UserStatus,
+    CreateUserRequest, SignupMethod, UpdateUserRequest, User, UserLifecycleMetadata, UserListQuery,
+    UserListSortBy, UserRole, UserStatus,
 };
 pub use user_preferences::{
     UserAuthFactors, UserNotificationPreferences, UserPreferences, UserPreferencesUpdate,

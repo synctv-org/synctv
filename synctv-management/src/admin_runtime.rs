@@ -20,6 +20,7 @@ pub struct ListUsersQuery {
     pub sort_by: UserListSortBy,
     pub sort_direction: AdminSortDirection,
     pub is_banned: Option<bool>,
+    pub include_deleted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -444,6 +445,12 @@ pub struct DeleteUserCommand {
 }
 
 #[derive(Debug, Clone)]
+pub struct RestoreUserCommand {
+    pub user_id: String,
+    pub ignore_identity_conflicts: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct CreateUserCommand {
     pub username: String,
     pub email: String,
@@ -605,6 +612,13 @@ pub trait AdminRuntime: Send + Sync {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<admin_proto::DeleteUserResponse, RuntimeError>;
+
+    async fn restore_user(
+        &self,
+        command: RestoreUserCommand,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<admin_proto::RestoreUserResponse, RuntimeError>;
 
     async fn ban_user(
         &self,

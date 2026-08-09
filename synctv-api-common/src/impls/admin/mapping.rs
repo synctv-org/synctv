@@ -530,6 +530,7 @@ pub(in crate::impls::admin) fn try_admin_user_to_proto(
     user: &synctv_core::models::User,
     email: Option<&str>,
     presence: Option<&synctv_core::service::OnlineUserStats>,
+    lifecycle: Option<&synctv_core::models::UserLifecycleMetadata>,
     public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
     Ok(synctv_proto::admin::AdminUser {
@@ -554,6 +555,25 @@ pub(in crate::impls::admin) fn try_admin_user_to_proto(
             .unwrap_or_default(),
         banned_reason: user.banned_reason.clone().unwrap_or_default(),
         avatar_url: String::new(),
+        deleted_at: user.deleted_at.map_or(0, |value| value.timestamp()),
+        deletion_reason: lifecycle
+            .and_then(|metadata| metadata.deletion_reason.clone())
+            .unwrap_or_default(),
+        restored_at: lifecycle
+            .and_then(|metadata| metadata.restored_at)
+            .map_or(0, |value| value.timestamp()),
+        deletion_source: lifecycle
+            .and_then(|metadata| metadata.deletion_source)
+            .map(|source| source.as_str().to_string())
+            .unwrap_or_default(),
+        deleted_by: encode_optional_user_id(
+            public_id_codec,
+            lifecycle.and_then(|metadata| metadata.deleted_by),
+        )?,
+        restored_by: encode_optional_user_id(
+            public_id_codec,
+            lifecycle.and_then(|metadata| metadata.restored_by),
+        )?,
         presence: presence
             .map(|stats| {
                 crate::impls::client::convert::user_presence_stats_to_proto(stats, public_id_codec)

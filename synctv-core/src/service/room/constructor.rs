@@ -326,7 +326,6 @@ impl RoomService {
                 .opaque_password_registration_session_store,
             opaque_password_login_session_store: options.opaque_password_login_session_store,
             realtime_outbox: options.realtime_outbox,
-            media_file_storage_service: options.media_file_storage_service,
             room_file_storage_service: options.room_file_storage_service,
             consistency: ConsistencyCoordinator::new(version_fence),
         }

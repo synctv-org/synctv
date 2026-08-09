@@ -89,14 +89,8 @@ struct MyRoomListRow {
     member_count: i32,
 }
 
-const ACCESSIBLE_ROOM_CREATOR_CONDITION: &str =
-    "EXISTS (SELECT 1 FROM users u WHERE u.id = r.created_by AND u.deleted_at IS NULL
-        AND NOT EXISTS (
-            SELECT 1 FROM user_bans ub
-            WHERE ub.user_id = u.id
-              AND ub.revoked_at IS NULL
-              AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
-        ))";
+const VISIBLE_ROOM_CREATOR_CONDITION: &str =
+    "EXISTS (SELECT 1 FROM users u WHERE u.id = r.created_by AND u.deleted_at IS NULL)";
 const ACTIVE_ROOM_BAN_EXISTS_SQL: &str = "EXISTS (
     SELECT 1 FROM room_bans rb
     WHERE rb.room_id = r.id
@@ -736,7 +730,7 @@ impl RoomMemberRepository {
 
     /// Delete a user's current memberships from all rooms.
     ///
-    /// Used during user deletion/ban to clean up room memberships.
+    /// Used during irreversible account cleanup and explicit membership removal.
     /// Returns the number of memberships removed.
     pub async fn remove_all_for_user(&self, user_id: &UserId) -> Result<u64> {
         let mut tx = self.pools.primary().begin().await?;
@@ -2698,7 +2692,11 @@ impl RoomMemberRepository {
         Ok((results, total_count))
     }
 
-    /// List only rooms whose creator is still active.
+    /// List joined rooms whose creator account still exists.
+    ///
+    /// Moderation and account-status restrictions are represented through the
+    /// client availability projection so members can still leave or delete an
+    /// unavailable room. Account-deleted creators remain hidden here.
     pub async fn list_accessible_by_user_with_query_eventually_consistent(
         &self,
         user_id: &UserId,
@@ -2726,7 +2724,7 @@ impl RoomMemberRepository {
             SELECT COUNT(*)
             FROM room_members rm
             JOIN rooms r ON rm.room_id = r.id
-            WHERE rm.user_id = $1 AND {count_where_sql} AND {ACCESSIBLE_ROOM_CREATOR_CONDITION}
+            WHERE rm.user_id = $1 AND {count_where_sql} AND {VISIBLE_ROOM_CREATOR_CONDITION}
             "
         );
         let total_count = Self::bind_my_room_count_filters(
@@ -2764,7 +2762,7 @@ impl RoomMemberRepository {
 	                         AND rmkc2.user_id = rm2.user_id
 	                         AND rmkc2.ends_at > CURRENT_TIMESTAMP
 	                   )
-	            WHERE rm.user_id = $1 AND {where_sql} AND {ACCESSIBLE_ROOM_CREATOR_CONDITION}
+	            WHERE rm.user_id = $1 AND {where_sql} AND {VISIBLE_ROOM_CREATOR_CONDITION}
 	            GROUP BY r.id, r.name, r.description, r.cover_file_reference_id, r.category_id,
 	                     r.created_by, r.closed_at,
 	                     r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,

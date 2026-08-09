@@ -8,8 +8,8 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::{
     models::{
-        normalize_provider_instance_name, Media, MediaId, MediaListQuery, PageParams, PlaylistId,
-        RoomId, UserId,
+        normalize_provider_instance_name, DeletionSource, Media, MediaId, MediaListQuery,
+        PageParams, PlaylistId, RoomId, UserId,
     },
     Result,
 };
@@ -199,6 +199,11 @@ impl MediaRepository {
     ) -> Result<()> {
         builder.push(" FROM media m LEFT JOIN users u ON m.creator_id = u.id AND u.deleted_at IS NULL WHERE m.room_id = ");
         builder.push_bind(room_id.as_i64());
+        builder.push(" AND m.deleted_at IS NULL AND (m.creator_id IS NULL OR u.id IS NOT NULL)");
+        builder.push(
+            " AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = m.room_id AND r.deleted_at IS NULL)",
+        );
+        builder.push(" AND (m.playlist_id IS NULL OR EXISTS (SELECT 1 FROM playlists p WHERE p.id = m.playlist_id AND p.deleted_at IS NULL AND (p.creator_id IS NULL OR EXISTS (SELECT 1 FROM users pu WHERE pu.id = p.creator_id AND pu.deleted_at IS NULL))))");
         match playlist_id {
             Some(playlist_id) => {
                 builder.push(" AND m.playlist_id = ");
@@ -324,7 +329,13 @@ impl MediaRepository {
             r#"
             INSERT INTO media (playlist_id, room_id, creator_id, name, description, position,
                               source_provider, source_config, provider_instance_name, added_at, updated_at, version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, 0)
+            SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, 0
+            WHERE $3::BIGINT IS NULL OR EXISTS (
+                SELECT 1
+                FROM users
+                WHERE users.id = $3::BIGINT AND users.deleted_at IS NULL
+                FOR KEY SHARE
+            )
              RETURNING id as "id: MediaId",
                        playlist_id as "playlist_id: PlaylistId",
                        room_id as "room_id: RoomId",
@@ -489,6 +500,10 @@ impl MediaRepository {
             UPDATE media
             SET name = $2, description = $3, position = $4
              WHERE id = $1
+               AND deleted_at IS NULL
+               AND (creator_id IS NULL OR EXISTS (
+                   SELECT 1 FROM users WHERE users.id = media.creator_id AND users.deleted_at IS NULL
+               ))
              RETURNING id as "id: MediaId",
                        playlist_id as "playlist_id: PlaylistId",
                        room_id as "room_id: RoomId",
@@ -553,7 +568,13 @@ impl MediaRepository {
             r#"
             UPDATE media
             SET name = $2, description = $3, position = $4, version = version + 1
-             WHERE id = $1 AND version = $5
+             WHERE id = $1
+               AND deleted_at IS NULL
+               AND version = $5
+               AND (creator_id IS NULL OR EXISTS (
+                   SELECT 1 FROM users u
+                   WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+               ))
              RETURNING id as "id: MediaId",
                        playlist_id as "playlist_id: PlaylistId",
                        room_id as "room_id: RoomId",
@@ -598,8 +619,27 @@ impl MediaRepository {
                    cover_file_reference_id,
     thumbnail_file_reference_id,
                    added_at, updated_at, version
-             FROM media
-             WHERE id = $1
+             FROM media m
+             WHERE m.id = $1
+               AND m.deleted_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM rooms r
+                   WHERE r.id = m.room_id AND r.deleted_at IS NULL
+               )
+               AND (m.creator_id IS NULL OR EXISTS (
+                   SELECT 1 FROM users u
+                   WHERE u.id = m.creator_id AND u.deleted_at IS NULL
+               ))
+               AND (m.playlist_id IS NULL OR EXISTS (
+                   SELECT 1
+                   FROM playlists p
+                   WHERE p.id = m.playlist_id
+                     AND p.deleted_at IS NULL
+                     AND (p.creator_id IS NULL OR EXISTS (
+                         SELECT 1 FROM users u
+                         WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                     ))
+               ))
             "#,
             media_id as &MediaId,
         )
@@ -631,8 +671,28 @@ impl MediaRepository {
                    cover_file_reference_id,
     thumbnail_file_reference_id,
                    added_at, updated_at, version
-             FROM media
-             WHERE room_id = $1 AND id = $2
+             FROM media m
+             WHERE m.room_id = $1
+               AND m.id = $2
+               AND m.deleted_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM rooms r
+                   WHERE r.id = m.room_id AND r.deleted_at IS NULL
+               )
+               AND (m.creator_id IS NULL OR EXISTS (
+                   SELECT 1 FROM users u
+                   WHERE u.id = m.creator_id AND u.deleted_at IS NULL
+               ))
+               AND (m.playlist_id IS NULL OR EXISTS (
+                   SELECT 1
+                   FROM playlists p
+                   WHERE p.id = m.playlist_id
+                     AND p.deleted_at IS NULL
+                     AND (p.creator_id IS NULL OR EXISTS (
+                         SELECT 1 FROM users u
+                         WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                     ))
+               ))
             "#,
             room_id as &RoomId,
             media_id as &MediaId,
@@ -668,8 +728,28 @@ impl MediaRepository {
                    cover_file_reference_id,
     thumbnail_file_reference_id,
                    added_at, updated_at, version
-             FROM media
-             WHERE room_id = $1 AND id = $2
+             FROM media m
+             WHERE m.room_id = $1
+               AND m.id = $2
+               AND m.deleted_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM rooms r
+                   WHERE r.id = m.room_id AND r.deleted_at IS NULL
+               )
+               AND (m.creator_id IS NULL OR EXISTS (
+                   SELECT 1 FROM users u
+                   WHERE u.id = m.creator_id AND u.deleted_at IS NULL
+               ))
+               AND (m.playlist_id IS NULL OR EXISTS (
+                   SELECT 1
+                   FROM playlists p
+                   WHERE p.id = m.playlist_id
+                     AND p.deleted_at IS NULL
+                     AND (p.creator_id IS NULL OR EXISTS (
+                         SELECT 1 FROM users u
+                         WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                     ))
+               ))
              FOR UPDATE
             "#,
             room_id as &RoomId,
@@ -698,7 +778,14 @@ impl MediaRepository {
             UPDATE media
             SET cover_file_reference_id = $3,
                 version = version + 1
-             WHERE room_id = $1 AND id = $2 AND version = $4
+             WHERE room_id = $1
+               AND id = $2
+               AND deleted_at IS NULL
+               AND version = $4
+               AND (creator_id IS NULL OR EXISTS (
+                   SELECT 1 FROM users u
+                   WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+               ))
              RETURNING id as "id: MediaId",
                        playlist_id as "playlist_id: PlaylistId",
                        room_id as "room_id: RoomId",
@@ -741,7 +828,14 @@ impl MediaRepository {
             UPDATE media
             SET thumbnail_file_reference_id = $3,
                 version = version + 1
-             WHERE room_id = $1 AND id = $2 AND version = $4
+             WHERE room_id = $1
+               AND id = $2
+               AND deleted_at IS NULL
+               AND version = $4
+               AND (creator_id IS NULL OR EXISTS (
+                   SELECT 1 FROM users u
+                   WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+               ))
              RETURNING id as "id: MediaId",
                        playlist_id as "playlist_id: PlaylistId",
                        room_id as "room_id: RoomId",
@@ -803,7 +897,26 @@ impl MediaRepository {
     thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
-             WHERE id = ANY($1)
+            WHERE media.id = ANY($1)
+              AND media.deleted_at IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM rooms r
+                  WHERE r.id = media.room_id AND r.deleted_at IS NULL
+              )
+              AND (media.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u
+                  WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+              ))
+              AND (media.playlist_id IS NULL OR EXISTS (
+                  SELECT 1
+                  FROM playlists p
+                  WHERE p.id = media.playlist_id
+                    AND p.deleted_at IS NULL
+                    AND (p.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u
+                        WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
             "#,
             &id_strs,
         )
@@ -845,7 +958,27 @@ impl MediaRepository {
     thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
-             WHERE room_id = $1 AND id = ANY($2)
+             WHERE media.room_id = $1
+               AND media.id = ANY($2)
+               AND media.deleted_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM rooms r
+                   WHERE r.id = media.room_id AND r.deleted_at IS NULL
+               )
+               AND (media.creator_id IS NULL OR EXISTS (
+                   SELECT 1 FROM users u
+                   WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+               ))
+               AND (media.playlist_id IS NULL OR EXISTS (
+                   SELECT 1
+                   FROM playlists p
+                   WHERE p.id = media.playlist_id
+                     AND p.deleted_at IS NULL
+                     AND (p.creator_id IS NULL OR EXISTS (
+                         SELECT 1 FROM users u
+                         WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                     ))
+               ))
             "#,
             room_id as &RoomId,
             &id_strs,
@@ -883,8 +1016,27 @@ impl MediaRepository {
     thumbnail_file_reference_id,
                    added_at, updated_at, version
             FROM media
-            WHERE room_id = $1
-              AND playlist_id IS NOT DISTINCT FROM $2
+            WHERE media.room_id = $1
+              AND media.deleted_at IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM rooms r
+                  WHERE r.id = media.room_id AND r.deleted_at IS NULL
+              )
+              AND (media.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u
+                  WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+              ))
+              AND (media.playlist_id IS NULL OR EXISTS (
+                  SELECT 1
+                  FROM playlists p
+                  WHERE p.id = media.playlist_id
+                    AND p.deleted_at IS NULL
+                    AND (p.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u
+                        WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
+              AND media.playlist_id IS NOT DISTINCT FROM $2
             ORDER BY position ASC, id ASC
             "#,
             room_id as &RoomId,
@@ -914,9 +1066,18 @@ impl MediaRepository {
                    cover_file_reference_id,
     thumbnail_file_reference_id,
                    added_at, updated_at, version
-             FROM media
-             WHERE room_id = $1
-               AND playlist_id IS NULL
+            FROM media
+            WHERE media.room_id = $1
+               AND media.deleted_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM rooms r
+                   WHERE r.id = media.room_id AND r.deleted_at IS NULL
+               )
+               AND (media.creator_id IS NULL OR EXISTS (
+                   SELECT 1 FROM users u
+                   WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+               ))
+               AND media.playlist_id IS NULL
              ORDER BY position ASC
             "#,
             room_id as &RoomId,
@@ -946,7 +1107,26 @@ impl MediaRepository {
     thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
-             WHERE playlist_id = $1
+             WHERE media.playlist_id = $1
+               AND media.deleted_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM rooms r
+                   WHERE r.id = media.room_id AND r.deleted_at IS NULL
+               )
+               AND (media.creator_id IS NULL OR EXISTS (
+                   SELECT 1 FROM users u
+                   WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+               ))
+               AND EXISTS (
+                   SELECT 1
+                   FROM playlists p
+                   WHERE p.id = media.playlist_id
+                     AND p.deleted_at IS NULL
+                     AND (p.creator_id IS NULL OR EXISTS (
+                         SELECT 1 FROM users u
+                         WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                     ))
+               )
              ORDER BY position ASC
             "#,
             playlist_id as &PlaylistId,
@@ -980,7 +1160,27 @@ impl MediaRepository {
     thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
-             WHERE room_id = $1 AND playlist_id = $2
+             WHERE media.room_id = $1
+               AND media.playlist_id = $2
+               AND media.deleted_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM rooms r
+                   WHERE r.id = media.room_id AND r.deleted_at IS NULL
+               )
+               AND (media.creator_id IS NULL OR EXISTS (
+                   SELECT 1 FROM users u
+                   WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+               ))
+               AND EXISTS (
+                   SELECT 1
+                   FROM playlists p
+                   WHERE p.id = media.playlist_id
+                     AND p.deleted_at IS NULL
+                     AND (p.creator_id IS NULL OR EXISTS (
+                         SELECT 1 FROM users u
+                         WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                     ))
+               )
              ORDER BY position ASC
             "#,
             room_id as &RoomId,
@@ -1004,7 +1204,28 @@ impl MediaRepository {
         // Get total count
         let total = sqlx::query_scalar!(
             r#"
-            SELECT COUNT(*) AS "count!" FROM media WHERE playlist_id = $1
+            SELECT COUNT(*) AS "count!"
+            FROM media
+            WHERE media.playlist_id = $1
+              AND media.deleted_at IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM rooms r
+                  WHERE r.id = media.room_id AND r.deleted_at IS NULL
+              )
+              AND (media.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u
+                  WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+              ))
+              AND EXISTS (
+                  SELECT 1
+                  FROM playlists p
+                  WHERE p.id = media.playlist_id
+                    AND p.deleted_at IS NULL
+                    AND (p.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u
+                        WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                    ))
+              )
             "#,
             playlist_id.as_i64(),
         )
@@ -1028,7 +1249,26 @@ impl MediaRepository {
     thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
-             WHERE playlist_id = $1
+             WHERE media.playlist_id = $1
+               AND media.deleted_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM rooms r
+                   WHERE r.id = media.room_id AND r.deleted_at IS NULL
+               )
+               AND (media.creator_id IS NULL OR EXISTS (
+                   SELECT 1 FROM users u
+                   WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+               ))
+               AND EXISTS (
+                   SELECT 1
+                   FROM playlists p
+                   WHERE p.id = media.playlist_id
+                     AND p.deleted_at IS NULL
+                     AND (p.creator_id IS NULL OR EXISTS (
+                         SELECT 1 FROM users u
+                         WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                     ))
+               )
              ORDER BY position ASC
              LIMIT $2 OFFSET $3
             "#,
@@ -1057,8 +1297,17 @@ impl MediaRepository {
             r#"
             SELECT COUNT(*) AS "count!"
             FROM media
-            WHERE room_id = $1
-              AND playlist_id IS NULL
+            WHERE media.room_id = $1
+              AND media.deleted_at IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM rooms r
+                  WHERE r.id = media.room_id AND r.deleted_at IS NULL
+              )
+              AND (media.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u
+                  WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+              ))
+              AND media.playlist_id IS NULL
             "#,
             room_id.as_i64(),
         )
@@ -1081,9 +1330,18 @@ impl MediaRepository {
                    cover_file_reference_id,
     thumbnail_file_reference_id,
                    added_at, updated_at, version
-             FROM media
-             WHERE room_id = $1
-               AND playlist_id IS NULL
+            FROM media
+            WHERE media.room_id = $1
+               AND media.deleted_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM rooms r
+                   WHERE r.id = media.room_id AND r.deleted_at IS NULL
+               )
+               AND (media.creator_id IS NULL OR EXISTS (
+                   SELECT 1 FROM users u
+                   WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+               ))
+               AND media.playlist_id IS NULL
              ORDER BY position ASC
              LIMIT $2 OFFSET $3
             "#,
@@ -1126,7 +1384,26 @@ impl MediaRepository {
     thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
-             WHERE playlist_id = $1
+             WHERE media.playlist_id = $1
+               AND media.deleted_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM rooms r
+                   WHERE r.id = media.room_id AND r.deleted_at IS NULL
+               )
+               AND (media.creator_id IS NULL OR EXISTS (
+                   SELECT 1 FROM users u
+                   WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+               ))
+               AND EXISTS (
+                   SELECT 1
+                   FROM playlists p
+                   WHERE p.id = media.playlist_id
+                     AND p.deleted_at IS NULL
+                     AND (p.creator_id IS NULL OR EXISTS (
+                         SELECT 1 FROM users u
+                         WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                     ))
+               )
              ORDER BY position ASC
              LIMIT $2 OFFSET $3
             "#,
@@ -1163,9 +1440,18 @@ impl MediaRepository {
                    cover_file_reference_id,
     thumbnail_file_reference_id,
                    added_at, updated_at, version
-             FROM media
-             WHERE room_id = $1
-               AND playlist_id IS NULL
+            FROM media
+            WHERE media.room_id = $1
+               AND media.deleted_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM rooms r
+                   WHERE r.id = media.room_id AND r.deleted_at IS NULL
+               )
+               AND (media.creator_id IS NULL OR EXISTS (
+                   SELECT 1 FROM users u
+                   WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+               ))
+               AND media.playlist_id IS NULL
              ORDER BY position ASC
              LIMIT $2 OFFSET $3
             "#,
@@ -1183,10 +1469,14 @@ impl MediaRepository {
     pub async fn delete(&self, media_id: &MediaId) -> Result<bool> {
         let result = sqlx::query!(
             r#"
-            DELETE FROM media
-             WHERE id = $1
+            UPDATE media
+               SET deleted_at = CURRENT_TIMESTAMP,
+                   deletion_source = $2,
+                   version = version + 1
+             WHERE id = $1 AND deleted_at IS NULL
             "#,
             media_id.as_i64(),
+            DeletionSource::User as DeletionSource,
         )
         .execute(&self.pool)
         .await?;
@@ -1198,10 +1488,14 @@ impl MediaRepository {
     pub async fn delete_playlist(&self, playlist_id: &PlaylistId) -> Result<usize> {
         let result = sqlx::query!(
             r#"
-            DELETE FROM media
-             WHERE playlist_id = $1
+            UPDATE media
+               SET deleted_at = CURRENT_TIMESTAMP,
+                   deletion_source = $2,
+                   version = version + 1
+             WHERE playlist_id = $1 AND deleted_at IS NULL
             "#,
             playlist_id.as_i64(),
+            DeletionSource::User as DeletionSource,
         )
         .execute(&self.pool)
         .await?;
@@ -1213,11 +1507,15 @@ impl MediaRepository {
     pub async fn delete_room_root(&self, room_id: &RoomId) -> Result<usize> {
         let result = sqlx::query!(
             r#"
-            DELETE FROM media
-             WHERE room_id = $1
+            UPDATE media
+               SET deleted_at = CURRENT_TIMESTAMP,
+                   deletion_source = $2,
+                   version = version + 1
+             WHERE room_id = $1 AND deleted_at IS NULL
                AND playlist_id IS NULL
             "#,
             room_id.as_i64(),
+            DeletionSource::User as DeletionSource,
         )
         .execute(&self.pool)
         .await?;
@@ -1247,10 +1545,14 @@ impl MediaRepository {
 
         let result = sqlx::query!(
             r#"
-            DELETE FROM media
-             WHERE id = ANY($1)
+            UPDATE media
+               SET deleted_at = CURRENT_TIMESTAMP,
+                   deletion_source = $2,
+                   version = version + 1
+             WHERE id = ANY($1) AND deleted_at IS NULL
             "#,
             &id_strs,
+            DeletionSource::User as DeletionSource,
         )
         .execute(executor)
         .await?;
@@ -1399,7 +1701,23 @@ impl MediaRepository {
     thumbnail_file_reference_id,
                    added_at, updated_at, version
             FROM media
-            WHERE room_id = $1 AND id = ANY($2)
+            WHERE media.room_id = $1
+              AND media.id = ANY($2)
+              AND media.deleted_at IS NULL
+              AND (media.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u
+                  WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+              ))
+              AND (media.playlist_id IS NULL OR EXISTS (
+                  SELECT 1
+                  FROM playlists p
+                  WHERE p.id = media.playlist_id
+                    AND p.deleted_at IS NULL
+                    AND (p.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u
+                        WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
             FOR UPDATE
             "#,
             room_id as &RoomId,
@@ -1463,7 +1781,7 @@ impl MediaRepository {
     thumbnail_file_reference_id,
                        added_at, updated_at, version
                 FROM media
-                WHERE room_id = $1 AND id = $2
+                WHERE room_id = $1 AND id = $2 AND deleted_at IS NULL
                 FOR UPDATE
                 "#,
                 room_id as &RoomId,
@@ -1506,6 +1824,7 @@ impl MediaRepository {
                 SELECT id AS "id: MediaId", position
                 FROM media
                 WHERE room_id = $1
+                  AND deleted_at IS NULL
                   AND playlist_id IS NOT DISTINCT FROM $2
                   AND NOT (id = ANY($3))
                 ORDER BY position ASC, id ASC
@@ -1565,7 +1884,7 @@ impl MediaRepository {
                     SET playlist_id = $2,
                         position = $3,
                         version = version + 1
-                    WHERE id = $1
+                    WHERE id = $1 AND deleted_at IS NULL
                     RETURNING id as "id: MediaId",
                               playlist_id as "playlist_id: PlaylistId",
                               room_id as "room_id: RoomId",
@@ -1613,6 +1932,7 @@ impl MediaRepository {
             SELECT position AS "position!"
             FROM media
             WHERE room_id = $1
+              AND deleted_at IS NULL
               AND playlist_id IS NOT DISTINCT FROM $2
               AND id <> $3
               AND (
@@ -1647,6 +1967,7 @@ impl MediaRepository {
             SELECT position AS "position!"
             FROM media
             WHERE room_id = $1
+              AND deleted_at IS NULL
               AND playlist_id IS NOT DISTINCT FROM $2
               AND id <> $3
               AND (
@@ -1678,6 +1999,7 @@ impl MediaRepository {
             SELECT id AS "id: MediaId"
             FROM media
             WHERE room_id = $1
+              AND deleted_at IS NULL
               AND playlist_id IS NOT DISTINCT FROM $2
             ORDER BY position ASC, id ASC
             FOR UPDATE
@@ -1694,7 +2016,7 @@ impl MediaRepository {
                     crate::Error::Internal("media order index exceeds u32::MAX".to_string())
                 })?;
             sqlx::query!(
-                "UPDATE media SET position = $2, version = version + 1 WHERE id = $1",
+                "UPDATE media SET position = $2, version = version + 1 WHERE id = $1 AND deleted_at IS NULL",
                 row.id.as_i64(),
                 position,
             )
@@ -1730,6 +2052,7 @@ impl MediaRepository {
             SELECT MAX(position)
             FROM media
             WHERE room_id = $1
+              AND deleted_at IS NULL
               AND playlist_id IS NOT DISTINCT FROM $2
             "#,
             room_id.as_i64(),
@@ -1782,7 +2105,23 @@ impl MediaRepository {
     thumbnail_file_reference_id,
                    added_at, updated_at, version
             FROM media
-            WHERE room_id = $1 AND id = $2
+            WHERE media.room_id = $1
+              AND media.id = $2
+              AND media.deleted_at IS NULL
+              AND (media.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u
+                  WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+              ))
+              AND (media.playlist_id IS NULL OR EXISTS (
+                  SELECT 1
+                  FROM playlists p
+                  WHERE p.id = media.playlist_id
+                    AND p.deleted_at IS NULL
+                    AND (p.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u
+                        WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
             FOR UPDATE
             "#,
             room_id as &RoomId,
@@ -1810,7 +2149,23 @@ impl MediaRepository {
     thumbnail_file_reference_id,
                    added_at, updated_at, version
             FROM media
-            WHERE room_id = $1 AND id = $2
+            WHERE media.room_id = $1
+              AND media.id = $2
+              AND media.deleted_at IS NULL
+              AND (media.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u
+                  WHERE u.id = media.creator_id AND u.deleted_at IS NULL
+              ))
+              AND (media.playlist_id IS NULL OR EXISTS (
+                  SELECT 1
+                  FROM playlists p
+                  WHERE p.id = media.playlist_id
+                    AND p.deleted_at IS NULL
+                    AND (p.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u
+                        WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
             FOR UPDATE
             "#,
             room_id as &RoomId,
@@ -1833,7 +2188,7 @@ impl MediaRepository {
 
         for _ in 0..2 {
             let anchor_position = sqlx::query_scalar!(
-                r#"SELECT position AS "position!" FROM media WHERE id = $1 FOR UPDATE"#,
+                r#"SELECT position AS "position!" FROM media WHERE id = $1 AND deleted_at IS NULL FOR UPDATE"#,
                 anchor.id.as_i64(),
             )
             .fetch_one(&mut **tx)
@@ -1877,7 +2232,7 @@ impl MediaRepository {
                     r#"
                     UPDATE media
                     SET position = $2, version = version + 1
-                    WHERE id = $1
+                    WHERE id = $1 AND deleted_at IS NULL
                     RETURNING id as "id: MediaId",
                               playlist_id as "playlist_id: PlaylistId",
                               room_id as "room_id: RoomId",
@@ -1914,7 +2269,22 @@ impl MediaRepository {
     pub async fn count_by_playlist(&self, playlist_id: &PlaylistId) -> Result<i64> {
         let count = sqlx::query_scalar!(
             r#"
-            SELECT COUNT(*) AS "count!" FROM media WHERE playlist_id = $1
+            SELECT COUNT(*) AS "count!"
+            FROM media m
+            WHERE m.playlist_id = $1
+              AND m.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = m.room_id AND r.deleted_at IS NULL)
+              AND (m.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = m.creator_id AND u.deleted_at IS NULL
+              ))
+              AND EXISTS (
+                  SELECT 1 FROM playlists p
+                  WHERE p.id = m.playlist_id
+                    AND p.deleted_at IS NULL
+                    AND (p.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                    ))
+              )
             "#,
             playlist_id.as_i64(),
         )
@@ -1928,7 +2298,22 @@ impl MediaRepository {
     pub async fn count_all(&self) -> Result<i64> {
         let count = sqlx::query_scalar!(
             r#"
-            SELECT COUNT(*) AS "count!" FROM media
+            SELECT COUNT(*) AS "count!"
+            FROM media m
+            WHERE m.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = m.room_id AND r.deleted_at IS NULL)
+              AND (m.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = m.creator_id AND u.deleted_at IS NULL
+              ))
+              AND (m.playlist_id IS NULL OR EXISTS (
+                  SELECT 1
+                  FROM playlists p
+                  WHERE p.id = m.playlist_id
+                    AND p.deleted_at IS NULL
+                    AND (p.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                    ))
+              ))
             "#
         )
         .fetch_one(&self.pool)
@@ -1945,7 +2330,24 @@ impl MediaRepository {
     ) -> Result<i64> {
         let count = sqlx::query_scalar!(
             r#"
-            SELECT COUNT(*) AS "count!" FROM media WHERE room_id = $1 AND playlist_id = $2
+            SELECT COUNT(*) AS "count!"
+            FROM media m
+            WHERE m.room_id = $1
+              AND m.playlist_id = $2
+              AND m.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = m.room_id AND r.deleted_at IS NULL)
+              AND (m.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = m.creator_id AND u.deleted_at IS NULL
+              ))
+              AND EXISTS (
+                  SELECT 1
+                  FROM playlists p
+                  WHERE p.id = m.playlist_id
+                    AND p.deleted_at IS NULL
+                    AND (p.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                    ))
+              )
             "#,
             room_id.as_i64(),
             playlist_id.as_i64()
@@ -1966,6 +2368,7 @@ impl MediaRepository {
               ON m.creator_id = u.id
              AND u.deleted_at IS NULL
             WHERE m.playlist_id = $1
+              AND m.deleted_at IS NULL
               AND (m.creator_id IS NULL OR (
                   u.id IS NOT NULL AND NOT EXISTS (
                       SELECT 1 FROM user_bans ub
@@ -1988,9 +2391,14 @@ impl MediaRepository {
         let count = sqlx::query_scalar!(
             r#"
             SELECT COUNT(*) AS "count!"
-            FROM media
-            WHERE room_id = $1
-              AND playlist_id IS NULL
+            FROM media m
+            WHERE m.room_id = $1
+              AND m.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = m.room_id AND r.deleted_at IS NULL)
+              AND (m.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = m.creator_id AND u.deleted_at IS NULL
+              ))
+              AND m.playlist_id IS NULL
             "#,
             room_id.as_i64(),
         )
@@ -2008,10 +2416,24 @@ impl MediaRepository {
         let ids: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
         let rows = sqlx::query!(
             r#"
-            SELECT playlist_id AS "playlist_id!: PlaylistId", COUNT(*) AS "cnt!"
-            FROM media
-            WHERE playlist_id = ANY($1)
-            GROUP BY playlist_id
+            SELECT m.playlist_id AS "playlist_id!: PlaylistId", COUNT(*) AS "cnt!"
+            FROM media m
+            WHERE m.playlist_id = ANY($1)
+              AND m.deleted_at IS NULL
+              AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = m.room_id AND r.deleted_at IS NULL)
+              AND (m.creator_id IS NULL OR EXISTS (
+                  SELECT 1 FROM users u WHERE u.id = m.creator_id AND u.deleted_at IS NULL
+              ))
+              AND EXISTS (
+                  SELECT 1
+                  FROM playlists p
+                  WHERE p.id = m.playlist_id
+                    AND p.deleted_at IS NULL
+                    AND (p.creator_id IS NULL OR EXISTS (
+                        SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
+                    ))
+              )
+            GROUP BY m.playlist_id
             "#,
             &ids,
         )
@@ -2043,6 +2465,7 @@ impl MediaRepository {
               ON m.creator_id = u.id
              AND u.deleted_at IS NULL
             WHERE m.playlist_id = ANY($1)
+              AND m.deleted_at IS NULL
               AND (m.creator_id IS NULL OR (
                   u.id IS NOT NULL AND NOT EXISTS (
                       SELECT 1 FROM user_bans ub

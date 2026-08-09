@@ -3,7 +3,7 @@ title: User Management
 description: Manage SyncTV users, global roles, ban state, account security state, and sensitive operations.
 ---
 
-Users have global roles, effective state, and security preferences. When handling user issues, first decide whether the cause is account state, authentication method, global role, or room permissions.
+Users have global roles, effective state, and security preferences. When handling user issues, first decide whether the cause is account state, authentication method, global role, or room permissions. The [Resource Lifecycle](../../operations/resource-lifecycle/) page defines deletion, recovery, and resource cascades.
 
 ## User State
 
@@ -26,8 +26,12 @@ Users have global roles, effective state, and security preferences. When handlin
 synctv user list
 synctv user get alice
 synctv user create alice --email alice@example.com
+synctv user list --include-deleted
 synctv user ban alice --reason "abuse"
 synctv user unban alice
+synctv user bans list --active
+synctv user restore alice
+synctv user restore alice --ignore-identity-conflicts
 synctv user set-role alice admin
 synctv user preferences get alice
 ```
@@ -37,7 +41,8 @@ synctv user preferences get alice
 | Scenario | Prefer |
 | --- | --- |
 | Abuse | Use `ban`, keep the reason, avoid deleting audit context |
-| Account recovery | Verify identity and bound methods before changing password, email, or 2FA |
+| Deleted-account recovery | Run `user restore` during retention and resolve identity conflicts first |
+| Account access recovery | Verify identity and bound methods before changing password, email, or 2FA |
 | Promote administrator | Use a root account and record the reason |
 | Change 2FA preference | Confirm at least two local verification methods remain |
 | Delete account | Evaluate room, media, review, notification, and audit impact first |

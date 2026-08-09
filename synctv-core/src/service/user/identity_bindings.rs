@@ -231,6 +231,12 @@ impl UserService {
 
         self.consume_sensitive_operation_verification(user_id, verification_id)
             .await?;
+        // Unbinding changes the account's identity state. Revoke every
+        // outstanding bind token in the same transaction so a stale token
+        // cannot attach an address after the email identity is removed.
+        self.email_bind_repository
+            .delete_unused_for_user_with_executor(user_id, &mut *tx)
+            .await?;
         let updated_user = self
             .user_email_repository
             .delete_with_executor(user_id, crate::SystemClock.now(), &mut *tx)

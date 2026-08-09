@@ -49,7 +49,9 @@ impl RoomService {
         room: &Room,
         active_creators: &HashSet<UserId>,
     ) -> ClientResourceAvailability {
-        if active_creators.contains(&room.created_by) {
+        if room.is_banned {
+            ClientResourceAvailability::CreatorInactive
+        } else if active_creators.contains(&room.created_by) {
             ClientResourceAvailability::Available
         } else {
             ClientResourceAvailability::CreatorInactive
@@ -138,6 +140,34 @@ impl RoomService {
         }
     }
 
+    async fn ensure_playlist_path_is_usable_for_client_access(
+        &self,
+        room_id: &RoomId,
+        playlist_id: &PlaylistId,
+    ) -> Result<()> {
+        let path = self
+            .playlist_repo
+            .get_path_in_room(room_id, playlist_id)
+            .await?;
+        if path.last().map(|playlist| playlist.id) != Some(*playlist_id)
+            || path
+                .first()
+                .is_none_or(|playlist| playlist.parent_id.is_some())
+        {
+            return Err(Error::Authorization(
+                "Playlist is unavailable because its lifecycle path is inactive".to_string(),
+            ));
+        }
+        for playlist in path {
+            self.ensure_resource_creator_is_active_for_client_access(
+                playlist.creator_id.as_ref(),
+                "Playlist",
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn ensure_room_creator_is_active_for_access(
         &self,
         room: &Room,
@@ -159,15 +189,23 @@ impl RoomService {
     }
 
     pub async fn ensure_client_usable_playlist(&self, playlist: &Playlist) -> Result<()> {
-        if !playlist.is_dynamic() {
-            return Ok(());
-        }
+        self.ensure_playlist_path_is_usable_for_client_access(&playlist.room_id, &playlist.id)
+            .await
+    }
 
+    /// Enforce the same creator lifecycle gate for static media playback and
+    /// other client operations that start from a direct media identifier.
+    pub async fn ensure_client_usable_media(&self, media: &Media) -> Result<()> {
         self.ensure_resource_creator_is_active_for_client_access(
-            playlist.creator_id.as_ref(),
-            "Dynamic playlist",
+            media.creator_id.as_ref(),
+            "Media",
         )
-        .await
+        .await?;
+        if let Some(playlist_id) = media.playlist_id.as_ref() {
+            self.ensure_playlist_path_is_usable_for_client_access(&media.room_id, playlist_id)
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn playlist_availability(
@@ -338,5 +376,25 @@ impl RoomService {
         self.media_repo
             .list_filtered_by_scope(room_id, playlist_id, query, limit, offset)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::{ClientResourceAvailability, RoomService};
+    use crate::models::{Room, UserId};
+
+    #[test]
+    fn banned_room_is_unavailable_with_an_active_creator() {
+        let creator_id = UserId::new();
+        let mut room = Room::new("banned room".to_string(), creator_id);
+        room.is_banned = true;
+
+        assert_eq!(
+            RoomService::room_client_availability(&room, &HashSet::from([creator_id])),
+            ClientResourceAvailability::CreatorInactive
+        );
     }
 }

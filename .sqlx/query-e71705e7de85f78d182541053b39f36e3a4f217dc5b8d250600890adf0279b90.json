@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE target_playlists AS (\n                SELECT id\n                FROM playlists\n                WHERE id = ANY($1)\n                  AND deleted_at IS NULL\n                UNION ALL\n                SELECT p.id\n                FROM playlists p\n                JOIN target_playlists tp ON p.parent_id = tp.id\n                WHERE p.deleted_at IS NULL\n            )\n            SELECT DISTINCT m.id AS \"id: MediaId\"\n            FROM media m\n            WHERE m.room_id = $2\n              AND m.deleted_at IS NULL\n              AND (\n                  m.id = ANY($3)\n                  OR m.playlist_id IN (SELECT id FROM target_playlists)\n              )\n            ORDER BY m.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: MediaId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Int8",
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e71705e7de85f78d182541053b39f36e3a4f217dc5b8d250600890adf0279b90"
+}

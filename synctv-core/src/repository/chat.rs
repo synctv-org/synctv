@@ -15,7 +15,7 @@ use crate::{
         ChatMetadata, ChatPinEvent, ChatPinEventKind, ChatPinEventLog, ChatPinnedMessage,
         ChatPlaybackMessagesQuery, ChatReactionSummary, ChatReactionUser, ChatReactionUsersCursor,
         ChatReactionUsersPage, ChatReadState, ChatSearchMessagesPage, ChatSearchMessagesQuery,
-        EventCursor, NewStoredFile, RoomId, SetChatReaction, User, UserId,
+        DeletionSource, EventCursor, NewStoredFile, RoomId, SetChatReaction, User, UserId,
         CHAT_ATTACHMENT_FILENAME_MAX_CHARS, CHAT_ATTACHMENT_ID_MAX_CHARS,
         CHAT_CLIENT_MESSAGE_ID_MAX_CHARS, CHAT_CLIENT_OPERATION_ID_MAX_CHARS,
         CHAT_EVENT_ID_MAX_CHARS, CHAT_EVENT_TYPE_MAX_CHARS, CHAT_PIN_NOTE_MAX_CHARS,
@@ -531,12 +531,14 @@ impl ChatRepository {
              AND m.created_at = p.message_created_at
             WHERE p.room_id = $1
               AND m.status <> $2
+              AND m.deletion_source IS DISTINCT FROM $4
             ORDER BY p.pinned_at DESC, p.message_id DESC
             LIMIT $3
             "#,
             room_id.as_i64(),
             i16::from(ChatMessageStatus::Deleted),
-            i64::from(limit)
+            i64::from(limit),
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_all(pool)
         .await?;
@@ -838,11 +840,14 @@ impl ChatRepository {
                    delete_reason,
                    created_at AS "created_at!"
             FROM chat_messages
-            WHERE room_id = $1 AND id = $2
+            WHERE room_id = $1
+              AND id = $2
+              AND deletion_source IS DISTINCT FROM $3
             FOR UPDATE
             "#,
             request.room_id.as_i64(),
-            request.message_id
+            request.message_id,
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_optional(&mut *tx)
         .await?
@@ -1247,17 +1252,22 @@ impl ChatRepository {
             sqlx::query_as!(
                 ChatEventRow,
                 r#"
-                SELECT sequence AS "sequence!",
-                       event_id AS "event_id!",
-                       room_id AS "room_id?",
-                       actor_user_id AS "actor_user_id?",
-                       payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
-                       occurred_at AS "occurred_at!"
-                FROM chat_message_events
-                WHERE room_id = $1
-                  AND sequence > $2
-                  AND event_type = ANY($3::text[])
-                  AND (payload #>> '{message,message,messageType}') = ANY($5::text[])
+                SELECT e.sequence AS "sequence!",
+                       e.event_id AS "event_id!",
+                       e.room_id AS "room_id?",
+                       e.actor_user_id AS "actor_user_id?",
+                       e.payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
+                       e.occurred_at AS "occurred_at!"
+                FROM chat_message_events e
+                JOIN chat_messages m
+                  ON m.room_id = e.room_id
+                 AND m.id = e.message_id
+                 AND m.created_at = e.message_created_at
+                 AND m.deletion_source IS DISTINCT FROM $6
+                WHERE e.room_id = $1
+                  AND e.sequence > $2
+                  AND e.event_type = ANY($3::text[])
+                  AND (e.payload #>> '{message,message,messageType}') = ANY($5::text[])
                 ORDER BY sequence ASC
                 LIMIT $4
                 "#,
@@ -1266,6 +1276,7 @@ impl ChatRepository {
                 &event_types,
                 i64::from(limit),
                 &included_message_type_strings,
+                DeletionSource::Account as DeletionSource,
             )
             .fetch_all(self.pool())
             .await?
@@ -1273,16 +1284,21 @@ impl ChatRepository {
             sqlx::query_as!(
                 ChatEventRow,
                 r#"
-                SELECT sequence AS "sequence!",
-                       event_id AS "event_id!",
-                       room_id AS "room_id?",
-                       actor_user_id AS "actor_user_id?",
-                       payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
-                       occurred_at AS "occurred_at!"
-                FROM chat_message_events
-                WHERE room_id = $1
-                  AND event_type = ANY($2::text[])
-                  AND (payload #>> '{message,message,messageType}') = ANY($4::text[])
+                SELECT e.sequence AS "sequence!",
+                       e.event_id AS "event_id!",
+                       e.room_id AS "room_id?",
+                       e.actor_user_id AS "actor_user_id?",
+                       e.payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
+                       e.occurred_at AS "occurred_at!"
+                FROM chat_message_events e
+                JOIN chat_messages m
+                  ON m.room_id = e.room_id
+                 AND m.id = e.message_id
+                 AND m.created_at = e.message_created_at
+                 AND m.deletion_source IS DISTINCT FROM $5
+                WHERE e.room_id = $1
+                  AND e.event_type = ANY($2::text[])
+                  AND (e.payload #>> '{message,message,messageType}') = ANY($4::text[])
                 ORDER BY sequence ASC
                 LIMIT $3
                 "#,
@@ -1290,6 +1306,7 @@ impl ChatRepository {
                 &event_types,
                 i64::from(limit),
                 &included_message_type_strings,
+                DeletionSource::Account as DeletionSource,
             )
             .fetch_all(self.pool())
             .await?
@@ -1327,17 +1344,22 @@ impl ChatRepository {
         let rows = sqlx::query_as!(
             ChatEventRow,
             r#"
-            SELECT sequence AS "sequence!",
-                   event_id AS "event_id!",
-                   room_id AS "room_id?",
-                   actor_user_id AS "actor_user_id?",
-                   payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
-                   occurred_at AS "occurred_at!"
-            FROM chat_message_events
-            WHERE room_id = $1
-              AND sequence > $2
-              AND event_type = ANY($3::text[])
-              AND (payload #>> '{message,message,messageType}') = ANY($5::text[])
+            SELECT e.sequence AS "sequence!",
+                   e.event_id AS "event_id!",
+                   e.room_id AS "room_id?",
+                   e.actor_user_id AS "actor_user_id?",
+                   e.payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
+                   e.occurred_at AS "occurred_at!"
+            FROM chat_message_events e
+            JOIN chat_messages m
+              ON m.room_id = e.room_id
+             AND m.id = e.message_id
+             AND m.created_at = e.message_created_at
+             AND m.deletion_source IS DISTINCT FROM $6
+            WHERE e.room_id = $1
+              AND e.sequence > $2
+              AND e.event_type = ANY($3::text[])
+              AND (e.payload #>> '{message,message,messageType}') = ANY($5::text[])
             ORDER BY sequence ASC
             LIMIT $4
             "#,
@@ -1346,6 +1368,7 @@ impl ChatRepository {
             &event_types,
             i64::from(limit),
             &included_message_type_strings,
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_all(self.pool())
         .await?;
@@ -1371,17 +1394,23 @@ impl ChatRepository {
         let row = sqlx::query_as!(
             EventCursor,
             r#"
-            SELECT event_id AS "event_id?", sequence AS "sequence!"
-            FROM chat_message_events
-            WHERE room_id = $1
-              AND event_type = ANY($2::text[])
-              AND (payload #>> '{message,message,messageType}') = ANY($3::text[])
-            ORDER BY sequence DESC
+            SELECT e.event_id AS "event_id?", e.sequence AS "sequence!"
+            FROM chat_message_events e
+            JOIN chat_messages m
+              ON m.room_id = e.room_id
+             AND m.id = e.message_id
+             AND m.created_at = e.message_created_at
+             AND m.deletion_source IS DISTINCT FROM $4
+            WHERE e.room_id = $1
+              AND e.event_type = ANY($2::text[])
+              AND (e.payload #>> '{message,message,messageType}') = ANY($3::text[])
+            ORDER BY e.sequence DESC
             LIMIT 1
             "#,
             room_id.as_i64(),
             &event_types,
             &included_message_type_strings,
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_optional(self.pool())
         .await?;
@@ -1423,24 +1452,30 @@ impl ChatRepository {
         let row = sqlx::query_as!(
             ChatEventRow,
             r#"
-            SELECT sequence AS "sequence!",
-                   event_id AS "event_id!",
-                   room_id AS "room_id?",
-                   actor_user_id AS "actor_user_id?",
-                   payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
-                   occurred_at AS "occurred_at!"
-            FROM chat_message_events
-            WHERE room_id = $1
-              AND event_type = ANY($2::text[])
-              AND message_id = $3
-              AND message_created_at = $4
+            SELECT e.sequence AS "sequence!",
+                   e.event_id AS "event_id!",
+                   e.room_id AS "room_id?",
+                   e.actor_user_id AS "actor_user_id?",
+                   e.payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
+                   e.occurred_at AS "occurred_at!"
+            FROM chat_message_events e
+            JOIN chat_messages m
+              ON m.room_id = e.room_id
+             AND m.id = e.message_id
+             AND m.created_at = e.message_created_at
+             AND m.deletion_source IS DISTINCT FROM $5
+            WHERE e.room_id = $1
+              AND e.event_type = ANY($2::text[])
+              AND e.message_id = $3
+              AND e.message_created_at = $4
             ORDER BY sequence DESC
             LIMIT 1
             "#,
             room_id.as_i64(),
             &event_types,
             message_id,
-            message_created_at
+            message_created_at,
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_optional(self.pool())
         .await?;
@@ -1457,24 +1492,30 @@ impl ChatRepository {
         let row = sqlx::query_as!(
             ChatEventRow,
             r#"
-            SELECT sequence AS "sequence!",
-                   event_id AS "event_id!",
-                   room_id AS "room_id?",
-                   actor_user_id AS "actor_user_id?",
-                   payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
-                   occurred_at AS "occurred_at!"
-            FROM chat_message_events
-            WHERE event_type = $1
-              AND room_id = $2
-              AND message_id = $3
-              AND message_created_at = $4
+            SELECT e.sequence AS "sequence!",
+                   e.event_id AS "event_id!",
+                   e.room_id AS "room_id?",
+                   e.actor_user_id AS "actor_user_id?",
+                   e.payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
+                   e.occurred_at AS "occurred_at!"
+            FROM chat_message_events e
+            JOIN chat_messages m
+              ON m.room_id = e.room_id
+             AND m.id = e.message_id
+             AND m.created_at = e.message_created_at
+             AND m.deletion_source IS DISTINCT FROM $5
+            WHERE e.event_type = $1
+              AND e.room_id = $2
+              AND e.message_id = $3
+              AND e.message_created_at = $4
             ORDER BY sequence ASC
             LIMIT 1
             "#,
             CHAT_MESSAGE_CREATED_EVENT_TYPE,
             room_id.as_i64(),
             message_id,
-            message_created_at
+            message_created_at,
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_optional(self.pool())
         .await?;
@@ -1585,6 +1626,7 @@ impl ChatRepository {
                     SELECT COUNT(*) AS "count!"
                     FROM chat_messages
                     WHERE room_id = $1
+                      AND deletion_source IS DISTINCT FROM $6
                       AND status <> $2
                       AND (user_id IS NULL OR user_id <> $3)
                       AND (created_at, id) > ($4, $5)
@@ -1593,7 +1635,8 @@ impl ChatRepository {
                     i16::from(ChatMessageStatus::Deleted),
                     user_id.as_i64(),
                     created_at,
-                    message_id
+                    message_id,
+                    DeletionSource::Account as DeletionSource,
                 )
                 .fetch_one(pool)
                 .await?
@@ -1896,13 +1939,15 @@ impl ChatRepository {
               AND e.sequence > $2
               AND e.event_type = $3
               AND m.status <> $4
+              AND m.deletion_source IS DISTINCT FROM $6
               AND (m.user_id IS NULL OR m.user_id <> $5)
             "#,
             room_id.as_i64(),
             sequence,
             CHAT_MESSAGE_CREATED_EVENT_TYPE,
             i16::from(ChatMessageStatus::Deleted),
-            user_id.as_i64()
+            user_id.as_i64(),
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_one(pool)
         .await?;
@@ -1917,13 +1962,15 @@ impl ChatRepository {
             SELECT COUNT(*) AS "count!"
             FROM chat_messages
             WHERE room_id = $1
+              AND deletion_source IS DISTINCT FROM $4
               AND status <> $2
               AND (user_id IS NULL OR user_id <> $3)
               AND created_at >= NOW() - INTERVAL '90 days'
             "#,
             room_id.as_i64(),
             i16::from(ChatMessageStatus::Deleted),
-            user_id.as_i64()
+            user_id.as_i64(),
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_one(pool)
         .await?;
@@ -2012,7 +2059,8 @@ impl ChatRepository {
                        delete_reason,
                        created_at AS "created_at!"
                 FROM chat_messages
-                WHERE room_id = $1
+            WHERE room_id = $1
+                  AND deletion_source IS DISTINCT FROM $8
                   AND ($2 OR status <> $3)
                   AND (created_at, id) < ($4, $5)
                   AND message_type = ANY($7::smallint[])
@@ -2026,6 +2074,7 @@ impl ChatRepository {
                 cursor.id,
                 i64::from(limit),
                 &included_message_type_codes,
+                DeletionSource::Account as DeletionSource,
             )
             .fetch_all(pool)
             .await?
@@ -2050,7 +2099,8 @@ impl ChatRepository {
                        delete_reason,
                        created_at AS "created_at!"
                 FROM chat_messages
-                WHERE room_id = $1
+            WHERE room_id = $1
+                  AND deletion_source IS DISTINCT FROM $6
                   AND ($2 OR status <> $3)
                   AND created_at >= NOW() - INTERVAL '90 days'
                   AND message_type = ANY($5::smallint[])
@@ -2062,6 +2112,7 @@ impl ChatRepository {
                 i16::from(ChatMessageStatus::Deleted),
                 i64::from(limit),
                 &included_message_type_codes,
+                DeletionSource::Account as DeletionSource,
             )
             .fetch_all(pool)
             .await?
@@ -2178,6 +2229,7 @@ impl ChatRepository {
                 FROM chat_messages m
                 CROSS JOIN search_terms st
                 WHERE m.room_id = $1
+                  AND m.deletion_source IS DISTINCT FROM $10
                   AND (m.content_search @@ st.tsquery OR m.content ILIKE $3 ESCAPE '\')
                   AND ($4 OR m.status <> $5)
                   AND ($6::bigint IS NULL OR m.user_id = $6)
@@ -2193,7 +2245,8 @@ impl ChatRepository {
                 user_id,
                 cursor.created_at,
                 cursor.id,
-                fetch_limit
+                fetch_limit,
+                DeletionSource::Account as DeletionSource,
             )
             .fetch_all(pool)
             .await?
@@ -2223,6 +2276,7 @@ impl ChatRepository {
                 FROM chat_messages m
                 CROSS JOIN search_terms st
                 WHERE m.room_id = $1
+                  AND m.deletion_source IS DISTINCT FROM $8
                   AND (m.content_search @@ st.tsquery OR m.content ILIKE $3 ESCAPE '\')
                   AND ($4 OR m.status <> $5)
                   AND ($6::bigint IS NULL OR m.user_id = $6)
@@ -2235,7 +2289,8 @@ impl ChatRepository {
                 query.include_deleted,
                 i16::from(ChatMessageStatus::Deleted),
                 user_id,
-                fetch_limit
+                fetch_limit,
+                DeletionSource::Account as DeletionSource,
             )
             .fetch_all(pool)
             .await?
@@ -2318,6 +2373,7 @@ impl ChatRepository {
                        END AS playback_position
                 FROM chat_messages
                 WHERE room_id = $1
+                  AND deletion_source IS DISTINCT FROM $11
                   AND ($2 OR status <> $3)
                   AND ($4::text IS NULL OR metadata #>> '{playback,mediaId}' = $4)
                   AND ($5::text IS NULL OR metadata #>> '{playback,playlistId}' = $5)
@@ -2355,6 +2411,7 @@ impl ChatRepository {
             start_seconds,
             end_seconds,
             i64::from(limit),
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_all(pool)
         .await?;
@@ -2423,6 +2480,7 @@ impl ChatRepository {
                    created_at AS "created_at!"
             FROM chat_messages
             WHERE room_id = $1
+              AND deletion_source IS DISTINCT FROM $7
               AND ($2 OR status <> $3)
               AND (created_at, id) < ($4, $5)
             ORDER BY created_at DESC, id DESC
@@ -2433,7 +2491,8 @@ impl ChatRepository {
             i16::from(ChatMessageStatus::Deleted),
             anchor.created_at,
             anchor.id,
-            i64::from(before_limit)
+            i64::from(before_limit),
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_all(pool)
         .await?;
@@ -2460,6 +2519,7 @@ impl ChatRepository {
                    created_at AS "created_at!"
             FROM chat_messages
             WHERE room_id = $1
+              AND deletion_source IS DISTINCT FROM $7
               AND ($2 OR status <> $3)
               AND (created_at, id) > ($4, $5)
             ORDER BY created_at ASC, id ASC
@@ -2470,7 +2530,8 @@ impl ChatRepository {
             i16::from(ChatMessageStatus::Deleted),
             anchor.created_at,
             anchor.id,
-            i64::from(after_limit)
+            i64::from(after_limit),
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_all(pool)
         .await?;
@@ -2517,8 +2578,10 @@ impl ChatRepository {
                    created_at AS "created_at!"
             FROM chat_messages
             WHERE id = $1
+              AND deletion_source IS DISTINCT FROM $2
             "#,
-            message_id
+            message_id,
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_optional(pool)
         .await?;
@@ -2571,9 +2634,11 @@ impl ChatRepository {
                    created_at AS "created_at!"
             FROM chat_messages
             WHERE room_id = $1 AND id = $2
+              AND deletion_source IS DISTINCT FROM $3
             "#,
             room_id.as_i64(),
-            message_id
+            message_id,
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_optional(pool)
         .await?;
@@ -2869,7 +2934,9 @@ impl ChatRepository {
             SET content = '', status = ",
         );
         builder.push_bind(i16::from(ChatMessageStatus::Deleted));
-        builder.push(", version = version + 1, deleted_at = NOW(), deleted_by = ");
+        builder.push(", version = version + 1, deleted_at = NOW(), deletion_source = ");
+        builder.push_bind(DeletionSource::User);
+        builder.push(", deleted_by = ");
         builder.push_bind(deleted_by.as_i64());
         builder.push(", delete_reason = ");
         builder.push_bind(reason);
@@ -2943,7 +3010,9 @@ impl ChatRepository {
             SET content = '', status = ",
         );
         builder.push_bind(i16::from(ChatMessageStatus::Deleted));
-        builder.push(", version = version + 1, deleted_at = NOW(), deleted_by = ");
+        builder.push(", version = version + 1, deleted_at = NOW(), deletion_source = ");
+        builder.push_bind(DeletionSource::User);
+        builder.push(", deleted_by = ");
         builder.push_bind(request.deleted_by.as_i64());
         builder.push(", delete_reason = ");
         builder.push_bind(request.reason);
@@ -3721,11 +3790,15 @@ impl ChatRepository {
                    delete_reason,
                    created_at AS "created_at!"
             FROM chat_messages
-            WHERE room_id = $1 AND id = $2 AND created_at = $3
+            WHERE room_id = $1
+              AND id = $2
+              AND created_at = $3
+              AND deletion_source IS DISTINCT FROM $4
             "#,
             room_id.as_i64(),
             message_id,
-            created_at
+            created_at,
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_optional(&mut **tx)
         .await?;
@@ -3908,20 +3981,26 @@ impl ChatRepository {
         let row = sqlx::query_as!(
             ChatEventRow,
             r#"
-            SELECT sequence AS "sequence!",
-                   event_id AS "event_id!",
-                   room_id AS "room_id?",
-                   actor_user_id AS "actor_user_id?",
-                   payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
-                   occurred_at AS "occurred_at!"
-            FROM chat_message_events
-            WHERE room_id = $1
-              AND event_id = $2
-              AND event_type = ANY($3::text[])
+            SELECT e.sequence AS "sequence!",
+                   e.event_id AS "event_id!",
+                   e.room_id AS "room_id?",
+                   e.actor_user_id AS "actor_user_id?",
+                   e.payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
+                   e.occurred_at AS "occurred_at!"
+            FROM chat_message_events e
+            JOIN chat_messages m
+              ON m.room_id = e.room_id
+             AND m.id = e.message_id
+             AND m.created_at = e.message_created_at
+             AND m.deletion_source IS DISTINCT FROM $4
+            WHERE e.room_id = $1
+              AND e.event_id = $2
+              AND e.event_type = ANY($3::text[])
             "#,
             room_id.as_i64(),
             event_id,
-            &event_types
+            &event_types,
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_optional(&mut **tx)
         .await?;
@@ -4187,11 +4266,13 @@ impl ChatRepository {
               ON m.id = wanted.id AND m.created_at = wanted.created_at
             WHERE m.room_id = $1
               AND m.status <> $4
+              AND m.deletion_source IS DISTINCT FROM $5
             "#,
             room_id.as_i64(),
             &ids,
             &created_ats,
-            i16::from(ChatMessageStatus::Deleted)
+            i16::from(ChatMessageStatus::Deleted),
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_all(pool)
         .await?;
@@ -4279,11 +4360,14 @@ impl ChatRepository {
                    delete_reason,
                    created_at AS "created_at!"
             FROM chat_messages
-            WHERE room_id = $1 AND id = $2
+            WHERE room_id = $1
+              AND id = $2
+              AND deletion_source IS DISTINCT FROM $3
             FOR UPDATE
             "#,
             room_id.as_i64(),
-            message_id
+            message_id,
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_optional(&mut **tx)
         .await?;

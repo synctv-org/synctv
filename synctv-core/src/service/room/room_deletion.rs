@@ -1,12 +1,12 @@
 use crate::{
-    models::{MediaId, PlaylistId, RoomId, UserId},
+    models::{DeletionSource, MediaId, PlaylistId, RoomId, UserId},
     repository::room_member::RemovedRoomMember,
     Error, Result,
 };
 
 use super::{
     collect_all_room_playlist_nodes_in_tx, collect_deleted_media_ids_in_tx,
-    collect_room_root_media_ids_in_tx, delete_playlist_ids_in_depth_order_in_tx,
+    collect_room_root_media_ids_in_tx,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -18,19 +18,22 @@ pub(crate) struct RoomCleanupImpact {
     pub settings_deleted: u64,
     pub playback_rows_deleted: u64,
     pub chat_deleted: u64,
+    pub deletion_timestamp: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 pub(crate) async fn soft_delete_room_and_cleanup_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     room_id: &RoomId,
+    deletion_source: DeletionSource,
 ) -> Result<RoomCleanupImpact> {
     let now = crate::SystemClock.now();
     let deleted = sqlx::query!(
         r#"UPDATE rooms
-         SET deleted_at = $2, updated_at = $2, version = version + 1
+         SET deleted_at = $2, deletion_source = $3, updated_at = $2, version = version + 1
          WHERE id = $1 AND deleted_at IS NULL"#,
         room_id.as_i64(),
         now,
+        deletion_source as DeletionSource,
     )
     .execute(&mut **tx)
     .await?;
@@ -61,12 +64,30 @@ pub(crate) async fn soft_delete_room_and_cleanup_in_tx(
 
     if !deleted_media_ids.is_empty() {
         let media_id_strs: Vec<i64> = deleted_media_ids.iter().map(MediaId::as_i64).collect();
-        sqlx::query!("DELETE FROM media WHERE id = ANY($1)", &media_id_strs)
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE media SET deleted_at = $2, deletion_source = COALESCE(deletion_source, $3), version = version + 1 WHERE id = ANY($1) AND deleted_at IS NULL",
+            &media_id_strs,
+            now,
+            DeletionSource::Room as DeletionSource,
+        )
+        .execute(&mut **tx)
+        .await?;
     }
 
-    delete_playlist_ids_in_depth_order_in_tx(tx, &playlist_nodes).await?;
+    if !deleted_playlist_ids.is_empty() {
+        let playlist_id_strs: Vec<i64> = deleted_playlist_ids
+            .iter()
+            .map(PlaylistId::as_i64)
+            .collect();
+        sqlx::query!(
+            "UPDATE playlists SET deleted_at = $2, deletion_source = COALESCE(deletion_source, $3), version = version + 1 WHERE id = ANY($1) AND deleted_at IS NULL",
+            &playlist_id_strs,
+            now,
+            DeletionSource::Room as DeletionSource,
+        )
+        .execute(&mut **tx)
+        .await?;
+    }
 
     let mut removed_members: Vec<RemovedRoomMember> = sqlx::query!(
         r#"DELETE FROM room_members
@@ -103,17 +124,15 @@ pub(crate) async fn soft_delete_room_and_cleanup_in_tx(
     }
     let members_deleted = removed_members.len() as u64;
 
-    let settings_deleted = sqlx::query!(
-        "DELETE FROM room_settings WHERE room_id = $1",
-        room_id.as_i64(),
-    )
-    .execute(&mut **tx)
-    .await?
-    .rows_affected();
+    // Settings are part of the recoverable room aggregate and stay hidden
+    // behind rooms.deleted_at until restore or hard purge.
+    let settings_deleted = 0;
 
     let chat_deleted = sqlx::query!(
-        "DELETE FROM chat_messages WHERE room_id = $1",
+        "UPDATE chat_messages SET deleted_at = $2, deletion_source = COALESCE(deletion_source, $3) WHERE room_id = $1 AND deleted_at IS NULL",
         room_id.as_i64(),
+        now,
+        DeletionSource::Room as DeletionSource,
     )
     .execute(&mut **tx)
     .await?
@@ -127,5 +146,6 @@ pub(crate) async fn soft_delete_room_and_cleanup_in_tx(
         settings_deleted,
         playback_rows_deleted,
         chat_deleted,
+        deletion_timestamp: Some(now),
     })
 }

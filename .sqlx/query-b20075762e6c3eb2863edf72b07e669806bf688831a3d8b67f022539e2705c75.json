@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM media WHERE id = ANY($1) AND deletion_source = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b20075762e6c3eb2863edf72b07e669806bf688831a3d8b67f022539e2705c75"
+}

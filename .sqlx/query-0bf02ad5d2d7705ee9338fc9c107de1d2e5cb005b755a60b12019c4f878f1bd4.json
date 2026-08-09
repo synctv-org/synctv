@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                WITH RECURSIVE retained_playlists(id) AS (\n                    SELECT id\n                    FROM playlists\n                    WHERE creator_id = $1 OR deleted_owner_id = $1\n                    UNION\n                    SELECT child.id\n                    FROM playlists child\n                    JOIN retained_playlists parent ON child.parent_id = parent.id\n                )\n                UPDATE playlists\n                SET deleted_owner_id = $1\n                WHERE id IN (SELECT id FROM retained_playlists)\n                  AND deleted_owner_id IS DISTINCT FROM $1\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0bf02ad5d2d7705ee9338fc9c107de1d2e5cb005b755a60b12019c4f878f1bd4"
+}

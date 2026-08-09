@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COUNT(*) AS \"count!\" FROM chat_message_events WHERE event_id IN ('deleted-user-chat-event', 'mentioned-deleted-user-chat-event')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5cc547bc873d125d391dd88f32b0ebf7fc6048fb0a5277ce79f49c0033dd8390"
+}

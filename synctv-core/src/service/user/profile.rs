@@ -145,6 +145,12 @@ impl UserService {
         self.user_email_repository.get_email(user_id).await
     }
 
+    pub async fn get_email_for_admin(&self, user_id: &UserId) -> Result<Option<String>> {
+        self.user_email_repository
+            .get_email_for_admin(user_id)
+            .await
+    }
+
     pub async fn get_user_with_email(
         &self,
         user_id: &UserId,

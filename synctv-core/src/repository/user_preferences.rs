@@ -245,7 +245,7 @@ impl UserPreferencesRepository {
                 EXISTS (
                     SELECT 1
                     FROM auth_email_identities
-                    WHERE user_id = $1
+                    WHERE user_id = $1 AND deleted_at IS NULL
                 ) AS "email!"
             "#,
             user_id.as_i64(),

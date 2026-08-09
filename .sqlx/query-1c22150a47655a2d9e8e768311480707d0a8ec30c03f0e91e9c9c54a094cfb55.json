@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO room_bans (room_id, banned_by, reason) VALUES ($1, $2, 'test')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1c22150a47655a2d9e8e768311480707d0a8ec30c03f0e91e9c9c54a094cfb55"
+}

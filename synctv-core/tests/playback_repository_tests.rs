@@ -4,8 +4,8 @@
 
 use chrono::Utc;
 use synctv_core::models::{
-    FromProviderParams, Media, MediaId, Playlist, PlaylistId, ProviderTarget, RoomMember, RoomRole,
-    SourceProvider,
+    DeletionSource, FromProviderParams, Media, MediaId, Playlist, PlaylistId, ProviderTarget,
+    RoomMember, RoomRole, SourceProvider,
 };
 use synctv_core::{
     models::{Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus},
@@ -468,7 +468,7 @@ async fn test_playback_state_rejects_cross_room_media_and_playlist_references() 
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_deleting_playing_media_is_rejected_while_playback_references_it() {
+async fn test_soft_deleting_playing_media_preserves_playback_reference_for_service_cleanup() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -548,18 +548,40 @@ async fn test_deleting_playing_media_is_rejected_while_playback_references_it() 
         "playback state should update",
     );
 
-    let delete_result = media_repo.delete(&media.id).await;
-    assert!(
-        delete_result.is_err(),
-        "deleting current media must be rejected until playback state is explicitly cleared"
+    let deleted = ok(
+        media_repo.delete(&media.id).await,
+        "repository soft-delete should succeed",
     );
+    assert!(
+        deleted,
+        "repository soft-delete should update the active media row"
+    );
+
+    let visible_media = ok(
+        media_repo.get_by_id(&media.id).await,
+        "media visibility lookup should succeed",
+    );
+    assert!(
+        visible_media.is_none(),
+        "soft-deleted media should disappear from normal repository reads"
+    );
+
+    let (deleted_at, deletion_source): (Option<chrono::DateTime<Utc>>, Option<DeletionSource>) = ok(
+        sqlx::query_as("SELECT deleted_at, deletion_source FROM media WHERE id = $1")
+            .bind(media.id.as_i64())
+            .fetch_one(&pool)
+            .await,
+        "media lifecycle metadata should remain queryable",
+    );
+    assert!(deleted_at.is_some());
+    assert_eq!(deletion_source, Some(DeletionSource::User));
 
     let state_after_delete = some(
         ok(
             playback_repo.get(&room.id).await,
-            "playback state should be fetched after delete attempt",
+            "playback state should be fetched after repository soft-delete",
         ),
-        "playback state should exist after delete attempt",
+        "playback state should remain for the service cleanup boundary",
     );
     assert!(state_after_delete.playing_playlist_id.is_none());
     assert_eq!(state_after_delete.playing_media_id, Some(media.id));

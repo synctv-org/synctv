@@ -33,15 +33,15 @@ use synctv_proto::admin::{
     ListUsersRequest, ListUsersResponse, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
     RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
     RejectUserRegistrationReviewRequest, RemoveAdminRequest, RemoveAdminResponse,
-    ResetRoomSettingsRequest, Room, RoomCreationReview, RoomJoinReview, RuntimeSettingsSnapshot,
-    SendTestEmailRequest, SendTestEmailResponse, SetUserPasswordRequest, SetUserPasswordResponse,
-    UnbanRoomRequest, UnbanUserRequest, UpdateContentReportStatusRequest,
-    UpdateContentReportStatusResponse, UpdateMemberDisplayTagRequest,
-    UpdateMemberPermissionsRequest, UpdateMemberRemarkNameRequest, UpdateRoomPasswordRequest,
-    UpdateRoomPasswordResponse, UpdateRoomSettingsRequest, UpdateRoomTaxonomyRequest,
-    UpdateSettingsRequest, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
-    UpdateUserRoleRequest, UpdateUserUsernameRequest, UpsertRoomCategoryRequest,
-    UpsertRoomLabelRequest, UserRegistrationReview,
+    ResetRoomSettingsRequest, RestoreUserRequest, RestoreUserResponse, Room, RoomCreationReview,
+    RoomJoinReview, RuntimeSettingsSnapshot, SendTestEmailRequest, SendTestEmailResponse,
+    SetUserPasswordRequest, SetUserPasswordResponse, UnbanRoomRequest, UnbanUserRequest,
+    UpdateContentReportStatusRequest, UpdateContentReportStatusResponse,
+    UpdateMemberDisplayTagRequest, UpdateMemberPermissionsRequest, UpdateMemberRemarkNameRequest,
+    UpdateRoomPasswordRequest, UpdateRoomPasswordResponse, UpdateRoomSettingsRequest,
+    UpdateRoomTaxonomyRequest, UpdateSettingsRequest, UpdateUserPreferencesRequest,
+    UpdateUserPreferencesResponse, UpdateUserRoleRequest, UpdateUserUsernameRequest,
+    UpsertRoomCategoryRequest, UpsertRoomLabelRequest, UserRegistrationReview,
 };
 use synctv_proto::client::{RoomCategory, RoomLabel};
 use synctv_proto::common::RoomMember;
@@ -300,6 +300,17 @@ impl AdminService for AdminServiceImpl {
         self.execute_root_rpc(request, move |api, validated, ctx, req| async move {
             synctv_api_common::impls::validate_proto_request(&req)?;
             api.delete_user(req, &validated.user_id, &ctx).await
+        })
+        .await
+    }
+
+    async fn restore_user(
+        &self,
+        request: Request<RestoreUserRequest>,
+    ) -> Result<Response<RestoreUserResponse>, Status> {
+        self.execute_root_rpc(request, move |api, validated, ctx, req| async move {
+            synctv_api_common::impls::validate_proto_request(&req)?;
+            api.restore_user(req, &validated.user_id, &ctx).await
         })
         .await
     }

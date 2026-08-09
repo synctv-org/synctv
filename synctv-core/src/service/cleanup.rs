@@ -1,7 +1,7 @@
 //! Data cleanup service for periodic maintenance tasks
 //!
 //! Coordinates cleanup of:
-//! - Soft-deleted records (users, rooms) past retention period
+//! - Soft-deleted records (users, rooms, media, playlists, chat messages) past retention period
 //! - Expired email auth and registration tokens
 //! - Expired media provider credentials
 //! - Old notifications
@@ -26,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use super::{cleanup_ops, FileStorageService, LeaderCheck, RuntimeSettingsStore};
+use crate::models::DeletionSource;
 use crate::service::partitioning::u32_to_i32;
 use crate::{InternalExt, Result};
 
@@ -43,6 +44,8 @@ pub struct CleanupConfig {
     pub soft_delete_retention_days: u32,
     /// Days to retain soft-deleted rooms before permanent deletion (0 = never purge)
     pub room_soft_delete_retention_days: u32,
+    /// Days to retain independently soft-deleted resources before permanent deletion (0 = never purge)
+    pub resource_soft_delete_retention_days: u32,
     /// Days to retain expired email auth and registration tokens before deletion (0 = never purge)
     pub expired_token_retention_days: u32,
     /// Hours buffer for expired credential cleanup (prevents race conditions)
@@ -72,6 +75,7 @@ impl Default for CleanupConfig {
         Self {
             soft_delete_retention_days: 90,
             room_soft_delete_retention_days: 90,
+            resource_soft_delete_retention_days: 90,
             expired_token_retention_days: 7,
             expired_credential_buffer_hours: 1,
             notification_retention_days: 30,
@@ -94,6 +98,16 @@ pub struct CleanupResult {
     pub users_purged: u64,
     /// Number of soft-deleted rooms permanently deleted
     pub rooms_purged: u64,
+    /// Number of independently soft-deleted media rows permanently deleted
+    pub media_purged: u64,
+    /// Number of independently soft-deleted playlists permanently deleted
+    pub playlists_purged: u64,
+    /// Number of independently soft-deleted chat messages permanently deleted
+    pub chat_messages_purged: u64,
+    /// Number of explicitly unbound email identities permanently deleted
+    pub email_identities_purged: u64,
+    /// Number of explicitly unbound OAuth2 identities permanently deleted
+    pub oauth2_identities_purged: u64,
     /// Number of expired email auth and registration tokens deleted
     pub tokens_deleted: u64,
     /// Number of expired credentials deleted
@@ -191,6 +205,17 @@ impl CleanupResourceTasks {
             },
             super::FileStorageCleanupOrigin::ReferenceCapExceeded,
             "per-room cap purge",
+        )
+        .await
+    }
+
+    async fn purge_soft_deleted_chat_messages(&self, retention_days: i64) -> Result<u64> {
+        cleanup_ops::cleanup_chat_messages_with_files(
+            &self.pool,
+            self.file_storage_service.as_ref(),
+            cleanup_ops::ChatMessageCleanupScope::SoftDeletedRetention { retention_days },
+            super::FileStorageCleanupOrigin::RetentionExpired,
+            "soft-delete retention purge",
         )
         .await
     }
@@ -322,6 +347,43 @@ impl CleanupService {
                     }
                 }
                 Err(e) => warn!(error = %e, "Failed to purge soft-deleted users"),
+            }
+        }
+
+        // 2b. Purge only independently deleted resources. Account- and
+        // room-propagated rows remain governed by their aggregate recovery window.
+        if self.config.resource_soft_delete_retention_days > 0 {
+            match self.purge_soft_deleted_resources().await {
+                Ok(cleanup) => {
+                    result.media_purged = cleanup.media_purged;
+                    result.playlists_purged = cleanup.playlists_purged;
+                    result.email_identities_purged = cleanup.email_identities_purged;
+                    result.oauth2_identities_purged = cleanup.oauth2_identities_purged;
+                    if cleanup.media_purged > 0
+                        || cleanup.playlists_purged > 0
+                        || cleanup.email_identities_purged > 0
+                        || cleanup.oauth2_identities_purged > 0
+                    {
+                        info!(
+                            media = cleanup.media_purged,
+                            playlists = cleanup.playlists_purged,
+                            email_identities = cleanup.email_identities_purged,
+                            oauth2_identities = cleanup.oauth2_identities_purged,
+                            "Purged independently soft-deleted resources"
+                        );
+                    }
+                }
+                Err(e) => warn!(error = %e, "Failed to purge soft-deleted room resources"),
+            }
+
+            match self.purge_soft_deleted_chat_messages().await {
+                Ok(count) => {
+                    result.chat_messages_purged = count;
+                    if count > 0 {
+                        info!(count, "Purged independently soft-deleted chat messages");
+                    }
+                }
+                Err(e) => warn!(error = %e, "Failed to purge soft-deleted chat messages"),
             }
         }
 
@@ -534,6 +596,54 @@ impl CleanupService {
         for user_id in user_ids {
             let mut tx = self.pool.begin().await?;
 
+            // Serialize recovery against the purge and re-check the retention
+            // predicate while holding the user row lock. Recovery locks this
+            // row before restoring identities and owned rooms, so a restored
+            // account cannot lose its aggregate after the candidate scan.
+            let purgeable_user = sqlx::query_scalar!(
+                r#"
+                SELECT id AS "id: crate::models::UserId"
+                FROM users
+                WHERE id = $1
+                  AND deleted_at IS NOT NULL
+                  AND deleted_at < CURRENT_TIMESTAMP - make_interval(days => $2)
+                FOR UPDATE
+                "#,
+                user_id as crate::models::UserId,
+                days,
+            )
+            .fetch_optional(&mut *tx)
+            .await
+            .internal_with_err("Failed to lock soft-deleted user before purge")?;
+            if purgeable_user.is_none() {
+                tx.rollback()
+                    .await
+                    .internal_with_err("Failed to rollback skipped user purge")?;
+                continue;
+            }
+
+            // Account-owned rooms belong to the account recovery aggregate.
+            // Purge them in the same transaction when the account window ends.
+            let owned_room_ids = sqlx::query_scalar!(
+                r#"SELECT id AS "id: crate::models::RoomId"
+                   FROM rooms
+                   WHERE created_by = $1
+                     AND deleted_at IS NOT NULL
+                   ORDER BY id
+                   FOR UPDATE"#,
+                user_id.as_i64(),
+            )
+            .fetch_all(&mut *tx)
+            .await
+            .internal_with_err("Failed to list retained account rooms during user purge")?;
+            for room_id in owned_room_ids {
+                crate::repository::room_cleanup::hard_delete_room_and_cleanup_in_tx(
+                    &mut tx, &room_id,
+                )
+                .await
+                .internal_with_err("Failed to purge retained account room")?;
+            }
+
             // User soft-delete keeps historical memberships by marking them as
             // `left`. Those rows still carry `ON DELETE RESTRICT` FKs, so they
             // must be removed before the hard delete can succeed.
@@ -544,6 +654,389 @@ impl CleanupService {
             .execute(&mut *tx)
             .await
             .internal_with_err("Failed to delete room memberships during user purge")?;
+
+            // Account deletion keeps recoverable identity rows during the
+            // retention window. Hard purge removes every retained credential
+            // and account-owned resource before deleting the user row.
+            sqlx::query!(
+                "UPDATE file_references fr SET expires_at = COALESCE(fr.expires_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP FROM users u WHERE u.id = $1 AND fr.id = u.avatar_file_reference_id AND fr.released_at IS NULL",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to expire retained user avatar reference")?;
+            sqlx::query!(
+                r#"
+                WITH RECURSIVE retained_playlists(id) AS (
+                    SELECT id
+                    FROM playlists
+                    WHERE creator_id = $1 OR deleted_owner_id = $1
+                    UNION
+                    SELECT child.id
+                    FROM playlists child
+                    JOIN retained_playlists parent ON child.parent_id = parent.id
+                )
+                UPDATE playlists
+                SET deleted_owner_id = $1
+                WHERE id IN (SELECT id FROM retained_playlists)
+                  AND deleted_owner_id IS DISTINCT FROM $1
+                "#,
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to claim retained playlist subtree during user purge")?;
+            sqlx::query!(
+                r#"
+                UPDATE media
+                SET deleted_owner_id = $1
+                WHERE deleted_owner_id IS DISTINCT FROM $1
+                  AND (
+                      creator_id = $1
+                      OR playlist_id IN (
+                          SELECT id FROM playlists WHERE deleted_owner_id = $1
+                      )
+                  )
+                "#,
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to claim retained media subtree during user purge")?;
+            sqlx::query!(
+                "UPDATE file_references fr SET expires_at = COALESCE(fr.expires_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE fr.released_at IS NULL AND (EXISTS (SELECT 1 FROM media m WHERE (m.creator_id = $1 OR m.deleted_owner_id = $1) AND (fr.id = m.cover_file_reference_id OR fr.id = m.thumbnail_file_reference_id)) OR EXISTS (SELECT 1 FROM playlists p WHERE (p.creator_id = $1 OR p.deleted_owner_id = $1) AND fr.id = p.cover_file_reference_id))",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to expire retained user file references")?;
+            sqlx::query!(
+                "DELETE FROM provider_playback_sessions WHERE credential_owner_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to remove provider playback sessions during user purge")?;
+            sqlx::query!(
+                "DELETE FROM room_creation_requests WHERE requested_by = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to remove room creation requests during user purge")?;
+            sqlx::query!(
+                "UPDATE room_creation_requests SET reviewed_by = NULL WHERE reviewed_by = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to clear room request reviewer during user purge")?;
+            sqlx::query!(
+                "DELETE FROM room_join_requests WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to remove room join requests during user purge")?;
+            sqlx::query!(
+                "UPDATE room_join_requests SET reviewed_by = NULL WHERE reviewed_by = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to clear join request reviewer during user purge")?;
+            sqlx::query!(
+                "UPDATE user_registration_requests SET reviewed_by = NULL WHERE reviewed_by = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to clear registration reviewer during user purge")?;
+            sqlx::query!(
+                "DELETE FROM content_reports WHERE reporter_user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to remove content reports during user purge")?;
+            sqlx::query!(
+                "UPDATE user_bans SET banned_by = NULL WHERE banned_by = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to clear ban actor during user purge")?;
+            sqlx::query!(
+                "UPDATE user_bans SET revoked_by = NULL WHERE revoked_by = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to clear ban revoker during user purge")?;
+            sqlx::query!(
+                "UPDATE room_bans SET banned_by = NULL WHERE banned_by = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to clear room ban actor during user purge")?;
+            sqlx::query!(
+                "UPDATE room_bans SET revoked_by = NULL WHERE revoked_by = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to clear room ban revoker during user purge")?;
+            sqlx::query!(
+                "DELETE FROM auth_oauth2_identities WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to purge retained OAuth2 identities")?;
+            sqlx::query!(
+                "DELETE FROM auth_email_identities WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to purge retained email identity")?;
+            sqlx::query!(
+                "DELETE FROM auth_email_tokens WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to purge retained email tokens")?;
+            sqlx::query!(
+                "DELETE FROM auth_email_bind_requests WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to purge retained email bind requests")?;
+
+            // Durable room events can outlive the rows they describe. Remove
+            // events authored by the account and events whose chat/resource
+            // aggregate belongs to it before the user FK is deleted.
+            sqlx::query!(
+                r#"
+                DELETE FROM chat_message_events e
+                WHERE e.actor_user_id = $1
+                   OR EXISTS (
+                       SELECT 1
+                       FROM chat_messages m
+                       WHERE m.room_id = e.room_id
+                         AND m.id = e.message_id
+                         AND m.created_at = e.message_created_at
+                         AND m.user_id = $1
+                   )
+                   OR EXISTS (
+                       SELECT 1
+                       FROM chat_message_mentions mention
+                       WHERE mention.room_id = e.room_id
+                         AND mention.message_id = e.message_id
+                         AND mention.message_created_at = e.message_created_at
+                         AND mention.mentioned_user_id = $1
+                   )
+                "#,
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to purge retained chat events")?;
+            sqlx::query!(
+                r#"
+                DELETE FROM room_resource_events e
+                WHERE e.actor_user_id = $1
+                   OR (
+                       e.resource_type = 'chat_pins'
+                       AND e.aggregate_type = 'chat_message'
+                       AND EXISTS (
+                           SELECT 1
+                           FROM chat_messages m
+                           WHERE m.room_id = e.room_id
+                             AND e.aggregate_id = m.id::TEXT
+                             AND m.user_id = $1
+                       )
+                   )
+                   OR (
+                       e.resource_type = 'media'
+                       AND EXISTS (
+                           SELECT 1
+                           FROM media m
+                           WHERE e.resource_id = m.id::TEXT
+                             AND (m.creator_id = $1 OR m.deleted_owner_id = $1)
+                       )
+                   )
+                   OR (
+                       e.resource_type = 'playlist'
+                       AND EXISTS (
+                           SELECT 1
+                           FROM playlists p
+                           WHERE e.resource_id = p.id::TEXT
+                             AND (p.creator_id = $1 OR p.deleted_owner_id = $1)
+                       )
+                   )
+                "#,
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to purge retained room resource events")?;
+            // Account-owned chat rows are removed by the user FK cascade. Mark
+            // their attachment references expired first so object storage can
+            // release the objects after the database transaction commits.
+            sqlx::query!(
+                r#"
+                UPDATE file_references fr
+                SET expires_at = COALESCE(fr.expires_at, CURRENT_TIMESTAMP),
+                    updated_at = CURRENT_TIMESTAMP
+                FROM chat_message_attachments a
+                JOIN chat_messages m
+                  ON m.room_id = a.room_id
+                 AND m.id = a.message_id
+                 AND m.created_at = a.message_created_at
+                WHERE (m.user_id = $1 OR m.deleted_owner_id = $1)
+                  AND fr.storage_backend = a.storage_backend
+                  AND fr.object_key = a.object_key
+                  AND fr.reference_kind = 'chat_message_attachment'
+                  AND fr.reference_id = format(
+                      '%s:%s:%s:%s',
+                      a.room_id,
+                      a.message_id,
+                      round(extract(epoch FROM a.message_created_at) * 1000000)::BIGINT,
+                      a.id
+                  )
+                  AND fr.released_at IS NULL
+                "#,
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to expire retained chat attachment references")?;
+            sqlx::query!(
+                "DELETE FROM chat_messages WHERE user_id = $1 OR deleted_owner_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to purge retained chat messages")?;
+            sqlx::query!(
+                "DELETE FROM auth_password_credentials WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to purge retained password credential")?;
+            sqlx::query!(
+                "DELETE FROM auth_webauthn_credentials WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to purge retained WebAuthn credentials")?;
+            sqlx::query!(
+                "DELETE FROM auth_totp_credentials WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to purge retained TOTP credential")?;
+            sqlx::query!(
+                "DELETE FROM user_media_provider_credentials WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to purge provider credentials")?;
+            sqlx::query!(
+                "DELETE FROM notifications WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to purge notifications")?;
+            sqlx::query!(
+                "DELETE FROM room_favorites WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to purge room favorites")?;
+            sqlx::query!("DELETE FROM user_bans WHERE user_id = $1", user_id.as_i64(),)
+                .execute(&mut *tx)
+                .await
+                .internal_with_err("Failed to purge account ban history")?;
+            sqlx::query!(
+                r#"
+                UPDATE room_playback_state
+                SET playing_media_id = NULL,
+                    playing_playlist_id = NULL,
+                    target = NULL,
+                    current_progress_id = NULL,
+                    speed = 1.0,
+                    is_playing = FALSE,
+                    playback_generation = playback_generation + 1,
+                    version = version + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE playing_media_id IN (
+                          SELECT id
+                          FROM media
+                          WHERE creator_id = $1 OR deleted_owner_id = $1
+                      )
+                   OR playing_playlist_id IN (
+                          SELECT id
+                          FROM playlists
+                          WHERE creator_id = $1 OR deleted_owner_id = $1
+                      )
+                "#,
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to clear retained resource playback state")?;
+            sqlx::query!(
+                "DELETE FROM media WHERE creator_id = $1 OR deleted_owner_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to purge retained media")?;
+            loop {
+                let deleted = sqlx::query!(
+                    r#"
+                    DELETE FROM playlists parent
+                    WHERE (parent.creator_id = $1 OR parent.deleted_owner_id = $1)
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM playlists child
+                          WHERE child.parent_id = parent.id
+                      )
+                    "#,
+                    user_id.as_i64(),
+                )
+                .execute(&mut *tx)
+                .await
+                .internal_with_err("Failed to purge retained playlist leaves")?;
+                if deleted.rows_affected() == 0 {
+                    break;
+                }
+            }
+            let retained_playlist_count = sqlx::query_scalar!(
+                r#"SELECT COUNT(*) AS "count!"
+                   FROM playlists
+                   WHERE creator_id = $1 OR deleted_owner_id = $1"#,
+                user_id.as_i64(),
+            )
+            .fetch_one(&mut *tx)
+            .await
+            .internal_with_err("Failed to verify retained playlist purge")?;
+            if retained_playlist_count > 0 {
+                return Err(crate::Error::Internal(format!(
+                    "Cannot purge user {user_id}: retained playlist graph contains a cycle"
+                )));
+            }
 
             match sqlx::query!(
                 r"
@@ -583,13 +1076,21 @@ impl CleanupService {
             self.config.room_soft_delete_retention_days,
             "room_soft_delete_retention_days",
         )?;
+        let user_retention_days = if self.config.soft_delete_retention_days == 0 {
+            None
+        } else {
+            Some(u32_to_i32(
+                self.config.soft_delete_retention_days,
+                "soft_delete_retention_days",
+            )?)
+        };
         let room_ids = sqlx::query_scalar!(
             r#"
             SELECT id as "id: crate::models::RoomId"
-            FROM rooms
-            WHERE deleted_at IS NOT NULL
-              AND deleted_at < CURRENT_TIMESTAMP - make_interval(days => $1)
-            ORDER BY deleted_at ASC, id ASC
+            FROM rooms r
+            WHERE r.deleted_at IS NOT NULL
+              AND r.deleted_at < CURRENT_TIMESTAMP - make_interval(days => $1)
+            ORDER BY r.deleted_at ASC, r.id ASC
             "#,
             days,
         )
@@ -600,6 +1101,127 @@ impl CleanupService {
         let mut purged = 0u64;
         for room_id in room_ids {
             let mut tx = self.pool.begin().await?;
+
+            // Account-owned rooms are part of the user recovery aggregate.
+            // Lock the owner before the room so restore and purge have one
+            // ordering and cannot split the aggregate during a race.
+            let candidate = sqlx::query!(
+                r#"
+                SELECT deletion_source AS "deletion_source?: DeletionSource",
+                       deleted_owner_id AS "deleted_owner_id?: crate::models::UserId"
+                FROM rooms
+                WHERE id = $1
+                "#,
+                room_id.as_i64(),
+            )
+            .fetch_optional(&mut *tx)
+            .await
+            .internal_with_err("Failed to inspect soft-deleted room before purge")?;
+            let Some(candidate) = candidate else {
+                tx.rollback()
+                    .await
+                    .internal_with_err("Failed to rollback missing room purge")?;
+                continue;
+            };
+
+            if candidate.deletion_source == Some(DeletionSource::Account) {
+                let Some(owner_id) = candidate.deleted_owner_id else {
+                    // Legacy rows without an owner cannot participate in
+                    // account recovery and are safe to process as rooms.
+                    let room_locked = sqlx::query_scalar!(
+                        "SELECT id AS \"id: crate::models::RoomId\" FROM rooms WHERE id = $1 AND deleted_at IS NOT NULL FOR UPDATE",
+                        room_id.as_i64(),
+                    )
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .internal_with_err("Failed to lock legacy account room before purge")?;
+                    if room_locked.is_none() {
+                        tx.rollback()
+                            .await
+                            .internal_with_err("Failed to rollback restored legacy room purge")?;
+                        continue;
+                    }
+                    let deleted =
+                        crate::repository::room_cleanup::hard_delete_room_and_cleanup_in_tx(
+                            &mut tx, &room_id,
+                        )
+                        .await
+                        .internal_with_err("Failed to clean up legacy account room")?;
+                    tx.commit()
+                        .await
+                        .internal_with_err("Failed to commit legacy account room purge")?;
+                    if deleted {
+                        purged += 1;
+                    }
+                    continue;
+                };
+
+                let Some(user_retention_days) = user_retention_days else {
+                    tx.rollback()
+                        .await
+                        .internal_with_err("Failed to rollback permanently retained room purge")?;
+                    continue;
+                };
+                let purgeable_owner = sqlx::query_scalar!(
+                    r#"
+                    SELECT id AS "id: crate::models::UserId"
+                    FROM users
+                    WHERE id = $1
+                      AND deleted_at IS NOT NULL
+                      AND deleted_at < CURRENT_TIMESTAMP - make_interval(days => $2)
+                    FOR UPDATE
+                    "#,
+                    owner_id as crate::models::UserId,
+                    user_retention_days,
+                )
+                .fetch_optional(&mut *tx)
+                .await
+                .internal_with_err("Failed to lock account owner before room purge")?;
+                if purgeable_owner.is_none() {
+                    tx.rollback()
+                        .await
+                        .internal_with_err("Failed to rollback protected account room purge")?;
+                    continue;
+                }
+                let room_locked = sqlx::query_scalar!(
+                    r#"
+                    SELECT id AS "id: crate::models::RoomId"
+                    FROM rooms
+                    WHERE id = $1
+                      AND deleted_at IS NOT NULL
+                      AND deletion_source = $3
+                      AND deleted_owner_id = $2
+                    FOR UPDATE
+                    "#,
+                    room_id.as_i64(),
+                    owner_id as crate::models::UserId,
+                    DeletionSource::Account as DeletionSource,
+                )
+                .fetch_optional(&mut *tx)
+                .await
+                .internal_with_err("Failed to re-check account room before purge")?;
+                if room_locked.is_none() {
+                    tx.rollback()
+                        .await
+                        .internal_with_err("Failed to rollback restored account room purge")?;
+                    continue;
+                }
+            } else {
+                let room_locked = sqlx::query_scalar!(
+                    "SELECT id AS \"id: crate::models::RoomId\" FROM rooms WHERE id = $1 AND deleted_at IS NOT NULL FOR UPDATE",
+                    room_id.as_i64(),
+                )
+                .fetch_optional(&mut *tx)
+                .await
+                .internal_with_err("Failed to lock soft-deleted room before purge")?;
+                if room_locked.is_none() {
+                    tx.rollback()
+                        .await
+                        .internal_with_err("Failed to rollback restored room purge")?;
+                    continue;
+                }
+            }
+
             let deleted = crate::repository::room_cleanup::hard_delete_room_and_cleanup_in_tx(
                 &mut tx, &room_id,
             )
@@ -614,6 +1236,23 @@ impl CleanupService {
         }
 
         Ok(purged)
+    }
+
+    async fn purge_soft_deleted_resources(
+        &self,
+    ) -> Result<cleanup_ops::SoftDeletedResourceCleanupResult> {
+        cleanup_ops::cleanup_soft_deleted_media_and_playlists(
+            &self.pool,
+            self.config.resource_soft_delete_retention_days,
+        )
+        .await
+    }
+
+    async fn purge_soft_deleted_chat_messages(&self) -> Result<u64> {
+        let days = i64::from(self.config.resource_soft_delete_retention_days);
+        self.resource_tasks
+            .purge_soft_deleted_chat_messages(days)
+            .await
     }
 
     /// Delete email auth and registration tokens that expired beyond the retention period.
@@ -817,6 +1456,7 @@ impl CleanupService {
                 info!(
                     chat_max_messages,
                     room_retention_days = service.config.room_soft_delete_retention_days,
+                    resource_retention_days = service.config.resource_soft_delete_retention_days,
                     user_retention_days = service.config.soft_delete_retention_days,
                     "Starting periodic data cleanup"
                 );
@@ -824,6 +1464,9 @@ impl CleanupService {
 
                 let total = result.users_purged
                     + result.rooms_purged
+                    + result.media_purged
+                    + result.playlists_purged
+                    + result.chat_messages_purged
                     + result.tokens_deleted
                     + result.credentials_deleted
                     + result.notifications_deleted
@@ -839,6 +1482,9 @@ impl CleanupService {
                     info!(
                         users = result.users_purged,
                         rooms_purged = result.rooms_purged,
+                        media_purged = result.media_purged,
+                        playlists_purged = result.playlists_purged,
+                        chat_messages_purged = result.chat_messages_purged,
                         tokens = result.tokens_deleted,
                         credentials = result.credentials_deleted,
                         notifications = result.notifications_deleted,

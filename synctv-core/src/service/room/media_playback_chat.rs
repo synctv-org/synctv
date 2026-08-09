@@ -102,6 +102,16 @@ impl RoomService {
         ))
     }
 
+    pub async fn get_chat_message_from_primary(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+    ) -> Result<Option<ChatMessage>> {
+        self.chat_repo
+            .get_by_room_and_id_from_primary(room_id, message_id)
+            .await
+    }
+
     pub async fn save_chat_message(
         &self,
         room_id: RoomId,

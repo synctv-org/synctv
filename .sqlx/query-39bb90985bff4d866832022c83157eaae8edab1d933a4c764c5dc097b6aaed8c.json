@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT deletion_source AS \"deletion_source?: DeletionSource\",\n                       deleted_owner_id AS \"deleted_owner_id?: crate::models::UserId\"\n                FROM rooms\n                WHERE id = $1\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "deletion_source?: DeletionSource",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "deletion_source"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "deleted_owner_id?: crate::models::UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "deleted_owner_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "39bb90985bff4d866832022c83157eaae8edab1d933a4c764c5dc097b6aaed8c"
+}

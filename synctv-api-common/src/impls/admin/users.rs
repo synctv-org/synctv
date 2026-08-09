@@ -42,6 +42,7 @@ fn list_users_query(
             req.sort_direction,
             synctv_core::models::SortDirection::Desc,
         )?,
+        include_deleted: req.include_deleted,
     })
 }
 
@@ -128,7 +129,16 @@ impl AdminApiImpl {
             self.prepare_deleted_room_outbox_fanout(&owned_room_ids, admin_user_id)?;
         let summary = self
             .user_service
-            .delete_user_with_summary_and_outbox(&uid, deleted_room_outbox_events)
+            .delete_user_with_summary_and_outbox_with_options(
+                &uid,
+                deleted_room_outbox_events,
+                synctv_core::service::UserDeletionOptions {
+                    source: synctv_core::service::UserDeletionSource::Admin,
+                    deleted_by: (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID)
+                        .then_some(*admin_user_id),
+                    reason: Some("Deleted by administrator".to_string()),
+                },
+            )
             .await
             .map_err(ApiError::from)?;
 
@@ -157,6 +167,50 @@ impl AdminApiImpl {
         .await;
 
         Ok(synctv_proto::admin::DeleteUserResponse { success: true })
+    }
+
+    pub async fn restore_user(
+        &self,
+        req: synctv_proto::admin::RestoreUserRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<synctv_proto::admin::RestoreUserResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
+        let result = self
+            .user_service
+            .restore_user(
+                &uid,
+                synctv_core::service::UserRestoreOptions {
+                    ignore_identity_conflicts: req.ignore_identity_conflicts,
+                    restored_by: (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID)
+                        .then_some(*admin_user_id),
+                },
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        self.log_admin_action(
+            admin_user_id,
+            synctv_core::models::AuditAction::UserRestored,
+            synctv_core::models::AuditTargetType::User,
+            Some(uid.to_string()),
+            AuditDetails {
+                target_user_id: Some(uid.to_string()),
+                target_username: Some(result.user.username.clone()),
+                reason: Some("User restored during retention window".to_string()),
+                ..Default::default()
+            },
+            ctx,
+        )
+        .await;
+
+        let user = self.admin_user_to_proto_with_email(&result.user).await?;
+        Ok(synctv_proto::admin::RestoreUserResponse {
+            success: true,
+            user: Some(user),
+            released_identities: result.released_identities,
+        })
     }
 
     pub async fn update_user_username(
@@ -304,7 +358,7 @@ impl AdminApiImpl {
         let user_id = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
         let user = self
             .user_service
-            .get_user(&user_id)
+            .get_user_for_admin(&user_id)
             .await
             .map_err(ApiError::from)?;
 

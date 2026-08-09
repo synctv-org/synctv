@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE target_playlists AS (\n                            SELECT id\n                            FROM playlists\n                            WHERE id = ANY($1)\n                              AND deleted_at IS NULL\n                            UNION ALL\n                            SELECT p.id\n                            FROM playlists p\n                            JOIN target_playlists tp ON p.parent_id = tp.id\n                            WHERE p.deleted_at IS NULL\n                        )\n                        SELECT EXISTS(\n                            SELECT 1\n                            FROM target_playlists\n                            WHERE id = $2\n                        ) AS \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b683fc5c9e74d05d03ab338685ee9ebafd37be3a48728ecb713eaeb38e149f42"
+}

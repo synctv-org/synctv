@@ -45,6 +45,19 @@ impl EmailBindRepository {
         expires_at: chrono::DateTime<Utc>,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<()> {
+        // Serialize bind creation with account deletion. The user row is the
+        // lifecycle source of truth, so a request that waits behind deletion
+        // must observe the deleted state and abort before inserting a token.
+        let active_user = sqlx::query_scalar!(
+            "SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+            user_id as &UserId,
+        )
+        .fetch_optional(&mut **tx)
+        .await?;
+        if active_user.is_none() {
+            return Err(Error::NotFound(format!("User {user_id} not found")));
+        }
+
         sqlx::query!(
             "SELECT pg_advisory_xact_lock(hashtext($1::text), $2)",
             user_id.to_string(),
@@ -96,6 +109,29 @@ impl EmailBindRepository {
             email,
         )
         .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    /// Revoke every pending email-bind verification for an account.
+    ///
+    /// Bind requests are authentication material. They are removed as part of
+    /// account deletion so a token issued before deletion cannot be consumed
+    /// during the recovery window.
+    pub async fn delete_unused_for_user_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        executor: E,
+    ) -> Result<u64>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let result = sqlx::query!(
+            "DELETE FROM auth_email_bind_requests WHERE user_id = $1 AND used_at IS NULL",
+            user_id as &UserId,
+        )
+        .execute(executor)
         .await?;
 
         Ok(result.rows_affected())

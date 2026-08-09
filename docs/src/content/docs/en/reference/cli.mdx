@@ -234,6 +234,9 @@ synctv user list
 synctv user get alice
 synctv user create alice --email alice@example.com
 synctv user delete alice
+synctv user list --include-deleted
+synctv user restore alice
+synctv user restore alice --ignore-identity-conflicts
 synctv user ban alice --reason "abuse"
 synctv user unban alice
 synctv user set-role alice admin
@@ -264,7 +267,7 @@ synctv user batch ban alice bob --reason "spam"
 synctv user batch delete alice bob
 ```
 
-Privileged operations follow role hierarchy. A non-root admin cannot modify root or higher-privilege users' sensitive settings.
+`user restore` applies before permanent cleanup. By default, the username, email, and OAuth2 identities must be available; `--ignore-identity-conflicts` generates a recovery username and reports released identities. Privileged operations follow role hierarchy. A non-root admin cannot modify root or higher-privilege users' sensitive settings.
 
 ## Room Management
 
@@ -343,10 +346,13 @@ synctv review room-join approve <REVIEW_ID>
 synctv review room-join reject <REVIEW_ID> --reason "reason"
 ```
 
-Ban records:
+Ban records are scoped by resource:
 
 ```bash
-synctv ban list
+synctv user bans list
+synctv user bans list --active --user-id <USER_ID>
+synctv room bans list
+synctv room bans list --active false --room-id <ROOM_ID>
 ```
 
 ## Playlists and Media

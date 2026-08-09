@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT CASE\n                       WHEN $1 = 'media' THEN EXISTS(SELECT 1 FROM media WHERE id = $2)\n                       ELSE EXISTS(SELECT 1 FROM playlists WHERE id = $2)\n                   END AS \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "0d31920014830f08c0d5b1c8398739093e5277b7815a55826112fb7b3f2b41a4"
+}

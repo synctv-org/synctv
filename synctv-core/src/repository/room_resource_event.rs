@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 use crate::{
-    models::{ChatPinEvent, EventCursor, RealtimeEvent, RoomId},
+    models::{ChatPinEvent, DeletionSource, EventCursor, RealtimeEvent, RoomId},
     Error, Result,
 };
 
@@ -329,7 +329,7 @@ impl RoomResourceEventRepository {
                          FROM chat_messages m
                          WHERE m.room_id = e.room_id
                            AND e.aggregate_id = m.id::TEXT
-                           AND m.deletion_source = 'account'
+                           AND m.deletion_source = $3
                      ))
                  OR (e.resource_type = 'media'
                      AND EXISTS (
@@ -337,7 +337,7 @@ impl RoomResourceEventRepository {
                          FROM media m
                          WHERE m.room_id = e.room_id
                            AND e.resource_id = m.id::TEXT
-                           AND m.deletion_source = 'account'
+                           AND m.deletion_source = $3
                      ))
                  OR (e.resource_type = 'playlist'
                      AND EXISTS (
@@ -345,14 +345,15 @@ impl RoomResourceEventRepository {
                          FROM playlists p
                          WHERE p.room_id = e.room_id
                            AND e.resource_id = p.id::TEXT
-                           AND p.deletion_source = 'account'
+                           AND p.deletion_source = $3
                      ))
               )
             ORDER BY sequence DESC
             LIMIT 1
             ",
             room_id.as_i64(),
-            &resource_types
+            &resource_types,
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_optional(&self.pool)
         .await?;
@@ -404,7 +405,7 @@ impl RoomResourceEventRepository {
                          FROM chat_messages m
                          WHERE m.room_id = e.room_id
                            AND e.aggregate_id = m.id::TEXT
-                           AND m.deletion_source = 'account'
+                           AND m.deletion_source = $5
                      ))
                  OR (e.resource_type = 'media'
                      AND EXISTS (
@@ -412,7 +413,7 @@ impl RoomResourceEventRepository {
                          FROM media m
                          WHERE m.room_id = e.room_id
                            AND e.resource_id = m.id::TEXT
-                           AND m.deletion_source = 'account'
+                           AND m.deletion_source = $5
                      ))
                  OR (e.resource_type = 'playlist'
                      AND EXISTS (
@@ -420,7 +421,7 @@ impl RoomResourceEventRepository {
                          FROM playlists p
                          WHERE p.room_id = e.room_id
                            AND e.resource_id = p.id::TEXT
-                           AND p.deletion_source = 'account'
+                           AND p.deletion_source = $5
                      ))
               )
             ORDER BY sequence ASC
@@ -429,7 +430,8 @@ impl RoomResourceEventRepository {
             room_id.as_i64(),
             after_sequence,
             &resource_types,
-            limit
+            limit,
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_all(&self.pool)
         .await?;

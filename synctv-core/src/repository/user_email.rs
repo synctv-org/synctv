@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 use crate::{
-    models::{SignupMethod, User, UserId, UserRole, UserStatus},
+    models::{DeletionSource, SignupMethod, User, UserId, UserRole, UserStatus},
     Error, Result,
 };
 
@@ -209,7 +209,7 @@ impl UserEmailRepository {
             deleted_email AS (
                 UPDATE auth_email_identities identity
                 SET deleted_at = $2,
-                    deletion_source = 'user',
+                    deletion_source = $3,
                     updated_at = $2
                 FROM updated_user
                 WHERE identity.user_id = updated_user.id
@@ -247,7 +247,8 @@ impl UserEmailRepository {
             ) active_ban ON TRUE
             "#,
             user_id.as_i64(),
-            now
+            now,
+            DeletionSource::User as DeletionSource,
         )
         .fetch_optional(executor)
         .await?
@@ -272,11 +273,12 @@ impl UserEmailRepository {
                   OR (
                       u.deleted_at IS NOT NULL
                       AND aei.deleted_at IS NOT NULL
-                      AND aei.deletion_source = 'account'
+                      AND aei.deletion_source = $2
                   )
               )
             ",
-            user_id.as_i64()
+            user_id.as_i64(),
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_optional(&self.pool)
         .await

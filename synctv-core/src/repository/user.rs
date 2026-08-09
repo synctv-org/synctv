@@ -5,8 +5,8 @@ use super::query_builder::ilike_contains_pattern;
 use crate::repository::pools::RepoPools;
 use crate::{
     models::{
-        SignupMethod, User, UserId, UserLifecycleMetadata, UserListQuery, UserListSortBy, UserRole,
-        UserStatus,
+        DeletionSource, SignupMethod, User, UserId, UserLifecycleMetadata, UserListQuery,
+        UserListSortBy, UserRole, UserStatus,
     },
     Error, Result,
 };
@@ -236,7 +236,7 @@ impl UserRepository {
             UserLifecycleMetadata,
             r#"
             SELECT id AS "user_id!: UserId",
-                   deletion_source,
+                   deletion_source AS "deletion_source?: DeletionSource",
                    deletion_reason,
                    deleted_by AS "deleted_by?: UserId",
                    restored_at,
@@ -263,7 +263,7 @@ impl UserRepository {
             UserLifecycleMetadata,
             r#"
             SELECT id AS "user_id!: UserId",
-                   deletion_source,
+                   deletion_source AS "deletion_source?: DeletionSource",
                    deletion_reason,
                    deleted_by AS "deleted_by?: UserId",
                    restored_at,
@@ -895,14 +895,16 @@ impl UserRepository {
         role_scope: UserListRoleScope,
         search_pattern: Option<&'a str>,
     ) {
-        builder.push(
-            " FROM user_account_profiles u \
+        builder
+            .push(
+                " FROM user_account_profiles u \
              LEFT JOIN auth_email_identities aei ON aei.user_id = u.id \
                AND ((u.deleted_at IS NULL AND aei.deleted_at IS NULL) \
                     OR (u.deleted_at IS NOT NULL AND aei.deleted_at IS NOT NULL \
-                        AND aei.deletion_source = 'account')) \
-             WHERE ",
-        );
+                        AND aei.deletion_source = ",
+            )
+            .push_bind(DeletionSource::Account)
+            .push(")) WHERE ");
 
         if query.include_deleted {
             builder.push("TRUE");

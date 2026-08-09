@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET deleted_at = $2, deletion_source = $3 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b51ea6efdf6ccb7f7ec928292cdfd04ed177c3d26047e5cf77bb33959d560590"
+}

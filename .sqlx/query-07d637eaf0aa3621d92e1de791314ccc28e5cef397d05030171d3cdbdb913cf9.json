@@ -7,7 +7,7 @@
       "Left": [
         "Int8",
         "Timestamptz",
-        "Text"
+        "Int2"
       ]
     },
     "nullable": []

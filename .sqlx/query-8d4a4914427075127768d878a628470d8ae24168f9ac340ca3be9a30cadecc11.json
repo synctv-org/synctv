@@ -1,0 +1,218 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH candidates AS (\n                SELECT id,\n                       room_id,\n                       user_id,\n                       client_message_id,\n                       content,\n                       message_type,\n                       status,\n                       version,\n                       reply_to_message_id,\n                       reply_to_message_created_at,\n                       metadata,\n                       edited_at,\n                       deleted_at,\n                       deleted_by,\n                       delete_reason,\n                       created_at,\n                       CASE\n                           WHEN jsonb_typeof(metadata #> '{playback,positionSeconds}') = 'number'\n                           THEN (metadata #>> '{playback,positionSeconds}')::double precision\n                           ELSE NULL\n                       END AS playback_position\n                FROM chat_messages\n                WHERE room_id = $1\n                  AND deletion_source IS DISTINCT FROM $11\n                  AND ($2 OR status <> $3)\n                  AND ($4::text IS NULL OR metadata #>> '{playback,mediaId}' = $4)\n                  AND ($5::text IS NULL OR metadata #>> '{playback,playlistId}' = $5)\n                  AND ($6::text IS NULL OR metadata #>> '{playback,targetHash}' = $6)\n                  AND message_type = ANY($7::smallint[])\n            )\n            SELECT id AS \"id!\",\n                   room_id AS \"room_id!: RoomId\",\n                   user_id AS \"user_id?: UserId\",\n                   client_message_id,\n                   content AS \"content!\",\n                   message_type AS \"message_type!: ChatMessageType\",\n                   status AS \"status!: ChatMessageStatus\",\n                   version AS \"version!\",\n                   reply_to_message_id,\n                   reply_to_message_created_at,\n                   metadata AS \"metadata?: ChatMetadata\",\n                   edited_at,\n                   deleted_at,\n                   deleted_by AS \"deleted_by?: UserId\",\n                   delete_reason,\n                   created_at AS \"created_at!\"\n            FROM candidates\n            WHERE playback_position BETWEEN $8 AND $9\n            ORDER BY playback_position ASC, created_at ASC, id ASC\n            LIMIT $10\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id?: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "client_message_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "client_message_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "content!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "content"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "message_type!: ChatMessageType",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "message_type"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "status!: ChatMessageStatus",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "version!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "reply_to_message_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "reply_to_message_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "reply_to_message_created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "reply_to_message_created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "metadata?: ChatMetadata",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "metadata"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "edited_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "edited_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "deleted_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "deleted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "deleted_by?: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "deleted_by"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "delete_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "delete_reason"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bool",
+        "Int2",
+        "Text",
+        "Text",
+        "Text",
+        "Int2Array",
+        "Float8",
+        "Float8",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "8d4a4914427075127768d878a628470d8ae24168f9ac340ca3be9a30cadecc11"
+}

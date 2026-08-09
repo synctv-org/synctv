@@ -4,8 +4,8 @@
 
 use chrono::Utc;
 use synctv_core::models::{
-    FromProviderParams, Media, MediaId, Playlist, PlaylistId, ProviderTarget, RoomMember, RoomRole,
-    SourceProvider,
+    DeletionSource, FromProviderParams, Media, MediaId, Playlist, PlaylistId, ProviderTarget,
+    RoomMember, RoomRole, SourceProvider,
 };
 use synctv_core::{
     models::{Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus},
@@ -566,7 +566,7 @@ async fn test_soft_deleting_playing_media_preserves_playback_reference_for_servi
         "soft-deleted media should disappear from normal repository reads"
     );
 
-    let (deleted_at, deletion_source): (Option<chrono::DateTime<Utc>>, Option<String>) = ok(
+    let (deleted_at, deletion_source): (Option<chrono::DateTime<Utc>>, Option<DeletionSource>) = ok(
         sqlx::query_as("SELECT deleted_at, deletion_source FROM media WHERE id = $1")
             .bind(media.id.as_i64())
             .fetch_one(&pool)
@@ -574,7 +574,7 @@ async fn test_soft_deleting_playing_media_preserves_playback_reference_for_servi
         "media lifecycle metadata should remain queryable",
     );
     assert!(deleted_at.is_some());
-    assert_eq!(deletion_source.as_deref(), Some("user"));
+    assert_eq!(deletion_source, Some(DeletionSource::User));
 
     let state_after_delete = some(
         ok(

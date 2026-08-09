@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Utc};
 
 use crate::{
-    models::{ChatMessageType, MediaId, RoomId, RoomPlaybackState, User, UserId},
+    models::{ChatMessageType, DeletionSource, MediaId, RoomId, RoomPlaybackState, User, UserId},
     repository::realtime_outbox::NewRealtimeOutboxEvent,
     Error, Result,
 };
@@ -21,11 +21,11 @@ pub enum UserDeletionSource {
 }
 
 impl UserDeletionSource {
-    const fn as_str(self) -> &'static str {
+    const fn as_deletion_source(self) -> DeletionSource {
         match self {
-            Self::Account => "account",
-            Self::Admin => "admin",
-            Self::System => "system",
+            Self::Account => DeletionSource::Account,
+            Self::Admin => DeletionSource::Admin,
+            Self::System => DeletionSource::System,
         }
     }
 }
@@ -202,12 +202,12 @@ impl UserService {
 
         // Keep a single lifecycle marker for downstream cleanup and recovery.
         // The user row itself remains the source of truth for visibility.
-        let deletion_source = options.source.as_str();
+        let deletion_source = options.source.as_deletion_source();
         let deletion_reason = options.reason.as_deref().unwrap_or("account closure");
         sqlx::query!(
             "UPDATE users SET deletion_source = $2, deletion_reason = $3, deleted_by = $4 WHERE id = $1",
             user_id.as_i64(),
-            deletion_source,
+            deletion_source as DeletionSource,
             deletion_reason,
             options.deleted_by.map(|id| id.as_i64()),
         )

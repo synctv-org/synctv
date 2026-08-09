@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE target AS (SELECT id FROM playlists WHERE id = ANY($1) AND deleted_at IS NULL UNION ALL SELECT p.id FROM playlists p JOIN target t ON p.parent_id = t.id WHERE p.deleted_at IS NULL) UPDATE playlists SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP), deletion_source = COALESCE(deletion_source, $3), deleted_owner_id = COALESCE(deleted_owner_id, $2), version = version + 1 WHERE id IN (SELECT id FROM target) AND deleted_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0578fb0239e07563573ee769185699734f41471a0828d4d128d2e10f06a08abb"
+}

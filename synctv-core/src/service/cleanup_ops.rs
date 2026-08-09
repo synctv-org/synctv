@@ -14,7 +14,7 @@ use tracing::warn;
 
 use super::partitioning::{len_to_u64, retention_seconds_to_i64, u32_to_i32};
 use super::{FileStorageCleanupOrigin, FileStorageService};
-use crate::models::{ChatAttachment, FileReferenceTarget, RoomId};
+use crate::models::{ChatAttachment, DeletionSource, FileReferenceTarget, RoomId};
 use crate::repository::{realtime_outbox::RealtimeOutboxStatus, FileStorageRepository};
 use crate::{Error, InternalExt, Result};
 
@@ -312,7 +312,7 @@ async fn cleanup_soft_deleted_chat_messages_batch(
         r#"
         SELECT id, created_at
         FROM chat_messages
-        WHERE deletion_source = 'user'
+        WHERE deletion_source = $3
           AND deleted_at <= NOW() - make_interval(days => $1)
         ORDER BY deleted_at ASC, created_at ASC, id ASC
         LIMIT $2
@@ -320,6 +320,7 @@ async fn cleanup_soft_deleted_chat_messages_batch(
         "#,
         retention_days,
         CHAT_MESSAGE_CLEANUP_BATCH_SIZE,
+        DeletionSource::User as DeletionSource,
     )
     .fetch_all(&mut *executor)
     .await
@@ -553,7 +554,7 @@ pub(super) async fn cleanup_soft_deleted_media_and_playlists(
             r#"
             SELECT id
             FROM media
-            WHERE deletion_source = 'user'
+            WHERE deletion_source = $3
               AND deleted_at <= NOW() - make_interval(days => $1)
             ORDER BY deleted_at ASC, id ASC
             LIMIT $2
@@ -561,6 +562,7 @@ pub(super) async fn cleanup_soft_deleted_media_and_playlists(
             "#,
             retention_days,
             RESOURCE_LIFECYCLE_CLEANUP_BATCH_SIZE,
+            DeletionSource::User as DeletionSource,
         )
         .fetch_all(&mut *tx)
         .await
@@ -615,8 +617,9 @@ pub(super) async fn cleanup_soft_deleted_media_and_playlists(
         .await
         .internal_with_err("Failed to delete playback progress for expired media")?;
         let deleted = sqlx::query!(
-            "DELETE FROM media WHERE id = ANY($1) AND deletion_source = 'user'",
+            "DELETE FROM media WHERE id = ANY($1) AND deletion_source = $2",
             &media_ids,
+            DeletionSource::User as DeletionSource,
         )
         .execute(&mut *tx)
         .await
@@ -635,7 +638,7 @@ pub(super) async fn cleanup_soft_deleted_media_and_playlists(
             r#"
             SELECT p.id
             FROM playlists p
-            WHERE p.deletion_source = 'user'
+            WHERE p.deletion_source = $3
               AND p.deleted_at <= NOW() - make_interval(days => $1)
               AND NOT EXISTS (SELECT 1 FROM media m WHERE m.playlist_id = p.id)
               AND NOT EXISTS (SELECT 1 FROM playlists child WHERE child.parent_id = p.id)
@@ -645,6 +648,7 @@ pub(super) async fn cleanup_soft_deleted_media_and_playlists(
             "#,
             retention_days,
             RESOURCE_LIFECYCLE_CLEANUP_BATCH_SIZE,
+            DeletionSource::User as DeletionSource,
         )
         .fetch_all(&mut *tx)
         .await
@@ -699,8 +703,9 @@ pub(super) async fn cleanup_soft_deleted_media_and_playlists(
         .await
         .internal_with_err("Failed to delete playback progress for expired playlists")?;
         let deleted = sqlx::query!(
-            "DELETE FROM playlists WHERE id = ANY($1) AND deletion_source = 'user'",
+            "DELETE FROM playlists WHERE id = ANY($1) AND deletion_source = $2",
             &playlist_ids,
+            DeletionSource::User as DeletionSource,
         )
         .execute(&mut *tx)
         .await
@@ -717,7 +722,7 @@ pub(super) async fn cleanup_soft_deleted_media_and_playlists(
             r#"
             SELECT id
             FROM auth_email_identities
-            WHERE deletion_source = 'user'
+            WHERE deletion_source = $3
               AND deleted_at <= NOW() - make_interval(days => $1)
             ORDER BY deleted_at ASC, id ASC
             LIMIT $2
@@ -725,6 +730,7 @@ pub(super) async fn cleanup_soft_deleted_media_and_playlists(
             "#,
             retention_days,
             RESOURCE_LIFECYCLE_CLEANUP_BATCH_SIZE,
+            DeletionSource::User as DeletionSource,
         )
         .fetch_all(&mut *tx)
         .await
@@ -733,7 +739,7 @@ pub(super) async fn cleanup_soft_deleted_media_and_playlists(
             r#"
             SELECT id
             FROM auth_oauth2_identities
-            WHERE deletion_source = 'user'
+            WHERE deletion_source = $3
               AND deleted_at <= NOW() - make_interval(days => $1)
             ORDER BY deleted_at ASC, id ASC
             LIMIT $2
@@ -741,6 +747,7 @@ pub(super) async fn cleanup_soft_deleted_media_and_playlists(
             "#,
             retention_days,
             RESOURCE_LIFECYCLE_CLEANUP_BATCH_SIZE,
+            DeletionSource::User as DeletionSource,
         )
         .fetch_all(&mut *tx)
         .await
@@ -755,8 +762,9 @@ pub(super) async fn cleanup_soft_deleted_media_and_playlists(
 
         if !email_identity_ids.is_empty() {
             let deleted = sqlx::query!(
-                "DELETE FROM auth_email_identities WHERE id = ANY($1) AND deletion_source = 'user'",
+                "DELETE FROM auth_email_identities WHERE id = ANY($1) AND deletion_source = $2",
                 &email_identity_ids,
+                DeletionSource::User as DeletionSource,
             )
             .execute(&mut *tx)
             .await
@@ -765,8 +773,9 @@ pub(super) async fn cleanup_soft_deleted_media_and_playlists(
         }
         if !oauth2_identity_ids.is_empty() {
             let deleted = sqlx::query!(
-                "DELETE FROM auth_oauth2_identities WHERE id = ANY($1) AND deletion_source = 'user'",
+                "DELETE FROM auth_oauth2_identities WHERE id = ANY($1) AND deletion_source = $2",
                 &oauth2_identity_ids,
+                DeletionSource::User as DeletionSource,
             )
             .execute(&mut *tx)
             .await

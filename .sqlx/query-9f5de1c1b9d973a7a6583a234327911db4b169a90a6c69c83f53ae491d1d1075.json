@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE auth_oauth2_identities SET deleted_at = CURRENT_TIMESTAMP, deletion_source = $2, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 AND deleted_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9f5de1c1b9d973a7a6583a234327911db4b169a90a6c69c83f53ae491d1d1075"
+}

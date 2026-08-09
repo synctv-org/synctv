@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE media SET deleted_at = $2, deletion_source = COALESCE(deletion_source, $3), version = version + 1 WHERE id = ANY($1) AND deleted_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Timestamptz",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "223dcf71e84db1647e51fb76b44605ae3f27a5e5b3416a74840296956cb97fca"
+}

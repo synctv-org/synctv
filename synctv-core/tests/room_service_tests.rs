@@ -10,10 +10,10 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
         room_settings::{AllowAutoJoin, MaxMembers, RequireApproval},
-        Media, MediaId, MemberStatus, MyRoomListQuery, PageParams, Playlist, PlaylistId,
-        ReviewRequestId, RoomAdminPermissionBits, RoomId, RoomListQuery, RoomRole, RoomSettings,
-        RoomStatus, SourceProvider, UpsertRoomCategory, UpsertRoomLabel, User, UserId, UserRole,
-        UserStatus,
+        DeletionSource, Media, MediaId, MemberStatus, MyRoomListQuery, PageParams, Playlist,
+        PlaylistId, ReviewRequestId, RoomAdminPermissionBits, RoomId, RoomListQuery, RoomRole,
+        RoomSettings, RoomStatus, SourceProvider, UpsertRoomCategory, UpsertRoomLabel, User,
+        UserId, UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, ReviewRepository, RoomMemberRepository,
@@ -5636,9 +5636,10 @@ async fn test_soft_delete_retains_recoverable_data_and_cleans_up_volatile_data()
         "Playlists should remain available for room recovery"
     );
     let deleted_playlist_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM playlists WHERE room_id = $1 AND deleted_at IS NOT NULL AND deletion_source = 'room'",
+        "SELECT COUNT(*) FROM playlists WHERE room_id = $1 AND deleted_at IS NOT NULL AND deletion_source = $2",
     )
     .bind(room.id.as_i64())
+    .bind(DeletionSource::Room)
     .fetch_one(&pool)
     .await
     .checked("test operation should succeed");
@@ -5656,9 +5657,10 @@ async fn test_soft_delete_retains_recoverable_data_and_cleans_up_volatile_data()
         "Media should remain available for room recovery"
     );
     let deleted_media_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM media WHERE room_id = $1 AND deleted_at IS NOT NULL AND deletion_source = 'room'",
+        "SELECT COUNT(*) FROM media WHERE room_id = $1 AND deleted_at IS NOT NULL AND deletion_source = $2",
     )
     .bind(room.id.as_i64())
+    .bind(DeletionSource::Room)
     .fetch_one(&pool)
     .await
     .checked("test operation should succeed");
@@ -5700,9 +5702,10 @@ async fn test_soft_delete_retains_recoverable_data_and_cleans_up_volatile_data()
         "Chat messages should remain available for room recovery"
     );
     let deleted_chat_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM chat_messages WHERE room_id = $1 AND deleted_at IS NOT NULL AND deletion_source = 'room'",
+        "SELECT COUNT(*) FROM chat_messages WHERE room_id = $1 AND deleted_at IS NOT NULL AND deletion_source = $2",
     )
     .bind(room.id.as_i64())
+    .bind(DeletionSource::Room)
     .fetch_one(&pool)
     .await
     .checked("test operation should succeed");

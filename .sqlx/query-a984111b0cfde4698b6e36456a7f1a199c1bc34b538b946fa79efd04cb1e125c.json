@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE media SET deleted_at = NULL, deletion_source = NULL, deleted_owner_id = NULL, updated_at = CURRENT_TIMESTAMP, version = version + 1 WHERE deleted_owner_id = $1 AND deletion_source = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a984111b0cfde4698b6e36456a7f1a199c1bc34b538b946fa79efd04cb1e125c"
+}

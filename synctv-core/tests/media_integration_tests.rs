@@ -5,8 +5,8 @@ use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        Media, MediaId, Playlist, PlaylistId, ProviderType, Room, RoomId, RoomMember, RoomRole,
-        RoomStatus, SourceProvider, User, UserId, UserRole, UserStatus,
+        DeletionSource, Media, MediaId, Playlist, PlaylistId, ProviderType, Room, RoomId,
+        RoomMember, RoomRole, RoomStatus, SourceProvider, User, UserId, UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository,
@@ -255,14 +255,16 @@ async fn test_media_delete() {
     assert!(fetched.is_none());
 
     let retained = sqlx::query!(
-        "SELECT deleted_at, deletion_source FROM media WHERE id = $1",
+        r#"SELECT deleted_at,
+                  deletion_source AS "deletion_source?: DeletionSource"
+           FROM media WHERE id = $1"#,
         created.id.as_i64(),
     )
     .fetch_one(&ctx.pool)
     .await
     .checked("soft-deleted media row should remain in storage");
     assert!(retained.deleted_at.is_some());
-    assert_eq!(retained.deletion_source.as_deref(), Some("user"));
+    assert_eq!(retained.deletion_source, Some(DeletionSource::User));
 
     // Double delete returns false
     let deleted_again = media_repo

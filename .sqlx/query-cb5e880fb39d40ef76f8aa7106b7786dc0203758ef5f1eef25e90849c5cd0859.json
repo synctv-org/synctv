@@ -1,0 +1,92 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT e.sequence AS \"sequence!\",\n                   e.event_id AS \"event_id!\",\n                   e.room_id AS \"room_id?\",\n                   e.actor_user_id AS \"actor_user_id?\",\n                   e.payload AS \"event_payload?: sqlx::types::Json<ChatMessageEvent>\",\n                   e.occurred_at AS \"occurred_at!\"\n            FROM chat_message_events e\n            JOIN chat_messages m\n              ON m.room_id = e.room_id\n             AND m.id = e.message_id\n             AND m.created_at = e.message_created_at\n             AND m.deletion_source IS DISTINCT FROM $5\n            WHERE e.event_type = $1\n              AND e.room_id = $2\n              AND e.message_id = $3\n              AND e.message_created_at = $4\n            ORDER BY sequence ASC\n            LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sequence!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_events",
+            "name": "sequence"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "event_id!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_events",
+            "name": "event_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "room_id?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_events",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "actor_user_id?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_events",
+            "name": "actor_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "event_payload?: sqlx::types::Json<ChatMessageEvent>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "chat_message_events",
+            "name": "payload"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "occurred_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_message_events",
+            "name": "occurred_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8",
+        "Timestamptz",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "cb5e880fb39d40ef76f8aa7106b7786dc0203758ef5f1eef25e90849c5cd0859"
+}

@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id\n            FROM media\n            WHERE deletion_source = $3\n              AND deleted_at <= NOW() - make_interval(days => $1)\n            ORDER BY deleted_at ASC, id ASC\n            LIMIT $2\n            FOR UPDATE SKIP LOCKED\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ae1ee546bf987fca6961ef335e1888a155e8524ab0030946ba31691bf0637df1"
+}

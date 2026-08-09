@@ -8,8 +8,8 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::{
     models::{
-        normalize_provider_instance_name, Media, MediaId, MediaListQuery, PageParams, PlaylistId,
-        RoomId, UserId,
+        normalize_provider_instance_name, DeletionSource, Media, MediaId, MediaListQuery,
+        PageParams, PlaylistId, RoomId, UserId,
     },
     Result,
 };
@@ -1471,11 +1471,12 @@ impl MediaRepository {
             r#"
             UPDATE media
                SET deleted_at = CURRENT_TIMESTAMP,
-                   deletion_source = 'user',
+                   deletion_source = $2,
                    version = version + 1
              WHERE id = $1 AND deleted_at IS NULL
             "#,
             media_id.as_i64(),
+            DeletionSource::User as DeletionSource,
         )
         .execute(&self.pool)
         .await?;
@@ -1489,11 +1490,12 @@ impl MediaRepository {
             r#"
             UPDATE media
                SET deleted_at = CURRENT_TIMESTAMP,
-                   deletion_source = 'user',
+                   deletion_source = $2,
                    version = version + 1
              WHERE playlist_id = $1 AND deleted_at IS NULL
             "#,
             playlist_id.as_i64(),
+            DeletionSource::User as DeletionSource,
         )
         .execute(&self.pool)
         .await?;
@@ -1507,12 +1509,13 @@ impl MediaRepository {
             r#"
             UPDATE media
                SET deleted_at = CURRENT_TIMESTAMP,
-                   deletion_source = 'user',
+                   deletion_source = $2,
                    version = version + 1
              WHERE room_id = $1 AND deleted_at IS NULL
                AND playlist_id IS NULL
             "#,
             room_id.as_i64(),
+            DeletionSource::User as DeletionSource,
         )
         .execute(&self.pool)
         .await?;
@@ -1544,11 +1547,12 @@ impl MediaRepository {
             r#"
             UPDATE media
                SET deleted_at = CURRENT_TIMESTAMP,
-                   deletion_source = 'user',
+                   deletion_source = $2,
                    version = version + 1
              WHERE id = ANY($1) AND deleted_at IS NULL
             "#,
             &id_strs,
+            DeletionSource::User as DeletionSource,
         )
         .execute(executor)
         .await?;

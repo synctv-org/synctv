@@ -26,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use super::{cleanup_ops, FileStorageService, LeaderCheck, RuntimeSettingsStore};
+use crate::models::DeletionSource;
 use crate::service::partitioning::u32_to_i32;
 use crate::{InternalExt, Result};
 
@@ -1106,7 +1107,7 @@ impl CleanupService {
             // ordering and cannot split the aggregate during a race.
             let candidate = sqlx::query!(
                 r#"
-                SELECT deletion_source,
+                SELECT deletion_source AS "deletion_source?: DeletionSource",
                        deleted_owner_id AS "deleted_owner_id?: crate::models::UserId"
                 FROM rooms
                 WHERE id = $1
@@ -1123,7 +1124,7 @@ impl CleanupService {
                 continue;
             };
 
-            if candidate.deletion_source.as_deref() == Some("account") {
+            if candidate.deletion_source == Some(DeletionSource::Account) {
                 let Some(owner_id) = candidate.deleted_owner_id else {
                     // Legacy rows without an owner cannot participate in
                     // account recovery and are safe to process as rooms.
@@ -1188,12 +1189,13 @@ impl CleanupService {
                     FROM rooms
                     WHERE id = $1
                       AND deleted_at IS NOT NULL
-                      AND deletion_source = 'account'
+                      AND deletion_source = $3
                       AND deleted_owner_id = $2
                     FOR UPDATE
                     "#,
                     room_id.as_i64(),
                     owner_id as crate::models::UserId,
+                    DeletionSource::Account as DeletionSource,
                 )
                 .fetch_optional(&mut *tx)
                 .await

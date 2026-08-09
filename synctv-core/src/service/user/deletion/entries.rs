@@ -1,7 +1,7 @@
 use sqlx::{Postgres, Transaction};
 
 use crate::{
-    models::{MediaId, PlaylistId, RoomId, RoomPlaybackState, UserId},
+    models::{DeletionSource, MediaId, PlaylistId, RoomId, RoomPlaybackState, UserId},
     Error, Result,
 };
 
@@ -222,9 +222,10 @@ impl UserService {
                 return Err(error.into());
             }
             if let Err(error) = sqlx::query!(
-                "UPDATE media SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP), deletion_source = COALESCE(deletion_source, 'account'), deleted_owner_id = COALESCE(deleted_owner_id, $2), version = version + 1 WHERE id = ANY($1) AND deleted_at IS NULL",
+                "UPDATE media SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP), deletion_source = COALESCE(deletion_source, $3), deleted_owner_id = COALESCE(deleted_owner_id, $2), version = version + 1 WHERE id = ANY($1) AND deleted_at IS NULL",
                 &media_id_strs,
                 deleted_owner_id.as_i64(),
+                DeletionSource::Account as DeletionSource,
             )
             .execute(&mut **tx)
             .await
@@ -250,9 +251,10 @@ impl UserService {
                 return Err(error.into());
             }
             if let Err(error) = sqlx::query!(
-                "WITH RECURSIVE target AS (SELECT id FROM playlists WHERE id = ANY($1) AND deleted_at IS NULL UNION ALL SELECT p.id FROM playlists p JOIN target t ON p.parent_id = t.id WHERE p.deleted_at IS NULL) UPDATE playlists SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP), deletion_source = COALESCE(deletion_source, 'account'), deleted_owner_id = COALESCE(deleted_owner_id, $2), version = version + 1 WHERE id IN (SELECT id FROM target) AND deleted_at IS NULL",
+                "WITH RECURSIVE target AS (SELECT id FROM playlists WHERE id = ANY($1) AND deleted_at IS NULL UNION ALL SELECT p.id FROM playlists p JOIN target t ON p.parent_id = t.id WHERE p.deleted_at IS NULL) UPDATE playlists SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP), deletion_source = COALESCE(deletion_source, $3), deleted_owner_id = COALESCE(deleted_owner_id, $2), version = version + 1 WHERE id IN (SELECT id FROM target) AND deleted_at IS NULL",
                 &playlist_id_strs,
                 deleted_owner_id.as_i64(),
+                DeletionSource::Account as DeletionSource,
             )
             .execute(&mut **tx)
             .await

@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use crate::{
-    models::{AuditAction, AuditDetails, AuditTargetType, RoomId, RoomPermission, UserId},
+    models::{
+        AuditAction, AuditDetails, AuditTargetType, DeletionSource, RoomId, RoomPermission, UserId,
+    },
     Error, Result,
 };
 
@@ -72,13 +74,15 @@ impl RoomService {
         let guard =
             PermissionFenceGuard::reserve(Arc::new(self.clone()), &room_id, &mut tx).await?;
 
-        let impact = match soft_delete_room_and_cleanup_in_tx(&mut tx, &room_id, "user").await {
-            Ok(impact) => impact,
-            Err(error) => {
-                guard.abort().await;
-                return Err(error);
-            }
-        };
+        let impact =
+            match soft_delete_room_and_cleanup_in_tx(&mut tx, &room_id, DeletionSource::User).await
+            {
+                Ok(impact) => impact,
+                Err(error) => {
+                    guard.abort().await;
+                    return Err(error);
+                }
+            };
         if let Err(error) = self
             .insert_realtime_outbox_tx(&mut tx, outbox_event.as_ref())
             .await

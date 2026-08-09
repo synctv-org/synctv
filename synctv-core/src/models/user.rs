@@ -307,7 +307,7 @@ pub struct User {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserLifecycleMetadata {
     pub user_id: UserId,
-    pub deletion_source: Option<String>,
+    pub deletion_source: Option<super::DeletionSource>,
     pub deletion_reason: Option<String>,
     pub deleted_by: Option<UserId>,
     pub restored_at: Option<DateTime<Utc>>,

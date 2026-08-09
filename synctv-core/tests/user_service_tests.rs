@@ -12,9 +12,9 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, LocalVersionFenceStore, UsernameCache, VersionFenceStore},
     models::{
-        Media, MediaId, MemberStatus, NotificationType, Playlist, PlaylistId, Room, RoomId,
-        RoomMember, RoomStatus, SignupMethod, SourceProvider, User, UserId, UserRole, UserStatus,
-        OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID, OPAQUE_SERVER_SETUP_VERSION,
+        DeletionSource, Media, MediaId, MemberStatus, NotificationType, Playlist, PlaylistId, Room,
+        RoomId, RoomMember, RoomStatus, SignupMethod, SourceProvider, User, UserId, UserRole,
+        UserStatus, OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID, OPAQUE_SERVER_SETUP_VERSION,
     },
     repository::{
         ChatRepository, MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository,
@@ -1177,14 +1177,19 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     assert!(!playback_row.is_playing, "playback must be stopped");
 
     let oauth2_identity = sqlx::query!(
-        "SELECT deleted_at, deletion_source FROM auth_oauth2_identities WHERE user_id = $1",
+        r#"SELECT deleted_at,
+                  deletion_source AS "deletion_source?: DeletionSource"
+           FROM auth_oauth2_identities WHERE user_id = $1"#,
         doomed_user.id.as_i64()
     )
     .fetch_one(&pool)
     .await
     .checked("query retained oauth2 mapping");
     assert!(oauth2_identity.deleted_at.is_some());
-    assert_eq!(oauth2_identity.deletion_source.as_deref(), Some("account"));
+    assert_eq!(
+        oauth2_identity.deletion_source,
+        Some(DeletionSource::Account)
+    );
 
     assert_eq!(
         service
@@ -1242,7 +1247,10 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         "surviving-room chat keeps its author during the recovery window"
     );
     let foreign_chat_lifecycle = sqlx::query!(
-        "SELECT deleted_at, deletion_source, deleted_owner_id AS \"deleted_owner_id: UserId\" FROM chat_messages WHERE id = $1",
+        r#"SELECT deleted_at,
+                  deletion_source AS "deletion_source?: DeletionSource",
+                  deleted_owner_id AS "deleted_owner_id: UserId"
+           FROM chat_messages WHERE id = $1"#,
         foreign_chat_message_id,
     )
     .fetch_one(&pool)
@@ -1250,8 +1258,8 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     .checked("query surviving-room chat lifecycle");
     assert!(foreign_chat_lifecycle.deleted_at.is_some());
     assert_eq!(
-        foreign_chat_lifecycle.deletion_source.as_deref(),
-        Some("account")
+        foreign_chat_lifecycle.deletion_source,
+        Some(DeletionSource::Account)
     );
     assert_eq!(
         foreign_chat_lifecycle.deleted_owner_id,
@@ -1265,22 +1273,26 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         .is_none());
 
     let owned_chat = sqlx::query!(
-        "SELECT deleted_at, deletion_source, deleted_owner_id AS \"deleted_owner_id: UserId\" FROM chat_messages WHERE room_id = $1",
+        r#"SELECT deleted_at,
+                  deletion_source AS "deletion_source?: DeletionSource",
+                  deleted_owner_id AS "deleted_owner_id: UserId"
+           FROM chat_messages WHERE room_id = $1"#,
         owned_room.id.as_i64(),
     )
     .fetch_one(&pool)
     .await
     .checked("query owned room chat lifecycle");
     assert!(owned_chat.deleted_at.is_some());
-    assert_eq!(owned_chat.deletion_source.as_deref(), Some("account"));
+    assert_eq!(owned_chat.deletion_source, Some(DeletionSource::Account));
     assert_eq!(owned_chat.deleted_owner_id, Some(doomed_user.id));
 
     let propagated_resources = sqlx::query!(
-        r#"SELECT deletion_source, deleted_owner_id AS "deleted_owner_id: UserId"
+        r#"SELECT deletion_source AS "deletion_source?: DeletionSource",
+                  deleted_owner_id AS "deleted_owner_id: UserId"
            FROM playlists
            WHERE id = ANY($1)
            UNION ALL
-           SELECT deletion_source, deleted_owner_id AS "deleted_owner_id: UserId"
+           SELECT deletion_source, deleted_owner_id
            FROM media
            WHERE id = ANY($2)"#,
         &[owned_playlist.id.as_i64(), foreign_playlist.id.as_i64()],
@@ -1291,19 +1303,25 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     .checked("query propagated resource lifecycle");
     assert_eq!(propagated_resources.len(), 4);
     for row in propagated_resources {
-        assert_eq!(row.deletion_source.as_deref(), Some("account"));
+        assert_eq!(row.deletion_source, Some(DeletionSource::Account));
         assert_eq!(row.deleted_owner_id, Some(doomed_user.id));
     }
 
     let explicit_lifecycle = sqlx::query!(
-        "SELECT deleted_at, deletion_source, deleted_owner_id AS \"deleted_owner_id: UserId\" FROM media WHERE id = $1",
+        r#"SELECT deleted_at,
+                  deletion_source AS "deletion_source?: DeletionSource",
+                  deleted_owner_id AS "deleted_owner_id: UserId"
+           FROM media WHERE id = $1"#,
         explicitly_deleted_media.id.as_i64(),
     )
     .fetch_one(&pool)
     .await
     .checked("query explicitly deleted media lifecycle");
     assert!(explicit_lifecycle.deleted_at.is_some());
-    assert_eq!(explicit_lifecycle.deletion_source.as_deref(), Some("user"));
+    assert_eq!(
+        explicit_lifecycle.deletion_source,
+        Some(DeletionSource::User)
+    );
     assert_eq!(explicit_lifecycle.deleted_owner_id, None);
 
     let restored = service
@@ -1487,8 +1505,9 @@ async fn assert_restore_identity_conflict_modes(pool: PgPool) {
         .checked("create explicit identity account");
     insert_trusted_email_identity(&pool, &explicit_identity.id, "explicit@example.com").await;
     sqlx::query!(
-        "UPDATE auth_email_identities SET deleted_at = CURRENT_TIMESTAMP, deletion_source = 'user' WHERE user_id = $1",
+        "UPDATE auth_email_identities SET deleted_at = CURRENT_TIMESTAMP, deletion_source = $2 WHERE user_id = $1",
         explicit_identity.id.as_i64(),
+        DeletionSource::User as DeletionSource,
     )
     .execute(&pool)
     .await
@@ -1509,13 +1528,14 @@ async fn assert_restore_identity_conflict_modes(pool: PgPool) {
         None
     );
     let explicit_source = sqlx::query_scalar!(
-        "SELECT deletion_source FROM auth_email_identities WHERE user_id = $1",
+        r#"SELECT deletion_source AS "deletion_source?: DeletionSource"
+           FROM auth_email_identities WHERE user_id = $1"#,
         explicit_identity.id.as_i64(),
     )
     .fetch_one(&pool)
     .await
     .checked("load explicit identity deletion source");
-    assert_eq!(explicit_source.as_deref(), Some("user"));
+    assert_eq!(explicit_source, Some(DeletionSource::User));
 }
 
 /// Test that "username taken" errors do NOT count against IP brute-force lockout.

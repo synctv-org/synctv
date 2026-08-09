@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    models::{MediaId, PlaylistId, RoomId, RoomPlaybackState},
+    models::{DeletionSource, MediaId, PlaylistId, RoomId, RoomPlaybackState},
     Error, Result,
 };
 
@@ -274,8 +274,9 @@ pub(super) async fn delete_playlist_ids_in_depth_order_in_tx(
 
     for (_depth, ids) in ids_by_depth.into_iter().rev() {
         sqlx::query!(
-            "UPDATE playlists SET deleted_at = CURRENT_TIMESTAMP, deletion_source = 'user', version = version + 1 WHERE id = ANY($1) AND deleted_at IS NULL",
+            "UPDATE playlists SET deleted_at = CURRENT_TIMESTAMP, deletion_source = $2, version = version + 1 WHERE id = ANY($1) AND deleted_at IS NULL",
             &ids,
+            DeletionSource::User as DeletionSource,
         )
             .execute(&mut **tx)
             .await?;
@@ -377,8 +378,9 @@ pub(super) async fn apply_delete_entries_impact_in_tx(
         .execute(&mut **tx)
         .await?;
         sqlx::query!(
-            "UPDATE media SET deleted_at = CURRENT_TIMESTAMP, deletion_source = 'user', version = version + 1 WHERE id = ANY($1) AND deleted_at IS NULL",
+            "UPDATE media SET deleted_at = CURRENT_TIMESTAMP, deletion_source = $2, version = version + 1 WHERE id = ANY($1) AND deleted_at IS NULL",
             &media_id_strs,
+            DeletionSource::User as DeletionSource,
         )
             .execute(&mut **tx)
             .await?;

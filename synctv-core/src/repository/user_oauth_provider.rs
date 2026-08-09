@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use crate::{
     models::{
         oauth2_client::{OAuth2Provider, OAuth2UserInfo, UserOAuthProviderMapping},
-        UserId,
+        DeletionSource, UserId,
     },
     Result,
 };
@@ -219,10 +219,11 @@ impl UserOAuthProviderRepository {
         provider_user_id: &str,
     ) -> Result<bool> {
         let result = sqlx::query!(
-            "UPDATE auth_oauth2_identities SET deleted_at = CURRENT_TIMESTAMP, deletion_source = 'user', updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 AND provider_instance_name = $2 AND provider_user_id = $3 AND deleted_at IS NULL",
+            "UPDATE auth_oauth2_identities SET deleted_at = CURRENT_TIMESTAMP, deletion_source = $4, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 AND provider_instance_name = $2 AND provider_user_id = $3 AND deleted_at IS NULL",
             user_id as &UserId,
             provider_instance_name,
             provider_user_id,
+            DeletionSource::User as DeletionSource,
         )
         .execute(&self.pool)
         .await?;
@@ -251,8 +252,9 @@ impl UserOAuthProviderRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let result = sqlx::query!(
-            "UPDATE auth_oauth2_identities SET deleted_at = CURRENT_TIMESTAMP, deletion_source = 'user', updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 AND deleted_at IS NULL",
+            "UPDATE auth_oauth2_identities SET deleted_at = CURRENT_TIMESTAMP, deletion_source = $2, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 AND deleted_at IS NULL",
             user_id as &UserId,
+            DeletionSource::User as DeletionSource,
         )
         .execute(executor)
         .await?;
@@ -267,9 +269,10 @@ impl UserOAuthProviderRepository {
         provider_type: &OAuth2Provider,
     ) -> Result<bool> {
         let result = sqlx::query!(
-            "UPDATE auth_oauth2_identities SET deleted_at = CURRENT_TIMESTAMP, deletion_source = 'user', updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 AND provider_type = $2 AND deleted_at IS NULL",
+            "UPDATE auth_oauth2_identities SET deleted_at = CURRENT_TIMESTAMP, deletion_source = $3, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 AND provider_type = $2 AND deleted_at IS NULL",
             user_id as &UserId,
             provider_type.as_i16(),
+            DeletionSource::User as DeletionSource,
         )
         .execute(&self.pool)
         .await?;

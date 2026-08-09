@@ -1,5 +1,5 @@
 use crate::{
-    models::{RoomId, RoomMember, RoomRole, User, UserId},
+    models::{DeletionSource, RoomId, RoomMember, RoomRole, User, UserId},
     repository::RoomMemberRepository,
     Error, Result,
 };
@@ -114,8 +114,9 @@ impl UserService {
         }
 
         let deleted_emails = sqlx::query_scalar!(
-            "SELECT email FROM auth_email_identities WHERE user_id = $1 AND deleted_at IS NOT NULL AND deletion_source = 'account' FOR UPDATE",
+            "SELECT email FROM auth_email_identities WHERE user_id = $1 AND deleted_at IS NOT NULL AND deletion_source = $2 FOR UPDATE",
             user_id.as_i64(),
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_all(&mut *tx)
         .await?;
@@ -142,9 +143,10 @@ impl UserService {
                 released_identities.push(format!("email:{email}"));
             } else {
                 sqlx::query!(
-                    "UPDATE auth_email_identities SET deleted_at = NULL, deletion_source = NULL, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 AND LOWER(email) = LOWER($2) AND deletion_source = 'account'",
+                    "UPDATE auth_email_identities SET deleted_at = NULL, deletion_source = NULL, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 AND LOWER(email) = LOWER($2) AND deletion_source = $3",
                     user_id.as_i64(),
                     &email,
+                    DeletionSource::Account as DeletionSource,
                 )
                 .execute(&mut *tx)
                 .await
@@ -153,8 +155,9 @@ impl UserService {
         }
 
         let deleted_oauth = sqlx::query!(
-            "SELECT id, provider_instance_name, provider_user_id FROM auth_oauth2_identities WHERE user_id = $1 AND deleted_at IS NOT NULL AND deletion_source = 'account' FOR UPDATE",
+            "SELECT id, provider_instance_name, provider_user_id FROM auth_oauth2_identities WHERE user_id = $1 AND deleted_at IS NOT NULL AND deletion_source = $2 FOR UPDATE",
             user_id.as_i64(),
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_all(&mut *tx)
         .await?;
@@ -187,8 +190,9 @@ impl UserService {
                 ));
             } else {
                 sqlx::query!(
-                    "UPDATE auth_oauth2_identities SET deleted_at = NULL, deletion_source = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND deletion_source = 'account'",
+                    "UPDATE auth_oauth2_identities SET deleted_at = NULL, deletion_source = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND deletion_source = $2",
                     identity.id,
+                    DeletionSource::Account as DeletionSource,
                 )
                 .execute(&mut *tx)
                 .await
@@ -200,10 +204,11 @@ impl UserService {
             r#"SELECT id AS "id: RoomId"
                FROM rooms
                WHERE deleted_owner_id = $1
-                 AND deletion_source = 'account'
+                 AND deletion_source = $2
                ORDER BY id
                FOR UPDATE"#,
             user_id.as_i64(),
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_all(&mut *tx)
         .await?;
@@ -217,27 +222,28 @@ impl UserService {
                 SELECT id AS room_id
                 FROM rooms
                 WHERE deleted_owner_id = $1
-                  AND deletion_source = 'account'
+                  AND deletion_source = $2
                 UNION
                 SELECT room_id
                 FROM playlists
                 WHERE deleted_owner_id = $1
-                  AND deletion_source = 'account'
+                  AND deletion_source = $2
                 UNION
                 SELECT room_id
                 FROM media
                 WHERE deleted_owner_id = $1
-                  AND deletion_source = 'account'
+                  AND deletion_source = $2
                 UNION
                 SELECT room_id
                 FROM chat_messages
                 WHERE deleted_owner_id = $1
-                  AND deletion_source = 'account'
+                  AND deletion_source = $2
             ) affected
             ORDER BY room_id
             ",
         )
         .bind(user_id.as_i64())
+        .bind(DeletionSource::Account)
         .fetch_all(&mut *tx)
         .await?
         .into_iter()
@@ -258,26 +264,30 @@ impl UserService {
         }
 
         sqlx::query!(
-            "UPDATE rooms SET deleted_at = NULL, deletion_source = NULL, deleted_owner_id = NULL, updated_at = CURRENT_TIMESTAMP, version = version + 1 WHERE deleted_owner_id = $1 AND deletion_source = 'account'",
+            "UPDATE rooms SET deleted_at = NULL, deletion_source = NULL, deleted_owner_id = NULL, updated_at = CURRENT_TIMESTAMP, version = version + 1 WHERE deleted_owner_id = $1 AND deletion_source = $2",
             user_id.as_i64(),
+            DeletionSource::Account as DeletionSource,
         )
         .execute(&mut *tx)
         .await?;
         sqlx::query!(
-            "UPDATE playlists SET deleted_at = NULL, deletion_source = NULL, deleted_owner_id = NULL, updated_at = CURRENT_TIMESTAMP, version = version + 1 WHERE deleted_owner_id = $1 AND deletion_source = 'account'",
+            "UPDATE playlists SET deleted_at = NULL, deletion_source = NULL, deleted_owner_id = NULL, updated_at = CURRENT_TIMESTAMP, version = version + 1 WHERE deleted_owner_id = $1 AND deletion_source = $2",
             user_id.as_i64(),
+            DeletionSource::Account as DeletionSource,
         )
         .execute(&mut *tx)
         .await?;
         sqlx::query!(
-            "UPDATE media SET deleted_at = NULL, deletion_source = NULL, deleted_owner_id = NULL, updated_at = CURRENT_TIMESTAMP, version = version + 1 WHERE deleted_owner_id = $1 AND deletion_source = 'account'",
+            "UPDATE media SET deleted_at = NULL, deletion_source = NULL, deleted_owner_id = NULL, updated_at = CURRENT_TIMESTAMP, version = version + 1 WHERE deleted_owner_id = $1 AND deletion_source = $2",
             user_id.as_i64(),
+            DeletionSource::Account as DeletionSource,
         )
         .execute(&mut *tx)
         .await?;
         sqlx::query!(
-            "UPDATE chat_messages SET deleted_at = NULL, deletion_source = NULL, deleted_owner_id = NULL, deleted_by = NULL, delete_reason = NULL, version = version + 1 WHERE deleted_owner_id = $1 AND deletion_source = 'account'",
+            "UPDATE chat_messages SET deleted_at = NULL, deletion_source = NULL, deleted_owner_id = NULL, deleted_by = NULL, delete_reason = NULL, version = version + 1 WHERE deleted_owner_id = $1 AND deletion_source = $2",
             user_id.as_i64(),
+            DeletionSource::Account as DeletionSource,
         )
         .execute(&mut *tx)
         .await?;

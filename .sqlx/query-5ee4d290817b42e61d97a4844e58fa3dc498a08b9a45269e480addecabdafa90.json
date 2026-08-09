@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM auth_email_identities WHERE id = ANY($1) AND deletion_source = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5ee4d290817b42e61d97a4844e58fa3dc498a08b9a45269e480addecabdafa90"
+}

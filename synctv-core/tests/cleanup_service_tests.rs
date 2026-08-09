@@ -10,8 +10,8 @@ use std::sync::Arc;
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use synctv_core::models::{
-    CreateFileUploadSession, FileReferenceTarget, FileUploadSessionCreateResult, NewStoredFile,
-    Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus,
+    CreateFileUploadSession, DeletionSource, FileReferenceTarget, FileUploadSessionCreateResult,
+    NewStoredFile, Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus,
 };
 use synctv_core::repository::realtime_outbox::RealtimeOutboxStatus;
 use synctv_core::repository::{RoomRepository, UserRepository};
@@ -676,11 +676,12 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
             r#"INSERT INTO playlists (
                    room_id, creator_id, name, position, deleted_at, deletion_source
                )
-               VALUES ($1, $2, 'retained-user-parent', 1.0, $3, 'user')
+               VALUES ($1, $2, 'retained-user-parent', 1.0, $3, $4)
                RETURNING id"#,
             surviving_room.id.as_i64(),
             deleted_user.id.as_i64(),
             forty_days_ago,
+            DeletionSource::User as DeletionSource,
         )
         .fetch_one(&pool)
         .await,
@@ -692,12 +693,13 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
                    room_id, creator_id, name, parent_id, position,
                    deleted_at, deletion_source
                )
-               VALUES ($1, $2, 'retained-other-user-child', $3, 1.0, $4, 'user')
+               VALUES ($1, $2, 'retained-other-user-child', $3, 1.0, $4, $5)
                RETURNING id"#,
             surviving_room.id.as_i64(),
             nested_creator.id.as_i64(),
             retained_parent_playlist_id,
             forty_days_ago,
+            DeletionSource::User as DeletionSource,
         )
         .fetch_one(&pool)
         .await,
@@ -710,12 +712,13 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
                    source_provider, source_config, deleted_at, deletion_source
                )
                VALUES ($1, $2, $3, 'retained-child-media', 1.0,
-                       1, '{}'::JSONB, $4, 'user')
+                       1, '{}'::JSONB, $4, $5)
                RETURNING id"#,
             retained_child_playlist_id,
             surviving_room.id.as_i64(),
             nested_creator.id.as_i64(),
             forty_days_ago,
+            DeletionSource::User as DeletionSource,
         )
         .fetch_one(&pool)
         .await,
@@ -739,10 +742,11 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
     ok(
         sqlx::query!(
             "UPDATE users
-         SET deleted_at = $2, updated_at = $2, deletion_source = 'account'
+         SET deleted_at = $2, updated_at = $2, deletion_source = $3
          WHERE id = $1",
             deleted_user.id.as_i64(),
             forty_days_ago,
+            DeletionSource::Account as DeletionSource,
         )
         .execute(&pool)
         .await,
@@ -753,11 +757,12 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
         sqlx::query!(
             "UPDATE rooms
          SET deleted_at = $2, updated_at = $2,
-             deletion_source = 'account', deleted_owner_id = $3
+             deletion_source = $4, deleted_owner_id = $3
          WHERE id = $1",
             deleted_owned_room.id.as_i64(),
             forty_days_ago,
             deleted_user.id.as_i64(),
+            DeletionSource::Account as DeletionSource,
         )
         .execute(&pool)
         .await,
@@ -920,9 +925,10 @@ async fn account_owned_rooms_follow_the_account_recovery_window() {
     let forty_days_ago = Utc::now() - Duration::days(40);
     ok(
         sqlx::query!(
-            "UPDATE users SET deleted_at = $2, deletion_source = 'account' WHERE id = $1",
+            "UPDATE users SET deleted_at = $2, deletion_source = $3 WHERE id = $1",
             deleted_user.id.as_i64(),
             forty_days_ago,
+            DeletionSource::Account as DeletionSource,
         )
         .execute(&pool)
         .await,
@@ -930,10 +936,11 @@ async fn account_owned_rooms_follow_the_account_recovery_window() {
     );
     ok(
         sqlx::query!(
-            "UPDATE rooms SET deleted_at = $2, deletion_source = 'account', deleted_owner_id = $1 WHERE id = $3",
+            "UPDATE rooms SET deleted_at = $2, deletion_source = $4, deleted_owner_id = $1 WHERE id = $3",
             deleted_user.id.as_i64(),
             forty_days_ago,
             room.id.as_i64(),
+            DeletionSource::Account as DeletionSource,
         )
         .execute(&pool)
         .await,
@@ -1089,9 +1096,10 @@ async fn hard_purge_removes_deleted_user_chat_and_resource_events() {
     let deleted_at = Utc::now() - Duration::days(40);
     ok(
         sqlx::query!(
-            "UPDATE users SET deleted_at = $2, deletion_source = 'account' WHERE id = $1",
+            "UPDATE users SET deleted_at = $2, deletion_source = $3 WHERE id = $1",
             deleted_user.id.as_i64(),
             deleted_at,
+            DeletionSource::Account as DeletionSource,
         )
         .execute(&pool)
         .await,
@@ -1179,14 +1187,16 @@ async fn resource_retention_purges_only_expired_user_deleted_rows() {
                    user_id, email, deleted_at, deletion_source
                )
                VALUES
-                   ($1, 'expired-unbound@example.com', $4, 'user'),
-                   ($2, 'recent-unbound@example.com', $5, 'user'),
-                   ($3, 'account-retained@example.com', $4, 'account')"#,
+                   ($1, 'expired-unbound@example.com', $4, $6),
+                   ($2, 'recent-unbound@example.com', $5, $6),
+                   ($3, 'account-retained@example.com', $4, $7)"#,
             user.id.as_i64(),
             recent_identity_user.id.as_i64(),
             account_identity_user.id.as_i64(),
             old_deleted_at,
             recent_deleted_at,
+            DeletionSource::User as DeletionSource,
+            DeletionSource::Account as DeletionSource,
         )
         .execute(&pool)
         .await,
@@ -1199,12 +1209,14 @@ async fn resource_retention_purges_only_expired_user_deleted_rows() {
                    user_id, username, deleted_at, deletion_source
                )
                VALUES
-                   (2, 'github', 'expired-unbound', $1, 'expired', $2, 'user'),
-                   (2, 'github', 'recent-unbound', $1, 'recent', $3, 'user'),
-                   (2, 'github', 'account-retained', $1, 'account', $2, 'account')"#,
+                   (2, 'github', 'expired-unbound', $1, 'expired', $2, $4),
+                   (2, 'github', 'recent-unbound', $1, 'recent', $3, $4),
+                   (2, 'github', 'account-retained', $1, 'account', $2, $5)"#,
             user.id.as_i64(),
             old_deleted_at,
             recent_deleted_at,
+            DeletionSource::User as DeletionSource,
+            DeletionSource::Account as DeletionSource,
         )
         .execute(&pool)
         .await,
@@ -1232,12 +1244,13 @@ async fn resource_retention_purges_only_expired_user_deleted_rows() {
                    room_id, creator_id, name, cover_file_reference_id, position,
                    deleted_at, deletion_source
                )
-               VALUES ($1, $2, 'expired-parent', $3, 1.0, $4, 'user')
+               VALUES ($1, $2, 'expired-parent', $3, 1.0, $4, $5)
                RETURNING id"#,
             room.id.as_i64(),
             user.id.as_i64(),
             playlist_cover_reference_id,
             old_deleted_at,
+            DeletionSource::User as DeletionSource,
         )
         .fetch_one(&pool)
         .await,
@@ -1249,12 +1262,13 @@ async fn resource_retention_purges_only_expired_user_deleted_rows() {
                    room_id, creator_id, name, parent_id, position,
                    deleted_at, deletion_source
                )
-               VALUES ($1, $2, 'expired-child', $3, 1.0, $4, 'user')
+               VALUES ($1, $2, 'expired-child', $3, 1.0, $4, $5)
                RETURNING id"#,
             room.id.as_i64(),
             user.id.as_i64(),
             expired_parent_playlist_id,
             old_deleted_at,
+            DeletionSource::User as DeletionSource,
         )
         .fetch_one(&pool)
         .await,
@@ -1265,11 +1279,12 @@ async fn resource_retention_purges_only_expired_user_deleted_rows() {
             r#"INSERT INTO playlists (
                    room_id, creator_id, name, position, deleted_at, deletion_source
                )
-               VALUES ($1, $2, 'recent-user-delete', 2.0, $3, 'user')
+               VALUES ($1, $2, 'recent-user-delete', 2.0, $3, $4)
                RETURNING id"#,
             room.id.as_i64(),
             user.id.as_i64(),
             recent_deleted_at,
+            DeletionSource::User as DeletionSource,
         )
         .fetch_one(&pool)
         .await,
@@ -1281,11 +1296,12 @@ async fn resource_retention_purges_only_expired_user_deleted_rows() {
                    room_id, creator_id, name, position, deleted_at,
                    deletion_source, deleted_owner_id
                )
-               VALUES ($1, $2, 'account-delete', 3.0, $3, 'account', $2)
+               VALUES ($1, $2, 'account-delete', 3.0, $3, $4, $2)
                RETURNING id"#,
             room.id.as_i64(),
             user.id.as_i64(),
             old_deleted_at,
+            DeletionSource::Account as DeletionSource,
         )
         .fetch_one(&pool)
         .await,
@@ -1299,13 +1315,14 @@ async fn resource_retention_purges_only_expired_user_deleted_rows() {
                    source_provider, source_config, cover_file_reference_id,
                    deleted_at, deletion_source
                )
-               VALUES ($1, $2, $3, 'expired-media', 1.0, 1, '{}'::JSONB, $4, $5, 'user')
+               VALUES ($1, $2, $3, 'expired-media', 1.0, 1, '{}'::JSONB, $4, $5, $6)
                RETURNING id"#,
             expired_child_playlist_id,
             room.id.as_i64(),
             user.id.as_i64(),
             media_cover_reference_id,
             old_deleted_at,
+            DeletionSource::User as DeletionSource,
         )
         .fetch_one(&pool)
         .await,
@@ -1317,11 +1334,12 @@ async fn resource_retention_purges_only_expired_user_deleted_rows() {
                    room_id, creator_id, name, position, source_provider, source_config,
                    deleted_at, deletion_source
                )
-               VALUES ($1, $2, 'recent-media', 2.0, 1, '{}'::JSONB, $3, 'user')
+               VALUES ($1, $2, 'recent-media', 2.0, 1, '{}'::JSONB, $3, $4)
                RETURNING id"#,
             room.id.as_i64(),
             user.id.as_i64(),
             recent_deleted_at,
+            DeletionSource::User as DeletionSource,
         )
         .fetch_one(&pool)
         .await,
@@ -1333,11 +1351,12 @@ async fn resource_retention_purges_only_expired_user_deleted_rows() {
                    room_id, creator_id, name, position, source_provider, source_config,
                    deleted_at, deletion_source
                )
-               VALUES ($1, $2, 'room-media', 3.0, 1, '{}'::JSONB, $3, 'room')
+               VALUES ($1, $2, 'room-media', 3.0, 1, '{}'::JSONB, $3, $4)
                RETURNING id"#,
             room.id.as_i64(),
             user.id.as_i64(),
             old_deleted_at,
+            DeletionSource::Room as DeletionSource,
         )
         .fetch_one(&pool)
         .await,
@@ -1358,12 +1377,12 @@ async fn resource_retention_purges_only_expired_user_deleted_rows() {
     insert_chat_text_message(&pool, room.id, user.id, 91_002, message_created_at).await;
     insert_chat_text_message(&pool, room.id, user.id, 91_003, message_created_at).await;
     for (message_id, deleted_at, source, deleted_owner_id) in [
-        (91_001_i64, old_deleted_at, "user", None),
-        (91_002_i64, recent_deleted_at, "user", None),
+        (91_001_i64, old_deleted_at, DeletionSource::User, None),
+        (91_002_i64, recent_deleted_at, DeletionSource::User, None),
         (
             91_003_i64,
             old_deleted_at,
-            "account",
+            DeletionSource::Account,
             Some(user.id.as_i64()),
         ),
     ] {
@@ -1374,7 +1393,7 @@ async fn resource_retention_purges_only_expired_user_deleted_rows() {
                    WHERE id = $1 AND created_at = $5"#,
                 message_id,
                 deleted_at,
-                source,
+                source as DeletionSource,
                 deleted_owner_id,
                 message_created_at,
             )

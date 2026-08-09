@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use synctv_core::models::{
-    FromProviderParams, MemberStatus, PlaylistId, ReviewRequestId, RoomId, RoomRole, RoomStatus,
-    UserId, UserRole, UserStatus,
+    DeletionSource, FromProviderParams, MemberStatus, PlaylistId, ReviewRequestId, RoomId,
+    RoomRole, RoomStatus, UserId, UserRole, UserStatus,
 };
 use synctv_core::service::ProvidersManager;
 use synctv_core::{
@@ -1718,7 +1718,7 @@ fn test_admin_user_to_proto_preserves_lifecycle_metadata() -> TestResult {
     user.deleted_at = Some(deleted_at);
     let lifecycle = synctv_core::models::UserLifecycleMetadata {
         user_id: user.id,
-        deletion_source: Some("admin".to_string()),
+        deletion_source: Some(DeletionSource::Admin),
         deletion_reason: Some("policy violation".to_string()),
         deleted_by: Some(actor_id),
         restored_at: None,

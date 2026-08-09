@@ -230,6 +230,21 @@ fn test_resource_event_is_critical() {
 }
 
 #[test]
+fn test_realtime_termination_is_critical() {
+    let message = ServerMessage {
+        message: Some(synctv_proto::client::server_message::Message::Termination(
+            synctv_proto::client::RealtimeTermination {
+                message: "Account access revoked".to_string(),
+                code: synctv_proto::client::RealtimeTerminationCode::UserAccessRevoked as i32,
+            },
+        )),
+    };
+
+    assert!(is_critical_message(&message));
+    assert_eq!(message_type_name(&message), "Termination");
+}
+
+#[test]
 fn test_websocket_json_uses_integer_enum_values() -> TestResult {
     let message = ServerMessage {
         message: Some(
@@ -1352,7 +1367,7 @@ fn test_critical_messages_bypass_full_normal_queue() -> TestResult {
     let result = sender.send(ServerMessage {
         message: Some(Message::Error(ErrorMessage {
             message: "critical".to_string(),
-            code: synctv_proto::common::ErrorCode::Forbidden as i32,
+            code: synctv_api_common::impls::error_codes::FORBIDDEN,
             detail: String::new(),
             client_operation_id: String::new(),
         })),

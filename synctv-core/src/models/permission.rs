@@ -427,6 +427,9 @@ impl RoomAdminPermissionBits {
         if bits & Self::DELETE_ROOM != 0 {
             permissions |= RoomAdminPermissionBits::DELETE_ROOM;
         }
+        if bits & Self::VIEW_PLAYBACK_HISTORY != 0 {
+            permissions |= RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY;
+        }
         if bits & Self::USE_P2P_MEDIA != 0 {
             permissions |= RoomAdminPermissionBits::USE_P2P_MEDIA;
         }
@@ -492,6 +495,9 @@ impl RoomAdminPermissionBits {
         }
         if permissions & RoomAdminPermissionBits::DELETE_ROOM != 0 {
             bits |= Self::DELETE_ROOM;
+        }
+        if permissions & RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY != 0 {
+            bits |= Self::VIEW_PLAYBACK_HISTORY;
         }
         if permissions & RoomAdminPermissionBits::USE_P2P_MEDIA != 0 {
             bits |= Self::USE_P2P_MEDIA;
@@ -829,6 +835,30 @@ mod tests {
         let guest_perms = Role::Guest.permissions();
         assert!(!guest_perms.has(crate::models::RoomPermission::BROWSE_LIBRARY));
         assert!(!guest_perms.has(crate::models::RoomPermission::MANAGE_OWN_MEDIA));
+    }
+
+    #[test]
+    fn admin_playback_history_permission_mapping_is_bidirectional() {
+        assert_eq!(
+            RoomAdminPermissionBits::to_permissions(RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY),
+            RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY
+        );
+        assert_eq!(
+            RoomAdminPermissionBits::from_permissions(
+                RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY
+            ),
+            RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY
+        );
+
+        let mut member = crate::models::RoomMember::new(
+            crate::models::RoomId::expect_positive(1),
+            crate::models::UserId::expect_positive(1),
+            Role::Admin,
+        );
+        member.admin_added_permissions = RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY;
+        assert!(member
+            .effective_permissions(RoomPermissionSet::empty())
+            .has(crate::models::RoomPermission::VIEW_PLAYBACK_HISTORY));
     }
 
     #[test]

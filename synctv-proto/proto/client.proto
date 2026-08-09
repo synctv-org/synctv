@@ -3346,7 +3346,30 @@ message ServerMessage {
     ResourceObserved resource_observed = 29;
     ResourceEvent resource_event = 30;
     ResourceObserveError resource_observe_error = 31;
+    // Terminal realtime state change sent immediately before the stream closes.
+    // Clients can classify an intentional server-side disconnect without
+    // relying on the transport close frame or a localized error string.
+    RealtimeTermination termination = 32;
   }
+}
+
+message RealtimeTermination {
+  // User-facing explanation of why the realtime stream is ending.
+  string message = 1;
+  // Stable machine-readable realtime termination category.
+  RealtimeTerminationCode code = 2 [(buf.validate.field).enum.defined_only = true];
+}
+
+enum RealtimeTerminationCode {
+  REALTIME_TERMINATION_CODE_UNSPECIFIED = 0;
+  REALTIME_TERMINATION_CODE_CONNECTION_REVOKED = 1;
+  REALTIME_TERMINATION_CODE_USER_ACCESS_REVOKED = 2;
+  REALTIME_TERMINATION_CODE_ROOM_ACCESS_REVOKED = 3;
+  REALTIME_TERMINATION_CODE_ROOM_MEMBERSHIP_REVOKED = 4;
+  REALTIME_TERMINATION_CODE_GUEST_ACCESS_REVOKED = 5;
+  REALTIME_TERMINATION_CODE_ROOM_DELETED = 6;
+  REALTIME_TERMINATION_CODE_ROOM_BANNED = 7;
+  REALTIME_TERMINATION_CODE_ROOM_OWNER_INACTIVE = 8;
 }
 
 message ResourceObserved {

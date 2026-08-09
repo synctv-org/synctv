@@ -54,17 +54,6 @@ enum ListSortDirection {
   LIST_SORT_DIRECTION_DESC = 2;
 }
 
-// Error codes for ErrorMessage
-enum ErrorCode {
-  ERROR_CODE_UNSPECIFIED = 0;
-  ERROR_CODE_UNAUTHORIZED = 1;
-  ERROR_CODE_FORBIDDEN = 2;
-  ERROR_CODE_NOT_FOUND = 3;
-  ERROR_CODE_RATE_LIMITED = 4;
-  ERROR_CODE_VALIDATION_FAILED = 5;
-  ERROR_CODE_INTERNAL = 6;
-}
-
 // ==================== Shared Types ====================
 
 // Room member information (shared between admin and client APIs)

@@ -1,5 +1,46 @@
 use super::notifications::system_notification_server_message;
-use synctv_proto::client::ServerMessage;
+use synctv_proto::client::{RealtimeTerminationCode, ServerMessage};
+use synctv_realtime::sync::RoomDisconnectReason;
+
+/// Build a terminal realtime message that is delivered before the transport
+/// is closed. The dedicated code is stable for client-side classification.
+pub(super) fn realtime_termination_server_message(
+    message: impl Into<String>,
+    code: RealtimeTerminationCode,
+) -> ServerMessage {
+    ServerMessage {
+        message: Some(synctv_proto::client::server_message::Message::Termination(
+            synctv_proto::client::RealtimeTermination {
+                message: message.into(),
+                code: code as i32,
+            },
+        )),
+    }
+}
+
+pub(super) fn room_disconnect_termination_server_message(
+    reason: RoomDisconnectReason,
+) -> ServerMessage {
+    let (message, code) = match reason {
+        RoomDisconnectReason::AccessRevoked => (
+            "This room is no longer available",
+            RealtimeTerminationCode::RoomAccessRevoked,
+        ),
+        RoomDisconnectReason::Deleted => (
+            "Room has been deleted",
+            RealtimeTerminationCode::RoomDeleted,
+        ),
+        RoomDisconnectReason::Banned => {
+            ("Room has been banned", RealtimeTerminationCode::RoomBanned)
+        }
+        RoomDisconnectReason::OwnerInactive => (
+            "Room is unavailable because its creator is not active",
+            RealtimeTerminationCode::RoomOwnerInactive,
+        ),
+    };
+
+    realtime_termination_server_message(message, code)
+}
 
 /// Convert a realtime event into one or more server messages.
 pub(super) fn realtime_event_to_server_messages(
@@ -7,8 +48,6 @@ pub(super) fn realtime_event_to_server_messages(
     _room_id: &str,
     _public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<Vec<ServerMessage>, String> {
-    use synctv_proto::client::server_message::Message;
-    use synctv_proto::client::{ErrorMessage, ServerMessage};
     use synctv_realtime::sync::RealtimeEvent;
 
     let messages = match event {
@@ -19,35 +58,19 @@ pub(super) fn realtime_event_to_server_messages(
             *timestamp,
         )?],
         RealtimeEvent::RoomDeleted { .. } => {
-            // Notify WebSocket clients that the room has been deleted
-            vec![ServerMessage {
-                message: Some(Message::Error(ErrorMessage {
-                    message: "Room has been deleted".to_string(),
-                    code: crate::impls::error_codes::NOT_FOUND,
-                    detail: String::new(),
-                    client_operation_id: String::new(),
-                })),
-            }]
+            vec![room_disconnect_termination_server_message(
+                RoomDisconnectReason::Deleted,
+            )]
         }
         RealtimeEvent::RoomBanned { .. } => {
-            vec![ServerMessage {
-                message: Some(Message::Error(ErrorMessage {
-                    message: "Room has been banned".to_string(),
-                    code: crate::impls::error_codes::FORBIDDEN,
-                    detail: String::new(),
-                    client_operation_id: String::new(),
-                })),
-            }]
+            vec![room_disconnect_termination_server_message(
+                RoomDisconnectReason::Banned,
+            )]
         }
         RealtimeEvent::RoomOwnerInactive { .. } => {
-            vec![ServerMessage {
-                message: Some(Message::Error(ErrorMessage {
-                    message: "Room is unavailable because its creator is not active".to_string(),
-                    code: crate::impls::error_codes::FORBIDDEN,
-                    detail: String::new(),
-                    client_operation_id: String::new(),
-                })),
-            }]
+            vec![room_disconnect_termination_server_message(
+                RoomDisconnectReason::OwnerInactive,
+            )]
         }
         RealtimeEvent::KickPublisher { .. }
         | RealtimeEvent::KickUser { .. }

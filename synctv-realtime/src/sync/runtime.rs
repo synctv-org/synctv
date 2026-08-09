@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::connection_manager::{
     ConnectionInfo, ConnectionLimits, ConnectionManager, ConnectionMetrics, DisconnectSignal,
-    ShutdownReport, VoiceRtcJoinOutcome,
+    RoomDisconnectReason, ShutdownReport, VoiceRtcJoinOutcome,
 };
 use super::room_hub::{ConnectionId, RoomLifecycleEvent, RoomMessageHub};
 use super::{RealtimeEvent, SharedRealtimeEvent};
@@ -175,7 +175,7 @@ pub trait ConnectionRuntime: Send + Sync {
 
     fn disconnect_user(&self, user_id: &UserId);
 
-    fn disconnect_room(&self, room_id: &RoomId);
+    fn disconnect_room(&self, room_id: &RoomId, reason: RoomDisconnectReason);
 
     fn disconnect_user_from_room(&self, user_id: &UserId, room_id: &RoomId);
 
@@ -312,8 +312,8 @@ impl ConnectionRuntime for ConnectionManager {
         ConnectionManager::disconnect_user(self, user_id);
     }
 
-    fn disconnect_room(&self, room_id: &RoomId) {
-        ConnectionManager::disconnect_room(self, room_id);
+    fn disconnect_room(&self, room_id: &RoomId, reason: RoomDisconnectReason) {
+        ConnectionManager::disconnect_room(self, room_id, reason);
     }
 
     fn disconnect_user_from_room(&self, user_id: &UserId, room_id: &RoomId) {

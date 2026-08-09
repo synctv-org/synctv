@@ -1,4 +1,7 @@
-use super::event_messages::realtime_event_to_server_messages;
+use super::event_messages::{
+    realtime_event_to_server_messages, realtime_termination_server_message,
+    room_disconnect_termination_server_message,
+};
 use super::*;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -33,7 +36,7 @@ use synctv_realtime::fanout::{
 };
 use synctv_realtime::sync::{
     ConnectionId, ConnectionLimits, ConnectionManager, RealtimeConfig, RealtimeManager,
-    SharedRealtimeEvent,
+    RoomDisconnectReason, SharedRealtimeEvent,
 };
 use synctv_realtime::sync::{NotificationLevel, RealtimeEvent, RoomMessageHub, WebRTCSignalKind};
 use tokio::sync::{broadcast, mpsc};
@@ -2708,6 +2711,121 @@ async fn test_start_cancels_and_cleans_up_when_admin_notification_send_fails() {
         sender_for_assert.send_calls() >= 1,
         "failing admin notification send should be attempted"
     );
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
+async fn test_start_sends_termination_before_user_kick_disconnect() {
+    let sender = RecordingMessageSender::new();
+    let fixture = create_start_handler_fixture("start_user_kick_termination", sender.clone()).await;
+    let StartTestFixture {
+        handler,
+        connection_service,
+        event_service,
+        ..
+    } = &fixture;
+
+    let (_tx, cancel_token) = handler.start().await.checked("start should return");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if realtime_manager_subscriber_count(event_service, &handler.room_id) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .checked("subscription should be established");
+
+    event_service.broadcast(RealtimeEvent::KickUser {
+        event_id: "evt-user-banned".to_string(),
+        user_id: handler.user_id,
+        reason: "user_banned".to_string(),
+        timestamp: now(),
+    });
+
+    wait_for_start_cleanup(
+        handler,
+        connection_service,
+        event_service,
+        &cancel_token,
+        true,
+    )
+    .await;
+
+    let termination = sender
+        .sent_messages()
+        .into_iter()
+        .find_map(|message| match message.message {
+            Some(Message::Termination(termination)) => Some(termination),
+            _ => None,
+        })
+        .checked("kick should send a realtime termination before cancellation");
+    assert_eq!(
+        termination.code,
+        synctv_proto::client::RealtimeTerminationCode::UserAccessRevoked as i32
+    );
+
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
+async fn test_start_sends_one_specific_termination_when_room_shutdown_paths_race() {
+    let sender = RecordingMessageSender::new();
+    let fixture =
+        create_start_handler_fixture("start_room_shutdown_termination", sender.clone()).await;
+    let StartTestFixture {
+        handler,
+        connection_service,
+        event_service,
+        ..
+    } = &fixture;
+
+    let (_tx, cancel_token) = handler.start().await.checked("start should return");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if realtime_manager_subscriber_count(event_service, &handler.room_id) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .checked("subscription should be established");
+
+    event_service.broadcast(RealtimeEvent::RoomDeleted {
+        event_id: "evt-room-deleted".to_string(),
+        room_id: handler.room_id,
+        deleted_by: handler.user_id,
+        timestamp: now(),
+    });
+    connection_service.disconnect_room(&handler.room_id, RoomDisconnectReason::Deleted);
+
+    wait_for_start_cleanup(
+        handler,
+        connection_service,
+        event_service,
+        &cancel_token,
+        true,
+    )
+    .await;
+
+    let terminations = sender
+        .sent_messages()
+        .into_iter()
+        .filter_map(|message| match message.message {
+            Some(Message::Termination(termination)) => Some(termination),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(terminations.len(), 1);
+    assert_eq!(
+        terminations[0].code,
+        synctv_proto::client::RealtimeTerminationCode::RoomDeleted as i32
+    );
+
     fixture.shutdown().await;
 }
 
@@ -7372,12 +7490,15 @@ fn test_room_deleted_event_conversion() {
         .checked("realtime event should convert");
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
-        Some(Message::Error(e)) => {
-            assert!(e.message.contains("deleted"));
-            assert_eq!(e.code, crate::impls::error_codes::NOT_FOUND);
+        Some(Message::Termination(termination)) => {
+            assert!(termination.message.contains("deleted"));
+            assert_eq!(
+                termination.code,
+                synctv_proto::client::RealtimeTerminationCode::RoomDeleted as i32
+            );
         }
         other => std::panic::panic_any(format!(
-            "Expected Error message for RoomDeleted, got: {other:?}"
+            "Expected Termination message for RoomDeleted, got: {other:?}"
         )),
     }
 }
@@ -7395,12 +7516,15 @@ fn test_room_banned_event_conversion() {
         .checked("realtime event should convert");
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
-        Some(Message::Error(e)) => {
-            assert!(e.message.contains("banned"));
-            assert_eq!(e.code, crate::impls::error_codes::FORBIDDEN);
+        Some(Message::Termination(termination)) => {
+            assert!(termination.message.contains("banned"));
+            assert_eq!(
+                termination.code,
+                synctv_proto::client::RealtimeTerminationCode::RoomBanned as i32
+            );
         }
         other => std::panic::panic_any(format!(
-            "Expected Error message for RoomBanned, got: {other:?}"
+            "Expected Termination message for RoomBanned, got: {other:?}"
         )),
     }
 }
@@ -7419,13 +7543,70 @@ fn test_room_owner_inactive_event_conversion() {
         .checked("realtime event should convert");
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
-        Some(Message::Error(e)) => {
-            assert!(e.message.contains("creator"));
-            assert_eq!(e.code, crate::impls::error_codes::FORBIDDEN);
+        Some(Message::Termination(termination)) => {
+            assert!(termination.message.contains("creator"));
+            assert_eq!(
+                termination.code,
+                synctv_proto::client::RealtimeTerminationCode::RoomOwnerInactive as i32
+            );
         }
         other => std::panic::panic_any(format!(
-            "Expected Error message for RoomOwnerInactive, got: {other:?}"
+            "Expected Termination message for RoomOwnerInactive, got: {other:?}"
         )),
+    }
+}
+
+#[test]
+fn test_realtime_termination_uses_dedicated_typed_code() {
+    let message = realtime_termination_server_message(
+        "Account access revoked",
+        synctv_proto::client::RealtimeTerminationCode::UserAccessRevoked,
+    );
+
+    match message.message {
+        Some(Message::Termination(termination)) => {
+            assert_eq!(
+                termination.code,
+                synctv_proto::client::RealtimeTerminationCode::UserAccessRevoked as i32
+            );
+        }
+        other => std::panic::panic_any(format!(
+            "Expected realtime termination message, got: {other:?}"
+        )),
+    }
+}
+
+#[test]
+fn test_room_disconnect_reasons_use_specific_termination_codes() {
+    let cases = [
+        (
+            RoomDisconnectReason::AccessRevoked,
+            synctv_proto::client::RealtimeTerminationCode::RoomAccessRevoked,
+        ),
+        (
+            RoomDisconnectReason::Deleted,
+            synctv_proto::client::RealtimeTerminationCode::RoomDeleted,
+        ),
+        (
+            RoomDisconnectReason::Banned,
+            synctv_proto::client::RealtimeTerminationCode::RoomBanned,
+        ),
+        (
+            RoomDisconnectReason::OwnerInactive,
+            synctv_proto::client::RealtimeTerminationCode::RoomOwnerInactive,
+        ),
+    ];
+
+    for (reason, expected_code) in cases {
+        let message = room_disconnect_termination_server_message(reason);
+        match message.message {
+            Some(Message::Termination(termination)) => {
+                assert_eq!(termination.code, expected_code as i32);
+            }
+            other => std::panic::panic_any(format!(
+                "Expected room disconnect termination message, got: {other:?}"
+            )),
+        }
     }
 }
 
@@ -9421,7 +9602,10 @@ fn test_disconnect_signal_requires_skip_cleanup_only_for_room_scoped_or_redundan
         connection_id,
     ));
     assert!(super::disconnect_signal_requires_skip_cleanup(
-        &synctv_realtime::sync::DisconnectSignal::Room(rid),
+        &synctv_realtime::sync::DisconnectSignal::Room {
+            room_id: rid,
+            reason: synctv_realtime::sync::RoomDisconnectReason::AccessRevoked,
+        },
         &uid,
         &rid,
         connection_id,
@@ -9511,7 +9695,10 @@ fn test_watch_disconnect_signal_matches_revocation_targets() {
         connection_id,
     ));
     assert!(super::watch_disconnect_signal_matches(
-        &synctv_realtime::sync::DisconnectSignal::Room(rid),
+        &synctv_realtime::sync::DisconnectSignal::Room {
+            room_id: rid,
+            reason: synctv_realtime::sync::RoomDisconnectReason::AccessRevoked,
+        },
         &uid,
         &rid,
         connection_id,

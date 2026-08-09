@@ -346,7 +346,7 @@ impl AdminApiImpl {
 
         // Force disconnect all connections and publishers in the deleted room.
         self.realtime_lifecycle
-            .disconnect_room(&rid, "room_deleted")
+            .disconnect_room(&rid, synctv_realtime::sync::RoomDisconnectReason::Deleted)
             .await;
 
         // Audit log: delete_room is a critical operation (best-effort)
@@ -1114,7 +1114,7 @@ impl AdminApiImpl {
         prepared_outbox_fanout.publish_after_outbox_commit();
 
         self.realtime_lifecycle
-            .disconnect_room(&rid, "room_banned")
+            .disconnect_room(&rid, synctv_realtime::sync::RoomDisconnectReason::Banned)
             .await;
 
         // Audit log: ban_room is a critical operation (best-effort)

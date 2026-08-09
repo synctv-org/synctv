@@ -218,7 +218,7 @@ impl AdminApiImpl {
 
                 prepared_outbox_fanout.publish_after_outbox_commit();
                 self.realtime_lifecycle
-                    .disconnect_room(&rid, "room_batch_banned")
+                    .disconnect_room(&rid, synctv_realtime::sync::RoomDisconnectReason::Banned)
                     .await;
 
                 Ok::<(), ApiError>(())
@@ -287,7 +287,7 @@ impl AdminApiImpl {
 
                 prepared_outbox_fanout.publish_after_outbox_commit();
                 self.realtime_lifecycle
-                    .disconnect_room(&rid, "room_batch_deleted")
+                    .disconnect_room(&rid, synctv_realtime::sync::RoomDisconnectReason::Deleted)
                     .await;
 
                 Ok::<(), ApiError>(())

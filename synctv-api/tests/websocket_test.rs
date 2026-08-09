@@ -571,6 +571,7 @@ mod websocket_e2e {
         pub(super) room_service: Arc<RoomService>,
         pub(super) user_service: Arc<UserService>,
         pub(super) connection_manager: Arc<ConnectionManager>,
+        client_api: Arc<synctv_api::ClientApiImpl>,
         realtime_manager: Arc<RealtimeManager>,
         ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
         server_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
@@ -1176,7 +1177,7 @@ mod websocket_e2e {
             public_id_codec,
             request_executor,
             metrics_access_controller: Arc::new(synctv_api::MetricsAccessController::new()),
-            client_api,
+            client_api: client_api.clone(),
             admin_api: None,
             email_api: None,
             notification_api: None,
@@ -1289,6 +1290,7 @@ mod websocket_e2e {
             room_service,
             user_service,
             connection_manager: connection_manager_ret,
+            client_api,
             realtime_manager,
             ws_ticket_service,
             server_shutdown_tx: Some(shutdown_tx),
@@ -2779,6 +2781,61 @@ mod websocket_e2e {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
+    async fn test_ws_delete_room_api_sends_one_specific_termination_before_close() {
+        let infra = TestInfra::new().await;
+        let mut server = setup_e2e_server(&infra).await;
+
+        let (owner_id, owner_token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "delete_room_termination_owner",
+        )
+        .await;
+        let room_id =
+            create_test_room(&server.room_service, &owner_id, "Delete Termination Room").await;
+        let mut ws_owner = ws_connect(&server.addr, &room_id, &owner_token).await;
+        drain_until_quiet(&mut ws_owner, 1500).await;
+
+        server
+            .client_api
+            .delete_room(&owner_id, &room_id)
+            .await
+            .expect("delete room through client API");
+
+        let termination = recv_matching_server_message(
+            &mut ws_owner,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    message.message,
+                    Some(server_message::Message::Termination(_))
+                )
+            },
+            "room deletion termination",
+        )
+        .await;
+        assert!(matches!(
+            termination.message,
+            Some(server_message::Message::Termination(termination))
+                if termination.code
+                    == synctv_proto::client::RealtimeTerminationCode::RoomDeleted as i32
+        ));
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                recv_server_message(&mut ws_owner),
+            )
+            .await
+            .expect("room-deleted stream termination should complete")
+            .is_none(),
+            "room deletion should close the stream after its sole termination message"
+        );
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_cross_replica_room_realtime_message_matrix_via_realtime_events() {
         let infra = TestInfra::new().await;
 
@@ -2878,23 +2935,35 @@ mod websocket_e2e {
             |message| {
                 matches!(
                     &message.message,
-                    Some(server_message::Message::Error(error))
-                        if error.message.contains("deleted")
+                    Some(server_message::Message::Termination(termination))
+                        if termination.code
+                            == synctv_proto::client::RealtimeTerminationCode::RoomDeleted as i32
                 )
             },
-            "cross-replica room deleted error",
+            "cross-replica room deleted termination",
         )
         .await;
         assert!(
             matches!(
                 room_deleted_msg.message,
-                Some(server_message::Message::Error(_))
+                Some(server_message::Message::Termination(termination))
+                    if termination.code
+                        == synctv_proto::client::RealtimeTerminationCode::RoomDeleted as i32
             ),
-            "RoomDeleted event should be forwarded as terminal error"
+            "RoomDeleted should terminate the realtime stream with a dedicated code"
+        );
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                recv_server_message(&mut ws_member),
+            )
+            .await
+            .expect("room-deleted stream termination should complete")
+            .is_none(),
+            "RoomDeleted should close the realtime stream after the termination message"
         );
 
         ws_owner.close(None).await.expect("close owner");
-        ws_member.close(None).await.expect("close member");
     }
 
     #[tokio::test]

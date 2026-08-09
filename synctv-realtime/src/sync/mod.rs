@@ -16,7 +16,7 @@ use synctv_core::RedisCoordinationRuntime;
 pub use backpressure::{BufferPressure, PublishBackpressure};
 pub use connection_manager::{
     ConnectionInfo, ConnectionLimits, ConnectionLimitsOptions, ConnectionManager,
-    ConnectionMetrics, DisconnectSignal, VoiceRtcJoinOutcome,
+    ConnectionMetrics, DisconnectSignal, RoomDisconnectReason, VoiceRtcJoinOutcome,
 };
 pub use dedup::{DedupKey, MessageDeduplicator};
 pub use realtime_manager::{

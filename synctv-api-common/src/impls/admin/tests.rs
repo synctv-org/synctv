@@ -4004,7 +4004,11 @@ async fn test_ban_user_disconnects_owned_room_connections() -> TestResult {
             .map_err(|error| test_error(format!("disconnect signal timeout: {error}")))?;
         let signal = signal.map_err(|error| test_error(format!("disconnect channel: {error}")))?;
 
-        if let synctv_realtime::sync::DisconnectSignal::Room(room_id) = signal {
+        if let synctv_realtime::sync::DisconnectSignal::Room {
+            room_id,
+            reason: synctv_realtime::sync::RoomDisconnectReason::OwnerInactive,
+        } = signal
+        {
             assert_eq!(room_id, room.id, "owned room must be disconnected");
             saw_room_disconnect = true;
             break;

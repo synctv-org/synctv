@@ -468,19 +468,31 @@ impl FnosSession {
 }
 
 fn map_file(parent: &str, file: RawFile) -> FnosFile {
+    let RawFile {
+        name,
+        uid,
+        size,
+        mtim,
+        btim,
+        dir,
+        v,
+    } = file;
     let path = if parent.is_empty() {
-        file.name.clone()
+        match (v, uid) {
+            (Some(storage_id), Some(user_id)) => format!("vol{storage_id}/{user_id}/{name}"),
+            _ => name.clone(),
+        }
     } else {
-        format!("{parent}/{}", file.name)
+        format!("{parent}/{name}")
     };
     FnosFile {
-        name: file.name,
+        name,
         path,
-        size: file.size,
-        modified_at: file.mtim,
-        created_at: file.btim,
-        is_dir: file.dir == Some(1),
-        storage_id: file.v,
+        size,
+        modified_at: mtim,
+        created_at: btim,
+        is_dir: dir == Some(1),
+        storage_id: v,
     }
 }
 
@@ -618,6 +630,7 @@ mod tests {
             "vol1/1000/Videos",
             RawFile {
                 name: "movie.mp4".to_string(),
+                uid: Some(1000),
                 size: Some(42),
                 mtim: Some(1),
                 btim: Some(2),
@@ -627,6 +640,154 @@ mod tests {
         );
         assert_eq!(file.path, "vol1/1000/Videos/movie.mp4");
         assert!(!file.is_dir);
+    }
+
+    #[test]
+    fn maps_root_directory_to_an_addressable_fnos_path() {
+        let file = map_file(
+            "",
+            RawFile {
+                name: "Series".to_string(),
+                uid: Some(1000),
+                size: None,
+                mtim: None,
+                btim: None,
+                dir: Some(1),
+                v: Some(2),
+            },
+        );
+        assert_eq!(file.path, "vol2/1000/Series");
+
+        let nested = map_file(
+            &file.path,
+            RawFile {
+                name: "Season 1".to_string(),
+                uid: None,
+                size: None,
+                mtim: None,
+                btim: None,
+                dir: Some(1),
+                v: None,
+            },
+        );
+        assert_eq!(nested.path, "vol2/1000/Series/Season 1");
+    }
+
+    #[tokio::test]
+    async fn lists_nested_directories_with_full_fnos_paths() {
+        use std::net::SocketAddr;
+
+        use futures_util::{SinkExt, StreamExt};
+        use serde_json::Value;
+        use tokio::net::TcpListener;
+        use tokio_tungstenite::accept_async;
+        use tokio_tungstenite::tungstenite::Message;
+
+        async fn serve_connection(stream: tokio::net::TcpStream) {
+            let mut socket = accept_async(stream)
+                .await
+                .expect("test websocket handshake should succeed");
+            while let Some(Ok(message)) = socket.next().await {
+                let Message::Text(text) = message else {
+                    continue;
+                };
+                let text = text.as_str();
+                let payload = text
+                    .find('{')
+                    .and_then(|start| serde_json::from_str::<Value>(&text[start..]).ok())
+                    .expect("test request should contain JSON");
+                let reqid = payload
+                    .get("reqid")
+                    .and_then(Value::as_str)
+                    .expect("test request should contain reqid");
+                let response = match payload.get("req").and_then(Value::as_str) {
+                    Some("util.crypto.getRSAPub") => {
+                        serde_json::json!({"reqid": reqid, "pub": "unused", "si": "session"})
+                    }
+                    Some("appcgi.sysinfo.getHostName") => serde_json::json!({
+                        "reqid": reqid,
+                        "result": "succ",
+                        "data": {"hostName": "test-fnos"}
+                    }),
+                    Some("user.authToken") => {
+                        serde_json::json!({"reqid": reqid, "result": "succ"})
+                    }
+                    Some("file.ls") => {
+                        let path = payload.get("path").and_then(Value::as_str);
+                        let files = match path {
+                            None => serde_json::json!([{
+                                "name": "Series",
+                                "uid": 1000,
+                                "dir": 1,
+                                "v": 2
+                            }]),
+                            Some("vol2/1000/Series") => serde_json::json!([{
+                                "name": "episode.mkv",
+                                "uid": 1000,
+                                "size": 42
+                            }]),
+                            Some(other) => panic!("unexpected FNOS path {other}"),
+                        };
+                        serde_json::json!({
+                            "reqid": reqid,
+                            "result": "succ",
+                            "files": files,
+                            "uver": 1
+                        })
+                    }
+                    request => panic!("unexpected FNOS request {request:?}"),
+                };
+                socket
+                    .send(Message::Text(response.to_string().into()))
+                    .await
+                    .expect("test response should be sent");
+            }
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test websocket listener should bind");
+        let address: SocketAddr = listener
+            .local_addr()
+            .expect("test websocket listener should have an address");
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (stream, _) = listener
+                    .accept()
+                    .await
+                    .expect("test websocket connection should be accepted");
+                serve_connection(stream).await;
+            }
+        });
+
+        let client = FnosClient::new()
+            .with_ssrf_guard(
+                synctv_common::ssrf::SsrfGuard::builder()
+                    .allow_private_network_targets(true)
+                    .build(),
+            )
+            .with_timeout(Duration::from_secs(2));
+        let endpoints = FnosEndpoints::parse(&format!("ws://{address}"))
+            .expect("test FNOS endpoint should parse");
+        let credential = FnosCredential {
+            username: "user".to_string(),
+            password: "password".to_string(),
+            token: "token".to_string(),
+            long_token: None,
+            secret: "c2VjcmV0".to_string(),
+        };
+        let root = client
+            .list(&endpoints, &credential, None)
+            .await
+            .expect("root FNOS listing should succeed");
+        assert_eq!(root.files[0].path, "vol2/1000/Series");
+        let nested = client
+            .list(&endpoints, &credential, Some(&root.files[0].path))
+            .await
+            .expect("nested FNOS listing should succeed");
+        assert_eq!(nested.files[0].path, "vol2/1000/Series/episode.mkv");
+
+        server.await.expect("test websocket server should finish");
     }
 
     #[test]

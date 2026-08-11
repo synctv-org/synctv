@@ -7,11 +7,15 @@ use synctv_proto::providers::cloudreve::{
     BindInfo, FileItem, GetBindsResponse, GetMeRequest, GetMeResponse, ListRequest, ListResponse,
     LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, SearchRequest, SearchResponse,
 };
+use synctv_proto::source_config::{
+    media_source_config, playlist_source_config, CloudreveMediaSourceConfig,
+    CloudrevePlaylistSourceConfig,
+};
 use synctv_realtime::fanout::RealtimeEventService;
 
 use super::{
-    provider_instance_name_for_response, publish_provider_credential_changed,
-    resolve_bound_instance_name,
+    discovered_media, discovered_playlist, provider_instance_name_for_response,
+    publish_provider_credential_changed, resolve_bound_instance_name,
 };
 
 #[derive(Clone)]
@@ -91,7 +95,8 @@ impl CloudreveApiImpl {
                 req.per_page.max(1),
             )
             .await?;
-        resolve_bound_instance_name(requested_instance_name, stored_instance_name.as_deref())?;
+        let instance_name =
+            resolve_bound_instance_name(requested_instance_name, stored_instance_name.as_deref())?;
         let pagination = Some(match response.pagination {
             DynamicPagination::Page { page } => {
                 synctv_proto::providers::cloudreve::list_response::Pagination::Page(
@@ -113,9 +118,22 @@ impl CloudreveApiImpl {
             content: response
                 .content
                 .into_iter()
-                .map(|item| file_item(item, Some(&parent)))
+                .map(|item| {
+                    file_item(
+                        item,
+                        Some(&parent),
+                        &req.server_id,
+                        instance_name.as_deref(),
+                    )
+                })
                 .collect(),
             pagination,
+            source: Some(cloudreve_source(
+                &req.server_id,
+                &parent,
+                true,
+                instance_name.as_deref(),
+            )),
         })
     }
 
@@ -129,12 +147,13 @@ impl CloudreveApiImpl {
             .provider
             .search(user_id, &req.server_id, &req.keywords, req.offset)
             .await?;
-        resolve_bound_instance_name(requested_instance_name, stored_instance_name.as_deref())?;
+        let instance_name =
+            resolve_bound_instance_name(requested_instance_name, stored_instance_name.as_deref())?;
         Ok(SearchResponse {
             content: response
                 .content
                 .into_iter()
-                .map(|item| file_item(item, None))
+                .map(|item| file_item(item, None, &req.server_id, instance_name.as_deref()))
                 .collect(),
             total: response.total,
         })
@@ -210,6 +229,8 @@ impl CloudreveApiImpl {
 fn file_item(
     item: synctv_media_providers::cloudreve::CloudreveFile,
     parent: Option<&str>,
+    server_id: &str,
+    provider_instance_name: Option<&str>,
 ) -> FileItem {
     let path = if item.path.trim().is_empty() {
         let parent = parent
@@ -222,6 +243,7 @@ fn file_item(
     };
     let is_dir = item.is_dir();
     let thumbnail = item.thumbnail();
+    let source = cloudreve_source(server_id, &path, is_dir, provider_instance_name);
     FileItem {
         id: item.id,
         name: item.name,
@@ -230,5 +252,33 @@ fn file_item(
         is_dir,
         modified: item.updated_at.map_or(0, |value| value.timestamp()),
         thumbnail,
+        source: Some(source),
+    }
+}
+
+fn cloudreve_source(
+    server_id: &str,
+    path: &str,
+    playlist: bool,
+    provider_instance_name: Option<&str>,
+) -> synctv_proto::providers::common::DiscoveredSource {
+    if playlist {
+        discovered_playlist(
+            playlist_source_config::Provider::Cloudreve(CloudrevePlaylistSourceConfig {
+                server_id: server_id.to_string(),
+                path: path.to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+            }),
+            provider_instance_name,
+        )
+    } else {
+        discovered_media(
+            media_source_config::Provider::Cloudreve(CloudreveMediaSourceConfig {
+                server_id: server_id.to_string(),
+                path: path.to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+            }),
+            provider_instance_name,
+        )
     }
 }

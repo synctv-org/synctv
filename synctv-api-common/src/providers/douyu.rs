@@ -2,7 +2,12 @@ use synctv_media_providers::douyu::{DouyuCodec, DouyuMedia, DouyuMetadata, Douyu
 use synctv_proto::providers::douyu::{self as proto, *};
 use synctv_proto::source_config as source_proto;
 
-pub fn resolve_response(media: DouyuMedia) -> ResolveResponse {
+use super::discovery::discovered_media;
+
+pub fn resolve_response(
+    media: DouyuMedia,
+    provider_instance_name: Option<&str>,
+) -> ResolveResponse {
     ResolveResponse {
         metadata: Some(metadata_message(media.metadata)),
         qualities: media
@@ -19,9 +24,14 @@ pub fn resolve_response(media: DouyuMedia) -> ResolveResponse {
                 format: stream_format(quality.format),
             })
             .collect(),
-        source_config: Some(source_proto::DouyuMediaSourceConfig {
-            room: media.playback.room_id,
-        }),
+        source: Some(discovered_media(
+            source_proto::media_source_config::Provider::Douyu(
+                source_proto::DouyuMediaSourceConfig {
+                    room: media.playback.room_id,
+                },
+            ),
+            provider_instance_name,
+        )),
     }
 }
 

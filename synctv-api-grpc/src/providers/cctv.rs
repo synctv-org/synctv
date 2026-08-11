@@ -37,7 +37,9 @@ impl CctvProviderService for CctvProviderGrpcService {
         request: Request<ResolveRequest>,
     ) -> Result<Response<ResolveResponse>, Status> {
         let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
-        let resource = request.into_inner().resource;
+        let req = request.into_inner();
+        let resource = req.resource;
+        let instance_name = req.instance_name;
         let service = self.service.clone();
         self.request_executor
             .execute_user(
@@ -48,7 +50,11 @@ impl CctvProviderService for CctvProviderGrpcService {
                         .resolve_resource(&resource)
                         .await
                         .map(|media| {
-                            synctv_api_common::providers::cctv::resolve_response(media, resource)
+                            synctv_api_common::providers::cctv::resolve_response(
+                                media,
+                                resource,
+                                (!instance_name.is_empty()).then_some(instance_name.as_str()),
+                            )
                         })
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },

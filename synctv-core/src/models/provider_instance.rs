@@ -311,8 +311,7 @@ impl UserProviderCredential {
 #[serde(
     tag = "type",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum ProviderCredential {
     #[serde(rename = "bilibili")]
@@ -460,7 +459,7 @@ pub enum ProviderCredential {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SynologyApiBinding {
     pub path: String,
     pub min_version: u32,
@@ -612,6 +611,32 @@ mod tests {
             emby_user_id: "user_uuid".to_string(),
         };
         assert!(matches!(emby, ProviderCredential::Emby { .. }));
+    }
+
+    #[test]
+    fn provider_credentials_ignore_unknown_persisted_fields() {
+        let credential: ProviderCredential = serde_json::from_value(serde_json::json!({
+            "type": "alist",
+            "host": "https://alist.example.com",
+            "username": "admin",
+            "password": "secret",
+            "futureCredentialField": true
+        }))
+        .expect("provider credential should ignore unknown persisted fields");
+
+        let ProviderCredential::Alist {
+            host,
+            username,
+            password,
+            otp_secret,
+        } = credential
+        else {
+            panic!("expected Alist credential");
+        };
+        assert_eq!(host, "https://alist.example.com");
+        assert_eq!(username, "admin");
+        assert_eq!(password, "secret");
+        assert!(otp_secret.is_none());
     }
 
     #[test]

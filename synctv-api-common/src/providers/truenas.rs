@@ -6,9 +6,16 @@ use synctv_proto::providers::truenas::{
     BindInfo, FileItem, GetBindsResponse, ListRequest, ListResponse, LoginRequest, LoginResponse,
     LogoutRequest, LogoutResponse,
 };
+use synctv_proto::source_config::{
+    media_source_config, playlist_source_config, TrueNasFolderPlaylistSourceConfig,
+    TrueNasMediaSourceConfig, TrueNasPlaylistSourceConfig,
+};
 use synctv_realtime::fanout::RealtimeEventService;
 
-use super::{publish_provider_credential_changed, resolve_bound_instance_name};
+use super::{
+    discovered_media, discovered_playlist, publish_provider_credential_changed,
+    resolve_bound_instance_name,
+};
 
 #[derive(Clone)]
 pub struct TrueNasApiImpl {
@@ -72,13 +79,20 @@ impl TrueNasApiImpl {
                 req.search.as_deref(),
             )
             .await?;
-        resolve_bound_instance_name(requested_instance_name, stored.as_deref())?;
+        let instance_name =
+            resolve_bound_instance_name(requested_instance_name, stored.as_deref())?;
         Ok(ListResponse {
             content: response
                 .content
                 .into_iter()
                 .map(|item| {
                     let is_dir = item.is_directory();
+                    let source = truenas_source(
+                        &req.server_id,
+                        &item.path,
+                        is_dir,
+                        instance_name.as_deref(),
+                    );
                     FileItem {
                         name: item.name,
                         path: item.path,
@@ -96,12 +110,19 @@ impl TrueNasApiImpl {
                         attributes: item.attributes,
                         xattrs: item.xattrs,
                         zfs_attributes: item.zfs_attrs.unwrap_or_default(),
+                        source: Some(source),
                     }
                 })
                 .collect(),
             total: response.total,
             page: response.page as u64,
             has_more: response.has_more,
+            source: Some(truenas_source(
+                &req.server_id,
+                &req.path,
+                true,
+                instance_name.as_deref(),
+            )),
         })
     }
 
@@ -151,5 +172,38 @@ impl TrueNasApiImpl {
             TrueNasProvider::NAME,
             server_id,
         );
+    }
+}
+
+fn truenas_source(
+    server_id: &str,
+    path: &str,
+    playlist: bool,
+    provider_instance_name: Option<&str>,
+) -> synctv_proto::providers::common::DiscoveredSource {
+    if playlist {
+        discovered_playlist(
+            playlist_source_config::Provider::Truenas(TrueNasPlaylistSourceConfig {
+                server_id: server_id.to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+                source: Some(
+                    synctv_proto::source_config::true_nas_playlist_source_config::Source::Folder(
+                        TrueNasFolderPlaylistSourceConfig {
+                            path: path.to_string(),
+                        },
+                    ),
+                ),
+            }),
+            provider_instance_name,
+        )
+    } else {
+        discovered_media(
+            media_source_config::Provider::Truenas(TrueNasMediaSourceConfig {
+                server_id: server_id.to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+                path: path.to_string(),
+            }),
+            provider_instance_name,
+        )
     }
 }

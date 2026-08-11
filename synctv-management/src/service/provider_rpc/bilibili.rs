@@ -1,6 +1,23 @@
 use super::super::*;
 
 impl ManagementServiceImpl {
+    pub(crate) async fn provider_bilibili_list_playlist(
+        &self,
+        request: Request<crate::proto::BilibiliListPlaylistRequest>,
+    ) -> Result<Response<synctv_proto::providers::bilibili::ListPlaylistResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let request = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(request.actor, request.request)
+            .await?;
+        let response = map_classified_result(
+            self.bilibili_api
+                .list_playlist(&actor_user_id, provider_request)
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
+
     pub(crate) async fn provider_bilibili_list_live_areas(
         &self,
         request: Request<crate::proto::BilibiliListLiveAreasRequest>,
@@ -116,6 +133,7 @@ impl ManagementServiceImpl {
                     &actor_user_id,
                     BilibiliParseQuery {
                         url: provider_request.url,
+                        shared: provider_request.shared,
                     },
                     instance_name.as_deref(),
                 )

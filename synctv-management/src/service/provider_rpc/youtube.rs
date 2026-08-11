@@ -69,4 +69,21 @@ impl ManagementServiceImpl {
         )?;
         Ok(Response::new(response))
     }
+
+    pub(crate) async fn provider_youtube_list(
+        &self,
+        request: Request<crate::proto::YoutubeListRequest>,
+    ) -> Result<Response<synctv_proto::providers::youtube::ListResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let request = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(request.actor, request.request)
+            .await?;
+        let response = map_classified_result(
+            self.youtube_api
+                .list(&actor_user_id, provider_request)
+                .await,
+        )?;
+        Ok(Response::new(response))
+    }
 }

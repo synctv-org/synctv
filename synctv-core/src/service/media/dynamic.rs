@@ -393,6 +393,7 @@ mod tests {
                     server_id: "srv".to_string(),
                     path: "/movies".to_string(),
                     password: None,
+                    proxy_mode: crate::models::PlaybackProxyMode::Auto,
                 },
             )),
         );
@@ -413,6 +414,7 @@ mod tests {
                     server_id: "srv".to_string(),
                     path: "/movies".to_string(),
                     password: None,
+                    proxy_mode: crate::models::PlaybackProxyMode::Auto,
                 },
             )),
         );

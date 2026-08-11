@@ -3,9 +3,10 @@ use std::sync::Arc;
 use crate::models::{MediaId, RoomId, SourceProvider, UserId};
 use crate::provider::{
     AlistFileStreamRequest, AlistHlsResourceRequest, BilibiliDashResourceRequest,
-    BilibiliHlsResourceRequest, BilibiliProvider, DirectUrlDashResourceRequest,
-    DirectUrlHlsResourceRequest, EmbyHlsResourceRequest, ExecutionControl, HlsResourceRequest,
-    PlaybackTransportAction, ProviderAccessService, ProviderContext, ProviderError, ProviderSet,
+    BilibiliHlsResourceRequest, BilibiliProvider, CloudreveHlsResourceRequest,
+    DirectUrlDashResourceRequest, DirectUrlHlsResourceRequest, EmbyHlsResourceRequest,
+    ExecutionControl, HlsResourceRequest, PlaybackTransportAction, ProviderAccessService,
+    ProviderContext, ProviderError, ProviderSet,
 };
 use crate::provider::{LiveFlvAccess, PlaybackTransportServices};
 use crate::provider::{ProviderStore, ProviderStoreResolver};
@@ -452,6 +453,11 @@ pub struct NextcloudPlaybackProviderService {
 }
 
 #[derive(Clone)]
+pub struct CloudrevePlaybackProviderService {
+    runtime: Arc<PlaybackProviderRuntime>,
+}
+
+#[derive(Clone)]
 pub struct SeafilePlaybackProviderService {
     runtime: Arc<PlaybackProviderRuntime>,
 }
@@ -711,6 +717,93 @@ impl NextcloudPlaybackProviderService {
         self.runtime
             .providers
             .nextcloud
+            .get_subtitle(
+                Some(&store),
+                version,
+                mode_name,
+                subtitle_index,
+                request_control,
+            )
+            .await
+    }
+}
+
+impl CloudrevePlaybackProviderService {
+    #[must_use]
+    pub fn new(deps: PlaybackProviderServiceDeps) -> Self {
+        Self {
+            runtime: Arc::new(PlaybackProviderRuntime::new(deps)),
+        }
+    }
+
+    pub async fn resource_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        range: Option<&str>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .cloudreve
+            .get_resource(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+                range,
+            )
+            .await
+    }
+
+    pub async fn hls_manifest_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .cloudreve
+            .get_hls_manifest(
+                Some(&store),
+                version,
+                mode_name,
+                media_index,
+                request_control,
+            )
+            .await
+    }
+
+    pub async fn hls_resource_action(
+        &self,
+        request: CloudreveHlsResourceRequest<'_>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .cloudreve
+            .get_hls_resource(Some(&store), request, request_control)
+            .await
+    }
+
+    pub async fn subtitle_action(
+        &self,
+        version: &str,
+        mode_name: &str,
+        subtitle_index: usize,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .cloudreve
             .get_subtitle(
                 Some(&store),
                 version,

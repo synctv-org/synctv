@@ -5,6 +5,9 @@ package synctv.provider.common;
 import "proto/providers/common.proto";
 
 service ProviderCommonService {
+  rpc PrepareDirectUrl(PrepareDirectUrlRequest) returns (PreparedMediaSource);
+  rpc PrepareLiveProxy(PrepareLiveProxyRequest) returns (PreparedMediaSource);
+  rpc PrepareRtmp(PrepareRtmpRequest) returns (PreparedMediaSource);
   rpc ListAvailableProviderInstances(ListAvailableProviderInstancesRequest) returns (ProviderInstancesResponse);
   rpc ListProviderBackends(ListProviderBackendsRequest) returns (ProviderBackendsResponse);
   rpc ListProviderInstances(ListProviderInstancesRequest) returns (ListProviderInstancesResponse);

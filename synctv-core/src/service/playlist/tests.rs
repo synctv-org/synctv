@@ -43,6 +43,7 @@ fn alist_playlist_source_config(
         server_id: server_id.into(),
         path: path.into(),
         password: None,
+        proxy_mode: crate::models::PlaybackProxyMode::Auto,
     })
 }
 
@@ -55,6 +56,7 @@ fn emby_playlist_source_config(
         source: crate::models::EmbyPlaylistSource::Folder {
             item_id: item_id.into(),
         },
+        proxy_mode: crate::models::PlaybackProxyMode::Auto,
     })
 }
 
@@ -572,6 +574,7 @@ async fn validate_dynamic_playlist_source_rejects_missing_credential_dependency(
                 server_id: "missing-server".to_string(),
                 path: "/movies".to_string(),
                 password: None,
+                proxy_mode: crate::models::PlaybackProxyMode::Auto,
             }),
             None,
         )
@@ -613,6 +616,7 @@ async fn validate_dynamic_playlist_source_allows_missing_optional_credential_dep
                 server_id: "viewer-optional-server".to_string(),
                 path: "optional".to_string(),
                 password: None,
+                proxy_mode: crate::models::PlaybackProxyMode::Auto,
             }),
             None,
         )

@@ -941,8 +941,39 @@ pub fn normalize_channel_id(input: &str) -> Result<String, ProviderClientError> 
         })
 }
 
+pub fn normalize_playlist_id(input: &str) -> Result<String, ProviderClientError> {
+    let input = input.trim();
+    if is_playlist_id(input) {
+        return Ok(input.to_string());
+    }
+    let url = Url::parse(input).map_err(|_| {
+        ProviderClientError::InvalidConfig("YouTube playlist ID or URL is invalid".to_string())
+    })?;
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    if host != "youtube.com" && !host.ends_with(".youtube.com") {
+        return Err(ProviderClientError::InvalidConfig(
+            "YouTube playlist URL host is invalid".to_string(),
+        ));
+    }
+    url.query_pairs()
+        .find_map(|(key, value)| (key == "list").then_some(value.into_owned()))
+        .filter(|value| is_playlist_id(value))
+        .ok_or_else(|| {
+            ProviderClientError::InvalidConfig(
+                "YouTube URL does not contain a valid playlist ID".to_string(),
+            )
+        })
+}
+
 fn is_video_id(value: &str) -> bool {
     value.len() == 11
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn is_playlist_id(value: &str) -> bool {
+    !value.is_empty()
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))

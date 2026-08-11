@@ -161,6 +161,21 @@ async fn test_user_provider_credential_storage_keeps_alist_metadata_plaintext() 
 }
 
 #[test]
+fn test_stored_provider_credential_ignores_unknown_persisted_fields() {
+    let stored: super::StoredProviderCredential = serde_json::from_value(serde_json::json!({
+        "type": "bilibili",
+        "cookies": "enc:ciphertext",
+        "futureCredentialField": true
+    }))
+    .expect("stored credential should ignore unknown persisted fields");
+
+    let super::StoredProviderCredential::Bilibili { cookies } = stored else {
+        panic!("expected Bilibili stored credential");
+    };
+    assert_eq!(cookies.0, "enc:ciphertext");
+}
+
+#[test]
 fn test_user_provider_credential_ciphertext_is_bound_to_binding() {
     let encryption = ok(CredentialEncryption::new(&[12u8; 32]), "encryption key");
     let credential = ProviderCredential::Alist {

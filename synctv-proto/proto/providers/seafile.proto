@@ -3,6 +3,7 @@ syntax = "proto3";
 package synctv.provider.seafile;
 
 import "proto/buf/validate/validate.proto";
+import "proto/providers/common.proto";
 
 message LoginRequest {
   string endpoint = 1 [(buf.validate.field).string.min_len = 1];
@@ -71,6 +72,7 @@ message FileItem {
   bool has_thumbnail = 12;
   bool repository_encrypted = 13;
   bool password_required = 14;
+  synctv.provider.common.DiscoveredSource source = 15;
 }
 
 message ListResponse {
@@ -78,6 +80,7 @@ message ListResponse {
   uint64 total = 2;
   uint64 page = 3;
   bool has_more = 4;
+  synctv.provider.common.DiscoveredSource source = 5;
 }
 
 message LogoutRequest {

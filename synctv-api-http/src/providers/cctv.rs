@@ -35,8 +35,13 @@ pub(crate) async fn resolve(
         move |_authenticated| {
             async move {
                 let resource = req.resource;
+                let instance_name = req.instance_name;
                 service.resolve_resource(&resource).await.map(|media| {
-                    synctv_api_common::providers::cctv::resolve_response(media, resource)
+                    synctv_api_common::providers::cctv::resolve_response(
+                        media,
+                        resource,
+                        (!instance_name.is_empty()).then_some(instance_name.as_str()),
+                    )
                 })
             }
             .boxed()

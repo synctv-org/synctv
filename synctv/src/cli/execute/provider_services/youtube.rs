@@ -36,6 +36,7 @@ pub(crate) async fn execute_provider_youtube(command: ProviderYoutubeCommand) ->
             synctv_proto::providers::youtube::ResolveRequest {
                 resource: args.resource,
                 instance_name: provider_service_instance_name(&args.instance),
+                shared: false,
             }
         ),
     }

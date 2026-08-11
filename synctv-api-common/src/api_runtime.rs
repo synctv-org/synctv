@@ -3,12 +3,13 @@ use std::sync::Arc;
 use synctv_core::provider::PlaybackTransportServices;
 use synctv_core::service::{
     AcFunPlaybackProviderService, AlistPlaybackProviderService, BilibiliPlaybackProviderService,
-    CctvPlaybackProviderService, DirectUrlPlaybackProviderService, DouyinPlaybackProviderService,
-    DouyuPlaybackProviderService, EmbyPlaybackProviderService, FnosPlaybackProviderService,
-    HuyaPlaybackProviderService, LiveProxyPlaybackProviderService,
-    NextcloudPlaybackProviderService, QnapPlaybackProviderService, RtmpPlaybackProviderService,
-    SeafilePlaybackProviderService, SynologyPlaybackProviderService, TikTokPlaybackProviderService,
-    TrueNasPlaybackProviderService, TwitchPlaybackProviderService, YoutubePlaybackProviderService,
+    CctvPlaybackProviderService, CloudrevePlaybackProviderService,
+    DirectUrlPlaybackProviderService, DouyinPlaybackProviderService, DouyuPlaybackProviderService,
+    EmbyPlaybackProviderService, FnosPlaybackProviderService, HuyaPlaybackProviderService,
+    LiveProxyPlaybackProviderService, NextcloudPlaybackProviderService,
+    QnapPlaybackProviderService, RtmpPlaybackProviderService, SeafilePlaybackProviderService,
+    SynologyPlaybackProviderService, TikTokPlaybackProviderService, TrueNasPlaybackProviderService,
+    TwitchPlaybackProviderService, YoutubePlaybackProviderService,
 };
 
 use crate::proxy_signature::{MediaSwarmSigningKey, ProxySigningKey};
@@ -327,6 +328,7 @@ pub struct SharedApiRuntime {
     pub alist_playback_provider_service: Arc<AlistPlaybackProviderService>,
     pub bilibili_playback_provider_service: Arc<BilibiliPlaybackProviderService>,
     pub direct_url_playback_provider_service: Arc<DirectUrlPlaybackProviderService>,
+    pub cloudreve_playback_provider_service: Arc<CloudrevePlaybackProviderService>,
     pub emby_playback_provider_service: Arc<EmbyPlaybackProviderService>,
     pub rtmp_playback_provider_service: Arc<RtmpPlaybackProviderService>,
     pub live_proxy_playback_provider_service: Arc<LiveProxyPlaybackProviderService>,

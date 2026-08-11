@@ -1817,6 +1817,7 @@ struct AlistSourceConfig {
     path: String,
     password: Option<String>,
     server_id: String,
+    proxy_mode: crate::models::PlaybackProxyMode,
 }
 
 impl From<AlistMediaSourceConfig> for AlistSourceConfig {
@@ -1825,6 +1826,7 @@ impl From<AlistMediaSourceConfig> for AlistSourceConfig {
             path: config.path,
             password: config.password,
             server_id: config.server_id,
+            proxy_mode: config.proxy_mode,
         }
     }
 }
@@ -1835,6 +1837,7 @@ impl From<AlistPlaylistSourceConfig> for AlistSourceConfig {
             path: config.path,
             password: config.password,
             server_id: config.server_id,
+            proxy_mode: config.proxy_mode,
         }
     }
 }
@@ -2466,13 +2469,17 @@ impl MediaProvider for AlistProvider {
             &playback_profile_cache_key,
         );
         let cache_ttl = Duration::from_mins(15);
+        let proxy_mode = config.proxy_mode;
 
         Box::pin(super::cached_versioned_playback_or_fill(
             Self::NAME,
             &cache_key,
             cache_ttl,
             _ctx,
-            mark_alist_playback_resources,
+            |result, version, expires_at| {
+                mark_alist_playback_resources(result, version, expires_at);
+                super::apply_provider_playback_policy(result, proxy_mode, true);
+            },
             || async {
                 let resolved = self.resolve_config(_ctx, config.clone()).await?;
                 self.resolve_from_api(&resolved, _ctx.request_context(), playback_client_profile)
@@ -2898,6 +2905,7 @@ impl DynamicPlaylistProvider for AlistProvider {
                 path: full_path.to_string(),
                 password: base_config.password.clone(),
                 server_id: base_config.server_id.clone(),
+                proxy_mode: base_config.proxy_mode,
             })
         };
 
@@ -2975,6 +2983,7 @@ impl DynamicPlaylistProvider for AlistProvider {
                 path: full_path.to_string(),
                 password: base_config.password.clone(),
                 server_id: base_config.server_id.clone(),
+                proxy_mode: base_config.proxy_mode,
             })
         };
 

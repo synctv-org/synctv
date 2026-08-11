@@ -37,8 +37,8 @@ use crate::models::{
     normalize_provider_instance_name, validate_provider_instance_name, BilibiliHistoryType,
     BilibiliMediaSourceConfig as BilibiliSourceConfig, BilibiliPgcTimelineType,
     BilibiliPlaylistSource, BilibiliPlaylistSourceConfig, BilibiliTarget, MediaSourceConfig,
-    PlayMode, PlaylistSourceConfig, ProviderCredential, ProviderTarget, UserId,
-    UserProviderCredential,
+    PlayMode, Playlist, PlaylistId, PlaylistSourceConfig, ProviderCredential, ProviderTarget,
+    RoomId, SourceProvider, UserId, UserProviderCredential,
 };
 use crate::repository::UserProviderCredentialRepository;
 use crate::service::RemoteProviderManager;
@@ -978,6 +978,7 @@ impl BilibiliProvider {
                         &BilibiliPlaylistSourceConfig {
                             source: BilibiliPlaylistSource::History { history_type },
                             shared: false,
+                            proxy_mode: crate::models::PlaybackProxyMode::Auto,
                         },
                         &target,
                     )?,
@@ -1032,6 +1033,7 @@ impl BilibiliProvider {
                             epid: item.episode_id,
                             cid: item.cid,
                             shared: false,
+                            proxy_mode: crate::models::PlaybackProxyMode::Auto,
                         },
                     ))
                 }),
@@ -2112,6 +2114,27 @@ fn mark_bilibili_playback_resources(result: &mut PlaybackResult, version: &str, 
                     resource_mode_name.clone_from(&mode_name);
                 }
             }
+
+            // DURL playback already uses a SyncTV-generated manifest and
+            // server-forwarded segments. Keep a proxy-named sibling so
+            // PLAYBACK_PROXY_MODE_ONLY can retain this fallback route.
+            let mut proxy_info = original_info.clone();
+            if let Some(media) = proxy_info.medias.first_mut() {
+                if let PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest {
+                    version: resource_version,
+                    expires_at: resource_expires_at,
+                    mode_name: resource_mode_name,
+                    ..
+                }) = &mut media.provider
+                {
+                    *resource_version = version.to_string();
+                    *resource_expires_at = expires_at;
+                    resource_mode_name.clone_from(&mode_name);
+                }
+            }
+            result
+                .playback_infos
+                .insert(format!("proxy_{mode_name}"), proxy_info);
             continue;
         }
 
@@ -2786,6 +2809,7 @@ impl BilibiliProvider {
                     aid: (*aid > 0).then_some(*aid),
                     cid: *cid,
                     shared: config.shared,
+                    proxy_mode: config.proxy_mode,
                 }),
             )),
             BilibiliTarget::PgcEpisode { epid, cid } => Ok(MediaSourceConfig::Bilibili(
@@ -2793,12 +2817,14 @@ impl BilibiliProvider {
                     epid: *epid,
                     cid: *cid,
                     shared: config.shared,
+                    proxy_mode: config.proxy_mode,
                 }),
             )),
             BilibiliTarget::Live { room_id } => Ok(MediaSourceConfig::Bilibili(
                 BilibiliSourceConfig::Live(crate::models::BilibiliLiveSourceConfig {
                     room_id: *room_id,
                     shared: config.shared,
+                    proxy_mode: config.proxy_mode,
                 }),
             )),
         }
@@ -2821,6 +2847,7 @@ impl BilibiliProvider {
                         aid: (*aid > 0).then_some(*aid),
                     },
                     shared: config.shared,
+                    proxy_mode: config.proxy_mode,
                 }),
             )),
             BilibiliTarget::VideoPart { .. }
@@ -3126,13 +3153,17 @@ impl MediaProvider for BilibiliProvider {
             resolve_optional_bilibili_cookies(_ctx, *credential_owner_id).await?;
 
         let (cache_key, cache_ttl) = playback_cache_entry(config, &credential_cache_partition)?;
+        let proxy_mode = config.proxy_mode();
 
         Box::pin(super::cached_versioned_playback_or_fill(
             Self::NAME,
             &cache_key,
             cache_ttl,
             _ctx,
-            mark_bilibili_playback_resources,
+            |result, version, expires_at| {
+                mark_bilibili_playback_resources(result, version, expires_at);
+                super::apply_provider_playback_policy(result, proxy_mode, true);
+            },
             || async {
                 self.resolve_from_api_with_cookies(
                     _ctx,
@@ -3404,6 +3435,34 @@ impl MediaProvider for BilibiliProvider {
 
     fn as_bilibili_live_danmaku_provider(&self) -> Option<&dyn super::BilibiliLiveDanmakuProvider> {
         Some(self)
+    }
+}
+
+impl BilibiliProvider {
+    pub async fn discover_playlist_with_context(
+        &self,
+        ctx: &ProviderContext<'_>,
+        config: BilibiliPlaylistSourceConfig,
+        query: DynamicListQuery,
+    ) -> Result<DynamicListResult, ProviderError> {
+        let now = chrono::Utc::now();
+        let playlist = Playlist {
+            id: PlaylistId::new(),
+            room_id: RoomId::new(),
+            creator_id: ctx.credential_owner_id().copied(),
+            name: "Bilibili discovery".to_string(),
+            description: String::new(),
+            cover_file_reference_id: None,
+            parent_id: None,
+            position: 0.0,
+            source_provider: Some(SourceProvider::Bilibili),
+            source_config: Some(PlaylistSourceConfig::Bilibili(config)),
+            provider_instance_name: ctx.provider_instance_name().map(str::to_string),
+            created_at: now,
+            updated_at: now,
+            version: 1,
+        };
+        <Self as DynamicPlaylistProvider>::list_playlist(self, ctx, &playlist, None, query).await
     }
 }
 
@@ -4268,6 +4327,52 @@ mod tests {
         assert!(manifest.contains("#EXTINF:1.250,\nhttps://cdn.example/part-1.mp4"));
         assert!(manifest.contains("#EXTINF:2.500,\nhttps://cdn.example/part-2.mp4"));
         assert!(manifest.ends_with("#EXT-X-ENDLIST\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn durl_manifest_keeps_a_proxy_sibling_for_proxy_only_mode() -> TestResult {
+        let media = provider_ok(bilibili_durl_media(
+            "MP4",
+            [(
+                "https://cdn.example/video.mp4?deadline=200".to_string(),
+                Vec::new(),
+                1_000,
+            )],
+            "sm3_test_durl_proxy".to_string(),
+        ))?;
+        let mut result = PlaybackResult {
+            playback_infos: HashMap::from([(
+                "durl".to_string(),
+                PlaybackInfo {
+                    thumbnail: None,
+                    medias: vec![media],
+                    default_media_index: Some(0),
+                    subtitles: Vec::new(),
+                    default_subtitle_index: None,
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                },
+            )]),
+            default_mode: "durl".to_string(),
+            provider: BilibiliProvider::NAME.to_string(),
+            provider_instance_name: None,
+            duration_seconds: None,
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
+            metadata: None,
+        };
+
+        mark_bilibili_playback_resources(&mut result, "version", 123);
+        assert!(result.playback_infos.contains_key("proxy_durl"));
+
+        super::super::apply_provider_playback_policy(
+            &mut result,
+            crate::models::PlaybackProxyMode::Only,
+            true,
+        );
+        assert_eq!(result.default_mode, "proxy_durl");
+        assert!(!result.playback_infos.contains_key("durl"));
+        assert_eq!(result.playback_infos["proxy_durl"].medias.len(), 1);
         Ok(())
     }
 

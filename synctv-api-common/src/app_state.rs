@@ -3,12 +3,12 @@ use std::sync::Arc;
 use synctv_core::provider::PlaybackTransportServices;
 use synctv_core::service::{
     AcFunPlaybackProviderService, AlistPlaybackProviderService, BilibiliPlaybackProviderService,
-    CctvPlaybackProviderService, DirectUrlPlaybackProviderService, DouyuPlaybackProviderService,
-    EmbyPlaybackProviderService, FnosPlaybackProviderService, HuyaPlaybackProviderService,
-    LiveProxyPlaybackProviderService, NextcloudPlaybackProviderService,
-    QnapPlaybackProviderService, RoomService, RtmpPlaybackProviderService,
-    SynologyPlaybackProviderService, TrueNasPlaybackProviderService, TwitchPlaybackProviderService,
-    UserService,
+    CctvPlaybackProviderService, CloudrevePlaybackProviderService,
+    DirectUrlPlaybackProviderService, DouyuPlaybackProviderService, EmbyPlaybackProviderService,
+    FnosPlaybackProviderService, HuyaPlaybackProviderService, LiveProxyPlaybackProviderService,
+    NextcloudPlaybackProviderService, QnapPlaybackProviderService, RoomService,
+    RtmpPlaybackProviderService, SynologyPlaybackProviderService, TrueNasPlaybackProviderService,
+    TwitchPlaybackProviderService, UserService,
 };
 use synctv_livestream::LiveStreamingInfrastructure;
 use synctv_realtime::fanout::{RealtimeEventService, RealtimeFanoutService};
@@ -68,6 +68,7 @@ pub struct RouterOptions {
     pub alist_playback_provider_service: Arc<AlistPlaybackProviderService>,
     pub bilibili_playback_provider_service: Arc<BilibiliPlaybackProviderService>,
     pub direct_url_playback_provider_service: Arc<DirectUrlPlaybackProviderService>,
+    pub cloudreve_playback_provider_service: Arc<CloudrevePlaybackProviderService>,
     pub emby_playback_provider_service: Arc<EmbyPlaybackProviderService>,
     pub rtmp_playback_provider_service: Arc<RtmpPlaybackProviderService>,
     pub live_proxy_playback_provider_service: Arc<LiveProxyPlaybackProviderService>,
@@ -283,6 +284,7 @@ pub fn build_shared_api_runtime(options: &RouterOptions) -> anyhow::Result<Share
         alist_playback_provider_service: options.alist_playback_provider_service.clone(),
         bilibili_playback_provider_service: options.bilibili_playback_provider_service.clone(),
         direct_url_playback_provider_service: options.direct_url_playback_provider_service.clone(),
+        cloudreve_playback_provider_service: options.cloudreve_playback_provider_service.clone(),
         emby_playback_provider_service: options.emby_playback_provider_service.clone(),
         rtmp_playback_provider_service: options.rtmp_playback_provider_service.clone(),
         live_proxy_playback_provider_service: options.live_proxy_playback_provider_service.clone(),

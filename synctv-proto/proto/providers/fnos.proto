@@ -3,6 +3,7 @@ syntax = "proto3";
 package synctv.provider.fnos;
 
 import "proto/buf/validate/validate.proto";
+import "proto/providers/common.proto";
 
 message LoginRequest {
   string endpoint = 1 [(buf.validate.field).string.min_len = 1];
@@ -47,6 +48,7 @@ message ListResponse {
   uint64 total = 2;
   uint32 page = 3;
   bool has_more = 4;
+  synctv.provider.common.DiscoveredSource source = 5;
 }
 
 message ListMediaLibrariesRequest {
@@ -91,6 +93,7 @@ message ListMediaItemsResponse {
   uint64 total = 2;
   uint32 page = 3;
   bool has_more = 4;
+  synctv.provider.common.DiscoveredSource source = 5;
 }
 
 message MediaItem {
@@ -109,6 +112,7 @@ message MediaItem {
   bool is_folder = 13;
   bool is_playable = 14;
   bool favorite = 15;
+  synctv.provider.common.DiscoveredSource source = 16;
 }
 
 message SetFavoriteRequest {
@@ -141,6 +145,7 @@ message FileItem {
   optional int64 created_at = 5;
   bool is_dir = 6;
   optional uint64 storage_id = 7;
+  synctv.provider.common.DiscoveredSource source = 8;
 }
 
 message GetServerInfoRequest {

@@ -549,6 +549,14 @@ mod tests {
             unavailable_test_management_response()
         }
 
+        async fn youtube_list(
+            &self,
+            _: Request<synctv_management::proto::YoutubeListRequest>,
+        ) -> std::result::Result<Response<synctv_proto::providers::youtube::ListResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+
         async fn cloudreve_login(
             &self,
             _: Request<synctv_management::proto::CloudreveLoginRequest>,
@@ -970,6 +978,16 @@ mod tests {
             _: Request<synctv_management::proto::BilibiliListLiveAreasRequest>,
         ) -> std::result::Result<
             Response<synctv_proto::providers::bilibili::ListLiveAreasResponse>,
+            Status,
+        > {
+            unavailable_test_management_response()
+        }
+
+        async fn bilibili_list_playlist(
+            &self,
+            _: Request<synctv_management::proto::BilibiliListPlaylistRequest>,
+        ) -> std::result::Result<
+            Response<synctv_proto::providers::bilibili::ListPlaylistResponse>,
             Status,
         > {
             unavailable_test_management_response()

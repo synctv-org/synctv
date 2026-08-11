@@ -5,8 +5,7 @@ use sha2::{Digest, Sha256};
 #[serde(
     tag = "provider",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum ProviderTarget {
     Alist(AlistTarget),
@@ -26,7 +25,7 @@ pub enum ProviderTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum BilibiliTarget {
     Video {
         bvid: String,
@@ -48,13 +47,13 @@ pub enum BilibiliTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct AlistTarget {
     pub relative_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum EmbyTarget {
     Item { item_id: String },
     Person { person_id: String },
@@ -62,32 +61,32 @@ pub enum EmbyTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CloudreveTarget {
     pub relative_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct FnosTarget {
     pub target: FnosTargetKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct QnapTarget {
     pub relative_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct NextcloudTarget {
     pub path: String,
     pub file_id: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SeafileTarget {
     pub repository_id: String,
     pub path: String,
@@ -96,13 +95,13 @@ pub struct SeafileTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct TrueNasTarget {
     pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum SynologyTarget {
     File {
         relative_path: String,
@@ -120,7 +119,7 @@ pub enum SynologyTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum FnosTargetKind {
     File {
         relative_path: String,
@@ -140,26 +139,26 @@ pub enum TwitchTargetKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct TwitchTarget {
     pub kind: TwitchTargetKind,
     pub id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct YoutubeTarget {
     pub video_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct DouyinTarget {
     pub aweme_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct TikTokTarget {
     pub video_id: String,
 }
@@ -489,4 +488,25 @@ pub fn hash_optional_provider_target(target: Option<&ProviderTarget>) -> crate::
 #[must_use]
 pub fn hash_empty_provider_target() -> String {
     hex::encode(Sha256::digest([]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_target_ignores_unknown_persisted_fields() {
+        let target: ProviderTarget = serde_json::from_value(serde_json::json!({
+            "provider": "synology",
+            "type": "file",
+            "relative_path": "/movies/demo.mkv",
+            "futureTargetField": "ignored"
+        }))
+        .expect("provider target should ignore unknown persisted fields");
+
+        assert_eq!(
+            target,
+            ProviderTarget::synology_file("/movies/demo.mkv".to_string())
+        );
+    }
 }

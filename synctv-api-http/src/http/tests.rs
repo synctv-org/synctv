@@ -57,6 +57,7 @@ struct TestPlaybackProviderServices {
     alist: Arc<synctv_core::service::AlistPlaybackProviderService>,
     bilibili: Arc<synctv_core::service::BilibiliPlaybackProviderService>,
     direct_url: Arc<synctv_core::service::DirectUrlPlaybackProviderService>,
+    cloudreve: Arc<synctv_core::service::CloudrevePlaybackProviderService>,
     emby: Arc<synctv_core::service::EmbyPlaybackProviderService>,
     rtmp: Arc<synctv_core::service::RtmpPlaybackProviderService>,
     live_proxy: Arc<synctv_core::service::LiveProxyPlaybackProviderService>,
@@ -376,6 +377,9 @@ fn test_playback_provider_services(
             deps.clone(),
         )),
         direct_url: Arc::new(synctv_core::service::DirectUrlPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        cloudreve: Arc::new(synctv_core::service::CloudrevePlaybackProviderService::new(
             deps.clone(),
         )),
         emby: Arc::new(synctv_core::service::EmbyPlaybackProviderService::new(
@@ -984,6 +988,7 @@ fn test_app_state_with_rate_limits(
         alist_playback_provider_service: playback_provider_services.alist.clone(),
         bilibili_playback_provider_service: playback_provider_services.bilibili.clone(),
         direct_url_playback_provider_service: playback_provider_services.direct_url.clone(),
+        cloudreve_playback_provider_service: playback_provider_services.cloudreve.clone(),
         emby_playback_provider_service: playback_provider_services.emby.clone(),
         rtmp_playback_provider_service: playback_provider_services.rtmp.clone(),
         live_proxy_playback_provider_service: playback_provider_services.live_proxy.clone(),
@@ -1498,6 +1503,7 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
         direct_url_playback_provider_service: injected_playback_provider_services
             .direct_url
             .clone(),
+        cloudreve_playback_provider_service: injected_playback_provider_services.cloudreve.clone(),
         emby_playback_provider_service: injected_playback_provider_services.emby.clone(),
         rtmp_playback_provider_service: injected_playback_provider_services.rtmp.clone(),
         live_proxy_playback_provider_service: injected_playback_provider_services
@@ -3174,6 +3180,7 @@ async fn test_openapi_json_route_is_available() -> TestResult {
     assert!(json["paths"]["/api/oauth2/{provider}/authorize"].is_object());
     assert!(json["paths"]["/api/notifications"].is_object());
     assert!(json["paths"]["/api/providers/bilibili/parse"].is_object());
+    assert!(json["paths"]["/api/providers/bilibili/playlist/list"].is_object());
     assert!(json["paths"]["/api/providers/youtube/resolve"].is_object());
     assert!(json["paths"]["/api/providers/alist/login"].is_object());
     assert!(json["paths"]["/api/providers/instances"].is_object());

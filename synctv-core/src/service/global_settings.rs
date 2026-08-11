@@ -1373,11 +1373,21 @@ impl RuntimeSettingsStore {
             return Ok(Vec::new());
         }
         let entries = self.runtime_settings_update_entries_for_mask(settings, update_mask)?;
-        let persisted = self
-            .storage
-            .settings_service()?
-            .persist_raw_settings_batch_internal(entries)
-            .await?;
+        let settings_service = self.storage.settings_service()?;
+        let persisted = crate::service::optimistic_retry::retry_with_optimistic_lock(
+            crate::service::optimistic_retry::DEFAULT_MAX_RETRIES,
+            crate::service::optimistic_retry::DEFAULT_BACKOFF_BASE_MS,
+            "runtime settings changed concurrently",
+            move || {
+                let entries = entries.clone();
+                async move {
+                    settings_service
+                        .persist_raw_settings_batch_internal(entries)
+                        .await
+                }
+            },
+        )
+        .await?;
         self.storage.apply_persisted_updates(persisted.clone());
         Ok(persisted)
     }

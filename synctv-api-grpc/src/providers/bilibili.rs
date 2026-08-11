@@ -14,9 +14,10 @@ use synctv_proto::providers::bilibili::{
     ListFavoriteFoldersResponse, ListFollowedPgcRequest, ListFollowedPgcResponse,
     ListHistoryRequest, ListHistoryResponse, ListLiveAreasRequest, ListLiveAreasResponse,
     ListPgcSeasonsRequest, ListPgcSeasonsResponse, ListPgcTimelineRequest, ListPgcTimelineResponse,
-    LoginQrRequest, LoginSmsRequest, LoginSmsResponse, LogoutRequest, LogoutResponse, ParseRequest,
-    ParseResponse, QrCodeResponse, QrStatusResponse, SendSmsRequest, SendSmsResponse,
-    StartSmsLoginRequest, StartSmsLoginResponse, UserInfoRequest, UserInfoResponse,
+    ListPlaylistRequest, ListPlaylistResponse, LoginQrRequest, LoginSmsRequest, LoginSmsResponse,
+    LogoutRequest, LogoutResponse, ParseRequest, ParseResponse, QrCodeResponse, QrStatusResponse,
+    SendSmsRequest, SendSmsResponse, StartSmsLoginRequest, StartSmsLoginResponse, UserInfoRequest,
+    UserInfoResponse,
 };
 
 /// Bilibili Provider gRPC Service
@@ -73,6 +74,35 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                 EndpointRateLimitCategory::Read,
                 move |request_control, authenticated| async move {
                     api.parse_with_context(
+                        &authenticated.user_id,
+                        req,
+                        instance_name.as_deref(),
+                        Some(&request_control),
+                    )
+                    .await
+                    .map_err(synctv_api_common::impls::ApiError::from)
+                },
+            )
+            .await
+            .map(Response::new)
+            .map_err(crate::grpc::map_api_error)
+    }
+
+    async fn list_playlist(
+        &self,
+        request: Request<ListPlaylistRequest>,
+    ) -> Result<Response<ListPlaylistResponse>, Status> {
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
+        let api = self.api.clone();
+
+        self.request_executor
+            .execute_user_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |request_control, authenticated| async move {
+                    api.list_playlist_with_context(
                         &authenticated.user_id,
                         req,
                         instance_name.as_deref(),

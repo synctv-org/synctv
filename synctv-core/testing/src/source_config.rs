@@ -80,6 +80,7 @@ pub fn alist_file_media_source_config(
         server_id: server_id.into(),
         path: path.into(),
         password: None,
+        proxy_mode: synctv_core::models::PlaybackProxyMode::Auto,
     })
 }
 
@@ -95,6 +96,7 @@ pub fn bilibili_video_media_source_config(
             aid: None,
             cid,
             shared,
+            proxy_mode: synctv_core::models::PlaybackProxyMode::Auto,
         },
     ))
 }
@@ -108,5 +110,6 @@ pub fn alist_directory_playlist_source_config(
         server_id: server_id.into(),
         path: path.into(),
         password: None,
+        proxy_mode: synctv_core::models::PlaybackProxyMode::Auto,
     })
 }

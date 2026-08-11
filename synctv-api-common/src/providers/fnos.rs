@@ -10,11 +10,17 @@ use synctv_proto::providers::fnos::{
     SetFavoriteRequest, SetFavoriteResponse, SetWatchedRequest, SetWatchedResponse,
     TwoFactorRequired,
 };
+use synctv_proto::source_config::{
+    fnos_media_source_config, fnos_playlist_source_config, media_source_config,
+    playlist_source_config, FnosFavoritesPlaylistSourceConfig, FnosFileSourceConfig,
+    FnosFilesPlaylistSourceConfig, FnosHistoryPlaylistSourceConfig, FnosLibraryItemSourceConfig,
+    FnosMediaLibraryPlaylistSourceConfig, FnosMediaSourceConfig, FnosPlaylistSourceConfig,
+};
 use synctv_realtime::fanout::RealtimeEventService;
 
 use super::{
-    provider_instance_name_for_response, publish_provider_credential_changed,
-    resolve_bound_instance_name,
+    discovered_media, discovered_playlist, provider_instance_name_for_response,
+    publish_provider_credential_changed, resolve_bound_instance_name,
 };
 
 #[derive(Clone)]
@@ -102,7 +108,8 @@ impl FnosApiImpl {
             .provider
             .list(user_id, &req.server_id, &req.path)
             .await?;
-        resolve_bound_instance_name(requested_instance_name, stored_instance_name.as_deref())?;
+        let instance_name =
+            resolve_bound_instance_name(requested_instance_name, stored_instance_name.as_deref())?;
 
         let search = req
             .search
@@ -134,13 +141,19 @@ impl FnosApiImpl {
             .unwrap_or_default()
             .iter()
             .cloned()
-            .map(file_item)
+            .map(|file| file_item(file, &req.server_id, instance_name.as_deref()))
             .collect();
         Ok(ListResponse {
             content,
             total,
             page: req.page.max(1),
             has_more: end < files.len(),
+            source: Some(fnos_file_source(
+                &req.server_id,
+                &req.path,
+                true,
+                instance_name.as_deref(),
+            )),
         })
     }
 
@@ -270,7 +283,15 @@ impl FnosApiImpl {
                 .await?;
             (response.list, response.total, instance_name)
         };
-        resolve_bound_instance_name(requested_instance_name, stored_instance_name.as_deref())?;
+        let instance_name =
+            resolve_bound_instance_name(requested_instance_name, stored_instance_name.as_deref())?;
+        let page_source = fnos_media_playlist_source(
+            &server_id,
+            collection,
+            req.ancestor_guid.as_deref(),
+            &req.media_types,
+            instance_name.as_deref(),
+        );
         Ok(ListMediaItemsResponse {
             items: items
                 .into_iter()
@@ -278,6 +299,32 @@ impl FnosApiImpl {
                     let title = item.display_title();
                     let is_folder = item.is_folder();
                     let is_playable = item.is_playable();
+                    let source = if is_folder {
+                        Some(fnos_media_playlist_source(
+                            &server_id,
+                            MediaCollection::Library,
+                            Some(&item.guid),
+                            &req.media_types,
+                            instance_name.as_deref(),
+                        ))
+                    } else if is_playable {
+                        Some(discovered_media(
+                            media_source_config::Provider::Fnos(FnosMediaSourceConfig {
+                                server_id: server_id.clone(),
+                                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto
+                                    as i32,
+                                source: Some(fnos_media_source_config::Source::LibraryItem(
+                                    FnosLibraryItemSourceConfig {
+                                        item_guid: item.guid.clone(),
+                                        media_guid: item.media_guid.clone(),
+                                    },
+                                )),
+                            }),
+                            instance_name.as_deref(),
+                        ))
+                    } else {
+                        None
+                    };
                     MediaItem {
                         guid: item.guid,
                         title,
@@ -298,12 +345,14 @@ impl FnosApiImpl {
                         is_folder,
                         is_playable,
                         favorite: item.is_favorite != 0,
+                        source,
                     }
                 })
                 .collect(),
             total,
             page,
             has_more: u64::from(page).saturating_mul(u64::from(page_size)) < total,
+            source: Some(page_source),
         })
     }
 
@@ -383,7 +432,12 @@ impl FnosApiImpl {
     }
 }
 
-fn file_item(file: synctv_media_providers::fnos::FnosFile) -> FileItem {
+fn file_item(
+    file: synctv_media_providers::fnos::FnosFile,
+    server_id: &str,
+    provider_instance_name: Option<&str>,
+) -> FileItem {
+    let source = fnos_file_source(server_id, &file.path, file.is_dir, provider_instance_name);
     FileItem {
         name: file.name,
         path: file.path,
@@ -392,7 +446,78 @@ fn file_item(file: synctv_media_providers::fnos::FnosFile) -> FileItem {
         created_at: file.created_at,
         is_dir: file.is_dir,
         storage_id: file.storage_id,
+        source: Some(source),
     }
+}
+
+fn fnos_file_source(
+    server_id: &str,
+    path: &str,
+    playlist: bool,
+    provider_instance_name: Option<&str>,
+) -> synctv_proto::providers::common::DiscoveredSource {
+    if playlist {
+        discovered_playlist(
+            playlist_source_config::Provider::Fnos(FnosPlaylistSourceConfig {
+                server_id: server_id.to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+                source: Some(fnos_playlist_source_config::Source::Files(
+                    FnosFilesPlaylistSourceConfig {
+                        path: path.to_string(),
+                    },
+                )),
+            }),
+            provider_instance_name,
+        )
+    } else {
+        discovered_media(
+            media_source_config::Provider::Fnos(FnosMediaSourceConfig {
+                server_id: server_id.to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+                source: Some(fnos_media_source_config::Source::File(
+                    FnosFileSourceConfig {
+                        path: path.to_string(),
+                    },
+                )),
+            }),
+            provider_instance_name,
+        )
+    }
+}
+
+fn fnos_media_playlist_source(
+    server_id: &str,
+    collection: MediaCollection,
+    ancestor_guid: Option<&str>,
+    media_types: &[String],
+    provider_instance_name: Option<&str>,
+) -> synctv_proto::providers::common::DiscoveredSource {
+    let source = match collection {
+        MediaCollection::Favorites => {
+            fnos_playlist_source_config::Source::Favorites(FnosFavoritesPlaylistSourceConfig {
+                media_types: media_types.to_vec(),
+            })
+        }
+        MediaCollection::History => {
+            fnos_playlist_source_config::Source::History(FnosHistoryPlaylistSourceConfig {})
+        }
+        MediaCollection::Library | MediaCollection::Unspecified => {
+            fnos_playlist_source_config::Source::MediaLibrary(
+                FnosMediaLibraryPlaylistSourceConfig {
+                    ancestor_guid: ancestor_guid.map(str::to_string),
+                    media_types: media_types.to_vec(),
+                },
+            )
+        }
+    };
+    discovered_playlist(
+        playlist_source_config::Provider::Fnos(FnosPlaylistSourceConfig {
+            server_id: server_id.to_string(),
+            proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+            source: Some(source),
+        }),
+        provider_instance_name,
+    )
 }
 
 fn media_item_matches_search(

@@ -13,6 +13,7 @@ pub(super) async fn execute_provider_bilibili(command: ProviderBilibiliCommand) 
                     request: Some(synctv_proto::providers::bilibili::ParseRequest {
                         url: args.url,
                         instance_name: provider_service_instance_name(&args.instance),
+                        shared: false,
                     }),
                 }
             )?;
@@ -159,7 +160,8 @@ pub(crate) async fn execute_bilibili_live_areas(
         bilibili_list_live_areas,
         BilibiliListLiveAreasRequest,
         synctv_proto::providers::bilibili::ListLiveAreasRequest {
-            instance_name: provider_service_instance_name(&args.instance)
+            instance_name: provider_service_instance_name(&args.instance),
+            shared: false
         }
     )
 }
@@ -172,7 +174,8 @@ pub(crate) async fn execute_bilibili_favorite_folders(
         bilibili_list_favorite_folders,
         BilibiliListFavoriteFoldersRequest,
         synctv_proto::providers::bilibili::ListFavoriteFoldersRequest {
-            instance_name: provider_service_instance_name(&args.instance)
+            instance_name: provider_service_instance_name(&args.instance),
+            shared: false
         }
     )
 }
@@ -188,7 +191,8 @@ pub(crate) async fn execute_bilibili_followed_pgc(
             instance_name: provider_service_instance_name(&args.instance),
             r#type: args.r#type.to_proto(),
             page: args.page,
-            page_size: args.page_size
+            page_size: args.page_size,
+            shared: false
         }
     )
 }
@@ -202,7 +206,8 @@ pub(crate) async fn execute_bilibili_history(args: ProviderBilibiliHistoryArgs) 
             r#type: args.r#type.to_proto(),
             cursor: args.cursor,
             page_size: args.page_size,
-            instance_name: provider_service_instance_name(&args.instance)
+            instance_name: provider_service_instance_name(&args.instance),
+            shared: false
         }
     )
 }
@@ -218,7 +223,8 @@ pub(crate) async fn execute_bilibili_pgc_timeline(
             r#type: args.r#type.to_proto(),
             before_days: args.before_days,
             after_days: args.after_days,
-            instance_name: provider_service_instance_name(&args.instance)
+            instance_name: provider_service_instance_name(&args.instance),
+            shared: false
         }
     )
 }
@@ -240,7 +246,8 @@ pub(crate) async fn execute_bilibili_pgc_seasons(
             area: args.area,
             year: args.year,
             style_id: args.style_id,
-            instance_name: provider_service_instance_name(&args.instance)
+            instance_name: provider_service_instance_name(&args.instance),
+            shared: false
         }
     )
 }

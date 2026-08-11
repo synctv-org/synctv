@@ -12,6 +12,7 @@ fn alist_playlist_source_config(path: impl Into<String>) -> PlaylistSourceConfig
         server_id: "alist-server".to_string(),
         path: path.into(),
         password: None,
+        proxy_mode: crate::models::PlaybackProxyMode::Auto,
     })
 }
 

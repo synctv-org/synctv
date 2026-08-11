@@ -5,8 +5,8 @@ use reqwest::{Client, Method, RequestBuilder, Response};
 use url::Url;
 
 use super::types::{
-    AuthTokenResponse, DirectoryItem, SeafileAccount, SeafileFileInfo, SeafileItem, SeafileList,
-    SeafileRepository, SeafileServerInfo, SearchResponse, StarredResponse,
+    AuthTokenResponse, DirectoryResponse, SeafileAccount, SeafileFileInfo, SeafileItem,
+    SeafileList, SeafileRepository, SeafileServerInfo, SearchResponse, StarredResponse,
 };
 use crate::{check_response, fetch_json, ProviderClientError, PROVIDER_USER_AGENT};
 
@@ -147,7 +147,7 @@ impl SeafileClient {
         page: u64,
         page_size: u32,
     ) -> Result<SeafileList, ProviderClientError> {
-        let directory: Vec<DirectoryItem> = fetch_json(
+        let directory = fetch_json::<DirectoryResponse>(
             self.authenticated(
                 Method::GET,
                 &format!("/api/v2.1/repos/{repository_id}/dir/"),
@@ -159,7 +159,8 @@ impl SeafileClient {
                 ("thumbnail_size", Cow::Borrowed("640")),
             ]),
         )
-        .await?;
+        .await?
+        .into_items();
         let parent = normalize_path(path).into_owned();
         let items = directory
             .into_iter()
@@ -504,5 +505,37 @@ mod tests {
         assert_eq!(download.path(), "/seafhttp/file");
         assert_eq!(info.object_id, "file-id");
         assert!(info.can_preview);
+    }
+
+    #[tokio::test]
+    async fn list_accepts_current_seafile_directory_envelope() {
+        crate::install_process_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2.1/repos/repo-id/dir/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "user_perm": "rw",
+                "dirent_list": [{
+                    "type": "file",
+                    "id": "file-id",
+                    "name": "Movie.mp4",
+                    "mtime": 1720000000,
+                    "size": 42,
+                    "permission": "rw"
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = SeafileClient::with_http_client(&server.uri(), Client::new())
+            .expect("test operation should succeed");
+        let list = client
+            .list("token", "repo-id", "/Movies", 1, 50)
+            .await
+            .expect("test operation should succeed");
+
+        assert_eq!(list.items.len(), 1);
+        assert_eq!(list.items[0].name, "Movie.mp4");
+        assert_eq!(list.items[0].path, "/Movies/Movie.mp4");
     }
 }

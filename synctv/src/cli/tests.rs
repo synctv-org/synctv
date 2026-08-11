@@ -33,8 +33,7 @@ fn direct_url_media_source_config(
                 synctv_proto::source_config::DirectUrlMediaSourceConfig {
                     playback_kind: None,
                     duration_seconds: None,
-                    prefer_proxy: None,
-                    proxy_only: None,
+                    proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                     medias: vec![synctv_proto::source_config::DirectUrlMediaResourceConfig {
                         name: String::new(),
                         url: url.to_string(),
@@ -63,6 +62,7 @@ fn alist_playlist_source_config(
                     server_id: "alist-main".to_string(),
                     path: path.to_string(),
                     password: None,
+                    proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 },
             ),
         ),

@@ -1060,6 +1060,7 @@ pub fn media_source_config_to_proto(
             Provider::Cloudreve(source_config_proto::CloudreveMediaSourceConfig {
                 server_id: config.server_id,
                 path: config.path,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
             })
         }
         synctv_core::models::MediaSourceConfig::Twitch(config) => {
@@ -1140,6 +1141,7 @@ pub fn media_source_config_to_proto(
         synctv_core::models::MediaSourceConfig::Fnos(config) => {
             Provider::Fnos(source_config_proto::FnosMediaSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 source: Some(match config.source {
                     synctv_core::models::FnosMediaSource::File { path } => {
                         source_config_proto::fnos_media_source_config::Source::File(
@@ -1162,11 +1164,13 @@ pub fn media_source_config_to_proto(
             Provider::Qnap(source_config_proto::QnapMediaSourceConfig {
                 server_id: config.server_id,
                 path: config.path,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
             })
         }
         synctv_core::models::MediaSourceConfig::Synology(config) => {
             Provider::Synology(source_config_proto::SynologyMediaSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 source: Some(match config.source {
                     synctv_core::models::SynologyMediaSource::File { path } => {
                         source_config_proto::synology_media_source_config::Source::File(
@@ -1192,6 +1196,7 @@ pub fn media_source_config_to_proto(
                 server_id: config.server_id,
                 path: config.path,
                 file_id: config.file_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
             })
         }
         synctv_core::models::MediaSourceConfig::Seafile(config) => {
@@ -1201,12 +1206,14 @@ pub fn media_source_config_to_proto(
                 path: config.path,
                 object_id: config.object_id,
                 has_thumbnail: config.has_thumbnail,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
             })
         }
         synctv_core::models::MediaSourceConfig::TrueNas(config) => {
             Provider::Truenas(source_config_proto::TrueNasMediaSourceConfig {
                 server_id: config.server_id,
                 path: config.path,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
             })
         }
     };
@@ -1235,6 +1242,7 @@ pub fn playlist_source_config_to_proto(
             Provider::Cloudreve(source_config_proto::CloudrevePlaylistSourceConfig {
                 server_id: config.server_id,
                 path: config.path,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
             })
         }
         synctv_core::models::PlaylistSourceConfig::Twitch(config) => {
@@ -1352,6 +1360,7 @@ pub fn playlist_source_config_to_proto(
         synctv_core::models::PlaylistSourceConfig::Fnos(config) => {
             Provider::Fnos(source_config_proto::FnosPlaylistSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 source: Some(match config.source {
                     synctv_core::models::FnosPlaylistSource::Files { path } => {
                         source_config_proto::fnos_playlist_source_config::Source::Files(
@@ -1384,11 +1393,13 @@ pub fn playlist_source_config_to_proto(
             Provider::Qnap(source_config_proto::QnapPlaylistSourceConfig {
                 server_id: config.server_id,
                 path: config.path,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
             })
         }
         synctv_core::models::PlaylistSourceConfig::Synology(config) => {
             Provider::Synology(source_config_proto::SynologyPlaylistSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 source: Some(match config.source {
                     synctv_core::models::SynologyPlaylistSource::Files { path } => {
                         source_config_proto::synology_playlist_source_config::Source::Files(
@@ -1434,6 +1445,7 @@ pub fn playlist_source_config_to_proto(
         synctv_core::models::PlaylistSourceConfig::Nextcloud(config) => {
             Provider::Nextcloud(source_config_proto::NextcloudPlaylistSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 source: Some(match config.source {
                     synctv_core::models::NextcloudPlaylistSource::Folder { path } => {
                         source_config_proto::nextcloud_playlist_source_config::Source::Folder(
@@ -1459,6 +1471,7 @@ pub fn playlist_source_config_to_proto(
         synctv_core::models::PlaylistSourceConfig::Seafile(config) => {
             Provider::Seafile(source_config_proto::SeafilePlaylistSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 source: Some(match config.source {
                     synctv_core::models::SeafilePlaylistSource::Folder {
                         repository_id,
@@ -1489,6 +1502,7 @@ pub fn playlist_source_config_to_proto(
         synctv_core::models::PlaylistSourceConfig::TrueNas(config) => {
             Provider::Truenas(source_config_proto::TrueNasPlaylistSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 source: Some(match config.source {
                     synctv_core::models::TrueNasPlaylistSource::Folder { path } => {
                         source_config_proto::true_nas_playlist_source_config::Source::Folder(
@@ -1553,6 +1567,20 @@ fn optional_index_to_proto(index: Option<usize>) -> Option<u32> {
     index.and_then(|index| u32::try_from(index).ok())
 }
 
+const fn playback_proxy_mode_to_proto(mode: synctv_core::models::PlaybackProxyMode) -> i32 {
+    match mode {
+        synctv_core::models::PlaybackProxyMode::Auto => {
+            source_config_proto::PlaybackProxyMode::Auto as i32
+        }
+        synctv_core::models::PlaybackProxyMode::Prefer => {
+            source_config_proto::PlaybackProxyMode::Prefer as i32
+        }
+        synctv_core::models::PlaybackProxyMode::Only => {
+            source_config_proto::PlaybackProxyMode::Only as i32
+        }
+    }
+}
+
 fn direct_url_media_source_config_to_proto(
     config: synctv_core::models::DirectUrlMediaSourceConfig,
 ) -> source_config_proto::DirectUrlMediaSourceConfig {
@@ -1566,8 +1594,7 @@ fn direct_url_media_source_config_to_proto(
             }
         }),
         duration_seconds: config.duration_seconds,
-        prefer_proxy: config.prefer_proxy,
-        proxy_only: config.proxy_only.then_some(true),
+        proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
         medias: config
             .medias
             .into_iter()
@@ -1612,11 +1639,12 @@ fn direct_url_media_source_config_to_proto(
     }
 }
 
-fn bilibili_media_source_config_to_proto(
+pub(crate) fn bilibili_media_source_config_to_proto(
     config: synctv_core::models::BilibiliMediaSourceConfig,
 ) -> source_config_proto::BilibiliMediaSourceConfig {
     use source_config_proto::bilibili_media_source_config::Source;
 
+    let proxy_mode = config.proxy_mode();
     let source = match config {
         synctv_core::models::BilibiliMediaSourceConfig::Video(config) => {
             Source::Video(source_config_proto::BilibiliVideoSourceConfig {
@@ -1643,10 +1671,11 @@ fn bilibili_media_source_config_to_proto(
 
     source_config_proto::BilibiliMediaSourceConfig {
         source: Some(source),
+        proxy_mode: playback_proxy_mode_to_proto(proxy_mode),
     }
 }
 
-fn bilibili_playlist_source_config_to_proto(
+pub(crate) fn bilibili_playlist_source_config_to_proto(
     config: synctv_core::models::BilibiliPlaylistSourceConfig,
 ) -> source_config_proto::BilibiliPlaylistSourceConfig {
     use source_config_proto::bilibili_playlist_source_config::Source;
@@ -1737,6 +1766,7 @@ fn bilibili_playlist_source_config_to_proto(
     source_config_proto::BilibiliPlaylistSourceConfig {
         source: Some(source),
         shared: config.shared,
+        proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
     }
 }
 
@@ -1747,6 +1777,7 @@ fn alist_media_source_config_to_proto(
         server_id: config.server_id,
         path: config.path,
         password: config.password,
+        proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
     }
 }
 
@@ -1757,6 +1788,7 @@ fn alist_playlist_source_config_to_proto(
         server_id: config.server_id,
         path: config.path,
         password: config.password,
+        proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
     }
 }
 
@@ -1766,6 +1798,7 @@ fn emby_media_source_config_to_proto(
     source_config_proto::EmbyMediaSourceConfig {
         server_id: config.server_id,
         item_id: config.item_id,
+        proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
     }
 }
 
@@ -1823,6 +1856,7 @@ fn emby_playlist_source_config_to_proto(
     source_config_proto::EmbyPlaylistSourceConfig {
         server_id: config.server_id,
         source: Some(source),
+        proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
     }
 }
 
@@ -3775,11 +3809,12 @@ fn playback_media_headers_for_proto(
 ) -> std::collections::HashMap<String, String> {
     use synctv_core::models::media::{
         PlaybackAlistMedia, PlaybackBilibiliMedia, PlaybackCloudreveMedia, PlaybackDirectUrlMedia,
-        PlaybackEmbyMedia, PlaybackMediaProvider,
+        PlaybackEmbyMedia, PlaybackFnosMedia, PlaybackMediaProvider, PlaybackNextcloudMedia,
+        PlaybackQnapMedia, PlaybackSeafileMedia, PlaybackSynologyMedia, PlaybackTrueNasMedia,
     };
 
     match &media.provider {
-        PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia { headers, .. })
+        PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct { headers, .. })
         | PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct { headers, .. })
         | PlaybackMediaProvider::Bilibili(
             PlaybackBilibiliMedia::Direct { headers, .. }
@@ -3787,7 +3822,15 @@ fn playback_media_headers_for_proto(
             | PlaybackBilibiliMedia::DurlManifest { headers, .. },
         )
         | PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct { headers, .. })
-        | PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct { headers, .. }) => headers.clone(),
+        | PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct { headers, .. })
+        | PlaybackMediaProvider::Fnos(PlaybackFnosMedia::Direct { headers, .. })
+        | PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Direct { headers, .. })
+        | PlaybackMediaProvider::Synology(PlaybackSynologyMedia::Direct { headers, .. })
+        | PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Direct { headers, .. })
+        | PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Direct { headers, .. })
+        | PlaybackMediaProvider::TrueNas(PlaybackTrueNasMedia::Direct { headers, .. }) => {
+            headers.clone()
+        }
         _ => std::collections::HashMap::new(),
     }
 }
@@ -3911,11 +3954,19 @@ fn playback_media_url(
     };
 
     let (provider, version, expires_at, path, resource) = match &media.provider {
-        PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia { url, .. })
+        PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct { url, .. })
         | PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct { url, .. })
         | PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct { url, .. })
         | PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct { url, .. })
         | PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct { url, .. }) => {
+            return Ok((url.clone(), None));
+        }
+        PlaybackMediaProvider::Fnos(PlaybackFnosMedia::Direct { url, .. })
+        | PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Direct { url, .. })
+        | PlaybackMediaProvider::Synology(PlaybackSynologyMedia::Direct { url, .. })
+        | PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Direct { url, .. })
+        | PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Direct { url, .. })
+        | PlaybackMediaProvider::TrueNas(PlaybackTrueNasMedia::Direct { url, .. }) => {
             return Ok((url.clone(), None));
         }
         PlaybackMediaProvider::Alist(PlaybackAlistMedia::ProxyFile {
@@ -3931,6 +3982,32 @@ fn playback_media_url(
             "files",
             mode_name,
             *url_index,
+        ),
+        PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::ProxyStream {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+        }) => versioned_indexed_resource(
+            synctv_core::provider::CloudreveProvider::NAME,
+            version,
+            *expires_at,
+            "resources",
+            mode_name,
+            *media_index,
+        ),
+        PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::ProxyHlsManifest {
+            version,
+            expires_at,
+            mode_name,
+            media_index,
+        }) => versioned_indexed_resource(
+            synctv_core::provider::CloudreveProvider::NAME,
+            version,
+            *expires_at,
+            "hls-manifests",
+            mode_name,
+            *media_index,
         ),
         PlaybackMediaProvider::Alist(PlaybackAlistMedia::ProxyTranscodedHlsManifest {
             version,
@@ -4449,14 +4526,16 @@ fn playback_subtitle_url(
     signing: Option<&PlaybackHttpSigningContext<'_>>,
 ) -> Result<String, crate::impls::ApiError> {
     use synctv_core::models::media::{
-        PlaybackAlistSubtitle, PlaybackBilibiliSubtitle, PlaybackDirectUrlSubtitle,
-        PlaybackEmbySubtitle, PlaybackFnosSubtitle, PlaybackNextcloudSubtitle,
-        PlaybackQnapSubtitle, PlaybackSeafileSubtitle, PlaybackSubtitleProvider,
-        PlaybackSynologySubtitle, PlaybackTikTokSubtitle, PlaybackTrueNasSubtitle,
-        PlaybackYoutubeSubtitle,
+        PlaybackAlistSubtitle, PlaybackBilibiliSubtitle, PlaybackCloudreveSubtitle,
+        PlaybackDirectUrlSubtitle, PlaybackEmbySubtitle, PlaybackFnosSubtitle,
+        PlaybackNextcloudSubtitle, PlaybackQnapSubtitle, PlaybackSeafileSubtitle,
+        PlaybackSubtitleProvider, PlaybackSynologySubtitle, PlaybackTikTokSubtitle,
+        PlaybackTrueNasSubtitle, PlaybackYoutubeSubtitle,
     };
     let (provider, version, expires_at, mode_name, subtitle_index) = match &subtitle.provider {
-        PlaybackSubtitleProvider::Cloudreve(subtitle) => return Ok(subtitle.url.clone()),
+        PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Direct { url, .. }) => {
+            return Ok(url.clone());
+        }
         PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle::Refresh { url, .. })
         | PlaybackSubtitleProvider::Bilibili(PlaybackBilibiliSubtitle::Direct { url, .. })
         | PlaybackSubtitleProvider::DirectUrl(PlaybackDirectUrlSubtitle::Direct { url, .. })
@@ -4471,6 +4550,18 @@ fn playback_subtitle_url(
             subtitle_index,
             ..
         }) => ("alist", version, *expires_at, mode_name, *subtitle_index),
+        PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Proxy {
+            version,
+            expires_at,
+            mode_name,
+            subtitle_index,
+        }) => (
+            synctv_core::provider::CloudreveProvider::NAME,
+            version,
+            *expires_at,
+            mode_name,
+            *subtitle_index,
+        ),
         PlaybackSubtitleProvider::Bilibili(PlaybackBilibiliSubtitle::Proxy {
             version,
             expires_at,

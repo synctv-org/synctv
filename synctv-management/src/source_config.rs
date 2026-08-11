@@ -29,6 +29,7 @@ fn alist_media_config(
         server_id: trimmed_required("server_id", server_id)?,
         path: trimmed_required("path", path)?,
         password: optional_trimmed(password),
+        proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
     })
 }
 
@@ -58,6 +59,7 @@ pub(crate) fn alist_playlist_source_config(
                     server_id: trimmed_required("server_id", server_id)?,
                     path: trimmed_required("path", path)?,
                     password: optional_trimmed(password),
+                    proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 },
             ),
         ),
@@ -74,6 +76,7 @@ pub(crate) fn emby_media_source_config(
                 EmbyMediaSourceConfig {
                     server_id: trimmed_required("server_id", server_id)?,
                     item_id: trimmed_required("item_id", item_id)?,
+                    proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 },
             ),
         ),
@@ -96,6 +99,7 @@ pub(crate) fn emby_playlist_source_config(
                             },
                         ),
                     ),
+                    proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 },
             ),
         ),
@@ -127,6 +131,7 @@ pub(crate) fn bilibili_video_source_config(
                             shared,
                         },
                     )),
+                    proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 },
             ),
         ),
@@ -151,6 +156,7 @@ pub(crate) fn bilibili_pgc_source_config(
                     source: Some(bilibili_media_source_config::Source::Pgc(
                         BilibiliPgcSourceConfig { epid, cid, shared },
                     )),
+                    proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 },
             ),
         ),
@@ -174,6 +180,7 @@ pub(crate) fn bilibili_live_source_config(
                             shared,
                         },
                     )),
+                    proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 },
             ),
         ),

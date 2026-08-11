@@ -9,4 +9,5 @@ service YoutubeProviderService {
   rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
   rpc Unbind(UnbindRequest) returns (UnbindResponse);
   rpc Resolve(ResolveRequest) returns (ResolveResponse);
+  rpc List(ListRequest) returns (ListResponse);
 }

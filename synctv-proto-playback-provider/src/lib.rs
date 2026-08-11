@@ -66,6 +66,19 @@ pub mod playback_provider {
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[allow(clippy::pedantic)]
+    pub mod cloudreve {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.cloudreve.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.cloudreve.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
     pub mod alist {
         include!(concat!(
             env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
@@ -338,8 +351,7 @@ mod tests {
                         default_danmaku_index: None,
                         playback_kind: None,
                         duration_seconds: None,
-                        prefer_proxy: None,
-                        proxy_only: None,
+                        proxy_mode: crate::source_config::PlaybackProxyMode::Auto as i32,
                     },
                 ),
             ),
@@ -351,6 +363,7 @@ mod tests {
             provider: Some(crate::source_config::media_source_config::Provider::Alist(
                 crate::source_config::AlistMediaSourceConfig {
                     server_id: "alist-main".to_string(),
+                    proxy_mode: crate::source_config::PlaybackProxyMode::Auto as i32,
                     path: path.to_string(),
                     password: None,
                 },
@@ -364,6 +377,7 @@ mod tests {
                 crate::source_config::playlist_source_config::Provider::Alist(
                     crate::source_config::AlistPlaylistSourceConfig {
                         server_id: "alist-main".to_string(),
+                        proxy_mode: crate::source_config::PlaybackProxyMode::Auto as i32,
                         path: path.to_string(),
                         password: None,
                     },

@@ -33,13 +33,16 @@ impl ManagementServiceImpl {
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let mode = provider_request.mode();
         let response = map_classified_result(
             self.emby_api
                 .list(
                     &actor_user_id,
                     EmbyListQuery {
                         server_id: provider_request.server_id,
-                        path: provider_request.path,
+                        mode,
+                        target_id: provider_request.target_id,
+                        item_types: provider_request.item_types,
                         start_index: provider_request.start_index,
                         limit: provider_request.limit,
                         search_term: provider_request.search_term,

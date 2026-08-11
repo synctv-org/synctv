@@ -128,8 +128,7 @@ impl EncryptedCredentialValue {
 #[serde(
     tag = "type",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 enum StoredProviderCredential {
     #[serde(rename = "bilibili")]

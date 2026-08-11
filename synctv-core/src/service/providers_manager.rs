@@ -212,6 +212,12 @@ impl ProvidersManager {
         &self.instance_manager
     }
 
+    /// Return the global SSRF policy used by all built-in providers.
+    #[must_use]
+    pub fn ssrf_guard(&self) -> synctv_common::ssrf::SsrfGuard {
+        self.ssrf_guard.clone()
+    }
+
     /// Register all built-in provider factories
     fn register_builtin_providers(&mut self) {
         let default_client_manager = Arc::clone(&self.default_client_manager);

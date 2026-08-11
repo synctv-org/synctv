@@ -6,8 +6,9 @@ fn youtube_services_and_source_variants_are_registered() {
     let provider = synctv_proto::PROVIDERS_DESCRIPTOR_POOL
         .get_service_by_name("synctv.provider.youtube.YoutubeProviderService")
         .expect("YouTube provider service descriptor");
-    assert_eq!(provider.methods().count(), 4);
+    assert_eq!(provider.methods().count(), 5);
     assert!(provider.methods().any(|method| method.name() == "Resolve"));
+    assert!(provider.methods().any(|method| method.name() == "List"));
     let playback = synctv_proto::PLAYBACK_PROVIDER_DESCRIPTOR_POOL
         .get_service_by_name("synctv.playback_provider.youtube.YoutubePlaybackProviderService")
         .expect("YouTube playback provider service descriptor");

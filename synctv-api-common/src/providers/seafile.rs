@@ -9,9 +9,17 @@ use synctv_proto::providers::seafile::{
     ListStarredRequest, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
     UnlockLibraryRequest, UnlockLibraryResponse,
 };
+use synctv_proto::source_config::{
+    media_source_config, playlist_source_config, seafile_playlist_source_config,
+    SeafileFolderPlaylistSourceConfig, SeafileMediaSourceConfig, SeafilePlaylistSourceConfig,
+    SeafileStarredPlaylistSourceConfig,
+};
 use synctv_realtime::fanout::RealtimeEventService;
 
-use super::{publish_provider_credential_changed, resolve_bound_instance_name};
+use super::{
+    discovered_media, discovered_playlist, publish_provider_credential_changed,
+    resolve_bound_instance_name,
+};
 
 #[derive(Clone)]
 pub struct SeafileApiImpl {
@@ -90,8 +98,14 @@ impl SeafileApiImpl {
                 req.page_size.clamp(1, 200) as usize,
             )
             .await?;
-        resolve_bound_instance_name(requested_instance_name, stored.as_deref())?;
-        Ok(list_response(response))
+        let instance_name =
+            resolve_bound_instance_name(requested_instance_name, stored.as_deref())?;
+        Ok(list_response(
+            response,
+            &req.server_id,
+            None,
+            instance_name.as_deref(),
+        ))
     }
 
     pub async fn list(
@@ -113,8 +127,23 @@ impl SeafileApiImpl {
                 search: req.search.as_deref(),
             })
             .await?;
-        resolve_bound_instance_name(requested_instance_name, stored.as_deref())?;
-        Ok(list_response(response))
+        let instance_name =
+            resolve_bound_instance_name(requested_instance_name, stored.as_deref())?;
+        Ok(list_response(
+            response,
+            &req.server_id,
+            Some(SeafilePlaylistSourceConfig {
+                server_id: req.server_id.clone(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+                source: Some(seafile_playlist_source_config::Source::Folder(
+                    SeafileFolderPlaylistSourceConfig {
+                        repository_id: req.repository_id,
+                        path: req.path,
+                    },
+                )),
+            }),
+            instance_name.as_deref(),
+        ))
     }
 
     pub async fn list_starred(
@@ -133,8 +162,20 @@ impl SeafileApiImpl {
                 req.page_size.clamp(1, 200) as usize,
             )
             .await?;
-        resolve_bound_instance_name(requested_instance_name, stored.as_deref())?;
-        Ok(list_response(response))
+        let instance_name =
+            resolve_bound_instance_name(requested_instance_name, stored.as_deref())?;
+        Ok(list_response(
+            response,
+            &req.server_id,
+            Some(SeafilePlaylistSourceConfig {
+                server_id: req.server_id.clone(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+                source: Some(seafile_playlist_source_config::Source::Starred(
+                    SeafileStarredPlaylistSourceConfig {},
+                )),
+            }),
+            instance_name.as_deref(),
+        ))
     }
 
     pub async fn logout(
@@ -204,30 +245,71 @@ fn page(value: u64) -> Result<usize, ProviderError> {
         .map_err(|_| ProviderError::InvalidConfig("Seafile page exceeds usize::MAX".to_string()))
 }
 
-fn list_response(response: synctv_core::provider::SeafileListResponse) -> ListResponse {
+fn list_response(
+    response: synctv_core::provider::SeafileListResponse,
+    server_id: &str,
+    playlist_source: Option<SeafilePlaylistSourceConfig>,
+    provider_instance_name: Option<&str>,
+) -> ListResponse {
     ListResponse {
         content: response
             .content
             .into_iter()
-            .map(|item| FileItem {
-                repository_id: item.repository_id,
-                repository_name: item.repository_name,
-                path: item.path,
-                name: item.name,
-                object_id: item.object_id,
-                is_dir: item.is_directory,
-                size: item.size,
-                modified_at: item.modified_at,
-                permission: item.permission,
-                modifier_name: item.modifier_name,
-                starred: item.starred,
-                has_thumbnail: item.has_thumbnail,
-                repository_encrypted: item.repository_encrypted,
-                password_required: item.password_required,
+            .map(|item| {
+                let source = if item.is_directory {
+                    discovered_playlist(
+                        playlist_source_config::Provider::Seafile(SeafilePlaylistSourceConfig {
+                            server_id: server_id.to_string(),
+                            proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+                            source: Some(seafile_playlist_source_config::Source::Folder(
+                                SeafileFolderPlaylistSourceConfig {
+                                    repository_id: item.repository_id.clone(),
+                                    path: item.path.clone(),
+                                },
+                            )),
+                        }),
+                        provider_instance_name,
+                    )
+                } else {
+                    discovered_media(
+                        media_source_config::Provider::Seafile(SeafileMediaSourceConfig {
+                            server_id: server_id.to_string(),
+                            proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+                            repository_id: item.repository_id.clone(),
+                            path: item.path.clone(),
+                            object_id: item.object_id.clone(),
+                            has_thumbnail: item.has_thumbnail,
+                        }),
+                        provider_instance_name,
+                    )
+                };
+                FileItem {
+                    repository_id: item.repository_id,
+                    repository_name: item.repository_name,
+                    path: item.path,
+                    name: item.name,
+                    object_id: item.object_id,
+                    is_dir: item.is_directory,
+                    size: item.size,
+                    modified_at: item.modified_at,
+                    permission: item.permission,
+                    modifier_name: item.modifier_name,
+                    starred: item.starred,
+                    has_thumbnail: item.has_thumbnail,
+                    repository_encrypted: item.repository_encrypted,
+                    password_required: item.password_required,
+                    source: Some(source),
+                }
             })
             .collect(),
         total: response.total,
         page: response.page as u64,
         has_more: response.has_more,
+        source: playlist_source.map(|source| {
+            discovered_playlist(
+                playlist_source_config::Provider::Seafile(source),
+                provider_instance_name,
+            )
+        }),
     }
 }

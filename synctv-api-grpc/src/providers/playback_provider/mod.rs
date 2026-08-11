@@ -10,6 +10,7 @@ use synctv_api_common::impls::{ApiError, EndpointRateLimitCategory};
 pub(crate) mod alist;
 pub(crate) mod bilibili;
 pub(crate) mod cctv;
+pub(crate) mod cloudreve;
 pub(crate) mod direct_url;
 pub(crate) mod douyin;
 pub(crate) mod douyu;

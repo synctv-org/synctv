@@ -936,6 +936,10 @@ mod websocket_e2e {
             Arc::new(synctv_core::service::DirectUrlPlaybackProviderService::new(
                 playback_provider_deps.clone(),
             ));
+        let cloudreve_playback_provider_service =
+            Arc::new(synctv_core::service::CloudrevePlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
         let emby_playback_provider_service = Arc::new(
             synctv_core::service::EmbyPlaybackProviderService::new(playback_provider_deps.clone()),
         );
@@ -1203,6 +1207,7 @@ mod websocket_e2e {
             alist_playback_provider_service,
             bilibili_playback_provider_service,
             direct_url_playback_provider_service,
+            cloudreve_playback_provider_service,
             emby_playback_provider_service,
             rtmp_playback_provider_service,
             live_proxy_playback_provider_service,

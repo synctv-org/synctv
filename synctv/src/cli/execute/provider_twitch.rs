@@ -61,6 +61,7 @@ pub(super) async fn execute_provider_twitch(command: ProviderTwitchCommand) -> R
                     request: Some(synctv_proto::providers::twitch::ResolveRequest {
                         resource: args.resource,
                         instance_name: provider_service_instance_name(&args.instance),
+                        shared: false,
                     }),
                 }
             )?;
@@ -75,11 +76,12 @@ pub(super) async fn execute_provider_twitch(command: ProviderTwitchCommand) -> R
                 management_proto::TwitchListChannelItemsRequest {
                     actor: Some(actor_user_id),
                     request: Some(synctv_proto::providers::twitch::ListChannelItemsRequest {
-                        channel: args.channel,
+                        resource: args.channel,
                         content: args.content.to_proto(),
                         cursor: args.cursor,
                         page_size: args.page_size,
                         instance_name: provider_service_instance_name(&args.instance),
+                        shared: false,
                     }),
                 }
             )?;
@@ -105,7 +107,8 @@ pub(crate) async fn execute_twitch_followed_live(
         synctv_proto::providers::twitch::ListFollowedLiveRequest {
             cursor: args.cursor,
             page_size: args.page_size,
-            instance_name: provider_service_instance_name(&args.instance)
+            instance_name: provider_service_instance_name(&args.instance),
+            shared: false
         }
     )
 }
@@ -122,7 +125,8 @@ pub(crate) async fn execute_twitch_category_streams(
             category_name: args.category_name,
             cursor: args.cursor,
             page_size: args.page_size,
-            instance_name: provider_service_instance_name(&args.instance)
+            instance_name: provider_service_instance_name(&args.instance),
+            shared: false
         }
     )
 }
@@ -137,7 +141,8 @@ pub(crate) async fn execute_twitch_top_categories(
         synctv_proto::providers::twitch::ListTopCategoriesRequest {
             cursor: args.cursor,
             page_size: args.page_size,
-            instance_name: provider_service_instance_name(&args.instance)
+            instance_name: provider_service_instance_name(&args.instance),
+            shared: false
         }
     )
 }
@@ -151,7 +156,8 @@ pub(crate) async fn execute_twitch_search_live(args: ProviderTwitchSearchLiveArg
             query: args.query,
             cursor: args.cursor,
             page_size: args.page_size,
-            instance_name: provider_service_instance_name(&args.instance)
+            instance_name: provider_service_instance_name(&args.instance),
+            shared: false
         }
     )
 }
@@ -165,7 +171,8 @@ pub(crate) async fn execute_twitch_schedule(args: ProviderTwitchScheduleArgs) ->
             broadcaster_id: args.broadcaster_id,
             cursor: args.cursor,
             page_size: args.page_size,
-            instance_name: provider_service_instance_name(&args.instance)
+            instance_name: provider_service_instance_name(&args.instance),
+            shared: false
         }
     )
 }

@@ -132,6 +132,7 @@ service ManagementService {
     rpc YoutubeGetBinds(YoutubeGetBindsRequest) returns (synctv.provider.youtube.GetBindsResponse);
     rpc YoutubeUnbind(YoutubeUnbindRequest) returns (synctv.provider.youtube.UnbindResponse);
     rpc YoutubeResolve(YoutubeResolveRequest) returns (synctv.provider.youtube.ResolveResponse);
+    rpc YoutubeList(YoutubeListRequest) returns (synctv.provider.youtube.ListResponse);
     rpc CloudreveLogin(CloudreveLoginRequest) returns (synctv.provider.cloudreve.LoginResponse);
     rpc CloudreveList(CloudreveListRequest) returns (synctv.provider.cloudreve.ListResponse);
     rpc CloudreveSearch(CloudreveSearchRequest) returns (synctv.provider.cloudreve.SearchResponse);
@@ -181,6 +182,7 @@ service ManagementService {
     rpc TruenasLogout(TruenasLogoutRequest) returns (synctv.provider.truenas.LogoutResponse);
     rpc TruenasGetBinds(TruenasGetBindsRequest) returns (synctv.provider.truenas.GetBindsResponse);
     rpc BilibiliListLiveAreas(BilibiliListLiveAreasRequest) returns (synctv.provider.bilibili.ListLiveAreasResponse);
+    rpc BilibiliListPlaylist(BilibiliListPlaylistRequest) returns (synctv.provider.bilibili.ListPlaylistResponse);
     rpc BilibiliListFavoriteFolders(BilibiliListFavoriteFoldersRequest) returns (synctv.provider.bilibili.ListFavoriteFoldersResponse);
     rpc BilibiliListFollowedPgc(BilibiliListFollowedPgcRequest) returns (synctv.provider.bilibili.ListFollowedPgcResponse);
     rpc BilibiliListHistory(BilibiliListHistoryRequest) returns (synctv.provider.bilibili.ListHistoryResponse);
@@ -290,6 +292,11 @@ message YoutubeUnbindRequest {
 message YoutubeResolveRequest {
     UserRef actor = 1;
     synctv.provider.youtube.ResolveRequest request = 2;
+}
+
+message YoutubeListRequest {
+    UserRef actor = 1;
+    synctv.provider.youtube.ListRequest request = 2;
 }
 
 message CloudreveLoginRequest {
@@ -535,6 +542,11 @@ message TruenasGetBindsRequest {
 message BilibiliListLiveAreasRequest {
     UserRef actor = 1;
     synctv.provider.bilibili.ListLiveAreasRequest request = 2;
+}
+
+message BilibiliListPlaylistRequest {
+    UserRef actor = 1;
+    synctv.provider.bilibili.ListPlaylistRequest request = 2;
 }
 
 message BilibiliListFavoriteFoldersRequest {

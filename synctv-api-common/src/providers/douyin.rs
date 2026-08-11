@@ -11,7 +11,10 @@ use synctv_proto::providers::douyin::{
 };
 use synctv_realtime::fanout::RealtimeEventService;
 
-use super::{provider_instance_name_for_response, publish_provider_credential_changed};
+use super::{
+    discovery::{discovered_media, discovered_playlist},
+    provider_instance_name_for_response, publish_provider_credential_changed,
+};
 
 #[derive(Clone)]
 pub struct DouyinApiImpl {
@@ -109,7 +112,7 @@ impl DouyinApiImpl {
             .provider
             .resolve_for_user(user_id, &req.resource, instance_name)
             .await?;
-        Ok(resolve_response(media))
+        Ok(resolve_response(media, req.shared, instance_name))
     }
 
     pub async fn list_user_posts(
@@ -129,24 +132,37 @@ impl DouyinApiImpl {
             )
             .await?;
         Ok(ListUserPostsResponse {
-            items: page.items.into_iter().map(list_item).collect(),
+            items: page
+                .items
+                .into_iter()
+                .map(|item| list_item(item, req.shared, instance_name))
+                .collect(),
             cursor: page.cursor,
             has_more: page.has_more,
-            source_config: Some(synctv_proto::source_config::DouyinPlaylistSourceConfig {
-                sec_uid: req.sec_uid,
-                shared: false,
-            }),
+            source: Some(discovered_playlist(
+                synctv_proto::source_config::playlist_source_config::Provider::Douyin(
+                    synctv_proto::source_config::DouyinPlaylistSourceConfig {
+                        sec_uid: req.sec_uid,
+                        shared: req.shared,
+                    },
+                ),
+                instance_name,
+            )),
         })
     }
 }
 
-fn resolve_response(media: DouyinMedia) -> ResolveResponse {
+fn resolve_response(
+    media: DouyinMedia,
+    shared: bool,
+    provider_instance_name: Option<&str>,
+) -> ResolveResponse {
     let source = match &media.resource {
         synctv_media_providers::douyin::DouyinResource::Video { aweme_id } => {
             synctv_proto::source_config::douyin_media_source_config::Source::Video(
                 synctv_proto::source_config::DouyinVideoSourceConfig {
                     aweme_id: aweme_id.clone(),
-                    shared: false,
+                    shared,
                 },
             )
         }
@@ -154,7 +170,7 @@ fn resolve_response(media: DouyinMedia) -> ResolveResponse {
             synctv_proto::source_config::douyin_media_source_config::Source::Live(
                 synctv_proto::source_config::DouyinLiveSourceConfig {
                     web_rid: web_rid.clone(),
-                    shared: false,
+                    shared,
                 },
             )
         }
@@ -207,13 +223,37 @@ fn resolve_response(media: DouyinMedia) -> ResolveResponse {
                 headers_required: variant.headers_required,
             })
             .collect(),
-        source_config: Some(synctv_proto::source_config::DouyinMediaSourceConfig {
-            source: Some(source),
-        }),
+        source: Some(discovered_media(
+            synctv_proto::source_config::media_source_config::Provider::Douyin(
+                synctv_proto::source_config::DouyinMediaSourceConfig {
+                    source: Some(source),
+                },
+            ),
+            provider_instance_name,
+        )),
     }
 }
 
-fn list_item(item: DouyinListItem) -> proto::ListItem {
+fn list_item(
+    item: DouyinListItem,
+    shared: bool,
+    provider_instance_name: Option<&str>,
+) -> proto::ListItem {
+    let source = discovered_media(
+        synctv_proto::source_config::media_source_config::Provider::Douyin(
+            synctv_proto::source_config::DouyinMediaSourceConfig {
+                source: Some(
+                    synctv_proto::source_config::douyin_media_source_config::Source::Video(
+                        synctv_proto::source_config::DouyinVideoSourceConfig {
+                            aweme_id: item.aweme_id.clone(),
+                            shared,
+                        },
+                    ),
+                ),
+            },
+        ),
+        provider_instance_name,
+    );
     proto::ListItem {
         aweme_id: item.aweme_id,
         title: item.title,
@@ -221,6 +261,7 @@ fn list_item(item: DouyinListItem) -> proto::ListItem {
         cover: item.cover.map(image),
         duration_ms: item.duration_ms,
         created_at: item.created_at,
+        source: Some(source),
     }
 }
 

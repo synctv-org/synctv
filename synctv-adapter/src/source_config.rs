@@ -25,10 +25,10 @@ pub fn media_source_config_from_proto(
             bilibili_media_source_config_from_proto(config)?,
         ),
         Provider::Alist(config) => synctv_core::models::MediaSourceConfig::Alist(
-            alist_media_source_config_from_proto(config),
+            alist_media_source_config_from_proto(config)?,
         ),
         Provider::Emby(config) => synctv_core::models::MediaSourceConfig::Emby(
-            emby_media_source_config_from_proto(config),
+            emby_media_source_config_from_proto(config)?,
         ),
         Provider::Rtmp(config) => synctv_core::models::MediaSourceConfig::Rtmp(
             synctv_core::models::RtmpMediaSourceConfig {
@@ -42,6 +42,7 @@ pub fn media_source_config_from_proto(
             synctv_core::models::CloudreveMediaSourceConfig {
                 server_id: config.server_id,
                 path: config.path,
+                proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
             },
         ),
         Provider::Twitch(config) => synctv_core::models::MediaSourceConfig::Twitch(
@@ -108,6 +109,7 @@ pub fn media_source_config_from_proto(
         Provider::Fnos(config) => synctv_core::models::MediaSourceConfig::Fnos(
             synctv_core::models::FnosMediaSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
                 source: match config
                     .source
                     .ok_or_else(|| invalid_source_config("FNOS media source is required"))?
@@ -128,11 +130,13 @@ pub fn media_source_config_from_proto(
             synctv_core::models::QnapMediaSourceConfig {
                 server_id: config.server_id,
                 path: config.path,
+                proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
             },
         ),
         Provider::Synology(config) => synctv_core::models::MediaSourceConfig::Synology(
             synctv_core::models::SynologyMediaSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
                 source: match config
                     .source
                     .ok_or_else(|| invalid_source_config("Synology media source is required"))?
@@ -155,6 +159,7 @@ pub fn media_source_config_from_proto(
                 server_id: config.server_id,
                 path: config.path,
                 file_id: config.file_id,
+                proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
             },
         ),
         Provider::Seafile(config) => synctv_core::models::MediaSourceConfig::Seafile(
@@ -164,12 +169,14 @@ pub fn media_source_config_from_proto(
                 path: config.path,
                 object_id: config.object_id,
                 has_thumbnail: config.has_thumbnail,
+                proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
             },
         ),
         Provider::Truenas(config) => synctv_core::models::MediaSourceConfig::TrueNas(
             synctv_core::models::TrueNasMediaSourceConfig {
                 server_id: config.server_id,
                 path: config.path,
+                proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
             },
         ),
     };
@@ -193,7 +200,7 @@ pub fn playlist_source_config_from_proto(
             bilibili_playlist_source_config_from_proto(config)?,
         ),
         Provider::Alist(config) => synctv_core::models::PlaylistSourceConfig::Alist(
-            alist_playlist_source_config_from_proto(config),
+            alist_playlist_source_config_from_proto(config)?,
         ),
         Provider::Emby(config) => synctv_core::models::PlaylistSourceConfig::Emby(
             emby_playlist_source_config_from_proto(config)?,
@@ -202,6 +209,7 @@ pub fn playlist_source_config_from_proto(
             synctv_core::models::CloudrevePlaylistSourceConfig {
                 server_id: config.server_id,
                 path: config.path,
+                proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
             },
         ),
         Provider::Twitch(config) => {
@@ -310,6 +318,7 @@ pub fn playlist_source_config_from_proto(
         Provider::Fnos(config) => synctv_core::models::PlaylistSourceConfig::Fnos(
             synctv_core::models::FnosPlaylistSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
                 source: match config
                     .source
                     .ok_or_else(|| invalid_source_config("FNOS playlist source is required"))?
@@ -338,11 +347,13 @@ pub fn playlist_source_config_from_proto(
             synctv_core::models::QnapPlaylistSourceConfig {
                 server_id: config.server_id,
                 path: config.path,
+                proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
             },
         ),
         Provider::Synology(config) => synctv_core::models::PlaylistSourceConfig::Synology(
             synctv_core::models::SynologyPlaylistSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
                 source: match config
                     .source
                     .ok_or_else(|| invalid_source_config("Synology playlist source is required"))?
@@ -382,6 +393,7 @@ pub fn playlist_source_config_from_proto(
         Provider::Nextcloud(config) => synctv_core::models::PlaylistSourceConfig::Nextcloud(
             synctv_core::models::NextcloudPlaylistSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
                 source: match config
                     .source
                     .ok_or_else(|| invalid_source_config("Nextcloud playlist source is required"))?
@@ -404,6 +416,7 @@ pub fn playlist_source_config_from_proto(
         Provider::Seafile(config) => synctv_core::models::PlaylistSourceConfig::Seafile(
             synctv_core::models::SeafilePlaylistSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
                 source: match config
                     .source
                     .ok_or_else(|| invalid_source_config("Seafile playlist source is required"))?
@@ -429,6 +442,7 @@ pub fn playlist_source_config_from_proto(
         Provider::Truenas(config) => synctv_core::models::PlaylistSourceConfig::TrueNas(
             synctv_core::models::TrueNasPlaylistSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
                 source: match config
                     .source
                     .ok_or_else(|| invalid_source_config("TrueNAS playlist source is required"))?
@@ -561,8 +575,7 @@ fn direct_url_media_source_config_from_proto(
             })
             .transpose()?,
         duration_seconds: config.duration_seconds,
-        prefer_proxy: config.prefer_proxy,
-        proxy_only: config.proxy_only == Some(true),
+        proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
         medias: config
             .medias
             .into_iter()
@@ -623,6 +636,7 @@ fn bilibili_media_source_config_from_proto(
     config: source_config_proto::BilibiliMediaSourceConfig,
 ) -> AdapterResult<synctv_core::models::BilibiliMediaSourceConfig> {
     use source_config_proto::bilibili_media_source_config::Source;
+    let proxy_mode = playback_proxy_mode_from_proto(config.proxy_mode)?;
     match config
         .source
         .ok_or_else(|| invalid_source_config("bilibili source_config source is required"))?
@@ -633,6 +647,7 @@ fn bilibili_media_source_config_from_proto(
                 aid: video.aid,
                 cid: video.cid,
                 shared: video.shared,
+                proxy_mode,
             },
         )),
         Source::Pgc(pgc) => Ok(synctv_core::models::BilibiliMediaSourceConfig::Pgc(
@@ -640,12 +655,14 @@ fn bilibili_media_source_config_from_proto(
                 epid: pgc.epid,
                 cid: pgc.cid,
                 shared: pgc.shared,
+                proxy_mode,
             },
         )),
         Source::Live(live) => Ok(synctv_core::models::BilibiliMediaSourceConfig::Live(
             synctv_core::models::BilibiliLiveSourceConfig {
                 room_id: live.room_id,
                 shared: live.shared,
+                proxy_mode,
             },
         )),
     }
@@ -738,36 +755,40 @@ fn bilibili_playlist_source_config_from_proto(
     Ok(synctv_core::models::BilibiliPlaylistSourceConfig {
         source,
         shared: config.shared,
+        proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
     })
 }
 
 fn alist_media_source_config_from_proto(
     config: source_config_proto::AlistMediaSourceConfig,
-) -> synctv_core::models::AlistMediaSourceConfig {
-    synctv_core::models::AlistMediaSourceConfig {
+) -> AdapterResult<synctv_core::models::AlistMediaSourceConfig> {
+    Ok(synctv_core::models::AlistMediaSourceConfig {
         server_id: config.server_id,
         path: config.path,
         password: config.password,
-    }
+        proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
+    })
 }
 
 fn alist_playlist_source_config_from_proto(
     config: source_config_proto::AlistPlaylistSourceConfig,
-) -> synctv_core::models::AlistPlaylistSourceConfig {
-    synctv_core::models::AlistPlaylistSourceConfig {
+) -> AdapterResult<synctv_core::models::AlistPlaylistSourceConfig> {
+    Ok(synctv_core::models::AlistPlaylistSourceConfig {
         server_id: config.server_id,
         path: config.path,
         password: config.password,
-    }
+        proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
+    })
 }
 
 fn emby_media_source_config_from_proto(
     config: source_config_proto::EmbyMediaSourceConfig,
-) -> synctv_core::models::EmbyMediaSourceConfig {
-    synctv_core::models::EmbyMediaSourceConfig {
+) -> AdapterResult<synctv_core::models::EmbyMediaSourceConfig> {
+    Ok(synctv_core::models::EmbyMediaSourceConfig {
         server_id: config.server_id,
         item_id: config.item_id,
-    }
+        proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
+    })
 }
 
 fn emby_playlist_source_config_from_proto(
@@ -811,7 +832,26 @@ fn emby_playlist_source_config_from_proto(
     Ok(synctv_core::models::EmbyPlaylistSourceConfig {
         server_id: config.server_id,
         source,
+        proxy_mode: playback_proxy_mode_from_proto(config.proxy_mode)?,
     })
+}
+
+fn playback_proxy_mode_from_proto(
+    mode: i32,
+) -> AdapterResult<synctv_core::models::PlaybackProxyMode> {
+    match source_config_proto::PlaybackProxyMode::try_from(mode)
+        .map_err(|_| invalid_source_config("playback proxy mode is invalid"))?
+    {
+        source_config_proto::PlaybackProxyMode::Auto => {
+            Ok(synctv_core::models::PlaybackProxyMode::Auto)
+        }
+        source_config_proto::PlaybackProxyMode::Prefer => {
+            Ok(synctv_core::models::PlaybackProxyMode::Prefer)
+        }
+        source_config_proto::PlaybackProxyMode::Only => {
+            Ok(synctv_core::models::PlaybackProxyMode::Only)
+        }
+    }
 }
 
 fn live_proxy_media_source_config_from_proto(

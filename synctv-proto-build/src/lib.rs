@@ -91,7 +91,7 @@ const PROVIDER_PBJSON_PREFIXES: [&str; 20] = [
     ".synctv.provider.truenas",
 ];
 
-const PLAYBACK_PROVIDER_PROTO_FILES: [&str; 21] = [
+const PLAYBACK_PROVIDER_PROTO_FILES: [&str; 22] = [
     "proto/playback_provider/common.proto",
     "proto/playback_provider/direct_url.proto",
     "proto/playback_provider/alist.proto",
@@ -110,6 +110,7 @@ const PLAYBACK_PROVIDER_PROTO_FILES: [&str; 21] = [
     "proto/playback_provider/fnos.proto",
     "proto/playback_provider/qnap.proto",
     "proto/playback_provider/synology.proto",
+    "proto/playback_provider/cloudreve.proto",
     "proto/playback_provider/nextcloud.proto",
     "proto/playback_provider/seafile.proto",
     "proto/playback_provider/truenas.proto",
@@ -691,7 +692,11 @@ fn strict_generated_line(line: &str) -> String {
     )
 }
 
-fn strict_pbjson_serde_source(source: &str, json_name_aliases: &[(String, String)]) -> String {
+fn strict_pbjson_serde_source(
+    source: &str,
+    json_name_aliases: &[(String, String)],
+    ignore_unknown_fields: bool,
+) -> String {
     let lines: Vec<&str> = source.lines().collect();
     let mut output = Vec::with_capacity(lines.len());
     let mut index = 0;
@@ -740,11 +745,37 @@ fn strict_pbjson_serde_source(source: &str, json_name_aliases: &[(String, String
             continue;
         }
 
-        if let Some(strict_line) = strict_generated_field_match_alias(line) {
-            output.push(strict_line);
-        } else {
-            output.push(strict_generated_line(line));
+        let mut generated_line =
+            strict_generated_field_match_alias(line).unwrap_or_else(|| strict_generated_line(line));
+        if ignore_unknown_fields {
+            if generated_line.trim() == "enum GeneratedField {" {
+                let indent = generated_line
+                    [..generated_line.len() - generated_line.trim_start().len()]
+                    .to_string();
+                output.push(generated_line);
+                output.push(format!("{indent}    __Ignore,"));
+                index += 1;
+                continue;
+            }
+            generated_line = generated_line.replace(
+                "Err(serde::de::Error::unknown_field(value, FIELDS))",
+                "Ok(GeneratedField::__Ignore)",
+            );
+            if generated_line.trim() == "match k {" {
+                let indent = generated_line
+                    [..generated_line.len() - generated_line.trim_start().len()]
+                    .to_string();
+                output.push(generated_line);
+                output.push(format!("{indent}    GeneratedField::__Ignore => {{"));
+                output.push(format!(
+                    "{indent}        let _ = map_.next_value::<serde::de::IgnoredAny>()?;"
+                ));
+                output.push(format!("{indent}    }}"));
+                index += 1;
+                continue;
+            }
         }
+        output.push(generated_line);
         index += 1;
     }
 
@@ -807,7 +838,9 @@ fn stricten_pbjson_serde_files(out_dir: &Path) -> io::Result<()> {
         }
 
         let source = fs::read_to_string(&path)?;
-        let strict_source = strict_pbjson_serde_source(&source, &json_name_aliases);
+        let ignore_unknown_fields = file_name == "synctv.source_config.serde.rs";
+        let strict_source =
+            strict_pbjson_serde_source(&source, &json_name_aliases, ignore_unknown_fields);
         if strict_source != source {
             fs::write(&path, &strict_source)?;
         }

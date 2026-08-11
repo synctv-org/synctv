@@ -21,9 +21,13 @@ impl CctvRuntime for ManagementCctvRuntime {
         request: cctv_proto::ResolveRequest,
     ) -> Result<cctv_proto::ResolveResponse, ProviderError> {
         let resource = request.resource;
-        self.inner
-            .resolve_resource(&resource)
-            .await
-            .map(|media| synctv_api::providers::cctv::resolve_response(media, resource))
+        let instance_name = request.instance_name;
+        self.inner.resolve_resource(&resource).await.map(|media| {
+            synctv_api::providers::cctv::resolve_response(
+                media,
+                resource,
+                (!instance_name.is_empty()).then_some(instance_name.as_str()),
+            )
+        })
     }
 }

@@ -20,6 +20,7 @@ fn fnos_source_config_uses_provider_specific_messages() {
         provider: Some(media_source_config::Provider::Fnos(
             synctv_proto::source_config::FnosMediaSourceConfig {
                 server_id: "server".to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 source: Some(
                     synctv_proto::source_config::fnos_media_source_config::Source::File(
                         synctv_proto::source_config::FnosFileSourceConfig {
@@ -34,6 +35,7 @@ fn fnos_source_config_uses_provider_specific_messages() {
         provider: Some(playlist_source_config::Provider::Fnos(
             synctv_proto::source_config::FnosPlaylistSourceConfig {
                 server_id: "server".to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 source: Some(
                     synctv_proto::source_config::fnos_playlist_source_config::Source::Files(
                         synctv_proto::source_config::FnosFilesPlaylistSourceConfig {

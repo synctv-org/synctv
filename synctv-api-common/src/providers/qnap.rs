@@ -6,11 +6,14 @@ use synctv_proto::providers::qnap::{
     BindInfo, FileItem, GetBindsResponse, GetCapabilitiesRequest, GetCapabilitiesResponse,
     ListRequest, ListResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
 };
+use synctv_proto::source_config::{
+    media_source_config, playlist_source_config, QnapMediaSourceConfig, QnapPlaylistSourceConfig,
+};
 use synctv_realtime::fanout::RealtimeEventService;
 
 use super::{
-    provider_instance_name_for_response, publish_provider_credential_changed,
-    resolve_bound_instance_name,
+    discovered_media, discovered_playlist, provider_instance_name_for_response,
+    publish_provider_credential_changed, resolve_bound_instance_name,
 };
 
 #[derive(Clone)]
@@ -81,25 +84,41 @@ impl QnapApiImpl {
                 req.search.as_deref(),
             )
             .await?;
-        resolve_bound_instance_name(requested_instance_name, stored_instance_name.as_deref())?;
+        let instance_name =
+            resolve_bound_instance_name(requested_instance_name, stored_instance_name.as_deref())?;
         Ok(ListResponse {
             content: response
                 .content
                 .into_iter()
-                .map(|item| FileItem {
-                    name: item.name,
-                    path: item.path,
-                    is_dir: item.is_dir,
-                    size: item.size,
-                    modified_at: item.modified_at,
-                    file_type: item.file_type,
-                    pre_transcoded_heights: item.pre_transcoded_heights,
+                .map(|item| {
+                    let source = qnap_source(
+                        &req.server_id,
+                        &item.path,
+                        item.is_dir,
+                        instance_name.as_deref(),
+                    );
+                    FileItem {
+                        name: item.name,
+                        path: item.path,
+                        is_dir: item.is_dir,
+                        size: item.size,
+                        modified_at: item.modified_at,
+                        file_type: item.file_type,
+                        pre_transcoded_heights: item.pre_transcoded_heights,
+                        source: Some(source),
+                    }
                 })
                 .collect(),
             total: response.total,
             page: u64::try_from(response.page).unwrap_or(u64::MAX),
             has_more: response.has_more,
             realtime_transcode: response.realtime_transcode,
+            source: Some(qnap_source(
+                &req.server_id,
+                &req.path,
+                true,
+                instance_name.as_deref(),
+            )),
         })
     }
 
@@ -178,5 +197,32 @@ impl QnapApiImpl {
         self.provider
             .thumbnail_action(credential_owner_id, server_id, path, size)
             .await
+    }
+}
+
+fn qnap_source(
+    server_id: &str,
+    path: &str,
+    playlist: bool,
+    provider_instance_name: Option<&str>,
+) -> synctv_proto::providers::common::DiscoveredSource {
+    if playlist {
+        discovered_playlist(
+            playlist_source_config::Provider::Qnap(QnapPlaylistSourceConfig {
+                server_id: server_id.to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+                path: path.to_string(),
+            }),
+            provider_instance_name,
+        )
+    } else {
+        discovered_media(
+            media_source_config::Provider::Qnap(QnapMediaSourceConfig {
+                server_id: server_id.to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+                path: path.to_string(),
+            }),
+            provider_instance_name,
+        )
     }
 }

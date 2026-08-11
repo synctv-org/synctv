@@ -619,6 +619,10 @@ pub enum AlistPlaybackSubtitleLocator {
     rename_all_fields = "camelCase"
 )]
 pub enum PlaybackTrueNasMedia {
+    Direct {
+        url: String,
+        headers: HashMap<String, String>,
+    },
     Refresh {
         credential_owner_id: String,
         server_id: String,
@@ -642,6 +646,10 @@ pub enum PlaybackTrueNasMedia {
     rename_all_fields = "camelCase"
 )]
 pub enum PlaybackSeafileMedia {
+    Direct {
+        url: String,
+        headers: HashMap<String, String>,
+    },
     Refresh {
         credential_owner_id: String,
         server_id: String,
@@ -669,6 +677,10 @@ pub enum PlaybackSeafileMedia {
     rename_all_fields = "camelCase"
 )]
 pub enum PlaybackNextcloudMedia {
+    Direct {
+        url: String,
+        headers: HashMap<String, String>,
+    },
     Refresh {
         credential_owner_id: String,
         server_id: String,
@@ -694,6 +706,10 @@ pub enum PlaybackNextcloudMedia {
     rename_all_fields = "camelCase"
 )]
 pub enum PlaybackSynologyMedia {
+    Direct {
+        url: String,
+        headers: HashMap<String, String>,
+    },
     Refresh {
         credential_owner_id: String,
         server_id: String,
@@ -744,6 +760,10 @@ pub enum SynologyPlaybackProfile {
     rename_all_fields = "camelCase"
 )]
 pub enum PlaybackFnosMedia {
+    Direct {
+        url: String,
+        headers: HashMap<String, String>,
+    },
     FileRefresh {
         credential_owner_id: String,
         server_id: String,
@@ -811,6 +831,10 @@ pub struct FnosTranscodeResource {
     rename_all_fields = "camelCase"
 )]
 pub enum PlaybackQnapMedia {
+    Direct {
+        url: String,
+        headers: HashMap<String, String>,
+    },
     Refresh {
         credential_owner_id: String,
         server_id: String,
@@ -984,11 +1008,29 @@ pub enum HuyaPlaybackFormat {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlaybackCloudreveMedia {
-    pub url: String,
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub headers: std::collections::HashMap<String, String>,
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackCloudreveMedia {
+    Direct {
+        url: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
+    ProxyStream {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+    },
+    ProxyHlsManifest {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        media_index: usize,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1420,13 +1462,25 @@ pub enum PlaybackTikTokSubtitle {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlaybackCloudreveSubtitle {
-    pub url: String,
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub headers: std::collections::HashMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expire_at: Option<chrono::DateTime<chrono::Utc>>,
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackCloudreveSubtitle {
+    Direct {
+        url: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expire_at: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    Proxy {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        subtitle_index: usize,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2890,7 +2944,9 @@ impl PlaybackMedia {
     #[must_use]
     pub fn direct_url(&self) -> Option<&str> {
         match &self.provider {
-            PlaybackMediaProvider::Cloudreve(media) => Some(&media.url),
+            PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct { url, .. }) => {
+                Some(url)
+            }
             PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct { url, .. })
             | PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct { url, .. })
             | PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct { url, .. }) => Some(url),
@@ -2904,7 +2960,9 @@ impl PlaybackMedia {
     #[must_use]
     pub fn upstream_url(&self) -> Option<&str> {
         match &self.provider {
-            PlaybackMediaProvider::Cloudreve(media) => Some(&media.url),
+            PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct { url, .. }) => {
+                Some(url)
+            }
             PlaybackMediaProvider::Alist(
                 PlaybackAlistMedia::Direct { url, .. }
                 | PlaybackAlistMedia::ProxyFile { url, .. }
@@ -2933,7 +2991,9 @@ impl PlaybackMedia {
     #[must_use]
     pub fn upstream_headers(&self) -> std::collections::HashMap<String, String> {
         match &self.provider {
-            PlaybackMediaProvider::Cloudreve(media) => media.headers.clone(),
+            PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct {
+                headers, ..
+            }) => headers.clone(),
             PlaybackMediaProvider::Alist(
                 PlaybackAlistMedia::Direct { headers, .. }
                 | PlaybackAlistMedia::ProxyFile { headers, .. }
@@ -2965,7 +3025,7 @@ impl PlaybackMedia {
     pub fn requires_provider_url(&self) -> bool {
         !matches!(
             self.provider,
-            PlaybackMediaProvider::Cloudreve(_)
+            PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct { .. })
                 | PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct { .. })
                 | PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct { .. })
                 | PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct { .. })
@@ -2993,9 +3053,10 @@ impl PlaybackSubtitle {
     #[must_use]
     pub fn expiration_timestamp(&self) -> Option<i64> {
         match &self.provider {
-            PlaybackSubtitleProvider::Cloudreve(subtitle) => {
-                subtitle.expire_at.map(|value| value.timestamp())
-            }
+            PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Direct {
+                expire_at,
+                ..
+            }) => expire_at.map(|value| value.timestamp()),
             PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle::Refresh {
                 expires_at, ..
             }) => *expires_at,
@@ -3040,6 +3101,10 @@ impl PlaybackSubtitle {
             })
             | PlaybackSubtitleProvider::TikTok(PlaybackTikTokSubtitle::Proxy {
                 expires_at, ..
+            })
+            | PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Proxy {
+                expires_at,
+                ..
             }) => Some(*expires_at),
             PlaybackSubtitleProvider::Youtube(PlaybackYoutubeSubtitle::Refresh { .. })
             | PlaybackSubtitleProvider::TikTok(PlaybackTikTokSubtitle::Refresh { .. }) => None,
@@ -3049,7 +3114,9 @@ impl PlaybackSubtitle {
     #[must_use]
     pub fn upstream_url(&self) -> &str {
         match &self.provider {
-            PlaybackSubtitleProvider::Cloudreve(subtitle) => &subtitle.url,
+            PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Direct {
+                url, ..
+            }) => url,
             PlaybackSubtitleProvider::Alist(
                 PlaybackAlistSubtitle::Refresh { url, .. }
                 | PlaybackAlistSubtitle::Proxy { url, .. },
@@ -3093,13 +3160,20 @@ impl PlaybackSubtitle {
             PlaybackSubtitleProvider::TikTok(PlaybackTikTokSubtitle::Proxy { version, .. }) => {
                 version
             }
+            PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Proxy {
+                version,
+                ..
+            }) => version,
         }
     }
 
     #[must_use]
     pub fn upstream_headers(&self) -> std::collections::HashMap<String, String> {
         match &self.provider {
-            PlaybackSubtitleProvider::Cloudreve(subtitle) => subtitle.headers.clone(),
+            PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Direct {
+                headers,
+                ..
+            }) => headers.clone(),
             PlaybackSubtitleProvider::Alist(
                 PlaybackAlistSubtitle::Refresh { headers, .. }
                 | PlaybackAlistSubtitle::Proxy { headers, .. },
@@ -3120,7 +3194,8 @@ impl PlaybackSubtitle {
                 PlaybackFnosSubtitle::Direct { headers, .. }
                 | PlaybackFnosSubtitle::Proxy { headers, .. },
             ) => headers.clone(),
-            PlaybackSubtitleProvider::Qnap(_)
+            PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Proxy { .. })
+            | PlaybackSubtitleProvider::Qnap(_)
             | PlaybackSubtitleProvider::Nextcloud(_)
             | PlaybackSubtitleProvider::Seafile(_)
             | PlaybackSubtitleProvider::TrueNas(_)

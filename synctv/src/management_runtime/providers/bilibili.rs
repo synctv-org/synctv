@@ -34,6 +34,7 @@ impl BilibiliRuntime for ManagementBilibiliRuntime {
         let req = bilibili_proto::ParseRequest {
             url: query.url,
             instance_name: String::new(),
+            shared: query.shared,
         };
         self.inner
             .parse_with_context(caller_user_id, req, instance_name, None)
@@ -149,6 +150,17 @@ impl BilibiliRuntime for ManagementBilibiliRuntime {
         let instance_name = take_instance(&mut request.instance_name);
         self.inner
             .list_live_areas_with_context(request, instance_name.as_deref(), None)
+            .await
+    }
+
+    async fn list_playlist(
+        &self,
+        caller_user_id: &UserId,
+        mut request: bilibili_proto::ListPlaylistRequest,
+    ) -> Result<bilibili_proto::ListPlaylistResponse, ProviderError> {
+        let instance_name = take_instance(&mut request.instance_name);
+        self.inner
+            .list_playlist_with_context(caller_user_id, request, instance_name.as_deref(), None)
             .await
     }
 

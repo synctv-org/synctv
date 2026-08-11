@@ -4,16 +4,36 @@ use url::Url;
 
 use super::{media::SourceProvider, playback::PlaybackKind};
 
-const fn is_false(value: &bool) -> bool {
-    !*value
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PlaybackProxyMode {
+    #[default]
+    Auto,
+    Prefer,
+    Only,
+}
+
+impl PlaybackProxyMode {
+    #[must_use]
+    pub const fn is_auto(&self) -> bool {
+        matches!(self, Self::Auto)
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Prefer => "prefer",
+            Self::Only => "only",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(
     tag = "provider",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum MediaSourceConfig {
     DirectUrl(DirectUrlMediaSourceConfig),
@@ -43,8 +63,7 @@ pub enum MediaSourceConfig {
 #[serde(
     tag = "provider",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum PlaylistSourceConfig {
     Alist(AlistPlaylistSourceConfig),
@@ -64,16 +83,14 @@ pub enum PlaylistSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct DirectUrlMediaSourceConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playback_kind: Option<PlaybackKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_seconds: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prefer_proxy: Option<bool>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub proxy_only: bool,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub medias: Vec<DirectUrlMediaResourceConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -96,8 +113,7 @@ impl DirectUrlMediaSourceConfig {
         Self {
             playback_kind: None,
             duration_seconds: None,
-            prefer_proxy: None,
-            proxy_only: false,
+            proxy_mode: PlaybackProxyMode::Auto,
             medias: vec![DirectUrlMediaResourceConfig {
                 name: String::new(),
                 url,
@@ -144,7 +160,7 @@ impl DirectUrlMediaSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct DirectUrlMediaResourceConfig {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
@@ -204,7 +220,7 @@ pub fn detect_direct_url_format(url: &str) -> &'static str {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct DirectUrlSubtitleSourceConfig {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
@@ -220,7 +236,7 @@ pub struct DirectUrlSubtitleSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct DirectUrlDanmakuSourceConfig {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
@@ -237,8 +253,7 @@ pub struct DirectUrlDanmakuSourceConfig {
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum BilibiliMediaSourceConfig {
     Video(BilibiliVideoSourceConfig),
@@ -246,20 +261,32 @@ pub enum BilibiliMediaSourceConfig {
     Live(BilibiliLiveSourceConfig),
 }
 
+impl BilibiliMediaSourceConfig {
+    #[must_use]
+    pub const fn proxy_mode(&self) -> PlaybackProxyMode {
+        match self {
+            Self::Video(config) => config.proxy_mode,
+            Self::Pgc(config) => config.proxy_mode,
+            Self::Live(config) => config.proxy_mode,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct BilibiliPlaylistSourceConfig {
     pub source: BilibiliPlaylistSource,
     #[serde(default)]
     pub shared: bool,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(
     tag = "type",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum BilibiliPlaylistSource {
     VideoParts {
@@ -323,8 +350,7 @@ pub enum BilibiliPgcTimelineType {
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum HuyaMediaSourceConfig {
     Live { room_id: String },
@@ -332,7 +358,7 @@ pub enum HuyaMediaSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct DouyuMediaSourceConfig {
     pub room: String,
 }
@@ -341,8 +367,7 @@ pub struct DouyuMediaSourceConfig {
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum DouyinMediaSourceConfig {
     Video {
@@ -358,7 +383,7 @@ pub enum DouyinMediaSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct DouyinPlaylistSourceConfig {
     pub sec_uid: String,
     #[serde(default)]
@@ -369,8 +394,7 @@ pub struct DouyinPlaylistSourceConfig {
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum TikTokMediaSourceConfig {
     Video {
@@ -386,7 +410,7 @@ pub enum TikTokMediaSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct TikTokPlaylistSourceConfig {
     pub sec_uid: String,
     #[serde(default)]
@@ -397,8 +421,7 @@ pub struct TikTokPlaylistSourceConfig {
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum AcFunMediaSourceConfig {
     Video {
@@ -415,20 +438,22 @@ pub enum AcFunMediaSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CctvMediaSourceConfig {
     pub resource: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct FnosMediaSourceConfig {
     pub server_id: String,
     pub source: FnosMediaSource,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum FnosMediaSource {
     File {
         path: String,
@@ -441,14 +466,16 @@ pub enum FnosMediaSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct FnosPlaylistSourceConfig {
     pub server_id: String,
     pub source: FnosPlaylistSource,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum FnosPlaylistSource {
     Files {
         path: String,
@@ -467,36 +494,44 @@ pub enum FnosPlaylistSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct QnapMediaSourceConfig {
     pub server_id: String,
     pub path: String,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct QnapPlaylistSourceConfig {
     pub server_id: String,
     pub path: String,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct NextcloudMediaSourceConfig {
     pub server_id: String,
     pub path: String,
     pub file_id: u64,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct NextcloudPlaylistSourceConfig {
     pub server_id: String,
     pub source: NextcloudPlaylistSource,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum NextcloudPlaylistSource {
     Folder { path: String },
     Favorites,
@@ -504,24 +539,28 @@ pub enum NextcloudPlaylistSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SeafileMediaSourceConfig {
     pub server_id: String,
     pub repository_id: String,
     pub path: String,
     pub object_id: String,
     pub has_thumbnail: bool,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SeafilePlaylistSourceConfig {
     pub server_id: String,
     pub source: SeafilePlaylistSource,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum SeafilePlaylistSource {
     Folder {
         repository_id: String,
@@ -535,35 +574,41 @@ pub enum SeafilePlaylistSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct TrueNasMediaSourceConfig {
     pub server_id: String,
     pub path: String,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct TrueNasPlaylistSourceConfig {
     pub server_id: String,
     pub source: TrueNasPlaylistSource,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum TrueNasPlaylistSource {
     Folder { path: String },
     Search { path: String, query: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SynologyMediaSourceConfig {
     pub server_id: String,
     pub source: SynologyMediaSource,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum SynologyMediaSource {
     File {
         path: String,
@@ -585,14 +630,16 @@ pub enum SynologyLibraryItemKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SynologyPlaylistSourceConfig {
     pub server_id: String,
     pub source: SynologyPlaylistSource,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum SynologyPlaylistSource {
     Files { path: String },
     Movies { library_id: i64 },
@@ -603,70 +650,83 @@ pub enum SynologyPlaylistSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct BilibiliVideoSourceConfig {
     pub bvid: Option<String>,
     pub aid: Option<u64>,
     pub cid: u64,
     #[serde(default)]
     pub shared: bool,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct BilibiliPgcSourceConfig {
     pub epid: u64,
     pub cid: u64,
     #[serde(default)]
     pub shared: bool,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct BilibiliLiveSourceConfig {
     pub room_id: u64,
     #[serde(default)]
     pub shared: bool,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct AlistMediaSourceConfig {
     pub path: String,
     #[serde(default)]
     pub password: Option<String>,
     pub server_id: String,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct AlistPlaylistSourceConfig {
     pub path: String,
     #[serde(default)]
     pub password: Option<String>,
     pub server_id: String,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CloudreveMediaSourceConfig {
     pub path: String,
     pub server_id: String,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CloudrevePlaylistSourceConfig {
     pub path: String,
     pub server_id: String,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum TwitchMediaSourceConfig {
     Live {
@@ -699,8 +759,7 @@ pub enum TwitchPlaylistContent {
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum TwitchPlaylistSourceConfig {
     Channel {
@@ -727,7 +786,7 @@ pub enum TwitchPlaylistSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct YoutubeMediaSourceConfig {
     pub video_id: String,
     #[serde(default)]
@@ -738,8 +797,7 @@ pub struct YoutubeMediaSourceConfig {
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum YoutubePlaylistSourceConfig {
     Playlist {
@@ -781,25 +839,28 @@ pub enum YoutubeChannelContent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct EmbyMediaSourceConfig {
     pub item_id: String,
     pub server_id: String,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct EmbyPlaylistSourceConfig {
     pub server_id: String,
     pub source: EmbyPlaylistSource,
+    #[serde(default, skip_serializing_if = "PlaybackProxyMode::is_auto")]
+    pub proxy_mode: PlaybackProxyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(
     tag = "type",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum EmbyPlaylistSource {
     Folder {
@@ -830,14 +891,14 @@ pub enum EmbyPlaylistSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct RtmpMediaSourceConfig {
     #[serde(default)]
     pub mode: RtmpStreamMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct LiveProxyMediaSourceConfig {
     pub source: ExternalLiveSourceConfig,
 }
@@ -846,8 +907,7 @@ pub struct LiveProxyMediaSourceConfig {
 #[serde(
     tag = "protocol",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum ExternalLiveSourceConfig {
     Rtmp {
@@ -883,12 +943,7 @@ pub enum RtspTransport {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(
-    tag = "mode",
-    content = "index",
-    rename_all = "camelCase",
-    deny_unknown_fields
-)]
+#[serde(tag = "mode", content = "index", rename_all = "camelCase")]
 pub enum RtspTrackSelection {
     FirstCompatible,
     Index(u32),
@@ -1026,8 +1081,7 @@ mod tests {
         let config = DirectUrlMediaSourceConfig {
             playback_kind: None,
             duration_seconds: None,
-            prefer_proxy: None,
-            proxy_only: false,
+            proxy_mode: PlaybackProxyMode::Auto,
             medias: vec![
                 DirectUrlMediaResourceConfig {
                     name: "manifest".to_string(),
@@ -1066,14 +1120,36 @@ mod tests {
     }
 
     #[test]
+    fn source_config_json_ignores_unknown_fields_and_legacy_proxy_flags() {
+        let config: MediaSourceConfig = serde_json::from_value(json!({
+            "provider": "directUrl",
+            "preferProxy": true,
+            "proxyOnly": true,
+            "futureField": {"version": 2},
+            "medias": [{
+                "url": "https://example.com/video.mp4",
+                "legacyHeaders": {"X-Legacy": "ignored"}
+            }]
+        }))
+        .expect("source config should ignore unknown persisted fields");
+
+        let MediaSourceConfig::DirectUrl(config) = config else {
+            panic!("expected direct URL source config");
+        };
+        assert_eq!(config.proxy_mode, PlaybackProxyMode::Auto);
+        assert_eq!(config.medias.len(), 1);
+        assert_eq!(config.medias[0].url, "https://example.com/video.mp4");
+        assert!(config.medias[0].headers.is_empty());
+    }
+
+    #[test]
     #[allow(clippy::unreadable_literal)]
     fn media_source_configs_round_trip_provider_storage() {
         media_round_trip(
             &MediaSourceConfig::DirectUrl(DirectUrlMediaSourceConfig {
                 playback_kind: Some(PlaybackKind::Regular),
                 duration_seconds: Some(120.5),
-                prefer_proxy: Some(true),
-                proxy_only: true,
+                proxy_mode: PlaybackProxyMode::Only,
                 medias: vec![DirectUrlMediaResourceConfig {
                     name: "1080p".to_string(),
                     url: "https://example.com/video.mp4".to_string(),
@@ -1104,8 +1180,7 @@ mod tests {
                 "provider": "directUrl",
                 "playbackKind": "regular",
                 "durationSeconds": 120.5,
-                "preferProxy": true,
-                "proxyOnly": true,
+                "proxyMode": "only",
                 "medias": [{
                     "name": "1080p",
                     "url": "https://example.com/video.mp4",
@@ -1138,6 +1213,7 @@ mod tests {
                     aid: None,
                     cid: 42,
                     shared: true,
+                    proxy_mode: PlaybackProxyMode::Auto,
                 },
             )),
             &json!({
@@ -1154,6 +1230,7 @@ mod tests {
                 server_id: "alist-main".to_string(),
                 path: "/movies/demo.mkv".to_string(),
                 password: None,
+                proxy_mode: PlaybackProxyMode::Auto,
             }),
             &json!({
                 "provider": "alist",
@@ -1166,6 +1243,7 @@ mod tests {
             &MediaSourceConfig::Emby(EmbyMediaSourceConfig {
                 server_id: "emby-main".to_string(),
                 item_id: "item-1".to_string(),
+                proxy_mode: PlaybackProxyMode::Auto,
             }),
             &json!({
                 "provider": "emby",
@@ -1211,6 +1289,7 @@ mod tests {
                 server_id: "alist-main".to_string(),
                 path: "/shows".to_string(),
                 password: Some("pw".to_string()),
+                proxy_mode: PlaybackProxyMode::Auto,
             }),
             &json!({
                 "provider": "alist",
@@ -1225,6 +1304,7 @@ mod tests {
                 source: EmbyPlaylistSource::Folder {
                     item_id: "folder-1".to_string(),
                 },
+                proxy_mode: PlaybackProxyMode::Auto,
             }),
             &json!({
                 "provider": "emby",

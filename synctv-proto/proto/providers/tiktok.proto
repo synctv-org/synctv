@@ -4,6 +4,7 @@ package synctv.provider.tiktok;
 
 import "proto/buf/validate/validate.proto";
 import "proto/source_config.proto";
+import "proto/providers/common.proto";
 
 message BindRequest {
   string label = 1 [(buf.validate.field).string.min_len = 1];
@@ -35,6 +36,7 @@ message UnbindResponse { bool removed = 1; }
 message ResolveRequest {
   string resource = 1 [(buf.validate.field).string.min_len = 1];
   string instance_name = 2;
+  bool shared = 3;
 }
 
 message Image {
@@ -110,20 +112,21 @@ message ResolveResponse {
   Metadata metadata = 1;
   optional string room_id = 2;
   repeated Variant variants = 3;
-  synctv.source_config.TikTokMediaSourceConfig source_config = 4;
+  synctv.provider.common.DiscoveredSource source = 4;
 }
 
 message GetUserRequest {
-  string unique_id = 1 [(buf.validate.field).string = {
+  string resource = 1 [(buf.validate.field).string = {
     min_len: 1,
-    max_len: 64
+    max_len: 512
   }];
   string instance_name = 2;
+  bool shared = 3;
 }
 
 message GetUserResponse {
   string sec_uid = 1;
-  synctv.source_config.TikTokPlaylistSourceConfig source_config = 2;
+  synctv.provider.common.DiscoveredSource source = 2;
 }
 
 message ListUserPostsRequest {
@@ -134,6 +137,7 @@ message ListUserPostsRequest {
   optional string cursor = 2;
   uint32 page_size = 3 [(buf.validate.field).uint32.lte = 35];
   string instance_name = 4;
+  bool shared = 5;
 }
 
 message ListItem {
@@ -143,11 +147,12 @@ message ListItem {
   optional Image cover = 4;
   optional uint64 duration_ms = 5;
   optional int64 created_at = 6;
+  synctv.provider.common.DiscoveredSource source = 7;
 }
 
 message ListUserPostsResponse {
   repeated ListItem items = 1;
   optional string cursor = 2;
   bool has_more = 3;
-  synctv.source_config.TikTokPlaylistSourceConfig source_config = 4;
+  synctv.provider.common.DiscoveredSource source = 4;
 }

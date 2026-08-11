@@ -787,6 +787,7 @@ mod tests {
                         server_id: "alist-server".to_string(),
                         path: path.to_string(),
                         password: None,
+                        proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                     },
                 ),
             ),

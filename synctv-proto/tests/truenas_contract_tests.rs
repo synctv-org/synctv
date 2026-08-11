@@ -16,6 +16,7 @@ fn truenas_services_and_source_variants_are_registered() {
         provider: Some(media_source_config::Provider::Truenas(
             synctv_proto::source_config::TrueNasMediaSourceConfig {
                 server_id: "nas-home".to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 path: "/mnt/tank/Movie.mkv".to_string(),
             },
         )),
@@ -24,6 +25,7 @@ fn truenas_services_and_source_variants_are_registered() {
         provider: Some(playlist_source_config::Provider::Truenas(
             synctv_proto::source_config::TrueNasPlaylistSourceConfig {
                 server_id: "nas-home".to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 source: Some(
                     synctv_proto::source_config::true_nas_playlist_source_config::Source::Search(
                         synctv_proto::source_config::TrueNasSearchPlaylistSourceConfig {

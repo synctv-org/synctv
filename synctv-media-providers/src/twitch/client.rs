@@ -81,7 +81,17 @@ impl TwitchClient {
     }
 
     pub fn parse_resource(raw: &str) -> Result<TwitchResource, ProviderClientError> {
-        let url = Url::parse(raw.trim()).map_err(|error| {
+        let raw = raw.trim();
+        let channel = raw.strip_prefix('@').unwrap_or(raw);
+        if valid_channel(channel) {
+            return resource(TwitchResourceKind::Channel, &channel.to_ascii_lowercase());
+        }
+        let normalized = if raw.contains("://") {
+            raw.to_string()
+        } else {
+            format!("https://{raw}")
+        };
+        let url = Url::parse(&normalized).map_err(|error| {
             ProviderClientError::InvalidConfig(format!("invalid Twitch URL: {error}"))
         })?;
         let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
@@ -1121,6 +1131,21 @@ mod tests {
 
     #[test]
     fn parses_channel_video_and_clip_urls() {
+        assert_eq!(
+            TwitchClient::parse_resource("@SyncTV").expect("channel handle should parse"),
+            TwitchResource {
+                kind: TwitchResourceKind::Channel,
+                id: "synctv".to_string(),
+            }
+        );
+        assert_eq!(
+            TwitchClient::parse_resource("twitch.tv/SyncTV")
+                .expect("scheme-less channel URL should parse"),
+            TwitchResource {
+                kind: TwitchResourceKind::Channel,
+                id: "synctv".to_string(),
+            }
+        );
         assert_eq!(
             TwitchClient::parse_resource("https://www.twitch.tv/synctv")
                 .expect("channel should parse"),

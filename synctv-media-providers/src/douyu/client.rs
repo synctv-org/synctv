@@ -118,7 +118,7 @@ impl DouyuClient {
     ) -> Result<DouyuMedia, ProviderClientError> {
         let room_id = self.resolve_room_id(&resource.room, session).await?;
         let metadata = self.metadata_by_id(&room_id, session).await?;
-        let qualities = if metadata.is_live {
+        let qualities = if should_request_playback(&metadata) {
             let data = self
                 .play_data(&room_id, "", 0, DouyuCodec::Hevc, session, false)
                 .await?;
@@ -462,6 +462,10 @@ fn metadata_from(
     }
 }
 
+const fn should_request_playback(metadata: &DouyuMetadata) -> bool {
+    metadata.is_live || metadata.is_replay
+}
+
 fn qualities(data: &PlayData) -> Vec<DouyuQuality> {
     let format = stream_format(&data.rtmp_live);
     let cdns = if data.cdns.is_empty() {
@@ -648,6 +652,27 @@ mod tests {
         };
         assert!(should_retry_transport_auth(&error, 0));
         assert!(!should_retry_transport_auth(&error, 1));
+    }
+
+    #[test]
+    fn live_and_replay_rooms_request_playback_qualities() {
+        let metadata = |is_live, is_replay| DouyuMetadata {
+            room_id: "123".to_string(),
+            title: "Room".to_string(),
+            author: "Anchor".to_string(),
+            category: None,
+            thumbnail_url: None,
+            avatar_url: None,
+            is_live,
+            is_replay,
+            is_vip: false,
+            viewer_count: None,
+            started_at: None,
+        };
+
+        assert!(should_request_playback(&metadata(true, false)));
+        assert!(should_request_playback(&metadata(false, true)));
+        assert!(!should_request_playback(&metadata(false, false)));
     }
 
     #[tokio::test]

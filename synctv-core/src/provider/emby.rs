@@ -527,20 +527,91 @@ fn emby_dynamic_list_request(
     })
 }
 
-fn emby_fs_list_request(req: EmbyListRequest) -> emby_upstream::FsListReq {
-    emby_upstream::FsListReq {
+fn emby_fs_list_request(req: EmbyListRequest) -> Result<emby_upstream::FsListReq, ProviderError> {
+    let source = match req.source {
+        EmbyPlaylistSource::Folder { item_id } => {
+            emby_upstream::fs_list_req::Source::Folder(emby_upstream::EmbyFolderListSource {
+                parent_id: item_id,
+            })
+        }
+        EmbyPlaylistSource::FavoriteItems { item_types } => {
+            emby_upstream::fs_list_req::Source::FavoriteItems(
+                emby_upstream::EmbyFavoriteItemsListSource {
+                    item_types: emby_item_types(&item_types),
+                },
+            )
+        }
+        EmbyPlaylistSource::FavoritePeople => emby_upstream::fs_list_req::Source::FavoritePeople(
+            emby_upstream::EmbyFavoritePeopleListSource {},
+        ),
+        EmbyPlaylistSource::PersonItems {
+            person_id,
+            item_types,
+        } => {
+            if person_id.trim().is_empty() {
+                return Err(ProviderError::InvalidConfig(
+                    "Emby person_id must not be empty".to_string(),
+                ));
+            }
+            emby_upstream::fs_list_req::Source::PersonItems(
+                emby_upstream::EmbyPersonItemsListSource {
+                    person_id,
+                    item_types: emby_item_types(&item_types),
+                },
+            )
+        }
+        EmbyPlaylistSource::ContinueWatching => {
+            emby_upstream::fs_list_req::Source::ContinueWatching(
+                emby_upstream::EmbyContinueWatchingListSource {},
+            )
+        }
+        EmbyPlaylistSource::NextUp => {
+            emby_upstream::fs_list_req::Source::NextUp(emby_upstream::EmbyNextUpListSource {})
+        }
+        EmbyPlaylistSource::RecentlyAdded { item_types } => {
+            emby_upstream::fs_list_req::Source::RecentlyAdded(
+                emby_upstream::EmbyRecentlyAddedListSource {
+                    item_types: emby_item_types(&item_types),
+                },
+            )
+        }
+        EmbyPlaylistSource::Playlists => {
+            emby_upstream::fs_list_req::Source::Playlists(emby_upstream::EmbyPlaylistsListSource {})
+        }
+        EmbyPlaylistSource::Collections => emby_upstream::fs_list_req::Source::Collections(
+            emby_upstream::EmbyCollectionsListSource {},
+        ),
+        EmbyPlaylistSource::Genres { item_types } => {
+            emby_upstream::fs_list_req::Source::Genres(emby_upstream::EmbyGenresListSource {
+                item_types: emby_item_types(&item_types),
+            })
+        }
+        EmbyPlaylistSource::GenreItems {
+            genre_id,
+            item_types,
+        } => {
+            if genre_id.trim().is_empty() {
+                return Err(ProviderError::InvalidConfig(
+                    "Emby genre_id must not be empty".to_string(),
+                ));
+            }
+            emby_upstream::fs_list_req::Source::GenreItems(
+                emby_upstream::EmbyGenreItemsListSource {
+                    genre_id,
+                    item_types: emby_item_types(&item_types),
+                },
+            )
+        }
+    };
+    Ok(emby_upstream::FsListReq {
         host: req.host,
         token: req.token,
         user_id: req.user_id,
-        source: Some(emby_upstream::fs_list_req::Source::Folder(
-            emby_upstream::EmbyFolderListSource {
-                parent_id: req.path,
-            },
-        )),
+        source: Some(source),
         start_index: req.start_index,
         limit: req.limit,
         search_term: req.search_term,
-    }
+    })
 }
 
 fn emby_report_playback_start_request(
@@ -668,7 +739,7 @@ pub struct EmbyBind {
 pub struct EmbyListRequest {
     pub host: String,
     pub token: String,
-    pub path: String,
+    pub source: EmbyPlaylistSource,
     pub start_index: u64,
     pub limit: u64,
     pub search_term: String,
@@ -1071,7 +1142,7 @@ impl EmbyProvider {
             .get_client_with_context(instance_name, request_context)
             .await?;
         let resp = client
-            .fs_list(emby_fs_list_request(req))
+            .fs_list(emby_fs_list_request(req)?)
             .await
             .map_err(ProviderError::from)?;
         Ok(EmbyListResponse {
@@ -1142,6 +1213,7 @@ impl EmbyProvider {
     }
 
     fn emby_list_item_from_item(item: EmbyItem) -> EmbyListItem {
+        let is_folder = Self::item_is_container(&item);
         EmbyListItem {
             name: item.name,
             id: item.id,
@@ -1151,7 +1223,7 @@ impl EmbyProvider {
             series_id: item.series_id,
             season_name: item.season_name,
             season_id: item.season_id,
-            is_folder: item.is_folder,
+            is_folder,
             collection_type: item.collection_type,
             has_thumbnail: item.has_thumbnail,
             description: item.description,
@@ -1215,11 +1287,33 @@ impl EmbyProvider {
     }
 
     fn item_type_from_listing(item: &EmbyItem) -> Option<ItemType> {
-        if item.is_folder {
+        if Self::item_is_container(item) {
             Some(ItemType::Playlist)
         } else {
             Self::playback_kind(&item.item_type).map(|_| ItemType::Media)
         }
+    }
+
+    fn item_is_container(item: &EmbyItem) -> bool {
+        item.is_folder || Self::is_container_type(&item.item_type)
+    }
+
+    fn is_container_type(item_type: &str) -> bool {
+        matches!(
+            item_type.trim().to_ascii_lowercase().as_str(),
+            "aggregatefolder"
+                | "basepluginfolder"
+                | "boxset"
+                | "collectionfolder"
+                | "folder"
+                | "manualplaylistsfolder"
+                | "playlist"
+                | "playlistsfolder"
+                | "season"
+                | "series"
+                | "userrootfolder"
+                | "userview"
+        )
     }
 
     fn playback_kind(item_type: &str) -> Option<EmbyPlaybackKind> {
@@ -1233,10 +1327,15 @@ impl EmbyProvider {
         }
     }
 
-    fn build_next_source_config(server_id: &str, item_id: &str) -> MediaSourceConfig {
+    fn build_next_source_config(
+        server_id: &str,
+        item_id: &str,
+        proxy_mode: crate::models::PlaybackProxyMode,
+    ) -> MediaSourceConfig {
         MediaSourceConfig::Emby(EmbyMediaSourceConfig {
             item_id: item_id.to_string(),
             server_id: server_id.to_string(),
+            proxy_mode,
         })
     }
 
@@ -1316,6 +1415,7 @@ impl EmbyProvider {
             EmbySourceConfig {
                 item_id,
                 server_id: config.server_id.clone(),
+                proxy_mode: config.proxy_mode,
             },
         )
         .await
@@ -1545,6 +1645,7 @@ struct ResolvedEmbyConfig {
 struct EmbySourceConfig {
     item_id: String,
     server_id: String,
+    proxy_mode: crate::models::PlaybackProxyMode,
 }
 
 impl From<EmbyMediaSourceConfig> for EmbySourceConfig {
@@ -1552,6 +1653,7 @@ impl From<EmbyMediaSourceConfig> for EmbySourceConfig {
         Self {
             item_id: config.item_id,
             server_id: config.server_id,
+            proxy_mode: config.proxy_mode,
         }
     }
 }
@@ -1560,6 +1662,7 @@ impl From<EmbyMediaSourceConfig> for EmbySourceConfig {
 struct EmbyPlaylistConfig {
     server_id: String,
     source: EmbyPlaylistSource,
+    proxy_mode: crate::models::PlaybackProxyMode,
 }
 
 impl EmbySourceConfig {
@@ -1579,6 +1682,7 @@ impl EmbyPlaylistConfig {
             crate::models::PlaylistSourceConfig::Emby(config) => Ok(Self {
                 server_id: config.server_id.clone(),
                 source: config.source.clone(),
+                proxy_mode: config.proxy_mode,
             }),
             _ => Err(ProviderError::InvalidConfig(
                 "Emby playlist requires Emby source_config".to_string(),
@@ -1753,13 +1857,17 @@ impl MediaProvider for EmbyProvider {
             &playback_profile_cache_key,
         );
         let cache_ttl = Duration::from_mins(30); // 30 minutes
+        let proxy_mode = config.proxy_mode;
 
         let result = Box::pin(super::cached_versioned_playback_or_fill(
             Self::NAME,
             &cache_key,
             cache_ttl,
             _ctx,
-            mark_emby_playback_resources,
+            |result, version, expires_at| {
+                mark_emby_playback_resources(result, version, expires_at);
+                super::apply_provider_playback_policy(result, proxy_mode, true);
+            },
             || async {
                 self.resolve_from_api(&resolved, _ctx.request_context(), playback_client_profile)
                     .await
@@ -1914,20 +2022,16 @@ impl EmbyProvider {
         // Also clean up active encodings (best effort, do not fail if this errors)
         let delete_req = emby_delete_active_encodings_request(&config, session_id);
 
-        let delete_result = client
-            .delete_active_encodings(delete_req)
-            .await
-            .map(|_| ())
-            .map_err(ProviderError::from);
-
-        match (stop_result, delete_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(stop_error), Ok(())) => Err(stop_error),
-            (Ok(()), Err(delete_error)) => Err(delete_error),
-            (Err(stop_error), Err(delete_error)) => Err(ProviderError::ApiError(format!(
-                "Emby playback stop failed for item {item_id}: report={stop_error}; cleanup={delete_error}"
-            ))),
+        if let Err(error) = client.delete_active_encodings(delete_req).await {
+            tracing::debug!(
+                error = %error,
+                session_id = %session_id,
+                item_id = %item_id,
+                "Emby active encoding cleanup was unavailable"
+            );
         }
+
+        stop_result
     }
 
     async fn report_playback_progress(
@@ -2010,6 +2114,7 @@ impl ProviderPlaybackSessionLifecycle for EmbyProvider {
         let source_config = MediaSourceConfig::Emby(EmbyMediaSourceConfig {
             item_id: session.item_id.clone(),
             server_id: session.server_id.clone(),
+            proxy_mode: crate::models::PlaybackProxyMode::Auto,
         });
         if !paused && !session.start_reported {
             self.report_playback_start(ctx, &session.play_session_id, &source_config)
@@ -2041,6 +2146,7 @@ impl ProviderPlaybackSessionLifecycle for EmbyProvider {
         let source_config = MediaSourceConfig::Emby(EmbyMediaSourceConfig {
             item_id: session.item_id.clone(),
             server_id: session.server_id.clone(),
+            proxy_mode: crate::models::PlaybackProxyMode::Auto,
         });
         self.report_playback_stop(
             ctx,
@@ -2456,6 +2562,7 @@ impl DynamicPlaylistProvider for EmbyProvider {
                         EmbyPlaylistSourceConfig {
                             server_id: base_config.server_id.clone(),
                             source,
+                            proxy_mode: base_config.proxy_mode,
                         },
                     ))
                 } else {
@@ -2463,6 +2570,7 @@ impl DynamicPlaylistProvider for EmbyProvider {
                         EmbyMediaSourceConfig {
                             item_id: item_id.clone(),
                             server_id: base_config.server_id.clone(),
+                            proxy_mode: base_config.proxy_mode,
                         },
                     ))
                 };
@@ -2527,7 +2635,11 @@ impl DynamicPlaylistProvider for EmbyProvider {
         Ok(Some(NextPlayItem {
             name: item.name,
             item_type,
-            source_config: Self::build_next_source_config(&base_config.server_id, &item_id),
+            source_config: Self::build_next_source_config(
+                &base_config.server_id,
+                &item_id,
+                base_config.proxy_mode,
+            ),
             target: target.clone(),
         }))
     }
@@ -2610,6 +2722,7 @@ impl DynamicPlaylistProvider for EmbyProvider {
                                             "Missing Emby item target".to_string(),
                                         )
                                     })?,
+                                    base_config.proxy_mode,
                                 ),
                                 target: next.target.clone(),
                             }));
@@ -2633,6 +2746,7 @@ impl DynamicPlaylistProvider for EmbyProvider {
                                             "Missing Emby item target".to_string(),
                                         )
                                     })?,
+                                    base_config.proxy_mode,
                                 ),
                                 target: next.target.clone(),
                             }));
@@ -2673,6 +2787,7 @@ impl DynamicPlaylistProvider for EmbyProvider {
                                         "Missing Emby item target".to_string(),
                                     )
                                 })?,
+                                base_config.proxy_mode,
                             ),
                             target: first.target.clone(),
                         }));
@@ -2737,6 +2852,7 @@ impl DynamicPlaylistProvider for EmbyProvider {
                             &Self::decode_target(Some(&random.target))?.ok_or_else(|| {
                                 ProviderError::InvalidConfig("Missing Emby item target".to_string())
                             })?,
+                            base_config.proxy_mode,
                         ),
                         target: random.target.clone(),
                     }))
@@ -2829,6 +2945,31 @@ mod tests {
             assert_eq!(EmbyProvider::playback_kind(item_type), Some(expected));
         }
         assert_eq!(EmbyProvider::playback_kind("Person"), None);
+    }
+
+    #[test]
+    fn collection_folder_is_always_exposed_as_a_playlist() {
+        let item = EmbyItem {
+            name: "SyncTV Dev Media".to_string(),
+            id: "collection-folder".to_string(),
+            item_type: "CollectionFolder".to_string(),
+            parent_id: String::new(),
+            series_name: String::new(),
+            series_id: String::new(),
+            season_name: String::new(),
+            season_id: String::new(),
+            is_folder: false,
+            collection_type: "homevideos".to_string(),
+            has_thumbnail: false,
+            description: String::new(),
+            duration_seconds: None,
+        };
+
+        assert_eq!(
+            EmbyProvider::item_type_from_listing(&item),
+            Some(ItemType::Playlist)
+        );
+        assert!(EmbyProvider::emby_list_item_from_item(item).is_folder);
     }
 
     #[test]

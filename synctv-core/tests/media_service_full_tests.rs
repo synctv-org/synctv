@@ -341,6 +341,7 @@ async fn test_add_media_rejects_missing_shared_bilibili_credential() {
                 aid: None,
                 cid: 12345,
                 shared: true,
+                proxy_mode: synctv_core::models::PlaybackProxyMode::Auto,
             },
         )),
     };
@@ -508,6 +509,7 @@ async fn test_create_dynamic_playlist_with_credential_backed_provider_without_re
             path: "/media/library".to_string(),
             server_id: "alist-server".to_string(),
             password: None,
+            proxy_mode: synctv_core::models::PlaybackProxyMode::Auto,
         })),
         provider_instance_name: None,
     };
@@ -566,6 +568,7 @@ async fn test_list_dynamic_playlist_items_with_credential_backed_provider_withou
             path: "/media/library".to_string(),
             server_id: "alist-server".to_string(),
             password: None,
+            proxy_mode: synctv_core::models::PlaybackProxyMode::Auto,
         })),
         provider_instance_name: None,
         created_at: Utc::now(),

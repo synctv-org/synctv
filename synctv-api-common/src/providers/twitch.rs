@@ -3,9 +3,9 @@ use std::sync::Arc;
 use synctv_core::models::UserId;
 use synctv_core::provider::{ProviderError, TwitchProvider};
 use synctv_media_providers::twitch::{
-    TwitchBrowseItem, TwitchBrowseKind, TwitchCategory, TwitchChannelSearchItem, TwitchMetadata,
-    TwitchPlayback, TwitchResourceKind, TwitchScheduleSegment as NativeScheduleSegment,
-    TwitchSession, TwitchStreamItem,
+    TwitchBrowseItem, TwitchBrowseKind, TwitchCategory, TwitchChannelSearchItem, TwitchClient,
+    TwitchMetadata, TwitchPlayback, TwitchResourceKind,
+    TwitchScheduleSegment as NativeScheduleSegment, TwitchSession, TwitchStreamItem,
 };
 use synctv_proto::providers::twitch::{self as proto, *};
 use synctv_proto::source_config::{
@@ -13,7 +13,10 @@ use synctv_proto::source_config::{
 };
 use synctv_realtime::fanout::RealtimeEventService;
 
-use super::{provider_instance_name_for_response, publish_provider_credential_changed};
+use super::{
+    discovery::{discovered_media, discovered_playlist},
+    provider_instance_name_for_response, publish_provider_credential_changed,
+};
 
 #[derive(Clone)]
 pub struct TwitchApiImpl {
@@ -127,7 +130,12 @@ impl TwitchApiImpl {
             .provider
             .resolve_for_user(user_id, &req.resource, instance_name)
             .await?;
-        Ok(resolve_response(playback, metadata))
+        Ok(resolve_response(
+            playback,
+            metadata,
+            req.shared,
+            instance_name,
+        ))
     }
 
     pub async fn list_channel_items(
@@ -149,11 +157,18 @@ impl TwitchApiImpl {
                 ));
             }
         };
+        let resource = TwitchClient::parse_resource(&req.resource)?;
+        if resource.kind != TwitchResourceKind::Channel {
+            return Err(ProviderError::InvalidConfig(
+                "Twitch channel resource is required".to_string(),
+            ));
+        }
+        let channel = resource.id;
         let page = self
             .provider
             .list_channel_items_for_user(
                 user_id,
-                &req.channel,
+                &channel,
                 kind,
                 req.cursor.as_deref(),
                 req.page_size.max(1),
@@ -162,20 +177,23 @@ impl TwitchApiImpl {
             .await?;
         let has_more = page.next_cursor.is_some();
         Ok(ListChannelItemsResponse {
-            items: page.items.into_iter().map(list_item).collect(),
+            items: page
+                .items
+                .into_iter()
+                .map(|item| list_item(item, req.shared, instance_name))
+                .collect(),
             cursor: page.next_cursor,
             has_more,
-            source_config: Some(source_proto::TwitchPlaylistSourceConfig {
-                shared: false,
-                source: Some(
-                    source_proto::twitch_playlist_source_config::Source::Channel(
-                        source_proto::twitch_playlist_source_config::Channel {
-                            channel: req.channel,
-                            content: req.content,
-                        },
-                    ),
+            source: Some(twitch_playlist_source(
+                req.shared,
+                source_proto::twitch_playlist_source_config::Source::Channel(
+                    source_proto::twitch_playlist_source_config::Channel {
+                        channel,
+                        content: req.content,
+                    },
                 ),
-            }),
+                instance_name,
+            )),
         })
     }
 
@@ -196,14 +214,19 @@ impl TwitchApiImpl {
             .await?;
         let has_more = page.next_cursor.is_some();
         Ok(ListFollowedLiveResponse {
-            items: page.items.into_iter().map(stream_item).collect(),
+            items: page
+                .items
+                .into_iter()
+                .map(|item| stream_item(item, req.shared, instance_name))
+                .collect(),
             cursor: page.next_cursor,
             has_more,
-            source_config: Some(twitch_playlist_source(
-                false,
+            source: Some(twitch_playlist_source(
+                req.shared,
                 source_proto::twitch_playlist_source_config::Source::FollowedLive(
                     source_proto::twitch_playlist_source_config::FollowedLive {},
                 ),
+                instance_name,
             )),
         })
     }
@@ -226,17 +249,22 @@ impl TwitchApiImpl {
             .await?;
         let has_more = page.next_cursor.is_some();
         Ok(ListCategoryStreamsResponse {
-            items: page.items.into_iter().map(stream_item).collect(),
+            items: page
+                .items
+                .into_iter()
+                .map(|item| stream_item(item, req.shared, instance_name))
+                .collect(),
             cursor: page.next_cursor,
             has_more,
-            source_config: Some(twitch_playlist_source(
-                false,
+            source: Some(twitch_playlist_source(
+                req.shared,
                 source_proto::twitch_playlist_source_config::Source::CategoryLive(
                     source_proto::twitch_playlist_source_config::CategoryLive {
                         category_id: req.category_id,
                         category_name: req.category_name,
                     },
                 ),
+                instance_name,
             )),
         })
     }
@@ -258,7 +286,11 @@ impl TwitchApiImpl {
             .await?;
         let has_more = page.next_cursor.is_some();
         Ok(ListTopCategoriesResponse {
-            items: page.items.into_iter().map(category_item).collect(),
+            items: page
+                .items
+                .into_iter()
+                .map(|item| category_item(item, req.shared, instance_name))
+                .collect(),
             cursor: page.next_cursor,
             has_more,
         })
@@ -282,14 +314,19 @@ impl TwitchApiImpl {
             .await?;
         let has_more = page.next_cursor.is_some();
         Ok(SearchLiveChannelsResponse {
-            items: page.items.into_iter().map(search_channel_item).collect(),
+            items: page
+                .items
+                .into_iter()
+                .map(|item| search_channel_item(item, req.shared, instance_name))
+                .collect(),
             cursor: page.next_cursor,
             has_more,
-            source_config: Some(twitch_playlist_source(
-                false,
+            source: Some(twitch_playlist_source(
+                req.shared,
                 source_proto::twitch_playlist_source_config::Source::SearchLive(
                     source_proto::twitch_playlist_source_config::SearchLive { query: req.query },
                 ),
+                instance_name,
             )),
         })
     }
@@ -311,7 +348,7 @@ impl TwitchApiImpl {
             )
             .await?;
         let has_more = page.next_cursor.is_some();
-        let source_config = twitch_live_source(page.broadcaster_login.clone());
+        let source = twitch_live_source(page.broadcaster_login.clone(), req.shared, instance_name);
         Ok(ListScheduleResponse {
             broadcaster_id: page.broadcaster_id,
             broadcaster_login: page.broadcaster_login,
@@ -319,7 +356,7 @@ impl TwitchApiImpl {
             segments: page.segments.into_iter().map(schedule_segment).collect(),
             cursor: page.next_cursor,
             has_more,
-            source_config: Some(source_config),
+            source: Some(source),
         })
     }
 }
@@ -327,27 +364,58 @@ impl TwitchApiImpl {
 fn twitch_playlist_source(
     shared: bool,
     source: source_proto::twitch_playlist_source_config::Source,
-) -> source_proto::TwitchPlaylistSourceConfig {
-    source_proto::TwitchPlaylistSourceConfig {
-        shared,
-        source: Some(source),
-    }
-}
-
-fn twitch_live_source(channel: String) -> source_proto::TwitchMediaSourceConfig {
-    source_proto::TwitchMediaSourceConfig {
-        source: Some(twitch_media_source_config::Source::Live(
-            source_proto::TwitchLiveSourceConfig {
-                channel,
-                shared: false,
+    provider_instance_name: Option<&str>,
+) -> synctv_proto::providers::common::DiscoveredSource {
+    discovered_playlist(
+        source_proto::playlist_source_config::Provider::Twitch(
+            source_proto::TwitchPlaylistSourceConfig {
+                shared,
+                source: Some(source),
             },
-        )),
-    }
+        ),
+        provider_instance_name,
+    )
 }
 
-fn stream_item(item: TwitchStreamItem) -> StreamItem {
+fn twitch_live_source(
+    channel: String,
+    shared: bool,
+    provider_instance_name: Option<&str>,
+) -> synctv_proto::providers::common::DiscoveredSource {
+    twitch_media_source(
+        twitch_media_source_config::Source::Live(source_proto::TwitchLiveSourceConfig {
+            channel,
+            shared,
+        }),
+        provider_instance_name,
+    )
+}
+
+fn twitch_media_source(
+    source: twitch_media_source_config::Source,
+    provider_instance_name: Option<&str>,
+) -> synctv_proto::providers::common::DiscoveredSource {
+    discovered_media(
+        source_proto::media_source_config::Provider::Twitch(
+            source_proto::TwitchMediaSourceConfig {
+                source: Some(source),
+            },
+        ),
+        provider_instance_name,
+    )
+}
+
+fn stream_item(
+    item: TwitchStreamItem,
+    shared: bool,
+    provider_instance_name: Option<&str>,
+) -> StreamItem {
     StreamItem {
-        source_config: Some(twitch_live_source(item.channel.clone())),
+        source: Some(twitch_live_source(
+            item.channel.clone(),
+            shared,
+            provider_instance_name,
+        )),
         stream_id: item.stream_id,
         user_id: item.user_id,
         channel: item.channel,
@@ -364,16 +432,21 @@ fn stream_item(item: TwitchStreamItem) -> StreamItem {
     }
 }
 
-fn category_item(item: TwitchCategory) -> CategoryItem {
+fn category_item(
+    item: TwitchCategory,
+    shared: bool,
+    provider_instance_name: Option<&str>,
+) -> CategoryItem {
     CategoryItem {
-        source_config: Some(twitch_playlist_source(
-            false,
+        source: Some(twitch_playlist_source(
+            shared,
             source_proto::twitch_playlist_source_config::Source::CategoryLive(
                 source_proto::twitch_playlist_source_config::CategoryLive {
                     category_id: item.id.clone(),
                     category_name: item.name.clone(),
                 },
             ),
+            provider_instance_name,
         )),
         id: item.id,
         name: item.name,
@@ -381,9 +454,17 @@ fn category_item(item: TwitchCategory) -> CategoryItem {
     }
 }
 
-fn search_channel_item(item: TwitchChannelSearchItem) -> SearchChannelItem {
+fn search_channel_item(
+    item: TwitchChannelSearchItem,
+    shared: bool,
+    provider_instance_name: Option<&str>,
+) -> SearchChannelItem {
     SearchChannelItem {
-        source_config: Some(twitch_live_source(item.channel.clone())),
+        source: Some(twitch_live_source(
+            item.channel.clone(),
+            shared,
+            provider_instance_name,
+        )),
         user_id: item.user_id,
         channel: item.channel,
         display_name: item.display_name,
@@ -411,25 +492,30 @@ fn schedule_segment(segment: NativeScheduleSegment) -> ScheduleSegment {
     }
 }
 
-fn resolve_response(playback: TwitchPlayback, metadata: TwitchMetadata) -> ResolveResponse {
+fn resolve_response(
+    playback: TwitchPlayback,
+    metadata: TwitchMetadata,
+    shared: bool,
+    provider_instance_name: Option<&str>,
+) -> ResolveResponse {
     let kind = resource_kind(playback.resource.kind);
     let source = match playback.resource.kind {
         TwitchResourceKind::Channel => {
             twitch_media_source_config::Source::Live(source_proto::TwitchLiveSourceConfig {
                 channel: playback.resource.id.clone(),
-                shared: false,
+                shared,
             })
         }
         TwitchResourceKind::Video => {
             twitch_media_source_config::Source::Video(source_proto::TwitchVideoSourceConfig {
                 video_id: playback.resource.id.clone(),
-                shared: false,
+                shared,
             })
         }
         TwitchResourceKind::Clip => {
             twitch_media_source_config::Source::Clip(source_proto::TwitchClipSourceConfig {
                 slug: playback.resource.id.clone(),
-                shared: false,
+                shared,
             })
         }
     };
@@ -449,9 +535,7 @@ fn resolve_response(playback: TwitchPlayback, metadata: TwitchMetadata) -> Resol
                 codecs: quality.codecs,
             })
             .collect(),
-        source_config: Some(source_proto::TwitchMediaSourceConfig {
-            source: Some(source),
-        }),
+        source: Some(twitch_media_source(source, provider_instance_name)),
     }
 }
 
@@ -480,7 +564,31 @@ fn metadata_message(metadata: TwitchMetadata) -> Metadata {
     }
 }
 
-fn list_item(item: TwitchBrowseItem) -> ListItem {
+fn list_item(
+    item: TwitchBrowseItem,
+    shared: bool,
+    provider_instance_name: Option<&str>,
+) -> ListItem {
+    let source = match item.resource.kind {
+        TwitchResourceKind::Channel => {
+            twitch_media_source_config::Source::Live(source_proto::TwitchLiveSourceConfig {
+                channel: item.resource.id.clone(),
+                shared,
+            })
+        }
+        TwitchResourceKind::Video => {
+            twitch_media_source_config::Source::Video(source_proto::TwitchVideoSourceConfig {
+                video_id: item.resource.id.clone(),
+                shared,
+            })
+        }
+        TwitchResourceKind::Clip => {
+            twitch_media_source_config::Source::Clip(source_proto::TwitchClipSourceConfig {
+                slug: item.resource.id.clone(),
+                shared,
+            })
+        }
+    };
     ListItem {
         kind: resource_kind(item.resource.kind),
         id: item.resource.id,
@@ -489,6 +597,7 @@ fn list_item(item: TwitchBrowseItem) -> ListItem {
         duration_seconds: item.duration_seconds,
         view_count: item.view_count,
         published_at: item.published_at,
+        source: Some(twitch_media_source(source, provider_instance_name)),
     }
 }
 

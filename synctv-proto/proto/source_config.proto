@@ -35,6 +35,12 @@ enum PlaybackKind {
   PLAYBACK_KIND_LIVE = 2;
 }
 
+enum PlaybackProxyMode {
+  PLAYBACK_PROXY_MODE_AUTO = 0;
+  PLAYBACK_PROXY_MODE_PREFER = 1;
+  PLAYBACK_PROXY_MODE_ONLY = 2;
+}
+
 message DirectUrlMediaResourceConfig {
   string name = 1;
   string url = 2;
@@ -69,35 +75,39 @@ message DirectUrlMediaSourceConfig {
   optional uint32 default_danmaku_index = 6;
   optional PlaybackKind playback_kind = 7 [(buf.validate.field).enum.defined_only = true];
   optional double duration_seconds = 8;
-  optional bool prefer_proxy = 9;
-  optional bool proxy_only = 10;
+  PlaybackProxyMode proxy_mode = 9 [(buf.validate.field).enum.defined_only = true];
 }
 
 message AlistMediaSourceConfig {
   string server_id = 1;
   string path = 2;
   optional string password = 3;
+  PlaybackProxyMode proxy_mode = 4 [(buf.validate.field).enum.defined_only = true];
 }
 
 message AlistPlaylistSourceConfig {
   string server_id = 1;
   string path = 2;
   optional string password = 3;
+  PlaybackProxyMode proxy_mode = 4 [(buf.validate.field).enum.defined_only = true];
 }
 
 message CloudreveMediaSourceConfig {
   string server_id = 1;
   string path = 2;
+  PlaybackProxyMode proxy_mode = 3 [(buf.validate.field).enum.defined_only = true];
 }
 
 message CloudrevePlaylistSourceConfig {
   string server_id = 1;
   string path = 2;
+  PlaybackProxyMode proxy_mode = 3 [(buf.validate.field).enum.defined_only = true];
 }
 
 message EmbyMediaSourceConfig {
   string server_id = 1;
   string item_id = 2;
+  PlaybackProxyMode proxy_mode = 3 [(buf.validate.field).enum.defined_only = true];
 }
 
 message EmbyPlaylistSourceConfig {
@@ -115,6 +125,7 @@ message EmbyPlaylistSourceConfig {
     EmbyGenresPlaylistSource genres = 11;
     EmbyGenreItemsPlaylistSource genre_items = 12;
   }
+  PlaybackProxyMode proxy_mode = 13 [(buf.validate.field).enum.defined_only = true];
 }
 
 message EmbyFolderPlaylistSource { string item_id = 1; }
@@ -208,6 +219,7 @@ message BilibiliMediaSourceConfig {
     BilibiliPgcSourceConfig pgc = 2;
     BilibiliLiveSourceConfig live = 3;
   }
+  PlaybackProxyMode proxy_mode = 4 [(buf.validate.field).enum.defined_only = true];
 }
 
 message BilibiliPopularPlaylistSource {}
@@ -277,6 +289,7 @@ message BilibiliPlaylistSourceConfig {
     BilibiliPgcTimelinePlaylistSource pgc_timeline = 14;
   }
   bool shared = 15;
+  PlaybackProxyMode proxy_mode = 16 [(buf.validate.field).enum.defined_only = true];
 }
 
 message TwitchLiveSourceConfig {
@@ -467,6 +480,7 @@ message FnosMediaSourceConfig {
     FnosFileSourceConfig file = 2;
     FnosLibraryItemSourceConfig library_item = 3;
   }
+  PlaybackProxyMode proxy_mode = 4 [(buf.validate.field).enum.defined_only = true];
 }
 
 message FnosFilesPlaylistSourceConfig {
@@ -492,16 +506,19 @@ message FnosPlaylistSourceConfig {
     FnosFavoritesPlaylistSourceConfig favorites = 4;
     FnosHistoryPlaylistSourceConfig history = 5;
   }
+  PlaybackProxyMode proxy_mode = 6 [(buf.validate.field).enum.defined_only = true];
 }
 
 message QnapMediaSourceConfig {
   string server_id = 1 [(buf.validate.field).string.min_len = 1];
   string path = 2 [(buf.validate.field).string.min_len = 1];
+  PlaybackProxyMode proxy_mode = 3 [(buf.validate.field).enum.defined_only = true];
 }
 
 message QnapPlaylistSourceConfig {
   string server_id = 1 [(buf.validate.field).string.min_len = 1];
   string path = 2;
+  PlaybackProxyMode proxy_mode = 3 [(buf.validate.field).enum.defined_only = true];
 }
 
 enum SynologyLibraryItemKind {
@@ -531,6 +548,7 @@ message SynologyMediaSourceConfig {
     SynologyFileSourceConfig file = 2;
     SynologyLibraryItemSourceConfig library_item = 3;
   }
+  PlaybackProxyMode proxy_mode = 4 [(buf.validate.field).enum.defined_only = true];
 }
 
 message SynologyFilesPlaylistSourceConfig {
@@ -568,12 +586,14 @@ message SynologyPlaylistSourceConfig {
     SynologyHomeVideosPlaylistSourceConfig home_videos = 6;
     SynologyTvRecordingsPlaylistSourceConfig tv_recordings = 7;
   }
+  PlaybackProxyMode proxy_mode = 8 [(buf.validate.field).enum.defined_only = true];
 }
 
 message NextcloudMediaSourceConfig {
   string server_id = 1 [(buf.validate.field).string.min_len = 1];
   string path = 2 [(buf.validate.field).string.min_len = 1];
   uint64 file_id = 3 [(buf.validate.field).uint64.gt = 0];
+  PlaybackProxyMode proxy_mode = 4 [(buf.validate.field).enum.defined_only = true];
 }
 
 message NextcloudFolderPlaylistSourceConfig {
@@ -594,6 +614,7 @@ message NextcloudPlaylistSourceConfig {
     NextcloudFavoritesPlaylistSourceConfig favorites = 3;
     NextcloudSearchPlaylistSourceConfig search = 4;
   }
+  PlaybackProxyMode proxy_mode = 5 [(buf.validate.field).enum.defined_only = true];
 }
 
 message SeafileMediaSourceConfig {
@@ -602,6 +623,7 @@ message SeafileMediaSourceConfig {
   string path = 3 [(buf.validate.field).string.min_len = 1];
   string object_id = 4;
   bool has_thumbnail = 5;
+  PlaybackProxyMode proxy_mode = 6 [(buf.validate.field).enum.defined_only = true];
 }
 
 message SeafileFolderPlaylistSourceConfig {
@@ -623,11 +645,13 @@ message SeafilePlaylistSourceConfig {
     SeafileStarredPlaylistSourceConfig starred = 3;
     SeafileSearchPlaylistSourceConfig search = 4;
   }
+  PlaybackProxyMode proxy_mode = 5 [(buf.validate.field).enum.defined_only = true];
 }
 
 message TrueNasMediaSourceConfig {
   string server_id = 1 [(buf.validate.field).string.min_len = 1];
   string path = 2 [(buf.validate.field).string.min_len = 1];
+  PlaybackProxyMode proxy_mode = 3 [(buf.validate.field).enum.defined_only = true];
 }
 message TrueNasFolderPlaylistSourceConfig { string path = 1; }
 message TrueNasSearchPlaylistSourceConfig {
@@ -640,6 +664,7 @@ message TrueNasPlaylistSourceConfig {
     TrueNasFolderPlaylistSourceConfig folder = 2;
     TrueNasSearchPlaylistSourceConfig search = 3;
   }
+  PlaybackProxyMode proxy_mode = 4 [(buf.validate.field).enum.defined_only = true];
 }
 
 message TikTokVideoSourceConfig {

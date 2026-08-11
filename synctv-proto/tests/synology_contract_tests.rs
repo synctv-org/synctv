@@ -20,6 +20,7 @@ fn synology_contract_separates_browse_and_playable_item_kinds() {
         provider: Some(media_source_config::Provider::Synology(
             synctv_proto::source_config::SynologyMediaSourceConfig {
                 server_id: "dsm-home".to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 source: Some(
                     synctv_proto::source_config::synology_media_source_config::Source::LibraryItem(
                         synctv_proto::source_config::SynologyLibraryItemSourceConfig {
@@ -37,6 +38,7 @@ fn synology_contract_separates_browse_and_playable_item_kinds() {
         provider: Some(playlist_source_config::Provider::Synology(
             synctv_proto::source_config::SynologyPlaylistSourceConfig {
                 server_id: "dsm-home".to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 source: Some(
                     synctv_proto::source_config::synology_playlist_source_config::Source::TvShows(
                         synctv_proto::source_config::SynologyTvShowsPlaylistSourceConfig {

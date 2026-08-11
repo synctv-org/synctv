@@ -6,6 +6,7 @@ use synctv_proto::providers::bilibili as bilibili_proto;
 #[derive(Debug, Clone)]
 pub struct BilibiliParseQuery {
     pub url: String,
+    pub shared: bool,
 }
 #[derive(Debug, Clone)]
 pub struct BilibiliLoginQrCommand;
@@ -84,6 +85,11 @@ pub trait BilibiliRuntime: Send + Sync {
         &self,
         request: bilibili_proto::ListLiveAreasRequest,
     ) -> Result<bilibili_proto::ListLiveAreasResponse, ProviderError>;
+    async fn list_playlist(
+        &self,
+        caller_user_id: &UserId,
+        request: bilibili_proto::ListPlaylistRequest,
+    ) -> Result<bilibili_proto::ListPlaylistResponse, ProviderError>;
     async fn list_favorite_folders(
         &self,
         caller_user_id: &UserId,

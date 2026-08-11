@@ -183,10 +183,10 @@ impl TikTokClient {
 
     pub async fn user_sec_uid(
         &self,
-        unique_id: &str,
+        resource: &str,
         session: Option<&TikTokSession>,
     ) -> Result<String, ProviderClientError> {
-        validate_unique_id(unique_id)?;
+        let unique_id = self.resolve_user_resource(resource, session).await?;
         let url = format!("{}/@{unique_id}", self.endpoints.web_base);
         let html = self.webpage(&url, session).await?;
         let scope = universal_scope(&html)?;
@@ -206,6 +206,60 @@ impl TikTokClient {
                 code: 404,
                 message: "TikTok user secUid is unavailable".to_string(),
             })
+    }
+
+    pub fn parse_user_resource(input: &str) -> Result<String, ProviderClientError> {
+        let input = input.trim();
+        let candidate = input.strip_prefix('@').unwrap_or(input);
+        if validate_unique_id(candidate).is_ok() {
+            return Ok(candidate.to_string());
+        }
+        let normalized = if input.contains("://") {
+            input.to_string()
+        } else {
+            format!("https://{input}")
+        };
+        let url = Url::parse(&normalized).map_err(|error| {
+            ProviderClientError::InvalidConfig(format!("invalid TikTok user resource: {error}"))
+        })?;
+        let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+        if !host.ends_with("tiktok.com") {
+            return Err(ProviderClientError::InvalidConfig(
+                "URL is outside TikTok".to_string(),
+            ));
+        }
+        let unique_id = url
+            .path_segments()
+            .into_iter()
+            .flatten()
+            .find_map(|segment| segment.strip_prefix('@'))
+            .unwrap_or_default();
+        validate_unique_id(unique_id)?;
+        Ok(unique_id.to_string())
+    }
+
+    async fn resolve_user_resource(
+        &self,
+        input: &str,
+        session: Option<&TikTokSession>,
+    ) -> Result<String, ProviderClientError> {
+        if let Ok(unique_id) = Self::parse_user_resource(input) {
+            return Ok(unique_id);
+        }
+        let url = Url::parse(input.trim()).map_err(|error| {
+            ProviderClientError::InvalidConfig(format!("invalid TikTok user resource: {error}"))
+        })?;
+        let host = url.host_str().unwrap_or_default();
+        if !matches!(host, "vm.tiktok.com" | "vt.tiktok.com") {
+            return Self::parse_user_resource(input);
+        }
+        let response = check_response(
+            Self::request(self.http.get(url), session, TIKTOK_ORIGIN)
+                .send()
+                .await?,
+        )
+        .await?;
+        Self::parse_user_resource(response.url().as_str())
     }
 
     pub async fn user_posts(
@@ -876,6 +930,26 @@ mod tests {
             }
         );
         assert!(TikTokClient::parse_resource("https://vm.tiktok.com/short").is_err());
+    }
+
+    #[test]
+    fn parses_user_handles_and_profile_urls() {
+        assert_eq!(
+            TikTokClient::parse_user_resource("@creator.name").expect("user handle should parse"),
+            "creator.name"
+        );
+        assert_eq!(
+            TikTokClient::parse_user_resource("www.tiktok.com/@creator.name")
+                .expect("scheme-less profile URL should parse"),
+            "creator.name"
+        );
+        assert_eq!(
+            TikTokClient::parse_user_resource(
+                "https://www.tiktok.com/@creator.name/video/7123456789012345678"
+            )
+            .expect("video URL author should parse"),
+            "creator.name"
+        );
     }
 
     #[tokio::test]

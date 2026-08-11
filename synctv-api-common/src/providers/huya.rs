@@ -2,7 +2,9 @@ use synctv_media_providers::huya::{HuyaMedia, HuyaMetadata, HuyaResourceKind, Hu
 use synctv_proto::providers::huya::{self as proto, *};
 use synctv_proto::source_config::{self as source_proto, huya_media_source_config};
 
-pub fn resolve_response(media: HuyaMedia) -> ResolveResponse {
+use super::discovery::discovered_media;
+
+pub fn resolve_response(media: HuyaMedia, provider_instance_name: Option<&str>) -> ResolveResponse {
     let kind = resource_kind(media.playback.resource.kind);
     let source = match media.playback.resource.kind {
         HuyaResourceKind::Live => {
@@ -33,9 +35,14 @@ pub fn resolve_response(media: HuyaMedia) -> ResolveResponse {
                 height: quality.height,
             })
             .collect(),
-        source_config: Some(source_proto::HuyaMediaSourceConfig {
-            source: Some(source),
-        }),
+        source: Some(discovered_media(
+            source_proto::media_source_config::Provider::Huya(
+                source_proto::HuyaMediaSourceConfig {
+                    source: Some(source),
+                },
+            ),
+            provider_instance_name,
+        )),
     }
 }
 

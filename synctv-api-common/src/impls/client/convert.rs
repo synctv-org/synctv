@@ -3958,10 +3958,8 @@ fn playback_media_url(
         | PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct { url, .. })
         | PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct { url, .. })
         | PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct { url, .. })
-        | PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct { url, .. }) => {
-            return Ok((url.clone(), None));
-        }
-        PlaybackMediaProvider::Fnos(PlaybackFnosMedia::Direct { url, .. })
+        | PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct { url, .. })
+        | PlaybackMediaProvider::Fnos(PlaybackFnosMedia::Direct { url, .. })
         | PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Direct { url, .. })
         | PlaybackMediaProvider::Synology(PlaybackSynologyMedia::Direct { url, .. })
         | PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Direct { url, .. })
@@ -4533,10 +4531,8 @@ fn playback_subtitle_url(
         PlaybackTrueNasSubtitle, PlaybackYoutubeSubtitle,
     };
     let (provider, version, expires_at, mode_name, subtitle_index) = match &subtitle.provider {
-        PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Direct { url, .. }) => {
-            return Ok(url.clone());
-        }
-        PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle::Refresh { url, .. })
+        PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Direct { url, .. })
+        | PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle::Refresh { url, .. })
         | PlaybackSubtitleProvider::Bilibili(PlaybackBilibiliSubtitle::Direct { url, .. })
         | PlaybackSubtitleProvider::DirectUrl(PlaybackDirectUrlSubtitle::Direct { url, .. })
         | PlaybackSubtitleProvider::Emby(PlaybackEmbySubtitle::Direct { url, .. })

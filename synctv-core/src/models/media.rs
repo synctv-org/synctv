@@ -2944,15 +2944,13 @@ impl PlaybackMedia {
     #[must_use]
     pub fn direct_url(&self) -> Option<&str> {
         match &self.provider {
-            PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct { url, .. }) => {
+            PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct { url, .. })
+            | PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct { url, .. }) => {
                 Some(url)
             }
             PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct { url, .. })
             | PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct { url, .. })
             | PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct { url, .. }) => Some(url),
-            PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct { url, .. }) => {
-                Some(url)
-            }
             _ => None,
         }
     }
@@ -2993,8 +2991,8 @@ impl PlaybackMedia {
         match &self.provider {
             PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct {
                 headers, ..
-            }) => headers.clone(),
-            PlaybackMediaProvider::Alist(
+            })
+            | PlaybackMediaProvider::Alist(
                 PlaybackAlistMedia::Direct { headers, .. }
                 | PlaybackAlistMedia::ProxyFile { headers, .. }
                 | PlaybackAlistMedia::ProxyTranscodedHlsManifest { headers, .. },
@@ -3116,8 +3114,8 @@ impl PlaybackSubtitle {
         match &self.provider {
             PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Direct {
                 url, ..
-            }) => url,
-            PlaybackSubtitleProvider::Alist(
+            })
+            | PlaybackSubtitleProvider::Alist(
                 PlaybackAlistSubtitle::Refresh { url, .. }
                 | PlaybackAlistSubtitle::Proxy { url, .. },
             )
@@ -3150,6 +3148,10 @@ impl PlaybackSubtitle {
             }) => video_id,
             PlaybackSubtitleProvider::Youtube(PlaybackYoutubeSubtitle::Proxy {
                 version, ..
+            })
+            | PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Proxy {
+                version,
+                ..
             }) => version,
             PlaybackSubtitleProvider::TikTok(PlaybackTikTokSubtitle::Refresh {
                 resource, ..
@@ -3160,10 +3162,6 @@ impl PlaybackSubtitle {
             PlaybackSubtitleProvider::TikTok(PlaybackTikTokSubtitle::Proxy { version, .. }) => {
                 version
             }
-            PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Proxy {
-                version,
-                ..
-            }) => version,
         }
     }
 
@@ -3173,8 +3171,8 @@ impl PlaybackSubtitle {
             PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Direct {
                 headers,
                 ..
-            }) => headers.clone(),
-            PlaybackSubtitleProvider::Alist(
+            })
+            | PlaybackSubtitleProvider::Alist(
                 PlaybackAlistSubtitle::Refresh { headers, .. }
                 | PlaybackAlistSubtitle::Proxy { headers, .. },
             )

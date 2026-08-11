@@ -169,7 +169,7 @@ fn suggested_name_from_url(url: &str, fallback: &str) -> String {
     };
     parsed
         .path_segments()
-        .and_then(|segments| segments.filter(|value| !value.is_empty()).next_back())
+        .and_then(|mut segments| segments.rfind(|value| !value.is_empty()))
         .map(ToString::to_string)
         .filter(|value| !value.trim().is_empty())
         .or_else(|| parsed.host_str().map(ToString::to_string))

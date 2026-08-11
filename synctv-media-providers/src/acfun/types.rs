@@ -138,13 +138,14 @@ where
 {
     Ok(
         match Option::<serde_json::Value>::deserialize(deserializer)? {
-            None | Some(serde_json::Value::Null) => None,
             Some(serde_json::Value::Number(value)) => value.as_u64(),
             Some(serde_json::Value::String(value)) => parse_display_count(&value),
-            Some(_) => None,
+            _ => None,
         },
     )
 }
+
+const U64_EXCLUSIVE_UPPER_BOUND: f64 = 18_446_744_073_709_551_616.0;
 
 fn parse_display_count(value: &str) -> Option<u64> {
     let normalized = value.trim().replace([',', ' '], "");
@@ -161,7 +162,12 @@ fn parse_display_count(value: &str) -> Option<u64> {
                 .map(|number| (number, 100_000_000_f64))
         })?;
     let value = number.parse::<f64>().ok()? * multiplier;
-    value.is_finite().then(|| value.round() as u64)
+    if !value.is_finite() || value.is_sign_negative() || value >= U64_EXCLUSIVE_UPPER_BOUND {
+        return None;
+    }
+    // The range checks above make the rounded conversion finite and unsigned.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Some(value.round() as u64)
 }
 
 #[cfg(test)]
@@ -174,7 +180,7 @@ mod tests {
         value: Option<u64>,
     }
 
-    fn count(value: serde_json::Value) -> Option<u64> {
+    fn count(value: &serde_json::Value) -> Option<u64> {
         serde_json::from_value::<OptionalCount>(serde_json::json!({ "value": value }))
             .expect("optional display counts should deserialize")
             .value
@@ -182,12 +188,13 @@ mod tests {
 
     #[test]
     fn optional_display_counts_accept_numbers_and_ignore_labels() {
-        assert_eq!(count(serde_json::json!(483)), Some(483));
-        assert_eq!(count(serde_json::json!("1,234")), Some(1_234));
-        assert_eq!(count(serde_json::json!("1.2万")), Some(12_000));
-        assert_eq!(count(serde_json::json!("3亿")), Some(300_000_000));
-        assert_eq!(count(serde_json::json!("点赞")), None);
-        assert_eq!(count(serde_json::json!("-")), None);
+        assert_eq!(count(&serde_json::json!(483)), Some(483));
+        assert_eq!(count(&serde_json::json!("1,234")), Some(1_234));
+        assert_eq!(count(&serde_json::json!("1.2万")), Some(12_000));
+        assert_eq!(count(&serde_json::json!("3亿")), Some(300_000_000));
+        assert_eq!(count(&serde_json::json!("-1万")), None);
+        assert_eq!(count(&serde_json::json!("点赞")), None);
+        assert_eq!(count(&serde_json::json!("-")), None);
     }
 }
 

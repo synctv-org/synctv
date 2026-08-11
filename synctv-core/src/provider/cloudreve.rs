@@ -853,58 +853,56 @@ fn mark_cloudreve_playback_resources(result: &mut PlaybackResult, version: &str,
             .medias
             .iter()
             .enumerate()
-            .filter_map(|(media_index, media)| {
+            .filter(|(_, media)| {
                 matches!(
                     media.provider,
                     PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct { .. })
                 )
-                .then(|| {
-                    let mut proxy = media.clone();
-                    proxy.expire_at = chrono::DateTime::from_timestamp(expires_at, 0);
-                    proxy.provider = PlaybackMediaProvider::Cloudreve(
-                        if super::playback_media_is_hls(&mode_name, media) {
-                            PlaybackCloudreveMedia::ProxyHlsManifest {
-                                version: version.to_string(),
-                                expires_at,
-                                mode_name: mode_name.clone(),
-                                media_index,
-                            }
-                        } else {
-                            PlaybackCloudreveMedia::ProxyStream {
-                                version: version.to_string(),
-                                expires_at,
-                                mode_name: mode_name.clone(),
-                                media_index,
-                            }
-                        },
-                    );
-                    proxy
-                })
+            })
+            .map(|(media_index, media)| {
+                let mut proxy = media.clone();
+                proxy.expire_at = chrono::DateTime::from_timestamp(expires_at, 0);
+                proxy.provider = PlaybackMediaProvider::Cloudreve(
+                    if super::playback_media_is_hls(&mode_name, media) {
+                        PlaybackCloudreveMedia::ProxyHlsManifest {
+                            version: version.to_string(),
+                            expires_at,
+                            mode_name: mode_name.clone(),
+                            media_index,
+                        }
+                    } else {
+                        PlaybackCloudreveMedia::ProxyStream {
+                            version: version.to_string(),
+                            expires_at,
+                            mode_name: mode_name.clone(),
+                            media_index,
+                        }
+                    },
+                );
+                proxy
             })
             .collect();
         proxy_info.subtitles = original_info
             .subtitles
             .iter()
             .enumerate()
-            .filter_map(|(subtitle_index, subtitle)| {
+            .filter(|(_, subtitle)| {
                 matches!(
                     subtitle.provider,
                     PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Direct { .. })
                 )
-                .then(|| PlaybackSubtitle {
-                    name: subtitle.name.clone(),
-                    language: subtitle.language.clone(),
-                    format: subtitle.format.clone(),
-                    p2p_swarm_id: subtitle.p2p_swarm_id.clone(),
-                    provider: PlaybackSubtitleProvider::Cloudreve(
-                        PlaybackCloudreveSubtitle::Proxy {
-                            version: version.to_string(),
-                            expires_at,
-                            mode_name: mode_name.clone(),
-                            subtitle_index,
-                        },
-                    ),
-                })
+            })
+            .map(|(subtitle_index, subtitle)| PlaybackSubtitle {
+                name: subtitle.name.clone(),
+                language: subtitle.language.clone(),
+                format: subtitle.format.clone(),
+                p2p_swarm_id: subtitle.p2p_swarm_id.clone(),
+                provider: PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Proxy {
+                    version: version.to_string(),
+                    expires_at,
+                    mode_name: mode_name.clone(),
+                    subtitle_index,
+                }),
             })
             .collect();
         result.playback_infos.insert(proxy_mode_name, proxy_info);
